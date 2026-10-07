@@ -1,6 +1,9 @@
 use super::StateRuntime;
 use super::usage::UsageLogger;
 use crate::SqliteConfig;
+use crate::migrations::USAGE_MIGRATOR;
+use crate::migrations::runtime_usage_migrator;
+use crate::migrations::validate_usage_reporting_indexes;
 use anyhow::Result;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::Event;
@@ -13,7 +16,555 @@ use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TokenUsageInfo;
 use codex_utils_absolute_path::test_support::PathExt;
 use sqlx::SqlitePool;
+use sqlx::migrate::Migration;
+use sqlx::migrate::Migrator;
+use std::borrow::Cow;
 use tempfile::tempdir;
+
+static T10_USAGE_HISTORY_MIGRATOR: Migrator = sqlx::migrate!("./test_data/usage_migrations_t10");
+
+type UsageMigrationRow = (i64, String, bool, Vec<u8>);
+
+fn test_usage_migrator(
+    migrations: Vec<Migration>,
+    base: &Migrator,
+    ignore_missing: bool,
+) -> Migrator {
+    Migrator {
+        migrations: Cow::Owned(migrations),
+        ignore_missing,
+        locking: base.locking,
+        no_tx: base.no_tx,
+        table_name: base.table_name.clone(),
+        create_schemas: base.create_schemas.clone(),
+    }
+}
+
+fn current_main_usage_history_migrator() -> Migrator {
+    test_usage_migrator(
+        USAGE_MIGRATOR
+            .iter()
+            .filter(|migration| migration.version != 20)
+            .cloned()
+            .collect(),
+        &USAGE_MIGRATOR,
+        /*ignore_missing*/ false,
+    )
+}
+
+fn t10_usage_history_migrator_through(max_version: i64) -> Migrator {
+    let mut migrations = USAGE_MIGRATOR
+        .iter()
+        .filter(|migration| {
+            migration.version <= max_version
+                && !matches!(migration.version, 1 | 5 | 6 | 8..=12 | 15 | 20)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    migrations.extend(
+        T10_USAGE_HISTORY_MIGRATOR
+            .iter()
+            .filter(|migration| migration.version <= max_version)
+            .cloned(),
+    );
+    migrations.sort_by_key(|migration| migration.version);
+    test_usage_migrator(migrations, &USAGE_MIGRATOR, /*ignore_missing*/ false)
+}
+
+fn t10_usage_history_migrator() -> Migrator {
+    t10_usage_history_migrator_through(/*max_version*/ 19)
+}
+
+async fn usage_migration_rows(pool: &SqlitePool) -> Result<Vec<UsageMigrationRow>> {
+    Ok(sqlx::query_as::<_, UsageMigrationRow>(
+        "SELECT version, description, success, checksum FROM _sqlx_migrations ORDER BY version",
+    )
+    .fetch_all(pool)
+    .await?)
+}
+
+async fn assert_preserved_migration_rows(
+    pool: &SqlitePool,
+    before: &[UsageMigrationRow],
+) -> Result<()> {
+    let after = usage_migration_rows(pool).await?;
+    let preserved = after
+        .into_iter()
+        .filter(|row| before.iter().any(|prior| prior.0 == row.0))
+        .collect::<Vec<_>>();
+    assert_eq!(preserved, before);
+    Ok(())
+}
+
+async fn assert_table_column(pool: &SqlitePool, table: &str, column: &str) -> Result<()> {
+    let count =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?")
+            .bind(table)
+            .bind(column)
+            .fetch_one(pool)
+            .await?;
+    assert_eq!(count, 1, "missing {table}.{column}");
+    Ok(())
+}
+
+async fn assert_schema_object(pool: &SqlitePool, kind: &str, name: &str) -> Result<()> {
+    let count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = ? AND name = ?",
+    )
+    .bind(kind)
+    .bind(name)
+    .fetch_one(pool)
+    .await?;
+    assert_eq!(count, 1, "missing {kind} {name}");
+    Ok(())
+}
+
+async fn assert_t10_pending_current_main_migrations(pool: &SqlitePool) -> Result<()> {
+    let rows = usage_migration_rows(pool).await?;
+    for version in [6, 8, 9, 10, 11, 12] {
+        assert!(
+            rows.iter().any(|row| row.0 == version && row.2),
+            "current-main usage migration {version} was not successfully applied"
+        );
+    }
+
+    for column in ["lineage_edge_kind", "spawn_request_id"] {
+        assert_table_column(pool, "usage_threads", column).await?;
+    }
+    for table in [
+        "usage_automatic_turn_chains",
+        "usage_automatic_turn_triggers",
+        "usage_automatic_turn_eligibility",
+        "usage_automatic_turns",
+    ] {
+        assert_schema_object(pool, "table", table).await?;
+    }
+    for (table, column) in [
+        ("usage_automatic_turn_triggers", "event_occurrence_id"),
+        ("usage_automatic_turn_eligibility", "event_occurrence_id"),
+        ("usage_automatic_turn_eligibility", "connection_principal"),
+        (
+            "usage_automatic_turn_eligibility",
+            "admitted_client_user_message_id",
+        ),
+        (
+            "usage_automatic_turn_eligibility",
+            "admitted_operation_kind",
+        ),
+        (
+            "usage_automatic_turn_eligibility",
+            "admitted_expected_turn_id",
+        ),
+        ("usage_automatic_turn_eligibility", "allowed_operation_kind"),
+        (
+            "usage_automatic_turn_eligibility",
+            "allowed_expected_turn_id",
+        ),
+        (
+            "usage_automatic_turn_eligibility",
+            "trigger_context_fingerprint",
+        ),
+        ("usage_automatic_turn_eligibility", "settings_generation"),
+        ("usage_automatic_turn_eligibility", "auth_generation"),
+        ("usage_automatic_turn_chains", "settings_generation"),
+        ("usage_automatic_turns", "event_occurrence_id"),
+        ("usage_automatic_turns", "connection_principal"),
+        ("usage_automatic_turns", "abort_event_occurrence_id"),
+    ] {
+        assert_table_column(pool, table, column).await?;
+    }
+    for index in [
+        "usage_automatic_turns_thread_turn_idx",
+        "usage_automatic_turns_trigger_idx",
+        "usage_automatic_turns_origin_idx",
+        "usage_automatic_turn_triggers_occurrence_idx",
+        "usage_automatic_turn_triggers_thread_idx",
+        "usage_automatic_turn_eligibility_admission_idx",
+    ] {
+        assert_schema_object(pool, "index", index).await?;
+    }
+    Ok(())
+}
+
+async fn assert_current_main_usage_migrations(pool: &SqlitePool, versions: &[i64]) -> Result<()> {
+    let rows = usage_migration_rows(pool).await?;
+    for version in versions {
+        let source = USAGE_MIGRATOR
+            .iter()
+            .find(|migration| migration.version == *version)
+            .expect("expected current-main migration is embedded");
+        let row = rows
+            .iter()
+            .find(|row| row.0 == *version)
+            .expect("expected current-main migration row is present");
+        assert_eq!(row.1.as_str(), source.description.as_ref());
+        assert!(row.2, "current-main usage migration {version} succeeded");
+        assert_eq!(row.3.as_slice(), source.checksum.as_ref());
+    }
+    Ok(())
+}
+
+async fn assert_partial_t10_usage_history_reopens(
+    historical_through: i64,
+    expected_main_versions: &[i64],
+) -> Result<()> {
+    let home = tempdir()?;
+    let sqlite = SqliteConfig::new_for_testing(home.path().abs());
+    let fixture = sqlite.open_read_write_pool(&sqlite.usage_db_path()).await?;
+    t10_usage_history_migrator_through(historical_through)
+        .run(&fixture)
+        .await?;
+    let historical_rows = usage_migration_rows(&fixture).await?;
+    fixture.close().await;
+
+    let upgraded = sqlite
+        .open_usage_db(&runtime_usage_migrator(), /*telemetry_override*/ None)
+        .await?;
+    assert_preserved_migration_rows(&upgraded, &historical_rows).await?;
+    assert_t10_pending_current_main_migrations(&upgraded).await?;
+    assert_current_main_usage_migrations(&upgraded, expected_main_versions).await?;
+    validate_usage_reporting_indexes(&upgraded, /*require_all*/ true).await?;
+    upgraded.close().await;
+
+    let reopened = sqlite
+        .open_usage_db(&runtime_usage_migrator(), /*telemetry_override*/ None)
+        .await?;
+    assert_preserved_migration_rows(&reopened, &historical_rows).await?;
+    assert_t10_pending_current_main_migrations(&reopened).await?;
+    assert_current_main_usage_migrations(&reopened, expected_main_versions).await?;
+    validate_usage_reporting_indexes(&reopened, /*require_all*/ true).await?;
+    reopened.close().await;
+    Ok(())
+}
+
+async fn seed_t10_usage_history(sqlite: &SqliteConfig) -> Result<SqlitePool> {
+    let pool = sqlite.open_read_write_pool(&sqlite.usage_db_path()).await?;
+    t10_usage_history_migrator().run(&pool).await?;
+    Ok(pool)
+}
+
+async fn assert_usage_version_absent(pool: &SqlitePool, version: i64) -> Result<()> {
+    let count =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM _sqlx_migrations WHERE version = ?")
+            .bind(version)
+            .fetch_one(pool)
+            .await?;
+    assert_eq!(count, 0, "unexpected usage migration version {version}");
+    Ok(())
+}
+
+async fn qualify_usage_migration_histories() -> Result<()> {
+    let fresh_home = tempdir()?;
+    let fresh_sqlite = SqliteConfig::new_for_testing(fresh_home.path().abs());
+    let fresh = fresh_sqlite
+        .open_usage_db(&runtime_usage_migrator(), /*telemetry_override*/ None)
+        .await?;
+    validate_usage_reporting_indexes(&fresh, /*require_all*/ true).await?;
+    let fresh_rows = usage_migration_rows(&fresh).await?;
+    assert!(fresh_rows.iter().any(|row| row.0 == 15 && row.2));
+    assert!(fresh_rows.iter().any(|row| row.0 == 20 && row.2));
+    let fresh_v15 = fresh_rows
+        .iter()
+        .find(|row| row.0 == 15)
+        .expect("fresh usage history includes main version 15")
+        .clone();
+    fresh.close().await;
+    let fresh_reopened = fresh_sqlite
+        .open_usage_db(&runtime_usage_migrator(), /*telemetry_override*/ None)
+        .await?;
+    validate_usage_reporting_indexes(&fresh_reopened, /*require_all*/ true).await?;
+    assert_eq!(
+        usage_migration_rows(&fresh_reopened)
+            .await?
+            .into_iter()
+            .find(|row| row.0 == 15),
+        Some(fresh_v15)
+    );
+    fresh_reopened.close().await;
+
+    let main_home = tempdir()?;
+    let main_sqlite = SqliteConfig::new_for_testing(main_home.path().abs());
+    let main_fixture = main_sqlite
+        .open_read_write_pool(&main_sqlite.usage_db_path())
+        .await?;
+    current_main_usage_history_migrator()
+        .run(&main_fixture)
+        .await?;
+    let main_before = usage_migration_rows(&main_fixture).await?;
+    let main_v15 = main_before
+        .iter()
+        .find(|row| row.0 == 15)
+        .expect("indexed main fixture includes version 15")
+        .clone();
+    validate_usage_reporting_indexes(&main_fixture, /*require_all*/ true).await?;
+    main_fixture.close().await;
+    let main_upgraded = main_sqlite
+        .open_usage_db(&runtime_usage_migrator(), /*telemetry_override*/ None)
+        .await?;
+    assert_preserved_migration_rows(&main_upgraded, &main_before).await?;
+    assert_eq!(
+        usage_migration_rows(&main_upgraded)
+            .await?
+            .into_iter()
+            .find(|row| row.0 == 15),
+        Some(main_v15.clone())
+    );
+    validate_usage_reporting_indexes(&main_upgraded, /*require_all*/ true).await?;
+    main_upgraded.close().await;
+    let main_reopened = main_sqlite
+        .open_usage_db(&runtime_usage_migrator(), /*telemetry_override*/ None)
+        .await?;
+    assert_eq!(
+        usage_migration_rows(&main_reopened)
+            .await?
+            .into_iter()
+            .find(|row| row.0 == 15),
+        Some(main_v15)
+    );
+    validate_usage_reporting_indexes(&main_reopened, /*require_all*/ true).await?;
+    main_reopened.close().await;
+
+    let t10_home = tempdir()?;
+    let t10_sqlite = SqliteConfig::new_for_testing(t10_home.path().abs());
+    let t10_fixture = seed_t10_usage_history(&t10_sqlite).await?;
+    let t10_before = usage_migration_rows(&t10_fixture).await?;
+    let t10_view_before = sqlx::query_scalar::<_, String>(
+        "SELECT sql FROM sqlite_master WHERE type = 'view' AND name = 'usage_provider_call_credit_estimates'",
+    )
+    .fetch_one(&t10_fixture)
+    .await?;
+    t10_fixture.close().await;
+    let t10_upgraded = t10_sqlite
+        .open_usage_db(&runtime_usage_migrator(), /*telemetry_override*/ None)
+        .await?;
+    assert_preserved_migration_rows(&t10_upgraded, &t10_before).await?;
+    assert_t10_pending_current_main_migrations(&t10_upgraded).await?;
+    validate_usage_reporting_indexes(&t10_upgraded, /*require_all*/ true).await?;
+    let t10_view_after = sqlx::query_scalar::<_, String>(
+        "SELECT sql FROM sqlite_master WHERE type = 'view' AND name = 'usage_provider_call_credit_estimates'",
+    )
+    .fetch_one(&t10_upgraded)
+    .await?;
+    assert_eq!(t10_view_after, t10_view_before);
+
+    let thread_id = "00000000-0000-4000-8000-000000000010";
+    sqlx::query(
+        "INSERT INTO usage_threads (thread_id, root_thread_id, source) VALUES (?, ?, 'user')",
+    )
+    .bind(thread_id)
+    .bind(thread_id)
+    .execute(&t10_upgraded)
+    .await?;
+    sqlx::query(
+        "INSERT INTO usage_provider_calls (provider_call_id, thread_id, provider, requested_model, actual_model_used, actual_service_tier, actual_service_tier_source, fast_mode_used, billing_surface, account_plan, started_at, completed_at, input_tokens_uncached, input_tokens_cached, input_tokens_cache_write, output_tokens, total_tokens, provider_reported_credits, status) VALUES ('t10-status-call', ?, 'openai', 'gpt-6-sol', 'gpt-6-luna', 'default', 'runtime_contract', 0, 'chatgpt_credits', 'plus', '2026-10-01T00:30:00Z', '2026-10-01T00:30:01Z', 0, 0, 0, 0, 0, NULL, 'provider_usage_missing')",
+    )
+    .bind(thread_id)
+    .execute(&t10_upgraded)
+    .await?;
+    let legacy_estimate = sqlx::query_as::<_, (String, Option<f64>)>(
+        "SELECT pricing_status, rate_card_estimated_total_credits FROM usage_provider_call_credit_estimates WHERE provider_call_id = 't10-status-call'",
+    )
+    .fetch_one(&t10_upgraded)
+    .await?;
+    assert_eq!(
+        legacy_estimate,
+        ("provider_usage_missing".to_string(), None)
+    );
+    t10_upgraded.close().await;
+
+    let t10_reopened = t10_sqlite
+        .open_usage_db(&runtime_usage_migrator(), /*telemetry_override*/ None)
+        .await?;
+    assert_preserved_migration_rows(&t10_reopened, &t10_before).await?;
+    assert_t10_pending_current_main_migrations(&t10_reopened).await?;
+    validate_usage_reporting_indexes(&t10_reopened, /*require_all*/ true).await?;
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT sql FROM sqlite_master WHERE type = 'view' AND name = 'usage_provider_call_credit_estimates'",
+        )
+        .fetch_one(&t10_reopened)
+        .await?,
+        t10_view_before
+    );
+    t10_reopened.close().await;
+
+    // Partial T10 histories can legitimately receive current-main migrations
+    // at the missing versions. Reopening must keep those exact rows valid.
+    assert_partial_t10_usage_history_reopens(/*historical_through*/ 1, &[5, 15]).await?;
+    assert_partial_t10_usage_history_reopens(/*historical_through*/ 14, &[15]).await?;
+
+    let report = codex_utils_cargo_bin::find_resource!("../../scripts/codex_usage_report.py")?;
+    let python_path = std::env::var_os("PATH").expect("hosted Python must be on PATH");
+    let report_output = std::process::Command::new("python3")
+        .arg(&report)
+        .arg("--database")
+        .arg(t10_sqlite.usage_db_path())
+        .arg("--start-utc")
+        .arg("2026-10-01T00:00:00Z")
+        .arg("--end-utc")
+        .arg("2026-10-02T00:00:00Z")
+        .arg("--timezone")
+        .arg("UTC")
+        .arg("--scope")
+        .arg("all")
+        .arg("--credit-mode")
+        .arg("observed_or_effective_rate")
+        .env_clear()
+        .env("PATH", python_path)
+        .env("PYTHONNOUSERSITE", "1")
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .env("TZ", "UTC")
+        .output()?;
+    let report_json: serde_json::Value = serde_json::from_slice(&report_output.stdout)?;
+    assert_eq!(report_json["status"], "incomplete");
+    assert_eq!(
+        report_output.status.code(),
+        Some(2),
+        "typed incomplete reports use exit status 2"
+    );
+    assert_eq!(report_json["summary"]["provider_call_count"], 1);
+    assert_eq!(
+        report_json["summary"]["actual_mode"]["uncovered_call_count"],
+        1
+    );
+    assert_eq!(
+        report_json["summary"]["actual_mode"]["uncovered_reasons"]["provider_usage_missing"],
+        1
+    );
+
+    for corrupt_version in [1, 19] {
+        let corrupt_home = tempdir()?;
+        let corrupt_sqlite = SqliteConfig::new_for_testing(corrupt_home.path().abs());
+        let corrupt_fixture = seed_t10_usage_history(&corrupt_sqlite).await?;
+        sqlx::query(
+            "UPDATE _sqlx_migrations SET checksum = zeroblob(length(checksum)) WHERE version = ?",
+        )
+        .bind(corrupt_version)
+        .execute(&corrupt_fixture)
+        .await?;
+        let corrupt_rows = usage_migration_rows(&corrupt_fixture).await?;
+        corrupt_fixture.close().await;
+        assert!(
+            corrupt_sqlite
+                .open_usage_db(&runtime_usage_migrator(), /*telemetry_override*/ None)
+                .await
+                .is_err(),
+            "conflicting T10 migration {corrupt_version} must fail before migration effects"
+        );
+        let readback = corrupt_sqlite
+            .open_read_only_pool(&corrupt_sqlite.usage_db_path())
+            .await?;
+        assert_eq!(usage_migration_rows(&readback).await?, corrupt_rows);
+        assert_usage_version_absent(&readback, /*version*/ 20).await?;
+        assert_usage_version_absent(&readback, /*version*/ 6).await?;
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM pragma_table_info('usage_threads') WHERE name = 'lineage_edge_kind'",
+            )
+            .fetch_one(&readback)
+            .await?,
+            0
+        );
+        readback.close().await;
+    }
+
+    let incomplete_home = tempdir()?;
+    let incomplete_sqlite = SqliteConfig::new_for_testing(incomplete_home.path().abs());
+    let incomplete_fixture = seed_t10_usage_history(&incomplete_sqlite).await?;
+    sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 15")
+        .execute(&incomplete_fixture)
+        .await?;
+    let incomplete_rows = usage_migration_rows(&incomplete_fixture).await?;
+    incomplete_fixture.close().await;
+    assert!(
+        incomplete_sqlite
+            .open_usage_db(&runtime_usage_migrator(), /*telemetry_override*/ None)
+            .await
+            .is_err(),
+        "T10 v16-v19 history without its exact v15 variant must fail closed"
+    );
+    let incomplete_readback = incomplete_sqlite
+        .open_read_only_pool(&incomplete_sqlite.usage_db_path())
+        .await?;
+    assert_eq!(
+        usage_migration_rows(&incomplete_readback).await?,
+        incomplete_rows
+    );
+    assert_usage_version_absent(&incomplete_readback, /*version*/ 20).await?;
+    assert_usage_version_absent(&incomplete_readback, /*version*/ 6).await?;
+    incomplete_readback.close().await;
+
+    let index_home = tempdir()?;
+    let index_sqlite = SqliteConfig::new_for_testing(index_home.path().abs());
+    let index_fixture = seed_t10_usage_history(&index_sqlite).await?;
+    let index_before = usage_migration_rows(&index_fixture).await?;
+    sqlx::query(
+        "CREATE INDEX usage_provider_calls_started_at_idx ON usage_provider_calls(thread_id)",
+    )
+    .execute(&index_fixture)
+    .await?;
+    index_fixture.close().await;
+    assert!(
+        index_sqlite
+            .open_usage_db(&runtime_usage_migrator(), /*telemetry_override*/ None)
+            .await
+            .is_err(),
+        "an unexpected same-name reporting index must fail before migration effects"
+    );
+    let index_readback = index_sqlite
+        .open_read_only_pool(&index_sqlite.usage_db_path())
+        .await?;
+    assert_eq!(usage_migration_rows(&index_readback).await?, index_before);
+    assert_usage_version_absent(&index_readback, /*version*/ 20).await?;
+    assert_usage_version_absent(&index_readback, /*version*/ 6).await?;
+    index_readback.close().await;
+
+    let future_home = tempdir()?;
+    let future_sqlite = SqliteConfig::new_for_testing(future_home.path().abs());
+    let future_fixture = future_sqlite
+        .open_read_write_pool(&future_sqlite.usage_db_path())
+        .await?;
+    current_main_usage_history_migrator()
+        .run(&future_fixture)
+        .await?;
+    sqlx::query(
+        "INSERT INTO _sqlx_migrations (version, description, installed_on, success, checksum, execution_time) VALUES (21, 'future usage migration marker', CURRENT_TIMESTAMP, TRUE, zeroblob(48), 0)",
+    )
+    .execute(&future_fixture)
+    .await?;
+    let future_before = usage_migration_rows(&future_fixture)
+        .await?
+        .into_iter()
+        .find(|row| row.0 == 21)
+        .expect("source-absent future migration row was seeded");
+    future_fixture.close().await;
+    let future_upgraded = future_sqlite
+        .open_usage_db(&runtime_usage_migrator(), /*telemetry_override*/ None)
+        .await?;
+    assert_eq!(
+        usage_migration_rows(&future_upgraded)
+            .await?
+            .into_iter()
+            .find(|row| row.0 == 21),
+        Some(future_before.clone())
+    );
+    validate_usage_reporting_indexes(&future_upgraded, /*require_all*/ true).await?;
+    future_upgraded.close().await;
+    let future_reopened = future_sqlite
+        .open_usage_db(&runtime_usage_migrator(), /*telemetry_override*/ None)
+        .await?;
+    assert_eq!(
+        usage_migration_rows(&future_reopened)
+            .await?
+            .into_iter()
+            .find(|row| row.0 == 21),
+        Some(future_before)
+    );
+    validate_usage_reporting_indexes(&future_reopened, /*require_all*/ true).await?;
+    future_reopened.close().await;
+
+    Ok(())
+}
 
 fn thread_id(value: &str) -> ThreadId {
     ThreadId::from_string(value).expect("fixture thread id is a UUID")
@@ -191,6 +742,8 @@ async fn provider_writer_batch_seconds(indexed_for_reporting: bool) -> Result<f6
 
 #[tokio::test]
 async fn bounded_usage_report_cli_qualifies_real_writer_and_hosted_scale() -> Result<()> {
+    qualify_usage_migration_histories().await?;
+
     let home = tempdir()?;
     let sqlite = SqliteConfig::new_for_testing(home.path().abs());
     let runtime = StateRuntime::init(sqlite.clone(), "openai".to_string()).await?;
