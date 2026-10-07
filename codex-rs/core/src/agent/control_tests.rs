@@ -4848,7 +4848,7 @@ async fn resume_thread_subagent_restores_stored_metadata() {
 }
 
 #[tokio::test]
-async fn resume_registered_child_rejects_mismatched_persisted_parent() {
+async fn resume_child_rejects_mismatched_persisted_parent_with_or_without_registry_metadata() {
     let harness = AgentControlHarness::new().await;
     let (parent_thread_id, _parent_thread) = harness.start_thread().await;
     let agent_path = AgentPath::from_string("/root/researcher".to_string())
@@ -4908,19 +4908,64 @@ async fn resume_registered_child_rejects_mismatched_persisted_parent() {
     assert!(
         error
             .to_string()
-            .contains("does not match the resumed child identity")
+            .contains("persisted parent for resumed child")
+    );
+
+    harness
+        .control
+        .runtime
+        .registry
+        .release_spawned_thread(child_thread_id);
+    let error = harness
+        .control
+        .resume_agent_from_rollout(
+            harness.config.clone(),
+            child_thread_id,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            }),
+        )
+        .await
+        .expect_err("unregistered child must reject a different persisted parent");
+    assert!(
+        error
+            .to_string()
+            .contains("persisted parent for resumed child")
     );
 
     stored_thread.parent_thread_id = Some(parent_thread_id);
+    stored_thread.agent_path = Some("/root/other/researcher".to_string());
     state_db
         .upsert_thread(&stored_thread)
         .await
-        .expect("restore consistent child metadata");
-    let _ = harness
+        .expect("mismatched child path should persist");
+    let error = harness
         .control
-        .shutdown_agent_tree(parent_thread_id)
+        .resume_agent_from_rollout(
+            harness.config.clone(),
+            child_thread_id,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            }),
+        )
         .await
-        .expect("tree shutdown should succeed");
+        .expect_err("unregistered child must reject a path under another parent");
+    assert!(error.to_string().contains("agent path for resumed child"));
+
+    let report = harness
+        .manager
+        .shutdown_all_threads_bounded(Duration::from_secs(5))
+        .await;
+    assert_eq!(report.submit_failed, Vec::<ThreadId>::new());
+    assert_eq!(report.timed_out, Vec::<ThreadId>::new());
 }
 
 #[tokio::test]

@@ -1510,6 +1510,45 @@ impl LocalAgentControl {
         Ok(resumed_thread_id)
     }
 
+    async fn resumed_agent_path_matches_parent(
+        &self,
+        state: &crate::thread_manager::ThreadManagerState,
+        parent_thread_id: ThreadId,
+        child_agent_path: &AgentPath,
+    ) -> CodexResult<bool> {
+        let Some((parent_path, _)) = child_agent_path.as_str().rsplit_once('/') else {
+            return Ok(false);
+        };
+        let parent_agent_path = AgentPath::try_from(parent_path)
+            .map_err(|err| CodexErr::InvalidRequest(format!("invalid parent agent path: {err}")))?;
+
+        if let Some(registered_parent_thread_id) =
+            self.runtime.registry.agent_id_for_path(&parent_agent_path)
+        {
+            return Ok(registered_parent_thread_id == parent_thread_id);
+        }
+
+        let stored_parent = state
+            .read_stored_thread(ReadThreadParams {
+                thread_id: parent_thread_id,
+                include_archived: true,
+                include_history: false,
+            })
+            .await?;
+        let parent_is_root = !matches!(&stored_parent.source, SessionSource::SubAgent(_));
+        let stored_parent_agent_path = stored_parent
+            .agent_path
+            .as_deref()
+            .map(AgentPath::try_from)
+            .transpose()
+            .map_err(|err| {
+                CodexErr::InvalidRequest(format!("invalid stored parent agent path: {err}"))
+            })?
+            .or_else(|| stored_parent.source.get_agent_path())
+            .or_else(|| parent_is_root.then(AgentPath::root));
+        Ok(stored_parent_agent_path.as_ref() == Some(&parent_agent_path))
+    }
+
     async fn resume_single_agent_from_rollout(
         &self,
         config: Config,
@@ -1572,24 +1611,29 @@ impl LocalAgentControl {
                 agent_nickname: _,
             }) => {
                 let requested_agent_path = agent_path.or(resumed_agent_path.clone());
+                if persisted_parent_thread_id.is_some_and(|persisted_parent_thread_id| {
+                    persisted_parent_thread_id != parent_thread_id
+                }) {
+                    return Err(CodexErr::InvalidRequest(format!(
+                        "persisted parent for resumed child {thread_id} does not match requested parent {parent_thread_id}"
+                    )));
+                }
+                if let Some(child_agent_path) = requested_agent_path.as_ref()
+                    && !self
+                        .resumed_agent_path_matches_parent(
+                            &state,
+                            parent_thread_id,
+                            child_agent_path,
+                        )
+                        .await?
+                {
+                    return Err(CodexErr::InvalidRequest(format!(
+                        "agent path for resumed child {thread_id} does not match requested parent {parent_thread_id}"
+                    )));
+                }
                 if let Some(metadata) = already_registered_metadata.as_ref() {
-                    let registered_path_parent_matches = match metadata.agent_path.as_ref() {
-                        Some(agent_path) => {
-                            agent_path
-                                .as_str()
-                                .rsplit_once('/')
-                                .and_then(|(parent, _)| AgentPath::try_from(parent).ok())
-                                .and_then(|parent| {
-                                    self.runtime.registry.agent_id_for_path(&parent)
-                                })
-                                == Some(parent_thread_id)
-                        }
-                        None => true,
-                    };
                     if metadata.agent_id != Some(thread_id)
                         || metadata.agent_path.as_ref() != requested_agent_path.as_ref()
-                        || persisted_parent_thread_id != Some(parent_thread_id)
-                        || !registered_path_parent_matches
                     {
                         return Err(CodexErr::InvalidRequest(format!(
                             "registered agent metadata for {thread_id} does not match the resumed child identity"
@@ -1638,7 +1682,8 @@ impl LocalAgentControl {
                 initial_history,
                 agent_control: self.clone(),
                 session_source,
-                parent_thread_id: persisted_parent_thread_id,
+                parent_thread_id: persisted_parent_thread_id
+                    .or_else(|| notification_source.parent_thread_id()),
                 environment_selections: None,
                 inherited_environments,
                 inherited_instructions: None,
