@@ -109,6 +109,23 @@ impl AgentRegistry {
         })
     }
 
+    /// Reserve every slot and path for a restore batch before callers assign
+    /// nicknames, so a later path collision cannot consume earlier names.
+    pub(crate) fn reserve_restore_batch_paths(
+        self: &Arc<Self>,
+        paths: impl IntoIterator<Item = Option<AgentPath>>,
+    ) -> Result<Vec<SpawnReservation>> {
+        let mut reservations = Vec::new();
+        for agent_path in paths {
+            let mut reservation = self.reserve_spawn_slot(/*max_threads*/ None)?;
+            if let Some(agent_path) = agent_path {
+                reservation.reserve_agent_path(&agent_path)?;
+            }
+            reservations.push(reservation);
+        }
+        Ok(reservations)
+    }
+
     pub(crate) fn release_spawned_thread(&self, thread_id: ThreadId) {
         let removed_counted_agent = {
             let mut active_agents = self

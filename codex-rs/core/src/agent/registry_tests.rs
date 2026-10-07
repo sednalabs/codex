@@ -390,6 +390,43 @@ fn reserved_agent_path_is_released_when_spawn_fails() {
 }
 
 #[test]
+fn restore_batch_path_failure_releases_slots_before_nickname_allocation() {
+    let registry = Arc::new(AgentRegistry::default());
+    let first_path = agent_path("/root/first");
+    let conflicting_path = agent_path("/root/conflict");
+    let mut conflict = registry
+        .reserve_spawn_slot(/*max_threads*/ None)
+        .expect("reserve conflicting path slot");
+    conflict
+        .reserve_agent_path(&conflicting_path)
+        .expect("reserve conflicting path");
+
+    assert!(
+        registry
+            .reserve_restore_batch_paths([
+                Some(first_path.clone()),
+                Some(conflicting_path.clone()),
+            ])
+            .is_err()
+    );
+    drop(conflict);
+    assert_eq!(registry.total_count.load(Ordering::Acquire), 0);
+
+    let mut retry = registry
+        .reserve_spawn_slot(/*max_threads*/ None)
+        .expect("reserve retry slot");
+    retry
+        .reserve_agent_path(&first_path)
+        .expect("failed batch should release earlier paths");
+    assert_eq!(
+        retry
+            .reserve_agent_nickname_with_preference(&["alpha"], /*preferred*/ None)
+            .expect("nickname should not have been consumed before path phase completes"),
+        "alpha"
+    );
+}
+
+#[test]
 fn committed_agent_path_is_indexed_until_release() {
     let registry = Arc::new(AgentRegistry::default());
     let thread_id = ThreadId::new();

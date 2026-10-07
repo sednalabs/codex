@@ -210,23 +210,31 @@ impl LocalAgentControl {
         let Some(agent_graph_store) = state.agent_graph_store() else {
             return;
         };
-        let descendant_ids = match agent_graph_store
-            .list_thread_spawn_descendants(
+        let descendants = match agent_graph_store
+            .list_thread_spawn_descendants_bounded(
                 root_thread_id,
                 Some(codex_agent_graph_store::ThreadSpawnEdgeStatus::Open),
             )
             .await
         {
-            Ok(descendant_ids) => descendant_ids,
+            Ok(descendants) => descendants,
             Err(err) => {
                 warn!("failed to restore persisted V2 agent metadata for {root_thread_id}: {err}");
                 return;
             }
         };
+        if descendants.relation_limit_reached {
+            warn!(
+                "persisted V2 agent metadata restoration exceeded the descendant safety limit for {root_thread_id}; refusing partial registration"
+            );
+            return;
+        }
 
-        // Overlap storage reads, but reserve paths and nicknames in graph order.
-        let mut stored_threads = stream::iter(
-            descendant_ids
+        // Resolve and validate the complete bounded graph before registering
+        // any descendant. A corrupt or missing row must not leave a partial tree.
+        let stored_threads = stream::iter(
+            descendants
+                .thread_ids
                 .into_iter()
                 .filter(|thread_id| registry.agent_metadata_for_thread(*thread_id).is_none())
                 .map(|thread_id| {
@@ -243,40 +251,122 @@ impl LocalAgentControl {
                     }
                 }),
         )
-        .buffered(/*n*/ 8);
-
-        while let Some((thread_id, stored_thread)) = stored_threads.next().await {
-            if registry.agent_metadata_for_thread(thread_id).is_some() {
-                continue;
-            }
+        .buffered(/*n*/ 8)
+        .collect::<Vec<_>>()
+        .await;
+        let mut prepared = Vec::with_capacity(stored_threads.len());
+        let mut paths = std::collections::HashSet::new();
+        for (thread_id, stored_thread) in stored_threads {
             let restore_result = stored_thread.and_then(|stored_thread| {
-                let stored_agent_path = stored_thread
+                let path = stored_thread
                     .agent_path
                     .as_deref()
                     .map(AgentPath::try_from)
                     .transpose()
                     .map_err(|err| {
                         CodexErr::InvalidRequest(format!("invalid stored agent path: {err}"))
-                    })?;
-                let mut reservation = registry.reserve_spawn_slot(/*max_threads*/ None)?;
-                let mut metadata = self.prepare_agent_metadata(
-                    &mut reservation,
-                    config,
-                    stored_agent_path.or_else(|| stored_thread.source.get_agent_path()),
+                    })?
+                    .or_else(|| stored_thread.source.get_agent_path());
+                if let Some(path) = &path {
+                    if !paths.insert(path.to_string()) {
+                        return Err(CodexErr::InvalidRequest(format!(
+                            "duplicate stored agent path: {path}"
+                        )));
+                    }
+                    if let Some(existing_id) = registry.agent_id_for_path(path)
+                        && existing_id != thread_id
+                    {
+                        return Err(CodexErr::InvalidRequest(format!(
+                            "stored agent path {path} belongs to another thread"
+                        )));
+                    }
+                }
+                Ok((
+                    thread_id,
+                    path,
                     stored_thread
                         .agent_role
                         .or_else(|| stored_thread.source.get_agent_role()),
                     stored_thread
                         .agent_nickname
                         .or_else(|| stored_thread.source.get_nickname()),
-                )?;
-                metadata.agent_id = Some(thread_id);
-                reservation.commit(metadata);
-                Ok(())
+                ))
             });
-            if let Err(err) = restore_result {
-                warn!("failed to restore V2 agent metadata for {thread_id}: {err}");
+            match restore_result {
+                Ok(entry) => prepared.push(entry),
+                Err(err) => {
+                    warn!("failed to preflight V2 agent metadata for {thread_id}: {err}");
+                    return;
+                }
             }
+        }
+
+        // Reserve every path/slot before consuming nicknames. A later path
+        // collision drops the whole batch without mutating nickname history.
+        let pending: Vec<_> = prepared
+            .into_iter()
+            .filter(|(thread_id, _, _, _)| {
+                registry.agent_metadata_for_thread(*thread_id).is_none()
+            })
+            .map(|(thread_id, path, role, nickname)| {
+                let candidate_names = agent_nickname_candidates(config, role.as_deref());
+                (thread_id, path, role, nickname, candidate_names)
+            })
+            .collect();
+        if let Some((thread_id, _, role, _, _)) = pending.iter().find(
+            |(_, _, _, nickname, candidate_names)| nickname.is_none() && candidate_names.is_empty(),
+        ) {
+            warn!(
+                "failed to preflight V2 agent nickname candidates for {thread_id} (role {:?})",
+                role
+            );
+            return;
+        }
+
+        let path_reservations = match registry.reserve_restore_batch_paths(
+            pending.iter().map(|(_, path, _, _, _)| path.clone()),
+        ) {
+            Ok(reservations) => reservations,
+            Err(err) => {
+                warn!("failed to reserve V2 agent metadata paths for {root_thread_id}: {err}");
+                return;
+            }
+        };
+
+        let mut reservations = Vec::with_capacity(pending.len());
+        for (
+            (thread_id, path, role, preferred_nickname, candidate_names),
+            mut reservation,
+        ) in pending.into_iter().zip(path_reservations)
+        {
+            let candidate_name_refs: Vec<&str> =
+                candidate_names.iter().map(String::as_str).collect();
+            let agent_nickname = match reservation
+                .reserve_agent_nickname_with_preference(
+                    &candidate_name_refs,
+                    preferred_nickname.as_deref(),
+                )
+            {
+                Ok(agent_nickname) => agent_nickname,
+                Err(err) => {
+                    warn!(
+                        "failed to reserve preflighted V2 agent nickname for {thread_id}: {err}"
+                    );
+                    return;
+                }
+            };
+            reservations.push((
+                reservation,
+                AgentMetadata {
+                    agent_id: Some(thread_id),
+                    agent_path: path,
+                    agent_nickname: Some(agent_nickname),
+                    agent_role: role,
+                },
+            ));
+        }
+        for (reservation, metadata) in reservations {
+            reservation.commit(metadata);
         }
     }
 
@@ -1449,21 +1539,28 @@ impl LocalAgentControl {
             history: Arc::new(history.items),
             rollout_path: stored_thread.rollout_path,
         });
-        let parent_thread_id = stored_thread.parent_thread_id;
+        let persisted_parent_thread_id = stored_thread.parent_thread_id;
         let multi_agent_version = state
             .effective_multi_agent_version_for_spawn(
                 &initial_history,
                 Some(&session_source),
-                parent_thread_id,
+                persisted_parent_thread_id,
                 /*forked_from_thread_id*/ None,
                 &config,
             )
             .await;
         let agent_max_threads = config.effective_agent_max_threads(multi_agent_version);
-        let mut reservation = self
-            .runtime
-            .registry
-            .reserve_spawn_slot(agent_max_threads)?;
+        let already_registered_metadata =
+            self.runtime.registry.agent_metadata_for_thread(thread_id);
+        let mut reservation = if already_registered_metadata.is_none() {
+            Some(
+                self.runtime
+                    .registry
+                    .reserve_spawn_slot(agent_max_threads)?,
+            )
+        } else {
+            None
+        };
         let (session_source, agent_metadata) = match session_source {
             SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id,
@@ -1471,16 +1568,54 @@ impl LocalAgentControl {
                 agent_path,
                 agent_role: _,
                 agent_nickname: _,
-            }) => self.prepare_thread_spawn(
-                &mut reservation,
-                &config,
-                parent_thread_id,
-                depth,
-                agent_path.or(resumed_agent_path),
-                resumed_agent_role,
-                resumed_agent_nickname,
-            )?,
-            other => (other, AgentMetadata::default()),
+            }) => {
+                let requested_agent_path = agent_path.or(resumed_agent_path.clone());
+                if let Some(metadata) = already_registered_metadata.as_ref() {
+                    let registered_parent_matches = match metadata.agent_path.as_ref() {
+                        Some(agent_path) => agent_path
+                            .as_str()
+                            .rsplit_once('/')
+                            .and_then(|(parent, _)| AgentPath::try_from(parent).ok())
+                            .and_then(|parent| self.runtime.registry.agent_id_for_path(&parent))
+                            == Some(parent_thread_id),
+                        None => persisted_parent_thread_id == Some(parent_thread_id),
+                    };
+                    if metadata.agent_id != Some(thread_id)
+                        || metadata.agent_path.as_ref() != requested_agent_path.as_ref()
+                        || !registered_parent_matches
+                    {
+                        return Err(CodexErr::InvalidRequest(format!(
+                            "registered agent metadata for {thread_id} does not match the resumed child identity"
+                        )));
+                    }
+                    (
+                        SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                            parent_thread_id,
+                            depth,
+                            agent_path: metadata.agent_path.clone(),
+                            agent_nickname: metadata.agent_nickname.clone(),
+                            agent_role: metadata.agent_role.clone(),
+                        }),
+                        metadata.clone(),
+                    )
+                } else {
+                    self.prepare_thread_spawn(
+                        reservation
+                            .as_mut()
+                            .expect("unregistered child should reserve a spawn slot"),
+                        &config,
+                        parent_thread_id,
+                        depth,
+                        requested_agent_path,
+                        resumed_agent_role,
+                        resumed_agent_nickname,
+                    )?
+                }
+            }
+            other => (
+                other,
+                already_registered_metadata.clone().unwrap_or_default(),
+            ),
         };
         let notification_source = session_source.clone();
         let inherited_environments = self
@@ -1496,7 +1631,7 @@ impl LocalAgentControl {
                 initial_history,
                 agent_control: self.clone(),
                 session_source,
-                parent_thread_id,
+                parent_thread_id: persisted_parent_thread_id,
                 environment_selections: None,
                 inherited_environments,
                 inherited_instructions: None,
@@ -1506,7 +1641,9 @@ impl LocalAgentControl {
             .await?;
         let mut agent_metadata = agent_metadata;
         agent_metadata.agent_id = Some(resumed_thread.thread_id);
-        reservation.commit(agent_metadata.clone());
+        if let Some(reservation) = reservation {
+            reservation.commit(agent_metadata.clone());
+        }
         // Resumed threads are re-registered in-memory and need the same listener
         // attachment path as freshly spawned threads.
         state.notify_thread_created(resumed_thread.thread_id);

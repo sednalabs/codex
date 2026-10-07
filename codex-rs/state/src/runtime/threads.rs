@@ -212,6 +212,75 @@ ON CONFLICT(child_thread_id) DO UPDATE SET
             .await
     }
 
+    /// List persisted descendants using the recovery safety bound and report truncation.
+    ///
+    /// Traversal is cycle-safe, excludes `root_thread_id` if the stored graph cycles back to it,
+    /// and returns breadth-first by depth, then by thread id. The status filter applies to every
+    /// traversed edge.
+    pub async fn list_thread_spawn_descendants_bounded(
+        &self,
+        root_thread_id: ThreadId,
+        status: Option<crate::DirectionalThreadSpawnEdgeStatus>,
+    ) -> anyhow::Result<crate::ThreadSpawnDescendants> {
+        let mut builder = QueryBuilder::<Sqlite>::new(
+            r#"
+WITH RECURSIVE subtree(child_thread_id, depth, visited) AS (
+    SELECT child_thread_id, 1, ',' || ? || ',' || child_thread_id || ','
+    FROM thread_spawn_edges
+    WHERE parent_thread_id = ?
+      AND child_thread_id != ?
+            "#,
+        );
+        builder.push_bind(root_thread_id.to_string());
+        builder.push_bind(root_thread_id.to_string());
+        builder.push_bind(root_thread_id.to_string());
+        if let Some(status) = status {
+            builder.push(" AND status = ").push_bind(status.to_string());
+        }
+        builder.push(
+            r#"
+    UNION ALL
+    SELECT edge.child_thread_id,
+           subtree.depth + 1,
+           subtree.visited || edge.child_thread_id || ','
+    FROM thread_spawn_edges AS edge
+    JOIN subtree ON edge.parent_thread_id = subtree.child_thread_id
+    WHERE instr(subtree.visited, ',' || edge.child_thread_id || ',') = 0
+            "#,
+        );
+        if let Some(status) = status {
+            builder.push(" AND edge.status = ").push_bind(status.to_string());
+        }
+        // SQLite's recursive queue ordering makes the row budget a BFS budget, rather than an
+        // arbitrary depth-first prefix. One extra row distinguishes exactly-at-limit from overflow.
+        builder.push(" ORDER BY 2 ASC, 1 ASC LIMIT ");
+        builder.push((crate::MAX_THREAD_SPAWN_DESCENDANTS + 1).to_string());
+        builder.push(
+            r#"
+)
+SELECT child_thread_id, MIN(depth) AS depth
+FROM subtree
+GROUP BY child_thread_id
+ORDER BY depth ASC, child_thread_id ASC
+            "#,
+        );
+
+        let rows = builder.build().fetch_all(self.pool.as_ref()).await?;
+        let relation_limit_reached = rows.len() > crate::MAX_THREAD_SPAWN_DESCENDANTS;
+        let mut thread_ids = rows
+            .into_iter()
+            .map(|row| {
+                ThreadId::try_from(row.try_get::<String, _>("child_thread_id")?)
+                    .map_err(Into::into)
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        thread_ids.truncate(crate::MAX_THREAD_SPAWN_DESCENDANTS);
+        Ok(crate::ThreadSpawnDescendants {
+            thread_ids,
+            relation_limit_reached,
+        })
+    }
+
     /// Find a direct spawned child of `parent_thread_id` by canonical agent path.
     pub async fn find_thread_spawn_child_by_path(
         &self,
