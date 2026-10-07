@@ -255,7 +255,6 @@ pub fn item_event_to_server_notification(
                 reasoning_effort: None,
                 agents_states,
                 wait_info: None,
-                wait_info: None,
             };
             ServerNotification::ItemCompleted(ItemCompletedNotification {
                 thread_id,
