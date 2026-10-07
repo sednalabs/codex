@@ -87,6 +87,7 @@ class NamedRustTests(TestCase):
         inventory = self.completed(stdout=private_output)
         with (
             mock.patch.object(MODULE.subprocess, "run", return_value=inventory),
+            mock.patch.object(MODULE, "git_sha", return_value="target-sha"),
             mock.patch.object(MODULE, "load_manifest", return_value=MANIFEST),
         ):
             result = MODULE.run_request(REQUEST, Path("/validation-target"))
@@ -176,6 +177,42 @@ class NamedRustTests(TestCase):
                 "codex-cli",
                 "--bin",
                 "codex",
+                "--",
+                "--test-threads=1",
+            ],
+        )
+
+    def test_app_server_protocol_library_uses_fixed_catalog_commands(self) -> None:
+        request = {
+            "schema_version": "rust-tests-v1",
+            "profile": "rust_minimal",
+            "package": "codex-app-server-protocol",
+            "target_kind": "lib",
+            "target": "",
+            "tests": ["core_turn_item_into_thread_item_converts_supported_variants"],
+        }
+        self.assertEqual(
+            MODULE.cargo_args(request, list_only=True),
+            [
+                "cargo",
+                "test",
+                "--locked",
+                "-p",
+                "codex-app-server-protocol",
+                "--lib",
+                "--",
+                "--list",
+            ],
+        )
+        self.assertEqual(
+            MODULE.cargo_args(request, list_only=False),
+            [
+                "cargo",
+                "test",
+                "--locked",
+                "-p",
+                "codex-app-server-protocol",
+                "--lib",
                 "--",
                 "--test-threads=1",
             ],

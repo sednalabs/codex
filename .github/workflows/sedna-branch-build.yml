@@ -1,7 +1,7 @@
 name: sedna-branch-build
 run-name: >-
   sedna-branch-build
-  [platform=${{ inputs.platform }} host_only=${{ inputs.host_only }}]
+  [platform=${{ inputs.platform }} host_only=${{ inputs.host_only }} prepare_lock_only=${{ inputs.prepare_lock_only }}]
 
 on:
   workflow_dispatch:
@@ -25,9 +25,14 @@ on:
         required: false
         default: false
         type: boolean
+      prepare_lock_only:
+        description: Generate a source-bound Cargo.lock delta without building binaries
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && (inputs.ref || github.sha) || github.ref_name }}-${{ inputs.platform }}-${{ inputs.host_only }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && (inputs.ref || github.sha) || github.ref_name }}-${{ inputs.platform }}-${{ inputs.host_only }}-${{ inputs.prepare_lock_only }}
   cancel-in-progress: true
 
 permissions:
@@ -68,6 +73,7 @@ jobs:
         env:
           CHECKOUT_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.sha }}
           HOST_ONLY: ${{ inputs.host_only }}
+          PREPARE_LOCK_ONLY: ${{ inputs.prepare_lock_only }}
           PLATFORM: ${{ inputs.platform }}
           WORKFLOW_SHA: ${{ github.sha }}
         run: |
@@ -76,20 +82,24 @@ jobs:
             echo "The code-mode host-only artifact is supported only on linux-x86_64." >&2
             exit 1
           fi
+          if [[ "${PREPARE_LOCK_ONLY}" == "true" && ( "${HOST_ONLY}" == "true" || "${PLATFORM}" != "linux-x86_64" ) ]]; then
+            echo "Cargo lock preparation requires linux-x86_64 mode with host_only disabled." >&2
+            exit 1
+          fi
           checkout_ref="$(git rev-parse HEAD)"
           short_sha="$(git rev-parse --short=8 HEAD)"
-          latest_tag="$(git tag --merged HEAD --list 'v*-sedna.*' --sort=-version:refname | head -n 1)"
-          if [[ -z "${latest_tag}" ]]; then
-            echo "No upstream Sedna version tag is reachable from the selected source." >&2
-            exit 1
+          base_version=""
+          while IFS= read -r candidate_tag; do
+            if [[ "${candidate_tag}" =~ ^rust-v([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)$ ]]; then
+              base_version="${BASH_REMATCH[1]}"
+              break
+            fi
+          done < <(git tag --merged HEAD --list 'rust-v*' --sort=-version:refname)
+          if [[ -n "${base_version}" ]]; then
+            preview_version="${base_version}-dev.sedna.${GITHUB_RUN_NUMBER}+g${short_sha}"
+          else
+            preview_version="0.0.0-dev.sedna.g${short_sha}"
           fi
-          if [[ ! "${latest_tag}" =~ ^v([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)-sedna\.[0-9]+(\+upstream\.[0-9]+)?$ ]]; then
-            echo "The selected source version tag is not a valid public version base." >&2
-            exit 1
-          fi
-          base_version="${BASH_REMATCH[1]}"
-
-          preview_version="${base_version}-dev.sedna.${GITHUB_RUN_NUMBER}+g${short_sha}"
 
           {
             echo "checkout_ref=${checkout_ref}"
@@ -101,7 +111,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Check out trusted package consumer
-        if: ${{ inputs.platform == 'linux-pair' }}
+        if: ${{ inputs.platform == 'linux-pair' || inputs.prepare_lock_only }}
         uses: actions/checkout@v7
         with:
           fetch-depth: 1
@@ -110,14 +120,171 @@ jobs:
           path: .workflow-src
 
       - name: Validate package consumer boundaries
-        if: ${{ inputs.platform == 'linux-pair' }}
+        if: ${{ inputs.platform == 'linux-pair' || inputs.prepare_lock_only }}
         working-directory: .workflow-src
         shell: bash
         run: python3 .github/scripts/test_verify_sedna_branch_package.py
 
+  prepare-cargo-lock:
+    name: Prepare exact source Cargo.lock delta
+    needs: metadata
+    if: ${{ inputs.prepare_lock_only }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ github.sha }}
+          path: .workflow-src
+
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ needs.metadata.outputs.checkout_ref }}
+          path: source
+
+      - uses: dtolnay/rust-toolchain@1.95.0
+
+      - name: Resolve only the exact local workspace lock addition
+        working-directory: source/codex-rs
+        shell: bash
+        env:
+          EXPECTED_SOURCE_SHA: ${{ needs.metadata.outputs.source_sha }}
+          EXPECTED_WORKFLOW_SHA: ${{ needs.metadata.outputs.workflow_sha }}
+          EXPECTED_PREVIEW_VERSION: ${{ needs.metadata.outputs.preview_version }}
+        run: |
+          set -euo pipefail
+          source_root="${GITHUB_WORKSPACE}/source"
+          actual_source_sha="$(git -C "${source_root}" rev-parse HEAD)"
+          source_tree="$(git -C "${source_root}" rev-parse 'HEAD^{tree}')"
+          workflow_sha="$(git -C "${GITHUB_WORKSPACE}/.workflow-src" rev-parse HEAD)"
+          if [[ "${actual_source_sha}" != "${EXPECTED_SOURCE_SHA}" || "${workflow_sha}" != "${EXPECTED_WORKFLOW_SHA}" ]]; then
+            echo "lock preparation source or workflow identity mismatch." >&2
+            exit 1
+          fi
+          if [[ -n "$(git -C "${source_root}" status --porcelain --untracked-files=normal)" ]]; then
+            echo "lock preparation source checkout is not clean before metadata resolution." >&2
+            exit 1
+          fi
+          cp Cargo.lock "${RUNNER_TEMP}/Cargo.lock.before"
+          cargo metadata --format-version 1 >/dev/null
+          git -C "${source_root}" diff --check
+          mapfile -t changed_paths < <(git -C "${source_root}" diff --name-only)
+          if [[ "${#changed_paths[@]}" -ne 1 || "${changed_paths[0]}" != "codex-rs/Cargo.lock" ]]; then
+            echo "lock preparation changed an unexpected source path." >&2
+            exit 1
+          fi
+          git -C "${source_root}" diff --binary -- codex-rs/Cargo.lock > "${RUNNER_TEMP}/Cargo.lock.patch"
+          patch_bytes="$(wc -c < "${RUNNER_TEMP}/Cargo.lock.patch" | tr -d '[:space:]')"
+          if [[ "${patch_bytes}" -eq 0 || "${patch_bytes}" -gt 65536 ]]; then
+            echo "lock preparation delta size is outside the accepted bound." >&2
+            exit 1
+          fi
+          SOURCE_TREE="${source_tree}" \
+            GITHUB_REPOSITORY="${GITHUB_REPOSITORY}" \
+            GITHUB_RUN_ID="${GITHUB_RUN_ID}" \
+            GITHUB_SERVER_URL="${GITHUB_SERVER_URL}" \
+            python3 - "${RUNNER_TEMP}/Cargo.lock.before" "${source_root}/codex-rs/Cargo.lock" "${RUNNER_TEMP}/Cargo.lock.patch" "${RUNNER_TEMP}/lock-delta.json" <<'PY'
+          import collections
+          import hashlib
+          import json
+          import os
+          import sys
+          import tomllib
+          from pathlib import Path
+
+          before_path, after_path, patch_path, output_path = map(Path, sys.argv[1:])
+          before_text = before_path.read_bytes()
+          after_text = after_path.read_bytes()
+          before = tomllib.loads(before_text.decode("utf-8"))
+          after = tomllib.loads(after_text.decode("utf-8"))
+
+          def records(document, external):
+              selected = [
+                  package for package in document.get("package", [])
+                  if bool(package.get("source")) == external
+              ]
+              return collections.Counter(
+                  json.dumps(package, sort_keys=True, separators=(",", ":"))
+                  for package in selected
+              )
+
+          before_external = records(before, True)
+          after_external = records(after, True)
+          if before_external != after_external:
+              raise SystemExit("external Cargo.lock package records changed")
+          before_local = {
+              (package["name"], package["version"]): package
+              for package in before.get("package", [])
+              if not package.get("source")
+          }
+          after_local = {
+              (package["name"], package["version"]): package
+              for package in after.get("package", [])
+              if not package.get("source")
+          }
+          added = set(after_local) - set(before_local)
+          removed = set(before_local) - set(after_local)
+          expected_added = {("codex-browser-computer-use", "0.0.0")}
+          if removed or added != expected_added:
+              raise SystemExit("unexpected local Cargo.lock package-set delta")
+          for identity, before_package in before_local.items():
+              after_package = after_local[identity]
+              if identity == ("codex-tui", "0.0.0"):
+                  expected_package = dict(before_package)
+                  expected_package["dependencies"] = sorted(
+                      [*before_package.get("dependencies", []), "codex-browser-computer-use"]
+                  )
+                  if after_package != expected_package:
+                      raise SystemExit("unexpected codex-tui lock dependency delta")
+              elif after_package != before_package:
+                  raise SystemExit("an unrelated local Cargo.lock package record changed")
+          package = after_local[next(iter(expected_added))]
+          patch = patch_path.read_bytes()
+          output = {
+              "schema_version": "sedna-cargo-lock-delta-v1",
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "workflow_url": (
+                  f'{os.environ["GITHUB_SERVER_URL"]}/{os.environ["GITHUB_REPOSITORY"]}'
+                  f'/actions/runs/{os.environ["GITHUB_RUN_ID"]}'
+              ),
+              "source_sha": os.environ["EXPECTED_SOURCE_SHA"],
+              "source_tree": os.environ["SOURCE_TREE"],
+              "workflow_sha": os.environ["EXPECTED_WORKFLOW_SHA"],
+              "preview_version": os.environ["EXPECTED_PREVIEW_VERSION"],
+              "before_lock_sha256": hashlib.sha256(before_text).hexdigest(),
+              "after_lock_sha256": hashlib.sha256(after_text).hexdigest(),
+              "patch_sha256": hashlib.sha256(patch).hexdigest(),
+              "patch_bytes": len(patch),
+              "added_local_package": {"name": package["name"], "version": package["version"]},
+              "updated_local_dependency": {
+                  "package": "codex-tui",
+                  "dependency": "codex-browser-computer-use",
+              },
+              "external_package_records_unchanged": True,
+          }
+          output_path.write_text(json.dumps(output, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+          PY
+
+      - name: Upload only the Cargo.lock patch and identity record
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ needs.metadata.outputs.artifact_name }}-cargo-lock-delta
+          path: |
+            ${{ runner.temp }}/Cargo.lock.patch
+            ${{ runner.temp }}/lock-delta.json
+          if-no-files-found: error
+          retention-days: 3
+
   build-linux-x86_64:
     needs: metadata
-    if: ${{ inputs.platform == 'linux-x86_64' || inputs.platform == 'linux-pair' }}
+    if: ${{ !inputs.prepare_lock_only && (inputs.platform == 'linux-x86_64' || inputs.platform == 'linux-pair') }}
     uses: ./.github/workflows/_sedna-linux-rust.yml
     with:
       checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
@@ -262,7 +429,7 @@ jobs:
 
   build-linux-aarch64:
     needs: metadata
-    if: ${{ inputs.platform == 'linux-aarch64' || inputs.platform == 'linux-pair' }}
+    if: ${{ !inputs.prepare_lock_only && (inputs.platform == 'linux-aarch64' || inputs.platform == 'linux-pair') }}
     uses: ./.github/workflows/_sedna-linux-rust.yml
     with:
       checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
@@ -353,7 +520,7 @@ jobs:
       - metadata
       - build-linux-x86_64
       - build-linux-aarch64
-    if: ${{ inputs.platform == 'linux-pair' }}
+    if: ${{ !inputs.prepare_lock_only && inputs.platform == 'linux-pair' }}
     strategy:
       fail-fast: false
       matrix:
@@ -410,7 +577,7 @@ jobs:
   build-macos:
     name: Build macOS preview - x86_64-apple-darwin
     needs: metadata
-    if: ${{ inputs.platform == 'macos' }}
+    if: ${{ !inputs.prepare_lock_only && inputs.platform == 'macos' }}
     runs-on: macos-15-intel
     timeout-minutes: 210
     permissions:

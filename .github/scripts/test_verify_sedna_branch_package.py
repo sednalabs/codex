@@ -21,6 +21,28 @@ SPEC.loader.exec_module(MODULE)
 
 
 class PackageArchiveTests(TestCase):
+    def test_preview_version_is_bound_to_source_sha(self) -> None:
+        source_sha = "0123456789abcdef" * 2 + "01234567"
+        self.assertEqual(len(source_sha), 40)
+        self.assertTrue(
+            MODULE.valid_preview_version(
+                f"0.143.0-alpha.10-dev.sedna.42+g{source_sha[:8]}", source_sha
+            )
+        )
+        self.assertTrue(
+            MODULE.valid_preview_version(
+                f"0.0.0-dev.sedna.g{source_sha[:8]}", source_sha
+            )
+        )
+        self.assertFalse(
+            MODULE.valid_preview_version("0.0.0-dev.sedna.gdeadbeef", source_sha)
+        )
+        self.assertFalse(
+            MODULE.valid_preview_version(
+                "0.0.0-dev.sedna.g01234567+g01234567", source_sha
+            )
+        )
+
     def test_exact_package_binary_inventory_extracts(self) -> None:
         payloads = {
             "codex": b"codex-binary",

@@ -54,6 +54,18 @@ class ConsumerFailure(Exception):
         self.code = code
 
 
+def valid_preview_version(preview_version: str, source_sha: str) -> bool:
+    if not re.fullmatch(r"[0-9a-f]{40}", source_sha):
+        return False
+    source_short = source_sha[:8]
+    if preview_version == f"0.0.0-dev.sedna.g{source_short}":
+        return True
+    return bool(
+        VERSION_RE.fullmatch(preview_version)
+        and preview_version.endswith(f"+g{source_short}")
+    )
+
+
 def required_env(name: str) -> str:
     value = os.environ.get(name, "")
     if not value:
@@ -344,9 +356,7 @@ def verify_and_consume() -> dict[str, Any]:
     if target not in TARGET_MACHINES or platform.machine() != TARGET_MACHINES[target]:
         raise ConsumerFailure("runner_architecture_mismatch")
     source_short = source_sha[:8]
-    if not VERSION_RE.fullmatch(preview_version) or not preview_version.endswith(
-        f"+g{source_short}"
-    ):
+    if not valid_preview_version(preview_version, source_sha):
         raise ConsumerFailure("preview_version_invalid")
 
     archive_base = f"codex-sedna-preview-{preview_version.replace('+', '__')}-{target}"

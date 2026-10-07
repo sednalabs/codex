@@ -10,6 +10,14 @@
       "execution_argv": ["cargo", "test", "--locked", "-p", "codex-app-server", "--lib", "--", "--test-threads=1"]
     },
     {
+      "package": "codex-app-server-protocol",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-app-server-protocol", "--lib", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-app-server-protocol", "--lib", "--", "--test-threads=1"]
+    },
+    {
       "package": "codex-config",
       "target_kind": "lib",
       "target": "",
