@@ -1618,6 +1618,15 @@ impl LocalAgentControl {
                         "persisted parent for resumed child {thread_id} does not match requested parent {parent_thread_id}"
                     )));
                 }
+                if stored_thread
+                    .source
+                    .parent_thread_id()
+                    .is_some_and(|stored_source_parent| stored_source_parent != parent_thread_id)
+                {
+                    return Err(CodexErr::InvalidRequest(format!(
+                        "persisted source parent for resumed child {thread_id} does not match requested parent {parent_thread_id}"
+                    )));
+                }
                 if let Some(child_agent_path) = requested_agent_path.as_ref()
                     && !self
                         .resumed_agent_path_matches_parent(
@@ -1691,6 +1700,13 @@ impl LocalAgentControl {
                 client_mcp_extensions: None,
             })
             .await?;
+        let requested_parent_thread_id = notification_source.parent_thread_id();
+        let running_parent_thread_id = resumed_thread.thread.session_source.parent_thread_id();
+        if running_parent_thread_id != requested_parent_thread_id {
+            return Err(CodexErr::InvalidRequest(format!(
+                "running source parent for resumed child {thread_id} does not match requested parent: requested {requested_parent_thread_id:?}, running {running_parent_thread_id:?}"
+            )));
+        }
         let mut agent_metadata = agent_metadata;
         agent_metadata.agent_id = Some(resumed_thread.thread_id);
         if let Some(reservation) = reservation {

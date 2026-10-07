@@ -4960,6 +4960,114 @@ async fn resume_child_rejects_mismatched_persisted_parent_with_or_without_regist
         .expect_err("unregistered child must reject a path under another parent");
     assert!(error.to_string().contains("agent path for resumed child"));
 
+    stored_thread.parent_thread_id = None;
+    stored_thread.agent_path = None;
+    let mismatched_source_parent_thread_id = ThreadId::new();
+    assert_ne!(mismatched_source_parent_thread_id, parent_thread_id);
+    stored_thread.source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id: mismatched_source_parent_thread_id,
+        depth: 1,
+        agent_path: None,
+        agent_nickname: None,
+        agent_role: None,
+    });
+    state_db
+        .upsert_thread(&stored_thread)
+        .await
+        .expect("mismatched source parent should persist");
+    let error = harness
+        .control
+        .resume_agent_from_rollout(
+            harness.config.clone(),
+            child_thread_id,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            }),
+        )
+        .await
+        .expect_err("unregistered child must reject a different persisted source parent");
+    assert!(
+        error
+            .to_string()
+            .contains("persisted source parent for resumed child")
+    );
+
+    let report = harness
+        .manager
+        .shutdown_all_threads_bounded(Duration::from_secs(5))
+        .await;
+    assert_eq!(report.submit_failed, Vec::<ThreadId>::new());
+    assert_eq!(report.timed_out, Vec::<ThreadId>::new());
+}
+
+#[tokio::test]
+async fn resume_running_child_rejects_a_different_requested_parent() {
+    let harness = AgentControlHarness::new().await;
+    let (running_parent_thread_id, _running_parent_thread) = harness.start_thread().await;
+    let (requested_parent_thread_id, _requested_parent_thread) = harness.start_thread().await;
+    let child_thread_id = harness
+        .control
+        .spawn_agent(
+            harness.config.clone(),
+            text_input("hello child"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: running_parent_thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            })),
+        )
+        .await
+        .expect("child spawn should succeed");
+    let child_thread = harness
+        .manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("child thread should exist");
+    persist_thread_for_tree_resume(&child_thread, "running child persisted").await;
+
+    let state_db = child_thread
+        .state_db()
+        .expect("sqlite state db should be available");
+    let mut stored_thread = state_db
+        .get_thread(child_thread_id)
+        .await
+        .expect("child metadata query should succeed")
+        .expect("child metadata should exist");
+    stored_thread.parent_thread_id = None;
+    stored_thread.agent_path = None;
+    stored_thread.source = SessionSource::Cli;
+    state_db
+        .upsert_thread(&stored_thread)
+        .await
+        .expect("missing parent metadata should persist");
+
+    let error = harness
+        .control
+        .resume_agent_from_rollout(
+            harness.config.clone(),
+            child_thread_id,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: requested_parent_thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            }),
+        )
+        .await
+        .expect_err("running child must reject a different requested parent");
+    assert!(
+        error
+            .to_string()
+            .contains("running source parent for resumed child")
+    );
+
     let report = harness
         .manager
         .shutdown_all_threads_bounded(Duration::from_secs(5))
