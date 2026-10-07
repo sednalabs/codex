@@ -144,13 +144,15 @@ fn mcp_device_prompt_escapes_terminal_controls() {
 struct DeviceAuthTestHttpClient {
     base_url: String,
     requests: Mutex<Vec<(String, String)>>,
+    events: Arc<Mutex<Vec<&'static str>>>,
 }
 
 impl DeviceAuthTestHttpClient {
-    fn new(base_url: &str) -> Self {
+    fn new(base_url: &str, events: Arc<Mutex<Vec<&'static str>>>) -> Self {
         Self {
             base_url: base_url.to_string(),
             requests: Mutex::new(Vec::new()),
+            events,
         }
     }
 
@@ -186,39 +188,57 @@ impl HttpClient for DeviceAuthTestHttpClient {
         let path = params.url.strip_prefix(&self.base_url).unwrap_or_default();
         let response = match (params.method.as_str(), path) {
             ("GET", "/mcp") => Self::response(405, Vec::new()),
-            ("GET", path) if path.contains("oauth-authorization-server") => self.json_response(
-                200,
-                json!({
-                    "issuer": format!("{}/mcp", self.base_url),
-                    "authorization_endpoint": format!("{}/authorize", self.base_url),
-                    "token_endpoint": format!("{}/token", self.base_url),
-                    "device_authorization_endpoint": format!("{}/device", self.base_url),
-                    "grant_types_supported": [
-                        "urn:ietf:params:oauth:grant-type:device_code",
-                        "refresh_token"
-                    ],
-                    "authorization_response_iss_parameter_supported": false
-                }),
-            ),
-            ("POST", "/device") => self.json_response(
-                200,
-                json!({
-                    "device_code": "synthetic-device-code",
-                    "user_code": "SYNTHETIC-CODE",
-                    "verification_uri": format!("{}/verify", self.base_url),
-                    "expires_in": 60,
-                    "interval": 1
-                }),
-            ),
-            ("POST", "/token") => self.json_response(
-                200,
-                json!({
-                    "access_token": "synthetic-access-token",
-                    "refresh_token": "synthetic-refresh-token",
-                    "token_type": "Bearer",
-                    "expires_in": 3600
-                }),
-            ),
+            ("GET", path) if path.contains("oauth-authorization-server") => {
+                self.events
+                    .lock()
+                    .expect("record OAuth discovery event")
+                    .push("discovery");
+                self.json_response(
+                    200,
+                    json!({
+                        "issuer": format!("{}/mcp", self.base_url),
+                        "authorization_endpoint": format!("{}/authorize", self.base_url),
+                        "token_endpoint": format!("{}/token", self.base_url),
+                        "device_authorization_endpoint": format!("{}/device", self.base_url),
+                        "grant_types_supported": [
+                            "urn:ietf:params:oauth:grant-type:device_code",
+                            "refresh_token"
+                        ],
+                        "authorization_response_iss_parameter_supported": false
+                    }),
+                )
+            }
+            ("POST", "/device") => {
+                self.events
+                    .lock()
+                    .expect("record device request event")
+                    .push("device");
+                self.json_response(
+                    200,
+                    json!({
+                        "device_code": "synthetic-device-code",
+                        "user_code": "SYNTHETIC-CODE",
+                        "verification_uri": format!("{}/verify", self.base_url),
+                        "expires_in": 60,
+                        "interval": 1
+                    }),
+                )
+            }
+            ("POST", "/token") => {
+                self.events
+                    .lock()
+                    .expect("record token request event")
+                    .push("token");
+                self.json_response(
+                    200,
+                    json!({
+                        "access_token": "synthetic-access-token",
+                        "refresh_token": "synthetic-refresh-token",
+                        "token_type": "Bearer",
+                        "expires_in": 3600
+                    }),
+                )
+            }
             ("GET", _) => Self::response(404, Vec::new()),
             _ => {
                 return async {
@@ -288,7 +308,8 @@ async fn device_auth_login_discovers_prompts_and_saves_issuer_bound_tokens() -> 
     let _home = TempCodexHome::new();
     let base_url = "http://127.0.0.1:43219";
     let server_url = format!("{base_url}/mcp");
-    let http_client = Arc::new(DeviceAuthTestHttpClient::new(base_url));
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let http_client = Arc::new(DeviceAuthTestHttpClient::new(base_url, Arc::clone(&events)));
     let server = McpServerConfig {
         auth: Default::default(),
         transport: McpServerTransportConfig::StreamableHttp {
@@ -331,6 +352,7 @@ async fn device_auth_login_discovers_prompts_and_saves_issuer_bound_tokens() -> 
         codex_config::types::OAuthCredentialsStoreMode::File,
         codex_config::types::AuthKeyringBackendKind::Direct,
         move |prompt| {
+            events.lock().expect("record prompt event").push("prompt");
             captured_prompts.lock().expect("capture CLI prompt").push((
                 prompt.server_name().to_string(),
                 prompt.verification_uri().to_string(),
@@ -347,6 +369,13 @@ async fn device_auth_login_discovers_prompts_and_saves_issuer_bound_tokens() -> 
             format!("{base_url}/verify"),
             "SYNTHETIC-CODE".to_string(),
         )]
+    );
+    assert_eq!(
+        events
+            .lock()
+            .expect("read device-auth event order")
+            .as_slice(),
+        ["discovery", "device", "prompt", "token"]
     );
     let issuer = server_url.clone();
     let saved = codex_rmcp_client::stored_oauth_credentials(
