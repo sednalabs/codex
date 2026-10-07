@@ -19,7 +19,7 @@ import subprocess
 import sys
 from pathlib import Path
 import xml.etree.ElementTree as ET
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
@@ -1217,6 +1217,70 @@ def _status_only_junit_projection(
         elif status == "skipped":
             ET.SubElement(projected_case, "skipped", {"message": "test skipped"})
     return projected, statuses, counts, invalid_name
+
+
+_JUNIT_ERROR_CLASS_NAMES = (
+    "AssertionError",
+    "AttributeError",
+    "CalledProcessError",
+    "ConnectionError",
+    "EOF",
+    "ExceptionGroup",
+    "FileNotFoundError",
+    "ImportError",
+    "KeyError",
+    "ModuleNotFoundError",
+    "NameError",
+    "OSError",
+    "PermissionError",
+    "RuntimeError",
+    "SubprocessError",
+    "TimeoutError",
+    "TimeoutExpired",
+    "TypeError",
+    "ValueError",
+)
+_JUNIT_ERROR_TYPE_TO_CLASS = {name: name for name in _JUNIT_ERROR_CLASS_NAMES}
+_JUNIT_ERROR_TYPE_TO_CLASS.update(
+    {
+        "asyncio.TimeoutError": "TimeoutError",
+        "builtins.AssertionError": "AssertionError",
+        "builtins.AttributeError": "AttributeError",
+        "builtins.ConnectionError": "ConnectionError",
+        "builtins.FileNotFoundError": "FileNotFoundError",
+        "builtins.ImportError": "ImportError",
+        "builtins.KeyError": "KeyError",
+        "builtins.ModuleNotFoundError": "ModuleNotFoundError",
+        "builtins.NameError": "NameError",
+        "builtins.OSError": "OSError",
+        "builtins.PermissionError": "PermissionError",
+        "builtins.RuntimeError": "RuntimeError",
+        "builtins.TimeoutError": "TimeoutError",
+        "builtins.TypeError": "TypeError",
+        "builtins.ValueError": "ValueError",
+        "pexpect.exceptions.EOF": "EOF",
+        "pexpect.exceptions.TIMEOUT": "TimeoutError",
+        "subprocess.CalledProcessError": "CalledProcessError",
+        "subprocess.SubprocessError": "SubprocessError",
+        "subprocess.TimeoutExpired": "TimeoutExpired",
+    }
+)
+
+
+def junit_error_class_counts(cases: Iterable[ET.Element]) -> dict[str, int]:
+    """Return fixed, allowlisted JUnit error-class counts only.
+
+    Error type attributes are matched exactly and never copied to output. All
+    unrecognized or absent types collapse into one fixed fallback bucket.
+    Error messages, text, traces, testcase attributes and filenames are ignored.
+    """
+    counts = {name: 0 for name in _JUNIT_ERROR_CLASS_NAMES}
+    counts["other_unknown"] = 0
+    for case in cases:
+        for error in case.findall("error"):
+            error_class = _JUNIT_ERROR_TYPE_TO_CLASS.get(error.attrib.get("type", ""), "other_unknown")
+            counts[error_class] += 1
+    return counts
 
 
 def _replace_with_status_only_junit(path: Path, root: ET.Element) -> None:

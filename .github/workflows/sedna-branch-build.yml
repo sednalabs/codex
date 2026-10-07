@@ -1262,6 +1262,9 @@ jobs:
           import sys
           import xml.etree.ElementTree as ET
 
+          sys.path.insert(0, str(Path(".workflow-src/.github/scripts").resolve()))
+          from verify_existing_first_binary_producer import junit_error_class_counts
+
           junit_path = Path(os.environ["CONSUMER_JUNIT"])
           context_path = Path(os.environ["CONSUMER_CONTEXT"])
           producer_path = Path(os.environ["PRODUCER_EVIDENCE"])
@@ -1281,6 +1284,7 @@ jobs:
               issues.append("pytest did not produce a JUnit report")
           failures = sum(len(case.findall("failure")) for case in cases)
           errors = sum(len(case.findall("error")) for case in cases)
+          error_class_counts = junit_error_class_counts(cases)
           skipped = sum(len(case.findall("skipped")) for case in cases)
           if pytest_exit != 0:
               issues.append(f"pytest exited with status {pytest_exit}")
@@ -1415,6 +1419,7 @@ jobs:
               "executed_cases": len(cases),
               "failures": failures,
               "errors": errors,
+              "error_class_counts": error_class_counts,
               "skipped": skipped,
               "state_history_positive_cases": len(positive),
               "state_history_negative_cases": len(negative),
@@ -2254,6 +2259,9 @@ jobs:
           import sys
           import xml.etree.ElementTree as ET
 
+          sys.path.insert(0, str(Path(".workflow-src/.github/scripts").resolve()))
+          from verify_existing_first_binary_producer import junit_error_class_counts
+
           junit_path = Path(sys.argv[1])
           identity_path = Path(sys.argv[2])
           basetemp = Path(sys.argv[3])
@@ -2270,6 +2278,7 @@ jobs:
               issues.append("pytest did not produce a JUnit report")
           failures = sum(len(case.findall("failure")) for case in cases)
           errors = sum(len(case.findall("error")) for case in cases)
+          error_class_counts = junit_error_class_counts(cases)
           skipped = sum(len(case.findall("skipped")) for case in cases)
           if pytest_exit != 0:
               issues.append(f"pytest exited with status {pytest_exit}")
@@ -2351,6 +2360,7 @@ jobs:
               "executed_cases": len(cases),
               "failures": failures,
               "errors": errors,
+              "error_class_counts": error_class_counts,
               "skipped": skipped,
               "state_history_positive_cases": len(positive),
               "state_history_negative_cases": len(negative),

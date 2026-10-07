@@ -101,6 +101,7 @@ from verify_existing_first_binary_producer import (
     select_accepted_record,
     _validate_manifest_record,
     _status_only_junit_projection,
+    junit_error_class_counts,
     _json_object_without_duplicate_keys,
     _verify_trusted_consumer_ref,
     validate_runner_policy_inputs,
@@ -2460,6 +2461,8 @@ class AcceptedInputManifestTests(unittest.TestCase):
                 self.assertIn('--base-sha "${ARTIFACT_BASE_SHA}"', consumer_step)
                 self.assertIn('pytest -q \\', consumer_step)
                 self.assertIn('pytest_addopts="--tb=no --show-capture=no"', consumer_step)
+                self.assertIn("junit_error_class_counts(cases)", consumer_step)
+                self.assertIn('"error_class_counts": error_class_counts', consumer_step)
 
         sdk_job = workflow.split("  sdk-parser:", 1)[1].split("\n  consume-linux-aarch64:", 1)[0]
         self.assertIn("runs-on: ubuntu-24.04", sdk_job)
@@ -2767,6 +2770,30 @@ class ExactW14780RouteTests(unittest.TestCase):
         self.assertEqual({"passed": 1, "failed": 1, "error": 0, "skipped": 0}, counts)
         for private_text in ("PRIVATE_SCREEN", "PRIVATE_ASSERTION", "PRIVATE_TRACE", "PRIVATE_REQUEST"):
             self.assertNotIn(private_text, text)
+
+    def test_junit_error_class_counts_allowlist_unknown_and_drop_payload(self) -> None:
+        source = ET.fromstring(
+            '<testsuite>'
+            '<testcase name="safe-name" classname="PRIVATE_CLASS" file="/private/runner/path.py">'
+            '<error type="AssertionError" message="PRIVATE_MESSAGE">PRIVATE_TRACE</error>'
+            '<error type="FileNotFoundError" message="PRIVATE_PATH">/private/runner/file</error>'
+            '<error type="subprocess.TimeoutExpired" message="PRIVATE_COMMAND">PRIVATE_ARGS</error>'
+            '<error type="/private/custom/HostFailure" message="PRIVATE_UNKNOWN">PRIVATE_STACK</error>'
+            '</testcase></testsuite>'
+        )
+        counts = junit_error_class_counts(list(source.iter("testcase")))
+        self.assertEqual(1, counts["AssertionError"])
+        self.assertEqual(1, counts["FileNotFoundError"])
+        self.assertEqual(1, counts["TimeoutExpired"])
+        self.assertEqual(1, counts["other_unknown"])
+        self.assertEqual(4, sum(counts.values()))
+        serialized = json.dumps(counts, sort_keys=True)
+        for private_value in (
+            "PRIVATE_CLASS", "/private/runner/path.py", "PRIVATE_MESSAGE", "PRIVATE_PATH",
+            "PRIVATE_COMMAND", "PRIVATE_ARGS", "/private/custom/HostFailure",
+            "PRIVATE_UNKNOWN", "PRIVATE_STACK",
+        ):
+            self.assertNotIn(private_value, serialized)
 
 
 class CurrentConsumerIdentityTests(unittest.TestCase):
