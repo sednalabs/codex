@@ -344,6 +344,14 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
                 "is_commit_ancestor",
                 side_effect=[False, True],
             ),
+            patch.object(
+                MODULE,
+                "gh_json",
+                side_effect=[
+                    {"tree": {"sha": "1" * 40}},
+                    {"tree": {"sha": "2" * 40}},
+                ],
+            ),
             patch.object(MODULE, "run_blocking_watcher") as watcher,
         ):
             receipt, status = MODULE.execute_delivery(args)
