@@ -449,6 +449,27 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
             raised.exception.action, "stop_merge_group_candidate_uncorrelatable"
         )
 
+    def test_merge_group_candidate_with_non_string_tree_sha_fails_closed(self):
+        args = make_args()
+        with (
+            patch.object(MODULE, "is_commit_ancestor", side_effect=[False, True]),
+            patch.object(
+                MODULE,
+                "gh_json",
+                return_value={"tree": {"sha": int("1" * 40)}},
+            ) as gh_json,
+            self.assertRaises(MODULE.DeliveryStop) as raised,
+        ):
+            MODULE.verify_candidate_association(
+                "owner/repo", CANDIDATE_SHA, make_pr(), args
+            )
+
+        self.assertEqual(
+            raised.exception.action, "stop_merge_group_candidate_uncorrelatable"
+        )
+        gh_json.assert_called_once()
+        self.assertEqual(MODULE.COMMIT_TREE_SHA_CACHE, {})
+
     def test_merge_group_candidate_tree_reads_are_cached_for_same_commit(self):
         args = make_args()
         with (

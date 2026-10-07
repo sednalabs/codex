@@ -584,8 +584,8 @@ def fetch_commit_tree_sha(repo, commit_sha, *, timeout_seconds=None):
     tree = payload.get("tree")
     if not isinstance(tree, dict):
         raise GhCommandError(f"Commit '{commit_sha}' returned an unexpected tree.")
-    tree_sha = str(tree.get("sha") or "")
-    if not is_full_sha(tree_sha):
+    tree_sha = tree.get("sha")
+    if not isinstance(tree_sha, str) or not FULL_SHA_RE.fullmatch(tree_sha):
         raise GhCommandError(f"Commit '{commit_sha}' did not return a full tree SHA.")
     COMMIT_TREE_SHA_CACHE[cache_key] = tree_sha
     return tree_sha
