@@ -216,68 +216,76 @@ ON CONFLICT(child_thread_id) DO UPDATE SET
     ///
     /// Traversal is cycle-safe, excludes `root_thread_id` if the stored graph cycles back to it,
     /// and returns breadth-first by depth, then by thread id. The status filter applies to every
-    /// traversed edge.
+    /// traversed edge. Each SQLite read is capped before results are fetched or ordered in memory.
+    /// If the descendant limit is exceeded, `thread_ids` is empty rather than a partial graph.
     pub async fn list_thread_spawn_descendants_bounded(
         &self,
         root_thread_id: ThreadId,
         status: Option<crate::DirectionalThreadSpawnEdgeStatus>,
     ) -> anyhow::Result<crate::ThreadSpawnDescendants> {
-        let mut builder = QueryBuilder::<Sqlite>::new(
-            r#"
-WITH RECURSIVE subtree(child_thread_id, depth, visited) AS (
-    SELECT child_thread_id, 1, ',' || ? || ',' || child_thread_id || ','
-    FROM thread_spawn_edges
-    WHERE parent_thread_id = ?
-      AND child_thread_id != ?
-            "#,
-        );
-        builder.push_bind(root_thread_id.to_string());
-        builder.push_bind(root_thread_id.to_string());
-        builder.push_bind(root_thread_id.to_string());
-        if let Some(status) = status {
-            builder.push(" AND status = ").push_bind(status.to_string());
-        }
-        builder.push(
-            r#"
-    UNION ALL
-    SELECT edge.child_thread_id,
-           subtree.depth + 1,
-           subtree.visited || edge.child_thread_id || ','
-    FROM thread_spawn_edges AS edge
-    JOIN subtree ON edge.parent_thread_id = subtree.child_thread_id
-    WHERE instr(subtree.visited, ',' || edge.child_thread_id || ',') = 0
-            "#,
-        );
-        if let Some(status) = status {
-            builder.push(" AND edge.status = ").push_bind(status.to_string());
-        }
-        // SQLite's recursive queue ordering makes the row budget a BFS budget, rather than an
-        // arbitrary depth-first prefix. One extra row distinguishes exactly-at-limit from overflow.
-        builder.push(" ORDER BY 2 ASC, 1 ASC LIMIT ");
-        builder.push((crate::MAX_THREAD_SPAWN_DESCENDANTS + 1).to_string());
-        builder.push(
-            r#"
-)
-SELECT child_thread_id, MIN(depth) AS depth
-FROM subtree
-GROUP BY child_thread_id
-ORDER BY depth ASC, child_thread_id ASC
-            "#,
-        );
+        const PARENT_BATCH_SIZE: usize = 500;
 
-        let rows = builder.build().fetch_all(self.pool.as_ref()).await?;
-        let relation_limit_reached = rows.len() > crate::MAX_THREAD_SPAWN_DESCENDANTS;
-        let mut thread_ids = rows
-            .into_iter()
-            .map(|row| {
-                ThreadId::try_from(row.try_get::<String, _>("child_thread_id")?)
-                    .map_err(Into::into)
-            })
-            .collect::<anyhow::Result<Vec<_>>>()?;
-        thread_ids.truncate(crate::MAX_THREAD_SPAWN_DESCENDANTS);
+        let root_id = root_thread_id.to_string();
+        let mut visited = std::collections::HashSet::from([root_id]);
+        let mut descendants = Vec::new();
+        let mut frontier = vec![root_thread_id];
+
+        while !frontier.is_empty() {
+            let mut next_frontier = Vec::new();
+            for parent_batch in frontier.chunks(PARENT_BATCH_SIZE) {
+                let remaining = crate::MAX_THREAD_SPAWN_DESCENDANTS
+                    .saturating_sub(descendants.len() + next_frontier.len());
+                let read_limit = remaining + 1;
+                let visited_path = format!(
+                    ",{},",
+                    visited.iter().cloned().collect::<Vec<_>>().join(",")
+                );
+
+                let mut builder = QueryBuilder::<Sqlite>::new(
+                    "SELECT child_thread_id FROM thread_spawn_edges WHERE parent_thread_id IN (",
+                );
+                let mut parents = builder.separated(", ");
+                for parent_thread_id in parent_batch {
+                    parents.push_bind(parent_thread_id.to_string());
+                }
+                parents.push_unseparated(")");
+                drop(parents);
+                if let Some(status) = status {
+                    builder.push(" AND status = ").push_bind(status.to_string());
+                }
+                builder
+                    .push(" AND instr(")
+                    .push_bind(visited_path)
+                    .push(" , ',' || child_thread_id || ',') = 0 LIMIT ");
+                builder.push(read_limit.to_string());
+
+                // Do not order or recurse in SQLite: each frontier read is bounded before any
+                // result materialization. The combined frontier is sorted below, in memory, where
+                // it is bounded by the same 3,200-node safety limit.
+                let rows = builder.build().fetch_all(self.pool.as_ref()).await?;
+                if rows.len() > remaining {
+                    return Ok(crate::ThreadSpawnDescendants {
+                        thread_ids: Vec::new(),
+                        relation_limit_reached: true,
+                    });
+                }
+
+                for row in rows {
+                    let child_id: String = row.try_get("child_thread_id")?;
+                    if visited.insert(child_id.clone()) {
+                        next_frontier.push(ThreadId::try_from(child_id)?);
+                    }
+                }
+            }
+
+            next_frontier.sort_by_key(|thread_id| thread_id.to_string());
+            descendants.extend(next_frontier.iter().copied());
+            frontier = next_frontier;
+        }
+
         Ok(crate::ThreadSpawnDescendants {
-            thread_ids,
-            relation_limit_reached,
+            thread_ids: descendants,
+            relation_limit_reached: false,
         })
     }
 
