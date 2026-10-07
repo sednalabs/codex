@@ -24,7 +24,7 @@ PACKAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 TARGET_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 TEST_RE = re.compile(r"^[A-Za-z0-9_:.\-]{1,255}$")
 ALLOWED_PROFILES = {"rust_minimal", "rust_integration"}
-ALLOWED_TARGET_KINDS = {"lib", "integration"}
+ALLOWED_TARGET_KINDS = {"lib", "integration", "bin"}
 MANIFEST_SCHEMA_VERSION = "rust-tests-command-manifest-v1"
 MANIFEST_NAME = "validation-named-tests.json"
 MAX_TESTS = 64
@@ -103,8 +103,12 @@ def expected_commands(
     command = ["cargo", "test", "--locked", "-p", package]
     if target_kind == "lib":
         command.append("--lib")
-    else:
+    elif target_kind == "integration":
         command.extend(["--test", target])
+    elif target_kind == "bin":
+        command.extend(["--bin", target])
+    else:
+        raise ValueError("target kind is not supported")
     inventory = [*command, "--", "--list"]
     execution = [*command, "--", "--test-threads=1"]
     return inventory, execution
@@ -136,11 +140,13 @@ def load_manifest(repo_root: Path) -> dict[tuple[str, str, str], dict[str, Any]]
             raise ValueError("manifest package is not a safe Cargo package name")
         if target_kind not in ALLOWED_TARGET_KINDS:
             raise ValueError("manifest target kind is not supported")
-        if target_kind == "integration":
+        if target_kind in {"integration", "bin"}:
             if not isinstance(target, str) or not TARGET_RE.fullmatch(target):
-                raise ValueError("manifest integration target is not safe")
-        elif target != "":
+                raise ValueError(f"manifest {target_kind} target is not safe")
+        elif target_kind == "lib" and target != "":
             raise ValueError("manifest lib targets must use an empty target")
+        elif target_kind != "lib":
+            raise ValueError("manifest target kind is not supported")
         if (
             not isinstance(profiles, list)
             or not profiles
@@ -216,11 +222,11 @@ def load_request() -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     if not isinstance(package, str) or not PACKAGE_RE.fullmatch(package):
         return None, fail("package_invalid", "package must be a safe Cargo package name")
     if target_kind not in ALLOWED_TARGET_KINDS:
-        return None, fail("target_kind_invalid", "target_kind must be lib or integration")
-    if target_kind == "integration":
+        return None, fail("target_kind_invalid", "target_kind must be lib, integration, or bin")
+    if target_kind in {"integration", "bin"}:
         if not isinstance(target, str) or not TARGET_RE.fullmatch(target):
-            return None, fail("target_invalid", "integration target must be a safe Cargo target name")
-    elif target not in ("", None, "lib"):
+            return None, fail("target_invalid", f"{target_kind} target must be a safe Cargo target name")
+    elif target_kind == "lib" and target not in ("", None, "lib"):
         return None, fail("target_invalid", "lib requests must not name an integration target")
     if profile not in ALLOWED_PROFILES:
         return None, fail("profile_invalid", "profile is not in the hosted allowlist")
