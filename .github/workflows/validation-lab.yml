@@ -1530,7 +1530,7 @@ jobs:
             --repo "${GITHUB_REPOSITORY}" \
             --host-ref "${{ needs.metadata.outputs.host_ref }}" \
             --workflow-sha "${{ needs.metadata.outputs.harness_sha }}" \
-            --base-ref "${{ needs.metadata.outputs.base_ref }}" \
+            --base-ref "${{ needs.metadata.outputs.base_sha }}" \
             --base-sha "${{ needs.metadata.outputs.base_sha }}" \
             --workflow-file "validation-lab.yml" \
             --display-ref "${{ needs.metadata.outputs.display_ref }}" \
