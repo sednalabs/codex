@@ -15,7 +15,8 @@ pub enum ThreadSpawnEdgeStatus {
 /// Descendants returned by a bounded persisted-graph recovery query.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ThreadSpawnDescendants {
-    /// Descendant thread identifiers retained by the bounded query.
+    /// Bounded descendant identifiers; callers must ignore this partial set when the limit flag
+    /// is true.
     pub thread_ids: Vec<ThreadId>,
     /// Whether the recovery safety limit was exceeded.
     pub relation_limit_reached: bool,

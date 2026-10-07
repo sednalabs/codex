@@ -215,9 +215,10 @@ ON CONFLICT(child_thread_id) DO UPDATE SET
     /// List persisted descendants using the recovery safety bound and report truncation.
     ///
     /// Traversal is cycle-safe, excludes `root_thread_id` if the stored graph cycles back to it,
-    /// and returns breadth-first by depth, then by thread id. The status filter applies to every
-    /// traversed edge. Each SQLite read is capped before results are fetched or ordered in memory.
-    /// If the descendant limit is exceeded, `thread_ids` is empty rather than a partial graph.
+    /// and returns breadth-first by depth, then by thread id when complete. The status filter
+    /// applies to every traversed edge. Each SQLite read is capped before results are fetched or
+    /// ordered in memory. If the descendant limit is exceeded, `thread_ids` contains a bounded
+    /// partial result and callers must ignore it whenever `relation_limit_reached` is true.
     pub async fn list_thread_spawn_descendants_bounded(
         &self,
         root_thread_id: ThreadId,
@@ -264,8 +265,20 @@ ON CONFLICT(child_thread_id) DO UPDATE SET
                 // it is bounded by the same 3,200-node safety limit.
                 let rows = builder.build().fetch_all(self.pool.as_ref()).await?;
                 if rows.len() > remaining {
+                    let mut overflow_children = Vec::with_capacity(rows.len());
+                    for row in rows {
+                        let child_id: String = row.try_get("child_thread_id")?;
+                        if visited.insert(child_id.clone()) {
+                            overflow_children.push(ThreadId::try_from(child_id)?);
+                        }
+                    }
+                    overflow_children.sort_by_key(|thread_id| thread_id.to_string());
+                    next_frontier.extend(overflow_children.into_iter().take(remaining));
+                    next_frontier.sort_by_key(|thread_id| thread_id.to_string());
+                    let mut thread_ids = descendants;
+                    thread_ids.extend(next_frontier);
                     return Ok(crate::ThreadSpawnDescendants {
-                        thread_ids: Vec::new(),
+                        thread_ids,
                         relation_limit_reached: true,
                     });
                 }

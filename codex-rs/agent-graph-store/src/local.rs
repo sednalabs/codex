@@ -458,7 +458,10 @@ mod tests {
             .list_thread_spawn_descendants_bounded(root_thread_id, None)
             .await
             .expect("overflow traversal should succeed");
-        assert!(overflow.thread_ids.is_empty());
+        assert_eq!(
+            overflow.thread_ids.len(),
+            codex_state::MAX_THREAD_SPAWN_DESCENDANTS
+        );
         assert!(overflow.relation_limit_reached);
     }
 }
