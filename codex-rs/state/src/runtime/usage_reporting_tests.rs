@@ -53,17 +53,27 @@ fn current_main_usage_history_migrator() -> Migrator {
     )
 }
 
-fn t10_usage_history_migrator() -> Migrator {
+fn t10_usage_history_migrator_through(max_version: i64) -> Migrator {
     let mut migrations = USAGE_MIGRATOR
         .iter()
         .filter(|migration| {
-            !matches!(migration.version, 1 | 5 | 6 | 8..=12 | 15 | 20)
+            migration.version <= max_version
+                && !matches!(migration.version, 1 | 5 | 6 | 8..=12 | 15 | 20)
         })
         .cloned()
         .collect::<Vec<_>>();
-    migrations.extend(T10_USAGE_HISTORY_MIGRATOR.iter().cloned());
+    migrations.extend(
+        T10_USAGE_HISTORY_MIGRATOR
+            .iter()
+            .filter(|migration| migration.version <= max_version)
+            .cloned(),
+    );
     migrations.sort_by_key(|migration| migration.version);
     test_usage_migrator(migrations, &USAGE_MIGRATOR, /*ignore_missing*/ false)
+}
+
+fn t10_usage_history_migrator() -> Migrator {
+    t10_usage_history_migrator_through(19)
 }
 
 async fn usage_migration_rows(pool: &SqlitePool) -> Result<Vec<UsageMigrationRow>> {
@@ -167,6 +177,59 @@ async fn assert_t10_pending_current_main_migrations(pool: &SqlitePool) -> Result
     ] {
         assert_schema_object(pool, "index", index).await?;
     }
+    Ok(())
+}
+
+async fn assert_current_main_usage_migrations(pool: &SqlitePool, versions: &[i64]) -> Result<()> {
+    let rows = usage_migration_rows(pool).await?;
+    for version in versions {
+        let source = USAGE_MIGRATOR
+            .iter()
+            .find(|migration| migration.version == *version)
+            .expect("expected current-main migration is embedded");
+        let row = rows
+            .iter()
+            .find(|row| row.0 == *version)
+            .expect("expected current-main migration row is present");
+        assert_eq!(row.1.as_str(), source.description.as_ref());
+        assert!(row.2, "current-main usage migration {version} succeeded");
+        assert_eq!(row.3.as_slice(), source.checksum.as_ref());
+    }
+    Ok(())
+}
+
+async fn assert_partial_t10_usage_history_reopens(
+    historical_through: i64,
+    expected_main_versions: &[i64],
+) -> Result<()> {
+    let home = tempdir()?;
+    let sqlite = SqliteConfig::new_for_testing(home.path().abs());
+    let fixture = sqlite
+        .open_read_write_pool(&sqlite.usage_db_path())
+        .await?;
+    t10_usage_history_migrator_through(historical_through)
+        .run(&fixture)
+        .await?;
+    let historical_rows = usage_migration_rows(&fixture).await?;
+    fixture.close().await;
+
+    let upgraded = sqlite
+        .open_usage_db(&runtime_usage_migrator(), None)
+        .await?;
+    assert_preserved_migration_rows(&upgraded, &historical_rows).await?;
+    assert_t10_pending_current_main_migrations(&upgraded).await?;
+    assert_current_main_usage_migrations(&upgraded, expected_main_versions).await?;
+    validate_usage_reporting_indexes(&upgraded, /*require_all*/ true).await?;
+    upgraded.close().await;
+
+    let reopened = sqlite
+        .open_usage_db(&runtime_usage_migrator(), None)
+        .await?;
+    assert_preserved_migration_rows(&reopened, &historical_rows).await?;
+    assert_t10_pending_current_main_migrations(&reopened).await?;
+    assert_current_main_usage_migrations(&reopened, expected_main_versions).await?;
+    validate_usage_reporting_indexes(&reopened, /*require_all*/ true).await?;
+    reopened.close().await;
     Ok(())
 }
 
@@ -320,6 +383,11 @@ async fn qualify_usage_migration_histories() -> Result<()> {
         t10_view_before
     );
     t10_reopened.close().await;
+
+    // Partial T10 histories can legitimately receive current-main migrations
+    // at the missing versions. Reopening must keep those exact rows valid.
+    assert_partial_t10_usage_history_reopens(1, &[5, 15]).await?;
+    assert_partial_t10_usage_history_reopens(14, &[15]).await?;
 
     let report = codex_utils_cargo_bin::find_resource!("../../scripts/codex_usage_report.py")?;
     let python_path = std::env::var_os("PATH").expect("hosted Python must be on PATH");

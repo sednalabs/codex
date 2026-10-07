@@ -101,7 +101,6 @@ pub(crate) async fn runtime_usage_migrator_for_history(
         Vec::new()
     };
 
-    let mut t10_history_seen = false;
     let mut t10_v5_or_later_seen = false;
     let mut t10_v15_or_later_seen = false;
     let mut skip_source_versions = Vec::new();
@@ -128,7 +127,6 @@ pub(crate) async fn runtime_usage_migrator_for_history(
         });
 
         if matches_t10 {
-            t10_history_seen = true;
             t10_v5_or_later_seen |= *version == 5 || *version >= 15;
             t10_v15_or_later_seen |= *version >= 15;
             if source.is_some_and(|migration| !matches_source) {
@@ -165,23 +163,6 @@ pub(crate) async fn runtime_usage_migrator_for_history(
                 && has_exact_t10_usage_migration(&applied, 15),
             "usage migration history has a T10 v15-or-later variant without its exact v5/v15 rows"
         );
-    }
-
-    if t10_history_seen {
-        for (version, description, _, checksum) in &applied {
-            if matches!(*version, 1 | 5 | 15) {
-                if let Some((_, known_description, known_checksum)) = T10_USAGE_MIGRATION_HISTORY
-                    .iter()
-                    .find(|(known_version, _, _)| known_version == version)
-                {
-                    anyhow::ensure!(
-                        description.as_str() == *known_description
-                            && checksum_matches_hex(checksum, known_checksum),
-                        "usage migration history mixes T10 and current-main version {version}"
-                    );
-                }
-            }
-        }
     }
 
     let migrations = base
