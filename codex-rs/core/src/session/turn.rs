@@ -6,6 +6,7 @@ use std::sync::atomic::Ordering;
 use crate::client::ModelClientSession;
 use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
+use crate::client_common::record_browser_output_stage;
 use crate::compact::run_inline_auto_compact_task;
 use crate::compact_remote_v2::run_inline_remote_auto_compact_task as run_inline_remote_auto_compact_task_v2;
 use crate::connectors;
@@ -1645,6 +1646,7 @@ async fn run_sampling_request(
                 .await
                 .for_prompt(&step_context.settings.model_info.input_modalities)
         };
+        record_browser_output_stage("normalized_prompt_input", &prompt_input);
         let mut prompt_input = prompt_input;
         sess.services
             .executed_tool_calls
@@ -2466,6 +2468,8 @@ async fn drain_in_flight(
     while let Some(res) = in_flight.next().await {
         match res {
             Ok(envelope) => {
+                let is_function_call_output =
+                    matches!(&envelope.item, ResponseItem::FunctionCallOutput { .. });
                 mark_thread_memory_mode_polluted_if_external_context(
                     sess.as_ref(),
                     turn_context.as_ref(),
@@ -2478,6 +2482,10 @@ async fn drain_in_flight(
                     vec![envelope],
                 )
                 .await;
+                if is_function_call_output {
+                    let history = sess.clone_history().await;
+                    record_browser_output_stage("core_history_recorded", history.raw_items());
+                }
             }
             Err(err) => {
                 error_or_panic(format!("in-flight tool future failed during drain: {err}"));

@@ -10,6 +10,10 @@ use codex_protocol::openai_models::ModelInfo;
 use codex_tools::ToolSpec;
 use futures::Stream;
 use serde_json::Value;
+use std::env;
+use std::fs::OpenOptions;
+use std::io::Write as _;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Context;
@@ -63,6 +67,57 @@ impl Prompt {
         let mut input = self.input.clone();
         normalize_image_details(&mut input, model_info);
         input
+    }
+}
+
+pub(crate) fn record_browser_output_stage<'a>(
+    stage: &str,
+    items: impl IntoIterator<Item = &'a ResponseItem>,
+) {
+    if env::var("CODEX_TEST_BROWSER_OUTPUT_DIAGNOSTIC")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
+        return;
+    }
+    let (Ok(expected_call_id), Some(codex_home)) = (
+        env::var("CODEX_TEST_BROWSER_OUTPUT_DIAGNOSTIC_CALL_ID"),
+        env::var_os("CODEX_HOME"),
+    ) else {
+        return;
+    };
+
+    let mut function_call_count = 0usize;
+    let mut function_call_output_count = 0usize;
+    for item in items {
+        match item {
+            ResponseItem::FunctionCall { call_id, .. } if call_id == &expected_call_id => {
+                function_call_count += 1;
+            }
+            ResponseItem::FunctionCallOutput {
+                call_id: Some(call_id),
+                ..
+            } if call_id == &expected_call_id => {
+                function_call_output_count += 1;
+            }
+            _ => {}
+        }
+    }
+
+    let path = PathBuf::from(codex_home).join("browser-output-stage-diagnostic.jsonl");
+    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
+        return;
+    };
+    let observation = serde_json::json!({
+        "stage": stage,
+        "call_id_matches_fixture": function_call_count > 0 || function_call_output_count > 0,
+        "function_call_count": function_call_count,
+        "function_call_output_count": function_call_output_count,
+    });
+    if let Ok(mut line) = serde_json::to_vec(&observation) {
+        line.push(b'\n');
+        let _ = file.write_all(&line);
     }
 }
 
