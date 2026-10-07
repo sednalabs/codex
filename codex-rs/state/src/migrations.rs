@@ -149,14 +149,14 @@ pub(crate) async fn runtime_usage_migrator_for_history(
 
     if t10_v5_or_later_seen {
         anyhow::ensure!(
-            has_exact_t10_usage_migration(&applied, 1),
+            has_exact_t10_usage_migration(&applied, /*version*/ 1),
             "usage migration history has a T10 v5-or-later variant without its exact v1 row"
         );
     }
     if t10_v15_or_later_seen {
         anyhow::ensure!(
-            has_exact_t10_usage_migration(&applied, 5)
-                && has_exact_t10_usage_migration(&applied, 15),
+            has_exact_t10_usage_migration(&applied, /*version*/ 5)
+                && has_exact_t10_usage_migration(&applied, /*version*/ 15),
             "usage migration history has a T10 v15-or-later variant without its exact v5/v15 rows"
         );
     }

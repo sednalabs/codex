@@ -275,9 +275,9 @@ impl SqliteConfig {
         let migrate_result = async {
             if matches!(spec.kind, DbKind::Usage) {
                 let usage_migrator = runtime_usage_migrator_for_history(&pool, migrator).await?;
-                validate_usage_reporting_indexes(&pool, /* require_all */ false).await?;
+                validate_usage_reporting_indexes(&pool, /*require_all*/ false).await?;
                 usage_migrator.run(&pool).await?;
-                validate_usage_reporting_indexes(&pool, /* require_all */ true).await?;
+                validate_usage_reporting_indexes(&pool, /*require_all*/ true).await?;
             } else {
                 migrator.run(&pool).await?;
             }
