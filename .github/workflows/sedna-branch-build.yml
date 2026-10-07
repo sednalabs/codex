@@ -395,6 +395,12 @@ jobs:
             exit 1
           fi
           git -C product cat-file -e "${BASE_SHA}^{commit}"
+      - name: Install libcap build dependency
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libcap-dev
       - name: Build canonical package and same-source proxy sidecar
         working-directory: product
         shell: bash
@@ -565,6 +571,12 @@ jobs:
             exit 1
           fi
           git -C product cat-file -e "${BASE_SHA}^{commit}"
+      - name: Install libcap build dependency
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libcap-dev
       - name: Build canonical package and same-source proxy sidecar
         working-directory: product
         shell: bash
