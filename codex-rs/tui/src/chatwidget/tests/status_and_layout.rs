@@ -1168,6 +1168,11 @@ async fn status_line_weekly_limit_discards_changed_or_expired_cycle() {
             resets_at: Some(expired),
         },
     ))));
+    assert_eq!(
+        chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::WeeklyLimit),
+        Some("weekly 80% left".to_string()),
+        "an expired reset must not produce a pacing claim"
+    );
     chat.on_rate_limit_snapshot(Some(account_usage_snapshot_with_weekly_window(Some(
         RateLimitWindow {
             used_percent: 30,
