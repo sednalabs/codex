@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fmt;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
@@ -67,6 +68,11 @@ impl DeviceAuthorizationPrompt {
     }
 }
 
+/// Performs OAuth device authorization using endpoints from one accepted
+/// authorization-server metadata discovery result. The caller must pass the
+/// issuer and endpoints from the same discovery result. Device and token
+/// endpoints may be cross-origin when declared by that metadata; URL safety
+/// checks and the no-redirect policy still apply.
 #[allow(clippy::too_many_arguments)]
 pub async fn perform_oauth_device_login(
     server_name: &str,
@@ -84,15 +90,9 @@ pub async fn perform_oauth_device_login(
     token_endpoint: &str,
     registration_endpoint: Option<&str>,
     supports_refresh_token: bool,
-    supports_issuer_parameter: bool,
     prompt: impl FnOnce(DeviceAuthorizationPrompt),
 ) -> Result<()> {
-    validate_device_endpoints(
-        issuer,
-        device_authorization_endpoint,
-        token_endpoint,
-        supports_issuer_parameter,
-    )?;
+    validate_device_endpoints(issuer, device_authorization_endpoint, token_endpoint)?;
     let has_configured_headers = http_headers
         .as_ref()
         .is_some_and(|headers| !headers.is_empty())
@@ -159,7 +159,6 @@ fn validate_device_endpoints(
     issuer: &str,
     device_endpoint: &str,
     token_endpoint: &str,
-    supports_issuer_parameter: bool,
 ) -> Result<()> {
     let issuer = issuer.trim();
     if issuer.is_empty() {
@@ -175,11 +174,6 @@ fn validate_device_endpoints(
         let endpoint_url = Url::parse(endpoint)
             .with_context(|| format!("OAuth {name} endpoint must be a valid URL"))?;
         validate_secure_url(&endpoint_url, &format!("{name} endpoint"))?;
-        if !supports_issuer_parameter && endpoint_url.origin() != issuer_url.origin() {
-            bail!(
-                "OAuth {name} endpoint origin does not match the advertised authorization server issuer"
-            );
-        }
     }
     Ok(())
 }
@@ -320,6 +314,21 @@ async fn poll_device_token(
     resource: Option<&str>,
     details: &DeviceAuthorizationResponse,
 ) -> Result<OAuthTokenResponse> {
+    poll_device_token_with_sleep(http_client, endpoint, client_id, resource, details, sleep).await
+}
+
+async fn poll_device_token_with_sleep<F, Fut>(
+    http_client: &OAuthHttpClientAdapter,
+    endpoint: &str,
+    client_id: &str,
+    resource: Option<&str>,
+    details: &DeviceAuthorizationResponse,
+    mut sleep: F,
+) -> Result<OAuthTokenResponse>
+where
+    F: FnMut(Duration) -> Fut,
+    Fut: Future<Output = ()>,
+{
     let expires_in = details.expires_in.unwrap_or(DEFAULT_DEVICE_EXPIRES_IN_SECS);
     if expires_in == 0 {
         bail!("OAuth device authorization response expired immediately");
@@ -333,7 +342,7 @@ async fn poll_device_token(
             .unwrap_or(DEFAULT_DEVICE_POLL_INTERVAL_SECS),
         grant_lifetime,
     );
-    sleep_until_next_poll(interval, deadline).await?;
+    sleep_until_next_poll(interval, deadline, &mut sleep).await?;
     loop {
         if Instant::now() >= deadline {
             bail!("OAuth device code expired before authorization completed");
@@ -363,11 +372,13 @@ async fn poll_device_token(
         }
         let error = parse_provider_error(response.status(), response.body(), "device token")?;
         match error.error.as_str() {
-            "authorization_pending" => sleep_until_next_poll(interval, deadline).await?,
+            "authorization_pending" => {
+                sleep_until_next_poll(interval, deadline, &mut sleep).await?
+            }
             "slow_down" => {
                 let remaining = deadline.saturating_duration_since(Instant::now());
                 interval = interval_after_slow_down(interval, remaining);
-                sleep_until_next_poll(interval, deadline).await?;
+                sleep_until_next_poll(interval, deadline, &mut sleep).await?;
             }
             "expired_token" => bail!("OAuth device code expired before authorization completed"),
             "access_denied" => bail!("OAuth device authorization was denied"),
@@ -419,7 +430,15 @@ fn encode_form(fields: &[(impl AsRef<str>, String)]) -> Vec<u8> {
     serializer.finish().into_bytes()
 }
 
-async fn sleep_until_next_poll(interval: Duration, deadline: Instant) -> Result<()> {
+async fn sleep_until_next_poll<F, Fut>(
+    interval: Duration,
+    deadline: Instant,
+    sleep: &mut F,
+) -> Result<()>
+where
+    F: FnMut(Duration) -> Fut,
+    Fut: Future<Output = ()>,
+{
     let now = Instant::now();
     if now >= deadline {
         bail!("OAuth device code expired before authorization completed");

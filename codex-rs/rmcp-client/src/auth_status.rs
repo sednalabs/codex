@@ -743,6 +743,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn discovery_preserves_cross_origin_device_endpoints_without_callback_issuer_support() {
+        let server = spawn_oauth_discovery_server(serde_json::json!({
+            "authorization_endpoint": "https://example.com/authorize",
+            "token_endpoint": "https://tokens.example.test/token",
+            "device_authorization_endpoint": "https://devices.example.test/device",
+            "grant_types_supported": ["urn:ietf:params:oauth:grant-type:device_code"],
+            "authorization_response_iss_parameter_supported": false,
+        }))
+        .await;
+
+        let discovery = discover_streamable_http_oauth(
+            &server.url,
+            /*http_headers*/ None,
+            /*env_http_headers*/ None,
+            test_http_client().await,
+            OAuthDiscoveryTimeout::LOCAL,
+            StreamableHttpRedirectMode::Legacy,
+        )
+        .await
+        .expect("discovery should succeed")
+        .expect("OAuth support should be detected");
+
+        assert_eq!(
+            discovery.callback_mode,
+            McpOAuthCallbackMode::CallbackSpecific
+        );
+        assert_eq!(discovery.issuer.as_deref(), Some(server.url.as_str()));
+        assert_eq!(
+            discovery.device_authorization_endpoint.as_deref(),
+            Some("https://devices.example.test/device")
+        );
+        assert_eq!(
+            discovery.token_endpoint,
+            "https://tokens.example.test/token"
+        );
+    }
+
+    #[tokio::test]
     async fn malformed_device_metadata_is_not_advertised_as_usable() {
         let server = spawn_oauth_discovery_server(serde_json::json!({
             "authorization_endpoint": "https://example.com/authorize",

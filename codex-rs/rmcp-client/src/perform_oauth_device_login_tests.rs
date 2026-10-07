@@ -19,7 +19,7 @@ use tokio::net::TcpListener;
 #[derive(Clone)]
 struct PollState {
     polls: Arc<AtomicUsize>,
-    terminal_error: Option<&'static str>,
+    poll_errors: Option<Vec<&'static str>>,
 }
 
 async fn spawn_server(state: PollState) -> String {
@@ -48,14 +48,15 @@ async fn spawn_server(state: PollState) -> String {
             Some("synthetic-device-code")
         );
         let poll = state.polls.fetch_add(1, Ordering::SeqCst);
-        if let Some(error) = state.terminal_error {
+        let error = state
+            .poll_errors
+            .as_ref()
+            .and_then(|errors| errors.get(poll).copied())
+            .or_else(|| {
+                (state.poll_errors.is_none() && poll == 0).then_some("authorization_pending")
+            });
+        if let Some(error) = error {
             return (AxumStatusCode::BAD_REQUEST, Json(json!({"error": error})));
-        }
-        if poll == 0 {
-            return (
-                AxumStatusCode::BAD_REQUEST,
-                Json(json!({"error": "authorization_pending"})),
-            );
         }
         (
             AxumStatusCode::OK,
@@ -97,22 +98,12 @@ fn http_client() -> Arc<dyn HttpClient> {
 fn prompt(_: DeviceAuthorizationPrompt) {}
 
 #[test]
-fn device_login_requires_a_nonempty_issuer_and_matching_endpoint_origins() {
+fn device_login_requires_a_nonempty_issuer_and_secure_endpoints() {
     assert!(
         validate_device_endpoints(
             "",
             "https://issuer.example/device",
-            "https://issuer.example/token",
-            false
-        )
-        .is_err()
-    );
-    assert!(
-        validate_device_endpoints(
-            "https://issuer.example",
-            "https://other.example/device",
-            "https://issuer.example/token",
-            false
+            "https://issuer.example/token"
         )
         .is_err()
     );
@@ -120,8 +111,7 @@ fn device_login_requires_a_nonempty_issuer_and_matching_endpoint_origins() {
         validate_device_endpoints(
             "https://issuer.example",
             "http://issuer.example/device",
-            "https://issuer.example/token",
-            false
+            "https://issuer.example/token"
         )
         .is_err()
     );
@@ -129,8 +119,7 @@ fn device_login_requires_a_nonempty_issuer_and_matching_endpoint_origins() {
         validate_device_endpoints(
             "ftp://localhost/issuer",
             "http://localhost/device",
-            "http://localhost/token",
-            true,
+            "http://localhost/token"
         )
         .is_err()
     );
@@ -138,18 +127,16 @@ fn device_login_requires_a_nonempty_issuer_and_matching_endpoint_origins() {
         validate_device_endpoints(
             "https://user:secret@issuer.example",
             "https://issuer.example/device",
-            "https://issuer.example/token",
-            false,
+            "https://issuer.example/token"
         )
         .is_err()
     );
     validate_device_endpoints(
         "https://issuer.example",
-        "https://issuer.example/device",
-        "https://issuer.example/token",
-        false,
+        "https://device.example/device",
+        "https://tokens.example/token",
     )
-    .expect("matching secure endpoints");
+    .expect("issuer metadata may declare secure cross-origin endpoints");
 }
 
 #[test]
@@ -169,7 +156,7 @@ async fn device_login_polls_pending_then_saves_issuer_bound_tokens() -> Result<(
     let _home = crate::oauth::test_support::TempCodexHome::new();
     let server = spawn_server(PollState {
         polls: Arc::new(AtomicUsize::new(0)),
-        terminal_error: None,
+        poll_errors: None,
     })
     .await;
     perform_oauth_device_login(
@@ -187,7 +174,6 @@ async fn device_login_polls_pending_then_saves_issuer_bound_tokens() -> Result<(
         &format!("{server}/device"),
         &format!("{server}/token"),
         Some(&format!("{server}/register")),
-        false,
         false,
         prompt,
     )
@@ -209,11 +195,63 @@ async fn device_login_polls_pending_then_saves_issuer_bound_tokens() -> Result<(
 }
 
 #[tokio::test]
+async fn device_login_increases_poll_interval_after_slow_down() -> Result<()> {
+    let polls = Arc::new(AtomicUsize::new(0));
+    let server = spawn_server(PollState {
+        polls: polls.clone(),
+        poll_errors: Some(vec!["authorization_pending", "slow_down"]),
+    })
+    .await;
+    let adapter = OAuthHttpClientAdapter::new_with_max_timeout_and_redirect_mode(
+        http_client(),
+        build_default_headers(None, None).expect("empty headers"),
+        "https://resource.example.test/mcp",
+        DEVICE_HTTP_REQUEST_TIMEOUT,
+        false,
+        StreamableHttpRedirectMode::Legacy,
+    )
+    .expect("synthetic OAuth client");
+    let details = DeviceAuthorizationResponse {
+        device_code: "synthetic-device-code".to_string(),
+        user_code: "SYNTHETIC-CODE".to_string(),
+        verification_uri: "https://login.example.test/device".to_string(),
+        verification_uri_complete: None,
+        expires_in: Some(60),
+        interval: Some(1),
+    };
+    let mut requested_sleeps = Vec::new();
+    let token = poll_device_token_with_sleep(
+        &adapter,
+        &format!("{server}/token"),
+        "synthetic-client",
+        None,
+        &details,
+        |duration| {
+            requested_sleeps.push(duration);
+            std::future::ready(())
+        },
+    )
+    .await?;
+
+    assert_eq!(polls.load(Ordering::SeqCst), 3);
+    assert_eq!(
+        requested_sleeps,
+        [
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            Duration::from_secs(6),
+        ]
+    );
+    assert_eq!(token.access_token().secret(), "synthetic-access-token");
+    Ok(())
+}
+
+#[tokio::test]
 async fn device_login_fails_closed_on_denial_and_expiry() {
     for (provider_error, expected) in [("access_denied", "denied"), ("expired_token", "expired")] {
         let server = spawn_server(PollState {
             polls: Arc::new(AtomicUsize::new(0)),
-            terminal_error: Some(provider_error),
+            poll_errors: Some(vec![provider_error]),
         })
         .await;
         let adapter = OAuthHttpClientAdapter::new_with_max_timeout_and_redirect_mode(
@@ -254,7 +292,7 @@ async fn device_login_does_not_poll_before_an_extreme_provider_interval() {
     let polls = Arc::new(AtomicUsize::new(0));
     let server = spawn_server(PollState {
         polls: polls.clone(),
-        terminal_error: None,
+        poll_errors: None,
     })
     .await;
     let adapter = OAuthHttpClientAdapter::new_with_max_timeout_and_redirect_mode(
@@ -292,7 +330,7 @@ async fn unknown_provider_error_is_not_echoed_to_terminal() {
     let provider_error = "\u{1b}[2JPWNED";
     let server = spawn_server(PollState {
         polls: Arc::new(AtomicUsize::new(0)),
-        terminal_error: Some(provider_error),
+        poll_errors: Some(vec![provider_error]),
     })
     .await;
     let adapter = OAuthHttpClientAdapter::new_with_max_timeout_and_redirect_mode(

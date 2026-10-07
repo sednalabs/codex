@@ -667,6 +667,8 @@ async fn run_login(config: &Config, login_args: LoginArgs) -> Result<()> {
             .grant_types_supported
             .as_ref()
             .is_some_and(|grant_types| grant_types.iter().any(|grant| grant == "refresh_token"));
+        // Keep issuer and device/token endpoints bound to this one accepted
+        // metadata result; RFC 9207 callback support is unrelated to device flow.
         perform_oauth_device_login(
             credential_name.as_ref(),
             &url,
@@ -683,7 +685,6 @@ async fn run_login(config: &Config, login_args: LoginArgs) -> Result<()> {
             &oauth_config.token_endpoint,
             oauth_config.registration_endpoint.as_deref(),
             supports_refresh_token,
-            oauth_config.callback_mode == McpOAuthCallbackMode::IssuerBound,
             print_device_authorization_prompt,
         )
         .await?;
