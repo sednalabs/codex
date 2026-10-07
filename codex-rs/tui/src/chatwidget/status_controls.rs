@@ -4,7 +4,9 @@
 //! widget entrypoints that apply status state, open setup views, and update the
 //! history-facing `/status` surface.
 
+use super::rate_limits::get_limits_duration;
 use super::*;
+use chrono::Duration as ChronoDuration;
 
 impl ChatWidget {
     /// Update the status indicator header and details.
@@ -449,6 +451,69 @@ impl ChatWidget {
         let window = window?;
         let remaining = (100.0f64 - window.used_percent).clamp(0.0f64, 100.0f64);
         Some(format!("{label} {remaining:.0}% left"))
+    }
+
+    pub(super) fn status_line_weekly_limit_display_at(
+        &self,
+        window: Option<&RateLimitWindowDisplay>,
+        label: &str,
+        now: chrono::DateTime<Local>,
+    ) -> Option<String> {
+        let base = self.status_line_limit_display(window, label)?;
+        let Some(window) = window else {
+            return Some(base);
+        };
+        if window
+            .window_minutes
+            .and_then(get_limits_duration)
+            .as_deref()
+            != Some("weekly")
+        {
+            return Some(base);
+        }
+
+        if now.signed_duration_since(window.captured_at) > ChronoDuration::minutes(15) {
+            return Some(format!("{base} (stale)"));
+        }
+
+        let Some(reset_epoch) = window.resets_at_unix_seconds else {
+            return Some(base);
+        };
+        if chrono::DateTime::<chrono::Utc>::from_timestamp(reset_epoch, 0).is_none() {
+            return Some(base);
+        }
+        let Some(window_seconds) = window
+            .window_minutes
+            .and_then(|minutes| minutes.checked_mul(60))
+        else {
+            return Some(base);
+        };
+        if window_seconds <= 0 {
+            return Some(base);
+        }
+        let Some(seconds_remaining) = reset_epoch.checked_sub(window.captured_at.timestamp())
+        else {
+            return Some(base);
+        };
+        if seconds_remaining <= 0 || reset_epoch <= now.timestamp() {
+            return Some(base);
+        }
+        let usage_remaining = (100.0 - window.used_percent).clamp(0.0, 100.0);
+        let time_remaining =
+            ((seconds_remaining as f64 / window_seconds as f64) * 100.0).clamp(0.0, 100.0);
+        if !usage_remaining.is_finite() || !time_remaining.is_finite() {
+            return Some(base);
+        }
+
+        let delta = usage_remaining - time_remaining;
+        let detail = if delta.abs() <= 3.0 {
+            "on pace".to_string()
+        } else if delta < 0.0 {
+            format!("over {}%", delta.abs().ceil() as i64)
+        } else {
+            format!("under {}%", delta.abs().ceil() as i64)
+        };
+        Some(format!("{base} ({detail})"))
     }
 
     pub(super) fn status_line_reasoning_effort_label(

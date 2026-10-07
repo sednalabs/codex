@@ -771,7 +771,7 @@ impl ChatWidget {
                     .get("codex")
                     .and_then(weekly_status_window)?;
                 let label = limit_label_for_window(window.window_minutes, is_secondary);
-                self.status_line_limit_display(Some(window), &label)
+                self.status_line_weekly_limit_display_at(Some(window), &label, chrono::Local::now())
             }
             StatusLineItem::CodexVersion => Some(CODEX_CLI_VERSION.to_string()),
             StatusLineItem::ContextWindowSize => self
