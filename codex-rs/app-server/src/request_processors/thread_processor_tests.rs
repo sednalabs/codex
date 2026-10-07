@@ -1600,7 +1600,6 @@ mod thread_list_failure_regression_tests {
 
     fn thread_list_params(cursor: Option<String>) -> ThreadListParams {
         ThreadListParams {
-            excluded_thread_ids: None,
             originators: None,
             cursor,
             limit: Some(1),
