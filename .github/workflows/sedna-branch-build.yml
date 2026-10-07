@@ -89,6 +89,8 @@ jobs:
           checkout_ref="$(git rev-parse HEAD)"
           short_sha="$(git rev-parse --short=8 HEAD)"
           base_version=""
+          git fetch --quiet --no-tags https://github.com/openai/codex.git \
+            '+refs/tags/rust-v*:refs/tags/rust-v*'
           while IFS= read -r candidate_tag; do
             if [[ "${candidate_tag}" =~ ^rust-v([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)$ ]]; then
               base_version="${BASH_REMATCH[1]}"
