@@ -861,7 +861,7 @@ jobs:
           printf 'PRODUCER_EVIDENCE=%s/first-binary-producer-evidence.json\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
           printf 'CONSUMER_RESULT=%s/first-binary-consumer-result.json\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
           printf 'STATE_WITNESS_DIR=%s/state-history-witnesses\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
-          if [[ ("$MODE" == "consume-existing" && "$CONSUMER_PROFILE" == "focused") || ("$MODE" == "build" && "$CONSUMER_PROFILE" == "browser-diagnostic") ]]; then
+          if [[ ("$MODE" == "consume-existing" && "$CONSUMER_PROFILE" == "focused") || ("$MODE" == "consume-existing" && "$CONSUMER_PROFILE" == "full") || ("$MODE" == "build" && "$CONSUMER_PROFILE" == "browser-diagnostic") ]]; then
             mkdir -m 700 -- "$RUNNER_TEMP/state-history-witnesses"
           fi
           if [[ "$MODE" == "consume-existing" || ("$MODE" == "build" && "$CONSUMER_PROFILE" == "browser-diagnostic") ]]; then
@@ -1885,7 +1885,7 @@ jobs:
           printf 'PRODUCER_EVIDENCE=%s/first-binary-producer-evidence.json\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
           printf 'CONSUMER_RESULT=%s/first-binary-consumer-result.json\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
           printf 'STATE_WITNESS_DIR=%s/state-history-witnesses\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
-          if [[ ("$MODE" == "consume-existing" && "$CONSUMER_PROFILE" == "focused") || ("$MODE" == "build" && "$CONSUMER_PROFILE" == "browser-diagnostic") ]]; then
+          if [[ ("$MODE" == "consume-existing" && "$CONSUMER_PROFILE" == "focused") || ("$MODE" == "consume-existing" && "$CONSUMER_PROFILE" == "full") || ("$MODE" == "build" && "$CONSUMER_PROFILE" == "browser-diagnostic") ]]; then
             mkdir -m 700 -- "$RUNNER_TEMP/state-history-witnesses"
           fi
           if [[ "$MODE" == "consume-existing" || ("$MODE" == "build" && "$CONSUMER_PROFILE" == "browser-diagnostic") ]]; then

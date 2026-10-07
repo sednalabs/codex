@@ -2369,6 +2369,13 @@ class AcceptedInputManifestTests(unittest.TestCase):
         self.assertEqual(2, workflow.count("Temporarily enable Linux user namespaces for existing-package consumers"))
         self.assertEqual(2, workflow.count("Restore original Linux user-namespace settings"))
         self.assertEqual(2, workflow.count("Check accepted package fixture modules for undefined names"))
+        witness_dir_init = (
+            'if [[ ("$MODE" == "consume-existing" && "$CONSUMER_PROFILE" == "focused") || '
+            '("$MODE" == "consume-existing" && "$CONSUMER_PROFILE" == "full") || '
+            '("$MODE" == "build" && "$CONSUMER_PROFILE" == "browser-diagnostic") ]]; then\n'
+            '            mkdir -m 700 -- "$RUNNER_TEMP/state-history-witnesses"'
+        )
+        self.assertEqual(2, workflow.count(witness_dir_init))
         consumer_jobs = (
             (
                 "consume-linux-x86_64",
