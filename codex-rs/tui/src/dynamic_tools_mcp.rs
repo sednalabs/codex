@@ -81,6 +81,7 @@ impl ThreadToolTransport {
         codex_home: &Path,
     ) -> Result<(), String> {
         crate::browser_dynamic_tools::validate_no_reserved_name_conflict(params)?;
+        crate::android_computer_use_provider::validate_no_reserved_name_conflict(params)?;
         let mut specs = match self {
             Self::Disabled => Vec::new(),
             Self::Dynamic => dynamic_tools::non_delegation_tool_specs(),
@@ -90,6 +91,9 @@ impl ThreadToolTransport {
             }
         };
         specs.extend(crate::browser_dynamic_tools::specs_for_codex_home(
+            codex_home,
+        ));
+        specs.extend(crate::android_computer_use_provider::specs_for_codex_home(
             codex_home,
         ));
         params.dynamic_tools = (!specs.is_empty()).then_some(specs);
@@ -423,18 +427,23 @@ impl ServerHandler for DynamicToolMcpHandler {
 }
 
 #[cfg(test)]
-mod browser_tests {
+mod native_computer_use_registration_tests {
     use super::*;
     use codex_app_server_protocol::DynamicToolSpec;
     use serde_json::json;
 
-    fn configured_browser_home() -> tempfile::TempDir {
-        let home = tempfile::tempdir().expect("temporary browser home");
+    fn configured_native_computer_use_home() -> tempfile::TempDir {
+        let home = tempfile::tempdir().expect("temporary computer-use home");
         std::fs::write(
             home.path().join("browser-computer-use.json"),
             r#"{"provider":"playwright"}"#,
         )
         .expect("write browser config");
+        std::fs::write(
+            home.path().join("android-computer-use.json"),
+            r#"{"mcp_url":"http://127.0.0.1:1/mcp"}"#,
+        )
+        .expect("write Android config");
         home
     }
 
@@ -446,27 +455,64 @@ mod browser_tests {
         })
     }
 
+    fn namespace_tool_names(params: &ThreadStartParams, name: &str) -> Vec<String> {
+        params
+            .dynamic_tools
+            .as_ref()
+            .into_iter()
+            .flatten()
+            .filter_map(|spec| match spec {
+                DynamicToolSpec::Namespace(namespace) if namespace.name == name => {
+                    Some(namespace)
+                }
+                _ => None,
+            })
+            .flat_map(|namespace| namespace.tools.iter())
+            .filter_map(|tool| match tool {
+                codex_app_server_protocol::DynamicToolNamespaceTool::Function(function) => {
+                    Some(function.name.clone())
+                }
+            })
+            .collect()
+    }
+
     #[tokio::test]
-    async fn browser_specs_are_registered_for_each_thread_tool_transport() {
-        let home = configured_browser_home();
+    async fn configured_native_provider_specs_are_registered_for_each_transport() {
+        let home = configured_native_computer_use_home();
 
         let mut disabled = ThreadStartParams::default();
         ThreadToolTransport::Disabled
             .configure(&mut disabled, home.path())
-            .expect("disabled task transport must retain native Browser");
+            .expect("disabled task transport must retain native providers");
         assert!(has_browser_namespace(&disabled));
+        assert_eq!(
+            namespace_tool_names(&disabled, crate::android_computer_use_provider::NAMESPACE),
+            vec![
+                "android_observe".to_string(),
+                "android_step".to_string(),
+                "android_install_build_from_run".to_string()
+            ]
+        );
         assert!(!has_task_tools(&disabled));
 
         let mut dynamic = ThreadStartParams::default();
         ThreadToolTransport::Dynamic
             .configure(&mut dynamic, home.path())
-            .expect("dynamic task transport must include native Browser");
+            .expect("dynamic task transport must include native providers");
         assert!(dynamic.dynamic_tools.as_ref().is_some_and(|specs| {
             specs.iter().any(
                 |spec| matches!(spec, DynamicToolSpec::Namespace(namespace) if namespace.name == dynamic_tools::NAMESPACE),
             )
         }));
         assert!(has_browser_namespace(&dynamic));
+        assert_eq!(
+            namespace_tool_names(&dynamic, crate::android_computer_use_provider::NAMESPACE),
+            vec![
+                "android_observe".to_string(),
+                "android_step".to_string(),
+                "android_install_build_from_run".to_string()
+            ]
+        );
         assert!(has_task_tools(&dynamic));
 
         let server = DynamicToolMcpServer {
@@ -478,8 +524,16 @@ mod browser_tests {
         let mut mcp = ThreadStartParams::default();
         ThreadToolTransport::Mcp(Arc::new(server))
             .configure(&mut mcp, home.path())
-            .expect("MCP task transport must include native Browser");
+            .expect("MCP task transport must include native providers");
         assert!(has_browser_namespace(&mcp));
+        assert_eq!(
+            namespace_tool_names(&mcp, crate::android_computer_use_provider::NAMESPACE),
+            vec![
+                "android_observe".to_string(),
+                "android_step".to_string(),
+                "android_install_build_from_run".to_string()
+            ]
+        );
         assert!(has_task_tools(&mcp));
         assert!(
             mcp.config

@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "divergences": [
+    {
+      "id": "codex-native-computer-use-adapters",
+      "title": "Namespaced native Android computer-use adapter",
+      "status": "live",
+      "category": "core-protocol",
+      "surface_type": "agent-facing",
+      "surface": [
+        "configured Android DynamicTool namespace",
+        "exact namespace/tool app-server request routing",
+        "native InputImage completion in the active turn"
+      ],
+      "files": [
+        "codex-rs/Cargo.toml",
+        "codex-rs/android-computer-use/Cargo.toml",
+        "codex-rs/android-computer-use/BUILD.bazel",
+        "codex-rs/android-computer-use/src/lib.rs",
+        "codex-rs/tui/Cargo.toml",
+        "codex-rs/tui/src/lib.rs",
+        "codex-rs/tui/src/android_computer_use_provider.rs",
+        "codex-rs/tui/src/dynamic_tools_mcp.rs",
+        "codex-rs/tui/src/app/app_server_events.rs",
+        "codex-rs/tui/src/app/tests/session_lifecycle_requests.rs",
+        "docs/native-computer-use.md",
+        "docs/downstream-tool-surface-matrix.md",
+        "docs/downstream-regression-matrix.md",
+        "docs/divergences/index.yaml",
+        "docs/carry-divergence-ledger.md"
+      ],
+      "behavior": "The configured Android MCP provider is advertised in the isolated codex_android DynamicTool namespace. Its exact route preserves request correlation and typed native images for the active turn; duplicate IDs and abandoned threads fail closed before provider start. Ordered action batches stop on first failure and uncertain actions are never replayed automatically.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex-android-computer-use/lib; codex-tui/lib; standard GitHub-hosted Rust validation",
+      "tests": [
+        "Android configured tools and ordered action provider tests",
+        "Android abandoned-thread routing fixture",
+        "Android native-image and post-failure observation fixtures"
+      ],
+      "owner": "downstream",
+      "notes": "Runtime provider authority remains external. No real device, service, executable, credential, profile, install, or release action is implied. Hosted named-test catalog, packaging, and lock-route inputs are maintained separately from this product-source carry. Cargo.lock and MODULE.bazel.lock must be generated and verified from the complete exact hosted candidate, not guessed or locally generated.",
+      "upstreamability_tier": "neutral-seam",
+      "boundary_type": "android-computer-use-provider-adapter",
+      "hotspot_files": [
+        "codex-rs/tui/src/dynamic_tools_mcp.rs",
+        "codex-rs/tui/src/app/app_server_events.rs"
+      ],
+      "extraction_target": "upstream native dynamic-tool provider adapters"
+    }
+  ]
+}

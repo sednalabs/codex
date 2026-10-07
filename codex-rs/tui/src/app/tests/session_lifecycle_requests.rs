@@ -2258,6 +2258,60 @@ async fn check_dynamic_tool_requests(rollout_enabled: bool) -> Result<()> {
 }
 
 #[tokio::test]
+async fn android_dynamic_tool_requests_from_abandoned_threads_do_not_start_provider() -> Result<()> {
+    let (mut app, mut events, _ops) = make_test_app_with_channels().await;
+    let codex_home = tempdir()?;
+    app.config.codex_home = codex_home.path().to_path_buf().abs();
+    app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
+    let abandoned_thread_id = ThreadId::new();
+    app.abandoned_side_threads.insert(abandoned_thread_id);
+    std::fs::write(
+        codex_home.path().join("android-computer-use.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "mcp_url": "http://127.0.0.1:1/mcp"
+        }))?,
+    )?;
+    let (app_server, _requests, proxy) = start_recording_remote_app_server(&app.config).await?;
+
+    app.handle_app_server_event(
+        &app_server,
+        AppServerEvent::ServerRequest(Box::new(ServerRequest::DynamicToolCall {
+            request_id: AppServerRequestId::Integer(703),
+            params: codex_app_server_protocol::DynamicToolCallParams {
+                thread_id: abandoned_thread_id.to_string(),
+                turn_id: "discarded-android-fixture-turn".to_string(),
+                call_id: "late-android-fixture-call".to_string(),
+                namespace: Some("codex_android".to_string()),
+                tool: "android_observe".to_string(),
+                arguments: serde_json::json!({}),
+            },
+        })),
+    )
+    .await;
+
+    let AppEvent::DynamicToolCallCompleted {
+        request_id,
+        response,
+    } = tokio::time::timeout(std::time::Duration::from_secs(/*secs*/ 5), events.recv())
+        .await?
+        .expect("abandoned Android request rejection")
+    else {
+        panic!("expected Android dynamic-tool completion")
+    };
+    assert_eq!(request_id, AppServerRequestId::Integer(703));
+    assert!(!response.success);
+    assert!(matches!(
+        response.content_items.first(),
+        Some(codex_app_server_protocol::DynamicToolCallOutputContentItem::InputText { text })
+            if text == "TUI dynamic tools require an active external task"
+    ));
+
+    app_server.shutdown().await?;
+    proxy.await??;
+    Ok(())
+}
+
+#[tokio::test]
 async fn older_pagination_reconciles_review_prompts_across_page_boundaries() -> Result<()> {
     let (mut app, codex_home) = make_history_test_app().await?;
     // The inline scrollback row cap fixes the page boundary around the review marker.
