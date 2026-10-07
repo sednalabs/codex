@@ -1,7 +1,7 @@
 name: sedna-branch-build
 run-name: >-
   sedna-branch-build
-  [target=${{ inputs.ref || github.ref_name }} platform=${{ inputs.platform }} host_only=${{ inputs.host_only }}]
+  [platform=${{ inputs.platform }} host_only=${{ inputs.host_only }}]
 
 on:
   workflow_dispatch:
@@ -55,7 +55,6 @@ jobs:
         shell: bash
         env:
           CHECKOUT_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.sha }}
-          DISPLAY_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref_name }}
           HOST_ONLY: ${{ inputs.host_only }}
           PLATFORM: ${{ inputs.platform }}
           WORKFLOW_SHA: ${{ github.sha }}
@@ -78,17 +77,15 @@ jobs:
           fi
           base_version="${BASH_REMATCH[1]}"
 
-          branch_name="${DISPLAY_REF}"
-          branch_slug="$(printf '%s' "${branch_name}" | tr '/:@ ' '-' | tr -cd '[:alnum:]._-' | cut -c1-48)"
           preview_version="${base_version}-dev.sedna.${GITHUB_RUN_NUMBER}+g${short_sha}"
 
           {
             echo "checkout_ref=${checkout_ref}"
-            echo "display_ref=${branch_name}"
+            echo "display_ref=source-${short_sha}"
             echo "preview_version=${preview_version}"
             echo "source_sha=$(git rev-parse HEAD)"
             echo "workflow_sha=${WORKFLOW_SHA}"
-            echo "artifact_name=sedna-branch-${branch_slug}-${short_sha}"
+            echo "artifact_name=sedna-branch-${short_sha}"
           } >> "$GITHUB_OUTPUT"
 
       - name: Check out trusted package consumer
@@ -237,8 +234,7 @@ jobs:
             "workflowCommit": subprocess.check_output(
                 ["git", "-C", "../.workflow-src", "rev-parse", "HEAD"], text=True
             ).strip(),
-            "ref": os.environ["DISPLAY_REF"],
-            "previewVersion": os.environ["CODEX_RELEASE_VERSION"],
+          "previewVersion": os.environ["CODEX_RELEASE_VERSION"],
             "target": "x86_64-unknown-linux-gnu",
             "binaries": binaries,
             "archiveSha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
@@ -324,8 +320,7 @@ jobs:
             "workflowCommit": subprocess.check_output(
                 ["git", "-C", "../.workflow-src", "rev-parse", "HEAD"], text=True
             ).strip(),
-            "ref": os.environ["DISPLAY_REF"],
-            "previewVersion": os.environ["CODEX_RELEASE_VERSION"],
+          "previewVersion": os.environ["CODEX_RELEASE_VERSION"],
             "target": "aarch64-unknown-linux-gnu",
             "binaries": binaries,
             "archiveSha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
@@ -380,7 +375,6 @@ jobs:
           EXPECTED_SOURCE_SHA: ${{ needs.metadata.outputs.source_sha }}
           EXPECTED_WORKFLOW_SHA: ${{ needs.metadata.outputs.workflow_sha }}
           EXPECTED_PREVIEW_VERSION: ${{ needs.metadata.outputs.preview_version }}
-          EXPECTED_REF: ${{ needs.metadata.outputs.display_ref }}
           EXPECTED_TARGET: ${{ matrix.target }}
           RESULT_PATH: ${{ runner.temp }}/sedna-package-consumer-result.json
         run: python3 .github/scripts/verify_sedna_branch_package.py

@@ -141,7 +141,6 @@ def verify_and_consume() -> dict[str, Any]:
     workflow_sha = required_env("EXPECTED_WORKFLOW_SHA")
     preview_version = required_env("EXPECTED_PREVIEW_VERSION")
     target = required_env("EXPECTED_TARGET")
-    display_ref = required_env("EXPECTED_REF")
     run_id = required_env("GITHUB_RUN_ID")
     repository = required_env("GITHUB_REPOSITORY")
     server_url = required_env("GITHUB_SERVER_URL").rstrip("/")
@@ -174,7 +173,6 @@ def verify_and_consume() -> dict[str, Any]:
         manifest.get("repository") != repository
         or manifest.get("commit") != source_sha
         or manifest.get("workflowCommit") != workflow_sha
-        or manifest.get("ref") != display_ref
         or manifest.get("target") != target
         or manifest.get("previewVersion") != preview_version
         or manifest.get("workflow") != expected_workflow
