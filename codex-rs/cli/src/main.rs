@@ -2789,13 +2789,13 @@ mod tests {
 
     #[test]
     fn cli_display_version_uses_package_manifest_branch_identity() {
-        let package_version = "0.143.0-alpha.10-dev.sedna.793+g3ebd9849";
+        let package_version = "0.143.0-alpha.10-dev.sedna.123+g01234567";
         assert_eq!(
             format_cli_display_version(
                 "0.0.0",
                 package_version,
                 &format!("v{package_version}"),
-                "3ebd9849fcb21aab092745fc4d9080476cb579f6",
+                "0123456789abcdef0123456789abcdef01234567",
             ),
             format!("0.0.0 (Sedna v{package_version})"),
         );
