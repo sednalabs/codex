@@ -182,14 +182,16 @@ fn android_install_build_from_run_input_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
-            "workflow_run_id": { "type": "integer", "minimum": 1, "description": "GitHub Actions workflow run to install." },
-            "repository": { "type": "string", "description": "Optional repository owning the workflow run, when required by the provider." },
-            "artifact_name": { "type": "string", "description": "Optional workflow artifact selector, when required by the provider." },
-            "serial": { "type": "string", "description": "Optional Android device serial; defaults to the configured device." }
+            "workflow_run_id": { "type": "integer", "minimum": 0, "description": "GitHub Actions workflow run to install." },
+            "artifact_name": { "type": "string", "description": "Required workflow artifact name to install." },
+            "repository": { "type": ["string", "null"], "default": null, "description": "Optional repository owning the workflow run; defaults to the configured repository." },
+            "launch_after_install": { "type": "boolean", "default": true, "description": "Whether to launch the installed app after installation." },
+            "serial": { "type": ["string", "null"], "default": null, "description": "Optional Android device serial; defaults to the configured device." },
+            "timeout_secs": { "type": ["integer", "null"], "minimum": 0, "default": null, "description": "Optional provider timeout in seconds." }
         },
-        "required": ["workflow_run_id"],
+        "required": ["workflow_run_id", "artifact_name"],
         "additionalProperties": true,
-        "description": "Provide the workflow_run_id and any provider-required repository or artifact selector. On success this installs into the active Android session and captures a fresh screenshot. If the result is uncertain, inspect with android_observe before retrying; do not replay the install automatically."
+        "description": "Provide the workflow_run_id and required artifact_name. repository, launch_after_install, serial, and timeout_secs are optional provider arguments. On success this installs into the active Android session and captures a fresh screenshot. If the result is uncertain, inspect with android_observe before retrying; do not replay the install automatically."
     })
 }
 
@@ -1989,11 +1991,30 @@ mod tests {
         );
         assert_eq!(schemas[1]["properties"]["x"]["type"], "integer");
         assert_eq!(
+            schemas[1]["properties"]["selector"]["anyOf"][0]["type"],
+            "string"
+        );
+        assert_eq!(
+            schemas[1]["properties"]["selector"]["anyOf"][1]["type"],
+            "object"
+        );
+        assert_eq!(
             schemas[2]["properties"]["workflow_run_id"]["type"],
             "integer"
         );
+        assert_eq!(schemas[2]["properties"]["workflow_run_id"]["minimum"], 0);
         assert_eq!(schemas[2]["required"][0], "workflow_run_id");
-        assert_eq!(schemas[2]["properties"]["serial"]["type"], "string");
+        assert_eq!(schemas[2]["required"][1], "artifact_name");
+        assert_eq!(schemas[2]["properties"]["artifact_name"]["type"], "string");
+        assert_eq!(
+            schemas[2]["properties"]["launch_after_install"]["type"],
+            "boolean"
+        );
+        assert_eq!(
+            schemas[2]["properties"]["timeout_secs"]["type"][0],
+            "integer"
+        );
+        assert_eq!(schemas[2]["properties"]["serial"]["type"][0], "string");
     }
 
     #[test]
