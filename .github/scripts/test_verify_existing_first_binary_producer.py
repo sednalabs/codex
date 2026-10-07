@@ -2451,8 +2451,8 @@ class AcceptedInputManifestTests(unittest.TestCase):
                 consumer_step = job[consumer_start:restore_start]
                 self.assertIn("ARTIFACT_BASE_SHA: ${{ steps.verified_artifact.outputs.artifact_base_sha }}", consumer_step)
                 self.assertIn('--base-sha "${ARTIFACT_BASE_SHA}"', consumer_step)
-                self.assertIn('pytest -q "${pytest_privacy_args[@]}"', consumer_step)
-                self.assertIn("pytest_privacy_args=(--tb=no --show-capture=no)", consumer_step)
+                self.assertIn('pytest -q \\', consumer_step)
+                self.assertIn('pytest_addopts="--tb=no --show-capture=no"', consumer_step)
 
         sdk_job = workflow.split("  sdk-parser:", 1)[1].split("\n  consume-linux-aarch64:", 1)[0]
         self.assertIn("runs-on: ubuntu-24.04", sdk_job)
