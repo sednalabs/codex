@@ -100,7 +100,7 @@ fn android_observe_input_schema() -> Value {
 }
 
 fn android_step_input_schema() -> Value {
-    let action_schema = json!({
+    let mut action_schema = json!({
         "type": "object",
         "properties": {
             "type": { "type": "string", "enum": ["launch_app", "tap", "click", "double_click", "long_press", "swipe", "drag", "multi_touch", "scroll", "type", "type_text", "keypress", "key", "wait", "semantic_action"] },
@@ -160,10 +160,11 @@ fn android_step_input_schema() -> Value {
         ],
         "additionalProperties": true
     });
+    let action_item_schema = action_schema.clone();
     action_schema["properties"]["actions"] = json!({
         "type": "array",
         "minItems": 1,
-        "items": action_schema.clone()
+        "items": action_item_schema
     });
     action_schema["anyOf"] = json!([
         { "required": ["actions"] },
