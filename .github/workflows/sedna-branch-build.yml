@@ -1510,7 +1510,7 @@ jobs:
           export TMPDIR="${RUNNER_TEMP}"
           rm -f -- "${STATUS_ONLY_JUNIT}"
           test_root="${FIXTURE_ROOT}/scripts/codex_package/smoke_tests/first_binary"
-          pytest_privacy_args=(--tb=auto --show-capture=all)
+          pytest_addopts="--tb=auto --show-capture=all"
           exact_status_run=false
           if [[ "${MODE}" == "consume-existing" \
             && "${CONSUMER_PROFILE}" == "full" \
@@ -1522,8 +1522,9 @@ jobs:
             && "${PRODUCER_RUN_ID}" == "37558769081" \
             && "${PRODUCER_WORKFLOW_HOST_SHA}" == "aa625ac365c7488c56c2061d64e24c241436b421" ]]; then
             exact_status_run=true
-            pytest_privacy_args=(--tb=no --show-capture=no)
+            pytest_addopts="--tb=no --show-capture=no"
           fi
+          export PYTEST_ADDOPTS="${pytest_addopts}"
           case "${CONSUMER_PROFILE}" in
             pair)
               test_args=(
@@ -1550,7 +1551,7 @@ jobs:
             --group test \
             --python 3.12.14 \
             --with "zstandard==0.25.0" \
-            pytest -q "${pytest_privacy_args[@]}" \
+            pytest -q \
               --confcutdir="${test_root}" \
               "${test_args[@]}" \
               --artifact-dir "${ARTIFACT_DIR}" \
@@ -2464,7 +2465,7 @@ jobs:
           export TMPDIR="${RUNNER_TEMP}"
           rm -f -- "${STATUS_ONLY_JUNIT}"
           test_root="${FIXTURE_ROOT}/scripts/codex_package/smoke_tests/first_binary"
-          pytest_privacy_args=(--tb=auto --show-capture=all)
+          pytest_addopts="--tb=auto --show-capture=all"
           exact_status_run=false
           if [[ "${MODE}" == "consume-existing" \
             && "${CONSUMER_PROFILE}" == "full" \
@@ -2476,8 +2477,9 @@ jobs:
             && "${PRODUCER_RUN_ID}" == "37558769081" \
             && "${PRODUCER_WORKFLOW_HOST_SHA}" == "aa625ac365c7488c56c2061d64e24c241436b421" ]]; then
             exact_status_run=true
-            pytest_privacy_args=(--tb=no --show-capture=no)
+            pytest_addopts="--tb=no --show-capture=no"
           fi
+          export PYTEST_ADDOPTS="${pytest_addopts}"
           case "${CONSUMER_PROFILE}" in
             pair)
               test_args=(
@@ -2504,7 +2506,7 @@ jobs:
             --group test \
             --python 3.12.14 \
             --with "zstandard==0.25.0" \
-            pytest -q "${pytest_privacy_args[@]}" \
+            pytest -q \
               --confcutdir="${test_root}" \
               "${test_args[@]}" \
               --artifact-dir "${ARTIFACT_DIR}" \
