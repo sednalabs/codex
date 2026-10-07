@@ -19,8 +19,23 @@ import pytest
 from openai_codex import ApprovalMode, Codex, CodexConfig, Sandbox
 
 from fixtures import SmokePackage
-from package_acceptance import _mock_config
 from tui_pty import PackagedTui
+
+
+def _mock_config(home: Path, server: MockResponsesServer, *, agent_tools: bool = False) -> None:
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.toml").write_text(
+        'model = "package-smoke"\nmodel_provider = "package_smoke"\n'
+        'approval_policy = "never"\nsandbox_mode = "workspace-write"\n'
+        '[features]\n'
+        f'code_mode_only = {str(not agent_tools).lower()}\n'
+        'code_mode_host = true\n'
+        'multi_agent_v2 = true\nmemories = false\napps = false\nplugins = false\n'
+        '[model_providers.package_smoke]\nname = "package smoke"\n'
+        f'base_url = "{server.url}/v1"\nwire_api = "responses"\n'
+        'request_max_retries = 0\nstream_max_retries = 0\n',
+        encoding="utf-8",
+    )
 
 
 def _png(red: int, green: int, blue: int) -> bytes:
