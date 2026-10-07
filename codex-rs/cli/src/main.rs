@@ -40,6 +40,7 @@ use std::io::IsTerminal;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use supports_color::Stream;
 
 #[cfg(all(
@@ -114,10 +115,64 @@ use codex_terminal_detection::TerminalName;
 /// Codex CLI
 ///
 /// If no subcommand is specified, options will be forwarded to the interactive CLI.
+fn cli_display_version() -> &'static str {
+    static DISPLAY_VERSION: OnceLock<String> = OnceLock::new();
+    DISPLAY_VERSION
+        .get_or_init(compute_cli_display_version)
+        .as_str()
+}
+
+fn compute_cli_display_version() -> String {
+    let build_info = codex_build_info::BuildInfo::get();
+    let packaged_version = build_info.version().to_string();
+    let display_version = build_info.display_version();
+
+    format_cli_display_version(
+        env!("CARGO_PKG_VERSION"),
+        &packaged_version,
+        &display_version,
+        build_info.build_commit(),
+    )
+}
+
+fn format_cli_display_version(
+    cargo_package_version: &str,
+    packaged_version: &str,
+    display_version: &str,
+    build_commit: &str,
+) -> String {
+    if cargo_package_version != "0.0.0" {
+        return cargo_package_version.to_string();
+    }
+
+    let sedna_version = if packaged_version != "0.0.0" {
+        let display_version = if display_version == "dev" {
+            format!("v{packaged_version}")
+        } else {
+            display_version.to_string()
+        };
+        format!("Sedna {display_version}")
+    } else if let Some(short_commit) = short_source_commit(build_commit) {
+        format!("Sedna dev {short_commit}")
+    } else {
+        "Sedna dev".to_string()
+    };
+
+    format!("{cargo_package_version} ({sedna_version})")
+}
+
+fn short_source_commit(build_commit: &str) -> Option<String> {
+    if build_commit.len() != 40 || !build_commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+
+    Some(build_commit[..8].to_ascii_lowercase())
+}
+
 #[derive(Debug, Parser)]
 #[clap(
     author,
-    version,
+    version = cli_display_version(),
     // If a sub‑command is given, ignore requirements of the default args.
     subcommand_negates_reqs = true,
     // The executable is sometimes invoked via a platform‑specific name like
@@ -2731,6 +2786,57 @@ mod tests {
     use codex_protocol::ThreadId;
     use codex_tui::TokenUsage;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn cli_display_version_uses_package_manifest_branch_identity() {
+        let package_version = "0.143.0-alpha.10-dev.sedna.793+g3ebd9849";
+        assert_eq!(
+            format_cli_display_version(
+                "0.0.0",
+                package_version,
+                &format!("v{package_version}"),
+                "3ebd9849fcb21aab092745fc4d9080476cb579f6",
+            ),
+            format!("0.0.0 (Sedna v{package_version})"),
+        );
+    }
+
+    #[test]
+    fn cli_display_version_uses_short_source_commit_without_package_identity() {
+        assert_eq!(
+            format_cli_display_version(
+                "0.0.0",
+                "0.0.0",
+                "v3ebd9849fcb21aab092745fc4d9080476cb579f6",
+                "3EBD9849FCB21AAB092745FC4D9080476CB579F6",
+            ),
+            "0.0.0 (Sedna dev 3ebd9849)",
+        );
+    }
+
+    #[test]
+    fn cli_display_version_does_not_render_invalid_source_commit() {
+        assert_eq!(
+            format_cli_display_version("0.0.0", "0.0.0", "dev", "unknown"),
+            "0.0.0 (Sedna dev)",
+        );
+    }
+
+    #[test]
+    fn cli_display_version_preserves_release_package_version() {
+        assert_eq!(
+            format_cli_display_version("0.143.0", "0.143.0", "v0.143.0", "unknown"),
+            "0.143.0",
+        );
+    }
+
+    #[test]
+    fn multitool_cli_uses_the_build_identity_version() {
+        assert_eq!(
+            MultitoolCli::command().get_version(),
+            Some(cli_display_version()),
+        );
+    }
 
     #[test]
     fn interactive_tui_future_stays_bounded() {
