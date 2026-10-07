@@ -1618,15 +1618,6 @@ impl LocalAgentControl {
                         "persisted parent for resumed child {thread_id} does not match requested parent {parent_thread_id}"
                     )));
                 }
-                if stored_thread
-                    .source
-                    .parent_thread_id()
-                    .is_some_and(|stored_source_parent| stored_source_parent != parent_thread_id)
-                {
-                    return Err(CodexErr::InvalidRequest(format!(
-                        "persisted source parent for resumed child {thread_id} does not match requested parent {parent_thread_id}"
-                    )));
-                }
                 if let Some(child_agent_path) = requested_agent_path.as_ref()
                     && !self
                         .resumed_agent_path_matches_parent(

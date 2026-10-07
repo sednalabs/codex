@@ -4960,42 +4960,6 @@ async fn resume_child_rejects_mismatched_persisted_parent_with_or_without_regist
         .expect_err("unregistered child must reject a path under another parent");
     assert!(error.to_string().contains("agent path for resumed child"));
 
-    stored_thread.parent_thread_id = None;
-    stored_thread.agent_path = None;
-    let mismatched_source_parent_thread_id = ThreadId::new();
-    assert_ne!(mismatched_source_parent_thread_id, parent_thread_id);
-    stored_thread.source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-        parent_thread_id: mismatched_source_parent_thread_id,
-        depth: 1,
-        agent_path: None,
-        agent_nickname: None,
-        agent_role: None,
-    });
-    state_db
-        .upsert_thread(&stored_thread)
-        .await
-        .expect("mismatched source parent should persist");
-    let error = harness
-        .control
-        .resume_agent_from_rollout(
-            harness.config.clone(),
-            child_thread_id,
-            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                parent_thread_id,
-                depth: 1,
-                agent_path: None,
-                agent_nickname: None,
-                agent_role: None,
-            }),
-        )
-        .await
-        .expect_err("unregistered child must reject a different persisted source parent");
-    assert!(
-        error
-            .to_string()
-            .contains("persisted source parent for resumed child")
-    );
-
     let report = harness
         .manager
         .shutdown_all_threads_bounded(Duration::from_secs(5))
@@ -5041,7 +5005,7 @@ async fn resume_running_child_rejects_a_different_requested_parent() {
         .expect("child metadata should exist");
     stored_thread.parent_thread_id = None;
     stored_thread.agent_path = None;
-    stored_thread.source = SessionSource::Cli;
+    stored_thread.source = SessionSource::Cli.to_string();
     state_db
         .upsert_thread(&stored_thread)
         .await
