@@ -111,9 +111,7 @@ pub(crate) async fn runtime_usage_migrator_for_history(
             "usage migration history contains an unsuccessful version {version}"
         );
 
-        let source = base
-            .iter()
-            .find(|migration| migration.version == *version);
+        let source = base.iter().find(|migration| migration.version == *version);
         let t10 = T10_USAGE_MIGRATION_HISTORY
             .iter()
             .find(|(known_version, _, _)| known_version == version);
@@ -136,9 +134,7 @@ pub(crate) async fn runtime_usage_migrator_for_history(
         }
 
         if t10.is_some() && source.is_none() {
-            anyhow::bail!(
-                "usage migration history has an unrecognized T10-only version {version}"
-            );
+            anyhow::bail!("usage migration history has an unrecognized T10-only version {version}");
         }
         if source.is_none() {
             // Keep the usage runtime's existing ignore_missing=true behavior
@@ -170,9 +166,7 @@ pub(crate) async fn runtime_usage_migrator_for_history(
         .filter(|migration| !skip_source_versions.contains(&migration.version))
         .cloned()
         .collect();
-    if migrations
-        .iter()
-        .any(|migration| migration.version == 15)
+    if migrations.iter().any(|migration| migration.version == 15)
         && !applied.iter().any(|(version, _, _, _)| *version == 15)
     {
         let existing_reporting_indexes = sqlx::query_scalar::<_, i64>(
@@ -196,10 +190,7 @@ pub(crate) async fn runtime_usage_migrator_for_history(
     })
 }
 
-fn has_exact_t10_usage_migration(
-    applied: &[(i64, String, bool, Vec<u8>)],
-    version: i64,
-) -> bool {
+fn has_exact_t10_usage_migration(applied: &[(i64, String, bool, Vec<u8>)], version: i64) -> bool {
     let Some((_, description, _, checksum)) = applied.iter().find(|row| row.0 == version) else {
         return false;
     };
@@ -209,8 +200,7 @@ fn has_exact_t10_usage_migration(
     else {
         return false;
     };
-    description.as_str() == *known_description
-        && checksum_matches_hex(checksum, known_checksum)
+    description.as_str() == *known_description && checksum_matches_hex(checksum, known_checksum)
 }
 
 fn checksum_matches_hex(checksum: &[u8], expected: &str) -> bool {
@@ -221,9 +211,9 @@ fn checksum_matches_hex(checksum: &[u8], expected: &str) -> bool {
         .iter()
         .zip(expected.as_bytes().chunks_exact(2))
         .all(|(actual, pair)| {
-            hex_nibble(pair[0]).zip(hex_nibble(pair[1])).is_some_and(
-                |(high, low)| *actual == ((high << 4) | low),
-            )
+            hex_nibble(pair[0])
+                .zip(hex_nibble(pair[1]))
+                .is_some_and(|(high, low)| *actual == ((high << 4) | low))
         })
 }
 
@@ -274,9 +264,9 @@ pub(crate) async fn validate_usage_reporting_indexes(
             Some((_, table, Some(sql)))
                 if table.as_str() == expected_table
                     && normalize_index_sql(sql).as_str() == expected_sql => {}
-            Some(_) => anyhow::bail!(
-                "usage reporting index {name} exists with an unexpected definition"
-            ),
+            Some(_) => {
+                anyhow::bail!("usage reporting index {name} exists with an unexpected definition")
+            }
             None if require_all => {
                 anyhow::bail!("usage reporting index {name} is missing after migration")
             }

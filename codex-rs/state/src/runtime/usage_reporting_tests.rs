@@ -1,9 +1,9 @@
 use super::StateRuntime;
 use super::usage::UsageLogger;
+use crate::SqliteConfig;
 use crate::migrations::USAGE_MIGRATOR;
 use crate::migrations::runtime_usage_migrator;
 use crate::migrations::validate_usage_reporting_indexes;
-use crate::SqliteConfig;
 use anyhow::Result;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::Event;
@@ -15,14 +15,13 @@ use codex_protocol::protocol::TokenCountEvent;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TokenUsageInfo;
 use codex_utils_absolute_path::test_support::PathExt;
+use sqlx::SqlitePool;
 use sqlx::migrate::Migration;
 use sqlx::migrate::Migrator;
-use sqlx::SqlitePool;
 use std::borrow::Cow;
 use tempfile::tempdir;
 
-static T10_USAGE_HISTORY_MIGRATOR: Migrator =
-    sqlx::migrate!("./test_data/usage_migrations_t10");
+static T10_USAGE_HISTORY_MIGRATOR: Migrator = sqlx::migrate!("./test_data/usage_migrations_t10");
 
 type UsageMigrationRow = (i64, String, bool, Vec<u8>);
 
@@ -98,13 +97,12 @@ async fn assert_preserved_migration_rows(
 }
 
 async fn assert_table_column(pool: &SqlitePool, table: &str, column: &str) -> Result<()> {
-    let count = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?",
-    )
-    .bind(table)
-    .bind(column)
-    .fetch_one(pool)
-    .await?;
+    let count =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?")
+            .bind(table)
+            .bind(column)
+            .fetch_one(pool)
+            .await?;
     assert_eq!(count, 1, "missing {table}.{column}");
     Ok(())
 }
@@ -125,8 +123,7 @@ async fn assert_t10_pending_current_main_migrations(pool: &SqlitePool) -> Result
     let rows = usage_migration_rows(pool).await?;
     for version in [6, 8, 9, 10, 11, 12] {
         assert!(
-            rows.iter()
-                .any(|row| row.0 == version && row.2),
+            rows.iter().any(|row| row.0 == version && row.2),
             "current-main usage migration {version} was not successfully applied"
         );
     }
@@ -150,10 +147,19 @@ async fn assert_t10_pending_current_main_migrations(pool: &SqlitePool) -> Result
             "usage_automatic_turn_eligibility",
             "admitted_client_user_message_id",
         ),
-        ("usage_automatic_turn_eligibility", "admitted_operation_kind"),
-        ("usage_automatic_turn_eligibility", "admitted_expected_turn_id"),
+        (
+            "usage_automatic_turn_eligibility",
+            "admitted_operation_kind",
+        ),
+        (
+            "usage_automatic_turn_eligibility",
+            "admitted_expected_turn_id",
+        ),
         ("usage_automatic_turn_eligibility", "allowed_operation_kind"),
-        ("usage_automatic_turn_eligibility", "allowed_expected_turn_id"),
+        (
+            "usage_automatic_turn_eligibility",
+            "allowed_expected_turn_id",
+        ),
         (
             "usage_automatic_turn_eligibility",
             "trigger_context_fingerprint",
@@ -204,9 +210,7 @@ async fn assert_partial_t10_usage_history_reopens(
 ) -> Result<()> {
     let home = tempdir()?;
     let sqlite = SqliteConfig::new_for_testing(home.path().abs());
-    let fixture = sqlite
-        .open_read_write_pool(&sqlite.usage_db_path())
-        .await?;
+    let fixture = sqlite.open_read_write_pool(&sqlite.usage_db_path()).await?;
     t10_usage_history_migrator_through(historical_through)
         .run(&fixture)
         .await?;
@@ -234,20 +238,17 @@ async fn assert_partial_t10_usage_history_reopens(
 }
 
 async fn seed_t10_usage_history(sqlite: &SqliteConfig) -> Result<SqlitePool> {
-    let pool = sqlite
-        .open_read_write_pool(&sqlite.usage_db_path())
-        .await?;
+    let pool = sqlite.open_read_write_pool(&sqlite.usage_db_path()).await?;
     t10_usage_history_migrator().run(&pool).await?;
     Ok(pool)
 }
 
 async fn assert_usage_version_absent(pool: &SqlitePool, version: i64) -> Result<()> {
-    let count = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM _sqlx_migrations WHERE version = ?",
-    )
-    .bind(version)
-    .fetch_one(pool)
-    .await?;
+    let count =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM _sqlx_migrations WHERE version = ?")
+            .bind(version)
+            .fetch_one(pool)
+            .await?;
     assert_eq!(count, 0, "unexpected usage migration version {version}");
     Ok(())
 }
@@ -365,7 +366,10 @@ async fn qualify_usage_migration_histories() -> Result<()> {
     )
     .fetch_one(&t10_upgraded)
     .await?;
-    assert_eq!(legacy_estimate, ("provider_usage_missing".to_string(), None));
+    assert_eq!(
+        legacy_estimate,
+        ("provider_usage_missing".to_string(), None)
+    );
     t10_upgraded.close().await;
 
     let t10_reopened = t10_sqlite
@@ -419,7 +423,10 @@ async fn qualify_usage_migration_histories() -> Result<()> {
         "typed incomplete reports use exit status 2"
     );
     assert_eq!(report_json["summary"]["provider_call_count"], 1);
-    assert_eq!(report_json["summary"]["actual_mode"]["uncovered_call_count"], 1);
+    assert_eq!(
+        report_json["summary"]["actual_mode"]["uncovered_call_count"],
+        1
+    );
     assert_eq!(
         report_json["summary"]["actual_mode"]["uncovered_reasons"]["provider_usage_missing"],
         1
@@ -429,10 +436,12 @@ async fn qualify_usage_migration_histories() -> Result<()> {
         let corrupt_home = tempdir()?;
         let corrupt_sqlite = SqliteConfig::new_for_testing(corrupt_home.path().abs());
         let corrupt_fixture = seed_t10_usage_history(&corrupt_sqlite).await?;
-        sqlx::query("UPDATE _sqlx_migrations SET checksum = zeroblob(length(checksum)) WHERE version = ?")
-            .bind(corrupt_version)
-            .execute(&corrupt_fixture)
-            .await?;
+        sqlx::query(
+            "UPDATE _sqlx_migrations SET checksum = zeroblob(length(checksum)) WHERE version = ?",
+        )
+        .bind(corrupt_version)
+        .execute(&corrupt_fixture)
+        .await?;
         let corrupt_rows = usage_migration_rows(&corrupt_fixture).await?;
         corrupt_fixture.close().await;
         assert!(
