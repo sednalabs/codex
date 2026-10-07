@@ -859,7 +859,7 @@ def execute_delivery(args):
         )
         candidate_payload = run_blocking_watcher(
             repo,
-            f"run-id={candidate['id']},head-sha={candidate_sha}",
+            f"run-id={candidate['id']},validation-target-sha={candidate_sha}",
             args,
         )
         candidate_result = verify_watched_run(

@@ -261,7 +261,8 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
         self.assertEqual(fetch_pr.call_count, 4)
         sleep.assert_called_once_with(args.poll_seconds)
         self.assertEqual(
-            watcher.call_args_list[0].args[1], f"run-id=901,head-sha={CANDIDATE_SHA}"
+            watcher.call_args_list[0].args[1],
+            f"run-id=901,validation-target-sha={CANDIDATE_SHA}",
         )
         self.assertEqual(
             watcher.call_args_list[1].args[1],
@@ -1359,7 +1360,7 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
         with patch.object(MODULE.subprocess, "run", return_value=completed) as run:
             payload = MODULE.run_blocking_watcher(
                 "owner/repo",
-                f"run-id=901,head-sha={CANDIDATE_SHA}",
+                f"run-id=901,validation-target-sha={CANDIDATE_SHA}",
                 args,
             )
 
@@ -1367,7 +1368,7 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
         command = run.call_args.args[0]
         self.assertEqual(command[0], str(MODULE.WATCHER_LAUNCHER))
         self.assertIn("--watch-until-terminal", command)
-        self.assertIn(f"run-id=901,head-sha={CANDIDATE_SHA}", command)
+        self.assertIn(f"run-id=901,validation-target-sha={CANDIDATE_SHA}", command)
         self.assertNotIn("timeout", run.call_args.kwargs)
 
     def test_blocking_watcher_forwards_the_delivery_python_override(self):
@@ -1384,7 +1385,7 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
             patch.object(MODULE.subprocess, "run", return_value=completed) as run,
         ):
             MODULE.run_blocking_watcher(
-                "owner/repo", f"run-id=901,head-sha={CANDIDATE_SHA}", args
+                "owner/repo", f"run-id=901,validation-target-sha={CANDIDATE_SHA}", args
             )
 
         watcher_env = run.call_args.kwargs["env"]
