@@ -11,6 +11,10 @@ on:
         required: false
         type: number
         default: 1
+      persist_checkout_credentials:
+        required: false
+        type: boolean
+        default: true
       runner:
         required: false
         type: string
@@ -100,12 +104,14 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: ${{ inputs.checkout_fetch_depth }}
+          persist-credentials: ${{ inputs.persist_checkout_credentials }}
           ref: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
 
       - name: Check out workflow helpers
         uses: actions/checkout@v7
         with:
           fetch-depth: 1
+          persist-credentials: ${{ inputs.persist_checkout_credentials }}
           ref: ${{ github.sha }}
           path: .workflow-src
 

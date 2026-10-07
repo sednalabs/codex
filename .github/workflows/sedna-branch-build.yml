@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: Branch, tag, or commit to build
+        description: Full commit SHA to build; omit to use the workflow commit
         required: false
         type: string
       platform:
@@ -27,7 +27,7 @@ on:
         type: boolean
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref_name }}-${{ inputs.platform }}-${{ inputs.host_only }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && (inputs.ref || github.sha) || github.ref_name }}-${{ inputs.platform }}-${{ inputs.host_only }}
   cancel-in-progress: true
 
 permissions:
@@ -45,9 +45,21 @@ jobs:
       source_sha: ${{ steps.meta.outputs.source_sha }}
       workflow_sha: ${{ steps.meta.outputs.workflow_sha }}
     steps:
+      - name: Validate immutable source identity
+        shell: bash
+        env:
+          SOURCE_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ ! "${SOURCE_REF}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "source ref must be a full immutable 40-character commit SHA." >&2
+            exit 1
+          fi
+
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          persist-credentials: false
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.sha }}
 
       - name: Compute preview version
@@ -109,6 +121,7 @@ jobs:
     uses: ./.github/workflows/_sedna-linux-rust.yml
     with:
       checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
+      persist_checkout_credentials: false
       summary_title: Branch build
       release_version: ${{ needs.metadata.outputs.preview_version }}
       target: x86_64-unknown-linux-gnu
@@ -253,6 +266,7 @@ jobs:
     uses: ./.github/workflows/_sedna-linux-rust.yml
     with:
       checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
+      persist_checkout_credentials: false
       runner: ubuntu-24.04-arm
       target: aarch64-unknown-linux-gnu
       summary_title: Branch build
@@ -418,6 +432,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 1
+          persist-credentials: false
 
       - name: Require the selected workflow ref for macOS previews
         if: ${{ inputs.ref != '' }}

@@ -72,14 +72,17 @@ class NamedRustTests(TestCase):
         self.assertEqual(result["failure_code"], "named_test_ignored")
         self.assertFalse(result["tests"][0]["execution_reconciled"])
 
-    def test_missing_summary_fails_closed_with_bounded_diagnostics(self) -> None:
-        result = self.run_request("cargo completed without a test summary\n")
+    def test_missing_summary_fails_closed_and_reports_full_target_scope(self) -> None:
+        private_output = "fixture-only diagnostic must not be serialized"
+        result = self.run_request(private_output + "\n")
 
         self.assertEqual(result["status"], "failure")
         self.assertEqual(result["failure_code"], "execution_reconciliation_failed")
-        self.assertIn("hosted job log", result["message"])
+        self.assertEqual(result["execution_scope"], "full_target")
+        self.assertEqual(result["full_target_results"]["observed_test_count"], 0)
+        self.assertNotIn(private_output, json.dumps(result))
 
-    def test_inventory_failure_preserves_actionable_bounded_diagnostics(self) -> None:
+    def test_inventory_failure_preserves_only_status_and_output_size(self) -> None:
         inventory = self.completed(stderr="manifest could not be loaded", code=101)
         with (
             mock.patch.object(MODULE.subprocess, "run", return_value=inventory),
@@ -89,13 +92,10 @@ class NamedRustTests(TestCase):
 
         self.assertEqual(result["status"], "failure")
         self.assertEqual(result["failure_code"], "inventory_failed")
-        self.assertIn("manifest could not be loaded", result["inventory"]["diagnostics"]["stderr_tail"])
-
-    def test_diagnostic_tail_is_bounded(self) -> None:
-        value = MODULE.bounded_diagnostic("x" * (MODULE.MAX_DIAGNOSTIC_CHARS + 100))
-
-        self.assertLessEqual(len(value), MODULE.MAX_DIAGNOSTIC_CHARS + 60)
-        self.assertIn("see hosted job log", value)
+        diagnostics = result["inventory"]["diagnostics"]
+        self.assertEqual(diagnostics["exit_code"], 101)
+        self.assertEqual(diagnostics["stderr_bytes"], len("manifest could not be loaded"))
+        self.assertNotIn("manifest could not be loaded", json.dumps(result))
 
     def test_command_builder_rejects_untrusted_values_at_the_sink(self) -> None:
         with self.assertRaises(ValueError):

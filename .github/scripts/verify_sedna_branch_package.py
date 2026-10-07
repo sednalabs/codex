@@ -8,10 +8,12 @@ import json
 import os
 import platform
 import re
-import shutil
+import selectors
+import signal
 import subprocess
 import tarfile
 import tempfile
+import time
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -22,6 +24,15 @@ EXPECTED_BINARIES = {
     "codex-responses-api-proxy",
 }
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+MAX_MANIFEST_BYTES = 64 * 1024
+MAX_SIDECAR_BYTES = 256
+MAX_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
+MAX_ARCHIVE_MEMBERS = 4  # Three binaries, plus an optional root directory.
+MAX_BINARY_BYTES = 1024 * 1024 * 1024
+MAX_TOTAL_EXTRACTED_BYTES = 2 * 1024 * 1024 * 1024
+MAX_COMMAND_OUTPUT_BYTES = 1024 * 1024
+MAX_COMMAND_RUNTIME_SECONDS = 45
+COMMAND_READ_CHUNK_BYTES = 64 * 1024
 VERSION_RE = re.compile(
     r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?-dev\.sedna\.[1-9][0-9]*\+g[0-9a-f]{8}$"
 )
@@ -54,22 +65,72 @@ def sha256_file(path: Path) -> str:
 
 
 def command_ok(arguments: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
+    process: subprocess.Popen[bytes] | None = None
+    selector = selectors.DefaultSelector()
+    output = {"stdout": bytearray(), "stderr": bytearray()}
+    output_bytes = 0
+    deadline = time.monotonic() + MAX_COMMAND_RUNTIME_SECONDS
     try:
-        return subprocess.run(
+        process = subprocess.Popen(
             arguments,
             cwd=cwd,
-            text=True,
-            capture_output=True,
-            check=False,
-            timeout=45,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
         )
-    except subprocess.TimeoutExpired as exc:
-        raise ConsumerFailure("packaged_command_timeout") from exc
+        assert process.stdout is not None and process.stderr is not None
+        selector.register(process.stdout, selectors.EVENT_READ, "stdout")
+        selector.register(process.stderr, selectors.EVENT_READ, "stderr")
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ConsumerFailure("packaged_command_timeout")
+            for key, _ in selector.select(min(remaining, 0.25)):
+                chunk = os.read(key.fileobj.fileno(), COMMAND_READ_CHUNK_BYTES)
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    key.fileobj.close()
+                    continue
+                output_bytes += len(chunk)
+                if output_bytes > MAX_COMMAND_OUTPUT_BYTES:
+                    raise ConsumerFailure("packaged_command_output_limit")
+                output[key.data].extend(chunk)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ConsumerFailure("packaged_command_timeout")
+        try:
+            return_code = process.wait(timeout=remaining)
+        except subprocess.TimeoutExpired as exc:
+            raise ConsumerFailure("packaged_command_timeout") from exc
+        return subprocess.CompletedProcess(
+            arguments,
+            return_code,
+            output["stdout"].decode("utf-8", errors="replace"),
+            output["stderr"].decode("utf-8", errors="replace"),
+        )
+    finally:
+        selector.close()
+        if process is not None:
+            if process.poll() is None:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                except OSError:
+                    process.kill()
+                process.wait()
+            for stream in (process.stdout, process.stderr):
+                if stream is not None and not stream.closed:
+                    stream.close()
 
 
 def verify_sidecar(path: Path, expected_name: str, expected_digest: str) -> None:
     try:
+        if path.stat().st_size > MAX_SIDECAR_BYTES:
+            raise ConsumerFailure("checksum_sidecar_invalid")
         fields = path.read_text(encoding="ascii").strip().split()
+    except ConsumerFailure:
+        raise
     except (OSError, UnicodeDecodeError) as exc:
         raise ConsumerFailure("checksum_sidecar_invalid") from exc
     if len(fields) != 2 or fields[0] != expected_digest or fields[1] != expected_name:
@@ -84,15 +145,25 @@ def read_manifest(artifact_dir: Path, archive_base: str) -> tuple[dict[str, Any]
         *(f"{archive_base}.{name}.sha256" for name in EXPECTED_BINARIES),
     }
     try:
-        entries = list(artifact_dir.iterdir())
+        entries: dict[str, Path] = {}
+        for entry in artifact_dir.iterdir():
+            if len(entries) >= len(expected_names):
+                raise ConsumerFailure("artifact_inventory_mismatch")
+            entries[entry.name] = entry
     except OSError as exc:
         raise ConsumerFailure("artifact_directory_unreadable") from exc
-    if any(entry.is_symlink() or not entry.is_file() for entry in entries) or {
-        entry.name for entry in entries
-    } != expected_names:
+    if (
+        set(entries) != expected_names
+        or any(entry.is_symlink() or not entry.is_file() for entry in entries.values())
+    ):
         raise ConsumerFailure("artifact_inventory_mismatch")
     try:
-        manifest = json.loads((artifact_dir / f"{archive_base}.json").read_text(encoding="utf-8"))
+        manifest_path = artifact_dir / f"{archive_base}.json"
+        if manifest_path.stat().st_size > MAX_MANIFEST_BYTES:
+            raise ConsumerFailure("manifest_invalid")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except ConsumerFailure:
+        raise
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ConsumerFailure("manifest_invalid") from exc
     if not isinstance(manifest, dict):
@@ -103,14 +174,22 @@ def read_manifest(artifact_dir: Path, archive_base: str) -> tuple[dict[str, Any]
 
 def extract_binaries(archive: Path, destination: Path) -> None:
     try:
-        with tarfile.open(archive, mode="r:gz") as bundle:
-            members = bundle.getmembers()
+        if archive.stat().st_size > MAX_ARCHIVE_BYTES:
+            raise ConsumerFailure("archive_size_limit")
+        with tarfile.open(archive, mode="r|gz") as bundle:
             observed: set[str] = set()
-            for member in members:
+            member_count = 0
+            total_bytes = 0
+            root_directory_seen = False
+            for member in bundle:
+                member_count += 1
+                if member_count > MAX_ARCHIVE_MEMBERS:
+                    raise ConsumerFailure("archive_member_limit")
                 raw = PurePosixPath(member.name)
                 normalized = PurePosixPath(*raw.parts)
                 name = str(normalized)
-                if name in {".", "./"} and member.isdir():
+                if name == "." and member.isdir() and not root_directory_seen:
+                    root_directory_seen = True
                     continue
                 if (
                     raw.is_absolute()
@@ -120,16 +199,33 @@ def extract_binaries(archive: Path, destination: Path) -> None:
                     or name in observed
                 ):
                     raise ConsumerFailure("archive_member_rejected")
+                if (
+                    member.size < 0
+                    or member.size > MAX_BINARY_BYTES
+                    or total_bytes + member.size > MAX_TOTAL_EXTRACTED_BYTES
+                ):
+                    raise ConsumerFailure("archive_expansion_limit")
                 source = bundle.extractfile(member)
                 if source is None:
                     raise ConsumerFailure("archive_member_unreadable")
                 target = destination / name
+                copied = 0
                 with target.open("wb") as output:
-                    shutil.copyfileobj(source, output, length=1024 * 1024)
+                    while copied < member.size:
+                        block = source.read(min(1024 * 1024, member.size - copied))
+                        if not block:
+                            raise ConsumerFailure("archive_member_size_mismatch")
+                        output.write(block)
+                        copied += len(block)
+                if copied != member.size:
+                    raise ConsumerFailure("archive_member_size_mismatch")
                 target.chmod(0o755)
                 observed.add(name)
+                total_bytes += copied
             if observed != EXPECTED_BINARIES:
                 raise ConsumerFailure("archive_binary_inventory_mismatch")
+    except ConsumerFailure:
+        raise
     except (OSError, tarfile.TarError) as exc:
         raise ConsumerFailure("archive_invalid") from exc
 
@@ -188,6 +284,11 @@ def verify_and_consume() -> dict[str, Any]:
         or not SHA256_RE.fullmatch(archive_digest)
     ):
         raise ConsumerFailure("manifest_inventory_invalid")
+    try:
+        if archive.stat().st_size > MAX_ARCHIVE_BYTES:
+            raise ConsumerFailure("archive_size_limit")
+    except OSError as exc:
+        raise ConsumerFailure("archive_invalid") from exc
     if sha256_file(archive) != archive_digest:
         raise ConsumerFailure("archive_digest_mismatch")
     verify_sidecar(

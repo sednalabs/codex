@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Run a typed, exact Rust test request on a hosted validation runner.
+"""Run a typed Rust target request on a hosted validation runner.
 
 The request is deliberately narrower than a shell command.  It selects a
 Cargo target from the committed command catalog and names fully-qualified
-tests to reconcile.  The runner inventories the target first, refuses to run
-when a requested name is missing or ambiguous, and executes only the
-catalog-owned target argv.  This prevents request data from reaching Cargo.
+test selectors to reconcile against the complete target execution. The runner
+inventories the target first, refuses to run when a requested name is missing
+or ambiguous, and executes only the catalog-owned target argv. This prevents
+request data from reaching Cargo.
 """
 
 from __future__ import annotations
@@ -29,7 +30,6 @@ MANIFEST_SCHEMA_VERSION = "rust-tests-command-manifest-v1"
 MANIFEST_NAME = "validation-named-tests.json"
 MAX_TESTS = 64
 MAX_REQUEST_CHARS = 32768
-MAX_DIAGNOSTIC_CHARS = 4096
 TEST_RESULT_RE = re.compile(
     r"test result:\s+\w+\.\s+"
     r"(?P<passed>\d+) passed;\s+"
@@ -41,20 +41,17 @@ TEST_RESULT_RE = re.compile(
 TEST_OUTCOME_RE = re.compile(r"^test (?P<name>.+?) \.\.\. (?P<status>ok|FAILED|ignored)$")
 
 
-def bounded_diagnostic(value: str | None) -> str:
-    """Keep failure evidence actionable without duplicating unbounded logs."""
-
-    text = str(value or "").strip()
-    if len(text) <= MAX_DIAGNOSTIC_CHARS:
-        return text
-    return "...[truncated; see hosted job log]...\n" + text[-MAX_DIAGNOSTIC_CHARS:]
-
-
 def command_diagnostics(completed: subprocess.CompletedProcess[str]) -> dict[str, Any]:
+    """Project only status and byte counts; never persist raw compiler/test output."""
+
     return {
         "exit_code": completed.returncode,
-        "stdout_tail": bounded_diagnostic(completed.stdout),
-        "stderr_tail": bounded_diagnostic(completed.stderr),
+        "stdout_bytes": len(
+            (completed.stdout or "").encode("utf-8", errors="replace")
+        ),
+        "stderr_bytes": len(
+            (completed.stderr or "").encode("utf-8", errors="replace")
+        ),
     }
 
 
@@ -350,6 +347,7 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
             "test_count": len(names),
             "tests": names,
         },
+        "execution_scope": "not_started",
         "tests": [],
     }
     if missing or ambiguous:
@@ -362,11 +360,12 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
             }
         )
         return result
-    # Run the complete immutable target command.  This keeps the command
-    # surface closed while the requested names remain exact post-run selectors.
+    # Run the complete immutable target command. Requested names are exact
+    # post-run selectors, not Cargo filters; report the full-target scope.
     test_command = cargo_args(
         request, list_only=False, command_record=command_record
     )
+    result["execution_scope"] = "full_target"
     completed = subprocess.run(
         test_command,
         cwd=manifest_root,
@@ -381,6 +380,11 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
     )
     counts = test_result_counts(output)
     outcomes = test_outcomes(output)
+    result["full_target_results"] = {
+        "observed_test_count": sum(len(values) for values in outcomes.values()),
+        "result_counts": counts,
+        "diagnostics": command_diagnostics(completed),
+    }
     for name in request["tests"]:
         observed = outcomes.get(name, [])
         outcome = observed[0] if len(observed) == 1 else ""
@@ -415,8 +419,8 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
             result["status"] = "failure"
             result["failure_code"] = failure_code
             result["message"] = (
-                "named test did not produce exactly one non-ignored passing result; "
-                "see bounded diagnostics and the hosted job log"
+                "a requested selector did not reconcile to exactly one non-ignored pass "
+                "in the full-target run"
             )
             break
     return result
