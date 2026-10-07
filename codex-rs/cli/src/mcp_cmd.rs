@@ -598,93 +598,14 @@ async fn run_login(config: &Config, login_args: LoginArgs) -> Result<()> {
     let explicit_scopes = (!scopes.is_empty()).then_some(scopes);
 
     if device_auth {
-        let has_registered_client_id = server
-            .oauth_client_id()
-            .is_some_and(|client_id| !client_id.trim().is_empty());
-        let has_client_secret = server
-            .oauth
-            .as_ref()
-            .is_some_and(|oauth| oauth.client_secret.is_some());
-        validate_device_auth_options(
+        run_device_auth_login(
+            &name,
+            server,
             client_registration,
-            has_registered_client_id,
-            has_client_secret,
-        )?;
-        let oauth_config = match oauth_login_support(
-            &server.transport,
-            Arc::clone(&http_client),
-            OAuthDiscoveryTimeout::LOCAL,
-            StreamableHttpRedirectMode::Legacy,
-        )
-        .await
-        {
-            McpOAuthLoginSupport::Supported(oauth_config) => oauth_config,
-            McpOAuthLoginSupport::Unsupported => {
-                bail!("No authorization support detected for MCP server '{name}'.")
-            }
-            McpOAuthLoginSupport::Unknown(error) => {
-                return Err(error).context(format!(
-                    "failed to discover OAuth support for MCP server '{name}'"
-                ));
-            }
-        };
-        let device_authorization_endpoint = oauth_config
-            .device_authorization_endpoint
-            .as_deref()
-            .filter(|endpoint| !endpoint.trim().is_empty())
-            .ok_or_else(|| anyhow!("OAuth device login is not advertised by MCP server '{name}'. Missing device_authorization_endpoint."))?;
-        let has_device_grant =
-            oauth_config
-                .grant_types_supported
-                .as_ref()
-                .is_some_and(|grant_types| {
-                    grant_types
-                        .iter()
-                        .any(|grant| grant == "urn:ietf:params:oauth:grant-type:device_code")
-                });
-        if !has_device_grant {
-            bail!(
-                "OAuth device login is not advertised by MCP server '{name}'. Missing device_code grant type."
-            );
-        }
-        let issuer = oauth_config
-            .issuer
-            .as_deref()
-            .filter(|issuer| !issuer.trim().is_empty())
-            .ok_or_else(|| anyhow!("OAuth device login is not advertised by MCP server '{name}'. Missing authorization server issuer."))?;
-        if oauth_config.token_endpoint.trim().is_empty() {
-            bail!(
-                "OAuth device login is not advertised by MCP server '{name}'. Missing token_endpoint."
-            );
-        }
-        let resolved_scopes = resolve_oauth_scopes(
             explicit_scopes,
-            server.scopes.clone(),
-            oauth_config.discovered_scopes.clone(),
-        );
-        let credential_name = server.oauth_credential_name(&name);
-        let supports_refresh_token = oauth_config
-            .grant_types_supported
-            .as_ref()
-            .is_some_and(|grant_types| grant_types.iter().any(|grant| grant == "refresh_token"));
-        // Keep issuer and device/token endpoints bound to this one accepted
-        // metadata result; RFC 9207 callback support is unrelated to device flow.
-        perform_oauth_device_login(
-            credential_name.as_ref(),
-            &url,
-            issuer,
             http_client,
             config.mcp_oauth_credentials_store_mode,
             config.auth_keyring_backend_kind(),
-            http_headers,
-            env_http_headers,
-            &resolved_scopes.scopes,
-            server.oauth_client_id(),
-            server.oauth_resource.as_deref(),
-            device_authorization_endpoint,
-            &oauth_config.token_endpoint,
-            oauth_config.registration_endpoint.as_deref(),
-            supports_refresh_token,
             print_device_authorization_prompt,
         )
         .await?;
@@ -732,6 +653,116 @@ async fn run_login(config: &Config, login_args: LoginArgs) -> Result<()> {
     .await?;
     println!("Successfully logged in to MCP server '{name}'.");
     Ok(())
+}
+
+async fn run_device_auth_login(
+    name: &str,
+    server: &McpServerConfig,
+    client_registration: McpOAuthClientRegistration,
+    explicit_scopes: Option<Vec<String>>,
+    http_client: Arc<dyn HttpClient>,
+    store_mode: codex_config::types::OAuthCredentialsStoreMode,
+    keyring_backend_kind: codex_config::types::AuthKeyringBackendKind,
+    prompt: impl FnOnce(DeviceAuthorizationPrompt),
+) -> Result<()> {
+    let McpServerTransportConfig::StreamableHttp {
+        url,
+        http_headers,
+        env_http_headers,
+        ..
+    } = &server.transport
+    else {
+        bail!("OAuth login is only supported for streamable HTTP servers.");
+    };
+    let has_registered_client_id = server
+        .oauth_client_id()
+        .is_some_and(|client_id| !client_id.trim().is_empty());
+    let has_client_secret = server
+        .oauth
+        .as_ref()
+        .is_some_and(|oauth| oauth.client_secret.is_some());
+    validate_device_auth_options(
+        client_registration,
+        has_registered_client_id,
+        has_client_secret,
+    )?;
+    let oauth_config = match oauth_login_support(
+        &server.transport,
+        Arc::clone(&http_client),
+        OAuthDiscoveryTimeout::LOCAL,
+        StreamableHttpRedirectMode::Legacy,
+    )
+    .await
+    {
+        McpOAuthLoginSupport::Supported(oauth_config) => oauth_config,
+        McpOAuthLoginSupport::Unsupported => {
+            bail!("No authorization support detected for MCP server '{name}'.")
+        }
+        McpOAuthLoginSupport::Unknown(error) => {
+            return Err(error).context(format!(
+                "failed to discover OAuth support for MCP server '{name}'"
+            ));
+        }
+    };
+    let device_authorization_endpoint = oauth_config
+        .device_authorization_endpoint
+        .as_deref()
+        .filter(|endpoint| !endpoint.trim().is_empty())
+        .ok_or_else(|| anyhow!("OAuth device login is not advertised by MCP server '{name}'. Missing device_authorization_endpoint."))?;
+    let has_device_grant = oauth_config
+        .grant_types_supported
+        .as_ref()
+        .is_some_and(|grant_types| {
+            grant_types
+                .iter()
+                .any(|grant| grant == "urn:ietf:params:oauth:grant-type:device_code")
+        });
+    if !has_device_grant {
+        bail!(
+            "OAuth device login is not advertised by MCP server '{name}'. Missing device_code grant type."
+        );
+    }
+    let issuer = oauth_config
+        .issuer
+        .as_deref()
+        .filter(|issuer| !issuer.trim().is_empty())
+        .ok_or_else(|| anyhow!("OAuth device login is not advertised by MCP server '{name}'. Missing authorization server issuer."))?;
+    if oauth_config.token_endpoint.trim().is_empty() {
+        bail!(
+            "OAuth device login is not advertised by MCP server '{name}'. Missing token_endpoint."
+        );
+    }
+    let resolved_scopes = resolve_oauth_scopes(
+        explicit_scopes,
+        server.scopes.clone(),
+        oauth_config.discovered_scopes.clone(),
+    );
+    let credential_name = server.oauth_credential_name(name);
+    let supports_refresh_token = oauth_config
+        .grant_types_supported
+        .as_ref()
+        .is_some_and(|grant_types| grant_types.iter().any(|grant| grant == "refresh_token"));
+    // Keep issuer and device/token endpoints bound to this one accepted
+    // metadata result; RFC 9207 callback support is unrelated to device flow.
+    perform_oauth_device_login(
+        credential_name.as_ref(),
+        url,
+        issuer,
+        http_client,
+        store_mode,
+        keyring_backend_kind,
+        http_headers.clone(),
+        env_http_headers.clone(),
+        &resolved_scopes.scopes,
+        server.oauth_client_id(),
+        server.oauth_resource.as_deref(),
+        device_authorization_endpoint,
+        &oauth_config.token_endpoint,
+        oauth_config.registration_endpoint.as_deref(),
+        supports_refresh_token,
+        prompt,
+    )
+    .await
 }
 
 fn validate_device_auth_options(
