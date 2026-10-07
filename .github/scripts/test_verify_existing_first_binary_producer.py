@@ -2461,8 +2461,9 @@ class AcceptedInputManifestTests(unittest.TestCase):
                 self.assertIn('--base-sha "${ARTIFACT_BASE_SHA}"', consumer_step)
                 self.assertIn('pytest -q \\', consumer_step)
                 self.assertIn('pytest_addopts="--tb=no --show-capture=no"', consumer_step)
-                self.assertIn("junit_error_class_counts(cases)", consumer_step)
-                self.assertIn('"error_class_counts": error_class_counts', consumer_step)
+                self.assertIn("--verify-consumer-results", consumer_step)
+                self.assertNotIn("junit_error_class_counts(cases)", consumer_step)
+                self.assertNotIn('"error_class_counts": error_class_counts', consumer_step)
 
         sdk_job = workflow.split("  sdk-parser:", 1)[1].split("\n  consume-linux-aarch64:", 1)[0]
         self.assertIn("runs-on: ubuntu-24.04", sdk_job)
@@ -3111,6 +3112,94 @@ class ConsumerResultTests(unittest.TestCase):
         self._q_sha = q_sha
         self._sdk_sha = sdk_sha
         return junit_path, consumer_path, producer_path, witness_dir, result_path
+
+    def test_exact_w14780_result_preserves_only_sanitized_error_class_counts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            junit, consumer_path, producer_path, witnesses, result_path = self._write_fixture(
+                root,
+                profile="full",
+                fixture_sha=W14780_FIXTURE_SHA,
+                sdk_sha=W14780_SDK_SHA,
+            )
+            consumer = json.loads(consumer_path.read_text(encoding="utf-8"))
+            consumer.update(
+                {
+                    "product_sha": W14780_T4_PRODUCT_SHA,
+                    "comparison_base_ref": W14780_BASE_REF,
+                    "comparison_base_sha": W14780_BASE_SHA,
+                    "branch": TRUSTED_CONSUMER_BRANCH,
+                }
+            )
+            producer = json.loads(producer_path.read_text(encoding="utf-8"))
+            producer.update(
+                {
+                    "workflow_host_sha": W14780_PRODUCER_HOST_SHA,
+                    "run_id": W14780_PRODUCER_RUN_ID,
+                    "branch": W14780_PRODUCER_BRANCH,
+                    "product_sha": W14780_T4_PRODUCT_SHA,
+                    "comparison_base_ref": W14780_BASE_REF,
+                    "comparison_base_sha": W14780_BASE_SHA,
+                    "artifact_base_sha": W14780_ARTIFACT_BASE_SHA,
+                }
+            )
+            consumer_path.write_text(json.dumps(consumer), encoding="utf-8")
+            producer_path.write_text(json.dumps(producer), encoding="utf-8")
+            for witness_path in witnesses.glob("*.json"):
+                witness = json.loads(witness_path.read_text(encoding="utf-8"))
+                witness.update(
+                    {
+                        "product_target_sha": W14780_T4_PRODUCT_SHA,
+                        "comparison_base_sha": W14780_ARTIFACT_BASE_SHA,
+                        "producer_workflow_host_sha": W14780_PRODUCER_HOST_SHA,
+                        "producer_run_id": W14780_PRODUCER_RUN_ID,
+                    }
+                )
+                witness_path.write_text(json.dumps(witness), encoding="utf-8")
+
+            private_markers = (
+                "PRIVATE_ERROR_MESSAGE",
+                "PRIVATE_ERROR_TRACE",
+                "/private/runner/private-test.py",
+                "PRIVATE_TEST_CLASS",
+            )
+            xml = junit.read_text(encoding="utf-8").replace(
+                "</testsuite>",
+                '<testcase name="PRIVATE_TEST_NAME" classname="PRIVATE_TEST_CLASS" '
+                'file="/private/runner/private-test.py">'
+                '<error type="AssertionError" message="PRIVATE_ERROR_MESSAGE">'
+                "PRIVATE_ERROR_TRACE</error>"
+                '<error type="/private/custom/HostFailure" message="PRIVATE_UNKNOWN_MESSAGE">'
+                "PRIVATE_UNKNOWN_TRACE</error></testcase></testsuite>",
+            )
+            junit.write_text(xml, encoding="utf-8")
+
+            result = reconcile_consumer_results(
+                junit_path=junit,
+                consumer_context_path=consumer_path,
+                producer_evidence_path=producer_path,
+                witness_dir=witnesses,
+                result_path=result_path,
+                pytest_exit=1,
+                mode="consume-existing",
+                profile="full",
+                fixture_sha=W14780_FIXTURE_SHA,
+                sdk_sha=W14780_SDK_SHA,
+                runner_temp=witnesses.parent,
+            )
+
+            expected_classes = result["error_class_counts"]
+            self.assertEqual(1, expected_classes["AssertionError"])
+            self.assertEqual(1, expected_classes["other_unknown"])
+            self.assertEqual(2, sum(expected_classes.values()))
+            persisted = json.loads(result_path.read_text(encoding="utf-8"))
+            self.assertEqual(expected_classes, persisted["error_class_counts"])
+            serialized = json.dumps(persisted, sort_keys=True)
+            for marker in private_markers:
+                self.assertNotIn(marker, serialized)
+            projected_junit = junit.read_text(encoding="utf-8")
+            for marker in private_markers:
+                self.assertNotIn(marker, projected_junit)
 
     def _write_browser_diagnostic_fixture(self, root: Path, *, failed: bool = False):
         runner_temp = root / "runner-temp"

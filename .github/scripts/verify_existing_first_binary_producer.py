@@ -1574,6 +1574,8 @@ def reconcile_consumer_results(
         "issues": issues,
     }
     if exact_status_projection:
+        if junit_root is not None:
+            result["error_class_counts"] = junit_error_class_counts(cases)
         result["test_statuses"] = status_projection
         result["test_status_counts"] = status_counts
     result_path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
