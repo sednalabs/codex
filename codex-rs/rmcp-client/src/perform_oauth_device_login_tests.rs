@@ -342,3 +342,14 @@ fn malformed_device_response_is_rejected_without_echoing_payload() {
     );
     assert!(!format!("{error:?}").contains("synthetic-only"));
 }
+
+#[test]
+fn provider_control_characters_in_user_code_are_rejected() {
+    let error = validate_device_user_code("ABCD\n\u{1b}[2J")
+        .expect_err("provider-supplied terminal controls must not be displayed");
+    assert_eq!(
+        error.to_string(),
+        "OAuth device authorization response included an unsafe user code"
+    );
+    assert!(!format!("{error:?}").contains("\u{1b}"));
+}
