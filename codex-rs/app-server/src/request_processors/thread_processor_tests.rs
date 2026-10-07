@@ -1445,3 +1445,247 @@ mod thread_processor_behavior_tests {
         Ok(())
     }
 }
+
+mod thread_list_failure_regression_tests {
+    use crate::in_process;
+    use crate::in_process::InProcessClientHandle;
+    use crate::in_process::InProcessStartArgs;
+    use anyhow::Result;
+    use codex_app_server_protocol::ClientInfo;
+    use codex_app_server_protocol::ClientRequest;
+    use codex_app_server_protocol::InitializeParams;
+    use codex_app_server_protocol::RequestId;
+    use codex_app_server_protocol::ThreadListParams;
+    use codex_app_server_protocol::ThreadListResponse;
+    use codex_arg0::Arg0DispatchPaths;
+    use codex_config::CloudConfigBundleLoader;
+    use codex_config::LoaderOverrides;
+    use codex_config::NoopThreadConfigLoader;
+    use codex_core::config::Config;
+    use codex_core::config::ConfigBuilder;
+    use codex_exec_server::EnvironmentManager;
+    use codex_feedback::CodexFeedback;
+    use codex_protocol::ThreadId;
+    use codex_protocol::models::BaseInstructions;
+    use codex_protocol::protocol::SessionSource;
+    use codex_protocol::protocol::ThreadMemoryMode;
+    use codex_thread_store::CreateThreadParams as StoreCreateThreadParams;
+    use codex_thread_store::InMemoryThreadStore;
+    use codex_thread_store::ThreadPersistenceMetadata;
+    use codex_thread_store::ThreadStore;
+    use codex_utils_absolute_path::test_support::PathExt;
+    use pretty_assertions::assert_eq;
+    use std::path::Path;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+    use uuid::Uuid;
+
+    async fn test_config(
+        codex_home: &Path,
+        loader_overrides: LoaderOverrides,
+    ) -> Result<Arc<Config>> {
+        Ok(Arc::new(
+            ConfigBuilder::default()
+                .codex_home(codex_home.to_path_buf())
+                .fallback_cwd(Some(codex_home.to_path_buf()))
+                .loader_overrides(loader_overrides)
+                .build()
+                .await?,
+        ))
+    }
+
+    async fn start_client(
+        config: Arc<Config>,
+        loader_overrides: LoaderOverrides,
+        state_db: Option<codex_rollout::StateDbHandle>,
+    ) -> Result<InProcessClientHandle> {
+        Ok(in_process::start(InProcessStartArgs {
+            arg0_paths: Arg0DispatchPaths::default(),
+            config,
+            cli_overrides: Vec::new(),
+            loader_overrides,
+            strict_config: false,
+            cloud_config_bundle: CloudConfigBundleLoader::default(),
+            embedded_network_policy: Default::default(),
+            thread_config_loader: Arc::new(NoopThreadConfigLoader),
+            feedback: CodexFeedback::new(),
+            log_db: None,
+            state_db,
+            environment_manager: Arc::new(EnvironmentManager::default_for_tests()),
+            config_warnings: Vec::new(),
+            session_source: SessionSource::Cli,
+            enable_codex_api_key_env: false,
+            initialize: InitializeParams {
+                client_info: ClientInfo {
+                    name: "codex-app-server-tests".into(),
+                    title: None,
+                    version: "0.1.0".into(),
+                },
+                capabilities: None,
+            },
+            channel_capacity: in_process::DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
+        })
+        .await?)
+    }
+
+    #[tokio::test]
+    async fn db_only_thread_list_distinguishes_unavailable_database_from_empty_history()
+    -> Result<()> {
+        let home = TempDir::new()?;
+        let other_home = TempDir::new()?;
+        let loader_overrides = LoaderOverrides::without_managed_config_for_tests();
+        let config = test_config(home.path(), loader_overrides.clone()).await?;
+        let right_db = codex_state::StateRuntime::init(
+            config.sqlite_config().clone(),
+            config.model_provider_id.clone(),
+        )
+        .await?;
+        let wrong_db = codex_state::StateRuntime::init(
+            codex_state::SqliteConfig::new_for_testing(other_home.path().abs()),
+            config.model_provider_id.clone(),
+        )
+        .await?;
+
+        for (state_db, should_succeed) in [
+            (None, false),
+            (Some(wrong_db), false),
+            (Some(right_db), true),
+        ] {
+            let client =
+                start_client(Arc::clone(&config), loader_overrides.clone(), state_db).await?;
+            for archived in [false, true] {
+                for cwd in [serde_json::json!(null), serde_json::json!([])] {
+                    let result = client
+                        .request(ClientRequest::ThreadList {
+                            request_id: RequestId::Integer(1),
+                            params: serde_json::from_value(serde_json::json!({
+                                "useStateDbOnly": true,
+                                "modelProviders": [],
+                                "archived": archived,
+                                "cwd": cwd,
+                            }))?,
+                        })
+                        .await?;
+                    if should_succeed {
+                        let page: ThreadListResponse = serde_json::from_value(
+                            result.expect("a healthy empty database should list successfully"),
+                        )?;
+                        assert_eq!(
+                            page,
+                            ThreadListResponse {
+                                data: vec![],
+                                next_cursor: None,
+                                backwards_cursor: None,
+                            }
+                        );
+                    } else {
+                        let error =
+                            result.expect_err("an unavailable database must not look exhausted");
+                        assert_eq!(error.code, -32603);
+                    }
+                }
+            }
+            client.shutdown().await?;
+        }
+        Ok(())
+    }
+
+    struct InMemoryThreadStoreId(String);
+
+    impl Drop for InMemoryThreadStoreId {
+        fn drop(&mut self) {
+            InMemoryThreadStore::remove_id(&self.0);
+        }
+    }
+
+    fn thread_list_params(cursor: Option<String>) -> ThreadListParams {
+        ThreadListParams {
+            excluded_thread_ids: None,
+            originators: None,
+            cursor,
+            limit: Some(1),
+            sort_key: None,
+            sort_direction: None,
+            model_providers: Some(Vec::new()),
+            source_kinds: None,
+            archived: None,
+            section_id: None,
+            project_id: None,
+            cwd: None,
+            use_state_db_only: false,
+            search_term: None,
+            parent_thread_id: None,
+            ancestor_thread_id: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn repeated_thread_list_cursors_fail_on_refill_and_full_pages() -> Result<()> {
+        let codex_home = TempDir::new()?;
+        let store_id = Uuid::new_v4().to_string();
+        std::fs::write(
+            codex_home.path().join("config.toml"),
+            format!("experimental_thread_store = {{ type = \"in_memory\", id = \"{store_id}\" }}"),
+        )?;
+        let thread_store = InMemoryThreadStore::for_id(store_id.clone());
+        let _in_memory_store = InMemoryThreadStoreId(store_id);
+        thread_store
+            .repeat_list_threads_cursor_for_testing("repeated-cursor")
+            .await;
+        let loader_overrides = LoaderOverrides::without_managed_config_for_tests();
+        let config = test_config(codex_home.path(), loader_overrides.clone()).await?;
+        let client = start_client(config, loader_overrides, None).await?;
+
+        let error = client
+            .request(ClientRequest::ThreadList {
+                request_id: RequestId::Integer(1),
+                params: thread_list_params(None),
+            })
+            .await?
+            .expect_err("a repeated refill cursor must fail thread/list");
+        assert_eq!(error.code, -32603);
+        assert_eq!(error.message, "thread listing returned a repeated cursor");
+
+        let thread_id = ThreadId::new();
+        thread_store
+            .create_thread(StoreCreateThreadParams {
+                creator_user_id: None,
+                creator_account_id: None,
+                session_id: thread_id.into(),
+                thread_id,
+                extra_config: None,
+                forked_from_id: None,
+                parent_thread_id: None,
+                source: SessionSource::Cli,
+                thread_source: None,
+                originator: "test_originator".to_string(),
+                base_instructions: BaseInstructions::default(),
+                dynamic_tools: Vec::new(),
+                selected_capability_roots: Vec::new(),
+                multi_agent_version: None,
+                history_mode: Default::default(),
+                history_base: None,
+                subagent_history_start_ordinal: None,
+                initial_window_id: Uuid::now_v7().to_string(),
+                runtime_workspace_roots: None,
+                metadata: ThreadPersistenceMetadata {
+                    cwd: Some(codex_home.path().to_path_buf()),
+                    model_provider: "mock_provider".to_string(),
+                    memory_mode: ThreadMemoryMode::Enabled,
+                },
+            })
+            .await?;
+
+        let error = client
+            .request(ClientRequest::ThreadList {
+                request_id: RequestId::Integer(2),
+                params: thread_list_params(Some("repeated-cursor".to_string())),
+            })
+            .await?
+            .expect_err("a repeated full-page cursor must fail thread/list");
+        assert_eq!(error.code, -32603);
+        assert_eq!(error.message, "thread listing returned a repeated cursor");
+        client.shutdown().await?;
+        Ok(())
+    }
+}
