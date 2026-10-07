@@ -165,7 +165,7 @@ pub(crate) async fn runtime_usage_migrator_for_history(
         );
     }
 
-    let migrations = base
+    let migrations: Vec<_> = base
         .iter()
         .filter(|migration| !skip_source_versions.contains(&migration.version))
         .cloned()
