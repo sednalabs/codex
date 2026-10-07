@@ -127,7 +127,7 @@ pub(crate) async fn runtime_usage_migrator_for_history(
         if matches_t10 {
             t10_v5_or_later_seen |= *version == 5 || *version >= 15;
             t10_v15_or_later_seen |= *version >= 15;
-            if source.is_some_and(|migration| !matches_source) {
+            if source.is_some() && !matches_source {
                 skip_source_versions.push(*version);
             }
             continue;
