@@ -1019,7 +1019,8 @@ fn spawn_approved_task_tool_call(
     );
     app_server
         .thread_tool_transport()
-        .configure(&mut thread_start_params);
+        .configure(&mut thread_start_params, app.config.codex_home.as_path())
+        .expect("thread tool configuration");
     let features = app.config.features.get().clone();
     tokio::spawn(async move {
         let response = crate::dynamic_tools::execute(

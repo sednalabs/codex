@@ -127,6 +127,7 @@ use crate::attestation::X_OAI_ATTESTATION_HEADER;
 use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::client_common::ResponseStream;
+use crate::client_common::record_browser_output_stage;
 use crate::context::BaseInstructionsFragment;
 use crate::context::ContextualUserFragment;
 use crate::cyber_access_program;
@@ -1725,6 +1726,7 @@ impl ModelClientSession {
                 responses_metadata,
                 include_internal,
             )?;
+            record_browser_output_stage("responses_api_request_built", &request.input);
             self.client.set_guardian_metadata(
                 &mut request.client_metadata,
                 responses_metadata.parent_response_id.as_deref(),
@@ -1772,6 +1774,7 @@ impl ModelClientSession {
                 }
                 request.input = input;
             }
+            record_browser_output_stage("pre_transport_request_input", &request.input);
             inference_trace_attempt.record_started(&request);
             let client = ApiResponsesClient::new(
                 transport,

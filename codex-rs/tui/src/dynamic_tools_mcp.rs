@@ -43,6 +43,7 @@ use serde_json::Value;
 use serde_json::json;
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::PoisonError;
 use std::sync::RwLock;
@@ -74,17 +75,25 @@ impl ThreadToolTransport {
         Ok(())
     }
 
-    pub(crate) fn configure(&self, params: &mut ThreadStartParams) {
-        match self {
-            Self::Disabled => params.dynamic_tools = None,
-            Self::Dynamic => {
-                params.dynamic_tools = Some(dynamic_tools::non_delegation_tool_specs());
-            }
+    pub(crate) fn configure(
+        &self,
+        params: &mut ThreadStartParams,
+        codex_home: &Path,
+    ) -> Result<(), String> {
+        crate::browser_dynamic_tools::validate_no_reserved_name_conflict(params)?;
+        let mut specs = match self {
+            Self::Disabled => Vec::new(),
+            Self::Dynamic => dynamic_tools::non_delegation_tool_specs(),
             Self::Mcp(_) => {
-                params.dynamic_tools = None;
                 self.configure_mcp(&mut params.config);
+                Vec::new()
             }
-        }
+        };
+        specs.extend(crate::browser_dynamic_tools::specs_for_codex_home(
+            codex_home,
+        ));
+        params.dynamic_tools = (!specs.is_empty()).then_some(specs);
+        Ok(())
     }
 
     pub(crate) fn configure_mcp(&self, config: &mut Option<HashMap<String, Value>>) {
@@ -95,6 +104,17 @@ impl ThreadToolTransport {
             );
         }
     }
+}
+
+pub(crate) fn has_task_tools(params: &ThreadStartParams) -> bool {
+    params.dynamic_tools.as_ref().is_some_and(|specs| {
+        specs.iter().any(
+            |spec| matches!(spec, DynamicToolSpec::Namespace(namespace) if namespace.name == dynamic_tools::NAMESPACE),
+        )
+    }) || params
+        .config
+        .as_ref()
+        .is_some_and(|config| config.contains_key("mcp_servers.codex_tui"))
 }
 
 #[derive(Clone)]
@@ -399,5 +419,72 @@ impl ServerHandler for DynamicToolMcpHandler {
             CallToolResult::error(content)
         }
         .into())
+    }
+}
+
+#[cfg(test)]
+mod browser_tests {
+    use super::*;
+    use codex_app_server_protocol::DynamicToolSpec;
+    use serde_json::json;
+
+    fn configured_browser_home() -> tempfile::TempDir {
+        let home = tempfile::tempdir().expect("temporary browser home");
+        std::fs::write(
+            home.path().join("browser-computer-use.json"),
+            r#"{"provider":"playwright"}"#,
+        )
+        .expect("write browser config");
+        home
+    }
+
+    fn has_browser_namespace(params: &ThreadStartParams) -> bool {
+        params.dynamic_tools.as_ref().is_some_and(|specs| {
+            specs.iter().any(
+                |spec| matches!(spec, DynamicToolSpec::Namespace(namespace) if namespace.name == crate::browser_dynamic_tools::NAMESPACE),
+            )
+        })
+    }
+
+    #[tokio::test]
+    async fn browser_specs_are_registered_for_each_thread_tool_transport() {
+        let home = configured_browser_home();
+
+        let mut disabled = ThreadStartParams::default();
+        ThreadToolTransport::Disabled
+            .configure(&mut disabled, home.path())
+            .expect("disabled task transport must retain native Browser");
+        assert!(has_browser_namespace(&disabled));
+        assert!(!has_task_tools(&disabled));
+
+        let mut dynamic = ThreadStartParams::default();
+        ThreadToolTransport::Dynamic
+            .configure(&mut dynamic, home.path())
+            .expect("dynamic task transport must include native Browser");
+        assert!(dynamic.dynamic_tools.as_ref().is_some_and(|specs| {
+            specs.iter().any(
+                |spec| matches!(spec, DynamicToolSpec::Namespace(namespace) if namespace.name == dynamic_tools::NAMESPACE),
+            )
+        }));
+        assert!(has_browser_namespace(&dynamic));
+        assert!(has_task_tools(&dynamic));
+
+        let server = DynamicToolMcpServer {
+            connection: Arc::new(RwLock::new(None)),
+            config: json!({"url":"http://127.0.0.1/mcp"}),
+            namespace: "codex_tui",
+            task: tokio::spawn(async {}),
+        };
+        let mut mcp = ThreadStartParams::default();
+        ThreadToolTransport::Mcp(Arc::new(server))
+            .configure(&mut mcp, home.path())
+            .expect("MCP task transport must include native Browser");
+        assert!(has_browser_namespace(&mcp));
+        assert!(has_task_tools(&mcp));
+        assert!(
+            mcp.config
+                .as_ref()
+                .is_some_and(|config| config.contains_key("mcp_servers.codex_tui"))
+        );
     }
 }

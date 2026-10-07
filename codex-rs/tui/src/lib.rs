@@ -138,6 +138,7 @@ mod worktree_browser;
 pub use custom_terminal::Terminal;
 mod assistant_directives;
 mod auto_review_denials;
+mod browser_dynamic_tools;
 mod cwd_prompt;
 mod debug_config;
 mod diff_model;
