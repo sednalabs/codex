@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import subprocess
+import tempfile
 from pathlib import Path
 from unittest import TestCase, main, mock
 
@@ -104,6 +106,11 @@ class NamedRustTests(TestCase):
                 list_only=True,
             )
         with self.assertRaises(ValueError):
+            MODULE.cargo_args(
+                {**REQUEST, "target_kind": "bin", "target": "$(touch nope)"},
+                list_only=True,
+            )
+        with self.assertRaises(ValueError):
             MODULE.cargo_args(REQUEST, list_only=False, test_name="suite::known; echo nope")
 
     def test_command_builder_returns_only_catalog_commands(self) -> None:
@@ -125,6 +132,62 @@ class NamedRustTests(TestCase):
             ],
         )
 
+        bin_request = {
+            **REQUEST,
+            "package": "codex-cli",
+            "target_kind": "bin",
+            "target": "codex",
+        }
+        self.assertEqual(
+            MODULE.cargo_args(bin_request, list_only=True),
+            [
+                "cargo",
+                "test",
+                "--locked",
+                "-p",
+                "codex-cli",
+                "--bin",
+                "codex",
+                "--",
+                "--list",
+            ],
+        )
+        self.assertEqual(
+            MODULE.cargo_args(bin_request, list_only=False),
+            [
+                "cargo",
+                "test",
+                "--locked",
+                "-p",
+                "codex-cli",
+                "--bin",
+                "codex",
+                "--",
+                "--test-threads=1",
+            ],
+        )
+
+    def test_missing_candidate_catalog_uses_trusted_host_catalog(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            candidate_root = Path(directory)
+            self.assertEqual(
+                MODULE.manifest_path(candidate_root),
+                Path(__file__).resolve().parents[2] / ".github" / MODULE.MANIFEST_NAME,
+            )
+            manifest = MODULE.load_manifest(candidate_root)
+            self.assertIn(("codex-cli", "bin", "codex"), manifest)
+            self.assertIn(("codex-rmcp-client", "lib", ""), manifest)
+
+    def test_candidate_catalog_takes_precedence_over_trusted_host_catalog(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            candidate_root = Path(directory)
+            candidate_manifest = candidate_root / ".github" / MODULE.MANIFEST_NAME
+            candidate_manifest.parent.mkdir()
+            candidate_manifest.write_text('{"candidate": true}', encoding="utf-8")
+            self.assertEqual(MODULE.manifest_path(candidate_root), candidate_manifest)
+            with self.assertRaises(ValueError):
+                MODULE.load_manifest(candidate_root)
+
     def test_unknown_target_fails_before_cargo(self) -> None:
         request = {**REQUEST, "package": "not-in-catalog"}
         with (
@@ -134,6 +197,27 @@ class NamedRustTests(TestCase):
             result = MODULE.run_request(request, Path("/validation-target"))
         self.assertEqual(result["failure_code"], "target_selector_unknown")
         run.assert_not_called()
+
+    def test_bin_request_accepts_only_a_safe_catalog_target(self) -> None:
+        request = {
+            "schema_version": "rust-tests-v1",
+            "profile": "rust_minimal",
+            "package": "codex-cli",
+            "target_kind": "bin",
+            "target": "codex",
+            "tests": ["mcp_cmd::tests::mcp_device_auth_flag_parses_and_conflicts_with_no_browser"],
+        }
+        with mock.patch.dict(
+            MODULE.os.environ,
+            {
+                "RUST_TEST_REQUEST_JSON": json.dumps(request),
+                "VALIDATION_PROFILE": "rust_minimal",
+            },
+        ):
+            parsed, error = MODULE.load_request()
+
+        self.assertIsNone(error)
+        self.assertEqual(parsed, request)
 
 
 if __name__ == "__main__":

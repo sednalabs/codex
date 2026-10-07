@@ -136,6 +136,11 @@ jobs:
         with:
           targets: x86_64-unknown-linux-gnu
 
+      - name: Validate trusted named-test helper
+        working-directory: .workflow-src
+        shell: bash
+        run: python3 .github/scripts/test_run_named_rust_tests.py
+
       - name: Inventory and run exact named tests
         id: named_tests
         continue-on-error: true

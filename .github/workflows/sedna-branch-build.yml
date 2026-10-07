@@ -18,6 +18,7 @@ on:
         options:
           - linux-x86_64
           - linux-aarch64
+          - linux-pair
           - macos
       host_only:
         description: Build only the Linux x86_64 code-mode host helper
@@ -41,6 +42,8 @@ jobs:
       display_ref: ${{ steps.meta.outputs.display_ref }}
       preview_version: ${{ steps.meta.outputs.preview_version }}
       artifact_name: ${{ steps.meta.outputs.artifact_name }}
+      source_sha: ${{ steps.meta.outputs.source_sha }}
+      workflow_sha: ${{ steps.meta.outputs.workflow_sha }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -55,35 +58,57 @@ jobs:
           DISPLAY_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref_name }}
           HOST_ONLY: ${{ inputs.host_only }}
           PLATFORM: ${{ inputs.platform }}
+          WORKFLOW_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           if [[ "${HOST_ONLY}" == "true" && "${PLATFORM}" != "linux-x86_64" ]]; then
             echo "The code-mode host-only artifact is supported only on linux-x86_64." >&2
             exit 1
           fi
-          checkout_ref="${CHECKOUT_REF}"
+          checkout_ref="$(git rev-parse HEAD)"
           short_sha="$(git rev-parse --short=8 HEAD)"
           latest_tag="$(git tag --merged HEAD --list 'v*-sedna.*' --sort=-version:refname | head -n 1)"
-          if [[ -n "${latest_tag}" ]]; then
-            base_version="${latest_tag#v}"
-          else
-            base_version="0.0.0-sedna.0"
+          if [[ -z "${latest_tag}" ]]; then
+            echo "No upstream Sedna version tag is reachable from the selected source." >&2
+            exit 1
           fi
+          if [[ ! "${latest_tag}" =~ ^v([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)-sedna\.[0-9]+(\+upstream\.[0-9]+)?$ ]]; then
+            echo "The selected source version tag is not a valid public version base." >&2
+            exit 1
+          fi
+          base_version="${BASH_REMATCH[1]}"
 
           branch_name="${DISPLAY_REF}"
           branch_slug="$(printf '%s' "${branch_name}" | tr '/:@ ' '-' | tr -cd '[:alnum:]._-' | cut -c1-48)"
-          preview_version="${base_version}-ci.${GITHUB_RUN_NUMBER}+g${short_sha}"
+          preview_version="${base_version}-dev.sedna.${GITHUB_RUN_NUMBER}+g${short_sha}"
 
           {
             echo "checkout_ref=${checkout_ref}"
             echo "display_ref=${branch_name}"
             echo "preview_version=${preview_version}"
+            echo "source_sha=$(git rev-parse HEAD)"
+            echo "workflow_sha=${WORKFLOW_SHA}"
             echo "artifact_name=sedna-branch-${branch_slug}-${short_sha}"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Check out trusted package consumer
+        if: ${{ inputs.platform == 'linux-pair' }}
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ github.sha }}
+          path: .workflow-src
+
+      - name: Validate package consumer boundaries
+        if: ${{ inputs.platform == 'linux-pair' }}
+        working-directory: .workflow-src
+        shell: bash
+        run: python3 .github/scripts/test_verify_sedna_branch_package.py
+
   build-linux-x86_64:
     needs: metadata
-    if: ${{ inputs.platform == 'linux-x86_64' }}
+    if: ${{ inputs.platform == 'linux-x86_64' || inputs.platform == 'linux-pair' }}
     uses: ./.github/workflows/_sedna-linux-rust.yml
     with:
       checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
@@ -158,7 +183,7 @@ jobs:
           printf '%s\n' "${source_status}" >&2
           exit 1
         fi
-        cargo build --locked --target x86_64-unknown-linux-gnu --release --bin codex --bin codex-responses-api-proxy
+        cargo build --locked --target x86_64-unknown-linux-gnu --release --bin codex --bin codex-code-mode-host --bin codex-responses-api-proxy
         mkdir -p ../dist
 
         stage_dir="${RUNNER_TEMP}/sedna-branch/x86_64-unknown-linux-gnu"
@@ -169,6 +194,7 @@ jobs:
         mkdir -p "${stage_dir}"
 
         install -Dm 0755 "target/x86_64-unknown-linux-gnu/release/codex" "${stage_dir}/codex"
+        install -Dm 0755 "target/x86_64-unknown-linux-gnu/release/codex-code-mode-host" "${stage_dir}/codex-code-mode-host"
         install -Dm 0755 "target/x86_64-unknown-linux-gnu/release/codex-responses-api-proxy" "${stage_dir}/codex-responses-api-proxy"
 
         file "${stage_dir}/codex" | grep -F 'x86-64'
@@ -182,21 +208,40 @@ jobs:
         "${stage_dir}/codex" --help >/dev/null
         "${stage_dir}/codex" exec --help >/dev/null
         "${stage_dir}/codex" app-server --help >/dev/null
+        "${stage_dir}/codex-code-mode-host" --help >/dev/null
         "${stage_dir}/codex-responses-api-proxy" --help >/dev/null
+        for binary in codex codex-code-mode-host codex-responses-api-proxy; do
+          (cd "${stage_dir}" && sha256sum "${binary}") > "../dist/${archive_base}.${binary}.sha256"
+        done
 
         tar -C "${stage_dir}" -czf "../dist/${archive_base}.tar.gz" .
+        (cd ../dist && sha256sum "${archive_base}.tar.gz") > "../dist/${archive_base}.tar.gz.sha256"
 
-        python3 - <<'PY' > "../dist/${archive_base}.json"
+        ARCHIVE_BASE="${archive_base}" python3 - <<'PY' > "../dist/${archive_base}.json"
+        import hashlib
         import json
         import os
+        from pathlib import Path
         import subprocess
         import sys
 
+        dist = Path("../dist")
+        archive = dist / f"{os.environ['ARCHIVE_BASE']}.tar.gz"
+        binaries = {}
+        for name in ("codex", "codex-code-mode-host", "codex-responses-api-proxy"):
+            binary = Path(os.environ["RUNNER_TEMP"]) / "sedna-branch/x86_64-unknown-linux-gnu" / name
+            binaries[name] = hashlib.sha256(binary.read_bytes()).hexdigest()
         payload = {
             "repository": os.environ["GITHUB_REPOSITORY"],
             "commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+            "workflowCommit": subprocess.check_output(
+                ["git", "-C", "../.workflow-src", "rev-parse", "HEAD"], text=True
+            ).strip(),
             "ref": os.environ["DISPLAY_REF"],
             "previewVersion": os.environ["CODEX_RELEASE_VERSION"],
+            "target": "x86_64-unknown-linux-gnu",
+            "binaries": binaries,
+            "archiveSha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
             "workflow": (
                 f'{os.environ["GITHUB_SERVER_URL"]}/'
                 f'{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{os.environ["GITHUB_RUN_ID"]}'
@@ -208,7 +253,7 @@ jobs:
 
   build-linux-aarch64:
     needs: metadata
-    if: ${{ inputs.platform == 'linux-aarch64' }}
+    if: ${{ inputs.platform == 'linux-aarch64' || inputs.platform == 'linux-pair' }}
     uses: ./.github/workflows/_sedna-linux-rust.yml
     with:
       checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
@@ -226,7 +271,7 @@ jobs:
           printf '%s\n' "${source_status}" >&2
           exit 1
         fi
-        cargo build --locked --target aarch64-unknown-linux-gnu --release --bin codex --bin codex-responses-api-proxy
+        cargo build --locked --target aarch64-unknown-linux-gnu --release --bin codex --bin codex-code-mode-host --bin codex-responses-api-proxy
         mkdir -p ../dist
 
         stage_dir="${RUNNER_TEMP}/sedna-branch/aarch64-unknown-linux-gnu"
@@ -237,6 +282,7 @@ jobs:
         mkdir -p "${stage_dir}"
 
         install -Dm 0755 "target/aarch64-unknown-linux-gnu/release/codex" "${stage_dir}/codex"
+        install -Dm 0755 "target/aarch64-unknown-linux-gnu/release/codex-code-mode-host" "${stage_dir}/codex-code-mode-host"
         install -Dm 0755 "target/aarch64-unknown-linux-gnu/release/codex-responses-api-proxy" "${stage_dir}/codex-responses-api-proxy"
 
         file "${stage_dir}/codex" | grep -F 'ARM aarch64'
@@ -250,22 +296,39 @@ jobs:
         "${stage_dir}/codex" --help >/dev/null
         "${stage_dir}/codex" exec --help >/dev/null
         "${stage_dir}/codex" app-server --help >/dev/null
+        "${stage_dir}/codex-code-mode-host" --help >/dev/null
         "${stage_dir}/codex-responses-api-proxy" --help >/dev/null
+        for binary in codex codex-code-mode-host codex-responses-api-proxy; do
+          (cd "${stage_dir}" && sha256sum "${binary}") > "../dist/${archive_base}.${binary}.sha256"
+        done
 
         tar -C "${stage_dir}" -czf "../dist/${archive_base}.tar.gz" .
+        (cd ../dist && sha256sum "${archive_base}.tar.gz") > "../dist/${archive_base}.tar.gz.sha256"
 
-        python3 - <<'PY' > "../dist/${archive_base}.json"
+        ARCHIVE_BASE="${archive_base}" python3 - <<'PY' > "../dist/${archive_base}.json"
+        import hashlib
         import json
         import os
+        from pathlib import Path
         import subprocess
         import sys
 
+        archive = Path("../dist") / f"{os.environ['ARCHIVE_BASE']}.tar.gz"
+        binaries = {}
+        for name in ("codex", "codex-code-mode-host", "codex-responses-api-proxy"):
+            binary = Path(os.environ["RUNNER_TEMP"]) / "sedna-branch/aarch64-unknown-linux-gnu" / name
+            binaries[name] = hashlib.sha256(binary.read_bytes()).hexdigest()
         payload = {
             "repository": os.environ["GITHUB_REPOSITORY"],
             "commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+            "workflowCommit": subprocess.check_output(
+                ["git", "-C", "../.workflow-src", "rev-parse", "HEAD"], text=True
+            ).strip(),
             "ref": os.environ["DISPLAY_REF"],
             "previewVersion": os.environ["CODEX_RELEASE_VERSION"],
             "target": "aarch64-unknown-linux-gnu",
+            "binaries": binaries,
+            "archiveSha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
             "workflow": (
                 f'{os.environ["GITHUB_SERVER_URL"]}/'
                 f'{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{os.environ["GITHUB_RUN_ID"]}'
@@ -274,6 +337,67 @@ jobs:
         json.dump(payload, sys.stdout, indent=2)
         sys.stdout.write("\n")
         PY
+
+  consume-linux-pair:
+    name: Consume packaged ${{ matrix.target }} preview
+    needs:
+      - metadata
+      - build-linux-x86_64
+      - build-linux-aarch64
+    if: ${{ inputs.platform == 'linux-pair' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - name: Check out trusted package verifier
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ github.sha }}
+          path: .workflow-src
+
+      - name: Download exact architecture artifact from this run
+        uses: actions/download-artifact@v7
+        with:
+          name: ${{ needs.metadata.outputs.artifact_name }}-${{ matrix.target }}
+          path: ${{ runner.temp }}/sedna-preview-artifact
+
+      - name: Verify packaged identity and included tools
+        id: package_consumer
+        continue-on-error: true
+        working-directory: .workflow-src
+        shell: bash
+        env:
+          ARTIFACT_DIR: ${{ runner.temp }}/sedna-preview-artifact
+          EXPECTED_SOURCE_SHA: ${{ needs.metadata.outputs.source_sha }}
+          EXPECTED_WORKFLOW_SHA: ${{ needs.metadata.outputs.workflow_sha }}
+          EXPECTED_PREVIEW_VERSION: ${{ needs.metadata.outputs.preview_version }}
+          EXPECTED_REF: ${{ needs.metadata.outputs.display_ref }}
+          EXPECTED_TARGET: ${{ matrix.target }}
+          RESULT_PATH: ${{ runner.temp }}/sedna-package-consumer-result.json
+        run: python3 .github/scripts/verify_sedna_branch_package.py
+
+      - name: Upload sanitized package-consumer evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ needs.metadata.outputs.artifact_name }}-consumer-${{ matrix.target }}
+          path: ${{ runner.temp }}/sedna-package-consumer-result.json
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Preserve failed package-consumer result
+        if: ${{ steps.package_consumer.outcome == 'failure' }}
+        shell: bash
+        run: exit 1
 
   build-macos:
     name: Build macOS preview - x86_64-apple-darwin
