@@ -1,0 +1,13 @@
+{
+  "schema_version": "rust-tests-command-manifest-v1",
+  "targets": [
+    {
+      "package": "codex-rmcp-client",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-rmcp-client", "--lib", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-rmcp-client", "--lib", "--", "--test-threads=1"]
+    }
+  ]
+}
