@@ -72,7 +72,7 @@ fn t10_usage_history_migrator_through(max_version: i64) -> Migrator {
 }
 
 fn t10_usage_history_migrator() -> Migrator {
-    t10_usage_history_migrator_through(19)
+    t10_usage_history_migrator_through(/*max_version*/ 19)
 }
 
 async fn usage_migration_rows(pool: &SqlitePool) -> Result<Vec<UsageMigrationRow>> {
@@ -218,7 +218,7 @@ async fn assert_partial_t10_usage_history_reopens(
     fixture.close().await;
 
     let upgraded = sqlite
-        .open_usage_db(&runtime_usage_migrator(), None)
+        .open_usage_db(&runtime_usage_migrator(), /*telemetry_override*/ None)
         .await?;
     assert_preserved_migration_rows(&upgraded, &historical_rows).await?;
     assert_t10_pending_current_main_migrations(&upgraded).await?;
@@ -227,7 +227,7 @@ async fn assert_partial_t10_usage_history_reopens(
     upgraded.close().await;
 
     let reopened = sqlite
-        .open_usage_db(&runtime_usage_migrator(), None)
+        .open_usage_db(&runtime_usage_migrator(), /*telemetry_override*/ None)
         .await?;
     assert_preserved_migration_rows(&reopened, &historical_rows).await?;
     assert_t10_pending_current_main_migrations(&reopened).await?;
@@ -257,7 +257,7 @@ async fn qualify_usage_migration_histories() -> Result<()> {
     let fresh_home = tempdir()?;
     let fresh_sqlite = SqliteConfig::new_for_testing(fresh_home.path().abs());
     let fresh = fresh_sqlite
-        .open_usage_db(&runtime_usage_migrator(), None)
+        .open_usage_db(&runtime_usage_migrator(), /*telemetry_override*/ None)
         .await?;
     validate_usage_reporting_indexes(&fresh, /*require_all*/ true).await?;
     let fresh_rows = usage_migration_rows(&fresh).await?;
@@ -270,7 +270,7 @@ async fn qualify_usage_migration_histories() -> Result<()> {
         .clone();
     fresh.close().await;
     let fresh_reopened = fresh_sqlite
-        .open_usage_db(&runtime_usage_migrator(), None)
+        .open_usage_db(&runtime_usage_migrator(), /*telemetry_override*/ None)
         .await?;
     validate_usage_reporting_indexes(&fresh_reopened, /*require_all*/ true).await?;
     assert_eq!(
@@ -299,7 +299,7 @@ async fn qualify_usage_migration_histories() -> Result<()> {
     validate_usage_reporting_indexes(&main_fixture, /*require_all*/ true).await?;
     main_fixture.close().await;
     let main_upgraded = main_sqlite
-        .open_usage_db(&runtime_usage_migrator(), None)
+        .open_usage_db(&runtime_usage_migrator(), /*telemetry_override*/ None)
         .await?;
     assert_preserved_migration_rows(&main_upgraded, &main_before).await?;
     assert_eq!(
@@ -312,7 +312,7 @@ async fn qualify_usage_migration_histories() -> Result<()> {
     validate_usage_reporting_indexes(&main_upgraded, /*require_all*/ true).await?;
     main_upgraded.close().await;
     let main_reopened = main_sqlite
-        .open_usage_db(&runtime_usage_migrator(), None)
+        .open_usage_db(&runtime_usage_migrator(), /*telemetry_override*/ None)
         .await?;
     assert_eq!(
         usage_migration_rows(&main_reopened)
@@ -335,7 +335,7 @@ async fn qualify_usage_migration_histories() -> Result<()> {
     .await?;
     t10_fixture.close().await;
     let t10_upgraded = t10_sqlite
-        .open_usage_db(&runtime_usage_migrator(), None)
+        .open_usage_db(&runtime_usage_migrator(), /*telemetry_override*/ None)
         .await?;
     assert_preserved_migration_rows(&t10_upgraded, &t10_before).await?;
     assert_t10_pending_current_main_migrations(&t10_upgraded).await?;
@@ -373,7 +373,7 @@ async fn qualify_usage_migration_histories() -> Result<()> {
     t10_upgraded.close().await;
 
     let t10_reopened = t10_sqlite
-        .open_usage_db(&runtime_usage_migrator(), None)
+        .open_usage_db(&runtime_usage_migrator(), /*telemetry_override*/ None)
         .await?;
     assert_preserved_migration_rows(&t10_reopened, &t10_before).await?;
     assert_t10_pending_current_main_migrations(&t10_reopened).await?;
@@ -390,8 +390,8 @@ async fn qualify_usage_migration_histories() -> Result<()> {
 
     // Partial T10 histories can legitimately receive current-main migrations
     // at the missing versions. Reopening must keep those exact rows valid.
-    assert_partial_t10_usage_history_reopens(1, &[5, 15]).await?;
-    assert_partial_t10_usage_history_reopens(14, &[15]).await?;
+    assert_partial_t10_usage_history_reopens(/*historical_through*/ 1, &[5, 15]).await?;
+    assert_partial_t10_usage_history_reopens(/*historical_through*/ 14, &[15]).await?;
 
     let report = codex_utils_cargo_bin::find_resource!("../../scripts/codex_usage_report.py")?;
     let python_path = std::env::var_os("PATH").expect("hosted Python must be on PATH");
@@ -446,7 +446,7 @@ async fn qualify_usage_migration_histories() -> Result<()> {
         corrupt_fixture.close().await;
         assert!(
             corrupt_sqlite
-                .open_usage_db(&runtime_usage_migrator(), None)
+                .open_usage_db(&runtime_usage_migrator(), /*telemetry_override*/ None)
                 .await
                 .is_err(),
             "conflicting T10 migration {corrupt_version} must fail before migration effects"
@@ -455,8 +455,8 @@ async fn qualify_usage_migration_histories() -> Result<()> {
             .open_read_only_pool(&corrupt_sqlite.usage_db_path())
             .await?;
         assert_eq!(usage_migration_rows(&readback).await?, corrupt_rows);
-        assert_usage_version_absent(&readback, 20).await?;
-        assert_usage_version_absent(&readback, 6).await?;
+        assert_usage_version_absent(&readback, /*version*/ 20).await?;
+        assert_usage_version_absent(&readback, /*version*/ 6).await?;
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
                 "SELECT COUNT(*) FROM pragma_table_info('usage_threads') WHERE name = 'lineage_edge_kind'",
@@ -478,7 +478,7 @@ async fn qualify_usage_migration_histories() -> Result<()> {
     incomplete_fixture.close().await;
     assert!(
         incomplete_sqlite
-            .open_usage_db(&runtime_usage_migrator(), None)
+            .open_usage_db(&runtime_usage_migrator(), /*telemetry_override*/ None)
             .await
             .is_err(),
         "T10 v16-v19 history without its exact v15 variant must fail closed"
@@ -490,8 +490,8 @@ async fn qualify_usage_migration_histories() -> Result<()> {
         usage_migration_rows(&incomplete_readback).await?,
         incomplete_rows
     );
-    assert_usage_version_absent(&incomplete_readback, 20).await?;
-    assert_usage_version_absent(&incomplete_readback, 6).await?;
+    assert_usage_version_absent(&incomplete_readback, /*version*/ 20).await?;
+    assert_usage_version_absent(&incomplete_readback, /*version*/ 6).await?;
     incomplete_readback.close().await;
 
     let index_home = tempdir()?;
@@ -506,7 +506,7 @@ async fn qualify_usage_migration_histories() -> Result<()> {
     index_fixture.close().await;
     assert!(
         index_sqlite
-            .open_usage_db(&runtime_usage_migrator(), None)
+            .open_usage_db(&runtime_usage_migrator(), /*telemetry_override*/ None)
             .await
             .is_err(),
         "an unexpected same-name reporting index must fail before migration effects"
@@ -515,8 +515,8 @@ async fn qualify_usage_migration_histories() -> Result<()> {
         .open_read_only_pool(&index_sqlite.usage_db_path())
         .await?;
     assert_eq!(usage_migration_rows(&index_readback).await?, index_before);
-    assert_usage_version_absent(&index_readback, 20).await?;
-    assert_usage_version_absent(&index_readback, 6).await?;
+    assert_usage_version_absent(&index_readback, /*version*/ 20).await?;
+    assert_usage_version_absent(&index_readback, /*version*/ 6).await?;
     index_readback.close().await;
 
     let future_home = tempdir()?;
@@ -539,7 +539,7 @@ async fn qualify_usage_migration_histories() -> Result<()> {
         .expect("source-absent future migration row was seeded");
     future_fixture.close().await;
     let future_upgraded = future_sqlite
-        .open_usage_db(&runtime_usage_migrator(), None)
+        .open_usage_db(&runtime_usage_migrator(), /*telemetry_override*/ None)
         .await?;
     assert_eq!(
         usage_migration_rows(&future_upgraded)
@@ -551,7 +551,7 @@ async fn qualify_usage_migration_histories() -> Result<()> {
     validate_usage_reporting_indexes(&future_upgraded, /*require_all*/ true).await?;
     future_upgraded.close().await;
     let future_reopened = future_sqlite
-        .open_usage_db(&runtime_usage_migrator(), None)
+        .open_usage_db(&runtime_usage_migrator(), /*telemetry_override*/ None)
         .await?;
     assert_eq!(
         usage_migration_rows(&future_reopened)
