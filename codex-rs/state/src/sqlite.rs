@@ -1,6 +1,8 @@
 //! Shared SQLite connection configuration.
 
 use crate::DbTelemetry;
+use crate::migrations::runtime_usage_migrator_for_history;
+use crate::migrations::validate_usage_reporting_indexes;
 use crate::runtime::RuntimeDbInitError;
 use crate::runtime::migration_repair::repair_state_migrations;
 use crate::telemetry;
@@ -270,7 +272,19 @@ impl SqliteConfig {
             }
         }
         let started = Instant::now();
-        let migrate_result = migrator.run(&pool).await.map_err(anyhow::Error::from);
+        let migrate_result = async {
+            if matches!(spec.kind, DbKind::Usage) {
+                let usage_migrator =
+                    runtime_usage_migrator_for_history(&pool, migrator).await?;
+                validate_usage_reporting_indexes(&pool, /* require_all */ false).await?;
+                usage_migrator.run(&pool).await?;
+                validate_usage_reporting_indexes(&pool, /* require_all */ true).await?;
+            } else {
+                migrator.run(&pool).await?;
+            }
+            Ok::<(), anyhow::Error>(())
+        }
+        .await;
         telemetry::record_init_result(
             telemetry_override,
             spec.kind,
