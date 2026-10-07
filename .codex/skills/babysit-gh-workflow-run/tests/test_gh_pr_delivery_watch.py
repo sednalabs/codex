@@ -353,6 +353,76 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
         self.assertEqual(receipt["merge_group"]["candidate_sha"], STALE_CANDIDATE_SHA)
         watcher.assert_not_called()
 
+    def test_merge_group_candidate_accepts_identical_result_tree_on_current_base(self):
+        args = make_args()
+        with (
+            patch.object(MODULE, "is_commit_ancestor", side_effect=[False, True]),
+            patch.object(
+                MODULE,
+                "gh_json",
+                side_effect=[
+                    {"tree": {"sha": "1" * 40}},
+                    {"tree": {"sha": "1" * 40}},
+                ],
+            ),
+        ):
+            association = MODULE.verify_candidate_association(
+                "owner/repo", CANDIDATE_SHA, make_pr(), args
+            )
+
+        self.assertFalse(association["candidate_contains_expected_head"])
+        self.assertTrue(association["candidate_tree_matches_expected_head"])
+        self.assertTrue(association["candidate_contains_current_base"])
+
+    def test_merge_group_candidate_with_different_result_tree_is_rejected(self):
+        args = make_args()
+        with (
+            patch.object(MODULE, "is_commit_ancestor", side_effect=[False, True]),
+            patch.object(
+                MODULE,
+                "gh_json",
+                side_effect=[
+                    {"tree": {"sha": "1" * 40}},
+                    {"tree": {"sha": "2" * 40}},
+                ],
+            ),
+            self.assertRaises(MODULE.DeliveryStop) as raised,
+        ):
+            MODULE.verify_candidate_association(
+                "owner/repo", CANDIDATE_SHA, make_pr(), args
+            )
+
+        self.assertEqual(raised.exception.action, "stop_merge_group_candidate_stale")
+
+    def test_merge_group_candidate_with_equivalent_tree_but_wrong_base_is_rejected(self):
+        args = make_args()
+        with (
+            patch.object(MODULE, "is_commit_ancestor", side_effect=[False, False]),
+            patch.object(MODULE, "gh_json") as gh_json,
+            self.assertRaises(MODULE.DeliveryStop) as raised,
+        ):
+            MODULE.verify_candidate_association(
+                "owner/repo", CANDIDATE_SHA, make_pr(), args
+            )
+
+        self.assertEqual(raised.exception.action, "stop_merge_group_candidate_stale")
+        gh_json.assert_not_called()
+
+    def test_merge_group_candidate_with_missing_tree_identity_fails_closed(self):
+        args = make_args()
+        with (
+            patch.object(MODULE, "is_commit_ancestor", side_effect=[False, True]),
+            patch.object(MODULE, "gh_json", return_value={"tree": {}}),
+            self.assertRaises(MODULE.DeliveryStop) as raised,
+        ):
+            MODULE.verify_candidate_association(
+                "owner/repo", CANDIDATE_SHA, make_pr(), args
+            )
+
+        self.assertEqual(
+            raised.exception.action, "stop_merge_group_candidate_uncorrelatable"
+        )
+
     def test_commit_ancestor_accepts_ahead_compare_status(self):
         with patch.object(MODULE, "gh_json", return_value={"status": "ahead"}):
             self.assertTrue(
