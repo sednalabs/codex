@@ -665,6 +665,26 @@ async fn wait_threads_preserves_snapshots_and_rejects_self_wait() -> color_eyre:
     Ok(())
 }
 
+#[test]
+fn wait_threads_preserves_unsuccessful_turn_statuses() {
+    assert_eq!(
+        wait_threads_turn_reason(&codex_app_server_protocol::TurnStatus::Completed),
+        Some("turnCompleted")
+    );
+    assert_eq!(
+        wait_threads_turn_reason(&codex_app_server_protocol::TurnStatus::Interrupted),
+        Some("turnInterrupted")
+    );
+    assert_eq!(
+        wait_threads_turn_reason(&codex_app_server_protocol::TurnStatus::Failed),
+        Some("turnFailed")
+    );
+    assert_eq!(
+        wait_threads_turn_reason(&codex_app_server_protocol::TurnStatus::InProgress),
+        None
+    );
+}
+
 #[tokio::test]
 async fn task_creation_and_followup_start_background_turns() -> color_eyre::Result<()> {
     let (_codex_home, server, source, target) = test_server(json!({})).await?;

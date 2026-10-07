@@ -938,6 +938,7 @@ impl ThreadHistoryBuilder {
             model: Some(payload.model.clone()),
             reasoning_effort: Some(payload.reasoning_effort.clone()),
             agents_states: HashMap::new(),
+            wait_info: None,
         };
         self.upsert_item_in_current_turn(item);
     }
@@ -973,6 +974,7 @@ impl ThreadHistoryBuilder {
             model: Some(payload.model.clone()),
             reasoning_effort: Some(payload.reasoning_effort.clone()),
             agents_states,
+            wait_info: None,
         });
     }
 
@@ -990,6 +992,7 @@ impl ThreadHistoryBuilder {
             model: None,
             reasoning_effort: None,
             agents_states: HashMap::new(),
+            wait_info: None,
         };
         self.upsert_item_in_current_turn(item);
     }
@@ -1014,6 +1017,7 @@ impl ThreadHistoryBuilder {
             model: None,
             reasoning_effort: None,
             agents_states: [(receiver_id, received_status)].into_iter().collect(),
+            wait_info: None,
         });
     }
 
@@ -1049,6 +1053,7 @@ impl ThreadHistoryBuilder {
             model: None,
             reasoning_effort: None,
             agents_states: HashMap::new(),
+            wait_info: None,
         };
         self.upsert_item_in_current_turn(item);
     }
@@ -1084,6 +1089,7 @@ impl ThreadHistoryBuilder {
             model: None,
             reasoning_effort: None,
             agents_states,
+            wait_info: None,
         });
     }
 
@@ -1101,6 +1107,7 @@ impl ThreadHistoryBuilder {
             model: None,
             reasoning_effort: None,
             agents_states: HashMap::new(),
+            wait_info: None,
         };
         self.upsert_item_in_current_turn(item);
     }
@@ -1127,6 +1134,7 @@ impl ThreadHistoryBuilder {
             model: None,
             reasoning_effort: None,
             agents_states,
+            wait_info: None,
         });
     }
 
@@ -1144,6 +1152,7 @@ impl ThreadHistoryBuilder {
             model: None,
             reasoning_effort: None,
             agents_states: HashMap::new(),
+            wait_info: None,
         };
         self.upsert_item_in_current_turn(item);
     }
@@ -1173,6 +1182,7 @@ impl ThreadHistoryBuilder {
             model: None,
             reasoning_effort: None,
             agents_states,
+            wait_info: None,
         });
     }
 
@@ -4663,6 +4673,7 @@ mod tests {
                 )]
                 .into_iter()
                 .collect(),
+                wait_info: None,
             }
         );
     }
@@ -4723,6 +4734,7 @@ mod tests {
                 )]
                 .into_iter()
                 .collect(),
+                wait_info: None,
             }
         );
     }
@@ -4795,6 +4807,7 @@ mod tests {
                 )]
                 .into_iter()
                 .collect(),
+                wait_info: None,
             }
         );
     }

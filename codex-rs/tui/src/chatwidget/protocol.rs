@@ -616,6 +616,7 @@ impl ChatWidget {
                 model,
                 reasoning_effort,
                 agents_states,
+                wait_info,
             } => self.on_collab_agent_tool_call(ThreadItem::CollabAgentToolCall {
                 id,
                 tool,
@@ -626,6 +627,7 @@ impl ChatWidget {
                 model,
                 reasoning_effort,
                 agents_states,
+                wait_info,
             }),
             ThreadItem::EnteredReviewMode { review, .. } if replay_kind.is_none() => {
                 self.enter_review_mode_with_hint(review, /*from_replay*/ false);

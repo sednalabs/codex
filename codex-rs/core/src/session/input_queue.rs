@@ -5,6 +5,7 @@ use crate::state::MailboxDeliveryPhase;
 use crate::state::TurnState;
 use codex_diagnostics::GaugeGuard;
 use codex_history::ResponseItemEnvelope;
+use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::InterAgentCommunication;
@@ -168,6 +169,33 @@ impl InputQueue {
             None
         };
         (activity_rx, pending_activity)
+    }
+
+    /// Snapshot available mailbox origins without exposing message content or consuming queued
+    /// communications. The boolean mailbox watch can signal activity before the local queue has
+    /// been materialized, so `None` means the origin was not observable at this boundary.
+    pub(crate) async fn pending_mailbox_agent_paths(
+        &self,
+        turn_state: Option<&Mutex<TurnState>>,
+    ) -> Option<Vec<AgentPath>> {
+        let mut agent_paths = std::collections::BTreeSet::new();
+        if let Some(turn_state) = turn_state {
+            let turn_state = turn_state.lock().await;
+            agent_paths.extend(turn_state.pending_input.items.iter().filter_map(
+                |input| match input {
+                    TurnInput::InterAgentCommunication(communication) => {
+                        Some(communication.author.clone())
+                    }
+                    _ => None,
+                },
+            ));
+        }
+
+        let mut pending = self.mailbox_pending_mails.lock().await;
+        self.read_mailbox(&mut pending);
+        agent_paths.extend(pending.iter().map(|mail| mail.communication.author.clone()));
+
+        (!agent_paths.is_empty()).then(|| agent_paths.into_iter().collect())
     }
 
     #[expect(
@@ -595,6 +623,81 @@ mod tests {
         assert_eq!(
             *activity_rx.borrow_and_update(),
             InputQueueActivity::Mailbox
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_mailbox_origins_are_snapshotted_without_consuming_messages() {
+        let input_queue = InputQueue::new();
+        let worker_a = AgentPath::root().join("worker_a").expect("worker path");
+        let worker_b = AgentPath::root().join("worker_b").expect("worker path");
+        let mail_one = make_mail(
+            worker_a.clone(),
+            AgentPath::root(),
+            "first payload",
+            /*trigger_turn*/ false,
+        );
+        let mail_two = make_mail(
+            worker_a.clone(),
+            AgentPath::root(),
+            "second payload",
+            /*trigger_turn*/ false,
+        );
+        let mail_three = make_mail(
+            worker_b.clone(),
+            AgentPath::root(),
+            "third payload",
+            /*trigger_turn*/ false,
+        );
+        for mail in [mail_one.clone(), mail_two.clone(), mail_three.clone()] {
+            input_queue
+                .enqueue_mailbox_communication(mail, Default::default())
+                .await;
+        }
+
+        assert_eq!(
+            input_queue
+                .pending_mailbox_agent_paths(/*turn_state*/ None)
+                .await,
+            Some(vec![worker_a, worker_b])
+        );
+        assert_eq!(
+            input_queue.drain_mailbox_input_items().await.0,
+            vec![
+                TurnInput::InterAgentCommunication(mail_one),
+                TurnInput::InterAgentCommunication(mail_two),
+                TurnInput::InterAgentCommunication(mail_three),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_turn_mailbox_origin_is_snapshotted_without_consuming_input() {
+        let input_queue = InputQueue::new();
+        let turn_state = Mutex::new(TurnState::default());
+        let worker = AgentPath::root().join("worker").expect("worker path");
+        let communication = make_mail(
+            worker.clone(),
+            AgentPath::root(),
+            "queued in the active turn",
+            /*trigger_turn*/ false,
+        );
+        input_queue
+            .extend_pending_input_for_turn_state(
+                &turn_state,
+                vec![TurnInput::InterAgentCommunication(communication.clone())],
+            )
+            .await;
+
+        assert_eq!(
+            input_queue
+                .pending_mailbox_agent_paths(Some(&turn_state))
+                .await,
+            Some(vec![worker])
+        );
+        assert_eq!(
+            turn_state.lock().await.pending_input.items,
+            vec![TurnInput::InterAgentCommunication(communication)]
         );
     }
 

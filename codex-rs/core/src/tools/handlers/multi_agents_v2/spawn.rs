@@ -89,6 +89,7 @@ impl ToolExecutor<ToolInvocation> for Handler {
                     reasoning_effort: agent_snapshot
                         .and_then(|snapshot| snapshot.reasoning_effort.clone()),
                     agents_states,
+                    wait_info: None,
                 },
                 started_at_ms,
                 completed_at_ms,

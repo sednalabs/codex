@@ -29,6 +29,8 @@ pub use codex_protocol::items::AgentMessageDelivery;
 pub use codex_protocol::items::AsyncUserInputQuestion;
 use codex_protocol::items::CollabAgentTool as CoreCollabAgentTool;
 use codex_protocol::items::CollabAgentToolCallStatus as CoreCollabAgentToolCallStatus;
+use codex_protocol::items::CollabAgentWaitInfo as CoreCollabAgentWaitInfo;
+use codex_protocol::items::CollabAgentWaitOutcome as CoreCollabAgentWaitOutcome;
 use codex_protocol::items::CommandExecutionStatus as CoreCommandExecutionStatus;
 use codex_protocol::items::DynamicToolCallStatus as CoreDynamicToolCallStatus;
 pub use codex_protocol::items::McpAppDisplayMode;
@@ -391,6 +393,10 @@ pub enum ThreadItem {
         reasoning_effort: Option<ReasoningEffort>,
         /// Last known status of the target agents, when available.
         agents_states: HashMap<String, CollabAgentState>,
+        /// Structured wake outcome for a completed V2 wait; absent on older records.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        wait_info: Option<CollabAgentWaitInfo>,
     },
     #[serde(rename_all = "camelCase")]
     #[ts(rename_all = "camelCase")]
@@ -980,6 +986,7 @@ impl From<CoreTurnItem> for ThreadItem {
                     .into_iter()
                     .map(|(thread_id, status)| (thread_id.to_string(), status.into()))
                     .collect(),
+                wait_info: call.wait_info.map(Into::into),
             },
             CoreTurnItem::SubAgentActivity(activity) => ThreadItem::SubAgentActivity {
                 model: activity.model,
@@ -1231,6 +1238,47 @@ pub enum CollabAgentToolCallStatus {
     Completed,
     Failed,
     Interrupted,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase", export_to = "v2/")]
+pub struct CollabAgentWaitInfo {
+    pub outcome: CollabAgentWaitOutcome,
+    /// Canonical origins observed in pending mailbox communications, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub agent_paths: Option<Vec<String>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case", export_to = "v2/")]
+pub enum CollabAgentWaitOutcome {
+    MailboxActivity,
+    SteeredInput,
+    TimedOut,
+}
+
+impl From<CoreCollabAgentWaitInfo> for CollabAgentWaitInfo {
+    fn from(value: CoreCollabAgentWaitInfo) -> Self {
+        Self {
+            outcome: value.outcome.into(),
+            agent_paths: value
+                .agent_paths
+                .map(|paths| paths.into_iter().map(String::from).collect()),
+        }
+    }
+}
+
+impl From<CoreCollabAgentWaitOutcome> for CollabAgentWaitOutcome {
+    fn from(value: CoreCollabAgentWaitOutcome) -> Self {
+        match value {
+            CoreCollabAgentWaitOutcome::MailboxActivity => Self::MailboxActivity,
+            CoreCollabAgentWaitOutcome::SteeredInput => Self::SteeredInput,
+            CoreCollabAgentWaitOutcome::TimedOut => Self::TimedOut,
+        }
+    }
 }
 
 impl From<CoreCollabAgentTool> for CollabAgentTool {

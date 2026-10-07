@@ -303,7 +303,7 @@ pub fn create_wait_agent_tool_v1(options: WaitAgentTimeoutOptions) -> ToolSpec {
 pub fn create_wait_agent_tool_v2(options: WaitAgentTimeoutOptions) -> ToolSpec {
     ToolSpec::Function(ResponsesApiTool {
         name: "wait_agent".to_string(),
-        description: "Wait for a mailbox update from any live agent, including queued messages and final-status notifications. The wait also ends early when new user input is steered into the active turn. Does not return the content; returns either a summary of which agents have updates (if any), an interruption summary for steered input, or a timeout summary if no activity arrives before the deadline."
+        description: "Wait for mailbox activity from any live agent or until new user input is steered into the active turn. Returns a structured wake outcome and, when observable, canonical paths for agents with pending updates. It never returns message content."
             .to_string(),
         strict: false,
         defer_loading: None,
@@ -546,9 +546,26 @@ fn wait_output_schema_v2() -> Value {
             "timed_out": {
                 "type": "boolean",
                 "description": "Whether the wait call returned because no mailbox update arrived before the timeout."
+            },
+            "wake": {
+                "type": "object",
+                "properties": {
+                    "outcome": {
+                        "type": "string",
+                        "enum": ["mailbox_activity", "steered_input", "timed_out"],
+                        "description": "The observed event that ended the wait; mailbox activity is distinct from starting a turn."
+                    },
+                    "agentPaths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Canonical origins found in pending mailbox communications; omitted when the origin was not observable."
+                    }
+                },
+                "required": ["outcome"],
+                "additionalProperties": false
             }
         },
-        "required": ["message", "timed_out"],
+        "required": ["message", "timed_out", "wake"],
         "additionalProperties": false
     })
 }

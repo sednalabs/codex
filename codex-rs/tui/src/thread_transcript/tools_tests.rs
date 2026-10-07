@@ -315,6 +315,7 @@ fn agent_tool_fallbacks_preserve_status_without_duplicating_v2_activity() {
             model: None,
             reasoning_effort: None,
             agents_states: Default::default(),
+            wait_info: None,
         };
         let cells = thread_items_to_transcript_cells(
             /*thread_id*/ None,

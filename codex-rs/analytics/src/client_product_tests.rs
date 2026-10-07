@@ -252,6 +252,7 @@ async fn buffered_tool_events_preserve_attribution_or_drop_it_on_queue_overflow(
                 model: None,
                 reasoning_effort: None,
                 agents_states: Default::default(),
+                wait_info: None,
             },
         };
         client.track_notification(&ServerNotification::ItemStarted(ItemStartedNotification {

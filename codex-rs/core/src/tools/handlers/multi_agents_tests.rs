@@ -45,6 +45,8 @@ use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::ShellEnvironmentPolicy;
+use codex_protocol::items::CollabAgentWaitInfo;
+use codex_protocol::items::CollabAgentWaitOutcome;
 use codex_protocol::items::TurnItem;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::models::BaseInstructions;
@@ -3030,7 +3032,7 @@ async fn multi_agent_v2_wait_agent_accepts_timeout_only_argument() {
         .input_queue
         .enqueue_mailbox_communication(
             InterAgentCommunication::new(
-                worker_path,
+                worker_path.clone(),
                 AgentPath::root(),
                 Vec::new(),
                 "hello from worker".to_string(),
@@ -3050,8 +3052,12 @@ async fn multi_agent_v2_wait_agent_accepts_timeout_only_argument() {
     assert_eq!(
         result,
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait completed.".to_string(),
+            message: "Wait completed after mailbox activity.".to_string(),
             timed_out: false,
+            wake: CollabAgentWaitInfo {
+                outcome: CollabAgentWaitOutcome::MailboxActivity,
+                agent_paths: Some(vec![worker_path]),
+            },
         }
     );
     assert_eq!(success, None);
@@ -3099,6 +3105,10 @@ async fn multi_agent_v2_wait_agent_clamps_timeout_below_configured_min() {
                 "Wait timed out.\n\nRequested timeout of 1ms was clamped to the minimum of 50ms."
                     .to_string(),
             timed_out: true,
+            wake: CollabAgentWaitInfo {
+                outcome: CollabAgentWaitOutcome::TimedOut,
+                agent_paths: None,
+            },
         }
     );
     assert_eq!(success, None);
@@ -3134,6 +3144,10 @@ async fn multi_agent_v2_wait_agent_accepts_explicit_timeout_at_configured_min() 
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait timed out.".to_string(),
             timed_out: true,
+            wake: CollabAgentWaitInfo {
+                outcome: CollabAgentWaitOutcome::TimedOut,
+                agent_paths: None,
+            },
         }
     );
     assert_eq!(success, None);
@@ -3189,6 +3203,10 @@ async fn multi_agent_v2_wait_agent_uses_configured_default_timeout() {
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait timed out.".to_string(),
             timed_out: true,
+            wake: CollabAgentWaitInfo {
+                outcome: CollabAgentWaitOutcome::TimedOut,
+                agent_paths: None,
+            },
         }
     );
     assert_eq!(success, None);
@@ -3229,6 +3247,10 @@ async fn multi_agent_v2_wait_agent_allows_zero_configured_timeout() {
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait timed out.".to_string(),
             timed_out: true,
+            wake: CollabAgentWaitInfo {
+                outcome: CollabAgentWaitOutcome::TimedOut,
+                agent_paths: None,
+            },
         }
     );
     assert_eq!(success, None);
@@ -3294,6 +3316,10 @@ async fn multi_agent_v2_wait_agent_accepts_explicit_timeout_at_configured_max() 
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait timed out.".to_string(),
             timed_out: true,
+            wake: CollabAgentWaitInfo {
+                outcome: CollabAgentWaitOutcome::TimedOut,
+                agent_paths: None,
+            },
         }
     );
     assert_eq!(success, None);
@@ -3530,7 +3556,7 @@ async fn multi_agent_v2_wait_agent_returns_summary_for_mailbox_activity() {
         .input_queue
         .enqueue_mailbox_communication(
             InterAgentCommunication::new(
-                worker_path,
+                worker_path.clone(),
                 AgentPath::root(),
                 Vec::new(),
                 "completed".to_string(),
@@ -3550,8 +3576,12 @@ async fn multi_agent_v2_wait_agent_returns_summary_for_mailbox_activity() {
     assert_eq!(
         result,
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait completed.".to_string(),
+            message: "Wait completed after mailbox activity.".to_string(),
             timed_out: false,
+            wake: CollabAgentWaitInfo {
+                outcome: CollabAgentWaitOutcome::MailboxActivity,
+                agent_paths: Some(vec![worker_path]),
+            },
         }
     );
     assert_eq!(success, None);
@@ -3606,7 +3636,7 @@ async fn multi_agent_v2_wait_agent_returns_for_already_queued_mail() {
         .input_queue
         .enqueue_mailbox_communication(
             InterAgentCommunication::new(
-                worker_path,
+                worker_path.clone(),
                 AgentPath::root(),
                 Vec::new(),
                 "already queued".to_string(),
@@ -3634,8 +3664,12 @@ async fn multi_agent_v2_wait_agent_returns_for_already_queued_mail() {
     assert_eq!(
         result,
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait completed.".to_string(),
+            message: "Wait completed after mailbox activity.".to_string(),
             timed_out: false,
+            wake: CollabAgentWaitInfo {
+                outcome: CollabAgentWaitOutcome::MailboxActivity,
+                agent_paths: Some(vec![worker_path]),
+            },
         }
     );
     assert_eq!(success, None);
@@ -3708,7 +3742,7 @@ async fn multi_agent_v2_wait_agent_wakes_on_any_mailbox_notification() {
         .input_queue
         .enqueue_mailbox_communication(
             InterAgentCommunication::new(
-                worker_b_path,
+                worker_b_path.clone(),
                 AgentPath::root(),
                 Vec::new(),
                 "from worker b".to_string(),
@@ -3728,8 +3762,12 @@ async fn multi_agent_v2_wait_agent_wakes_on_any_mailbox_notification() {
     assert_eq!(
         result,
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait completed.".to_string(),
+            message: "Wait completed after mailbox activity.".to_string(),
             timed_out: false,
+            wake: CollabAgentWaitInfo {
+                outcome: CollabAgentWaitOutcome::MailboxActivity,
+                agent_paths: Some(vec![worker_b_path]),
+            },
         }
     );
     assert_eq!(success, None);
@@ -3799,7 +3837,7 @@ async fn multi_agent_v2_wait_agent_does_not_return_completed_content() {
         .input_queue
         .enqueue_mailbox_communication(
             InterAgentCommunication::new(
-                worker_path,
+                worker_path.clone(),
                 AgentPath::root(),
                 Vec::new(),
                 "sensitive child output".to_string(),
@@ -3819,8 +3857,12 @@ async fn multi_agent_v2_wait_agent_does_not_return_completed_content() {
     assert_eq!(
         result,
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait completed.".to_string(),
+            message: "Wait completed after mailbox activity.".to_string(),
             timed_out: false,
+            wake: CollabAgentWaitInfo {
+                outcome: CollabAgentWaitOutcome::MailboxActivity,
+                agent_paths: Some(vec![worker_path]),
+            },
         }
     );
     assert!(!content.contains("sensitive child output"));

@@ -334,6 +334,25 @@ pub enum CollabAgentToolCallStatus {
     Interrupted,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum CollabAgentWaitOutcome {
+    MailboxActivity,
+    SteeredInput,
+    TimedOut,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CollabAgentWaitInfo {
+    pub outcome: CollabAgentWaitOutcome,
+    /// Canonical origins observed in pending mailbox communications, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub agent_paths: Option<Vec<AgentPath>>,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq)]
 pub struct CollabAgentToolCallItem {
     pub id: String,
@@ -355,6 +374,10 @@ pub struct CollabAgentToolCallItem {
     pub reasoning_effort: Option<ReasoningEffortConfig>,
     #[serde(default)]
     pub agents_states: HashMap<ThreadId, AgentStatus>,
+    /// Structured outcome for a completed V2 wait. Missing on older history records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub wait_info: Option<CollabAgentWaitInfo>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]

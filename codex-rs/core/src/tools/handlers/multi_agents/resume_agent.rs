@@ -78,6 +78,7 @@ async fn handle_resume_agent(
                 model: None,
                 reasoning_effort: None,
                 agents_states: Default::default(),
+                wait_info: None,
             }),
         )
         .await;
@@ -123,6 +124,7 @@ async fn handle_resume_agent(
                 model: None,
                 reasoning_effort: None,
                 agents_states: [(receiver_thread_id, status.clone())].into_iter().collect(),
+                wait_info: None,
             }),
         )
         .await;

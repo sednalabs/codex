@@ -8,6 +8,8 @@ use codex_protocol::items::AgentMessageItem;
 use codex_protocol::items::CollabAgentTool as CoreCollabAgentTool;
 use codex_protocol::items::CollabAgentToolCallItem;
 use codex_protocol::items::CollabAgentToolCallStatus as CoreCollabAgentToolCallStatus;
+use codex_protocol::items::CollabAgentWaitInfo as CoreCollabAgentWaitInfo;
+use codex_protocol::items::CollabAgentWaitOutcome as CoreCollabAgentWaitOutcome;
 use codex_protocol::items::CommandExecutionItem;
 use codex_protocol::items::CommandExecutionStatus as CoreCommandExecutionStatus;
 use codex_protocol::items::DynamicToolCallItem;
@@ -3421,6 +3423,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         agents_states: [(receiver_thread_id, CoreAgentStatus::Completed(None))]
             .into_iter()
             .collect(),
+        wait_info: None,
     });
 
     assert_eq!(
@@ -3443,8 +3446,73 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             )]
             .into_iter()
             .collect(),
+            wait_info: None,
         }
     );
+
+    let wait_item = TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+        id: "wait-1".to_string(),
+        tool: CoreCollabAgentTool::Wait,
+        status: CoreCollabAgentToolCallStatus::Completed,
+        sender_thread_id,
+        receiver_thread_ids: Vec::new(),
+        receiver_agents: Vec::new(),
+        prompt: None,
+        model: None,
+        reasoning_effort: None,
+        agents_states: HashMap::new(),
+        wait_info: Some(CoreCollabAgentWaitInfo {
+            outcome: CoreCollabAgentWaitOutcome::MailboxActivity,
+            agent_paths: Some(vec![
+                codex_protocol::AgentPath::root()
+                    .join("worker")
+                    .expect("worker path"),
+            ]),
+        }),
+    });
+    let converted_wait = ThreadItem::from(wait_item);
+    assert_eq!(
+        converted_wait,
+        ThreadItem::CollabAgentToolCall {
+            id: "wait-1".to_string(),
+            tool: CollabAgentTool::Wait,
+            status: CollabAgentToolCallStatus::Completed,
+            sender_thread_id: sender_thread_id.to_string(),
+            receiver_thread_ids: Vec::new(),
+            prompt: None,
+            model: None,
+            reasoning_effort: None,
+            agents_states: HashMap::new(),
+            wait_info: Some(CollabAgentWaitInfo {
+                outcome: CollabAgentWaitOutcome::MailboxActivity,
+                agent_paths: Some(vec!["/root/worker".to_string()]),
+            }),
+        }
+    );
+    let wait_json = serde_json::to_value(&converted_wait).expect("serialize wait item");
+    assert_eq!(wait_json["waitInfo"]["outcome"], "mailbox_activity");
+    assert_eq!(wait_json["waitInfo"]["agentPaths"][0], "/root/worker");
+
+    let legacy_wait: ThreadItem = serde_json::from_value(json!({
+        "type": "collabAgentToolCall",
+        "id": "legacy-wait",
+        "tool": "wait",
+        "status": "completed",
+        "senderThreadId": sender_thread_id.to_string(),
+        "receiverThreadIds": [],
+        "prompt": null,
+        "model": null,
+        "reasoningEffort": null,
+        "agentsStates": {},
+    }))
+    .expect("legacy wait history without wait info should deserialize");
+    assert!(matches!(
+        legacy_wait,
+        ThreadItem::CollabAgentToolCall {
+            wait_info: None,
+            ..
+        }
+    ));
 
     let sub_agent_activity_item = TurnItem::SubAgentActivity(SubAgentActivityItem {
         model: Some("gpt-5".into()),

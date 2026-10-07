@@ -322,7 +322,7 @@ fn followup_task_tool_requires_message_and_has_no_output_schema() {
 }
 
 #[test]
-fn wait_agent_tool_v2_uses_timeout_only_summary_output() {
+fn wait_agent_tool_v2_describes_structured_wake_output() {
     let ToolSpec::Function(ResponsesApiTool {
         description,
         parameters,
@@ -346,9 +346,8 @@ fn wait_agent_tool_v2_uses_timeout_only_summary_output() {
         .expect("wait_agent should use object params");
     assert!(!properties.contains_key("targets"));
     assert!(properties.contains_key("timeout_ms"));
-    assert!(description.contains(
-        "Does not return the content; returns either a summary of which agents have updates (if any)"
-    ));
+    assert!(description.contains("structured wake outcome"));
+    assert!(description.contains("canonical paths for agents with pending updates"));
     assert_eq!(
         properties
             .get("timeout_ms")
@@ -356,11 +355,24 @@ fn wait_agent_tool_v2_uses_timeout_only_summary_output() {
         Some("Timeout in milliseconds. Defaults to 30000, min 10000, max 3600000.")
     );
     assert_eq!(parameters.required.as_ref(), None);
+    let output_schema = output_schema.expect("wait output schema").to_value();
     assert_eq!(
-        output_schema.expect("wait output schema").to_value()["properties"]["message"]["description"],
+        output_schema["properties"]["message"]["description"],
         json!(
             "Brief wait summary without the agent's final content, including any timeout adjustment."
         )
+    );
+    assert_eq!(
+        output_schema["required"],
+        json!(["message", "timed_out", "wake"])
+    );
+    assert_eq!(
+        output_schema["properties"]["wake"]["properties"]["outcome"]["enum"],
+        json!(["mailbox_activity", "steered_input", "timed_out"])
+    );
+    assert_eq!(
+        output_schema["properties"]["wake"]["properties"]["agentPaths"]["type"],
+        "array"
     );
 }
 

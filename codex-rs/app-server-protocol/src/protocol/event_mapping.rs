@@ -86,6 +86,7 @@ pub fn item_event_to_server_notification(
                 model: Some(begin_event.model),
                 reasoning_effort: Some(begin_event.reasoning_effort),
                 agents_states: HashMap::new(),
+                wait_info: None,
             };
             ServerNotification::ItemStarted(ItemStartedNotification {
                 thread_id,
@@ -125,6 +126,7 @@ pub fn item_event_to_server_notification(
                 model: Some(end_event.model),
                 reasoning_effort: Some(end_event.reasoning_effort),
                 agents_states,
+                wait_info: None,
             };
             ServerNotification::ItemCompleted(ItemCompletedNotification {
                 thread_id,
@@ -145,6 +147,7 @@ pub fn item_event_to_server_notification(
                 model: None,
                 reasoning_effort: None,
                 agents_states: HashMap::new(),
+                wait_info: None,
             };
             ServerNotification::ItemStarted(ItemStartedNotification {
                 thread_id,
@@ -173,6 +176,7 @@ pub fn item_event_to_server_notification(
                 model: None,
                 reasoning_effort: None,
                 agents_states: [(receiver_id, received_status)].into_iter().collect(),
+                wait_info: None,
             };
             ServerNotification::ItemCompleted(ItemCompletedNotification {
                 thread_id,
@@ -213,6 +217,7 @@ pub fn item_event_to_server_notification(
                 model: None,
                 reasoning_effort: None,
                 agents_states: HashMap::new(),
+                wait_info: None,
             };
             ServerNotification::ItemStarted(ItemStartedNotification {
                 thread_id,
@@ -249,6 +254,8 @@ pub fn item_event_to_server_notification(
                 model: None,
                 reasoning_effort: None,
                 agents_states,
+                wait_info: None,
+                wait_info: None,
             };
             ServerNotification::ItemCompleted(ItemCompletedNotification {
                 thread_id,
@@ -268,6 +275,7 @@ pub fn item_event_to_server_notification(
                 model: None,
                 reasoning_effort: None,
                 agents_states: HashMap::new(),
+                wait_info: None,
             };
             ServerNotification::ItemStarted(ItemStartedNotification {
                 thread_id,
@@ -301,6 +309,7 @@ pub fn item_event_to_server_notification(
                 model: None,
                 reasoning_effort: None,
                 agents_states,
+                wait_info: None,
             };
             ServerNotification::ItemCompleted(ItemCompletedNotification {
                 thread_id,
@@ -320,6 +329,7 @@ pub fn item_event_to_server_notification(
                 model: None,
                 reasoning_effort: None,
                 agents_states: HashMap::new(),
+                wait_info: None,
             };
             ServerNotification::ItemStarted(ItemStartedNotification {
                 thread_id,
@@ -542,6 +552,7 @@ mod tests {
                     model: None,
                     reasoning_effort: None,
                     agents_states: HashMap::new(),
+                    wait_info: None,
                 },
             },
         );
@@ -586,6 +597,7 @@ mod tests {
                     )]
                     .into_iter()
                     .collect(),
+                    wait_info: None,
                 },
             },
         );

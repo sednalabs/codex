@@ -12,6 +12,8 @@ use codex_app_server_protocol::CollabAgentState;
 use codex_app_server_protocol::CollabAgentStatus;
 use codex_app_server_protocol::CollabAgentTool;
 use codex_app_server_protocol::CollabAgentToolCallStatus;
+use codex_app_server_protocol::CollabAgentWaitInfo;
+use codex_app_server_protocol::CollabAgentWaitOutcome;
 use codex_app_server_protocol::SubAgentActivityKind;
 use codex_app_server_protocol::ThreadItem;
 use codex_protocol::ThreadId;
@@ -212,6 +214,7 @@ pub(crate) fn tool_call_history_cell(
         receiver_thread_ids,
         prompt,
         agents_states,
+        wait_info,
         ..
     } = item
     else {
@@ -270,6 +273,7 @@ pub(crate) fn tool_call_history_cell(
                 Some(waiting_end(
                     receiver_thread_ids,
                     agents_states,
+                    wait_info.as_ref(),
                     &mut agent_metadata,
                 ))
             }
@@ -407,10 +411,45 @@ fn waiting_begin(
 fn waiting_end(
     receiver_thread_ids: &[String],
     agents_states: &std::collections::HashMap<String, CollabAgentState>,
+    wait_info: Option<&CollabAgentWaitInfo>,
     agent_metadata: &mut impl FnMut(ThreadId) -> AgentMetadata,
 ) -> PlainHistoryCell {
-    let details = wait_complete_lines(receiver_thread_ids, agents_states, agent_metadata);
-    collab_event(title_text("Finished waiting"), details)
+    let (title, details) = match wait_info {
+        Some(wait_info) => wait_info_lines(wait_info),
+        None => (
+            "Finished waiting".to_string(),
+            wait_complete_lines(receiver_thread_ids, agents_states, agent_metadata),
+        ),
+    };
+    collab_event(title_text(title), details)
+}
+
+fn wait_info_lines(wait_info: &CollabAgentWaitInfo) -> (String, Vec<Line<'static>>) {
+    match wait_info.outcome {
+        CollabAgentWaitOutcome::MailboxActivity => {
+            let details = wait_info
+                .agent_paths
+                .as_ref()
+                .filter(|paths| !paths.is_empty())
+                .map(|paths| {
+                    paths
+                        .iter()
+                        .map(|path| {
+                            Line::from(format!(
+                                "Mailbox update from {}",
+                                truncate_text(path, COLLAB_PROMPT_PREVIEW_GRAPHEMES)
+                            ))
+                        })
+                        .collect()
+                })
+                .unwrap_or_else(|| vec![Line::from("Mailbox origin unavailable")]);
+            ("Mailbox activity received".to_string(), details)
+        }
+        CollabAgentWaitOutcome::SteeredInput => {
+            ("Wait interrupted by new input".to_string(), Vec::new())
+        }
+        CollabAgentWaitOutcome::TimedOut => ("Wait timed out".to_string(), Vec::new()),
+    }
 }
 
 fn close_end(
@@ -586,7 +625,12 @@ fn wait_complete_lines(
     entries.extend(extras);
 
     if entries.is_empty() {
-        vec![Line::from(Span::from("No agents completed yet"))]
+        let summary = if receiver_thread_ids.is_empty() && agents_states.is_empty() {
+            "Agent status details unavailable"
+        } else {
+            "No agents completed yet"
+        };
+        vec![Line::from(Span::from(summary))]
     } else {
         entries
             .into_iter()
@@ -737,6 +781,7 @@ mod tests {
                     robie_id.to_string(),
                     agent_state(CollabAgentStatus::PendingInit, /*message*/ None),
                 )]),
+                wait_info: None,
             },
             /*cached_spawn_request*/ None,
             |thread_id| metadata_for(thread_id, robie_id, bob_id),
@@ -757,6 +802,7 @@ mod tests {
                     robie_id.to_string(),
                     agent_state(CollabAgentStatus::Running, /*message*/ None),
                 )]),
+                wait_info: None,
             },
             /*cached_spawn_request*/ None,
             |thread_id| metadata_for(thread_id, robie_id, bob_id),
@@ -774,6 +820,7 @@ mod tests {
                 model: None,
                 reasoning_effort: None,
                 agents_states: HashMap::new(),
+                wait_info: None,
             },
             /*cached_spawn_request*/ None,
             |thread_id| metadata_for(thread_id, robie_id, bob_id),
@@ -800,6 +847,7 @@ mod tests {
                         agent_state(CollabAgentStatus::Errored, Some("tool timeout")),
                     ),
                 ]),
+                wait_info: None,
             },
             /*cached_spawn_request*/ None,
             |thread_id| metadata_for(thread_id, robie_id, bob_id),
@@ -820,6 +868,7 @@ mod tests {
                     robie_id.to_string(),
                     agent_state(CollabAgentStatus::Completed, Some("39916800")),
                 )]),
+                wait_info: None,
             },
             /*cached_spawn_request*/ None,
             |thread_id| metadata_for(thread_id, robie_id, bob_id),
@@ -832,6 +881,89 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n\n");
         assert_snapshot!("collab_agent_transcript", snapshot);
+    }
+
+    #[test]
+    fn wait_history_renders_cause_and_keeps_legacy_status_unknown() {
+        let mailbox = CollabAgentWaitInfo {
+            outcome: CollabAgentWaitOutcome::MailboxActivity,
+            agent_paths: Some(vec!["/root/worker".to_string()]),
+        };
+        let (title, details) = wait_info_lines(&mailbox);
+        assert_eq!(title, "Mailbox activity received");
+        assert_eq!(
+            details.iter().map(line_to_text).collect::<Vec<_>>(),
+            vec!["Mailbox update from /root/worker"]
+        );
+
+        let unavailable = CollabAgentWaitInfo {
+            outcome: CollabAgentWaitOutcome::MailboxActivity,
+            agent_paths: None,
+        };
+        let (title, details) = wait_info_lines(&unavailable);
+        assert_eq!(title, "Mailbox activity received");
+        assert_eq!(
+            details.iter().map(line_to_text).collect::<Vec<_>>(),
+            vec!["Mailbox origin unavailable"]
+        );
+        assert_eq!(
+            wait_info_lines(&CollabAgentWaitInfo {
+                outcome: CollabAgentWaitOutcome::SteeredInput,
+                agent_paths: None,
+            })
+            .0,
+            "Wait interrupted by new input"
+        );
+        assert_eq!(
+            wait_info_lines(&CollabAgentWaitInfo {
+                outcome: CollabAgentWaitOutcome::TimedOut,
+                agent_paths: None,
+            })
+            .0,
+            "Wait timed out"
+        );
+
+        let legacy = ThreadItem::CollabAgentToolCall {
+            id: "legacy-wait".to_string(),
+            tool: CollabAgentTool::Wait,
+            status: CollabAgentToolCallStatus::Completed,
+            sender_thread_id: ThreadId::new().to_string(),
+            receiver_thread_ids: Vec::new(),
+            prompt: None,
+            model: None,
+            reasoning_effort: None,
+            agents_states: HashMap::new(),
+            wait_info: None,
+        };
+        let legacy = tool_call_history_cell(
+            &legacy,
+            /*cached_spawn_request*/ None,
+            |_| AgentMetadata::default(),
+        )
+        .expect("legacy wait should render");
+        let rendered = cell_to_text(&legacy);
+        assert!(rendered.contains("Agent status details unavailable"));
+        assert!(!rendered.contains("No agents completed yet"));
+
+        let legacy_target_wait = ThreadItem::CollabAgentToolCall {
+            id: "legacy-target-wait".to_string(),
+            tool: CollabAgentTool::Wait,
+            status: CollabAgentToolCallStatus::Completed,
+            sender_thread_id: ThreadId::new().to_string(),
+            receiver_thread_ids: vec![ThreadId::new().to_string()],
+            prompt: None,
+            model: None,
+            reasoning_effort: None,
+            agents_states: HashMap::new(),
+            wait_info: None,
+        };
+        let legacy_target_wait = tool_call_history_cell(
+            &legacy_target_wait,
+            /*cached_spawn_request*/ None,
+            |_| AgentMetadata::default(),
+        )
+        .expect("legacy targeted wait should render");
+        assert!(cell_to_text(&legacy_target_wait).contains("No agents completed yet"));
     }
 
     #[cfg(target_os = "macos")]
@@ -904,6 +1036,7 @@ mod tests {
                     robie_id.to_string(),
                     agent_state(CollabAgentStatus::PendingInit, /*message*/ None),
                 )]),
+                wait_info: None,
             },
             /*cached_spawn_request*/ None,
             |thread_id| metadata_for(thread_id, robie_id, ThreadId::new()),
@@ -943,6 +1076,7 @@ mod tests {
                     robie_id.to_string(),
                     agent_state(CollabAgentStatus::Interrupted, /*message*/ None),
                 )]),
+                wait_info: None,
             },
             /*cached_spawn_request*/ None,
             |thread_id| metadata_for(thread_id, robie_id, ThreadId::new()),

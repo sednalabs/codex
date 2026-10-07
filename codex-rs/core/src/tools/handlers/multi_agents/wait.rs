@@ -116,6 +116,7 @@ impl Handler {
                     model: None,
                     reasoning_effort: None,
                     agents_states: Default::default(),
+                    wait_info: None,
                 }),
             )
             .await;
@@ -161,6 +162,7 @@ impl Handler {
                                 model: None,
                                 reasoning_effort: None,
                                 agents_states: statuses,
+                                wait_info: None,
                             }),
                         )
                         .await;
@@ -232,6 +234,7 @@ impl Handler {
                     model: None,
                     reasoning_effort: None,
                     agents_states: statuses_by_id,
+                    wait_info: None,
                 }),
             )
             .await;

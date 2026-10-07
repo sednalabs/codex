@@ -462,6 +462,7 @@ impl ChatWidget {
                 model,
                 reasoning_effort,
                 agents_states,
+                wait_info,
             } => self.on_collab_agent_tool_call(ThreadItem::CollabAgentToolCall {
                 id,
                 tool,
@@ -472,6 +473,7 @@ impl ChatWidget {
                 model,
                 reasoning_effort,
                 agents_states,
+                wait_info,
             }),
             item @ ThreadItem::SubAgentActivity { .. } => self.on_sub_agent_activity(item),
             item @ ThreadItem::DynamicToolCall { .. } => self.on_dynamic_tool_item(item),
