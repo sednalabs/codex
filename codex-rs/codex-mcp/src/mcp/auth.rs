@@ -33,6 +33,11 @@ pub struct McpOAuthLoginConfig {
     pub env_http_headers: Option<HashMap<String, String>>,
     pub discovered_scopes: Option<Vec<String>>,
     pub callback_mode: McpOAuthCallbackMode,
+    pub issuer: Option<String>,
+    pub device_authorization_endpoint: Option<String>,
+    pub token_endpoint: String,
+    pub registration_endpoint: Option<String>,
+    pub grant_types_supported: Option<Vec<String>>,
 }
 
 #[derive(Debug)]
@@ -113,6 +118,11 @@ pub async fn oauth_login_support(
         Ok(Some(discovery)) => {
             config.discovered_scopes = discovery.scopes_supported;
             config.callback_mode = discovery.callback_mode;
+            config.issuer = discovery.issuer;
+            config.device_authorization_endpoint = discovery.device_authorization_endpoint;
+            config.token_endpoint = discovery.token_endpoint;
+            config.registration_endpoint = discovery.registration_endpoint;
+            config.grant_types_supported = discovery.grant_types_supported;
             McpOAuthLoginSupport::Supported(config)
         }
         Ok(None) => McpOAuthLoginSupport::Unsupported,
@@ -140,6 +150,11 @@ fn oauth_login_candidate(transport: &McpServerTransportConfig) -> Option<McpOAut
         env_http_headers: env_http_headers.clone(),
         discovered_scopes: None,
         callback_mode: McpOAuthCallbackMode::CallbackSpecific,
+        issuer: None,
+        device_authorization_endpoint: None,
+        token_endpoint: String::new(),
+        registration_endpoint: None,
+        grant_types_supported: None,
     })
 }
 

@@ -60,3 +60,24 @@ fn oauth_client_secret_requires_url_and_client_id_without_disclosure() {
         assert!(!error.to_string().contains("cli-secret-marker"));
     }
 }
+
+#[test]
+fn mcp_device_auth_flag_parses_and_conflicts_with_no_browser() {
+    let help = McpCli::try_parse_from(["mcp", "login", "--help"])
+        .expect_err("login help exits without a server name");
+    assert_eq!(help.kind(), clap::error::ErrorKind::DisplayHelp);
+    assert!(help.to_string().contains("--device-auth"));
+
+    let cli = McpCli::try_parse_from(["mcp", "login", "synthetic", "--device-auth"])
+        .expect("device authorization flag parses");
+    let McpSubcommand::Login(args) = cli.subcommand else {
+        panic!("expected MCP login");
+    };
+    assert!(args.device_auth);
+    assert!(!args.no_browser);
+
+    let error =
+        McpCli::try_parse_from(["mcp", "login", "synthetic", "--device-auth", "--no-browser"])
+            .expect_err("device auth and paste-callback modes are mutually exclusive");
+    assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+}
