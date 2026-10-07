@@ -60,6 +60,17 @@ from verify_existing_first_binary_producer import (
     Q67_FIXTURE_SHA,
     Q68_FIXTURE_SHA,
     Q69_FIXTURE_SHA,
+    W14780_ARTIFACT_BASE_SHA,
+    W14780_BASE_REF,
+    W14780_BASE_SHA,
+    W14780_FIXTURE_SHA,
+    W14780_PRODUCER_BRANCH,
+    W14780_PRODUCER_HOST_SHA,
+    W14780_PRODUCER_JOB_NAMES,
+    W14780_PRODUCER_RUN_ID,
+    W14780_SDK_SHA,
+    W14780_T4_PRODUCT_SHA,
+    W14780_ADDITIONAL_PLAIN_TESTS,
     S0_SDK_SHA,
     S1_SDK_SHA,
     S2_SDK_SHA,
@@ -89,6 +100,7 @@ from verify_existing_first_binary_producer import (
     sdk_test_plan,
     select_accepted_record,
     _validate_manifest_record,
+    _status_only_junit_projection,
     _json_object_without_duplicate_keys,
     _verify_trusted_consumer_ref,
     validate_runner_policy_inputs,
@@ -2436,6 +2448,11 @@ class AcceptedInputManifestTests(unittest.TestCase):
                     ],
                     ruff_arguments,
                 )
+                consumer_step = job[consumer_start:restore_start]
+                self.assertIn("ARTIFACT_BASE_SHA: ${{ steps.verified_artifact.outputs.artifact_base_sha }}", consumer_step)
+                self.assertIn('--base-sha "${ARTIFACT_BASE_SHA}"', consumer_step)
+                self.assertIn('pytest -q "${pytest_privacy_args[@]}"', consumer_step)
+                self.assertIn("pytest_privacy_args=(--tb=no --show-capture=no)", consumer_step)
 
         sdk_job = workflow.split("  sdk-parser:", 1)[1].split("\n  consume-linux-aarch64:", 1)[0]
         self.assertIn("runs-on: ubuntu-24.04", sdk_job)
@@ -2618,6 +2635,131 @@ class AcceptedInputManifestTests(unittest.TestCase):
                     **accepted_producer_args(),
                     accepted_record=record,
                 )
+
+
+class ExactW14780RouteTests(unittest.TestCase):
+    def test_h6_record_binds_distinct_package_and_consumer_bases(self) -> None:
+        manifest = json.loads(ACCEPTED_INPUTS_PATH.read_text(encoding="utf-8"))
+        rows = [row for row in manifest["records"] if row["producer"]["run_id"] == W14780_PRODUCER_RUN_ID]
+        self.assertEqual(1, len(rows))
+        record = rows[0]
+        _validate_manifest_record(record)
+        self.assertEqual(W14780_PRODUCER_HOST_SHA, record["producer"]["workflow_host_sha"])
+        self.assertEqual(W14780_PRODUCER_BRANCH, record["producer"]["branch"])
+        self.assertEqual(W14780_ARTIFACT_BASE_SHA, record["producer"]["artifact_base_sha"])
+        self.assertEqual(W14780_BASE_SHA, record["identity"]["comparison_base_sha"])
+        self.assertNotEqual(record["producer"]["artifact_base_sha"], record["identity"]["comparison_base_sha"])
+        self.assertEqual(
+            {
+                "product_sha": W14780_T4_PRODUCT_SHA,
+                "comparison_base_ref": W14780_BASE_REF,
+                "comparison_base_sha": W14780_BASE_SHA,
+                "fixture_sha": W14780_FIXTURE_SHA,
+                "sdk_sha": W14780_SDK_SHA,
+                "profile": "full",
+            },
+            record["identity"],
+        )
+        self.assertEqual(7, len(W14780_PRODUCER_JOB_NAMES))
+        producer_jobs = {
+            "total_count": len(record["jobs"]),
+            "jobs": [
+                {
+                    **hosted_job(job["name"], job["conclusion"], job["runner"], ran=job["ran"]),
+                    "status": job["status"],
+                }
+                for job in record["jobs"]
+            ],
+        }
+        producer_run = {
+            "id": W14780_PRODUCER_RUN_ID,
+            "workflow_id": WORKFLOW_ID,
+            "head_sha": W14780_PRODUCER_HOST_SHA,
+            "head_branch": W14780_PRODUCER_BRANCH,
+            "event": "workflow_dispatch",
+            "status": "completed",
+            "conclusion": "failure",
+            "run_attempt": 1,
+            "repository": {"id": REPOSITORY_ID, "full_name": REPOSITORY},
+            "head_repository": {"id": REPOSITORY_ID, "full_name": REPOSITORY},
+        }
+        producer_workflow = {"id": WORKFLOW_ID, "path": WORKFLOW_PATH, "state": "active"}
+        producer_artifacts = {
+            "total_count": 2,
+            "artifacts": [
+                {
+                    **artifact,
+                    "expired": False,
+                    "workflow_run": {
+                        "id": W14780_PRODUCER_RUN_ID,
+                        "head_sha": W14780_PRODUCER_HOST_SHA,
+                        "head_branch": W14780_PRODUCER_BRANCH,
+                        "repository_id": REPOSITORY_ID,
+                        "head_repository_id": REPOSITORY_ID,
+                    },
+                }
+                for artifact in record["artifacts"].values()
+            ],
+        }
+        selected_artifacts = verify_existing_producer(
+            producer_run,
+            producer_workflow,
+            producer_jobs,
+            producer_artifacts,
+            producer_run_id=W14780_PRODUCER_RUN_ID,
+            producer_workflow_host_sha=W14780_PRODUCER_HOST_SHA,
+            product_sha=W14780_T4_PRODUCT_SHA,
+            base_ref=W14780_BASE_REF,
+            base_sha=W14780_BASE_SHA,
+            accepted_record=record,
+        )
+        self.assertEqual({"x86_64", "aarch64"}, set(selected_artifacts))
+        inputs = {
+            **record["identity"],
+            "producer_run_id": record["producer"]["run_id"],
+            "producer_workflow_host_sha": record["producer"]["workflow_host_sha"],
+        }
+        self.assertEqual(record["record_id"], select_accepted_record(manifest, inputs)["record_id"])
+        for field, value in (
+            ("artifact_base_sha", W14780_BASE_SHA),
+            ("workflow_host_sha", "f" * 40),
+        ):
+            changed_record = copy.deepcopy(record)
+            changed_record["producer"][field] = value
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                _validate_manifest_record(changed_record)
+        changed = dict(inputs)
+        changed["comparison_base_sha"] = W14780_ARTIFACT_BASE_SHA
+        with self.assertRaises(ValueError):
+            select_accepted_record(manifest, changed)
+
+    def test_h6_full_plan_includes_only_bound_additions_and_expanded_case_count(self) -> None:
+        plan = consume_existing_test_plan(W14780_FIXTURE_SHA, W14780_SDK_SHA, "full")
+        self.assertEqual(FULL_PLAIN_TESTS | Q3_ADDITIONAL_PLAIN_TESTS | W14780_ADDITIONAL_PLAIN_TESTS, plan["plain"])
+        self.assertEqual(21, plan["plain_case_count"])
+        with self.assertRaises(ValueError):
+            consume_existing_test_plan(W14780_FIXTURE_SHA, W14780_SDK_SHA, "focused")
+
+    def test_status_projection_keeps_case_status_and_discards_failure_payload(self) -> None:
+        source = ET.fromstring(
+            '<testsuite tests="2" failures="1" errors="0" skipped="0">'
+            '<testcase name="test_pass"><system-out>PRIVATE_SCREEN</system-out></testcase>'
+            '<testcase name="test_fail"><failure message="PRIVATE_ASSERTION">PRIVATE_TRACE</failure>'
+            '<system-err>PRIVATE_REQUEST</system-err></testcase></testsuite>'
+        )
+        projected, statuses, counts, invalid_name = _status_only_junit_projection(list(source.iter("testcase")))
+        text = ET.tostring(projected, encoding="unicode")
+        self.assertFalse(invalid_name)
+        self.assertEqual(
+            [
+                {"name": "test_pass", "status": "passed"},
+                {"name": "test_fail", "status": "failed"},
+            ],
+            statuses,
+        )
+        self.assertEqual({"passed": 1, "failed": 1, "error": 0, "skipped": 0}, counts)
+        for private_text in ("PRIVATE_SCREEN", "PRIVATE_ASSERTION", "PRIVATE_TRACE", "PRIVATE_REQUEST"):
+            self.assertNotIn(private_text, text)
 
 
 class CurrentConsumerIdentityTests(unittest.TestCase):
@@ -2908,6 +3050,10 @@ class ConsumerResultTests(unittest.TestCase):
             if case_name in EXPECTED_STATE_NEGATIVE
         )
         testcase_xml.extend(f'<testcase name="{name}"/>' for name in plain_cases)
+        if (q_sha, sdk_sha) == (W14780_FIXTURE_SHA, W14780_SDK_SHA) and profile == "full":
+            testcase_xml.append(
+                '<testcase name="test_packaged_weekly_pacing_uses_account_usage_across_sparse_update_and_resume[ratio-case]"/>'
+            )
         junit_path.write_text(f"<testsuite>{''.join(testcase_xml)}</testsuite>", encoding="utf-8")
         for case_name in state_cases:
             name = f"{case_name}.json"
@@ -3024,6 +3170,31 @@ class ConsumerResultTests(unittest.TestCase):
             ET.SubElement(case, "failure", {"message": "fixture observed missing call output"})
         ET.ElementTree(suite).write(junit_path, encoding="unicode")
         return junit_path, consumer_path, producer_path, witness_dir, result_path
+
+    def test_w14780_full_fixture_reconciles_parameterized_pacing_cases(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            junit, consumer, producer, witnesses, result_path = self._write_fixture(
+                Path(temporary),
+                profile="full",
+                fixture_sha=W14780_FIXTURE_SHA,
+                sdk_sha=W14780_SDK_SHA,
+            )
+            result = reconcile_consumer_results(
+                junit_path=junit,
+                consumer_context_path=consumer,
+                producer_evidence_path=producer,
+                witness_dir=witnesses,
+                result_path=result_path,
+                pytest_exit=0,
+                mode="consume-existing",
+                profile="full",
+                fixture_sha=W14780_FIXTURE_SHA,
+                sdk_sha=W14780_SDK_SHA,
+                runner_temp=witnesses.parent,
+            )
+            self.assertEqual(45, result["executed_cases"])
+            self.assertEqual(0, result["failures"])
+            self.assertEqual([], result["issues"])
 
     def test_browser_diagnostic_profile_is_closed_to_exact_pair_and_route(self) -> None:
         plan = browser_diagnostic_test_plan(

@@ -67,6 +67,24 @@ H9E58_PRODUCER_RUN_ID = 37182140778
 H9E58_PRODUCER_JOB_NAMES = PRODUCER_JOB_NAMES | {
     "Verify exact SDK runtime-version parser selectors",
 }
+W14780_T4_PRODUCT_SHA = "8d3f61c3f8750641fc9675d50bf65fc775364226"
+W14780_BASE_REF = "validation/interrupt-guardian-fixture-8389-20261004"
+W14780_BASE_SHA = "8389b61d82cb6fb936e4e500b977f31682441ffe"
+W14780_FIXTURE_SHA = "d9d97bc01abbbced71b72997368e743bb698ee2c"
+W14780_SDK_SHA = "e8bec7e6dc09de16d81c6b105e0cbed9f24bfa1a"
+W14780_PRODUCER_RUN_ID = 37558769081
+W14780_PRODUCER_HOST_SHA = "aa625ac365c7488c56c2061d64e24c241436b421"
+W14780_PRODUCER_BRANCH = "fix/w14962-package-version-20261006"
+W14780_ARTIFACT_BASE_SHA = "76a6e55d5ac69e3ba6b0481f8f3b94256f46dfa7"
+W14780_PRODUCER_JOB_NAMES = {
+    "Verify standard runner graph and exact identities",
+    "Package native Linux x86_64",
+    "Package native Linux ARM64",
+    "Verify exact SDK runtime-version parser selectors",
+    "Prepare exact source schema diff",
+    "Consume native Linux ARM64 package",
+    "Consume native Linux x86_64 package",
+}
 Q2_FIXTURE_SHA = "c6b1888354315575e1b22abbe240b482e65b4f46"
 Q3_FIXTURE_SHA = "b5d2ffd3dcdf4486297d8380cbe562a0b30bcc30"
 Q4_FIXTURE_SHA = "c61cc2b4943079d924a3c645512eb2b6600bdd57"
@@ -158,6 +176,13 @@ Q3_ADDITIONAL_PLAIN_TESTS = frozenset(
         "test_packaged_model_queue_only_message_does_not_wake_until_followup_and_exact_join",
         "test_packaged_model_goal_continuation_and_terminal_transition",
         "test_packaged_tui_agents_details_render_configured_identity_and_unknown_effective_identity",
+    }
+)
+W14780_ADDITIONAL_PLAIN_TESTS = frozenset(
+    {
+        "test_packaged_model_list_exposes_bundled_gpt6_descriptors",
+        "test_packaged_double_escape_interrupt_persists_exact_turn_and_resumes",
+        "test_packaged_weekly_pacing_uses_account_usage_across_sparse_update_and_resume",
     }
 )
 FOCUSED_REPAIR_PLAIN_TESTS = frozenset(
@@ -291,6 +316,11 @@ CONSUME_EXISTING_TEST_PLANS = {
         "focused_plain": FOCUSED_REPAIR_PLAIN_TESTS,
         "full_plain": FULL_PLAIN_TESTS | Q3_ADDITIONAL_PLAIN_TESTS,
     },
+    (W14780_FIXTURE_SHA, W14780_SDK_SHA): {
+        "profiles": frozenset({"full"}),
+        "full_plain": FULL_PLAIN_TESTS | Q3_ADDITIONAL_PLAIN_TESTS | W14780_ADDITIONAL_PLAIN_TESTS,
+        "full_plain_case_count": 21,
+    },
 }
 SDK_TEST_PLAN_BY_SHA = {
     S0_SDK_SHA: {
@@ -362,6 +392,13 @@ def consume_existing_test_plan(fixture_sha: str, sdk_sha: str, profile: str) -> 
     plan = CONSUME_EXISTING_TEST_PLANS.get((fixture_sha, sdk_sha))
     _require(plan is not None, "fixture/SDK source pair has no exact consume-existing test inventory")
     _require(profile in plan["profiles"], "fixture/SDK source pair does not admit this consumer profile")
+    plain = (
+        frozenset()
+        if profile == "pair"
+        else plan["focused_plain"]
+        if profile == "focused"
+        else plan["full_plain"]
+    )
     return {
         "state": (
             frozenset({"fresh", "bad_checksum"})
@@ -370,12 +407,11 @@ def consume_existing_test_plan(fixture_sha: str, sdk_sha: str, profile: str) -> 
             if profile == "full"
             else frozenset()
         ),
-        "plain": (
-            frozenset()
-            if profile == "pair"
-            else plan["focused_plain"]
-            if profile == "focused"
-            else plan["full_plain"]
+        "plain": plain,
+        "plain_case_count": (
+            plan.get("full_plain_case_count", len(plain))
+            if profile == "full"
+            else len(plain)
         ),
     }
 
@@ -582,7 +618,6 @@ def _validate_manifest_record(value: object) -> Mapping[str, Any]:
     _require(set(identity) == identity_fields, "accepted-input identity has unexpected or missing fields")
     for field in ("product_sha", "comparison_base_sha", "fixture_sha", "sdk_sha"):
         _require(isinstance(identity.get(field), str) and SHA.fullmatch(identity[field]) is not None, f"accepted-input {field} is invalid")
-    _require(identity.get("comparison_base_ref") == "main", "accepted-input comparison base ref is unsupported")
     _require(
         isinstance(identity.get("profile"), str)
         and identity["profile"] in {"pair", "focused", "full"},
@@ -594,6 +629,12 @@ def _validate_manifest_record(value: object) -> Mapping[str, Any]:
         "repository", "repository_id", "workflow_id", "workflow_path", "run_id", "run_attempt", "event",
         "workflow_host_sha", "branch", "status", "conclusion",
     }
+    exact_h6 = (
+        producer.get("run_id") == W14780_PRODUCER_RUN_ID
+        or producer.get("workflow_host_sha") == W14780_PRODUCER_HOST_SHA
+    )
+    if exact_h6:
+        producer_fields = producer_fields | {"artifact_base_sha"}
     _require(set(producer) == producer_fields, "accepted-input producer has unexpected or missing fields")
     _require(producer.get("repository") == REPOSITORY and producer.get("repository_id") == REPOSITORY_ID, "accepted-input producer repository is unsupported")
     _require(producer.get("workflow_id") == WORKFLOW_ID and producer.get("workflow_path") == WORKFLOW_PATH, "accepted-input producer workflow is unsupported")
@@ -602,7 +643,33 @@ def _validate_manifest_record(value: object) -> Mapping[str, Any]:
         _require(disposition == "diagnostic" and eligible is False, "the superseded diagnostic producer run is permanently ineligible")
     _require(producer.get("event") == "workflow_dispatch", "accepted-input producer event is unsupported")
     _require(isinstance(producer.get("workflow_host_sha"), str) and SHA.fullmatch(producer["workflow_host_sha"]) is not None, "accepted-input producer host SHA is invalid")
-    _require(producer.get("branch") == TRUSTED_CONSUMER_BRANCH, "accepted-input producer branch is unsupported")
+    if exact_h6:
+        _require(
+            producer.get("run_id") == W14780_PRODUCER_RUN_ID
+            and producer.get("workflow_host_sha") == W14780_PRODUCER_HOST_SHA
+            and producer.get("branch") == W14780_PRODUCER_BRANCH,
+            "H6 producer identity differs from the exact admitted run and branch",
+        )
+        _require(
+            producer.get("artifact_base_sha") == W14780_ARTIFACT_BASE_SHA,
+            "H6 package artifact base differs from the exact producer manifest base",
+        )
+        _require(
+            identity == {
+                "product_sha": W14780_T4_PRODUCT_SHA,
+                "comparison_base_ref": W14780_BASE_REF,
+                "comparison_base_sha": W14780_BASE_SHA,
+                "fixture_sha": W14780_FIXTURE_SHA,
+                "sdk_sha": W14780_SDK_SHA,
+                "profile": "full",
+            }
+            and disposition == "accepted"
+            and eligible is True,
+            "H6 is admitted only for the exact reviewed T4/B/D/S4 full consumer tuple",
+        )
+    else:
+        _require(producer.get("branch") == TRUSTED_CONSUMER_BRANCH, "accepted-input producer branch is unsupported")
+        _require(identity.get("comparison_base_ref") == "main", "accepted-input comparison base ref is unsupported")
     _require(
         producer.get("status") == "completed"
         and isinstance(producer.get("conclusion"), str)
@@ -616,6 +683,8 @@ def _validate_manifest_record(value: object) -> Mapping[str, Any]:
     elif producer["workflow_host_sha"] == H9E58_PRODUCER_WORKFLOW_HOST_SHA:
         expected_job_names = H9E58_PRODUCER_JOB_NAMES
         _require(producer["run_id"] == H9E58_PRODUCER_RUN_ID, "H9e58 producer run ID differs from the exact admitted run")
+    elif exact_h6:
+        expected_job_names = W14780_PRODUCER_JOB_NAMES
     jobs_value = record.get("jobs")
     _require(isinstance(jobs_value, list) and len(jobs_value) == len(expected_job_names), "accepted-input producer job contract is incomplete")
     jobs: dict[str, Mapping[str, Any]] = {}
@@ -634,7 +703,8 @@ def _validate_manifest_record(value: object) -> Mapping[str, Any]:
     _require(jobs["Verify standard runner graph and exact identities"]["conclusion"] == "success", "producer runner-policy job must succeed")
     _require(jobs["Package native Linux x86_64"]["conclusion"] == "success", "producer x86_64 package job must succeed")
     _require(jobs["Package native Linux ARM64"]["conclusion"] == "success", "producer ARM64 package job must succeed")
-    _require(jobs["Prepare exact Cargo lock and app-server schema diff"]["conclusion"] == "skipped", "producer preparation job must be skipped")
+    preparation_job = "Prepare exact source schema diff" if exact_h6 else "Prepare exact Cargo lock and app-server schema diff"
+    _require(jobs[preparation_job]["conclusion"] == "skipped", "producer preparation job must be skipped")
     if producer["workflow_host_sha"] == H2_PRODUCER_WORKFLOW_HOST_SHA:
         _require(
             jobs["Verify exact SDK runtime-version parser selectors"]["conclusion"] == "skipped",
@@ -654,6 +724,16 @@ def _validate_manifest_record(value: object) -> Mapping[str, Any]:
             jobs["Consume native Linux ARM64 package"]["conclusion"] == "failure"
             and jobs["Consume native Linux x86_64 package"]["conclusion"] == "failure",
             "H9e58 producer bundled consumer jobs differ from the exact admitted run",
+        )
+    elif exact_h6:
+        _require(
+            jobs["Verify exact SDK runtime-version parser selectors"]["conclusion"] == "skipped",
+            "H6 producer SDK parser job must be skipped",
+        )
+        _require(
+            jobs["Consume native Linux ARM64 package"]["conclusion"] == "failure"
+            and jobs["Consume native Linux x86_64 package"]["conclusion"] == "failure",
+            "H6 producer bundled consumer jobs differ from the exact admitted run",
         )
     expected_run_conclusion = "failure" if any(job["conclusion"] == "failure" for job in jobs.values()) else "success"
     _require(producer["conclusion"] == expected_run_conclusion, "producer run conclusion does not match its closed job inventory")
@@ -1086,11 +1166,75 @@ def verify_current_consumer(
         "branch": branch,
         "workflow_ref": workflow_ref,
         "product_sha": product_sha,
+        "comparison_base_ref": env.get("BASE_REF", ""),
         "comparison_base_sha": base_sha,
         "target": arch["target"],
         "architecture": architecture,
         "runner_label": arch["runner"],
     }
+
+
+def _status_only_junit_projection(
+    cases: list[ET.Element],
+) -> tuple[ET.Element, list[dict[str, str]], dict[str, int], bool]:
+    """Keep exact case names/statuses while dropping all failure and capture text."""
+    failures = sum(case.find("failure") is not None for case in cases)
+    errors = sum(case.find("error") is not None for case in cases)
+    skipped = sum(case.find("skipped") is not None for case in cases)
+    projected = ET.Element(
+        "testsuite",
+        {
+            "name": "first-binary-consumer",
+            "tests": str(len(cases)),
+            "failures": str(failures),
+            "errors": str(errors),
+            "skipped": str(skipped),
+        },
+    )
+    statuses: list[dict[str, str]] = []
+    counts = {"passed": 0, "failed": 0, "error": 0, "skipped": 0}
+    invalid_name = False
+    for case in cases:
+        name = case.attrib.get("name", "")
+        if not name or len(name) > 256 or any(ord(character) < 32 or ord(character) > 126 for character in name):
+            invalid_name = True
+            name = "unrecognized-test-name"
+        if case.find("error") is not None:
+            status = "error"
+        elif case.find("failure") is not None:
+            status = "failed"
+        elif case.find("skipped") is not None:
+            status = "skipped"
+        else:
+            status = "passed"
+        counts[status] += 1
+        statuses.append({"name": name, "status": status})
+        projected_case = ET.SubElement(projected, "testcase", {"name": name})
+        if status == "error":
+            ET.SubElement(projected_case, "error", {"type": "error", "message": "test error"})
+        elif status == "failed":
+            ET.SubElement(projected_case, "failure", {"type": "failure", "message": "test failed"})
+        elif status == "skipped":
+            ET.SubElement(projected_case, "skipped", {"message": "test skipped"})
+    return projected, statuses, counts, invalid_name
+
+
+def _replace_with_status_only_junit(path: Path, root: ET.Element) -> None:
+    """Replace the runner-local raw report before any artifact upload."""
+    encoded = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(path, flags, 0o600)
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(encoded)
+    except OSError:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise ValueError("could not safely replace raw JUnit with its status-only projection") from None
 
 
 def reconcile_consumer_results(
@@ -1127,12 +1271,16 @@ def reconcile_consumer_results(
         issues.append("producer API evidence is missing or malformed")
 
     cases: list[ET.Element] = []
+    junit_parse_error = False
     try:
-        cases = list(ET.parse(junit_path).getroot().iter("testcase"))
+        junit_root = ET.parse(junit_path).getroot()
+        cases = list(junit_root.iter("testcase"))
     except (OSError, ET.ParseError):
+        junit_root = None
+        junit_parse_error = True
         issues.append("pytest did not produce a parseable JUnit report")
     failures = sum(len(case.findall("failure")) for case in cases)
-    errors = sum(len(case.findall("error")) for case in cases)
+    errors = sum(len(case.findall("error")) for case in cases) + int(junit_parse_error)
     skipped = sum(len(case.findall("skipped")) for case in cases)
     if pytest_exit != 0:
         issues.append(f"pytest exited with status {pytest_exit}")
@@ -1213,6 +1361,9 @@ def reconcile_consumer_results(
         issues.append("consumer result has an unsupported mode/profile")
         expected_state = frozenset()
         expected_plain = frozenset()
+    expected_plain_case_count = len(expected_plain)
+    if mode == "consume-existing" and profile == "full":
+        expected_plain_case_count = selected_plan.get("plain_case_count", len(expected_plain))
     if profile not in {"pair", "focused", "full", BROWSER_DIAGNOSTIC_PROFILE}:
         issues.append("consumer result has an unsupported mode/profile")
     if mode == "consume-existing" and profile == "pair":
@@ -1227,12 +1378,13 @@ def reconcile_consumer_results(
         if len(negative) != 8 or set(negative) != expected_negative:
             issues.append("JUnit does not contain the exact 8 negative state-history cases")
     plain_names = {
-        case.attrib.get("name", "") for case in cases
+        case.attrib.get("name", "").split("[", 1)[0]
+        for case in cases
         if not case.attrib.get("name", "").startswith((positive_prefix, negative_prefix))
     }
     if plain_names != expected_plain:
         issues.append("JUnit plain-test inventory differs from the exact selected profile")
-    if len(cases) != len(expected_state) + len(expected_plain):
+    if len(cases) != len(expected_state) + expected_plain_case_count:
         issues.append("JUnit executed-case count differs from the exact selected profile")
 
     try:
@@ -1266,7 +1418,9 @@ def reconcile_consumer_results(
         witness_cases.add(case_name)
         expected_fields = {
             "product_target_sha": producer.get("product_sha"),
-            "comparison_base_sha": producer.get("comparison_base_sha"),
+            # This legacy witness field identifies the package artifact's base.
+            # The consumer comparison base is separately preserved in its API context.
+            "comparison_base_sha": producer.get("artifact_base_sha", producer.get("comparison_base_sha")),
             "fixture_source_sha": expected_fixture_sha,
             "producer_workflow_host_sha": producer.get("workflow_host_sha"),
             "producer_run_id": producer.get("run_id"),
@@ -1294,6 +1448,35 @@ def reconcile_consumer_results(
         issues.append("state-history witness inventory differs from the exact selected profile")
     if len(witness_versions) > 1 or len(witness_archive_digests) > 1:
         issues.append("state-history witnesses report inconsistent package identity")
+
+    exact_status_projection = (
+        mode == "consume-existing"
+        and profile == "full"
+        and fixture_sha == W14780_FIXTURE_SHA
+        and sdk_sha == W14780_SDK_SHA
+        and producer.get("run_id") == W14780_PRODUCER_RUN_ID
+        and producer.get("workflow_host_sha") == W14780_PRODUCER_HOST_SHA
+        and producer.get("product_sha") == W14780_T4_PRODUCT_SHA
+        and producer.get("comparison_base_ref") == W14780_BASE_REF
+        and producer.get("comparison_base_sha") == W14780_BASE_SHA
+        and producer.get("artifact_base_sha") == W14780_ARTIFACT_BASE_SHA
+        and consumer.get("product_sha") == W14780_T4_PRODUCT_SHA
+        and consumer.get("comparison_base_ref") == W14780_BASE_REF
+        and consumer.get("comparison_base_sha") == W14780_BASE_SHA
+        and consumer.get("branch") == TRUSTED_CONSUMER_BRANCH
+    )
+    status_projection: list[dict[str, str]] = []
+    status_counts = {"passed": 0, "failed": 0, "error": 0, "skipped": 0}
+    if exact_status_projection and junit_root is not None:
+        projected, status_projection, status_counts, invalid_name = _status_only_junit_projection(cases)
+        if invalid_name:
+            issues.append("status projection encountered an invalid test name")
+        _replace_with_status_only_junit(junit_path, projected)
+    elif exact_status_projection:
+        # Never publish an unparsable/raw report from this exact privacy-bound route.
+        fallback = ET.Element("testsuite", {"name": "first-binary-consumer", "tests": "0", "failures": "0", "errors": "1", "skipped": "0"})
+        _replace_with_status_only_junit(junit_path, fallback)
+        status_counts["error"] = 1
 
     result = {
         "schema_version": "sedna-first-binary-consumer-result-v1",
@@ -1326,6 +1509,9 @@ def reconcile_consumer_results(
         "browser_output_diagnostic": browser_diagnostic,
         "issues": issues,
     }
+    if exact_status_projection:
+        result["test_statuses"] = status_projection
+        result["test_status_counts"] = status_counts
     result_path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return result
 
@@ -1402,7 +1588,7 @@ def main() -> int:
             sdk_sha=env.get("SDK_SHA", ""),
         )
         _verify_trusted_consumer_ref(env)
-    elif base_ref != "main":
+    elif mode != "consume-existing" and base_ref != "main":
         raise ValueError("consumer route requires the pinned main comparison ref")
 
     api_url = _required_env(env, "API_URL")
@@ -1512,6 +1698,11 @@ def main() -> int:
         "product_sha": product_sha,
         "comparison_base_ref": base_ref,
         "comparison_base_sha": base_sha,
+        "artifact_base_sha": (
+            accepted_record["producer"].get("artifact_base_sha", base_sha)
+            if mode == "consume-existing"
+            else base_sha
+        ),
         "artifact_id": artifact["id"],
         "artifact_name": artifact["name"],
         "artifact_digest": artifact["digest"],
@@ -1530,6 +1721,10 @@ def main() -> int:
         output.write(f"artifact_digest={artifact['digest']}\n")
         output.write(f"producer_run_id={producer_run_id}\n")
         output.write(f"producer_workflow_host_sha={producer_host}\n")
+        output.write(
+            "artifact_base_sha="
+            f"{accepted_record['producer'].get('artifact_base_sha', base_sha) if mode == 'consume-existing' else base_sha}\n"
+        )
     return 0
 
 
