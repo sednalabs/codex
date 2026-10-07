@@ -53,28 +53,142 @@ pub fn configured_android_dynamic_tools_for_codex_home(codex_home: &Path) -> Vec
             android_dynamic_tool(
                 ANDROID_OBSERVE_TOOL_NAME,
                 "Capture the current Android screen as a model-visible screenshot.",
+                android_observe_input_schema(),
             ),
             android_dynamic_tool(
                 ANDROID_STEP_TOOL_NAME,
-                "Perform ordered Android actions, then return a fresh screenshot.",
+                "Perform one Android action or a non-empty ordered actions batch, then return a fresh screenshot. Each action needs type, action, or name. tap/click accepts x+y coordinates or selector/target; swipe/drag uses x1+y1+x2+y2; scroll uses scroll_y or those coordinates; type uses text; keypress uses key/keycode or keys; launch_app uses package_name/package; multi_touch uses 2-5 pointers with x1/y1/x2/y2; wait uses ms or wait_ms. An uncertain action must not be replayed; recover with android_observe.",
+                android_step_input_schema(),
             ),
             android_dynamic_tool(
                 ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME,
-                "Install a GitHub Actions Android build into the active Android session.",
+                "Install a GitHub Actions Android build into the active Android session. Provide workflow_run_id, plus any provider-required repository or artifact selector; serial is optional and defaults to the configured device. If the result is uncertain, inspect with android_observe and do not replay the install automatically.",
+                android_install_build_from_run_input_schema(),
             ),
         ],
     })]
 }
 
-fn android_dynamic_tool(name: &str, description: &str) -> DynamicToolNamespaceTool {
+fn android_dynamic_tool(
+    name: &str,
+    description: &str,
+    input_schema: Value,
+) -> DynamicToolNamespaceTool {
     DynamicToolNamespaceTool::Function(DynamicToolFunctionSpec {
         name: name.to_string(),
         description: description.to_string(),
-        input_schema: json!({
-            "type": "object",
-            "additionalProperties": true
-        }),
+        input_schema,
         defer_loading: false,
+    })
+}
+
+fn android_observe_input_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "serial": { "type": "string", "description": "Optional Android device serial; defaults to the configured device." },
+            "timeout_secs": { "type": "number", "minimum": 0, "description": "Optional timeout for the UI inspection." },
+            "stable": { "type": "boolean", "description": "Wait for stable UI before capturing (default true when supported)." },
+            "wait_for_stable_ui": { "type": "boolean", "description": "Alias for stable." },
+            "screenshot_filename": { "type": "string", "description": "Optional provider-side screenshot filename." },
+            "hierarchy_filename": { "type": "string", "description": "Optional provider-side hierarchy filename." },
+            "poll_interval_ms": { "type": "integer", "minimum": 0 },
+            "stable_polls": { "type": "integer", "minimum": 1 }
+        },
+        "additionalProperties": false
+    })
+}
+
+fn android_step_input_schema() -> Value {
+    let action_schema = json!({
+        "type": "object",
+        "properties": {
+            "type": { "type": "string", "enum": ["launch_app", "tap", "click", "double_click", "long_press", "swipe", "drag", "multi_touch", "scroll", "type", "type_text", "keypress", "key", "wait", "semantic_action"] },
+            "action": { "type": "string", "enum": ["launch_app", "tap", "click", "double_click", "long_press", "swipe", "drag", "multi_touch", "scroll", "type", "type_text", "keypress", "key", "wait", "semantic_action"] },
+            "name": { "type": "string", "enum": ["launch_app", "tap", "click", "double_click", "long_press", "swipe", "drag", "multi_touch", "scroll", "type", "type_text", "keypress", "key", "wait", "semantic_action"] },
+            "package_name": { "type": "string" },
+            "package": { "type": "string" },
+            "activity": { "type": "string" },
+            "selector": { "anyOf": [{ "type": "string" }, { "type": "object" }], "description": "Provider-specific UI element selector." },
+            "target": { "anyOf": [{ "type": "string" }, { "type": "object" }], "description": "Alias for selector." },
+            "x": { "type": "integer", "minimum": 0, "description": "Horizontal screen coordinate in pixels." },
+            "y": { "type": "integer", "minimum": 0, "description": "Vertical screen coordinate in pixels." },
+            "x1": { "type": "integer", "minimum": 0, "description": "Gesture start horizontal coordinate in pixels." },
+            "y1": { "type": "integer", "minimum": 0, "description": "Gesture start vertical coordinate in pixels." },
+            "x2": { "type": "integer", "minimum": 0, "description": "Gesture end horizontal coordinate in pixels." },
+            "y2": { "type": "integer", "minimum": 0, "description": "Gesture end vertical coordinate in pixels." },
+            "scroll_y": { "type": "integer" },
+            "duration_ms": { "type": "integer", "minimum": 0 },
+            "pointers": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 5,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "x1": { "type": "integer", "minimum": 0 },
+                        "y1": { "type": "integer", "minimum": 0 },
+                        "x2": { "type": "integer", "minimum": 0 },
+                        "y2": { "type": "integer", "minimum": 0 }
+                    },
+                    "required": ["x1", "y1", "x2", "y2"],
+                    "additionalProperties": false
+                }
+            },
+            "text": { "type": "string" },
+            "keys": { "type": "array", "items": { "type": "string" } },
+            "keycode": { "anyOf": [{ "type": "string" }, { "type": "integer" }] },
+            "key": { "anyOf": [{ "type": "string" }, { "type": "integer" }] },
+            "serial": { "type": "string" },
+            "timeout_secs": { "type": "number", "minimum": 0 },
+            "wait_for_activity": { "type": "string" },
+            "wait_for_package": { "type": "string" },
+            "wait_for_selector": { "anyOf": [{ "type": "string" }, { "type": "object" }] },
+            "wait_until_absent": { "anyOf": [{ "type": "string" }, { "type": "boolean" }, { "type": "object" }] },
+            "match_index": { "type": "integer", "minimum": 0 },
+            "expect_scroll_change": { "type": "boolean" },
+            "ms": { "type": "integer", "minimum": 0 },
+            "wait_ms": { "type": "integer", "minimum": 0 },
+            "stable": { "type": "boolean" },
+            "poll_interval_ms": { "type": "integer", "minimum": 0 },
+            "stable_polls": { "type": "integer", "minimum": 1 }
+        },
+        "anyOf": [
+            { "required": ["type"] },
+            { "required": ["action"] },
+            { "required": ["name"] }
+        ],
+        "additionalProperties": true
+    });
+    action_schema["properties"]["actions"] = json!({
+        "type": "array",
+        "minItems": 1,
+        "items": action_schema.clone()
+    });
+    action_schema["anyOf"] = json!([
+        { "required": ["actions"] },
+        { "required": ["type"] },
+        { "required": ["action"] },
+        { "required": ["name"] }
+    ]);
+    action_schema["description"] = json!(
+        "Use either one action object or a non-empty actions array. Actions run in order and stop at the first failure. Supported types: launch_app, tap/click, double_click, long_press, swipe/drag, multi_touch, scroll, type/type_text, keypress/key, wait, and semantic_action. For visual actions, recover with android_observe after an uncertain failure instead of replaying the action."
+    );
+    action_schema
+}
+
+fn android_install_build_from_run_input_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "workflow_run_id": { "type": "integer", "minimum": 1, "description": "GitHub Actions workflow run to install." },
+            "repository": { "type": "string", "description": "Optional repository owning the workflow run, when required by the provider." },
+            "artifact_name": { "type": "string", "description": "Optional workflow artifact selector, when required by the provider." },
+            "serial": { "type": "string", "description": "Optional Android device serial; defaults to the configured device." }
+        },
+        "required": ["workflow_run_id"],
+        "additionalProperties": true,
+        "description": "Provide the workflow_run_id and any provider-required repository or artifact selector. On success this installs into the active Android session and captures a fresh screenshot. If the result is uncertain, inspect with android_observe before retrying; do not replay the install automatically."
     })
 }
 
@@ -126,7 +240,12 @@ fn default_codex_home() -> Option<PathBuf> {
 }
 
 fn is_supported_android_tool(tool: &str) -> bool {
-    matches!(tool, ANDROID_OBSERVE_TOOL_NAME | ANDROID_STEP_TOOL_NAME | ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME)
+    matches!(
+        tool,
+        ANDROID_OBSERVE_TOOL_NAME
+            | ANDROID_STEP_TOOL_NAME
+            | ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME
+    )
 }
 
 fn request_timeout_for_tool(tool: &str) -> Duration {
@@ -1854,6 +1973,26 @@ mod tests {
                 ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME,
             ]
         );
+        let schemas = namespace
+            .tools
+            .iter()
+            .map(|tool| match tool {
+                DynamicToolNamespaceTool::Function(function) => &function.input_schema,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(schemas[0]["properties"]["serial"]["type"], "string");
+        assert_eq!(schemas[1]["properties"]["actions"]["minItems"], 1);
+        assert_eq!(
+            schemas[1]["properties"]["actions"]["items"]["properties"]["type"]["enum"][0],
+            "launch_app"
+        );
+        assert_eq!(schemas[1]["properties"]["x"]["type"], "integer");
+        assert_eq!(
+            schemas[2]["properties"]["workflow_run_id"]["type"],
+            "integer"
+        );
+        assert_eq!(schemas[2]["required"][0], "workflow_run_id");
+        assert_eq!(schemas[2]["properties"]["serial"]["type"], "string");
     }
 
     #[test]

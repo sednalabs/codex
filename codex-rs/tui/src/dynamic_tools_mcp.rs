@@ -64,6 +64,21 @@ impl ThreadToolTransport {
         &self,
         config: &crate::legacy_core::config::Config,
     ) -> std::io::Result<()> {
+        if !crate::android_computer_use_provider::specs_for_codex_home(config.codex_home.as_path())
+            .is_empty()
+            && config
+                .mcp_servers
+                .get()
+                .contains_key(crate::android_computer_use_provider::NAMESPACE)
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!(
+                    "MCP server key `{}` is reserved by Android dynamic tools; rename that server before starting this thread",
+                    crate::android_computer_use_provider::NAMESPACE
+                ),
+            ));
+        }
         if let Self::Mcp(server) = self
             && config.mcp_servers.get().contains_key(server.namespace)
         {
@@ -429,6 +444,7 @@ impl ServerHandler for DynamicToolMcpHandler {
 #[cfg(test)]
 mod native_computer_use_registration_tests {
     use super::*;
+    use crate::legacy_core::config::ConfigBuilder;
     use codex_app_server_protocol::DynamicToolSpec;
     use serde_json::json;
 
@@ -462,9 +478,7 @@ mod native_computer_use_registration_tests {
             .into_iter()
             .flatten()
             .filter_map(|spec| match spec {
-                DynamicToolSpec::Namespace(namespace) if namespace.name == name => {
-                    Some(namespace)
-                }
+                DynamicToolSpec::Namespace(namespace) if namespace.name == name => Some(namespace),
                 _ => None,
             })
             .flat_map(|namespace| namespace.tools.iter())
@@ -540,5 +554,41 @@ mod native_computer_use_registration_tests {
                 .as_ref()
                 .is_some_and(|config| config.contains_key("mcp_servers.codex_tui"))
         );
+    }
+
+    #[tokio::test]
+    async fn persisted_android_server_collision_is_rejected_only_when_provider_is_configured() {
+        let home = tempfile::tempdir().expect("temporary Codex home");
+        std::fs::write(
+            home.path().join("config.toml"),
+            "[mcp_servers.codex_android]\nurl = 'http://127.0.0.1:1/mcp'\n",
+        )
+        .expect("write persisted MCP server config");
+        std::fs::write(
+            home.path().join("android-computer-use.json"),
+            r#"{"mcp_url":"http://127.0.0.1:1/android-mcp"}"#,
+        )
+        .expect("write Android provider config");
+
+        let configured = ConfigBuilder::default()
+            .codex_home(home.path().to_path_buf())
+            .build()
+            .await
+            .expect("load config with both namespace claimants");
+        let error = ThreadToolTransport::Disabled
+            .validate_config(&configured)
+            .expect_err("persisted MCP claimant must not mask the Android provider");
+        assert!(error.to_string().contains("codex_android"));
+
+        std::fs::remove_file(home.path().join("android-computer-use.json"))
+            .expect("remove Android provider config");
+        let unconfigured = ConfigBuilder::default()
+            .codex_home(home.path().to_path_buf())
+            .build()
+            .await
+            .expect("load config with only the MCP server");
+        ThreadToolTransport::Disabled
+            .validate_config(&unconfigured)
+            .expect("unclaimed Android namespace must not reject an unrelated MCP server");
     }
 }

@@ -5,8 +5,10 @@ functions. The provider owns environment-specific interaction; Codex owns
 session registration, request correlation, failure projection and forwarding
 native `InputImage` content to the active model turn. Browser remains the
 separate `codex_browser` adapter; the Android carry restores the isolated
-`codex_android` provider namespace. Namespace collisions fail closed; there is
-no generic provider registry or fallback.
+`codex_android` provider namespace. Namespace collisions fail closed; a
+persisted `[mcp_servers.codex_android]` entry is rejected before thread startup
+when the Android provider is configured. There is no generic provider registry
+or fallback.
 
 ## Android
 
@@ -29,6 +31,13 @@ tool calls the existing MCP method
 `interactive_session.install_build_from_run` with its 300-second timeout and
 then requests a fresh observation. These interfaces do not imply permission to
 contact a real service or device.
+
+The advertised schemas document optional observation serial and stability
+controls; `android_step` accepts one action or an ordered `actions` array with
+the supported action discriminator and its selector, coordinate, text, key,
+wait, or pointer fields; and `android_install_build_from_run` requires a
+`workflow_run_id`, with optional repository, artifact, and serial
+selectors. A configured device serial is used when no per-call serial is given.
 
 ## Shared boundary
 
