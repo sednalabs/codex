@@ -343,14 +343,13 @@ async fn qualify_usage_migration_histories() -> Result<()> {
         .env("PYTHONDONTWRITEBYTECODE", "1")
         .env("TZ", "UTC")
         .output()?;
-    anyhow::ensure!(
-        report_output.status.success(),
-        "T10 usage reporter failed: stdout={} stderr={}",
-        String::from_utf8_lossy(&report_output.stdout),
-        String::from_utf8_lossy(&report_output.stderr)
-    );
     let report_json: serde_json::Value = serde_json::from_slice(&report_output.stdout)?;
     assert_eq!(report_json["status"], "incomplete");
+    assert_eq!(
+        report_output.status.code(),
+        Some(2),
+        "typed incomplete reports use exit status 2"
+    );
     assert_eq!(report_json["summary"]["provider_call_count"], 1);
     assert_eq!(report_json["summary"]["actual_mode"]["uncovered_call_count"], 1);
     assert_eq!(
