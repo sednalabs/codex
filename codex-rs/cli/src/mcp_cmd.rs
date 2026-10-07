@@ -598,6 +598,18 @@ async fn run_login(config: &Config, login_args: LoginArgs) -> Result<()> {
     let explicit_scopes = (!scopes.is_empty()).then_some(scopes);
 
     if device_auth {
+        let has_registered_client_id = server
+            .oauth_client_id()
+            .is_some_and(|client_id| !client_id.trim().is_empty());
+        let has_client_secret = server
+            .oauth
+            .as_ref()
+            .is_some_and(|oauth| oauth.client_secret.is_some());
+        validate_device_auth_options(
+            client_registration,
+            has_registered_client_id,
+            has_client_secret,
+        )?;
         let oauth_config = match oauth_login_support(
             &server.transport,
             Arc::clone(&http_client),
@@ -721,13 +733,35 @@ async fn run_login(config: &Config, login_args: LoginArgs) -> Result<()> {
     Ok(())
 }
 
+fn validate_device_auth_options(
+    client_registration: McpOAuthClientRegistration,
+    has_registered_client_id: bool,
+    has_client_secret: bool,
+) -> Result<()> {
+    if has_client_secret {
+        bail!(
+            "MCP OAuth device authorization does not support a configured client secret; use a public OAuth client"
+        );
+    }
+    if !has_registered_client_id && client_registration == McpOAuthClientRegistration::Cimd {
+        bail!(
+            "MCP OAuth device authorization does not support CIMD registration; use `auto` or `dcr`"
+        );
+    }
+    Ok(())
+}
+
 fn print_device_authorization_prompt(prompt: DeviceAuthorizationPrompt) {
     println!(
         "Authorize `{}` by opening this URL in your browser:\n{}\n\nEnter code: {}\n",
-        prompt.server_name(),
-        prompt.verification_uri(),
-        prompt.user_code()
+        escape_terminal_text(prompt.server_name()),
+        escape_terminal_text(prompt.verification_uri()),
+        escape_terminal_text(prompt.user_code())
     );
+}
+
+fn escape_terminal_text(value: &str) -> String {
+    value.chars().flat_map(char::escape_debug).collect()
 }
 
 async fn run_logout(config: &Config, logout_args: LogoutArgs) -> Result<()> {

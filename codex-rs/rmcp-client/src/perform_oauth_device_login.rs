@@ -289,6 +289,7 @@ async fn request_device_authorization(
     {
         bail!("OAuth device authorization response omitted a required code or verification URI");
     }
+    validate_device_user_code(&details.user_code)?;
     let uri = Url::parse(
         details
             .verification_uri_complete
@@ -298,6 +299,13 @@ async fn request_device_authorization(
     .context("OAuth device verification URI must be a valid URL")?;
     validate_secure_url(&uri, "device verification URI")?;
     Ok(details)
+}
+
+fn validate_device_user_code(user_code: &str) -> Result<()> {
+    if user_code.chars().any(char::is_control) {
+        bail!("OAuth device authorization response included an unsafe user code");
+    }
+    Ok(())
 }
 
 fn parse_device_authorization_response(body: &[u8]) -> Result<DeviceAuthorizationResponse> {
