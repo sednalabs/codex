@@ -263,9 +263,7 @@ impl InputQueue {
         let local_count = watermark.and_then(|watermark| {
             let mut count = 0usize;
             for mail in state.pending.iter() {
-                let Some(ordinal) = mail.local_enqueue_ordinal else {
-                    return None;
-                };
+                let ordinal = mail.local_enqueue_ordinal?;
                 if ordinal >= watermark && !mail.communication.trigger_turn {
                     count = count.checked_add(1)?;
                 }

@@ -255,7 +255,7 @@ fn validate_embedded_namespace(migrator: &Migrator) -> anyhow::Result<()> {
     }
     if migrator
         .iter()
-        .any(|migration| migration.version >= FORK_BASE && migration.version > FORK_9003)
+        .any(|migration| migration.version > FORK_9003)
     {
         anyhow::bail!("state migration uses an unreviewed fork namespace version");
     }
@@ -361,16 +361,16 @@ fn validate_prefixes(rows: &[RowIdentity], deployed_thread_source: bool) -> anyh
         .filter(|target| *target < FORK_BASE)
         .max()
         .unwrap_or(0);
-    if let Some(last_core) = targets.iter().filter(|version| **version <= 60).max() {
-        if last_shifted.is_none() || *last_core > shifted_core_limit {
-            let legacy_recency = rows.iter().any(|row| row.source == 38 && row.target == 39);
-            for version in 1..=*last_core {
-                if !targets.contains(&version)
-                    && !(legacy_recency && version == 38)
-                    && !(deployed_thread_source && version == 30)
-                {
-                    anyhow::bail!("state migration history has a gap at {version}");
-                }
+    if let Some(last_core) = targets.iter().filter(|version| **version <= 60).max()
+        && (last_shifted.is_none() || *last_core > shifted_core_limit)
+    {
+        let legacy_recency = rows.iter().any(|row| row.source == 38 && row.target == 39);
+        for version in 1..=*last_core {
+            if !(targets.contains(&version)
+                || legacy_recency && version == 38
+                || deployed_thread_source && version == 30)
+            {
+                anyhow::bail!("state migration history has a gap at {version}");
             }
         }
     }

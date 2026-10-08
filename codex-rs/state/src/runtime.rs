@@ -752,7 +752,7 @@ mod tests {
         assert!(
             error
                 .chain()
-                .any(|source| source.is::<super::recovery::RuntimeDbInitError>())
+                .any(<(dyn std::error::Error + 'static)>::is::<super::recovery::RuntimeDbInitError>)
         );
         assert!(format!("{error:#}").contains("state migration 9999 has an unknown identity"));
         assert!(telemetry.counters().iter().any(|event| {

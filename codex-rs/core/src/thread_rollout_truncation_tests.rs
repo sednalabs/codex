@@ -164,7 +164,7 @@ fn last_n_fork_turns_treats_triggering_agent_communication_as_a_turn_boundary() 
     let rollout = vec![
         response_item(user_msg("earlier")),
         response_item(assistant_msg("answer")),
-        trigger.clone(),
+        trigger,
     ];
 
     let truncated = truncate_rollout_to_last_n_fork_turns(&rollout, 1);

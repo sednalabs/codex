@@ -165,7 +165,7 @@ impl App {
             self.agent_navigation.set_source_metadata(
                 thread_id,
                 AgentPickerSourceMetadata {
-                    model: Some(thread.model.clone()),
+                    model: thread.model.clone(),
                     reasoning_effort: thread.reasoning_effort.clone(),
                     provider: Some(thread.model_provider.clone()),
                     task_name: Some(agent_path.clone().unwrap_or_default()),

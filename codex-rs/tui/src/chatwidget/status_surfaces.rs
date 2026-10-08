@@ -13,6 +13,7 @@ use crate::model_catalog::LUNA_RESERVE_MODEL;
 use crate::status::format_credit_micros;
 use crate::status::format_estimated_usd_micros;
 use crate::status::format_tokens_compact;
+use crate::version::display_version;
 use codex_app_server_protocol::AskForApproval;
 use codex_config::ConfigLayerSource;
 use codex_config::os_host_name;
@@ -714,10 +715,6 @@ impl ChatWidget {
         self.status_line_value_for_item_at(item, chrono::Local::now())
     }
 
-    pub(super) fn status_line_value_for_item(&mut self, item: StatusLineItem) -> Option<String> {
-        self.status_line_value_for_item_at(item, chrono::Local::now())
-    }
-
     pub(super) fn status_line_value_for_item_at(
         &mut self,
         item: StatusLineItem,
@@ -793,7 +790,7 @@ impl ChatWidget {
                     self.status_line_limit_display(Some(window), &label)
                 }
             }
-            StatusLineItem::CodexVersion => Some(CODEX_CLI_VERSION.to_string()),
+            StatusLineItem::CodexVersion => Some(display_version().to_string()),
             StatusLineItem::ContextWindowSize => self
                 .status_line_context_window_size()
                 .map(|cws| format!("{} window", format_tokens_compact(cws))),

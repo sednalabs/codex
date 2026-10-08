@@ -612,8 +612,10 @@ async fn canonical_gaps_and_55_59_60_effect_mismatches_reject_without_bridge_wri
                 .expect("apply schema effect without its ledger row");
             }
             "missing_59" | "wrong_59_owner" | "wrong_59_order" | "unique_59" | "partial_59" => {
+                // Keep the synthetic DROP and replacement on one schema cache.
+                let mut connection = pool.acquire().await.expect("index fixture connection");
                 sqlx::query("DROP INDEX idx_thread_attachments_identity_thread")
-                    .execute(&pool)
+                    .execute(&mut *connection)
                     .await
                     .expect("remove recorded reverse index");
                 let replacement = match defect {
@@ -634,15 +636,16 @@ async fn canonical_gaps_and_55_59_60_effect_mismatches_reject_without_bridge_wri
                 };
                 if let Some(sql) = replacement {
                     sqlx::query(sql)
-                        .execute(&pool)
+                        .execute(&mut *connection)
                         .await
                         .expect("synthetic reverse index mismatch");
                 }
             }
             "missing_60" | "type_60" | "nullable_60" | "pk_60" | "fk_60" | "extra_60"
             | "default_60" => {
+                let mut connection = pool.acquire().await.expect("feedback fixture connection");
                 sqlx::query("DROP TABLE guardian_review_feedback")
-                    .execute(&pool)
+                    .execute(&mut *connection)
                     .await
                     .expect("remove recorded feedback table");
                 let replacement = match defect {
@@ -669,7 +672,7 @@ async fn canonical_gaps_and_55_59_60_effect_mismatches_reject_without_bridge_wri
                 };
                 if let Some(sql) = replacement {
                     sqlx::query(sql)
-                        .execute(&pool)
+                        .execute(&mut *connection)
                         .await
                         .expect("synthetic feedback shape mismatch");
                 }
@@ -698,25 +701,23 @@ async fn canonical_gaps_and_55_59_60_effect_mismatches_reject_without_bridge_wri
 
 #[tokio::test]
 async fn cancelling_after_bridge_writes_rolls_back_on_the_same_connection() {
-    let home = unique_temp_dir();
-    tokio::fs::create_dir_all(&home)
-        .await
-        .expect("synthetic cancellation fixture directory");
-    let sqlite = crate::SqliteConfig::new_for_testing(home.as_path().abs());
-    let pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect_with(
-            sqlx::sqlite::SqliteConnectOptions::new()
-                .filename(sqlite.state_db_path())
-                .create_if_missing(true),
-        )
-        .await
-        .expect("one-connection synthetic pool");
+    let (sqlite, pool) = fixture().await;
+    let max_connections = pool.options().get_max_connections();
+    assert!(max_connections > 0);
+    // Use the SQLite shim while leaving only one connection for the witness.
+    let mut reserved_connections = Vec::new();
+    for _ in 1..max_connections {
+        reserved_connections.push(pool.acquire().await.expect("reserve other pool connections"));
+    }
     old_fork_56_58()
         .run(&pool)
         .await
         .expect("historical input for transactional rekeying");
     seed_thread(&pool).await;
+    sqlx::query("CREATE TEMP TABLE bridge_connection_sentinel AS SELECT 1 AS marker")
+        .execute(&pool)
+        .await
+        .expect("connection-local cancellation witness");
     let before = preimage(&pool).await;
     let (written, writes_observed) = tokio::sync::oneshot::channel();
     let task_pool = pool.clone();
@@ -742,6 +743,13 @@ async fn cancelling_after_bridge_writes_rolls_back_on_the_same_connection() {
         .await
         .expect("same pooled connection must be reusable after cancellation");
     assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT marker FROM temp.bridge_connection_sentinel")
+            .fetch_one(&mut *transaction)
+            .await
+            .expect("resumed transaction must use the same physical connection"),
+        1
+    );
+    assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM _sqlx_migrations WHERE version < 0",)
             .fetch_one(&mut *transaction)
             .await
@@ -750,6 +758,7 @@ async fn cancelling_after_bridge_writes_rolls_back_on_the_same_connection() {
     );
     transaction.rollback().await.expect("release writer slot");
     assert_eq!(preimage(&pool).await, before);
+    drop(reserved_connections);
     bridge_migrate_reopen(sqlite, pool).await;
 }
 

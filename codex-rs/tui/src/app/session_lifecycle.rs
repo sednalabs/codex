@@ -233,9 +233,11 @@ impl App {
                     description_parts
                         .push(format!("approval: {}", session.approval_policy.to_core()));
                     description_parts.push(format!("reviewer: {}", session.approvals_reviewer));
-                    if let Ok(sandbox) = session
+                    if let Some(sandbox) = session
                         .permission_profile
                         .to_legacy_sandbox_policy(session.cwd.as_path())
+                        .ok()
+                        .map(codex_app_server_protocol::SandboxPolicy::from)
                     {
                         description_parts.push(format!("sandbox: {}", sandbox.to_core()));
                     }
