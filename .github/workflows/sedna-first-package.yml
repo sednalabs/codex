@@ -15,6 +15,7 @@ on:
       - "MODULE.bazel.lock"
       - "codex-rs/**"
       - "justfile"
+      - "scripts/build_codex_package.py"
       - "scripts/codex_package/**"
       - "sdk/python/**"
       - ".github/actions/**"
