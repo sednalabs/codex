@@ -598,3 +598,152 @@ fn spawn_failure_context_distinguishes_registry_rejections() {
         ],
     );
 }
+
+fn restore_entry(
+    thread_id: ThreadId,
+    agent_path: Option<AgentPath>,
+    name: &str,
+) -> RestoreAgentMetadata {
+    RestoreAgentMetadata {
+        thread_id,
+        agent_path,
+        agent_role: Some("worker".to_string()),
+        preferred_nickname: None,
+        nickname_candidates: vec![name.to_string()],
+    }
+}
+
+#[test]
+fn restore_batch_commits_all_metadata_under_one_registry_operation() {
+    let registry = Arc::new(AgentRegistry::default());
+    let first_id = ThreadId::new();
+    let second_id = ThreadId::new();
+    let first_path = agent_path("/root/first");
+    let second_path = agent_path("/root/second");
+
+    registry
+        .restore_agent_metadata_batch(vec![
+            restore_entry(first_id, Some(first_path.clone()), "Alpha"),
+            restore_entry(second_id, Some(second_path.clone()), "Beta"),
+        ])
+        .expect("complete restore batch should commit");
+
+    assert_eq!(
+        registry
+            .agent_metadata_for_thread(first_id)
+            .map(|metadata| (metadata.agent_id, metadata.agent_path)),
+        Some((Some(first_id), Some(first_path.clone())))
+    );
+    assert_eq!(
+        registry
+            .agent_metadata_for_thread(second_id)
+            .map(|metadata| (metadata.agent_id, metadata.agent_path)),
+        Some((Some(second_id), Some(second_path.clone())))
+    );
+    assert_eq!(registry.agent_id_for_path(&first_path), Some(first_id));
+    assert_eq!(registry.agent_id_for_path(&second_path), Some(second_id));
+    assert_eq!(registry.total_count.load(Ordering::Acquire), 2);
+}
+
+#[test]
+fn restore_batch_path_failure_releases_slots_before_nickname_allocation() {
+    let registry = Arc::new(AgentRegistry::default());
+    let existing_id = ThreadId::new();
+    let occupied_path = agent_path("/root/occupied");
+    let mut existing = registry
+        .reserve_spawn_slot(/*max_threads*/ None)
+        .expect("reserve existing slot");
+    existing
+        .reserve_agent_path(&occupied_path)
+        .expect("reserve existing path");
+    existing.commit(AgentMetadata {
+        agent_id: Some(existing_id),
+        agent_path: Some(occupied_path.clone()),
+        agent_nickname: Some("Existing".to_string()),
+        ..Default::default()
+    });
+
+    let fresh_id = ThreadId::new();
+    let fresh_path = agent_path("/root/fresh");
+    let err = registry
+        .restore_agent_metadata_batch(vec![
+            restore_entry(fresh_id, Some(fresh_path.clone()), "Fresh"),
+            restore_entry(ThreadId::new(), Some(occupied_path.clone()), "Unused"),
+        ])
+        .expect_err("occupied path must reject the complete batch");
+    assert!(err.to_string().contains("already registered"));
+    assert!(registry.agent_metadata_for_thread(fresh_id).is_none());
+    assert_eq!(registry.total_count.load(Ordering::Acquire), 1);
+    assert!(!registry
+        .active_agents
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .agent_tree
+        .contains_key(fresh_path.as_str()));
+
+    let mut nickname_reservation = registry
+        .reserve_spawn_slot(/*max_threads*/ None)
+        .expect("reserve nickname-check slot");
+    assert_eq!(
+        nickname_reservation
+            .reserve_agent_nickname_with_preference(&["Fresh"], None)
+            .expect("failed batch must not consume a nickname"),
+        "Fresh"
+    );
+}
+
+#[test]
+fn restore_batch_duplicate_thread_id_is_rejected_without_partial_registration() {
+    let registry = Arc::new(AgentRegistry::default());
+    let thread_id = ThreadId::new();
+    let first_path = agent_path("/root/first");
+    let second_path = agent_path("/root/second");
+
+    assert!(
+        registry
+            .restore_agent_metadata_batch(vec![
+                restore_entry(thread_id, Some(first_path.clone()), "Alpha"),
+                restore_entry(thread_id, Some(second_path.clone()), "Beta"),
+            ])
+            .is_err()
+    );
+    assert!(registry.agent_metadata_for_thread(thread_id).is_none());
+    assert_eq!(registry.total_count.load(Ordering::Acquire), 0);
+    let active_agents = registry
+        .active_agents
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    assert!(!active_agents.agent_tree.contains_key(first_path.as_str()));
+    assert!(!active_agents.agent_tree.contains_key(second_path.as_str()));
+}
+
+#[test]
+fn restore_batch_reservation_drop_releases_slots_ids_and_paths() {
+    let registry = Arc::new(AgentRegistry::default());
+    let thread_id = ThreadId::new();
+    let path = agent_path("/root/worker");
+    let entries = vec![restore_entry(thread_id, Some(path.clone()), "Worker")];
+    let mut active_agents = registry
+        .active_agents
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    registry.total_count.fetch_add(entries.len(), Ordering::AcqRel);
+    {
+        let mut reservation = RestoreBatchReservation::new(
+            &mut active_agents,
+            &registry.total_count,
+            entries,
+        );
+        reservation.reserve_all();
+    }
+    drop(active_agents);
+
+    assert_eq!(registry.total_count.load(Ordering::Acquire), 0);
+    assert!(registry.agent_metadata_for_thread(thread_id).is_none());
+    let active_agents = registry
+        .active_agents
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    assert!(!active_agents.reserved_thread_ids.contains(&thread_id));
+    assert!(!active_agents.agent_tree.contains_key(path.as_str()));
+}

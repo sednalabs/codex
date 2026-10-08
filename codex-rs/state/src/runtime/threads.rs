@@ -212,6 +212,95 @@ ON CONFLICT(child_thread_id) DO UPDATE SET
             .await
     }
 
+    /// List persisted descendants using the recovery safety bound and report truncation.
+    ///
+    /// Traversal is cycle-safe, excludes `root_thread_id` if the stored graph cycles back to it,
+    /// and returns breadth-first by depth, then by thread id when complete. The status filter
+    /// applies to every traversed edge. Each SQLite read is capped before results are fetched or
+    /// ordered in memory. If the descendant limit is exceeded, `thread_ids` contains a bounded
+    /// partial result and callers must ignore it whenever `relation_limit_reached` is true.
+    pub async fn list_thread_spawn_descendants_bounded(
+        &self,
+        root_thread_id: ThreadId,
+        status: Option<crate::DirectionalThreadSpawnEdgeStatus>,
+    ) -> anyhow::Result<crate::ThreadSpawnDescendants> {
+        const PARENT_BATCH_SIZE: usize = 500;
+
+        let root_id = root_thread_id.to_string();
+        let mut visited = std::collections::HashSet::from([root_id]);
+        let mut descendants = Vec::new();
+        let mut frontier = vec![root_thread_id];
+
+        while !frontier.is_empty() {
+            let mut next_frontier = Vec::new();
+            for parent_batch in frontier.chunks(PARENT_BATCH_SIZE) {
+                let remaining = crate::MAX_THREAD_SPAWN_DESCENDANTS
+                    .saturating_sub(descendants.len() + next_frontier.len());
+                let read_limit = remaining + 1;
+                let visited_path = format!(
+                    ",{},",
+                    visited.iter().cloned().collect::<Vec<_>>().join(",")
+                );
+
+                let mut builder = QueryBuilder::<Sqlite>::new(
+                    "SELECT child_thread_id FROM thread_spawn_edges WHERE parent_thread_id IN (",
+                );
+                let mut parents = builder.separated(", ");
+                for parent_thread_id in parent_batch {
+                    parents.push_bind(parent_thread_id.to_string());
+                }
+                parents.push_unseparated(")");
+                drop(parents);
+                if let Some(status) = status {
+                    builder.push(" AND status = ").push_bind(status.to_string());
+                }
+                builder
+                    .push(" AND instr(")
+                    .push_bind(visited_path)
+                    .push(" , ',' || child_thread_id || ',') = 0 LIMIT ");
+                builder.push(read_limit.to_string());
+
+                // Each frontier read is bounded before result materialization. The combined
+                // frontier is sorted below, in memory, where it remains within the same limit.
+                let rows = builder.build().fetch_all(self.pool.as_ref()).await?;
+                if rows.len() > remaining {
+                    let mut overflow_children = Vec::with_capacity(rows.len());
+                    for row in rows {
+                        let child_id: String = row.try_get("child_thread_id")?;
+                        if visited.insert(child_id.clone()) {
+                            overflow_children.push(ThreadId::try_from(child_id)?);
+                        }
+                    }
+                    overflow_children.sort_by_key(|thread_id| thread_id.to_string());
+                    next_frontier.extend(overflow_children.into_iter().take(remaining));
+                    next_frontier.sort_by_key(|thread_id| thread_id.to_string());
+                    let mut thread_ids = descendants;
+                    thread_ids.extend(next_frontier);
+                    return Ok(crate::ThreadSpawnDescendants {
+                        thread_ids,
+                        relation_limit_reached: true,
+                    });
+                }
+
+                for row in rows {
+                    let child_id: String = row.try_get("child_thread_id")?;
+                    if visited.insert(child_id.clone()) {
+                        next_frontier.push(ThreadId::try_from(child_id)?);
+                    }
+                }
+            }
+
+            next_frontier.sort_by_key(|thread_id| thread_id.to_string());
+            descendants.extend(next_frontier.iter().copied());
+            frontier = next_frontier;
+        }
+
+        Ok(crate::ThreadSpawnDescendants {
+            thread_ids: descendants,
+            relation_limit_reached: false,
+        })
+    }
+
     /// Find a direct spawned child of `parent_thread_id` by canonical agent path.
     pub async fn find_thread_spawn_child_by_path(
         &self,

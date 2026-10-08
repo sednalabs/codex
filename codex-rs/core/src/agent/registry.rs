@@ -33,8 +33,17 @@ pub(crate) struct AgentRegistry {
 struct ActiveAgents {
     agent_tree: HashMap<String, AgentMetadata>,
     thread_paths: HashMap<ThreadId, RegisteredAgent>,
+    reserved_thread_ids: HashSet<ThreadId>,
     used_agent_nicknames: HashSet<String>,
     nickname_reset_count: usize,
+}
+
+pub(crate) struct RestoreAgentMetadata {
+    pub(crate) thread_id: ThreadId,
+    pub(crate) agent_path: Option<AgentPath>,
+    pub(crate) agent_role: Option<String>,
+    pub(crate) preferred_nickname: Option<String>,
+    pub(crate) nickname_candidates: Vec<String>,
 }
 
 struct RegisteredAgent {
@@ -107,6 +116,66 @@ impl AgentRegistry {
             reserved_agent_nickname: None,
             reserved_agent_path: None,
         })
+    }
+
+    /// Restore persisted agent identities as one registry transaction.
+    ///
+    /// All identifiers, paths, and slots are reserved before nicknames are consumed. The mutex
+    /// remains held through the single metadata commit, so readers cannot observe a partial tree.
+    pub(crate) fn restore_agent_metadata_batch(
+        &self,
+        entries: Vec<RestoreAgentMetadata>,
+    ) -> Result<()> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+
+        let mut active_agents = self
+            .active_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut thread_ids = HashSet::new();
+        let mut paths = HashSet::new();
+        for entry in &entries {
+            if !thread_ids.insert(entry.thread_id)
+                || active_agents.thread_paths.contains_key(&entry.thread_id)
+                || active_agents.reserved_thread_ids.contains(&entry.thread_id)
+            {
+                return Err(CodexErr::InvalidRequest(format!(
+                    "agent thread `{}` is already registered or reserved",
+                    entry.thread_id
+                )));
+            }
+            if entry.preferred_nickname.is_none() && entry.nickname_candidates.is_empty() {
+                return Err(CodexErr::InvalidRequest(format!(
+                    "no nickname candidates for restored agent {}",
+                    entry.thread_id
+                )));
+            }
+            if let Some(agent_path) = &entry.agent_path
+                && (!paths.insert(agent_path.to_string())
+                    || active_agents.agent_tree.contains_key(agent_path.as_str()))
+            {
+                return Err(CodexErr::InvalidRequest(format!(
+                    "stored agent path {agent_path} is duplicated or already registered"
+                )));
+            }
+        }
+
+        self.total_count
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                count.checked_add(entries.len())
+            })
+            .map_err(|_| CodexErr::InvalidRequest("agent registry slot count overflow".into()))?;
+
+        let mut reservation = RestoreBatchReservation::new(
+            &mut active_agents,
+            &self.total_count,
+            entries,
+        );
+        reservation.reserve_all();
+        reservation.allocate_nicknames_and_commit();
+        Ok(())
     }
 
     pub(crate) fn release_spawned_thread(&self, thread_id: ThreadId) {
@@ -224,13 +293,20 @@ impl AgentRegistry {
     }
 
     fn register_spawned_thread(&self, agent_metadata: AgentMetadata) {
-        let Some(thread_id) = agent_metadata.agent_id else {
-            return;
-        };
         let mut active_agents = self
             .active_agents
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Self::insert_spawned_thread(&mut active_agents, agent_metadata);
+    }
+
+    fn insert_spawned_thread(
+        active_agents: &mut ActiveAgents,
+        agent_metadata: AgentMetadata,
+    ) {
+        let Some(thread_id) = agent_metadata.agent_id else {
+            return;
+        };
         let key = agent_metadata
             .agent_path
             .as_ref()
@@ -261,6 +337,14 @@ impl AgentRegistry {
             .active_agents
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Self::reserve_agent_nickname_locked(&mut active_agents, names, preferred)
+    }
+
+    fn reserve_agent_nickname_locked(
+        active_agents: &mut ActiveAgents,
+        names: &[&str],
+        preferred: Option<&str>,
+    ) -> Option<String> {
         let agent_nickname = if let Some(preferred) = preferred {
             preferred.to_string()
         } else {
@@ -346,6 +430,107 @@ impl AgentRegistry {
                 Err(updated) => current = updated,
             }
         }
+    }
+}
+
+struct RestoreBatchReservation<'a> {
+    active_agents: &'a mut ActiveAgents,
+    total_count: &'a AtomicUsize,
+    entries: Vec<RestoreAgentMetadata>,
+    committed: bool,
+}
+
+impl<'a> RestoreBatchReservation<'a> {
+    fn new(
+        active_agents: &'a mut ActiveAgents,
+        total_count: &'a AtomicUsize,
+        entries: Vec<RestoreAgentMetadata>,
+    ) -> Self {
+        Self {
+            active_agents,
+            total_count,
+            entries,
+            committed: false,
+        }
+    }
+
+    fn reserve_all(&mut self) {
+        for entry in &self.entries {
+            let inserted = self.active_agents.reserved_thread_ids.insert(entry.thread_id);
+            debug_assert!(inserted);
+            if let Some(agent_path) = &entry.agent_path {
+                let previous = self.active_agents.agent_tree.insert(
+                    agent_path.to_string(),
+                    AgentMetadata {
+                        agent_path: Some(agent_path.clone()),
+                        ..Default::default()
+                    },
+                );
+                debug_assert!(previous.is_none());
+            }
+        }
+    }
+
+    fn allocate_nicknames_and_commit(&mut self) {
+        let metadata = self
+            .entries
+            .iter()
+            .map(|entry| {
+                let candidate_names: Vec<&str> = entry
+                    .nickname_candidates
+                    .iter()
+                    .map(String::as_str)
+                    .collect();
+                let agent_nickname = AgentRegistry::reserve_agent_nickname_locked(
+                    self.active_agents,
+                    &candidate_names,
+                    entry.preferred_nickname.as_deref(),
+                )
+                .expect("restore batch nickname candidates were preflighted");
+                AgentMetadata {
+                    agent_id: Some(entry.thread_id),
+                    agent_path: entry.agent_path.clone(),
+                    agent_nickname: Some(agent_nickname),
+                    agent_role: entry.agent_role.clone(),
+                }
+            })
+            .collect::<Vec<_>>();
+
+        for entry in &self.entries {
+            self.active_agents
+                .reserved_thread_ids
+                .remove(&entry.thread_id);
+        }
+        for agent_metadata in metadata {
+            AgentRegistry::insert_spawned_thread(self.active_agents, agent_metadata);
+        }
+        self.committed = true;
+    }
+}
+
+impl Drop for RestoreBatchReservation<'_> {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        for entry in &self.entries {
+            self.active_agents
+                .reserved_thread_ids
+                .remove(&entry.thread_id);
+            if let Some(agent_path) = &entry.agent_path
+                && self
+                    .active_agents
+                    .agent_tree
+                    .get(agent_path.as_str())
+                    .is_some_and(|metadata| metadata.agent_id.is_none())
+            {
+                self.active_agents
+                    .agent_tree
+                    .remove(agent_path.as_str());
+            }
+        }
+        self.total_count
+            .fetch_sub(self.entries.len(), Ordering::AcqRel);
     }
 }
 

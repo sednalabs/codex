@@ -11,3 +11,4 @@ pub use local::LocalAgentGraphStore;
 pub use store::AgentGraphStore;
 pub use store::AgentGraphStoreFuture;
 pub use types::ThreadSpawnEdgeStatus;
+pub use types::ThreadSpawnDescendants;

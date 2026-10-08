@@ -79,6 +79,7 @@ pub use model::ThreadMetadataBuilder;
 pub use model::ThreadRelationFilter;
 pub use model::ThreadSection;
 pub use model::ThreadSectionAppearance;
+pub use model::ThreadSpawnDescendants;
 pub use model::ThreadSectionsPage;
 pub use model::ThreadsPage;
 pub use runtime::ExternalAgentConfigImportDetailsRecord;
@@ -117,6 +118,9 @@ pub const MAX_THREAD_ATTACHMENT_PAYLOAD_BYTES: usize = 64 * 1024;
 
 /// Maximum byte length of a persisted attachment type.
 pub const MAX_THREAD_ATTACHMENT_TYPE_BYTES: usize = 256;
+
+/// Maximum number of persisted descendants returned by one agent recovery query.
+pub const MAX_THREAD_SPAWN_DESCENDANTS: usize = 3_200;
 
 /// Maximum byte length of a persisted stable attachment identity key.
 pub const MAX_THREAD_ATTACHMENT_IDENTITY_KEY_BYTES: usize = 256;
