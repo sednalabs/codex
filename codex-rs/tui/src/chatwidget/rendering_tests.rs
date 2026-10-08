@@ -394,7 +394,7 @@ async fn initial_session_header_starts_at_the_top_of_the_viewport() {
         })
         .collect::<Vec<_>>()
         .join("\n")
-        .replace(crate::version::CODEX_CLI_VERSION, "<VERSION>");
+        .replace(crate::version::display_version(), "<VERSION>");
 
     let cwd = widget.config.cwd.as_path().display().to_string();
 

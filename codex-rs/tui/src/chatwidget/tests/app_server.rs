@@ -95,7 +95,7 @@ async fn session_header_uses_catalog_display_name_without_changing_model() {
             .iter()
             .map(|lines| lines_to_single_string(lines))
             .collect::<String>()
-            .replace(CODEX_CLI_VERSION, "<VERSION>")
+            .replace(crate::version::display_version(), "<VERSION>")
             .replace("C:\\tmp\\thread-settings", "/tmp/thread-settings");
         assert_chatwidget_snapshot!(format!("catalog_model_session_header_{name}"), rendered);
         assert_eq!(chat.current_model(), slug);

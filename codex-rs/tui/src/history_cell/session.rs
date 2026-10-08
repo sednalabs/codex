@@ -4,6 +4,7 @@ use super::*;
 use crate::line_truncation::line_width;
 use crate::line_truncation::truncate_line_with_ellipsis_if_overflow;
 use crate::style::accent_color;
+use crate::version::display_version;
 use crate::width::display_width;
 
 /// Render `lines` inside a border whose inner width is at least `inner_width`.
@@ -184,7 +185,7 @@ pub(crate) fn new_session_info(
         model_display_name.to_string(),
         session.reasoning_effort.clone(),
         config.cwd.to_path_buf(),
-        CODEX_CLI_VERSION,
+        display_version(),
     )
     .with_yolo_mode(has_yolo_permissions(
         session.approval_policy,
