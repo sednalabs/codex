@@ -43,6 +43,18 @@ fn assistant_msg(text: &str) -> ResponseItem {
     }
 }
 
+fn synthetic_summary_msg() -> ResponseItem {
+    ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: format!("{}\nolder conversation summary", codex_prompts::SUMMARY_PREFIX),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    }
+}
+
 fn compacted_with_history(history: Vec<ResponseItem>) -> RolloutItem {
     RolloutItem::Compacted(CompactedItem {
         message: "checkpoint".to_string(),
@@ -77,6 +89,37 @@ fn last_n_fork_turns_counts_nested_checkpoint_history_and_drops_superseded_prefi
     let history = checkpoint.replacement_history.as_ref().unwrap();
     assert_eq!(history.len(), 2);
     assert!(matches!(&history[0].item, ResponseItem::Message { role, .. } if role == "user"));
+}
+
+#[test]
+fn last_n_fork_turns_does_not_count_or_retain_synthetic_checkpoint_summary() {
+    let rollout = vec![compacted_with_history(vec![
+        synthetic_summary_msg(),
+        user_msg("retained turn"),
+        assistant_msg("retained answer"),
+    ])];
+
+    let truncated = truncate_rollout_to_last_n_fork_turns(&rollout, 1);
+    let RolloutItem::Compacted(checkpoint) = &truncated[0] else {
+        panic!("checkpoint should be retained as the active history container");
+    };
+    let history = checkpoint.replacement_history.as_ref().unwrap();
+    assert_eq!(history.len(), 2);
+    assert!(matches!(
+        &history[0].item,
+        ResponseItem::Message { role, content, .. }
+            if role == "user"
+                && matches!(content.first(), Some(ContentItem::OutputText { text }) if text == "retained turn")
+    ));
+    assert!(!history.iter().any(|item| matches!(
+        &item.item,
+        ResponseItem::Message { content, .. }
+            if content.iter().any(|content| matches!(
+                content,
+                ContentItem::InputText { text }
+                    if text.starts_with(&format!("{}\n", codex_prompts::SUMMARY_PREFIX))
+            ))
+    )));
 }
 
 #[test]

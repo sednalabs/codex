@@ -271,10 +271,11 @@ fn normalize_rollbacks_in_fork_suffix(items: &mut Vec<RolloutItem>) {
 }
 
 fn is_real_user_message_boundary(item: &ResponseItem) -> bool {
-    matches!(
-        event_mapping::parse_turn_item(item),
-        Some(TurnItem::UserMessage(_))
-    )
+    is_user_turn_boundary(item)
+        && matches!(
+            event_mapping::parse_turn_item(item),
+            Some(TurnItem::UserMessage(_))
+        )
 }
 
 fn is_trigger_turn_boundary(item: &ResponseItem) -> bool {
