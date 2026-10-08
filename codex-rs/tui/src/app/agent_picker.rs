@@ -1,6 +1,7 @@
 //! Root-scoped background refresh for the agent picker.
 
 use super::agent_navigation::AgentPickerThreadVisibility;
+use super::agent_navigation::AgentPickerSourceMetadata;
 use super::app_server_event_targets::ServerNotificationThreadTarget;
 use super::app_server_event_targets::server_notification_thread_target;
 use super::*;
@@ -161,6 +162,17 @@ impl App {
                 self.agent_navigation.mark_parent_owned(thread_id);
             }
             self.upsert_agent_picker_thread(thread_id, agent_nickname, agent_role, is_closed);
+            self.agent_navigation.set_source_metadata(
+                thread_id,
+                AgentPickerSourceMetadata {
+                    model: Some(thread.model.clone()),
+                    reasoning_effort: thread.reasoning_effort.clone(),
+                    provider: Some(thread.model_provider.clone()),
+                    task_name: Some(agent_path.clone().unwrap_or_default()),
+                    created_at: Some(thread.created_at),
+                    updated_at: Some(thread.updated_at),
+                },
+            );
             self.agent_navigation.set_agent_path(thread_id, agent_path);
             if !live && update_liveness {
                 self.agent_navigation.set_running(thread_id, is_running);

@@ -8,6 +8,7 @@ use crate::agent::registry::RestoreAgentMetadata;
 use crate::agent::role::apply_role_to_config;
 use crate::agent::types::AgentMetadata;
 use crate::agent::types::LiveAgent;
+use crate::agent::types::SpawnAgentForkMode;
 use crate::agent::types::SpawnAgentOptions;
 use crate::agents_md_manager::SessionInstructions;
 use crate::codex_thread::CodexThread;
@@ -23,6 +24,7 @@ use crate::context::MultiAgentModeInstructions;
 use crate::context::MultiAgentRoleInstructions;
 use crate::context::world_state::PersistentModeState;
 use crate::session::multi_agents::resolve_usage_hints;
+use crate::thread_rollout_truncation::truncate_rollout_to_last_n_fork_turns;
 use codex_context_fragments::set_annotated_content;
 use codex_context_fragments::to_annotated_content;
 use codex_extension_api::ExtensionDataInit;
@@ -1116,6 +1118,10 @@ impl LocalAgentControl {
                     ))
                 })?
                 .items;
+        if let Some(SpawnAgentForkMode::LastNTurns(last_n_turns)) = options.fork_mode.as_ref() {
+            forked_rollout_items =
+                truncate_rollout_to_last_n_fork_turns(&forked_rollout_items, *last_n_turns);
+        }
 
         let selected_capability_roots = forked_rollout_items
             .iter()

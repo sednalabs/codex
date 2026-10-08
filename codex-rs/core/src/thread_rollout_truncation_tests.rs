@@ -2,10 +2,12 @@ use super::*;
 use crate::session::step_context::StepContext;
 use crate::session::tests::build_world_state_from_turn_context;
 use crate::session::tests::make_session_and_context;
+use codex_history::CompactedItem;
 use codex_protocol::ResponseItemId;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ReasoningItemReasoningSummary;
+use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::ThreadRolledBackEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnStartedEvent;
@@ -39,6 +41,81 @@ fn assistant_msg(text: &str) -> ResponseItem {
         phase: None,
         internal_chat_message_metadata_passthrough: None,
     }
+}
+
+fn compacted_with_history(history: Vec<ResponseItem>) -> RolloutItem {
+    RolloutItem::Compacted(CompactedItem {
+        message: "checkpoint".to_string(),
+        replacement_history: Some(history.into_iter().map(Into::into).collect()),
+        guardian_history: None,
+        retained_context: None,
+        mcp_resource_origins: None,
+        window_number: None,
+        first_window_id: None,
+        previous_window_id: None,
+        window_id: None,
+        compaction_response_id: None,
+        latest_token_usage_record: None,
+        resume_metadata: None,
+    })
+}
+
+#[test]
+fn last_n_fork_turns_counts_nested_checkpoint_history_and_drops_superseded_prefix() {
+    let rollout = vec![compacted_with_history(vec![
+        user_msg("old turn"),
+        assistant_msg("old answer"),
+        user_msg("kept turn"),
+        assistant_msg("kept answer"),
+    ])];
+
+    let truncated = truncate_rollout_to_last_n_fork_turns(&rollout, 1);
+    let RolloutItem::Compacted(checkpoint) = &truncated[0] else {
+        panic!("checkpoint should be retained as the active history container");
+    };
+    assert!(checkpoint.message.is_empty());
+    let history = checkpoint.replacement_history.as_ref().unwrap();
+    assert_eq!(history.len(), 2);
+    assert!(matches!(&history[0].item, ResponseItem::Message { role, .. } if role == "user"));
+}
+
+#[test]
+fn last_n_fork_turns_applies_rollback_to_nested_checkpoint_boundaries() {
+    let rollout = vec![
+        compacted_with_history(vec![
+            user_msg("kept turn"),
+            assistant_msg("kept answer"),
+            user_msg("rolled back turn"),
+        ]),
+        RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
+            num_turns: 1,
+        })),
+    ];
+
+    let truncated = truncate_rollout_to_last_n_fork_turns(&rollout, 2);
+    let RolloutItem::Compacted(checkpoint) = &truncated[0] else {
+        panic!("checkpoint should be retained");
+    };
+    assert_eq!(checkpoint.replacement_history.as_ref().unwrap().len(), 2);
+    assert!(truncated.iter().all(|item| !matches!(
+        item,
+        RolloutItem::EventMsg(EventMsg::ThreadRolledBack(_))
+    )));
+}
+
+#[test]
+fn last_n_fork_turns_treats_triggering_agent_communication_as_a_turn_boundary() {
+    let trigger = RolloutItem::InterAgentCommunication(InterAgentCommunication::new(
+        codex_protocol::protocol::AgentPath::root(),
+        codex_protocol::protocol::AgentPath::try_from("/root/worker").unwrap(),
+        Vec::new(),
+        "trigger task".to_string(),
+        /*trigger_turn*/ true,
+    ));
+    let rollout = vec![user_msg("earlier"), assistant_msg("answer"), trigger.clone()];
+
+    let truncated = truncate_rollout_to_last_n_fork_turns(&rollout, 1);
+    assert_eq!(truncated, vec![trigger]);
 }
 
 fn turn_started(turn_id: &str) -> RolloutItem {

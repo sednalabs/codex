@@ -1375,12 +1375,37 @@ impl App {
         &mut self,
         notification: &ServerNotification,
     ) {
-        if let Some(activity) =
-            sub_agent_activity_item(notification).and_then(sub_agent_activity_display)
-        {
-            self.agent_navigation.record_sub_agent_activity(activity);
-            self.sync_active_agent_label();
-            return;
+        if let Some(item) = sub_agent_activity_item(notification) {
+            let metadata = match item {
+                codex_app_server_protocol::ThreadItem::SubAgentActivity {
+                    agent_thread_id,
+                    model,
+                    reasoning_effort,
+                    agent_path,
+                    ..
+                } => ThreadId::from_string(agent_thread_id).ok().map(|thread_id| {
+                    (
+                        thread_id,
+                        crate::app::agent_navigation::AgentPickerSourceMetadata {
+                            model: model.clone(),
+                            reasoning_effort: reasoning_effort.clone(),
+                            task_name: Some(agent_path.clone()),
+                            ..Default::default()
+                        },
+                    )
+                }),
+                _ => None,
+            };
+            let activity = sub_agent_activity_display(item);
+            if let Some((thread_id, metadata)) = metadata {
+                self.agent_navigation
+                    .set_source_metadata(thread_id, metadata);
+            }
+            if let Some(activity) = activity {
+                self.agent_navigation.record_sub_agent_activity(activity);
+                self.sync_active_agent_label();
+                return;
+            }
         }
 
         let Some(receiver_thread_ids) = collab_receiver_thread_ids(notification) else {

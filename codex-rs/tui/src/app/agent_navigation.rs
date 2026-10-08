@@ -1,8 +1,8 @@
 //! Multi-agent picker navigation and labeling state for the TUI app.
 //!
 //! This module exists to keep the pure parts of multi-agent navigation out of [`crate::app::App`].
-//! It owns the stable spawn-order cache used by the `/subagents` picker, keyboard next/previous
-//! navigation, and the contextual footer label for the thread currently being watched.
+//! It owns the stable spawn-order cache used by the `/agent` and `/subagents` picker, keyboard
+//! next/previous navigation, and the contextual footer label for the thread currently being watched.
 //!
 //! Responsibilities here are intentionally narrow:
 //! - remember picker entries and their first-seen order
@@ -25,6 +25,7 @@ use crate::multi_agents::format_agent_picker_item_name;
 use crate::multi_agents::next_agent_shortcut;
 use crate::multi_agents::previous_agent_shortcut;
 use codex_protocol::ThreadId;
+use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use ratatui::text::Span;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -43,6 +44,7 @@ use uuid::Uuid;
 pub(crate) struct AgentNavigationState {
     /// Latest picker metadata for each tracked thread id.
     threads: HashMap<ThreadId, AgentPickerThreadEntry>,
+    source_metadata: HashMap<ThreadId, AgentPickerSourceMetadata>,
     /// Stable first-seen traversal order for picker rows and keyboard cycling.
     order: Vec<ThreadId>,
     /// Threads with observed terminal liveness that must not be revived by delayed activity.
@@ -52,6 +54,16 @@ pub(crate) struct AgentNavigationState {
     picker_excluded_threads: HashSet<ThreadId>,
     /// Coalesces root refreshes while rejecting replies from a previous session.
     pub(super) picker_refresh: Option<AgentPickerRefreshState>,
+}
+
+#[derive(Debug, Default, Clone)]
+pub(crate) struct AgentPickerSourceMetadata {
+    pub(crate) model: Option<String>,
+    pub(crate) reasoning_effort: Option<ReasoningEffortConfig>,
+    pub(crate) provider: Option<String>,
+    pub(crate) task_name: Option<String>,
+    pub(crate) created_at: Option<i64>,
+    pub(crate) updated_at: Option<i64>,
 }
 
 /// Direction of keyboard traversal through the stable picker order.
@@ -78,6 +90,39 @@ pub(super) struct AgentPickerRefreshState {
 }
 
 impl AgentNavigationState {
+    pub(crate) fn set_source_metadata(
+        &mut self,
+        thread_id: ThreadId,
+        metadata: AgentPickerSourceMetadata,
+    ) {
+        let current = self.source_metadata.entry(thread_id).or_default();
+        if metadata.model.is_some() {
+            current.model = metadata.model;
+        }
+        if metadata.reasoning_effort.is_some() {
+            current.reasoning_effort = metadata.reasoning_effort;
+        }
+        if metadata.provider.is_some() {
+            current.provider = metadata.provider;
+        }
+        if metadata.task_name.is_some() {
+            current.task_name = metadata.task_name;
+        }
+        if metadata.created_at.is_some() {
+            current.created_at = metadata.created_at;
+        }
+        if metadata.updated_at.is_some() {
+            current.updated_at = metadata.updated_at;
+        }
+    }
+
+    pub(crate) fn source_metadata(
+        &self,
+        thread_id: ThreadId,
+    ) -> Option<&AgentPickerSourceMetadata> {
+        self.source_metadata.get(&thread_id)
+    }
+
     pub(crate) fn begin_picker_refresh(&mut self, thread_id: ThreadId) -> Option<Uuid> {
         if self
             .picker_refresh
@@ -264,6 +309,7 @@ impl AgentNavigationState {
     /// to a pristine single-session state.
     pub(crate) fn clear(&mut self) {
         self.threads.clear();
+        self.source_metadata.clear();
         self.order.clear();
         self.stopped_threads.clear();
         self.parent_owned_threads.clear();
@@ -278,6 +324,7 @@ impl AgentNavigationState {
     /// would leave ghost rows in `/subagents`.
     pub(crate) fn remove(&mut self, thread_id: ThreadId) {
         self.threads.remove(&thread_id);
+        self.source_metadata.remove(&thread_id);
         self.order.retain(|candidate| *candidate != thread_id);
         self.stopped_threads.remove(&thread_id);
         self.parent_owned_threads.remove(&thread_id);
@@ -511,6 +558,36 @@ mod tests {
             state.ordered_thread_ids(),
             vec![main_thread_id, first_agent_id, second_agent_id]
         );
+    }
+
+    #[test]
+    fn picker_source_metadata_merges_observations_without_inventing_provider_identity() {
+        let mut state = AgentNavigationState::default();
+        let thread_id = ThreadId::new();
+        state.set_source_metadata(
+            thread_id,
+            AgentPickerSourceMetadata {
+                model: Some("gpt-6.1-sol".to_string()),
+                task_name: Some("/root/child".to_string()),
+                ..Default::default()
+            },
+        );
+        assert_eq!(state.source_metadata(thread_id).unwrap().provider, None);
+        state.set_source_metadata(
+            thread_id,
+            AgentPickerSourceMetadata {
+                reasoning_effort: Some(ReasoningEffortConfig::Medium),
+                provider: Some("openai".to_string()),
+                ..Default::default()
+            },
+        );
+
+        let metadata = state.source_metadata(thread_id).expect("metadata retained");
+        assert_eq!(metadata.model.as_deref(), Some("gpt-6.1-sol"));
+        assert_eq!(metadata.task_name.as_deref(), Some("/root/child"));
+        assert_eq!(metadata.provider.as_deref(), Some("openai"));
+        assert_eq!(metadata.created_at, None);
+        assert_eq!(metadata.updated_at, None);
     }
 
     #[test]

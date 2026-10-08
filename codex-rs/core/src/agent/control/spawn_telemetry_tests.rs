@@ -51,6 +51,20 @@ fn records_bounded_spawn_phase_metrics() {
             total: Duration::from_millis(29),
         },
     );
+    record_spawn_success(
+        &telemetry,
+        Some(&SpawnAgentForkMode::LastNTurns(3)),
+        MultiAgentVersion::V2,
+        SpawnMeasurements {
+            history_mode: ThreadHistoryMode::Paginated,
+            residency_reservation: None,
+            fork_context: None,
+            child_create: Duration::from_millis(31),
+            durability_wait: Duration::ZERO,
+            input_admission: Duration::ZERO,
+            total: Duration::from_millis(31),
+        },
+    );
 
     let snapshot = metrics.snapshot().expect("snapshot spawn metrics");
     let metric = snapshot
@@ -74,22 +88,31 @@ fn records_bounded_spawn_phase_metrics() {
                 })
                 .collect::<BTreeMap<_, _>>();
             assert_eq!(attributes.len(), 5);
-            assert_eq!(attributes["fork_mode"], "all");
+            assert!(matches!(attributes["fork_mode"].as_str(), "all" | "last_n"));
             assert_eq!(attributes["history_mode"], "paginated");
             assert_eq!(attributes["multi_agent_version"], "v2");
             assert_eq!(attributes["product_sku"], "codex");
-            (attributes["phase"].clone(), (point.count(), point.sum()))
+            (
+                (attributes["fork_mode"].clone(), attributes["phase"].clone()),
+                (point.count(), point.sum()),
+            )
         })
         .collect::<BTreeMap<_, _>>();
     assert_eq!(
         phases,
         BTreeMap::from([
-            ("child_create".to_string(), (1, 17.0)),
-            ("durability_wait".to_string(), (1, 19.0)),
-            ("fork_context".to_string(), (1, 13.0)),
-            ("input_admission".to_string(), (1, 23.0)),
-            ("residency_reservation".to_string(), (1, 11.0)),
-            ("total".to_string(), (1, 29.0)),
+            (("all".to_string(), "child_create".to_string()), (1, 17.0)),
+            (("all".to_string(), "durability_wait".to_string()), (1, 19.0)),
+            (("all".to_string(), "fork_context".to_string()), (1, 13.0)),
+            (("all".to_string(), "input_admission".to_string()), (1, 23.0)),
+            (("all".to_string(), "residency_reservation".to_string()), (1, 11.0)),
+            (("all".to_string(), "total".to_string()), (1, 29.0)),
+            (("last_n".to_string(), "child_create".to_string()), (1, 31.0)),
+            (("last_n".to_string(), "durability_wait".to_string()), (1, 0.0)),
+            (("last_n".to_string(), "fork_context".to_string()), (1, 0.0)),
+            (("last_n".to_string(), "input_admission".to_string()), (1, 0.0)),
+            (("last_n".to_string(), "residency_reservation".to_string()), (1, 0.0)),
+            (("last_n".to_string(), "total".to_string()), (1, 31.0)),
         ])
     );
 }

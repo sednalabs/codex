@@ -295,13 +295,15 @@ impl SpawnAgentArgs {
         if fork_turns.eq_ignore_ascii_case("none") {
             return Ok(None);
         }
-        // Accept legacy turn counts without limiting the inherited history.
-        if fork_turns.eq_ignore_ascii_case("all") || fork_turns.parse::<NonZeroUsize>().is_ok() {
+        if fork_turns.eq_ignore_ascii_case("all") {
             return Ok(Some(SpawnAgentForkMode::FullHistory));
+        }
+        if let Ok(turn_count) = fork_turns.parse::<NonZeroUsize>() {
+            return Ok(Some(SpawnAgentForkMode::LastNTurns(turn_count.get())));
         }
 
         Err(FunctionCallError::RespondToModel(
-            "fork_turns must be `none` or `all`".to_string(),
+            "fork_turns must be `none`, `all`, or a positive integer".to_string(),
         ))
     }
 }

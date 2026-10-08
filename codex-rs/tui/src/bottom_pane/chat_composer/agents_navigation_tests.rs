@@ -10,6 +10,7 @@ fn parent_owned_thread_allows_bare_navigation_commands() {
     for (command, expected) in [
         ("/agents", SlashCommand::Agents),
         ("/subagents", SlashCommand::MultiAgents),
+        ("/agent", SlashCommand::Agent),
         ("/side", SlashCommand::Side),
         ("/btw", SlashCommand::Btw),
         ("/diff ", SlashCommand::Diff),

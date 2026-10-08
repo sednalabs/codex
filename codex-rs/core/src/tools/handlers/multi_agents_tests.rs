@@ -1358,6 +1358,7 @@ async fn multi_agent_v2_spawn_rejects_legacy_fork_context() {
 
 #[test_case::test_case("banana"; "invalid string")]
 #[test_case::test_case("0"; "zero turns")]
+#[test_case::test_case("99999999999999999999999999999999999999"; "overflow")]
 #[tokio::test]
 async fn multi_agent_v2_spawn_rejects_invalid_fork_turns_string(fork_turns: &str) {
     let (mut session, mut turn) = make_session_and_context().await;
@@ -1392,7 +1393,9 @@ async fn multi_agent_v2_spawn_rejects_invalid_fork_turns_string(fork_turns: &str
 
     assert_eq!(
         err,
-        FunctionCallError::RespondToModel("fork_turns must be `none` or `all`".to_string())
+        FunctionCallError::RespondToModel(
+            "fork_turns must be `none`, `all`, or a positive integer".to_string()
+        )
     );
 }
 

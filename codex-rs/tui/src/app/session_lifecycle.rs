@@ -197,16 +197,65 @@ impl App {
                         )
                     });
                 let uuid = thread_id.to_string();
+                let mut description_parts = vec![uuid.clone()];
+                if let Some(metadata) = self.agent_navigation.source_metadata(thread_id) {
+                    if let Some(model) = metadata.model.as_deref() {
+                        description_parts.push(format!("selected model: {model}"));
+                    }
+                    if let Some(effort) = metadata.reasoning_effort.as_ref() {
+                        description_parts.push(format!("selected effort: {effort}"));
+                    }
+                    if let Some(provider) = metadata.provider.as_deref() {
+                        description_parts.push(format!("session provider: {provider}"));
+                    }
+                    if let Some(task_name) = metadata
+                        .task_name
+                        .as_deref()
+                        .filter(|task_name| !task_name.is_empty())
+                    {
+                        description_parts.push(format!("task: {task_name}"));
+                    }
+                    if let Some(updated_at) = metadata.updated_at.or(metadata.created_at) {
+                        description_parts.push(format!("updated: {updated_at}"));
+                    }
+                    description_parts.push("provider-effective identity: unverified".to_string());
+                }
+                if self.active_thread_id == Some(thread_id) {
+                    let token_usage = self.chat_widget.token_usage();
+                    if token_usage.total_tokens > 0 {
+                        description_parts.push(format!("{} tokens", token_usage.total_tokens));
+                    }
+                }
+                if let Some(channel) = self.thread_event_channels.get(&thread_id)
+                    && let Ok(store) = channel.store.try_lock()
+                    && let Some(session) = &store.session
+                {
+                    description_parts.push(format!(
+                        "approval: {}",
+                        session.approval_policy.to_core()
+                    ));
+                    description_parts.push(format!(
+                        "reviewer: {}",
+                        session.approvals_reviewer
+                    ));
+                    if let Ok(sandbox) = session
+                        .permission_profile
+                        .to_legacy_sandbox_policy(session.cwd.as_path())
+                    {
+                        description_parts.push(format!("sandbox: {}", sandbox.to_core()));
+                    }
+                }
+                let description = description_parts.join(" • ");
                 SelectionItem {
                     name: name.clone(),
                     name_prefix_spans: agent_picker_status_dot_spans(entry.is_closed),
-                    description: Some(uuid.clone()),
+                    description: Some(description.clone()),
                     is_current: self.active_thread_id == Some(thread_id),
                     actions: vec![Box::new(move |tx| {
                         tx.send(AppEvent::SelectAgentThread(id));
                     })],
                     dismiss_on_select: true,
-                    search_value: Some(format!("{name} {uuid}")),
+                    search_value: Some(format!("{name} {description}")),
                     ..Default::default()
                 }
             })
