@@ -250,7 +250,7 @@ async fn buffered_tool_events_preserve_attribution_or_drop_it_on_queue_overflow(
                 receiver_thread_ids: Vec::new(),
                 receiver_agents: None,
                 wait_outcome: None,
-                queued_update_count: 0,
+                queued_update_count: None,
                 prompt: None,
                 model: None,
                 reasoning_effort: None,

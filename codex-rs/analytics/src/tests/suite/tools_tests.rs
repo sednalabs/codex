@@ -379,7 +379,7 @@ async fn collaborator_tool_events_keep_response_ids_when_completion_races_sampli
             receiver_thread_ids: Vec::new(),
             receiver_agents: None,
             wait_outcome: None,
-            queued_update_count: 0,
+            queued_update_count: None,
             prompt: None,
             model: None,
             reasoning_effort: None,

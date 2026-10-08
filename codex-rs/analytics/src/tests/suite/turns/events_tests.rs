@@ -521,7 +521,7 @@ async fn turn_event_counts_completed_tool_items() {
             receiver_thread_ids: vec!["thread-child".to_string()],
             receiver_agents: None,
             wait_outcome: None,
-            queued_update_count: 0,
+            queued_update_count: None,
             prompt: Some("help".to_string()),
             model: Some("gpt-5".to_string()),
             reasoning_effort: None,
