@@ -59,6 +59,25 @@ fn unpackaged_runtime_uses_build_commit() {
     );
 }
 
+#[test]
+fn progressive_zero_base_version_is_a_package_not_a_source_build() {
+    let progressive_version = "0.0.0-sedna.0-ci.1+g01234567";
+    let source_build = BuildInfo {
+        version: Version::new(0, 0, 0),
+        build_commit: BUILD_COMMIT.to_string(),
+        target: None,
+    };
+    let progressive_package = BuildInfo::from_version(progressive_version);
+
+    assert!(source_build.is_source_build());
+    assert_eq!(source_build.display_version(), format!("v{BUILD_COMMIT}"));
+    assert!(!progressive_package.is_source_build());
+    assert_eq!(
+        progressive_package.display_version(),
+        format!("v{progressive_version}")
+    );
+}
+
 /// Older package layouts without release metadata retain their build identity.
 #[test]
 fn legacy_package_without_version_uses_build_commit() {

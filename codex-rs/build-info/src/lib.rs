@@ -92,7 +92,7 @@ impl BuildInfo {
 
     /// Identify source builds without parsing their displayed Git commit.
     pub fn is_source_build(&self) -> bool {
-        self.version.major == 0 && self.version.minor == 0 && self.version.patch == 0
+        self.version == Version::new(0, 0, 0)
     }
 
     /// Return the Git commit stamped into the final executable.
