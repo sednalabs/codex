@@ -202,13 +202,13 @@ jobs:
           --archive-output "${package_archive}" \
           --force
         python3 ../.workflow-src/.github/scripts/verify_sedna_package_identity.py \
-          --package-dir "${package_dir}" \
           --archive "${package_archive}" \
           --report "${package_report}" \
           --target x86_64-unknown-linux-gnu \
           --cargo-version 0.0.0 \
           --expected-version "${CODEX_RELEASE_VERSION}" \
           --source-sha "$(git rev-parse HEAD)" \
+          --predecessor-source-sha "$(git show -s --format=%P HEAD | cut -d' ' -f1)" \
           --workflow-host-sha "$(git -C ../.workflow-src rev-parse HEAD)"
 
         python3 - <<'PY' > "../dist/${archive_base}.json"
@@ -218,6 +218,7 @@ jobs:
         import sys
 
         payload = {
+            "artifactKind": "flat_raw_preview_archive_without_codex_package_manifest",
             "repository": os.environ["GITHUB_REPOSITORY"],
             "commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
             "ref": os.environ["DISPLAY_REF"],
@@ -295,13 +296,13 @@ jobs:
           --archive-output "${package_archive}" \
           --force
         python3 ../.workflow-src/.github/scripts/verify_sedna_package_identity.py \
-          --package-dir "${package_dir}" \
           --archive "${package_archive}" \
           --report "${package_report}" \
           --target aarch64-unknown-linux-gnu \
           --cargo-version 0.0.0 \
           --expected-version "${CODEX_RELEASE_VERSION}" \
           --source-sha "$(git rev-parse HEAD)" \
+          --predecessor-source-sha "$(git show -s --format=%P HEAD | cut -d' ' -f1)" \
           --workflow-host-sha "$(git -C ../.workflow-src rev-parse HEAD)"
 
         python3 - <<'PY' > "../dist/${archive_base}.json"
@@ -311,6 +312,7 @@ jobs:
         import sys
 
         payload = {
+            "artifactKind": "flat_raw_preview_archive_without_codex_package_manifest",
             "repository": os.environ["GITHUB_REPOSITORY"],
             "commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
             "ref": os.environ["DISPLAY_REF"],

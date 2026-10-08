@@ -9,14 +9,16 @@ import os
 import pty
 import re
 import select
+import shutil
 import signal
 import struct
 import subprocess
 import sys
+import tarfile
 import tempfile
 import termios
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 
 ANSI_ESCAPE = re.compile(
@@ -28,17 +30,19 @@ SEMVER = re.compile(
     r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
     r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?\Z"
 )
+MAX_ARCHIVE_MEMBERS = 256
+MAX_ARCHIVE_UNPACKED_BYTES = 1024 * 1024 * 1024
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="verify_sedna_package_identity")
-    parser.add_argument("--package-dir", type=Path, required=True)
     parser.add_argument("--archive", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--target", required=True)
     parser.add_argument("--cargo-version", required=True)
     parser.add_argument("--expected-version", required=True)
     parser.add_argument("--source-sha", required=True)
+    parser.add_argument("--predecessor-source-sha", required=True)
     parser.add_argument("--workflow-host-sha", required=True)
     return parser.parse_args()
 
@@ -49,6 +53,78 @@ def archive_sha256(path: Path) -> str:
         for chunk in iter(lambda: archive.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def extract_canonical_package(archive_path: Path, destination: Path) -> bool:
+    """Extract only ordinary package files beneath a fresh temporary root."""
+    try:
+        with tarfile.open(archive_path, "r:gz") as archive:
+            members = []
+            for member in archive:
+                members.append(member)
+                if len(members) > MAX_ARCHIVE_MEMBERS:
+                    return False
+
+            seen: set[str] = set()
+            unpacked_bytes = 0
+            for member in members:
+                name = member.name
+                relative = PurePosixPath(name)
+                if (
+                    not name
+                    or "\\" in name
+                    or relative.is_absolute()
+                    or relative.as_posix() != name
+                    or any(part in ("", ".", "..") for part in relative.parts)
+                    or name in seen
+                    or member.type
+                    not in (tarfile.DIRTYPE, tarfile.REGTYPE, tarfile.AREGTYPE)
+                ):
+                    return False
+                seen.add(name)
+                if member.isfile():
+                    if member.size < 0:
+                        return False
+                    unpacked_bytes += member.size
+                    if unpacked_bytes > MAX_ARCHIVE_UNPACKED_BYTES:
+                        return False
+                elif member.size != 0:
+                    return False
+
+            root = destination.resolve(strict=True)
+            for member in members:
+                relative = PurePosixPath(member.name)
+                target = root.joinpath(*relative.parts)
+                if not target.resolve(strict=False).is_relative_to(root):
+                    return False
+                directory = root
+                for part in target.parent.relative_to(root).parts:
+                    directory = directory / part
+                    if directory.exists():
+                        if not directory.is_dir() or directory.is_symlink():
+                            return False
+                    else:
+                        directory.mkdir(mode=0o755)
+
+                if member.isdir():
+                    if target.exists() or target.is_symlink():
+                        if not target.is_dir() or target.is_symlink():
+                            return False
+                    else:
+                        target.mkdir(mode=0o755)
+                    continue
+
+                if target.exists() or target.is_symlink():
+                    return False
+                source = archive.extractfile(member)
+                if source is None:
+                    return False
+                with source, target.open("xb") as output:
+                    shutil.copyfileobj(source, output, length=1024 * 1024)
+                os.chmod(target, (member.mode & 0o755) or 0o644)
+        return True
+    except (OSError, tarfile.TarError, ValueError):
+        return False
 
 
 def tui_header_is_visible(cli: Path, package_dir: Path, expected_header: str) -> bool:
@@ -151,6 +227,7 @@ def main() -> int:
     args = parse_args()
     if (
         SOURCE_SHA.fullmatch(args.source_sha) is None
+        or SOURCE_SHA.fullmatch(args.predecessor_source_sha) is None
         or SOURCE_SHA.fullmatch(args.workflow_host_sha) is None
         or SEMVER.fullmatch(args.expected_version) is None
         or not args.expected_version.endswith(f"+g{args.source_sha[:8]}")
@@ -158,8 +235,27 @@ def main() -> int:
         return fail("invalid_identity_input")
 
     try:
-        package_dir = args.package_dir.resolve(strict=True)
         archive = args.archive.resolve(strict=True)
+        archive_digest = archive_sha256(archive)
+    except OSError:
+        return fail("package_archive_unavailable")
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="codex-package-consumer-") as temp_dir:
+            package_dir = Path(temp_dir)
+            if not extract_canonical_package(archive, package_dir):
+                return fail("package_archive_invalid")
+            return verify_extracted_package(args, archive_digest, package_dir)
+    except OSError:
+        return fail("package_archive_unavailable")
+
+
+def verify_extracted_package(
+    args: argparse.Namespace,
+    archive_digest: str,
+    package_dir: Path,
+) -> int:
+    try:
         manifest = json.loads(
             (package_dir / "codex-package.json").read_text(encoding="utf-8")
         )
@@ -231,7 +327,6 @@ def main() -> int:
         return fail("packaged_tui_version_missing")
 
     try:
-        archive_digest = archive_sha256(archive)
         report = {
             "outcome": "success",
             "run_id": os.environ.get("GITHUB_RUN_ID", "unavailable"),
@@ -240,16 +335,28 @@ def main() -> int:
                 f'{os.environ.get("GITHUB_REPOSITORY", "")}/actions/runs/'
                 f'{os.environ.get("GITHUB_RUN_ID", "")}'
             ),
+            "artifact_kind": "canonical_codex_package_archive",
+            "predecessor_source_sha": args.predecessor_source_sha,
             "source_sha": args.source_sha,
             "workflow_host_sha": args.workflow_host_sha,
             "target": args.target,
+            "consumer": "canonical_package_archive",
             "cargo_version": args.cargo_version,
+            "preview_version": args.expected_version,
             "manifest_version": manifest["version"],
             "manifest_matches_expected": True,
             "cli_version": expected_cli,
             "cli_version_matches_expected": True,
             "tui_header": expected_header,
             "tui_header_observed": True,
+            "components_present_and_executable": [
+                "codex",
+                "codex-code-mode-host",
+                "rg",
+                "bwrap",
+            ],
+            "not_included": ["codex-responses-api-proxy", "separate codex-app-server binary"],
+            "other_carry_capabilities": "unverified_by_version_identity_consumer",
             "package_archive_sha256": archive_digest,
         }
         args.report.parent.mkdir(parents=True, exist_ok=True)
