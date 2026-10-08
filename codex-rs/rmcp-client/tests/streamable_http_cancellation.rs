@@ -87,7 +87,7 @@ async fn handle_mcp(State(state): State<ServerState>, Json(request): Json<Value>
             json_response(
                 request.get("id").cloned(),
                 json!({"protocolVersion":protocol,"capabilities":{},"serverInfo":{"name":"cancel-test","version":"0"}}),
-                true,
+                /*session*/ true,
             )
         }
         Some("notifications/initialized") => accepted_response(),
@@ -130,7 +130,7 @@ async fn handle_mcp(State(state): State<ServerState>, Json(request): Json<Value>
             json_response(
                 request.get("id").cloned(),
                 json!({"content":[],"isError":false}),
-                false,
+                /*session*/ false,
             )
         }
         Some("resources/read") => {
@@ -148,10 +148,10 @@ async fn handle_mcp(State(state): State<ServerState>, Json(request): Json<Value>
             json_response(
                 request.get("id").cloned(),
                 json!({"contents":[{"uri":"memo://after-cancel","mimeType":"text/plain","text":"ok"}]}),
-                false,
+                /*session*/ false,
             )
         }
-        _ => json_response(request.get("id").cloned(), json!({}), false),
+        _ => json_response(request.get("id").cloned(), json!({}), /*session*/ false),
     }
 }
 

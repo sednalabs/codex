@@ -311,6 +311,13 @@ fn agent_tool_fallbacks_preserve_status_without_duplicating_v2_activity() {
             status,
             sender_thread_id: "00000000-0000-0000-0000-000000000001".to_string(),
             receiver_thread_ids: vec!["00000000-0000-0000-0000-000000000002".to_string()],
+            receiver_agents: (tool == CollabAgentTool::Wait).then(|| {
+                vec![codex_app_server_protocol::CollabAgentRef {
+                    thread_id: "00000000-0000-0000-0000-000000000002".to_string(),
+                    agent_nickname: None,
+                    agent_role: None,
+                }]
+            }),
             prompt: Some("Inspect the parser".to_string()),
             model: None,
             reasoning_effort: None,

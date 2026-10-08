@@ -64,11 +64,11 @@ fn provider_model_provenance_rejects_header_body_conflicts() {
         None
     );
     assert_eq!(
-        trustworthy_response_model(Some("gpt-header"), None),
+        trustworthy_response_model(Some("gpt-header"), /*body_model*/ None),
         Some("gpt-header".to_string())
     );
     assert_eq!(
-        trustworthy_response_model(None, Some("gpt-body")),
+        trustworthy_response_model(/*response_header_model*/ None, Some("gpt-body")),
         Some("gpt-body".to_string())
     );
 }

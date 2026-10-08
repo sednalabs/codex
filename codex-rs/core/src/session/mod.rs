@@ -284,6 +284,7 @@ pub(crate) use self::environment::ThreadEnvironmentDefaults;
 #[cfg(test)]
 use self::handlers::submission_dispatch_span;
 use self::handlers::submission_loop;
+#[cfg(test)]
 pub(crate) use self::input_queue::InputQueue;
 pub(crate) use self::input_queue::InputQueueActivity;
 pub(crate) use self::input_queue::TurnInput;
@@ -5476,7 +5477,7 @@ mod completed_turn_readiness_tests {
         );
         assert_eq!(
             completed_turn_readiness(
-                None,
+                /*marker*/ None,
                 "turn-current",
                 "turn-current",
                 &AgentStatus::Errored("failed".to_string()),
@@ -5498,7 +5499,7 @@ mod completed_turn_readiness_tests {
     #[test]
     fn only_authoritative_interruption_abort_is_actionable() {
         assert_eq!(
-            interrupted_readiness(None),
+            interrupted_readiness(/*error_info*/ None),
             AgentReadiness::Pending,
             "ordinary interruption is quiet"
         );

@@ -85,7 +85,7 @@ fn last_n_fork_turns_counts_nested_checkpoint_history_and_drops_superseded_prefi
         assistant_msg("kept answer"),
     ])];
 
-    let truncated = truncate_rollout_to_last_n_fork_turns(&rollout, 1);
+    let truncated = truncate_rollout_to_last_n_fork_turns(&rollout, /*n_from_end*/ 1);
     let RolloutItem::Compacted(checkpoint) = &truncated[0] else {
         panic!("checkpoint should be retained as the active history container");
     };
@@ -103,7 +103,7 @@ fn last_n_fork_turns_does_not_count_or_retain_synthetic_checkpoint_summary() {
         assistant_msg("retained answer"),
     ])];
 
-    let truncated = truncate_rollout_to_last_n_fork_turns(&rollout, 2);
+    let truncated = truncate_rollout_to_last_n_fork_turns(&rollout, /*n_from_end*/ 2);
     let RolloutItem::Compacted(checkpoint) = &truncated[0] else {
         panic!("checkpoint should be retained as the active history container");
     };
@@ -139,7 +139,7 @@ fn last_n_fork_turns_applies_rollback_to_nested_checkpoint_boundaries() {
         })),
     ];
 
-    let truncated = truncate_rollout_to_last_n_fork_turns(&rollout, 2);
+    let truncated = truncate_rollout_to_last_n_fork_turns(&rollout, /*n_from_end*/ 2);
     let RolloutItem::Compacted(checkpoint) = &truncated[0] else {
         panic!("checkpoint should be retained");
     };
@@ -167,7 +167,7 @@ fn last_n_fork_turns_treats_triggering_agent_communication_as_a_turn_boundary() 
         trigger,
     ];
 
-    let truncated = truncate_rollout_to_last_n_fork_turns(&rollout, 1);
+    let truncated = truncate_rollout_to_last_n_fork_turns(&rollout, /*n_from_end*/ 1);
     assert!(matches!(
         truncated.as_slice(),
         [RolloutItem::InterAgentCommunication(item)] if item == &communication

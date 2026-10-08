@@ -154,7 +154,12 @@ impl DynamicToolHandler {
         )
         .await;
         let Some(response) = response else {
-            record_browser_core_output_stage(&diagnostic_call_id, false, false, 0);
+            record_browser_core_output_stage(
+                &diagnostic_call_id,
+                /*response_received*/ false,
+                /*function_output_constructed*/ false,
+                /*output_item_count*/ 0,
+            );
             return Err(FunctionCallError::RespondToModel(
                 "dynamic tool call was cancelled before receiving a response".to_string(),
             ));
@@ -170,7 +175,12 @@ impl DynamicToolHandler {
             .collect::<Vec<_>>();
         let output_item_count = body.len();
         let output = boxed_tool_output(FunctionToolOutput::from_content(body, Some(success)));
-        record_browser_core_output_stage(&diagnostic_call_id, true, true, output_item_count);
+        record_browser_core_output_stage(
+            &diagnostic_call_id,
+            /*response_received*/ true,
+            /*function_output_constructed*/ true,
+            output_item_count,
+        );
         Ok(output)
     }
 }

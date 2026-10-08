@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 
 use sqlx::migrate::Migrator;
+#[cfg(test)]
 use sqlx_sqlite::SqlitePool;
 
 pub(crate) static STATE_MIGRATOR: Migrator = sqlx_macros::migrate!("./migrations");
@@ -59,6 +60,7 @@ pub(crate) fn runtime_thread_history_migrator() -> Migrator {
     runtime_migrator(&THREAD_HISTORY_MIGRATOR)
 }
 
+#[cfg(test)]
 pub(crate) async fn repair_legacy_recency_migration_version(
     pool: &SqlitePool,
     migrator: &Migrator,

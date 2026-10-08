@@ -935,7 +935,7 @@ fn wait_agent_tool_parameters_v2(options: WaitAgentTimeoutOptions) -> JsonSchema
         (
             "targets".to_string(),
             JsonSchema::array(
-                JsonSchema::string(None),
+                JsonSchema::string(/*description*/ None),
                 Some("Exact agent IDs to wait on. Omit for mailbox activity.".to_string()),
             ),
         ),

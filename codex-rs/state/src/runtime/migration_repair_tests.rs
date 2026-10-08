@@ -27,7 +27,7 @@ fn upstream_through(last: i64) -> Migrator {
 }
 
 fn old_fork_56_58() -> Migrator {
-    let mut migrations = upstream_through(55).iter().cloned().collect::<Vec<_>>();
+    let mut migrations = upstream_through(/*last*/ 55).iter().cloned().collect::<Vec<_>>();
     for (old, target) in LEGACY_FORK_IDS.iter().take(3) {
         let current = embedded(&STATE_MIGRATOR, *target).expect("fork migration is embedded");
         migrations.push(Migration::new(
@@ -42,7 +42,7 @@ fn old_fork_56_58() -> Migrator {
 }
 
 fn old_fork_alias_pair() -> Migrator {
-    let mut migrations = upstream_through(55).iter().cloned().collect::<Vec<_>>();
+    let mut migrations = upstream_through(/*last*/ 55).iter().cloned().collect::<Vec<_>>();
     for (old, target) in LEGACY_FORK_IDS
         .iter()
         .filter(|(old, _)| *old == 9001 || *old == 9002)
@@ -60,7 +60,7 @@ fn old_fork_alias_pair() -> Migrator {
 }
 
 fn shifted_fork_through(last: i64) -> Migrator {
-    let mut migrations = upstream_through(23).iter().cloned().collect::<Vec<_>>();
+    let mut migrations = upstream_through(/*last*/ 23).iter().cloned().collect::<Vec<_>>();
     for (old, _, target) in SHIFTED.iter().filter(|(old, _, _)| *old <= last) {
         let current = embedded(&STATE_MIGRATOR, *target).expect("shifted target is embedded");
         migrations.push(Migration::new(
@@ -287,7 +287,7 @@ async fn old_fork_56_58_and_shifted_history_rekey_without_checksum_change() {
 #[tokio::test]
 async fn deployed_thread_source_column_without_row_is_recognized() {
     let (sqlite, pool) = fixture().await;
-    upstream_through(29)
+    upstream_through(/*last*/ 29)
         .run(&pool)
         .await
         .expect("pre-column upstream prefix");
@@ -707,7 +707,11 @@ async fn cancelling_after_bridge_writes_rolls_back_on_the_same_connection() {
     // Use the SQLite shim while leaving only one connection for the witness.
     let mut reserved_connections = Vec::new();
     for _ in 1..max_connections {
-        reserved_connections.push(pool.acquire().await.expect("reserve other pool connections"));
+        reserved_connections.push(
+            pool.acquire()
+                .await
+                .expect("reserve other pool connections"),
+        );
     }
     old_fork_56_58()
         .run(&pool)

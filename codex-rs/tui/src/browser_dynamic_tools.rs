@@ -56,17 +56,16 @@ pub(crate) fn validate_no_reserved_name_conflict(params: &ThreadStartParams) -> 
             }
         }
     }
-    if let Some(config) = &params.config {
-        if config.contains_key(&format!("mcp_servers.{NAMESPACE}"))
+    if let Some(config) = &params.config
+        && (config.contains_key(&format!("mcp_servers.{NAMESPACE}"))
             || config
                 .get("mcp_servers")
                 .and_then(Value::as_object)
-                .is_some_and(|servers| servers.contains_key(NAMESPACE))
-        {
-            return Err(format!(
-                "MCP server key `{NAMESPACE}` is reserved by Browser dynamic tools; rename that server before starting this thread."
-            ));
-        }
+                .is_some_and(|servers| servers.contains_key(NAMESPACE)))
+    {
+        return Err(format!(
+            "MCP server key `{NAMESPACE}` is reserved by Browser dynamic tools; rename that server before starting this thread."
+        ));
     }
     Ok(())
 }

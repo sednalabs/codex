@@ -197,7 +197,7 @@ impl App {
                         )
                     });
                 let uuid = thread_id.to_string();
-                let mut description_parts = vec![uuid.clone()];
+                let mut description_parts = vec![uuid];
                 if let Some(metadata) = self.agent_navigation.source_metadata(thread_id) {
                     if let Some(model) = metadata.model.as_deref() {
                         description_parts.push(format!("selected model: {model}"));

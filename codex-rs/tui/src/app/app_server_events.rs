@@ -744,7 +744,7 @@ impl App {
                 .configure(&mut thread_start_params, self.config.codex_home.as_path())
             {
                 self.app_event_tx.send(AppEvent::DynamicToolCallCompleted {
-                    request_id: request_id.clone(),
+                    request_id,
                     response: crate::dynamic_tools::failure_response(error),
                 });
                 return;

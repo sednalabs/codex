@@ -688,7 +688,7 @@ fn restore_batch_path_failure_releases_slots_before_nickname_allocation() {
         .expect("reserve nickname-check slot");
     assert_eq!(
         nickname_reservation
-            .reserve_agent_nickname_with_preference(&["Fresh"], None)
+            .reserve_agent_nickname_with_preference(&["Fresh"], /*preferred*/ None)
             .expect("failed batch must not consume a nickname"),
         "Fresh"
     );

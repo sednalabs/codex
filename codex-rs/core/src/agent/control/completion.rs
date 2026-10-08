@@ -206,7 +206,7 @@ mod tests {
             &child,
             &AgentStatus::Interrupted,
             &AgentReadiness::ActionRequired,
-            None,
+            /*error_info*/ None,
         );
         assert!(message.is_some());
 
@@ -216,7 +216,7 @@ mod tests {
                 &child,
                 &AgentStatus::Interrupted,
                 &AgentReadiness::Pending,
-                None,
+                /*error_info*/ None,
             ),
             None
         );
@@ -229,7 +229,7 @@ mod tests {
                     goal_id: "goal-1".to_owned(),
                     turn_id: "turn-1".to_owned(),
                 },
-                None,
+                /*error_info*/ None,
             ),
             None
         );
@@ -242,7 +242,7 @@ mod tests {
                     goal_id: "goal-1".to_owned(),
                     turn_id: "turn-2".to_owned(),
                 },
-                None,
+                /*error_info*/ None,
             ),
             None,
             "intermediate goal completion must not become parent mailbox activity"

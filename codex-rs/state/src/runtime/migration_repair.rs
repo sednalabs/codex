@@ -222,7 +222,7 @@ fn classify_row(
     // Upstream's prior one-off recency repair used version 38 for the SQL
     // currently embedded as 39. Fold it into this guarded transaction.
     if source == 38 {
-        let migration = embedded(migrator, 39)?;
+        let migration = embedded(migrator, /*version*/ 39)?;
         if description == migration.description.as_ref() && checksum == migration.checksum.as_ref()
         {
             return Ok((39, false));
@@ -759,7 +759,7 @@ async fn apply_bridge(
         }
     }
     if column_exists(connection, "threads", "thread_source").await? && !applied.contains(&30) {
-        insert_applied(connection, migrator, 30).await?;
+        insert_applied(connection, migrator, /*version*/ 30).await?;
     }
     Ok(())
 }

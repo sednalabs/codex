@@ -460,7 +460,7 @@ mod tests {
         assert!(reverse_wait_error(Some(&current), Some(&current)).is_some());
         assert!(reverse_wait_error(Some(&current), Some(&ancestor)).is_some());
         assert!(reverse_wait_error(Some(&current), Some(&sibling)).is_none());
-        assert!(reverse_wait_error(None, Some(&ancestor)).is_none());
+        assert!(reverse_wait_error(/*current_agent_path*/ None, Some(&ancestor)).is_none());
     }
 
     #[test]
@@ -497,7 +497,7 @@ mod tests {
         let mut agent_wait = Some(registration);
         let input_queue = InputQueue::new();
         let watermark = input_queue.mailbox_enqueue_watermark().await;
-        let (mut activity_rx, pending) = input_queue.subscribe_activity(None).await;
+        let (mut activity_rx, pending) = input_queue.subscribe_activity(/*turn_state*/ None).await;
         assert_eq!(pending, None);
         input_queue
             .enqueue_mailbox_communication(

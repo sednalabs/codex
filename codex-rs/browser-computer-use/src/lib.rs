@@ -222,7 +222,12 @@ async fn run_command_provider(
     let output = match run_provider_process(&command.argv, params, &[]).await {
         Ok(output) => output,
         Err(error) => {
-            record_browser_provider_stage(&params.call_id, false, false, 0);
+            record_browser_provider_stage(
+                &params.call_id,
+                /*process_exit_success*/ false,
+                /*json_parse_success*/ false,
+                /*content_item_count*/ 0,
+            );
             return Err(error);
         }
     };
@@ -230,14 +235,19 @@ async fn run_command_provider(
         Ok(response) => {
             record_browser_provider_stage(
                 &params.call_id,
-                true,
-                true,
+                /*process_exit_success*/ true,
+                /*json_parse_success*/ true,
                 response.content_items.len(),
             );
             Ok(response)
         }
         Err(error) => {
-            record_browser_provider_stage(&params.call_id, true, false, 0);
+            record_browser_provider_stage(
+                &params.call_id,
+                /*process_exit_success*/ true,
+                /*json_parse_success*/ false,
+                /*content_item_count*/ 0,
+            );
             Err(error)
         }
     }
