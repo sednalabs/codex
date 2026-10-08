@@ -113,6 +113,7 @@ impl Handler {
             .input_queue
             .turn_state_for_sub_id(&session.active_turn, &turn.sub_id)
             .await;
+        let mailbox_enqueue_watermark = session.input_queue.mailbox_enqueue_watermark().await;
         let (mut activity_rx, pending_activity) = session
             .input_queue
             .subscribe_activity(turn_state.as_deref())
@@ -175,7 +176,7 @@ impl Handler {
         }
         let queued_update_count = session
             .input_queue
-            .pending_mailbox_communication_count()
+            .pending_mailbox_communication_count_since(mailbox_enqueue_watermark)
             .await;
         // A completed wait may wake for a message, user input, or its timeout.
         // Dropped waits do not have an observed outcome and are not included.
@@ -492,6 +493,7 @@ mod tests {
         );
         let mut agent_wait = Some(registration);
         let input_queue = InputQueue::new();
+        let watermark = input_queue.mailbox_enqueue_watermark().await;
         let (mut activity_rx, pending) = input_queue.subscribe_activity(None).await;
         assert_eq!(pending, None);
         input_queue
@@ -524,7 +526,9 @@ mod tests {
         assert_eq!(result.outcomes[0].0, target);
         assert_eq!(result.outcomes[0].1.turn_id.as_deref(), Some("turn-1"));
         assert_eq!(result.outcomes[0].1.status, AgentStatus::Completed(Some("done".to_string())));
-        let queued_update_count = input_queue.pending_mailbox_communication_count().await;
+        let queued_update_count = input_queue
+            .pending_mailbox_communication_count_since(watermark)
+            .await;
         let item = completed_wait_item(
             "wait-call".to_string(),
             ThreadId::new(),

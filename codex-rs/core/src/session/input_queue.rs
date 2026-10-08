@@ -96,11 +96,13 @@ pub(crate) struct InputQueue {
     activity_tx: watch::Sender<InputQueueActivity>,
     controller: Option<(ThreadId, Arc<dyn AgentControl>, watch::Receiver<bool>)>,
     mailbox_pending_mails: Mutex<VecDeque<PendingMailboxCommunication>>,
+    next_local_enqueue_ordinal: Mutex<Option<u64>>,
 }
 
 pub(crate) struct PendingMailboxCommunication {
     pub(crate) communication: InterAgentCommunication,
     start_options: TurnStartOptions,
+    local_enqueue_ordinal: Option<u64>,
     _diagnostics_guard: GaugeGuard,
 }
 
@@ -111,6 +113,7 @@ impl InputQueue {
             activity_tx,
             controller: None,
             mailbox_pending_mails: Mutex::new(VecDeque::new()),
+            next_local_enqueue_ordinal: Mutex::new(Some(0)),
         }
     }
 
@@ -141,6 +144,7 @@ impl InputQueue {
                     .map(|communication| PendingMailboxCommunication {
                         communication,
                         start_options: TurnStartOptions::default(),
+                        local_enqueue_ordinal: None,
                         _diagnostics_guard: PENDING_MAILBOX_MESSAGES.track(),
                     }),
             );
@@ -210,9 +214,13 @@ impl InputQueue {
         let mut pending = self.mailbox_pending_mails.lock().await;
         // Mail retained while unloaded precedes new submissions to the loaded session.
         self.read_mailbox(&mut pending);
+        let mut next_ordinal = self.next_local_enqueue_ordinal.lock().await;
+        let local_enqueue_ordinal = *next_ordinal;
+        *next_ordinal = (*next_ordinal).and_then(|ordinal| ordinal.checked_add(1));
         pending.push_back(PendingMailboxCommunication {
             communication,
             start_options,
+            local_enqueue_ordinal,
             _diagnostics_guard: PENDING_MAILBOX_MESSAGES.track(),
         });
         self.activity_tx.send_replace(InputQueueActivity::Mailbox);
@@ -226,14 +234,37 @@ impl InputQueue {
                 .is_some_and(|(_, _, updates)| *updates.borrow())
     }
 
-    /// Count locally observed pending communications without draining them. A host controller
-    /// exposes only a pending bit, so its contribution makes the total unknown while set.
-    pub(crate) async fn pending_mailbox_communication_count(&self) -> Option<u32> {
+    /// Capture a local enqueue watermark before an agent wait subscribes to activity.
+    pub(crate) async fn mailbox_enqueue_watermark(&self) -> Option<u64> {
+        // Use the same lock order as enqueue so the watermark is ordered atomically with queue
+        // insertion rather than racing an enqueue between its ordinal assignment and push.
+        let _pending = self.mailbox_pending_mails.lock().await;
+        *self.next_local_enqueue_ordinal.lock().await
+    }
+
+    /// Count newly enqueued, still-pending local communications without draining them. A host
+    /// controller exposes only a pending bit, so its contribution makes the count unknown.
+    pub(crate) async fn pending_mailbox_communication_count_since(
+        &self,
+        watermark: Option<u64>,
+    ) -> Option<u32> {
         let controller_pending_before = self
             .controller
             .as_ref()
             .is_some_and(|(_, _, updates)| *updates.borrow());
-        let local_count = self.mailbox_pending_mails.lock().await.len();
+        let pending = self.mailbox_pending_mails.lock().await;
+        let local_count = watermark.and_then(|watermark| {
+            let mut count = 0usize;
+            for mail in pending.iter() {
+                let Some(ordinal) = mail.local_enqueue_ordinal else {
+                    return None;
+                };
+                if ordinal >= watermark && !mail.communication.trigger_turn {
+                    count = count.checked_add(1)?;
+                }
+            }
+            Some(count)
+        });
         let controller_pending_after = self
             .controller
             .as_ref()
@@ -477,12 +508,11 @@ impl InputQueue {
     }
 }
 
-fn observed_pending_mail_count(local_count: usize, controller_pending: bool) -> Option<u32> {
+fn observed_pending_mail_count(local_count: Option<usize>, controller_pending: bool) -> Option<u32> {
     if controller_pending {
-        None
-    } else {
-        u32::try_from(local_count).ok()
+        return None;
     }
+    u32::try_from(local_count?).ok()
 }
 
 impl TurnInputQueue {
@@ -593,32 +623,94 @@ mod tests {
 
     #[test]
     fn controller_pending_bit_keeps_total_count_unknown() {
-        assert_eq!(observed_pending_mail_count(2, /*controller_pending*/ false), Some(2));
-        assert_eq!(observed_pending_mail_count(2, /*controller_pending*/ true), None);
-        assert_eq!(observed_pending_mail_count(0, /*controller_pending*/ false), Some(0));
+        assert_eq!(observed_pending_mail_count(Some(2), /*controller_pending*/ false), Some(2));
+        assert_eq!(observed_pending_mail_count(Some(2), /*controller_pending*/ true), None);
+        assert_eq!(observed_pending_mail_count(Some(0), /*controller_pending*/ false), Some(0));
+        assert_eq!(observed_pending_mail_count(None, /*controller_pending*/ false), None);
     }
 
     #[tokio::test]
-    async fn pending_mailbox_count_is_observational_and_does_not_drain() {
+    async fn pending_mailbox_count_is_since_wait_start_and_non_consuming() {
         let input_queue = InputQueue::new();
-        for content in ["one", "two"] {
+        let recipient = AgentPath::try_from("/root/worker").expect("agent path");
+        for (content, trigger_turn) in [("older quiet", false), ("older trigger", true)] {
             input_queue
                 .enqueue_mailbox_communication(
-                    make_mail(
-                        AgentPath::root(),
-                        AgentPath::try_from("/root/worker").expect("agent path"),
-                        content,
-                        /*trigger_turn*/ false,
-                    ),
+                    make_mail(AgentPath::root(), recipient.clone(), content, trigger_turn),
+                    Default::default(),
+                )
+                .await;
+        }
+        let watermark = input_queue.mailbox_enqueue_watermark().await;
+        for (content, trigger_turn) in [("new quiet", false), ("new trigger", true)] {
+            input_queue
+                .enqueue_mailbox_communication(
+                    make_mail(AgentPath::root(), recipient.clone(), content, trigger_turn),
                     Default::default(),
                 )
                 .await;
         }
 
-        assert_eq!(input_queue.pending_mailbox_communication_count().await, Some(2));
+        assert_eq!(
+            input_queue
+                .pending_mailbox_communication_count_since(watermark)
+                .await,
+            Some(1)
+        );
         assert!(input_queue.has_pending_mailbox_items().await);
-        assert_eq!(input_queue.drain_mailbox().await.len(), 2);
-        assert_eq!(input_queue.pending_mailbox_communication_count().await, Some(0));
+        assert_eq!(input_queue.drain_mailbox().await.len(), 4);
+        assert_eq!(
+            input_queue
+                .pending_mailbox_communication_count_since(watermark)
+                .await,
+            Some(0)
+        );
+    }
+
+    #[tokio::test]
+    async fn mailbox_count_is_unknown_after_ordinal_overflow() {
+        let input_queue = InputQueue::new();
+        *input_queue.next_local_enqueue_ordinal.lock().await = Some(u64::MAX - 1);
+        input_queue
+            .enqueue_mailbox_communication(
+                make_mail(
+                    AgentPath::root(),
+                    AgentPath::try_from("/root/worker").expect("agent path"),
+                    "last numbered update",
+                    /*trigger_turn*/ false,
+                ),
+                Default::default(),
+            )
+            .await;
+        let watermark = input_queue.mailbox_enqueue_watermark().await;
+        input_queue
+            .enqueue_mailbox_communication(
+                make_mail(
+                    AgentPath::root(),
+                    AgentPath::try_from("/root/worker").expect("agent path"),
+                    "final ordinal update",
+                    /*trigger_turn*/ false,
+                ),
+                Default::default(),
+            )
+            .await;
+        input_queue
+            .enqueue_mailbox_communication(
+                make_mail(
+                    AgentPath::root(),
+                    AgentPath::try_from("/root/worker").expect("agent path"),
+                    "unnumbered update",
+                    /*trigger_turn*/ false,
+                ),
+                Default::default(),
+            )
+            .await;
+        assert_eq!(
+            input_queue
+                .pending_mailbox_communication_count_since(watermark)
+                .await,
+            None
+        );
     }
 
     #[tokio::test]
