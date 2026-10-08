@@ -1,17 +1,34 @@
 name: sedna-first-package
 run-name: >-
   sedna-first-package
-  [source=${{ inputs.source_sha }} operation=${{ inputs.operation }}]
+  [event=${{ github.event_name }} host=${{ github.sha }}]
 
 on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - ".cargo/**"
+      - "MODULE.bazel"
+      - "MODULE.bazel.lock"
+      - "codex-rs/**"
+      - "justfile"
+      - "scripts/codex_package/**"
+      - "sdk/python/**"
+      - ".github/actions/**"
+      - ".github/scripts/**"
+      - "rust-toolchain.toml"
+    # Candidate code remains in an unprivileged pull_request context.
+    types:
+      - opened
+      - synchronize
+      - reopened
   workflow_dispatch:
     inputs:
-      source_sha:
-        description: Exact full commit SHA of the frozen be2e-derived candidate.
-        required: true
-        type: string
       operation:
-        description: Generate selected-tree outputs, or build and consume the exact Linux package pair.
+        description: Generate selected-tree outputs, or build and consume this protected main commit.
         required: true
         default: prepare
         type: choice
@@ -20,7 +37,7 @@ on:
           - package
 
 concurrency:
-  group: sedna-first-package-${{ inputs.source_sha }}-${{ inputs.operation }}
+  group: sedna-first-package-${{ github.event.pull_request.number || github.ref }}-${{ inputs.operation || 'package' }}
   cancel-in-progress: false
 
 permissions:
@@ -37,37 +54,44 @@ jobs:
       package_version: ${{ steps.identity.outputs.package_version }}
       workflow_host_sha: ${{ steps.identity.outputs.workflow_host_sha }}
       workflow_host_tree: ${{ steps.identity.outputs.workflow_host_tree }}
+      package_available: ${{ steps.identity.outputs.package_available }}
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.source_sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Resolve immutable identities and package version
         id: identity
         shell: bash
         env:
-          SOURCE_SHA: ${{ inputs.source_sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           WORKFLOW_HOST_SHA: ${{ github.sha }}
           EVENT_REF: ${{ github.ref }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          REPOSITORY: ${{ github.repository }}
+          OPERATION_INPUT: ${{ inputs.operation }}
           SELECTED_BASE_SHA: be2e129ecd67d900c016eda12d5d193e33d9c3da
         run: |
           set -euo pipefail
 
-          if [[ "${EVENT_REF}" != "refs/heads/main" ]]; then
-            echo "This route must be dispatched from protected default-branch main." >&2
-            exit 1
-          fi
           if [[ ! "${SOURCE_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "source_sha must be one exact lowercase 40-character commit SHA." >&2
+            echo "The event source is not one exact lowercase 40-character commit SHA." >&2
             exit 1
           fi
-          if [[ "$(git rev-parse HEAD)" != "${SOURCE_SHA}" ]]; then
-            echo "The source checkout does not match source_sha." >&2
+          if [[ "$(git rev-parse HEAD)" != "${WORKFLOW_HOST_SHA}" ]]; then
+            echo "The identity checkout does not match the workflow host SHA." >&2
             exit 1
           fi
-          if ! git merge-base --is-ancestor "${SELECTED_BASE_SHA}" "${SOURCE_SHA}"; then
-            echo "The candidate is not descended from the selected be2e base." >&2
+          if ! git cat-file -e "${SOURCE_SHA}^{commit}"; then
+            echo "The event source commit is not present in the workflow-host checkout." >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "${SOURCE_SHA}" "${WORKFLOW_HOST_SHA}"; then
+            echo "The event source is not an ancestor of this workflow host." >&2
             exit 1
           fi
           if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
@@ -76,9 +100,31 @@ jobs:
             exit 1
           fi
 
-          git fetch --no-tags origin "${WORKFLOW_HOST_SHA}"
           source_tree="$(git rev-parse "${SOURCE_SHA}^{tree}")"
           workflow_host_tree="$(git rev-parse "${WORKFLOW_HOST_SHA}^{tree}")"
+          if [[ "${EVENT_NAME}" == "pull_request" ]]; then
+            if [[ "${PR_BASE_REF}" != "main" || "${PR_HEAD_REPOSITORY}" != "${REPOSITORY}" ]]; then
+              echo "Only same-repository pull requests targeting main use this package route." >&2
+              exit 1
+            fi
+            if ! git merge-base --is-ancestor "${SELECTED_BASE_SHA}" "${SOURCE_SHA}"; then
+              echo "The pull-request candidate is not descended from the selected be2e base." >&2
+              exit 1
+            fi
+          elif [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+            if [[ "${EVENT_REF}" != "refs/heads/main" || "${SOURCE_SHA}" != "${WORKFLOW_HOST_SHA}" ]]; then
+              echo "Manual runs must use this protected main workflow-host commit as their source." >&2
+              exit 1
+            fi
+            if [[ "${OPERATION_INPUT}" != "prepare" && "${OPERATION_INPUT}" != "package" ]]; then
+              echo "Manual operation must be prepare or package." >&2
+              exit 1
+            fi
+          else
+            echo "Unsupported event for the package route." >&2
+            exit 1
+          fi
+
           source_short="$(git rev-parse --short=8 "${SOURCE_SHA}")"
           latest_tag="$(git tag --merged "${SOURCE_SHA}" --list 'v*-sedna.*' --sort=-version:refname | head -n 1)"
           if [[ -n "${latest_tag}" ]]; then
@@ -88,6 +134,37 @@ jobs:
           fi
           package_version="${base_version}-ci.${GITHUB_RUN_NUMBER}+g${source_short}"
 
+          required_package_paths=(
+            "justfile"
+            "scripts/codex_package/test_cargo.py"
+            "scripts/codex_package/test_layout.py"
+            "scripts/codex_package/smoke_tests/pyproject.toml"
+            "scripts/codex_package/smoke_tests/uv.lock"
+            "scripts/codex_package/smoke_tests/test_codex_package.py"
+            "scripts/codex_package/smoke_tests/fixtures.py"
+            "scripts/codex_package/smoke_tests/conftest.py"
+            "scripts/codex_package/smoke_tests/first_binary/test_tui_package_version.py"
+            "scripts/codex_package/smoke_tests/first_binary/test_tui_agents_acceptance.py"
+            "scripts/codex_package/smoke_tests/first_binary/tui_pty.py"
+          )
+          missing_package_paths=()
+          for path in "${required_package_paths[@]}"; do
+            if ! git cat-file -e "${SOURCE_SHA}:${path}" 2>/dev/null; then
+              missing_package_paths+=("${path}")
+            fi
+          done
+          if ! justfile_contents="$(git show "${SOURCE_SHA}:justfile" 2>/dev/null)" || ! grep -Fq "assemble-codex-package" <<< "${justfile_contents}"; then
+            missing_package_paths+=("justfile:assemble-codex-package")
+          fi
+          if [[ "${#missing_package_paths[@]}" -eq 0 ]]; then
+            package_available=true
+          else
+            package_available=false
+            echo "Package artifacts are unavailable for this exact source; required package inputs are missing:" >&2
+            printf '  %s\n' "${missing_package_paths[@]}" >&2
+            echo "::notice title=Package route not yet available::No package or consumer proof will be produced until the exact source includes the assembler and smoke-test inputs."
+          fi
+
           {
             echo "source_sha=${SOURCE_SHA}"
             echo "source_tree=${source_tree}"
@@ -95,19 +172,46 @@ jobs:
             echo "package_version=${package_version}"
             echo "workflow_host_sha=${WORKFLOW_HOST_SHA}"
             echo "workflow_host_tree=${workflow_host_tree}"
+            echo "package_available=${package_available}"
           } >> "${GITHUB_OUTPUT}"
 
   prepare-source:
     name: Generate exact-source locks and schemas
-    if: ${{ inputs.operation == 'prepare' }}
+    if: ${{ needs.identity.outputs.package_available == 'true' }}
     needs: identity
     runs-on: ubuntu-24.04
     timeout-minutes: 210
+    outputs:
+      source_ready: ${{ steps.generate.outputs.source_ready }}
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ needs.identity.outputs.source_sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check out exact source for preparation
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ needs.identity.outputs.source_sha }}
+          SOURCE_TREE: ${{ needs.identity.outputs.source_tree }}
+          WORKFLOW_HOST_SHA: ${{ needs.identity.outputs.workflow_host_sha }}
+          WORKFLOW_HOST_TREE: ${{ needs.identity.outputs.workflow_host_tree }}
+        run: |
+          set -euo pipefail
+          if [[ "$(git rev-parse HEAD)" != "${WORKFLOW_HOST_SHA}" || "$(git rev-parse HEAD^{tree})" != "${WORKFLOW_HOST_TREE}" ]]; then
+            echo "The preparation checkout does not match the frozen workflow-host identity." >&2
+            exit 1
+          fi
+          if [[ "$(git rev-parse "${SOURCE_SHA}^{tree}")" != "${SOURCE_TREE}" ]]; then
+            echo "The preparation source does not match the frozen source tree." >&2
+            exit 1
+          fi
+          git checkout --detach "${SOURCE_SHA}"
+          if [[ "$(git rev-parse HEAD)" != "${SOURCE_SHA}" || -n "$(git status --porcelain --untracked-files=normal)" ]]; then
+            echo "Could not check out a clean exact source tree for preparation." >&2
+            exit 1
+          fi
 
       - name: Set up standard CI tools and Bazel
         uses: ./.github/actions/setup-bazel-ci
@@ -134,6 +238,7 @@ jobs:
           version: "0.11.3"
 
       - name: Generate selected-source locks, schemas, and status snapshots
+        id: generate
         shell: bash
         env:
           EXPECTED_SOURCE_SHA: ${{ needs.identity.outputs.source_sha }}
@@ -172,10 +277,6 @@ jobs:
               exit 1
               ;;
           esac
-          if [[ -z "$(git diff --name-only HEAD)" ]]; then
-            echo "The fixed generators produced no source output." >&2
-            exit 1
-          fi
           git diff --check HEAD
 
           output_dir="${RUNNER_TEMP}/sedna-first-generated"
@@ -183,6 +284,12 @@ jobs:
           git diff --binary HEAD > "${output_dir}/generated-outputs.patch"
           git diff --name-only HEAD > "${output_dir}/generated-paths.txt"
           git diff --stat HEAD > "${output_dir}/generated-stat.txt"
+          if [[ -z "$(git diff --name-only HEAD)" ]]; then
+            source_ready=true
+          else
+            source_ready=false
+          fi
+          echo "source_ready=${source_ready}" >> "${GITHUB_OUTPUT}"
           python3 - <<'PY' > "${output_dir}/generated-identity.json"
           import json
           import os
@@ -210,10 +317,25 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+  package-unavailable:
+    name: Package route unavailable for this exact source
+    if: ${{ needs.identity.outputs.package_available != 'true' }}
+    needs: identity
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Report missing package inputs without claiming artifact proof
+        env:
+          SOURCE_SHA: ${{ needs.identity.outputs.source_sha }}
+        run: |
+          echo "Package preparation and package consumption are skipped for ${SOURCE_SHA}."
+          echo "The identity job listed the missing assembler/smoke-test inputs; this is not package or consumer acceptance."
+
   build-package:
     name: Build exact Linux package pair (${{ matrix.target }})
-    if: ${{ inputs.operation == 'package' }}
-    needs: identity
+    if: ${{ needs.identity.outputs.package_available == 'true' && needs.prepare-source.outputs.source_ready == 'true' && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.operation == 'package')) }}
+    needs:
+      - identity
+      - prepare-source
     strategy:
       fail-fast: false
       matrix:
@@ -244,8 +366,32 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ needs.identity.outputs.source_sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check out exact source for packaging
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ needs.identity.outputs.source_sha }}
+          SOURCE_TREE: ${{ needs.identity.outputs.source_tree }}
+          WORKFLOW_HOST_SHA: ${{ needs.identity.outputs.workflow_host_sha }}
+          WORKFLOW_HOST_TREE: ${{ needs.identity.outputs.workflow_host_tree }}
+        run: |
+          set -euo pipefail
+          if [[ "$(git rev-parse HEAD)" != "${WORKFLOW_HOST_SHA}" || "$(git rev-parse HEAD^{tree})" != "${WORKFLOW_HOST_TREE}" ]]; then
+            echo "The package checkout does not match the frozen workflow-host identity." >&2
+            exit 1
+          fi
+          if [[ "$(git rev-parse "${SOURCE_SHA}^{tree}")" != "${SOURCE_TREE}" ]]; then
+            echo "The package source does not match the frozen source tree." >&2
+            exit 1
+          fi
+          git checkout --detach "${SOURCE_SHA}"
+          if [[ "$(git rev-parse HEAD)" != "${SOURCE_SHA}" || -n "$(git status --porcelain --untracked-files=normal)" ]]; then
+            echo "Could not check out a clean exact source tree for packaging." >&2
+            exit 1
+          fi
 
       - name: Prepare standard Linux CI build paths
         uses: ./.github/actions/setup-ci
@@ -280,16 +426,11 @@ jobs:
             echo "The package checkout does not match the frozen source identity." >&2
             exit 1
           fi
-          if [[ "${GITHUB_REF}" != "refs/heads/main" ]]; then
-            echo "This workflow host is not protected default-branch main." >&2
-            exit 1
-          fi
           if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
             echo "Refusing to package a dirty source checkout." >&2
             git status --short >&2
             exit 1
           fi
-          git fetch --no-tags origin "${WORKFLOW_HOST_SHA}"
           if [[ "$(git rev-parse "${WORKFLOW_HOST_SHA}^{tree}")" != "${WORKFLOW_HOST_TREE}" ]]; then
             echo "The workflow-host checkout does not match its frozen tree." >&2
             exit 1
@@ -380,9 +521,10 @@ jobs:
 
   consume-package:
     name: Consume exact downloaded packages (${{ matrix.target }})
-    if: ${{ inputs.operation == 'package' }}
+    if: ${{ needs.identity.outputs.package_available == 'true' && needs.prepare-source.outputs.source_ready == 'true' && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.operation == 'package')) }}
     needs:
       - identity
+      - prepare-source
       - build-package
     strategy:
       fail-fast: false
@@ -411,8 +553,32 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ needs.identity.outputs.source_sha }}
-          fetch-depth: 1
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check out exact source for package consumption
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ needs.identity.outputs.source_sha }}
+          SOURCE_TREE: ${{ needs.identity.outputs.source_tree }}
+          WORKFLOW_HOST_SHA: ${{ needs.identity.outputs.workflow_host_sha }}
+          WORKFLOW_HOST_TREE: ${{ needs.identity.outputs.workflow_host_tree }}
+        run: |
+          set -euo pipefail
+          if [[ "$(git rev-parse HEAD)" != "${WORKFLOW_HOST_SHA}" || "$(git rev-parse HEAD^{tree})" != "${WORKFLOW_HOST_TREE}" ]]; then
+            echo "The consumer checkout does not match the frozen workflow-host identity." >&2
+            exit 1
+          fi
+          if [[ "$(git rev-parse "${SOURCE_SHA}^{tree}")" != "${SOURCE_TREE}" ]]; then
+            echo "The consumer source does not match the frozen source tree." >&2
+            exit 1
+          fi
+          git checkout --detach "${SOURCE_SHA}"
+          if [[ "$(git rev-parse HEAD)" != "${SOURCE_SHA}" || -n "$(git status --porcelain --untracked-files=normal)" ]]; then
+            echo "Could not check out a clean exact source tree for package consumption." >&2
+            exit 1
+          fi
 
       - name: Download the exact same-run architecture artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -467,6 +633,8 @@ jobs:
             file "${binary}" | grep -F '${{ matrix.binary_kind }}'
             readelf -l "${binary}" | grep -F '${{ matrix.loader }}'
           done
+          chmod 0755 dist/codex-responses-api-proxy
+          test -x dist/codex-responses-api-proxy
           dist/codex-responses-api-proxy --help >/dev/null
 
       - name: Set up Python consumer environment
