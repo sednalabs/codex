@@ -92,18 +92,22 @@ def extract_canonical_package(archive_path: Path, destination: Path) -> bool:
             for member in members:
                 name = member.name
                 relative = PurePosixPath(name)
+                normalized_name = relative.as_posix()
+                canonical_name = name == normalized_name or (
+                    member.isdir() and name == f"{normalized_name}/"
+                )
                 if (
                     not name
                     or "\\" in name
                     or relative.is_absolute()
-                    or relative.as_posix() != name
+                    or not canonical_name
                     or any(part in ("", ".", "..") for part in relative.parts)
-                    or name in seen
+                    or normalized_name in seen
                     or member.type
                     not in (tarfile.DIRTYPE, tarfile.REGTYPE, tarfile.AREGTYPE)
                 ):
                     return False
-                seen.add(name)
+                seen.add(normalized_name)
                 if member.isfile():
                     if member.size < 0:
                         return False
