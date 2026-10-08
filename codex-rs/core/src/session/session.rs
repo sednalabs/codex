@@ -1212,8 +1212,8 @@ impl Session {
                 e
             })?;
         if let Some(state_db) = state_db_ctx.as_ref() {
-            let parent = session_configuration.parent_thread_id.clone();
-            let fork_parent = forked_from_id.clone();
+            let parent = session_configuration.parent_thread_id;
+            let fork_parent = forked_from_id;
             let usage_thread = codex_state::UsageThreadRecord {
                 thread_id: thread_id.to_string(),
                 parent_thread_id: parent.map(|id| id.to_string()),

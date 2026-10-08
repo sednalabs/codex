@@ -46,6 +46,7 @@ use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::ShellEnvironmentPolicy;
 use codex_protocol::items::TurnItem;
+use codex_protocol::items::WaitAgentOutcome;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::BaseInstructionsProvenance;
@@ -55,6 +56,7 @@ use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::models::SandboxEnforcement;
+use codex_protocol::openai_models::ModelVisibility;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::AskForApproval;
@@ -65,6 +67,7 @@ use codex_protocol::protocol::FileSystemSandboxEntry;
 use codex_protocol::protocol::FileSystemSandboxPolicy;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::ItemCompletedEvent;
+use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::NetworkSandboxPolicy;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SandboxPolicy;
@@ -529,7 +532,7 @@ async fn multi_agent_v2_spawn_rejects_disabled_backend_model_and_omits_it_from_c
     disabled_model.display_name = "Disabled backend model".to_string();
     disabled_model.multi_agent_version = Some(MultiAgentVersion::Disabled);
     disabled_model.priority = i32::MIN;
-    assert!(disabled_model.show_in_picker);
+    assert_eq!(disabled_model.visibility, ModelVisibility::List);
     catalog.models.push(disabled_model);
     session.services.models_manager = Arc::new(StaticModelsManager::new(
         /*auth_manager*/ None, catalog,
@@ -3150,6 +3153,7 @@ async fn multi_agent_v2_wait_agent_accepts_timeout_only_argument() {
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait completed.".to_string(),
             timed_out: false,
+            outcome: Some(WaitAgentOutcome::UnattributedMailboxActivity),
         }
     );
     assert_eq!(success, None);
@@ -3197,6 +3201,7 @@ async fn multi_agent_v2_wait_agent_clamps_timeout_below_configured_min() {
                 "Wait timed out.\n\nRequested timeout of 1ms was clamped to the minimum of 50ms."
                     .to_string(),
             timed_out: true,
+            outcome: Some(WaitAgentOutcome::Timeout),
         }
     );
     assert_eq!(success, None);
@@ -3232,6 +3237,7 @@ async fn multi_agent_v2_wait_agent_accepts_explicit_timeout_at_configured_min() 
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait timed out.".to_string(),
             timed_out: true,
+            outcome: Some(WaitAgentOutcome::Timeout),
         }
     );
     assert_eq!(success, None);
@@ -3287,6 +3293,7 @@ async fn multi_agent_v2_wait_agent_uses_configured_default_timeout() {
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait timed out.".to_string(),
             timed_out: true,
+            outcome: Some(WaitAgentOutcome::Timeout),
         }
     );
     assert_eq!(success, None);
@@ -3327,6 +3334,7 @@ async fn multi_agent_v2_wait_agent_allows_zero_configured_timeout() {
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait timed out.".to_string(),
             timed_out: true,
+            outcome: Some(WaitAgentOutcome::Timeout),
         }
     );
     assert_eq!(success, None);
@@ -3392,6 +3400,7 @@ async fn multi_agent_v2_wait_agent_accepts_explicit_timeout_at_configured_max() 
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait timed out.".to_string(),
             timed_out: true,
+            outcome: Some(WaitAgentOutcome::Timeout),
         }
     );
     assert_eq!(success, None);
@@ -3650,6 +3659,7 @@ async fn multi_agent_v2_wait_agent_returns_summary_for_mailbox_activity() {
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait completed.".to_string(),
             timed_out: false,
+            outcome: Some(WaitAgentOutcome::UnattributedMailboxActivity),
         }
     );
     assert_eq!(success, None);
@@ -3734,6 +3744,7 @@ async fn multi_agent_v2_wait_agent_returns_for_already_queued_mail() {
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait completed.".to_string(),
             timed_out: false,
+            outcome: Some(WaitAgentOutcome::UnattributedMailboxActivity),
         }
     );
     assert_eq!(success, None);
@@ -3828,6 +3839,7 @@ async fn multi_agent_v2_wait_agent_wakes_on_any_mailbox_notification() {
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait completed.".to_string(),
             timed_out: false,
+            outcome: Some(WaitAgentOutcome::UnattributedMailboxActivity),
         }
     );
     assert_eq!(success, None);
@@ -3919,6 +3931,7 @@ async fn multi_agent_v2_wait_agent_does_not_return_completed_content() {
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait completed.".to_string(),
             timed_out: false,
+            outcome: Some(WaitAgentOutcome::UnattributedMailboxActivity),
         }
     );
     assert!(!content.contains("sensitive child output"));

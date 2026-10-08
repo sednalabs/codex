@@ -3,7 +3,6 @@ use crate::agent::agent_resolver::resolve_agent_target;
 use crate::agent::api::AgentWaitRegistration;
 use crate::agent::api::AgentWaitResult;
 use crate::agent::api::AgentWaitReturnWhen;
-use crate::session::InputQueue;
 use crate::session::InputQueueActivity;
 use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
 use crate::tools::handlers::multi_agents_spec::create_wait_agent_tool_v2;
@@ -364,7 +363,12 @@ async fn wait_for_activity(
                 Ok(()) => return activity_wake_outcome(*activity_rx.borrow_and_update(), agent_wait),
                 Err(_) => return WaitOutcome::SubscriptionLoss,
             },
-            agent = async { agent_wait.as_mut().expect("guarded by has_agent_wait").changed().await }, if has_agent_wait => match agent {
+            agent = async {
+                match agent_wait.as_mut() {
+                    Some(registration) => registration.changed().await,
+                    None => std::future::pending().await,
+                }
+            }, if has_agent_wait => match agent {
                 Ok(Some(outcome)) => return WaitOutcome::TargetTerminal(outcome),
                 Ok(None) => {},
                 Err(_) => return WaitOutcome::SubscriptionLoss,
@@ -442,6 +446,7 @@ mod tests {
     use crate::agent::api::AgentWaitRegistry;
     use crate::agent::api::AgentWaitReturnWhen;
     use crate::agent::api::register_agent_wait;
+    use crate::session::InputQueue;
     use codex_protocol::AgentPath;
     use codex_protocol::protocol::AgentStatus;
     use std::sync::Arc;

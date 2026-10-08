@@ -29,8 +29,12 @@ class SourceBinariesForTargetTest(unittest.TestCase):
 
             with (
                 patch.dict(os.environ, {"CARGO_TARGET_DIR": str(target_dir)}),
-                patch("codex_package.cargo.resolve_codex_v8_cargo_env", return_value={}),
-                patch("codex_package.cargo.subprocess.run", side_effect=fake_cargo_build) as run,
+                patch(
+                    "codex_package.cargo.resolve_codex_v8_cargo_env", return_value={}
+                ),
+                patch(
+                    "codex_package.cargo.subprocess.run", side_effect=fake_cargo_build
+                ) as run,
             ):
                 build_source_binaries(
                     TARGET_SPECS["x86_64-unknown-linux-musl"],

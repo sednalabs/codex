@@ -95,7 +95,7 @@ impl LocalAgentControl {
 
         let message = format_parent_outcome_message(
             &parent_agent_path,
-            &child_agent_path,
+            child_agent_path,
             &status,
             &outcome.readiness,
             outcome.error_info.as_ref(),

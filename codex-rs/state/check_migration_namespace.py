@@ -45,7 +45,9 @@ def main() -> None:
         versions[version] = name
         expected[name] = (kind, digest)
     if set(versions) != set(range(1, 61)) | set(range(FORK_BASE, FORK_BASE + 7)):
-        raise ValueError("frozen upstream or seven-fork migration mapping is incomplete")
+        raise ValueError(
+            "frozen upstream or seven-fork migration mapping is incomplete"
+        )
     actual = {path.name for path in MIGRATIONS.glob("*.sql")}
     if actual != set(expected):
         raise ValueError(
@@ -54,7 +56,9 @@ def main() -> None:
         )
     for name, (kind, expected_digest) in expected.items():
         data = (MIGRATIONS / name).read_bytes()
-        digest = git_blob_sha1(data) if kind == "u" else hashlib.sha384(data).hexdigest()
+        digest = (
+            git_blob_sha1(data) if kind == "u" else hashlib.sha384(data).hexdigest()
+        )
         if digest != expected_digest:
             raise ValueError(f"historical SQL bytes changed: {name}")
     source = BRIDGE.read_text()

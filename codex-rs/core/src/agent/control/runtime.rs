@@ -279,12 +279,8 @@ impl LocalAgentRuntime {
     }
 
     pub(crate) async fn raw_agent_status(&self, thread_id: ThreadId) -> Option<AgentStatus> {
-        let Some(manager) = self.manager.upgrade() else {
-            return None;
-        };
-        let Ok(thread) = manager.get_thread(thread_id).await else {
-            return None;
-        };
+        let manager = self.manager.upgrade()?;
+        let thread = manager.get_thread(thread_id).await.ok()?;
         Some(thread.agent_status().await)
     }
 }

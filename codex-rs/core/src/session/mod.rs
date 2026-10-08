@@ -20,7 +20,6 @@ use crate::agent::api::AgentTurnOutcome;
 use crate::agent::api::GoalTurnMarker;
 use crate::agent::api::GoalTurnReadiness;
 use crate::agent::control::AgentControlInit;
-use crate::agent::status::is_final;
 use crate::agents_md_manager::SessionInstructions;
 use crate::attestation::AttestationProvider;
 use crate::compact;

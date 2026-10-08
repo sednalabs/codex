@@ -95,8 +95,12 @@ pub(crate) struct TurnInputQueue {
 pub(crate) struct InputQueue {
     activity_tx: watch::Sender<InputQueueActivity>,
     controller: Option<(ThreadId, Arc<dyn AgentControl>, watch::Receiver<bool>)>,
-    mailbox_pending_mails: Mutex<VecDeque<PendingMailboxCommunication>>,
-    next_local_enqueue_ordinal: Mutex<Option<u64>>,
+    mailbox_state: Mutex<MailboxQueueState>,
+}
+
+struct MailboxQueueState {
+    pending: VecDeque<PendingMailboxCommunication>,
+    next_local_enqueue_ordinal: Option<u64>,
 }
 
 pub(crate) struct PendingMailboxCommunication {
@@ -112,8 +116,10 @@ impl InputQueue {
         Self {
             activity_tx,
             controller: None,
-            mailbox_pending_mails: Mutex::new(VecDeque::new()),
-            next_local_enqueue_ordinal: Mutex::new(Some(0)),
+            mailbox_state: Mutex::new(MailboxQueueState {
+                pending: VecDeque::new(),
+                next_local_enqueue_ordinal: Some(0),
+            }),
         }
     }
 
@@ -211,13 +217,14 @@ impl InputQueue {
         communication: InterAgentCommunication,
         start_options: TurnStartOptions,
     ) {
-        let mut pending = self.mailbox_pending_mails.lock().await;
+        let mut state = self.mailbox_state.lock().await;
         // Mail retained while unloaded precedes new submissions to the loaded session.
-        self.read_mailbox(&mut pending);
-        let mut next_ordinal = self.next_local_enqueue_ordinal.lock().await;
-        let local_enqueue_ordinal = *next_ordinal;
-        *next_ordinal = (*next_ordinal).and_then(|ordinal| ordinal.checked_add(1));
-        pending.push_back(PendingMailboxCommunication {
+        self.read_mailbox(&mut state.pending);
+        let local_enqueue_ordinal = state.next_local_enqueue_ordinal;
+        state.next_local_enqueue_ordinal = state
+            .next_local_enqueue_ordinal
+            .and_then(|ordinal| ordinal.checked_add(1));
+        state.pending.push_back(PendingMailboxCommunication {
             communication,
             start_options,
             local_enqueue_ordinal,
@@ -227,19 +234,19 @@ impl InputQueue {
     }
 
     pub(crate) async fn has_pending_mailbox_items(&self) -> bool {
-        !self.mailbox_pending_mails.lock().await.is_empty()
-            || self
-                .controller
-                .as_ref()
-                .is_some_and(|(_, _, updates)| *updates.borrow())
+        if !self.mailbox_state.lock().await.pending.is_empty() {
+            return true;
+        }
+        self.controller
+            .as_ref()
+            .is_some_and(|(_, _, updates)| *updates.borrow())
     }
 
     /// Capture a local enqueue watermark before an agent wait subscribes to activity.
     pub(crate) async fn mailbox_enqueue_watermark(&self) -> Option<u64> {
-        // Use the same lock order as enqueue so the watermark is ordered atomically with queue
-        // insertion rather than racing an enqueue between its ordinal assignment and push.
-        let _pending = self.mailbox_pending_mails.lock().await;
-        *self.next_local_enqueue_ordinal.lock().await
+        // The watermark and pending queue share one lock with enqueue, so it
+        // cannot split an enqueue's ordinal assignment from its queue insert.
+        self.mailbox_state.lock().await.next_local_enqueue_ordinal
     }
 
     /// Count newly enqueued, still-pending local communications without draining them. A host
@@ -252,10 +259,10 @@ impl InputQueue {
             .controller
             .as_ref()
             .is_some_and(|(_, _, updates)| *updates.borrow());
-        let pending = self.mailbox_pending_mails.lock().await;
+        let state = self.mailbox_state.lock().await;
         let local_count = watermark.and_then(|watermark| {
             let mut count = 0usize;
-            for mail in pending.iter() {
+            for mail in state.pending.iter() {
                 let Some(ordinal) = mail.local_enqueue_ordinal else {
                     return None;
                 };
@@ -276,17 +283,18 @@ impl InputQueue {
     }
 
     pub(crate) async fn has_trigger_turn_mailbox_items(&self) -> bool {
-        self.mailbox_pending_mails
+        self.mailbox_state
             .lock()
             .await
+            .pending
             .iter()
             .any(|mail| mail.communication.trigger_turn)
     }
 
     pub(crate) async fn drain_mailbox(&self) -> Vec<PendingMailboxCommunication> {
-        let mut pending = self.mailbox_pending_mails.lock().await;
-        self.read_mailbox(&mut pending);
-        pending.drain(..).collect()
+        let mut state = self.mailbox_state.lock().await;
+        self.read_mailbox(&mut state.pending);
+        state.pending.drain(..).collect()
     }
 
     pub(crate) async fn drain_mailbox_input_items(&self) -> (Vec<TurnInput>, TurnStartOptions) {
@@ -685,7 +693,11 @@ mod tests {
     #[tokio::test]
     async fn mailbox_count_is_unknown_after_ordinal_overflow() {
         let input_queue = InputQueue::new();
-        *input_queue.next_local_enqueue_ordinal.lock().await = Some(u64::MAX - 1);
+        input_queue
+            .mailbox_state
+            .lock()
+            .await
+            .next_local_enqueue_ordinal = Some(u64::MAX - 1);
         input_queue
             .enqueue_mailbox_communication(
                 make_mail(

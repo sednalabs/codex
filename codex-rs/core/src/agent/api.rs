@@ -483,20 +483,22 @@ impl AgentOutcomePublisher {
                 registry
                     .current_turns
                     .insert(self.thread_id, turn_id.clone());
-            } else if registry
-                .current_turns
-                .get(&self.thread_id)
-                .is_some_and(|current_turn| current_turn != turn_id)
-            {
-                return registry
-                    .snapshots
-                    .get(&self.thread_id)
-                    .cloned()
-                    .unwrap_or_default();
-            } else if !registry.current_turns.contains_key(&self.thread_id) {
-                registry
-                    .current_turns
-                    .insert(self.thread_id, turn_id.clone());
+            } else {
+                match registry.current_turns.entry(self.thread_id) {
+                    std::collections::hash_map::Entry::Occupied(entry)
+                        if entry.get() != turn_id =>
+                    {
+                        return registry
+                            .snapshots
+                            .get(&self.thread_id)
+                            .cloned()
+                            .unwrap_or_default();
+                    }
+                    std::collections::hash_map::Entry::Occupied(_) => {}
+                    std::collections::hash_map::Entry::Vacant(entry) => {
+                        entry.insert(turn_id.clone());
+                    }
+                }
             }
         }
         registry.snapshots.insert(self.thread_id, snapshot.clone());
@@ -545,21 +547,6 @@ impl AgentOutcomePublisher {
             all_targets: wait.return_when == AgentWaitReturnWhen::All,
             outcomes,
         }));
-    }
-
-    fn mark_current_goal_action_required(&self) {
-        let mut registry = self
-            .registry
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(mut snapshot) = registry.snapshots.get(&self.thread_id).cloned() else {
-            return;
-        };
-        if !matches!(snapshot.readiness, AgentReadiness::GoalContinuing { .. }) {
-            return;
-        }
-        snapshot.readiness = AgentReadiness::ActionRequired;
-        self.publish_locked(&mut registry, snapshot);
     }
 
     pub fn mark_reported(&self, turn_id: &str) -> bool {

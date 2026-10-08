@@ -1439,7 +1439,6 @@ fn mcp_image_content_item(mut value: Value) -> Option<DynamicToolCallOutputConte
     if value.get("type").and_then(Value::as_str)? != "image" {
         return None;
     }
-    let detail = mcp_image_detail(&value).or_else(|| Some("high".to_string()));
     let data = value.get_mut("data")?.take();
     let data = match data {
         Value::String(data) => data,
@@ -1459,18 +1458,6 @@ fn mcp_image_content_item(mut value: Value) -> Option<DynamicToolCallOutputConte
         format!("data:{mime_type};base64,{data}")
     };
     Some(DynamicToolCallOutputContentItem::InputImage { image_url })
-}
-
-fn mcp_image_detail(value: &Value) -> Option<String> {
-    let detail = value
-        .get("_meta")
-        .and_then(Value::as_object)
-        .and_then(|meta| meta.get("codex/imageDetail"))
-        .and_then(Value::as_str)?;
-    match detail {
-        "auto" | "low" | "high" | "original" => Some(detail.to_string()),
-        _ => None,
-    }
 }
 
 fn items_include_native_image(items: &[DynamicToolCallOutputContentItem]) -> bool {

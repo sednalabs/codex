@@ -22,18 +22,20 @@ from fixtures import SmokePackage
 from tui_pty import PackagedTui
 
 
-def _mock_config(home: Path, server: MockResponsesServer, *, agent_tools: bool = False) -> None:
+def _mock_config(
+    home: Path, server: MockResponsesServer, *, agent_tools: bool = False
+) -> None:
     home.mkdir(parents=True, exist_ok=True)
     (home / "config.toml").write_text(
         'model = "package-smoke"\nmodel_provider = "package_smoke"\n'
         'approval_policy = "never"\nsandbox_mode = "workspace-write"\n'
-        '[features]\n'
-        f'code_mode_only = {str(not agent_tools).lower()}\n'
-        'code_mode_host = true\n'
-        'multi_agent_v2 = true\nmemories = false\napps = false\nplugins = false\n'
+        "[features]\n"
+        f"code_mode_only = {str(not agent_tools).lower()}\n"
+        "code_mode_host = true\n"
+        "multi_agent_v2 = true\nmemories = false\napps = false\nplugins = false\n"
         '[model_providers.package_smoke]\nname = "package smoke"\n'
         f'base_url = "{server.url}/v1"\nwire_api = "responses"\n'
-        'request_max_retries = 0\nstream_max_retries = 0\n',
+        "request_max_retries = 0\nstream_max_retries = 0\n",
         encoding="utf-8",
     )
 
@@ -57,7 +59,7 @@ def _png(red: int, green: int, blue: int) -> bytes:
     )
 
 
-_SYNTHETIC_BROWSER_PROVIDER = r'''import base64
+_SYNTHETIC_BROWSER_PROVIDER = r"""import base64
 import json
 import os
 import sys
@@ -118,7 +120,7 @@ for capture in manifest["captures"]:
         "imageUrl": "data:image/png;base64," + base64.b64encode(image).decode("ascii"),
     })
 json.dump({"success": True, "contentItems": content}, sys.stdout)
-'''
+"""
 
 
 _BROWSER_FIXTURE_CALL_ID = "browser-visual-fixture-call"
@@ -179,7 +181,8 @@ def browser_output_diagnostic(record_property):
     server = state["responses_server"]
     requests = (
         [request for request in server.requests() if request.path == "/v1/responses"]
-        if server is not None else []
+        if server is not None
+        else []
     )
     second_request_input_available = False
     call_outputs = []
@@ -189,8 +192,10 @@ def browser_output_diagnostic(record_property):
             if isinstance(input_items, list):
                 second_request_input_available = True
                 call_outputs = [
-                    item for item in input_items
-                    if isinstance(item, dict) and item.get("type") == "function_call_output"
+                    item
+                    for item in input_items
+                    if isinstance(item, dict)
+                    and item.get("type") == "function_call_output"
                 ]
         except (TypeError, ValueError):
             pass
@@ -202,12 +207,17 @@ def browser_output_diagnostic(record_property):
         call_ids.append(
             "<fixture>"
             if call_id == _BROWSER_FIXTURE_CALL_ID
-            else "<other>" if isinstance(call_id, str) else "<missing>"
+            else "<other>"
+            if isinstance(call_id, str)
+            else "<missing>"
         )
         name = item.get("name")
         tool_names.append(
-            name if isinstance(name, str) and name in _BROWSER_TOOL_NAMES
-            else "<other>" if isinstance(name, str) else "<absent>"
+            name
+            if isinstance(name, str) and name in _BROWSER_TOOL_NAMES
+            else "<other>"
+            if isinstance(name, str)
+            else "<absent>"
         )
 
     provider_invoked = False
@@ -218,12 +228,17 @@ def browser_output_diagnostic(record_property):
             observation = json.loads(observation_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             observation = {}
-        provider_invoked = isinstance(observation, dict) and observation.get("invoked") is True
-        observed_name = observation.get("tool_name") if isinstance(observation, dict) else None
+        provider_invoked = (
+            isinstance(observation, dict) and observation.get("invoked") is True
+        )
+        observed_name = (
+            observation.get("tool_name") if isinstance(observation, dict) else None
+        )
         if provider_invoked:
             provider_tool_name = (
                 observed_name
-                if isinstance(observed_name, str) and observed_name in _BROWSER_TOOL_NAMES
+                if isinstance(observed_name, str)
+                and observed_name in _BROWSER_TOOL_NAMES
                 else "<other>"
             )
 
@@ -232,7 +247,8 @@ def browser_output_diagnostic(record_property):
     try:
         stage_lines = (
             stage_observation_path.read_text(encoding="utf-8").splitlines()
-            if isinstance(stage_observation_path, Path) else []
+            if isinstance(stage_observation_path, Path)
+            else []
         )
     except OSError:
         stage_lines = []
@@ -255,12 +271,17 @@ def browser_output_diagnostic(record_property):
         if type(scalar_values.get("call_id_matches_fixture")) is not bool:
             continue
         count_keys = {
-            key for key in expected_fields
+            key
+            for key in expected_fields
             if key.endswith("_item_count") or key.endswith("_count")
         }
-        result_keys = expected_fields - {
-            "call_id_matches_fixture",
-        } - count_keys
+        result_keys = (
+            expected_fields
+            - {
+                "call_id_matches_fixture",
+            }
+            - count_keys
+        )
         if any(type(scalar_values.get(key)) is not bool for key in result_keys):
             continue
         if any(
@@ -268,10 +289,12 @@ def browser_output_diagnostic(record_property):
             for key in count_keys
         ):
             continue
-        source_stage_observations.append({
-            "stage": stage,
-            **{key: scalar_values[key] for key in sorted(expected_fields)},
-        })
+        source_stage_observations.append(
+            {
+                "stage": stage,
+                **{key: scalar_values[key] for key in sorted(expected_fields)},
+            }
+        )
         if len(source_stage_observations) >= 32:
             break
 
@@ -302,12 +325,18 @@ def _isolated(package: SmokePackage, suffix: str) -> tuple[SmokePackage, Path]:
 
 
 def _sdk(package: SmokePackage) -> Codex:
-    return Codex(config=CodexConfig(
-        codex_bin=str(package.cli), cwd=str(package.directory), env=package.environment,
-    ))
+    return Codex(
+        config=CodexConfig(
+            codex_bin=str(package.cli),
+            cwd=str(package.directory),
+            env=package.environment,
+        )
+    )
 
 
-def test_actual_tui_agents_entry_has_initial_empty_search(package: SmokePackage) -> None:
+def test_actual_tui_agents_entry_has_initial_empty_search(
+    package: SmokePackage,
+) -> None:
     isolated, home = _isolated(package, "tui-empty-search")
     with MockResponsesServer() as server:
         _mock_config(home, server, agent_tools=True)
@@ -330,7 +359,8 @@ def test_actual_tui_nested_filter_clear_live_rename_and_replay(
             server.enqueue_assistant_message(message, response_id=f"tui-seed-{index}")
         with _sdk(isolated) as client:
             root = client.thread_start(
-                ephemeral=False, approval_mode=ApprovalMode.deny_all,
+                ephemeral=False,
+                approval_mode=ApprovalMode.deny_all,
                 sandbox=Sandbox.workspace_write,
             )
             root.set_name("root-package-task")
@@ -424,24 +454,32 @@ def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate
         start=1,
     ):
         (fixture_dir / filename).write_bytes(image)
-        captures.append({
-            "order": order,
-            "label": label,
-            "path": filename,
-            "sha256": hashlib.sha256(image).hexdigest(),
-            "metadata": {
-                "effectiveViewport": {"width": width, "height": height},
-                "devicePixelRatio": 1,
-                "scroll": {"x": 0, "y": scroll_y},
-            },
-        })
+        captures.append(
+            {
+                "order": order,
+                "label": label,
+                "path": filename,
+                "sha256": hashlib.sha256(image).hexdigest(),
+                "metadata": {
+                    "effectiveViewport": {"width": width, "height": height},
+                    "devicePixelRatio": 1,
+                    "scroll": {"x": 0, "y": scroll_y},
+                },
+            }
+        )
     manifest = {
         "schemaVersion": 1,
         "captures": captures,
         "restoration": {
             "success": True,
-            "actual": {"effectiveViewport": {"width": 1024, "height": 768}, "scroll": {"x": 0, "y": 0}},
-            "expected": {"effectiveViewport": {"width": 1024, "height": 768}, "scroll": {"x": 0, "y": 0}},
+            "actual": {
+                "effectiveViewport": {"width": 1024, "height": 768},
+                "scroll": {"x": 0, "y": 0},
+            },
+            "expected": {
+                "effectiveViewport": {"width": 1024, "height": 768},
+                "scroll": {"x": 0, "y": 0},
+            },
         },
     }
     manifest_path = fixture_dir / "manifest.json"
@@ -449,7 +487,9 @@ def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate
     provider_script = home / "synthetic_browser_provider.py"
     provider_script.write_text(_SYNTHETIC_BROWSER_PROVIDER, encoding="utf-8")
     (home / "browser-computer-use.json").write_text(
-        json.dumps({"provider": "command", "command": [sys.executable, str(provider_script)]}),
+        json.dumps(
+            {"provider": "command", "command": [sys.executable, str(provider_script)]}
+        ),
         encoding="utf-8",
     )
 
@@ -460,27 +500,43 @@ def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate
     with MockResponsesServer() as server:
         browser_output_diagnostic["responses_server"] = server
         _mock_config(home, server, agent_tools=True)
-        server.enqueue_sse(sse([
-            ev_response_created("browser-visual-fixture-request"),
-            {
-                "type": "response.output_item.done",
-                "item": {
-                    "type": "function_call",
-                    "namespace": "codex_browser",
-                    "call_id": call_id,
-                    "name": "browser_observe",
-                    "arguments": json.dumps({
-                        "scope": "viewport_and_page",
-                        "captures": [
-                            {"label": "top", "viewportWidth": 800, "viewportHeight": 600, "scroll": "top"},
-                            {"label": "bottom", "viewportWidth": 640, "viewportHeight": 480, "scroll": "bottom"},
-                        ],
-                        "save_artifact": True,
-                    }),
-                },
-            },
-            ev_completed("browser-visual-fixture-request"),
-        ]))
+        server.enqueue_sse(
+            sse(
+                [
+                    ev_response_created("browser-visual-fixture-request"),
+                    {
+                        "type": "response.output_item.done",
+                        "item": {
+                            "type": "function_call",
+                            "namespace": "codex_browser",
+                            "call_id": call_id,
+                            "name": "browser_observe",
+                            "arguments": json.dumps(
+                                {
+                                    "scope": "viewport_and_page",
+                                    "captures": [
+                                        {
+                                            "label": "top",
+                                            "viewportWidth": 800,
+                                            "viewportHeight": 600,
+                                            "scroll": "top",
+                                        },
+                                        {
+                                            "label": "bottom",
+                                            "viewportWidth": 640,
+                                            "viewportHeight": 480,
+                                            "scroll": "bottom",
+                                        },
+                                    ],
+                                    "save_artifact": True,
+                                }
+                            ),
+                        },
+                    },
+                    ev_completed("browser-visual-fixture-request"),
+                ]
+            )
+        )
         browser_output_diagnostic["fixture_function_call_emitted"] = True
         server.enqueue_assistant_message(
             "browser synthetic consumer complete",
@@ -494,7 +550,9 @@ def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate
             tui.send("\r")
             server.wait_for_requests(2, timeout_s=30)
 
-        requests = [request for request in server.requests() if request.path == "/v1/responses"]
+        requests = [
+            request for request in server.requests() if request.path == "/v1/responses"
+        ]
         assert len(requests) == 2, {"response_request_count": len(requests)}
         request_body = requests[0].body_json()
         advertised = request_body.get("tools")
@@ -510,8 +568,10 @@ def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate
                         advertised.extend(additional_tools)
         browser_namespace = next(
             (
-                tool for tool in advertised
-                if tool.get("type") == "namespace" and tool.get("name") == "codex_browser"
+                tool
+                for tool in advertised
+                if tool.get("type") == "namespace"
+                and tool.get("name") == "codex_browser"
             ),
             None,
         )
@@ -519,34 +579,48 @@ def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate
             "advertised_tool_count": len(advertised),
         }
         assert {tool.get("name") for tool in browser_namespace.get("tools", [])} >= {
-            "browser_observe", "browser_step",
+            "browser_observe",
+            "browser_step",
         }
 
         call_outputs = [
-            item for item in requests[1].input()
-            if item.get("type") == "function_call_output" and item.get("call_id") == call_id
+            item
+            for item in requests[1].input()
+            if item.get("type") == "function_call_output"
+            and item.get("call_id") == call_id
         ]
         assert len(call_outputs) == 1, {"browser_call_output_count": len(call_outputs)}
         output = call_outputs[0].get("output")
-        assert isinstance(output, list), {"typed_multimodal_output_is_list": isinstance(output, list)}
+        assert isinstance(output, list), {
+            "typed_multimodal_output_is_list": isinstance(output, list)
+        }
         output_types = [part.get("type") for part in output]
         assert output_types == ["input_text", "input_image", "input_image"], {
             "typed_output_item_count": len(output_types),
             "typed_input_image_count": output_types.count("input_image"),
         }
         text = output[0].get("text", "")
-        recorded_request = json.loads((fixture_dir / "provider-request.json").read_text(encoding="utf-8"))
+        recorded_request = json.loads(
+            (fixture_dir / "provider-request.json").read_text(encoding="utf-8")
+        )
         assert recorded_request["namespace"] == "codex_browser"
         assert recorded_request["tool"] == "browser_observe"
-        assert [capture["label"] for capture in recorded_request["arguments"]["captures"]] == [
-            "top", "bottom",
+        assert [
+            capture["label"] for capture in recorded_request["arguments"]["captures"]
+        ] == [
+            "top",
+            "bottom",
         ]
         assert recorded_request["arguments"]["save_artifact"] is True
 
-        assert Path(text.split("artifact_manifest: ", 1)[1].splitlines()[0]).name == manifest_path.name
+        assert (
+            Path(text.split("artifact_manifest: ", 1)[1].splitlines()[0]).name
+            == manifest_path.name
+        )
         manifest_on_disk = json.loads(manifest_path.read_text(encoding="utf-8"))
         assert [capture["label"] for capture in manifest_on_disk["captures"]] == [
-            "top", "bottom",
+            "top",
+            "bottom",
         ]
         expected_metadata = [
             {
@@ -560,7 +634,9 @@ def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate
                 "scroll": {"x": 0, "y": 1200},
             },
         ]
-        assert [capture["metadata"] for capture in manifest_on_disk["captures"]] == expected_metadata
+        assert [
+            capture["metadata"] for capture in manifest_on_disk["captures"]
+        ] == expected_metadata
         text_captures = [
             json.loads(line.partition("capture: ")[2])
             for line in text.splitlines()
@@ -576,12 +652,19 @@ def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate
         ]
         assert [capture["label"] for capture in text_captures] == ["top", "bottom"]
         assert [capture["metadata"] for capture in text_captures] == expected_metadata
-        restoration = next(line for line in text.splitlines() if line.startswith("restoration: "))
-        assert json.loads(restoration.partition("restoration: ")[2]) == manifest_on_disk["restoration"]
+        restoration = next(
+            line for line in text.splitlines() if line.startswith("restoration: ")
+        )
+        assert (
+            json.loads(restoration.partition("restoration: ")[2])
+            == manifest_on_disk["restoration"]
+        )
         assert "artifact_manifest: browser-fixture/manifest.json" in text
         assert "data:image/png;base64," not in text
         encoded_images = [part.get("image_url", "") for part in output[1:]]
-        assert all(image.startswith("data:image/png;base64,") for image in encoded_images)
+        assert all(
+            image.startswith("data:image/png;base64,") for image in encoded_images
+        )
         model_images = [
             base64.b64decode(image.split(",", 1)[1], validate=True)
             for image in encoded_images
@@ -590,7 +673,9 @@ def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate
             "model_image_count": len(model_images),
             "model_image_bytes_match_fixture": model_images == image_bytes,
         }
-        for capture, image in zip(manifest_on_disk["captures"], model_images, strict=True):
+        for capture, image in zip(
+            manifest_on_disk["captures"], model_images, strict=True
+        ):
             saved = (fixture_dir / capture["path"]).read_bytes()
             assert saved == image, {
                 "capture_order": capture["order"],

@@ -56,10 +56,9 @@ struct NotifyOnDrop {
 }
 impl Drop for NotifyOnDrop {
     fn drop(&mut self) {
-        self.dropped_ids
-            .lock()
-            .expect("drop ID lock")
-            .push(self.request_id.clone());
+        if let Ok(mut dropped_ids) = self.dropped_ids.lock() {
+            dropped_ids.push(self.request_id.clone());
+        }
         self.notify.notify_one();
     }
 }
@@ -105,7 +104,11 @@ async fn handle_mcp(State(state): State<ServerState>, Json(request): Json<Value>
                 return response;
             }
             if name == Some("terminal-error") {
-                let mut response = Response::new(Body::from(serde_json::to_vec(&json!({"jsonrpc":"2.0","id":request.get("id"),"error":{"code":-32603,"message":"terminal test error"}})).unwrap()));
+                let body = match serde_json::to_vec(&json!({"jsonrpc":"2.0","id":request.get("id"),"error":{"code":-32603,"message":"terminal test error"}})) {
+                    Ok(body) => body,
+                    Err(error) => panic!("failed to encode terminal JSON-RPC test response: {error}"),
+                };
+                let mut response = Response::new(Body::from(body));
                 response
                     .headers_mut()
                     .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
@@ -155,7 +158,10 @@ fn accepted_response() -> Response {
 }
 
 fn json_response(id: Option<Value>, result: Value, session: bool) -> Response {
-    let body = serde_json::to_vec(&json!({"jsonrpc":"2.0","id":id,"result":result})).unwrap();
+    let body = match serde_json::to_vec(&json!({"jsonrpc":"2.0","id":id,"result":result})) {
+        Ok(body) => body,
+        Err(error) => panic!("failed to encode JSON-RPC test response: {error}"),
+    };
     let mut response = Response::new(Body::from(body));
     response
         .headers_mut()

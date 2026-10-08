@@ -131,6 +131,20 @@ impl GoalRuntimeHandle {
         self.is_enabled() && self.inner.tools_available_for_thread
     }
 
+    /// Reports whether a continuation may be attempted for this thread.
+    ///
+    /// This is only an eligibility check: it does not reserve the idle thread
+    /// or submit work. `start_turn_if_idle` remains the authoritative check.
+    pub(crate) async fn can_schedule_continuation(&self) -> bool {
+        if !self.tools_available() {
+            return false;
+        }
+        let Some(thread_manager) = self.inner.thread_manager.upgrade() else {
+            return false;
+        };
+        thread_manager.get_thread(self.inner.thread_id).await.is_ok()
+    }
+
     pub(crate) fn thread_id(&self) -> ThreadId {
         self.inner.thread_id
     }

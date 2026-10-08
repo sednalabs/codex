@@ -297,6 +297,7 @@ async fn new_config(
         tui_alternate_screen: AltScreenMode::Auto,
         tui_status_line: None,
         tui_status_line_use_colors: true,
+        tui_weekly_limit_pacing_style: Default::default(),
         tui_terminal_title: None,
         tui_theme: None,
         tui_raw_output_mode: false,

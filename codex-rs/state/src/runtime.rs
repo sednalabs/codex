@@ -48,6 +48,7 @@ mod logs;
 mod logs_maintenance;
 mod memories;
 mod memory_versions;
+pub(crate) mod migration_repair;
 mod projects;
 mod queued_items;
 pub(crate) mod reclamation;
@@ -497,6 +498,7 @@ pub async fn sqlite_integrity_check(
 mod tests {
     use super::SqliteIntegrityCheck;
     use super::StateRuntime;
+    use super::migration_repair::run_state_migrations;
     use super::runtime_state_migrator;
     use super::sqlite_integrity_check;
     use super::test_support::test_thread_metadata;
@@ -665,7 +667,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn open_state_sqlite_tolerates_newer_applied_migrations() {
+    async fn open_state_sqlite_rejects_unknown_applied_migrations_without_bridge_writes() {
+        type Snapshot = (
+            Vec<(i64, String, String, bool, Vec<u8>, i64)>,
+            Vec<(String, String, Option<String>)>,
+            Vec<(String, String, i64)>,
+        );
+        async fn snapshot(pool: &SqlitePool) -> Snapshot {
+            let ledger = sqlx::query_as(
+                "SELECT version, description, CAST(installed_on AS TEXT), success, checksum, execution_time
+                 FROM _sqlx_migrations ORDER BY version",
+            )
+            .fetch_all(pool)
+            .await
+            .expect("ledger preimage");
+            let schema = sqlx::query_as(
+                "SELECT type, name, sql FROM sqlite_schema ORDER BY type, name",
+            )
+            .fetch_all(pool)
+            .await
+            .expect("schema and receipt-table preimage");
+            let data = sqlx::query_as("SELECT id, title, updated_at FROM threads ORDER BY id")
+                .fetch_all(pool)
+                .await
+                .expect("synthetic user-data preimage");
+            (ledger, schema, data)
+        }
+
         let codex_home = unique_temp_dir();
         tokio::fs::create_dir_all(&codex_home)
             .await
@@ -676,10 +704,22 @@ mod tests {
             .open_read_write_pool(&state_path)
             .await
             .expect("open state db");
-        STATE_MIGRATOR
-            .run(&pool)
+        run_state_migrations(&pool, &STATE_MIGRATOR)
             .await
             .expect("apply current state schema");
+        sqlx::query(
+            "INSERT INTO threads (
+                id, rollout_path, created_at, updated_at, source, model_provider,
+                cwd, title, sandbox_policy, approval_mode
+             ) VALUES (
+                'unknown-id-preservation', '/synthetic/unknown.jsonl',
+                1700000000, 1700000001, 'cli', 'synthetic-provider',
+                '/synthetic', 'preserve unknown-id data', 'read-only', 'on-request'
+             )",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed synthetic preservation row");
         sqlx::query(
             "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES (?, ?, ?, ?, ?)",
         )
@@ -691,6 +731,7 @@ mod tests {
         .execute(&pool)
         .await
         .expect("insert future migration record");
+        let before = snapshot(&pool).await;
         pool.close().await;
 
         let strict_pool = open_db_pool(state_path.as_path()).await;
@@ -701,12 +742,32 @@ mod tests {
         assert!(matches!(strict_err, MigrateError::VersionMissing(9_999)));
         strict_pool.close().await;
 
-        let tolerant_migrator = runtime_state_migrator();
-        let tolerant_pool = sqlite
-            .open_state_db(&tolerant_migrator, /*telemetry_override*/ None)
+        // Deliberate guarded-state divergence: ignore_missing alone is not
+        // permission to write a database with an unknown migration identity.
+        let runtime_migrator = runtime_state_migrator();
+        let telemetry = TestTelemetry::default();
+        let error = sqlite
+            .open_state_db(&runtime_migrator, Some(&telemetry))
             .await
-            .expect("runtime migrator should tolerate newer applied migrations");
-        tolerant_pool.close().await;
+            .expect_err("guarded state opens must reject unknown migration identities");
+        assert!(
+            error
+                .chain()
+                .any(|source| source.is::<super::recovery::RuntimeDbInitError>())
+        );
+        assert!(format!("{error:#}").contains("state migration 9999 has an unknown identity"));
+        assert!(telemetry.counters().iter().any(|event| {
+            event.name == DB_INIT_METRIC
+                && event.tags.get("db").map(String::as_str) == Some("state")
+                && event.tags.get("phase").map(String::as_str) == Some("migrate_state")
+                && event.tags.get("status").map(String::as_str) == Some("failed")
+        }));
+        let check_pool = sqlite
+            .open_read_write_pool(&state_path)
+            .await
+            .expect("rejected migration leaves observable data readable");
+        assert_eq!(snapshot(&check_pool).await, before);
+        check_pool.close().await;
 
         let _ = tokio::fs::remove_dir_all(codex_home).await;
     }

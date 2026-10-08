@@ -460,11 +460,10 @@ async fn collect_compaction_output(
                     }
                 }
             }
-            ResponseEvent::ServerModel { model, scope } => {
-                if scope == codex_api::ServerModelScope::CurrentResponse {
-                    current_response_server_model = Some(model);
-                }
-            }
+            ResponseEvent::ServerModel {
+                model,
+                scope: codex_api::ServerModelScope::CurrentResponse,
+            } => current_response_server_model = Some(model),
             ResponseEvent::Completed {
                 response_id,
                 token_usage,

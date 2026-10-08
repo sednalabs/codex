@@ -478,12 +478,13 @@ impl<'a> RestoreBatchReservation<'a> {
                     .iter()
                     .map(String::as_str)
                     .collect();
-                let agent_nickname = AgentRegistry::reserve_agent_nickname_locked(
+                let Some(agent_nickname) = AgentRegistry::reserve_agent_nickname_locked(
                     self.active_agents,
                     &candidate_names,
                     entry.preferred_nickname.as_deref(),
-                )
-                .expect("restore batch nickname candidates were preflighted");
+                ) else {
+                    unreachable!("restore batch nickname candidates were preflighted");
+                };
                 AgentMetadata {
                     agent_id: Some(entry.thread_id),
                     agent_path: entry.agent_path.clone(),

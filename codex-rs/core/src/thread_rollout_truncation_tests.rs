@@ -3,6 +3,7 @@ use crate::session::step_context::StepContext;
 use crate::session::tests::build_world_state_from_turn_context;
 use crate::session::tests::make_session_and_context;
 use codex_history::CompactedItem;
+use codex_protocol::AgentPath;
 use codex_protocol::ResponseItemId;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::models::ContentItem;
@@ -152,21 +153,25 @@ fn last_n_fork_turns_applies_rollback_to_nested_checkpoint_boundaries() {
 
 #[test]
 fn last_n_fork_turns_treats_triggering_agent_communication_as_a_turn_boundary() {
-    let trigger = RolloutItem::InterAgentCommunication(InterAgentCommunication::new(
-        codex_protocol::protocol::AgentPath::root(),
-        codex_protocol::protocol::AgentPath::try_from("/root/worker").unwrap(),
+    let communication = InterAgentCommunication::new(
+        AgentPath::root(),
+        AgentPath::try_from("/root/worker").unwrap(),
         Vec::new(),
         "trigger task".to_string(),
         /*trigger_turn*/ true,
-    ));
+    );
+    let trigger = RolloutItem::InterAgentCommunication(communication.clone());
     let rollout = vec![
-        user_msg("earlier"),
-        assistant_msg("answer"),
+        response_item(user_msg("earlier")),
+        response_item(assistant_msg("answer")),
         trigger.clone(),
     ];
 
     let truncated = truncate_rollout_to_last_n_fork_turns(&rollout, 1);
-    assert_eq!(truncated, vec![trigger]);
+    assert!(matches!(
+        truncated.as_slice(),
+        [RolloutItem::InterAgentCommunication(item)] if item == &communication
+    ));
 }
 
 fn turn_started(turn_id: &str) -> RolloutItem {

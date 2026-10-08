@@ -27,12 +27,14 @@ use crate::context::MultiAgentRoleInstructions;
 use crate::context::SubagentNotification;
 use crate::init_state_db;
 use crate::responses_metadata::CodexResponsesRequestKind;
+use crate::session::ProviderResponseUsageContext;
 use crate::session::SessionSettingsUpdate;
 use crate::session::step_context::StepContext;
 use crate::thread_manager::ForkSnapshot;
 use crate::thread_manager::StartThreadOptions;
 use crate::tools::handlers::multi_agents_common::thread_spawn_source;
 use assert_matches::assert_matches;
+use codex_agent_graph_store::AgentGraphStore;
 use codex_extension_api::ExtensionDataInit;
 use codex_extension_api::Instructions;
 use codex_extension_api::LoadInstructionsFuture;
@@ -2747,6 +2749,14 @@ async fn spawn_agent_fork_sanitizes_inherited_compaction_metadata() {
             "child-response",
             Some(&child_usage),
             /*usage_metadata*/ None,
+            ProviderResponseUsageContext {
+                started_at: None,
+                provider: "openai".to_string(),
+                requested_model: "test-model".to_string(),
+                actual_model_used: None,
+                requested_service_tier: None,
+                actual_service_tier: None,
+            },
         )
         .await;
     child_thread

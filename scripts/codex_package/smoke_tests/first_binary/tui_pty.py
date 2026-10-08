@@ -30,13 +30,22 @@ class PackagedTui:
     def __enter__(self) -> "PackagedTui":
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 34, 110, 0, 0))
-        env = {**self.package.environment, "TERM": "xterm-256color", "COLUMNS": "110", "LINES": "34"}
+        env = {
+            **self.package.environment,
+            "TERM": "xterm-256color",
+            "COLUMNS": "110",
+            "LINES": "34",
+        }
         try:
             self.process = subprocess.Popen(
                 [str(self.package.cli), "--no-alt-screen", *self.arguments],
-                cwd=self.package.directory, env=env,
-                stdin=slave, stdout=slave, stderr=slave,
-                start_new_session=True, close_fds=True,
+                cwd=self.package.directory,
+                env=env,
+                stdin=slave,
+                stdout=slave,
+                stderr=slave,
+                start_new_session=True,
+                close_fds=True,
             )
         finally:
             os.close(slave)
@@ -77,17 +86,23 @@ class PackagedTui:
                     f"packaged TUI exited {self.process.returncode} before {marker!r}: "
                     f"{plain(received)!r}"
                 )
-            ready, _, _ = select.select([self.master], [], [], max(0, deadline - time.monotonic()))
+            ready, _, _ = select.select(
+                [self.master], [], [], max(0, deadline - time.monotonic())
+            )
             if not ready:
                 break
             try:
                 chunk = os.read(self.master, 65536)
             except OSError as error:
-                raise AssertionError(f"packaged TUI PTY closed before {marker!r}") from error
+                raise AssertionError(
+                    f"packaged TUI PTY closed before {marker!r}"
+                ) from error
             if not chunk:
                 break
             received.extend(chunk)
             rendered = plain(received)
             if marker in rendered:
                 return rendered
-        raise AssertionError(f"packaged TUI did not render {marker!r}: {plain(received)!r}")
+        raise AssertionError(
+            f"packaged TUI did not render {marker!r}: {plain(received)!r}"
+        )

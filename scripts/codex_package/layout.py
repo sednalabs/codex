@@ -201,8 +201,7 @@ def package_payload_sha256(package_dir: Path) -> dict[str, str]:
         key=lambda path: path.relative_to(package_dir).as_posix(),
     )
     return {
-        path.relative_to(package_dir).as_posix(): sha256_file(path)
-        for path in payloads
+        path.relative_to(package_dir).as_posix(): sha256_file(path) for path in payloads
     }
 
 
