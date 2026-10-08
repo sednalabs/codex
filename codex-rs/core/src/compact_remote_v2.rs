@@ -1294,7 +1294,7 @@ mod tests {
             stream,
         )
         .await
-            .expect("compaction should be collected");
+        .expect("compaction should be collected");
 
         assert_eq!(output.compaction_output, compaction);
         assert_eq!(output.response_id, "resp-compact");

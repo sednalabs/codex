@@ -363,10 +363,7 @@ impl SqliteConfig {
                         &pool, migrator,
                     )
                     .await?;
-                return usage_migrator
-                    .run(&pool)
-                    .await
-                    .map_err(anyhow::Error::from);
+                return usage_migrator.run(&pool).await.map_err(anyhow::Error::from);
             }
             migrator.run(&pool).await.map_err(anyhow::Error::from)
         }

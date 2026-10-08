@@ -2,10 +2,10 @@ use std::sync::Arc;
 use std::sync::Weak;
 
 use codex_analytics::AnalyticsEventsClient;
-use codex_core::ThreadManager;
-use codex_core::TurnStartOptions;
 use codex_core::GoalTurnMarker;
 use codex_core::GoalTurnReadiness;
+use codex_core::ThreadManager;
+use codex_core::TurnStartOptions;
 use codex_extension_api::ConfigContributor;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionEventSink;
@@ -365,13 +365,12 @@ where
                     .has_thread_goal_continuation_deferral(runtime.thread_id())
                     .await
                     .unwrap_or(true);
-                let readiness = if !continuation_deferred
-                    && runtime.can_schedule_continuation().await
-                {
-                    GoalTurnReadiness::Continuing
-                } else {
-                    GoalTurnReadiness::ActionRequired
-                };
+                let readiness =
+                    if !continuation_deferred && runtime.can_schedule_continuation().await {
+                        GoalTurnReadiness::Continuing
+                    } else {
+                        GoalTurnReadiness::ActionRequired
+                    };
                 input.turn_store.insert(GoalTurnMarker {
                     goal_id: expected_goal_id.clone(),
                     turn_id: turn_id.to_string(),

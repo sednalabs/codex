@@ -466,14 +466,17 @@ impl ChatWidget {
         let Some(reset_seconds) = window.resets_at_unix_seconds else {
             return Some(base);
         };
-        let Some(window_seconds) = window.window_minutes.and_then(|minutes| minutes.checked_mul(60))
+        let Some(window_seconds) = window
+            .window_minutes
+            .and_then(|minutes| minutes.checked_mul(60))
         else {
             return Some(base);
         };
         if window_seconds <= 0 || !window.used_percent.is_finite() {
             return Some(base);
         }
-        let Some(seconds_remaining) = reset_seconds.checked_sub(snapshot.captured_at.timestamp()) else {
+        let Some(seconds_remaining) = reset_seconds.checked_sub(snapshot.captured_at.timestamp())
+        else {
             return Some(base);
         };
         if seconds_remaining < 0 {

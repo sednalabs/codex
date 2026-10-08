@@ -12,7 +12,10 @@ pub(crate) struct RequestCancellationGuard {
 
 impl RequestCancellationGuard {
     pub(crate) fn new(peer: Peer<RoleClient>, request_id: RequestId) -> Self {
-        Self { peer: Some(peer), request_id }
+        Self {
+            peer: Some(peer),
+            request_id,
+        }
     }
 
     pub(crate) fn disarm(mut self) {
@@ -24,7 +27,9 @@ impl Drop for RequestCancellationGuard {
     fn drop(&mut self) {
         let Some(peer) = self.peer.take() else { return };
         let request_id = self.request_id.clone();
-        let Ok(runtime) = tokio::runtime::Handle::try_current() else { return };
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
         let task = runtime.spawn(async move {
             let _ = peer
                 .send_notification(

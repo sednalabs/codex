@@ -48,7 +48,10 @@ fn synthetic_summary_msg() -> ResponseItem {
         id: None,
         role: "user".to_string(),
         content: vec![ContentItem::InputText {
-            text: format!("{}\nolder conversation summary", codex_prompts::SUMMARY_PREFIX),
+            text: format!(
+                "{}\nolder conversation summary",
+                codex_prompts::SUMMARY_PREFIX
+            ),
         }],
         phase: None,
         internal_chat_message_metadata_passthrough: None,
@@ -140,10 +143,11 @@ fn last_n_fork_turns_applies_rollback_to_nested_checkpoint_boundaries() {
         panic!("checkpoint should be retained");
     };
     assert_eq!(checkpoint.replacement_history.as_ref().unwrap().len(), 2);
-    assert!(truncated.iter().all(|item| !matches!(
-        item,
-        RolloutItem::EventMsg(EventMsg::ThreadRolledBack(_))
-    )));
+    assert!(
+        truncated
+            .iter()
+            .all(|item| !matches!(item, RolloutItem::EventMsg(EventMsg::ThreadRolledBack(_))))
+    );
 }
 
 #[test]
@@ -155,7 +159,11 @@ fn last_n_fork_turns_treats_triggering_agent_communication_as_a_turn_boundary() 
         "trigger task".to_string(),
         /*trigger_turn*/ true,
     ));
-    let rollout = vec![user_msg("earlier"), assistant_msg("answer"), trigger.clone()];
+    let rollout = vec![
+        user_msg("earlier"),
+        assistant_msg("answer"),
+        trigger.clone(),
+    ];
 
     let truncated = truncate_rollout_to_last_n_fork_turns(&rollout, 1);
     assert_eq!(truncated, vec![trigger]);

@@ -230,14 +230,9 @@ impl App {
                     && let Ok(store) = channel.store.try_lock()
                     && let Some(session) = &store.session
                 {
-                    description_parts.push(format!(
-                        "approval: {}",
-                        session.approval_policy.to_core()
-                    ));
-                    description_parts.push(format!(
-                        "reviewer: {}",
-                        session.approvals_reviewer
-                    ));
+                    description_parts
+                        .push(format!("approval: {}", session.approval_policy.to_core()));
+                    description_parts.push(format!("reviewer: {}", session.approvals_reviewer));
                     if let Ok(sandbox) = session
                         .permission_profile
                         .to_legacy_sandbox_policy(session.cwd.as_path())

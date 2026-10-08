@@ -140,7 +140,9 @@ impl SlashCommand {
             SlashCommand::Voice => "start or stop voice; use /voice settings to choose a voice",
             SlashCommand::Goal => "set or view the goal for a long-running task",
             SlashCommand::Agents => "open the agent command center",
-            SlashCommand::MultiAgents | SlashCommand::Agent => "switch between this session's subagents",
+            SlashCommand::MultiAgents | SlashCommand::Agent => {
+                "switch between this session's subagents"
+            }
             SlashCommand::Side | SlashCommand::Btw => {
                 "start a side conversation in an ephemeral fork"
             }

@@ -259,7 +259,7 @@ async fn streamable_http_session_recovery_retries_initialize_failure() -> anyhow
     );
     let client = create_client_with_http_client(&base_url, Arc::new(http_client.clone())).await?;
 
-    let expected = client.list_tools(None, Some(Duration::from_secs(5))).await?;
+    let expected = client.list_tools(/*params*/ None, Some(Duration::from_secs(5))).await?;
 
     arm_session_post_failure(
         &base_url,
@@ -270,7 +270,7 @@ async fn streamable_http_session_recovery_retries_initialize_failure() -> anyhow
     .await?;
     http_client.fail_next_initialize();
 
-    let recovered = client.list_tools(None, Some(Duration::from_secs(5))).await?;
+    let recovered = client.list_tools(/*params*/ None, Some(Duration::from_secs(5))).await?;
     assert_eq!(http_client.initialize_attempts(), 3);
     assert_eq!(recovered, expected);
 
@@ -400,7 +400,7 @@ async fn streamable_http_404_recovery_only_retries_once() -> anyhow::Result<()> 
     let (_server, base_url) = spawn_streamable_http_server().await?;
     let client = create_client(&base_url).await?;
 
-    let expected = client.list_tools(None, Some(Duration::from_secs(5))).await?;
+    let expected = client.list_tools(/*params*/ None, Some(Duration::from_secs(5))).await?;
 
     arm_session_post_failure(
         &base_url,
@@ -410,14 +410,14 @@ async fn streamable_http_404_recovery_only_retries_once() -> anyhow::Result<()> 
     )
     .await?;
 
-    let error = client.list_tools(None, Some(Duration::from_secs(5))).await.unwrap_err();
+    let error = client.list_tools(/*params*/ None, Some(Duration::from_secs(5))).await.unwrap_err();
     let error_message = error.to_string();
     assert!(
         error_message.contains("404") || error_message.contains("session expired"),
         "expected session-expiry error, got: {error:#}"
     );
 
-    let recovered = client.list_tools(None, Some(Duration::from_secs(5))).await?;
+    let recovered = client.list_tools(/*params*/ None, Some(Duration::from_secs(5))).await?;
     assert_eq!(recovered, expected);
 
     Ok(())

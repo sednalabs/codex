@@ -2444,14 +2444,22 @@ async fn desktop_dynamic_tool_image_is_forwarded_to_the_app_server_response() ->
     })
     .await?;
     assert_eq!(server_response["success"], true);
-    assert!(server_response["contentItems"].as_array().is_some_and(|items| {
-        items.iter().any(|item| {
-            item["type"] == "inputImage" && item["imageUrl"] == image_url
-        })
-    }));
-    assert!(requests.lock().expect("request recorder lock").iter().any(
-        |request| request.method == "server/request/response" && request.id == request_id
-    ));
+    assert!(
+        server_response["contentItems"]
+            .as_array()
+            .is_some_and(|items| {
+                items
+                    .iter()
+                    .any(|item| item["type"] == "inputImage" && item["imageUrl"] == image_url)
+            })
+    );
+    assert!(
+        requests
+            .lock()
+            .expect("request recorder lock")
+            .iter()
+            .any(|request| request.method == "server/request/response" && request.id == request_id)
+    );
 
     app_server.shutdown().await?;
     proxy.await??;

@@ -106,13 +106,14 @@ fn fork_turn_positions_in_rollout(items: &[RolloutItem]) -> Vec<ForkTurnPosition
             }
             RolloutItem::ResponseItem(response_item) => {
                 let position = ForkTurnPosition::TopLevel(index);
-                let has_delivery_metadata = matches!(&response_item.item, ResponseItem::AgentMessage { .. })
-                    && index.checked_sub(1).is_some_and(|previous_index| {
-                        matches!(
-                            items.get(previous_index),
-                            Some(RolloutItem::InterAgentCommunicationMetadata { .. })
-                        )
-                    });
+                let has_delivery_metadata =
+                    matches!(&response_item.item, ResponseItem::AgentMessage { .. })
+                        && index.checked_sub(1).is_some_and(|previous_index| {
+                            matches!(
+                                items.get(previous_index),
+                                Some(RolloutItem::InterAgentCommunicationMetadata { .. })
+                            )
+                        });
                 if (is_user_turn_boundary(response_item)
                     || is_trigger_turn_boundary(&response_item.item))
                     && !has_delivery_metadata
@@ -128,7 +129,8 @@ fn fork_turn_positions_in_rollout(items: &[RolloutItem]) -> Vec<ForkTurnPosition
             RolloutItem::InterAgentCommunication(_) => {
                 let position = ForkTurnPosition::TopLevel(index);
                 rollback_turn_positions.push(position);
-                if matches!(item, RolloutItem::InterAgentCommunication(value) if value.trigger_turn) {
+                if matches!(item, RolloutItem::InterAgentCommunication(value) if value.trigger_turn)
+                {
                     fork_turn_positions.push(position);
                 }
             }
@@ -150,10 +152,10 @@ fn fork_turn_positions_in_rollout(items: &[RolloutItem]) -> Vec<ForkTurnPosition
                     .map(|start| rollback_turn_positions[start])
                     .or_else(|| rollback_turn_positions.first().copied());
                 if let Some(rollback_start) = rollback_start {
-                    rollback_turn_positions.truncate(
-                        rollback_turn_positions.len().saturating_sub(num_turns),
-                    );
-                    fork_turn_positions.retain(|position| position_precedes(*position, rollback_start));
+                    rollback_turn_positions
+                        .truncate(rollback_turn_positions.len().saturating_sub(num_turns));
+                    fork_turn_positions
+                        .retain(|position| position_precedes(*position, rollback_start));
                 }
             }
             _ => {}
@@ -178,20 +180,27 @@ fn position_precedes(left: ForkTurnPosition, right: ForkTurnPosition) -> bool {
             left_checkpoint < right_checkpoint
                 || (left_checkpoint == right_checkpoint && left_response < right_response)
         }
-        (ForkTurnPosition::ReplacementHistory { checkpoint_index, .. }, ForkTurnPosition::TopLevel(right)) => {
-            checkpoint_index < right
-        }
-        (ForkTurnPosition::TopLevel(left), ForkTurnPosition::ReplacementHistory { checkpoint_index, .. }) => {
-            left < checkpoint_index
-        }
+        (
+            ForkTurnPosition::ReplacementHistory {
+                checkpoint_index, ..
+            },
+            ForkTurnPosition::TopLevel(right),
+        ) => checkpoint_index < right,
+        (
+            ForkTurnPosition::TopLevel(left),
+            ForkTurnPosition::ReplacementHistory {
+                checkpoint_index, ..
+            },
+        ) => left < checkpoint_index,
     }
 }
 
 fn normalize_rollbacks_in_fork_suffix(items: &mut Vec<RolloutItem>) {
     loop {
-        let Some(rollback_index) = items.iter().position(|item| {
-            matches!(item, RolloutItem::EventMsg(EventMsg::ThreadRolledBack(_)))
-        }) else {
+        let Some(rollback_index) = items
+            .iter()
+            .position(|item| matches!(item, RolloutItem::EventMsg(EventMsg::ThreadRolledBack(_))))
+        else {
             return;
         };
         let RolloutItem::EventMsg(EventMsg::ThreadRolledBack(rollback)) = &items[rollback_index]
@@ -218,15 +227,14 @@ fn normalize_rollbacks_in_fork_suffix(items: &mut Vec<RolloutItem>) {
                     }
                 }
                 RolloutItem::ResponseItem(response_item) => {
-                    let has_delivery_metadata = matches!(
-                        &response_item.item,
-                        ResponseItem::AgentMessage { .. }
-                    ) && index.checked_sub(1).is_some_and(|previous_index| {
-                        matches!(
-                            items.get(previous_index),
-                            Some(RolloutItem::InterAgentCommunicationMetadata { .. })
-                        )
-                    });
+                    let has_delivery_metadata =
+                        matches!(&response_item.item, ResponseItem::AgentMessage { .. })
+                            && index.checked_sub(1).is_some_and(|previous_index| {
+                                matches!(
+                                    items.get(previous_index),
+                                    Some(RolloutItem::InterAgentCommunicationMetadata { .. })
+                                )
+                            });
                     if (is_user_turn_boundary(response_item)
                         || is_trigger_turn_boundary(&response_item.item))
                         && !has_delivery_metadata

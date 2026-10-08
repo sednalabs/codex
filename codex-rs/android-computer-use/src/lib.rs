@@ -6,12 +6,10 @@ use codex_app_server_protocol::DynamicToolCallResponse;
 use codex_app_server_protocol::DynamicToolNamespaceSpec;
 use codex_app_server_protocol::DynamicToolNamespaceTool;
 use codex_app_server_protocol::DynamicToolSpec;
+use codex_http_client::{ClientRouteClass, HttpClient, HttpClientFactory, OutboundProxyPolicy};
 use codex_protocol::dynamic_tools::DynamicToolFunctionSpec;
-use reqwest::StatusCode;
-use reqwest::header::ACCEPT;
-use reqwest::header::CONTENT_TYPE;
-use reqwest::header::HeaderMap;
-use reqwest::header::HeaderValue;
+use http::StatusCode;
+use http::header::{ACCEPT, CONTENT_TYPE, HeaderMap, HeaderValue};
 use serde_json::Value;
 use serde_json::json;
 use std::collections::BTreeSet;
@@ -952,7 +950,7 @@ impl AndroidRuntimeConfigFile {
 }
 
 struct AndroidRuntimeClient {
-    http: reqwest::Client,
+    http: HttpClient,
     url: String,
     headers: HeaderMap,
     session_id: Option<String>,
@@ -1008,8 +1006,11 @@ impl AndroidRuntimeClient {
             }
         }
 
+        let http = HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault)
+            .build_client_without_request_logging(&config.mcp_url, ClientRouteClass::Other)
+            .map_err(|err| format!("failed to build Android provider HTTP client: {err}"))?;
         let mut client = Self {
-            http: reqwest::Client::new(),
+            http,
             url: config.mcp_url,
             headers,
             session_id: None,

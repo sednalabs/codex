@@ -102,16 +102,37 @@ fn records_bounded_spawn_phase_metrics() {
         phases,
         BTreeMap::from([
             (("all".to_string(), "child_create".to_string()), (1, 17.0)),
-            (("all".to_string(), "durability_wait".to_string()), (1, 19.0)),
+            (
+                ("all".to_string(), "durability_wait".to_string()),
+                (1, 19.0)
+            ),
             (("all".to_string(), "fork_context".to_string()), (1, 13.0)),
-            (("all".to_string(), "input_admission".to_string()), (1, 23.0)),
-            (("all".to_string(), "residency_reservation".to_string()), (1, 11.0)),
+            (
+                ("all".to_string(), "input_admission".to_string()),
+                (1, 23.0)
+            ),
+            (
+                ("all".to_string(), "residency_reservation".to_string()),
+                (1, 11.0)
+            ),
             (("all".to_string(), "total".to_string()), (1, 29.0)),
-            (("last_n".to_string(), "child_create".to_string()), (1, 31.0)),
-            (("last_n".to_string(), "durability_wait".to_string()), (1, 0.0)),
+            (
+                ("last_n".to_string(), "child_create".to_string()),
+                (1, 31.0)
+            ),
+            (
+                ("last_n".to_string(), "durability_wait".to_string()),
+                (1, 0.0)
+            ),
             (("last_n".to_string(), "fork_context".to_string()), (1, 0.0)),
-            (("last_n".to_string(), "input_admission".to_string()), (1, 0.0)),
-            (("last_n".to_string(), "residency_reservation".to_string()), (1, 0.0)),
+            (
+                ("last_n".to_string(), "input_admission".to_string()),
+                (1, 0.0)
+            ),
+            (
+                ("last_n".to_string(), "residency_reservation".to_string()),
+                (1, 0.0)
+            ),
             (("last_n".to_string(), "total".to_string()), (1, 31.0)),
         ])
     );

@@ -3043,7 +3043,11 @@ async fn collect_response_provenance(
     client_session: &mut ModelClientSession,
     harness: &WebsocketTestHarness,
     prompt: &Prompt,
-) -> (Option<String>, Option<String>, Vec<(String, codex_api::ServerModelScope)>) {
+) -> (
+    Option<String>,
+    Option<String>,
+    Vec<(String, codex_api::ServerModelScope)>,
+) {
     let responses_metadata = turn_metadata(harness, /*turn_id*/ None);
     let mut stream = client_session
         .stream(

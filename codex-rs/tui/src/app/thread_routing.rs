@@ -1383,17 +1383,19 @@ impl App {
                     reasoning_effort,
                     agent_path,
                     ..
-                } => ThreadId::from_string(agent_thread_id).ok().map(|thread_id| {
-                    (
-                        thread_id,
-                        crate::app::agent_navigation::AgentPickerSourceMetadata {
-                            model: model.clone(),
-                            reasoning_effort: reasoning_effort.clone(),
-                            task_name: Some(agent_path.clone()),
-                            ..Default::default()
-                        },
-                    )
-                }),
+                } => ThreadId::from_string(agent_thread_id)
+                    .ok()
+                    .map(|thread_id| {
+                        (
+                            thread_id,
+                            crate::app::agent_navigation::AgentPickerSourceMetadata {
+                                model: model.clone(),
+                                reasoning_effort: reasoning_effort.clone(),
+                                task_name: Some(agent_path.clone()),
+                                ..Default::default()
+                            },
+                        )
+                    }),
                 _ => None,
             };
             let activity = sub_agent_activity_display(item);

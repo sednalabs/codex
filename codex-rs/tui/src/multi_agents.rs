@@ -432,10 +432,14 @@ fn wait_outcome_summary(outcome: WaitAgentOutcome) -> &'static str {
     match outcome {
         WaitAgentOutcome::TargetTerminalAny => "A target agent became actionable.",
         WaitAgentOutcome::TargetTerminalAll => "All target agents became actionable.",
-        WaitAgentOutcome::ExactTargetActionableMessage => "An exact target sent an actionable message.",
+        WaitAgentOutcome::ExactTargetActionableMessage => {
+            "An exact target sent an actionable message."
+        }
         WaitAgentOutcome::TargetlessActionableMessage => "An agent sent an actionable message.",
         WaitAgentOutcome::UnattributedMailboxActivity => "Agent mailbox activity occurred.",
-        WaitAgentOutcome::AmbiguousMailboxActivity => "Agent mailbox activity occurred; its source is unknown.",
+        WaitAgentOutcome::AmbiguousMailboxActivity => {
+            "Agent mailbox activity occurred; its source is unknown."
+        }
         WaitAgentOutcome::TerminalCompletion => "A process completed.",
         WaitAgentOutcome::OperatorSteer => "Interrupted by new input.",
         WaitAgentOutcome::Timeout => "Timed out.",
@@ -894,11 +898,9 @@ mod tests {
                 agent_state(CollabAgentStatus::Completed, None),
             )]),
         };
-        let cell = tool_call_history_cell(
-            &item,
-            /*cached_spawn_request*/ None,
-            |thread_id| metadata_for(thread_id, target, ThreadId::new()),
-        )
+        let cell = tool_call_history_cell(&item, /*cached_spawn_request*/ None, |thread_id| {
+            metadata_for(thread_id, target, ThreadId::new())
+        })
         .expect("completed wait renders");
         let rendered = cell
             .display_lines(/*width*/ 120)

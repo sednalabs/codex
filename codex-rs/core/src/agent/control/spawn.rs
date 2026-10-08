@@ -282,7 +282,9 @@ impl LocalAgentControl {
             if let Some(agent_path) = &agent_path
                 && !paths.insert(agent_path.to_string())
             {
-                warn!("failed to preflight V2 agent metadata: duplicate stored agent path {agent_path}");
+                warn!(
+                    "failed to preflight V2 agent metadata: duplicate stored agent path {agent_path}"
+                );
                 return;
             }
             let agent_role = stored_thread
@@ -294,10 +296,7 @@ impl LocalAgentControl {
             pending.push(RestoreAgentMetadata {
                 thread_id,
                 agent_path,
-                nickname_candidates: agent_nickname_candidates(
-                    config,
-                    agent_role.as_deref(),
-                ),
+                nickname_candidates: agent_nickname_candidates(config, agent_role.as_deref()),
                 agent_role,
                 preferred_nickname,
             });

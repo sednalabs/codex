@@ -1,16 +1,16 @@
 use super::*;
 use crate::agent::agent_resolver::resolve_agent_target;
 use crate::agent::api::AgentWaitRegistration;
-use crate::agent::api::AgentWaitReturnWhen;
 use crate::agent::api::AgentWaitResult;
+use crate::agent::api::AgentWaitReturnWhen;
 use crate::session::InputQueue;
 use crate::session::InputQueueActivity;
 use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
 use crate::tools::handlers::multi_agents_spec::create_wait_agent_tool_v2;
-use codex_tools::ToolSpec;
 use codex_protocol::ThreadId;
 use codex_protocol::items::WaitAgentOutcome;
 use codex_protocol::protocol::AgentStatus;
+use codex_tools::ToolSpec;
 use std::collections::HashMap;
 use std::time::Duration;
 use tokio::time::Instant;
@@ -92,10 +92,9 @@ impl Handler {
                 .local_agent_runtime
                 .agent_metadata(*target)
                 .and_then(|metadata| metadata.agent_path);
-            if let Some(message) = reverse_wait_error(
-                current_agent_path.as_ref(),
-                target_agent_path.as_ref(),
-            ) {
+            if let Some(message) =
+                reverse_wait_error(current_agent_path.as_ref(), target_agent_path.as_ref())
+            {
                 return Err(FunctionCallError::RespondToModel(message));
             }
         }
@@ -169,7 +168,13 @@ impl Handler {
         let outcome = if let Some(outcome) = initial_agent_outcome {
             WaitOutcome::TargetTerminal(outcome)
         } else {
-            wait_for_activity(&mut activity_rx, pending_activity, deadline, &mut agent_wait).await
+            wait_for_activity(
+                &mut activity_rx,
+                pending_activity,
+                deadline,
+                &mut agent_wait,
+            )
+            .await
         };
         if let WaitOutcome::TargetTerminal(outcome) = &outcome {
             agents_states = agent_wait_states(Some(outcome));
@@ -206,10 +211,7 @@ impl Handler {
         );
 
         session
-            .emit_turn_item_completed(
-                &turn,
-                TurnItem::CollabAgentToolCall(completed_item),
-            )
+            .emit_turn_item_completed(&turn, TurnItem::CollabAgentToolCall(completed_item))
             .await;
 
         Ok(boxed_tool_output(result))
@@ -307,7 +309,9 @@ impl WaitOutcome {
         match self {
             Self::MailboxActivity => WaitAgentOutcome::UnattributedMailboxActivity,
             Self::Steered => WaitAgentOutcome::OperatorSteer,
-            Self::TargetTerminal(result) if result.all_targets => WaitAgentOutcome::TargetTerminalAll,
+            Self::TargetTerminal(result) if result.all_targets => {
+                WaitAgentOutcome::TargetTerminalAll
+            }
             Self::TargetTerminal(_) => WaitAgentOutcome::TargetTerminalAny,
             Self::TimedOut => WaitAgentOutcome::Timeout,
             Self::SubscriptionLoss => WaitAgentOutcome::SubscriptionLoss,
@@ -382,9 +386,7 @@ fn activity_wake_outcome(
     }
 }
 
-fn agent_wait_states(
-    outcome: Option<&AgentWaitResult>,
-) -> HashMap<ThreadId, AgentStatus> {
+fn agent_wait_states(outcome: Option<&AgentWaitResult>) -> HashMap<ThreadId, AgentStatus> {
     outcome
         .into_iter()
         .flat_map(|outcome| outcome.outcomes.iter())
@@ -486,11 +488,7 @@ mod tests {
             status: AgentStatus::Running,
             readiness: AgentReadiness::Pending,
         });
-        let registration = register_agent_wait(
-            &registry,
-            vec![target],
-            AgentWaitReturnWhen::Any,
-        );
+        let registration = register_agent_wait(&registry, vec![target], AgentWaitReturnWhen::Any);
         let mut agent_wait = Some(registration);
         let input_queue = InputQueue::new();
         let watermark = input_queue.mailbox_enqueue_watermark().await;
@@ -515,17 +513,17 @@ mod tests {
             readiness: AgentReadiness::Terminal,
         });
 
-        let outcome = activity_wake_outcome(
-            *activity_rx.borrow_and_update(),
-            &mut agent_wait,
-        );
+        let outcome = activity_wake_outcome(*activity_rx.borrow_and_update(), &mut agent_wait);
         let WaitOutcome::TargetTerminal(result) = outcome else {
             panic!("latched target outcome must win over concurrently ready mailbox activity");
         };
         assert_eq!(result.outcomes.len(), 1);
         assert_eq!(result.outcomes[0].0, target);
         assert_eq!(result.outcomes[0].1.turn_id.as_deref(), Some("turn-1"));
-        assert_eq!(result.outcomes[0].1.status, AgentStatus::Completed(Some("done".to_string())));
+        assert_eq!(
+            result.outcomes[0].1.status,
+            AgentStatus::Completed(Some("done".to_string()))
+        );
         let queued_update_count = input_queue
             .pending_mailbox_communication_count_since(watermark)
             .await;
@@ -544,7 +542,11 @@ mod tests {
             item.agents_states.get(&target),
             Some(&AgentStatus::Completed(Some("done".to_string())))
         );
-        assert_eq!(queued_update_count, Some(1), "count observes without consuming");
+        assert_eq!(
+            queued_update_count,
+            Some(1),
+            "count observes without consuming"
+        );
         assert!(input_queue.has_pending_mailbox_items().await);
     }
 }

@@ -26,6 +26,25 @@ jobs:
           rust-version: 1.95.0
           manifest-path: ./codex-rs/Cargo.toml
 
+      - name: Detect generated Cargo lockfile
+        id: cargo_lockfile
+        if: always() && !cancelled()
+        run: |
+          if git diff --quiet -- Cargo.lock; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload generated Cargo lockfile
+        if: ${{ always() && !cancelled() && steps.cargo_lockfile.outputs.changed == 'true' }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: generated-cargo-lock-${{ github.run_id }}-${{ github.run_attempt }}
+          path: codex-rs/Cargo.lock
+          if-no-files-found: error
+          retention-days: 3
+
       - name: Check for a clean worktree
         if: always() && !cancelled()
         uses: ./.github/actions/check-clean-worktree

@@ -22,16 +22,16 @@ use arc_swap::ArcSwapOption;
 use codex_extension_api::ThreadInstructionsProvider;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
-use codex_protocol::protocol::AgentStatus;
 use codex_protocol::error::AgentErrorContext;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
+use codex_protocol::protocol::AgentStatus;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::PoisonError;
 use std::sync::Weak;
-use std::collections::HashMap;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use tokio_util::task::task_tracker::TaskTrackerToken;
@@ -253,7 +253,12 @@ impl LocalAgentRuntime {
         let mut outcomes = self.outcomes.lock().unwrap_or_else(PoisonError::into_inner);
         outcomes
             .entry(thread_id)
-            .or_insert_with(|| Arc::new(AgentOutcomePublisher::new(thread_id, self.wait_registry.clone())))
+            .or_insert_with(|| {
+                Arc::new(AgentOutcomePublisher::new(
+                    thread_id,
+                    self.wait_registry.clone(),
+                ))
+            })
             .clone()
     }
 

@@ -163,15 +163,13 @@ fn format_parent_outcome_message(
         (AgentStatus::Interrupted, AgentReadiness::ActionRequired, _) => Some(format!(
             "Agent {child_agent_path} was interrupted and requires action before it can continue."
         )),
-        (
-            AgentStatus::Errored(error),
-            _,
-            Some(CodexErrorInfo::TooManyDenials),
-        ) => Some(format_guardian_interruption_message(
-            parent_agent_path.clone(),
-            child_agent_path.clone(),
-            error,
-        )),
+        (AgentStatus::Errored(error), _, Some(CodexErrorInfo::TooManyDenials)) => {
+            Some(format_guardian_interruption_message(
+                parent_agent_path.clone(),
+                child_agent_path.clone(),
+                error,
+            ))
+        }
         _ => format_inter_agent_completion_message(
             parent_agent_path.clone(),
             child_agent_path.clone(),

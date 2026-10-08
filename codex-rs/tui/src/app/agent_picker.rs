@@ -1,7 +1,7 @@
 //! Root-scoped background refresh for the agent picker.
 
-use super::agent_navigation::AgentPickerThreadVisibility;
 use super::agent_navigation::AgentPickerSourceMetadata;
+use super::agent_navigation::AgentPickerThreadVisibility;
 use super::app_server_event_targets::ServerNotificationThreadTarget;
 use super::app_server_event_targets::server_notification_thread_target;
 use super::*;

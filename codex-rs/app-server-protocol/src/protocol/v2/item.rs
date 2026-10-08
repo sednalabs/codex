@@ -29,14 +29,13 @@ pub use codex_protocol::items::AgentMessageDelivery;
 pub use codex_protocol::items::AsyncUserInputQuestion;
 use codex_protocol::items::CollabAgentTool as CoreCollabAgentTool;
 use codex_protocol::items::CollabAgentToolCallStatus as CoreCollabAgentToolCallStatus;
-use codex_protocol::protocol::CollabAgentRef as CoreCollabAgentRef;
 use codex_protocol::items::CommandExecutionStatus as CoreCommandExecutionStatus;
 use codex_protocol::items::DynamicToolCallStatus as CoreDynamicToolCallStatus;
-use codex_protocol::items::WaitAgentOutcome as CoreWaitAgentOutcome;
 pub use codex_protocol::items::McpAppDisplayMode;
 pub use codex_protocol::items::McpAppUi;
 use codex_protocol::items::McpToolCallStatus as CoreMcpToolCallStatus;
 use codex_protocol::items::TurnItem as CoreTurnItem;
+use codex_protocol::items::WaitAgentOutcome as CoreWaitAgentOutcome;
 use codex_protocol::memory_citation::MemoryCitation as CoreMemoryCitation;
 use codex_protocol::memory_citation::MemoryCitationEntry as CoreMemoryCitationEntry;
 use codex_protocol::models::FunctionCallOutputBody;
@@ -45,6 +44,7 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::parse_command::ParsedCommand as CoreParsedCommand;
 use codex_protocol::protocol::AgentStatus as CoreAgentStatus;
+use codex_protocol::protocol::CollabAgentRef as CoreCollabAgentRef;
 use codex_protocol::protocol::ExecCommandSource as CoreExecCommandSource;
 use codex_protocol::protocol::ExecCommandStatus as CoreExecCommandStatus;
 use codex_protocol::protocol::GuardianRiskLevel as CoreGuardianRiskLevel;
@@ -989,7 +989,12 @@ impl From<CoreTurnItem> for ThreadItem {
                 receiver_agents: if call.receiver_agents.is_empty() {
                     None
                 } else {
-                    Some(call.receiver_agents.into_iter().map(CollabAgentRef::from).collect())
+                    Some(
+                        call.receiver_agents
+                            .into_iter()
+                            .map(CollabAgentRef::from)
+                            .collect(),
+                    )
                 },
                 wait_outcome: call.wait_outcome.map(WaitAgentOutcome::from),
                 queued_update_count: call.queued_update_count,
@@ -1355,7 +1360,9 @@ impl From<CoreWaitAgentOutcome> for WaitAgentOutcome {
         match outcome {
             CoreWaitAgentOutcome::TargetTerminalAny => Self::TargetTerminalAny,
             CoreWaitAgentOutcome::TargetTerminalAll => Self::TargetTerminalAll,
-            CoreWaitAgentOutcome::ExactTargetActionableMessage => Self::ExactTargetActionableMessage,
+            CoreWaitAgentOutcome::ExactTargetActionableMessage => {
+                Self::ExactTargetActionableMessage
+            }
             CoreWaitAgentOutcome::TargetlessActionableMessage => Self::TargetlessActionableMessage,
             CoreWaitAgentOutcome::UnattributedMailboxActivity => Self::UnattributedMailboxActivity,
             CoreWaitAgentOutcome::AmbiguousMailboxActivity => Self::AmbiguousMailboxActivity,

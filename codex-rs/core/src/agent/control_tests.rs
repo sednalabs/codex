@@ -1638,10 +1638,9 @@ async fn root_resume_does_not_partially_restore_descendants_when_graph_is_over_l
         .expect("open child below the closed edge should persist");
 
     for suffix in 10_000..13_199 {
-        let ghost_thread_id = ThreadId::from_string(&format!(
-            "ffffffff-ffff-ffff-ffff-{suffix:012}"
-        ))
-        .expect("generated descendant ID should be valid");
+        let ghost_thread_id =
+            ThreadId::from_string(&format!("ffffffff-ffff-ffff-ffff-{suffix:012}"))
+                .expect("generated descendant ID should be valid");
         state_db
             .upsert_thread_spawn_edge(
                 worker_thread_id,
@@ -1724,7 +1723,12 @@ async fn root_resume_does_not_partially_restore_descendants_when_graph_is_over_l
         .restore_v2_agent_metadata(&harness.config, parent_thread_id)
         .await;
 
-    assert!(resumed_control.runtime.ensure_agent_known(worker_thread_id).is_err());
+    assert!(
+        resumed_control
+            .runtime
+            .ensure_agent_known(worker_thread_id)
+            .is_err()
+    );
     assert_thread_not_loaded(&resumed_manager, worker_thread_id).await;
 }
 

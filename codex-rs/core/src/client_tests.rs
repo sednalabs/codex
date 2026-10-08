@@ -1123,16 +1123,24 @@ async fn responses_http_preserves_raw_tool_metadata_for_openai_custom_endpoint()
         .clone();
     assert_eq!(observed_at.len(), 2);
     let started_at = chrono::DateTime::parse_from_rfc3339(
-        started_at.as_deref().expect("completed response request start"),
+        started_at
+            .as_deref()
+            .expect("completed response request start"),
     )?
     .timestamp_nanos_opt()
     .expect("request start timestamp range");
     assert!(
-        started_at > observed_at[0].timestamp_nanos_opt().expect("503 timestamp range"),
+        started_at
+            > observed_at[0]
+                .timestamp_nanos_opt()
+                .expect("503 timestamp range"),
         "successful response start must follow the failed 503 attempt"
     );
     assert!(
-        started_at <= observed_at[1].timestamp_nanos_opt().expect("200 timestamp range"),
+        started_at
+            <= observed_at[1]
+                .timestamp_nanos_opt()
+                .expect("200 timestamp range"),
         "successful response start must precede its successful HTTP request"
     );
     Ok(())
@@ -1156,8 +1164,7 @@ async fn bundled_gpt6_models_build_and_send_expected_responses_requests() -> any
             .get_model_info(slug, &ModelsManagerConfig::default())
             .await;
         assert_eq!(
-            model_info.used_fallback_model_metadata,
-            !has_catalog_metadata,
+            model_info.used_fallback_model_metadata, !has_catalog_metadata,
             "unexpected bundled metadata resolution for {slug}"
         );
         model_infos.push(model_info);
@@ -1284,14 +1291,20 @@ async fn bundled_gpt6_models_build_and_send_expected_responses_requests() -> any
             assert_eq!(input[0]["role"], "developer");
             assert_eq!(input[1]["type"], "message");
             assert_eq!(input[1]["role"], "developer");
-            assert_eq!(input[1]["content"][0]["text"], "synthetic base instructions");
+            assert_eq!(
+                input[1]["content"][0]["text"],
+                "synthetic base instructions"
+            );
             assert_eq!(body["text"]["verbosity"], "low");
         } else {
             assert!(body.get("tools").is_some());
             assert_eq!(input.len(), 2);
             assert_eq!(input[0]["type"], "message");
             assert_eq!(input[0]["role"], "developer");
-            assert_eq!(input[0]["content"][0]["text"], "synthetic base instructions");
+            assert_eq!(
+                input[0]["content"][0]["text"],
+                "synthetic base instructions"
+            );
         }
     }
     Ok(())

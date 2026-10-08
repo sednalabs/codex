@@ -765,16 +765,17 @@ mod tests {
             .expect("state runtime should initialize its usage ledger");
         let pool = runtime.usage_pool();
         assert!(!pool.is_closed());
-        assert!(sqlite
-            .runtime_db_paths()
-            .iter()
-            .any(|db| db.path == sqlite.usage_db_path()));
-        let versions = sqlx::query_scalar::<_, i64>(
-            "SELECT version FROM _sqlx_migrations ORDER BY version",
-        )
-        .fetch_all(pool.as_ref())
-        .await
-        .expect("usage migrations should be applied");
+        assert!(
+            sqlite
+                .runtime_db_paths()
+                .iter()
+                .any(|db| db.path == sqlite.usage_db_path())
+        );
+        let versions =
+            sqlx::query_scalar::<_, i64>("SELECT version FROM _sqlx_migrations ORDER BY version")
+                .fetch_all(pool.as_ref())
+                .await
+                .expect("usage migrations should be applied");
         assert_eq!(versions, vec![1, 2, 3, 4, 5, 7, 13, 14, 15, 16, 17, 18, 19]);
         runtime.close().await;
         assert!(pool.is_closed());
@@ -784,12 +785,10 @@ mod tests {
             .expect("usage ledger should reopen without changing its history");
         let reopened_pool = reopened.usage_pool();
         assert_eq!(
-            sqlx::query_scalar::<_, i64>(
-                "SELECT version FROM _sqlx_migrations ORDER BY version",
-            )
-            .fetch_all(reopened_pool.as_ref())
-            .await
-            .expect("read reopened usage ledger"),
+            sqlx::query_scalar::<_, i64>("SELECT version FROM _sqlx_migrations ORDER BY version",)
+                .fetch_all(reopened_pool.as_ref())
+                .await
+                .expect("read reopened usage ledger"),
             versions
         );
         reopened.close().await;

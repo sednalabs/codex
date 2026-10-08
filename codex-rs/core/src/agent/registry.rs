@@ -168,11 +168,8 @@ impl AgentRegistry {
             })
             .map_err(|_| CodexErr::InvalidRequest("agent registry slot count overflow".into()))?;
 
-        let mut reservation = RestoreBatchReservation::new(
-            &mut active_agents,
-            &self.total_count,
-            entries,
-        );
+        let mut reservation =
+            RestoreBatchReservation::new(&mut active_agents, &self.total_count, entries);
         reservation.reserve_all();
         reservation.allocate_nicknames_and_commit();
         Ok(())
@@ -300,10 +297,7 @@ impl AgentRegistry {
         Self::insert_spawned_thread(&mut active_agents, agent_metadata);
     }
 
-    fn insert_spawned_thread(
-        active_agents: &mut ActiveAgents,
-        agent_metadata: AgentMetadata,
-    ) {
+    fn insert_spawned_thread(active_agents: &mut ActiveAgents, agent_metadata: AgentMetadata) {
         let Some(thread_id) = agent_metadata.agent_id else {
             return;
         };
@@ -456,7 +450,10 @@ impl<'a> RestoreBatchReservation<'a> {
 
     fn reserve_all(&mut self) {
         for entry in &self.entries {
-            let inserted = self.active_agents.reserved_thread_ids.insert(entry.thread_id);
+            let inserted = self
+                .active_agents
+                .reserved_thread_ids
+                .insert(entry.thread_id);
             debug_assert!(inserted);
             if let Some(agent_path) = &entry.agent_path {
                 let previous = self.active_agents.agent_tree.insert(
@@ -524,9 +521,7 @@ impl Drop for RestoreBatchReservation<'_> {
                     .get(agent_path.as_str())
                     .is_some_and(|metadata| metadata.agent_id.is_none())
             {
-                self.active_agents
-                    .agent_tree
-                    .remove(agent_path.as_str());
+                self.active_agents.agent_tree.remove(agent_path.as_str());
             }
         }
         self.total_count

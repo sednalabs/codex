@@ -7496,18 +7496,17 @@ async fn make_session_with_usage_state_and_agent_control_and_rx(
 #[tokio::test]
 async fn completed_response_usage_joins_real_session_lineage_and_survives_writer_failure() {
     let codex_home = tempfile::tempdir().expect("create shared usage fixture home");
-    let (root, root_events, thread_store) =
-        make_session_with_usage_state_and_agent_control_and_rx(
-            InitialHistory::New,
-            SessionSource::Exec,
-            LocalAgentControl::default(),
-            codex_home.path(),
-            /*enable_usage_state*/ true,
-            /*parent_thread_id*/ None,
-            /*shared_thread_store*/ None,
-        )
-        .await
-        .expect("create persistent root session");
+    let (root, root_events, thread_store) = make_session_with_usage_state_and_agent_control_and_rx(
+        InitialHistory::New,
+        SessionSource::Exec,
+        LocalAgentControl::default(),
+        codex_home.path(),
+        /*enable_usage_state*/ true,
+        /*parent_thread_id*/ None,
+        /*shared_thread_store*/ None,
+    )
+    .await
+    .expect("create persistent root session");
     let child_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
         parent_thread_id: root.thread_id(),
         depth: 1,
@@ -7630,10 +7629,8 @@ async fn completed_response_usage_joins_real_session_lineage_and_survives_writer
     assert_eq!(root_row.12.as_deref(), Some("provider_response"));
     assert_eq!(root_row.13, root_started_at);
     assert!(
-        chrono::DateTime::parse_from_rfc3339(&root_row.14)
-            .expect("completed timestamp")
-            > chrono::DateTime::parse_from_rfc3339(&root_row.13)
-                .expect("request start timestamp")
+        chrono::DateTime::parse_from_rfc3339(&root_row.14).expect("completed timestamp")
+            > chrono::DateTime::parse_from_rfc3339(&root_row.13).expect("request start timestamp")
     );
     assert_eq!(root_row.15, "ok");
     let child_row = rows
@@ -7654,10 +7651,8 @@ async fn completed_response_usage_joins_real_session_lineage_and_survives_writer
     assert_eq!(child_row.12.as_deref(), Some("provider_response"));
     assert_eq!(child_row.13, child_started_at);
     assert!(
-        chrono::DateTime::parse_from_rfc3339(&child_row.14)
-            .expect("completed timestamp")
-            > chrono::DateTime::parse_from_rfc3339(&child_row.13)
-                .expect("request start timestamp")
+        chrono::DateTime::parse_from_rfc3339(&child_row.14).expect("completed timestamp")
+            > chrono::DateTime::parse_from_rfc3339(&child_row.13).expect("request start timestamp")
     );
     assert_eq!(child_row.15, "ok");
 
@@ -7670,9 +7665,15 @@ async fn completed_response_usage_joins_real_session_lineage_and_survives_writer
         }
     };
     assert_eq!(root_raw_completion.token_usage, Some(usage.clone()));
-    assert_eq!(root_raw_completion.usage_metadata, Some(usage_metadata.clone()));
+    assert_eq!(
+        root_raw_completion.usage_metadata,
+        Some(usage_metadata.clone())
+    );
     let child_raw_completion = loop {
-        let event = child_events.recv().await.expect("child raw completion event");
+        let event = child_events
+            .recv()
+            .await
+            .expect("child raw completion event");
         if let EventMsg::RawResponseCompleted(completed) = event.msg
             && completed.response_id == child_response_id
         {
@@ -7680,7 +7681,10 @@ async fn completed_response_usage_joins_real_session_lineage_and_survives_writer
         }
     };
     assert_eq!(child_raw_completion.token_usage, Some(usage.clone()));
-    assert_eq!(child_raw_completion.usage_metadata, Some(usage_metadata.clone()));
+    assert_eq!(
+        child_raw_completion.usage_metadata,
+        Some(usage_metadata.clone())
+    );
 
     root_state.usage_pool().close().await;
     let failed_response_id = "usage-fixture-after-writer-close";

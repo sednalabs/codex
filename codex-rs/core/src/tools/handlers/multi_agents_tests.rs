@@ -515,11 +515,10 @@ fn service_tier_test_catalog() -> codex_protocol::openai_models::ModelsResponse 
 }
 
 #[tokio::test]
-async fn multi_agent_v2_spawn_rejects_disabled_backend_model_and_omits_it_from_capped_error_list(
-) {
+async fn multi_agent_v2_spawn_rejects_disabled_backend_model_and_omits_it_from_capped_error_list() {
     let (mut session, mut turn) = make_session_and_context().await;
-    let mut catalog = codex_models_manager::bundled_models_response()
-        .expect("bundled models should parse");
+    let mut catalog =
+        codex_models_manager::bundled_models_response().expect("bundled models should parse");
     let mut disabled_model = catalog
         .models
         .iter()
@@ -533,8 +532,7 @@ async fn multi_agent_v2_spawn_rejects_disabled_backend_model_and_omits_it_from_c
     assert!(disabled_model.show_in_picker);
     catalog.models.push(disabled_model);
     session.services.models_manager = Arc::new(StaticModelsManager::new(
-        /*auth_manager*/ None,
-        catalog,
+        /*auth_manager*/ None, catalog,
     ));
 
     let mut config = (*turn.config).clone();
@@ -595,9 +593,7 @@ async fn multi_agent_v2_spawn_rejects_disabled_backend_model_and_omits_it_from_c
         panic!("backend rejection should be returned as a model-facing error");
     };
     let available = message
-        .strip_prefix(
-            "Unknown model `disabled-backend-model` for spawn_agent. Available models: ",
-        )
+        .strip_prefix("Unknown model `disabled-backend-model` for spawn_agent. Available models: ")
         .expect("the rejection should contain the available-model list");
     assert!(
         !available

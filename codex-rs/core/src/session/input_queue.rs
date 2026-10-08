@@ -508,7 +508,10 @@ impl InputQueue {
     }
 }
 
-fn observed_pending_mail_count(local_count: Option<usize>, controller_pending: bool) -> Option<u32> {
+fn observed_pending_mail_count(
+    local_count: Option<usize>,
+    controller_pending: bool,
+) -> Option<u32> {
     if controller_pending {
         return None;
     }
@@ -623,10 +626,22 @@ mod tests {
 
     #[test]
     fn controller_pending_bit_keeps_total_count_unknown() {
-        assert_eq!(observed_pending_mail_count(Some(2), /*controller_pending*/ false), Some(2));
-        assert_eq!(observed_pending_mail_count(Some(2), /*controller_pending*/ true), None);
-        assert_eq!(observed_pending_mail_count(Some(0), /*controller_pending*/ false), Some(0));
-        assert_eq!(observed_pending_mail_count(None, /*controller_pending*/ false), None);
+        assert_eq!(
+            observed_pending_mail_count(Some(2), /*controller_pending*/ false),
+            Some(2)
+        );
+        assert_eq!(
+            observed_pending_mail_count(Some(2), /*controller_pending*/ true),
+            None
+        );
+        assert_eq!(
+            observed_pending_mail_count(Some(0), /*controller_pending*/ false),
+            Some(0)
+        );
+        assert_eq!(
+            observed_pending_mail_count(None, /*controller_pending*/ false),
+            None
+        );
     }
 
     #[tokio::test]

@@ -4734,10 +4734,8 @@ async fn runtime_config_resolves_weekly_limit_pacing_style_default_and_override(
         codex_config::types::WeeklyLimitPacingStyle::Qualitative
     );
 
-    let ratio_toml = toml::from_str::<ConfigToml>(
-        "[tui]\nweekly_limit_pacing_style = \"ratio\"\n",
-    )
-    .expect("parse ratio config");
+    let ratio_toml = toml::from_str::<ConfigToml>("[tui]\nweekly_limit_pacing_style = \"ratio\"\n")
+        .expect("parse ratio config");
     let ratio_config = Config::load_from_base_config_with_overrides(
         ratio_toml,
         ConfigOverrides::default(),

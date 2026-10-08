@@ -2892,7 +2892,10 @@ async fn try_run_sampling_request(
                     active_item_is_streaming_to_client = stream_item_to_client;
                 }
             }
-            ResponseEvent::ServerModel { model: server_model, scope } => {
+            ResponseEvent::ServerModel {
+                model: server_model,
+                scope,
+            } => {
                 if !turn_context
                     .server_model_warning_emitted
                     .load(Ordering::Relaxed)

@@ -374,8 +374,16 @@ mod tests {
         let open_grandchild_under_closed_child = thread_id(/*suffix*/ 34);
         for (parent, child, status) in [
             (root_thread_id, child_thread_id, ThreadSpawnEdgeStatus::Open),
-            (child_thread_id, grandchild_thread_id, ThreadSpawnEdgeStatus::Open),
-            (grandchild_thread_id, root_thread_id, ThreadSpawnEdgeStatus::Open),
+            (
+                child_thread_id,
+                grandchild_thread_id,
+                ThreadSpawnEdgeStatus::Open,
+            ),
+            (
+                grandchild_thread_id,
+                root_thread_id,
+                ThreadSpawnEdgeStatus::Open,
+            ),
             (
                 root_thread_id,
                 closed_child_thread_id,

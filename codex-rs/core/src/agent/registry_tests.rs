@@ -674,12 +674,14 @@ fn restore_batch_path_failure_releases_slots_before_nickname_allocation() {
     assert!(err.to_string().contains("already registered"));
     assert!(registry.agent_metadata_for_thread(fresh_id).is_none());
     assert_eq!(registry.total_count.load(Ordering::Acquire), 1);
-    assert!(!registry
-        .active_agents
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .agent_tree
-        .contains_key(fresh_path.as_str()));
+    assert!(
+        !registry
+            .active_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .agent_tree
+            .contains_key(fresh_path.as_str())
+    );
 
     let mut nickname_reservation = registry
         .reserve_spawn_slot(/*max_threads*/ None)
@@ -727,13 +729,12 @@ fn restore_batch_reservation_drop_releases_slots_ids_and_paths() {
         .active_agents
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    registry.total_count.fetch_add(entries.len(), Ordering::AcqRel);
+    registry
+        .total_count
+        .fetch_add(entries.len(), Ordering::AcqRel);
     {
-        let mut reservation = RestoreBatchReservation::new(
-            &mut active_agents,
-            &registry.total_count,
-            entries,
-        );
+        let mut reservation =
+            RestoreBatchReservation::new(&mut active_agents, &registry.total_count, entries);
         reservation.reserve_all();
     }
     drop(active_agents);

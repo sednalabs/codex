@@ -538,7 +538,7 @@ pub async fn process_sse(
         idle_timeout,
         telemetry,
         SafetyBufferingTreatment::default(),
-        None,
+        /*started_at*/ None,
     )
     .await;
 }

@@ -349,7 +349,10 @@ impl AgentWaitRegistration {
         let Some(readiness) = raw_terminal_readiness(&status) else {
             return;
         };
-        let mut registry = self.registry.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut registry = self
+            .registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(wait) = registry.waits.get(&self.id) else {
             return;
         };
@@ -367,13 +370,11 @@ impl AgentWaitRegistration {
                     Some(snapshot)
                 }
                 Some(snapshot) if snapshot.turn_id.is_some() => None,
-                _ => {
-                    Some(AgentOutcomeSnapshot {
-                        turn_id: None,
-                        status,
-                        readiness,
-                    })
-                }
+                _ => Some(AgentOutcomeSnapshot {
+                    turn_id: None,
+                    status,
+                    readiness,
+                }),
             }
         };
         if let Some(outcome) = outcome {
@@ -416,7 +417,13 @@ impl AgentOutcomePublisher {
             .unwrap_or_default();
         let (tx, _) = watch::channel(initial);
         let (actionable_tx, _) = broadcast::channel(64);
-        Self { thread_id, tx, actionable_tx, registry, last_reported_turn: Mutex::new(None) }
+        Self {
+            thread_id,
+            tx,
+            actionable_tx,
+            registry,
+            last_reported_turn: Mutex::new(None),
+        }
     }
 
     pub fn snapshot(&self) -> AgentOutcomeSnapshot {
@@ -432,7 +439,10 @@ impl AgentOutcomePublisher {
     }
 
     pub fn publish(&self, snapshot: AgentOutcomeSnapshot) -> AgentOutcomeSnapshot {
-        let mut registry = self.registry.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut registry = self
+            .registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.publish_locked(&mut registry, snapshot)
     }
 
@@ -440,8 +450,15 @@ impl AgentOutcomePublisher {
         &self,
         mut snapshot: AgentOutcomeSnapshot,
     ) -> AgentOutcomeSnapshot {
-        let mut registry = self.registry.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let previous = registry.snapshots.get(&self.thread_id).cloned().unwrap_or_default();
+        let mut registry = self
+            .registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let previous = registry
+            .snapshots
+            .get(&self.thread_id)
+            .cloned()
+            .unwrap_or_default();
         if previous.turn_id.is_some() && previous.turn_id != snapshot.turn_id {
             return previous;
         }
@@ -463,15 +480,23 @@ impl AgentOutcomePublisher {
             if snapshot.status == AgentStatus::Running
                 && matches!(snapshot.readiness, AgentReadiness::Pending)
             {
-                registry.current_turns.insert(self.thread_id, turn_id.clone());
+                registry
+                    .current_turns
+                    .insert(self.thread_id, turn_id.clone());
             } else if registry
                 .current_turns
                 .get(&self.thread_id)
                 .is_some_and(|current_turn| current_turn != turn_id)
             {
-                return registry.snapshots.get(&self.thread_id).cloned().unwrap_or_default();
+                return registry
+                    .snapshots
+                    .get(&self.thread_id)
+                    .cloned()
+                    .unwrap_or_default();
             } else if !registry.current_turns.contains_key(&self.thread_id) {
-                registry.current_turns.insert(self.thread_id, turn_id.clone());
+                registry
+                    .current_turns
+                    .insert(self.thread_id, turn_id.clone());
             }
         }
         registry.snapshots.insert(self.thread_id, snapshot.clone());
@@ -482,7 +507,9 @@ impl AgentOutcomePublisher {
             let _ = self.actionable_tx.send(snapshot.clone());
             for wait in registry.waits.values_mut() {
                 if wait.targets.contains(&self.thread_id) {
-                    wait.outcomes.entry(self.thread_id).or_insert_with(|| snapshot.clone());
+                    wait.outcomes
+                        .entry(self.thread_id)
+                        .or_insert_with(|| snapshot.clone());
                     Self::complete_wait(wait);
                 }
             }
@@ -494,16 +521,26 @@ impl AgentOutcomePublisher {
         if wait.tx.borrow().is_some() {
             return;
         }
-        let all_ready = wait.targets.iter().all(|target| wait.outcomes.contains_key(target));
+        let all_ready = wait
+            .targets
+            .iter()
+            .all(|target| wait.outcomes.contains_key(target));
         if wait.return_when == AgentWaitReturnWhen::All && !all_ready {
             return;
         }
         if wait.outcomes.is_empty() {
             return;
         }
-        let outcomes = wait.targets.iter().filter_map(|target| {
-            wait.outcomes.get(target).cloned().map(|outcome| (*target, outcome))
-        }).collect();
+        let outcomes = wait
+            .targets
+            .iter()
+            .filter_map(|target| {
+                wait.outcomes
+                    .get(target)
+                    .cloned()
+                    .map(|outcome| (*target, outcome))
+            })
+            .collect();
         let _ = wait.tx.send_replace(Some(AgentWaitResult {
             all_targets: wait.return_when == AgentWaitReturnWhen::All,
             outcomes,
@@ -511,8 +548,13 @@ impl AgentOutcomePublisher {
     }
 
     fn mark_current_goal_action_required(&self) {
-        let mut registry = self.registry.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(mut snapshot) = registry.snapshots.get(&self.thread_id).cloned() else { return; };
+        let mut registry = self
+            .registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(mut snapshot) = registry.snapshots.get(&self.thread_id).cloned() else {
+            return;
+        };
         if !matches!(snapshot.readiness, AgentReadiness::GoalContinuing { .. }) {
             return;
         }
@@ -521,8 +563,13 @@ impl AgentOutcomePublisher {
     }
 
     pub fn mark_reported(&self, turn_id: &str) -> bool {
-        let mut last = self.last_reported_turn.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if last.as_deref() == Some(turn_id) { return false; }
+        let mut last = self
+            .last_reported_turn
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if last.as_deref() == Some(turn_id) {
+            return false;
+        }
         *last = Some(turn_id.to_string());
         true
     }
@@ -533,7 +580,9 @@ pub(crate) fn register_agent_wait(
     targets: Vec<ThreadId>,
     return_when: AgentWaitReturnWhen,
 ) -> AgentWaitRegistration {
-    let mut state = registry.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut state = registry
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut id = state.next_wait_id.max(1);
     while state.waits.contains_key(&id) {
         id = id.wrapping_add(1).max(1);
@@ -541,7 +590,12 @@ pub(crate) fn register_agent_wait(
     state.next_wait_id = id.wrapping_add(1).max(1);
     let revisions = targets
         .iter()
-        .map(|target| (*target, state.revisions.get(target).copied().unwrap_or_default()))
+        .map(|target| {
+            (
+                *target,
+                state.revisions.get(target).copied().unwrap_or_default(),
+            )
+        })
         .collect();
     let (tx, receiver) = watch::channel(None);
     let wait = ActiveAgentWait {
@@ -551,7 +605,12 @@ pub(crate) fn register_agent_wait(
         tx,
     };
     state.waits.insert(id, wait);
-    AgentWaitRegistration { id, registry: registry.clone(), revisions, receiver }
+    AgentWaitRegistration {
+        id,
+        registry: registry.clone(),
+        revisions,
+        receiver,
+    }
 }
 
 fn raw_terminal_readiness(status: &AgentStatus) -> Option<AgentReadiness> {
@@ -572,7 +631,11 @@ pub enum AgentConfigUpdate {
 mod agent_wait_registry_tests {
     use super::*;
 
-    fn snapshot(turn_id: &str, status: AgentStatus, readiness: AgentReadiness) -> AgentOutcomeSnapshot {
+    fn snapshot(
+        turn_id: &str,
+        status: AgentStatus,
+        readiness: AgentReadiness,
+    ) -> AgentOutcomeSnapshot {
         AgentOutcomeSnapshot {
             turn_id: Some(turn_id.to_string()),
             status,
@@ -590,11 +653,7 @@ mod agent_wait_registry_tests {
             AgentStatus::Running,
             AgentReadiness::Pending,
         ));
-        let mut active = register_agent_wait(
-            &registry,
-            vec![target],
-            AgentWaitReturnWhen::Any,
-        );
+        let mut active = register_agent_wait(&registry, vec![target], AgentWaitReturnWhen::Any);
 
         publisher.publish(snapshot(
             "turn-1",
@@ -616,7 +675,10 @@ mod agent_wait_registry_tests {
         assert_eq!(result.outcomes.len(), 1);
         assert_eq!(result.outcomes[0].1.turn_id.as_deref(), Some("turn-1"));
         let mut fresh = register_agent_wait(&registry, vec![target], AgentWaitReturnWhen::Any);
-        assert!(fresh.current().is_none(), "fresh wait must not inherit turn-1 result");
+        assert!(
+            fresh.current().is_none(),
+            "fresh wait must not inherit turn-1 result"
+        );
         assert_eq!(publisher.snapshot().turn_id.as_deref(), Some("turn-2"));
         drop(active);
         assert_eq!(registry.lock().unwrap().waits.len(), 1);
@@ -636,12 +698,14 @@ mod agent_wait_registry_tests {
         ));
 
         let mut wait = register_agent_wait(&registry, vec![target], AgentWaitReturnWhen::Any);
-        wait.seed_raw_status(
-            target,
-            AgentStatus::Errored("failed".to_string()),
+        wait.seed_raw_status(target, AgentStatus::Errored("failed".to_string()));
+        let result = wait
+            .current()
+            .expect("registration seeds actionable snapshot");
+        assert_eq!(
+            result.outcomes[0].1.readiness,
+            AgentReadiness::ActionRequired
         );
-        let result = wait.current().expect("registration seeds actionable snapshot");
-        assert_eq!(result.outcomes[0].1.readiness, AgentReadiness::ActionRequired);
     }
 
     #[test]
@@ -649,12 +713,20 @@ mod agent_wait_registry_tests {
         let registry = Arc::new(Mutex::new(AgentWaitRegistry::default()));
         let target = ThreadId::new();
         let mut wait = register_agent_wait(&registry, vec![target], AgentWaitReturnWhen::Any);
-        wait.seed_raw_status(target, AgentStatus::Completed(Some("restored result".to_string())));
+        wait.seed_raw_status(
+            target,
+            AgentStatus::Completed(Some("restored result".to_string())),
+        );
 
-        let result = wait.current().expect("restored terminal status is observable");
+        let result = wait
+            .current()
+            .expect("restored terminal status is observable");
         assert_eq!(result.outcomes[0].1.turn_id.as_deref(), None);
         assert_eq!(result.outcomes[0].1.readiness, AgentReadiness::Terminal);
-        assert!(matches!(&result.outcomes[0].1.status, AgentStatus::Completed(_)));
+        assert!(matches!(
+            &result.outcomes[0].1.status,
+            AgentStatus::Completed(_)
+        ));
     }
 
     #[test]
@@ -674,7 +746,10 @@ mod agent_wait_registry_tests {
             AgentReadiness::Pending,
         ));
         wait.seed_raw_status(target, AgentStatus::Completed(None));
-        assert!(wait.current().is_none(), "old raw final cannot survive a typed new-turn reset");
+        assert!(
+            wait.current().is_none(),
+            "old raw final cannot survive a typed new-turn reset"
+        );
 
         publisher.publish(snapshot(
             "new-turn",
@@ -682,7 +757,10 @@ mod agent_wait_registry_tests {
             AgentReadiness::Terminal,
         ));
         assert_eq!(
-            wait.current().expect("new final is latched").outcomes[0].1.turn_id.as_deref(),
+            wait.current().expect("new final is latched").outcomes[0]
+                .1
+                .turn_id
+                .as_deref(),
             Some("new-turn")
         );
     }
@@ -703,7 +781,10 @@ mod agent_wait_registry_tests {
         let mut wait = register_agent_wait(&registry, vec![target], AgentWaitReturnWhen::Any);
         wait.seed_raw_status(target, AgentStatus::Completed(None));
 
-        assert!(wait.current().is_none(), "raw status cannot erase trusted quiet-goal binding");
+        assert!(
+            wait.current().is_none(),
+            "raw status cannot erase trusted quiet-goal binding"
+        );
     }
 
     #[test]
@@ -713,13 +794,18 @@ mod agent_wait_registry_tests {
         let second = ThreadId::new();
         let first_publisher = AgentOutcomePublisher::new(first, registry.clone());
         let second_publisher = AgentOutcomePublisher::new(second, registry.clone());
-        first_publisher.publish(snapshot("first-turn", AgentStatus::Running, AgentReadiness::Pending));
-        second_publisher.publish(snapshot("second-turn", AgentStatus::Running, AgentReadiness::Pending));
-        let mut wait = register_agent_wait(
-            &registry,
-            vec![first, second],
-            AgentWaitReturnWhen::All,
-        );
+        first_publisher.publish(snapshot(
+            "first-turn",
+            AgentStatus::Running,
+            AgentReadiness::Pending,
+        ));
+        second_publisher.publish(snapshot(
+            "second-turn",
+            AgentStatus::Running,
+            AgentReadiness::Pending,
+        ));
+        let mut wait =
+            register_agent_wait(&registry, vec![first, second], AgentWaitReturnWhen::All);
 
         first_publisher.publish(snapshot(
             "first-turn",
@@ -753,7 +839,10 @@ mod agent_wait_registry_tests {
             AgentStatus::Interrupted,
             AgentReadiness::Pending,
         ));
-        assert!(wait.current().is_none(), "ordinary interruption remains quiet");
+        assert!(
+            wait.current().is_none(),
+            "ordinary interruption remains quiet"
+        );
         publisher.publish(snapshot(
             "turn-1",
             AgentStatus::Completed(None),
@@ -769,7 +858,9 @@ mod agent_wait_registry_tests {
             AgentReadiness::ActionRequired,
         ));
         assert_eq!(
-            wait.current().expect("action required wakes").outcomes[0].1.readiness,
+            wait.current().expect("action required wakes").outcomes[0]
+                .1
+                .readiness,
             AgentReadiness::ActionRequired
         );
     }
@@ -783,17 +874,17 @@ mod agent_wait_registry_tests {
             let registry = Arc::new(Mutex::new(AgentWaitRegistry::default()));
             let target = ThreadId::new();
             let publisher = Arc::new(AgentOutcomePublisher::new(target, registry.clone()));
-            publisher.publish(snapshot("turn-1", AgentStatus::Running, AgentReadiness::Pending));
+            publisher.publish(snapshot(
+                "turn-1",
+                AgentStatus::Running,
+                AgentReadiness::Pending,
+            ));
             let barrier = Arc::new(Barrier::new(3));
             let register_registry = registry.clone();
             let register_barrier = barrier.clone();
             let register_thread = thread::spawn(move || {
                 register_barrier.wait();
-                register_agent_wait(
-                    &register_registry,
-                    vec![target],
-                    AgentWaitReturnWhen::Any,
-                )
+                register_agent_wait(&register_registry, vec![target], AgentWaitReturnWhen::Any)
             });
             let publish_barrier = barrier.clone();
             let publish_thread = thread::spawn(move || {
@@ -807,7 +898,10 @@ mod agent_wait_registry_tests {
             barrier.wait();
             let mut registration = register_thread.join().expect("wait registration");
             publish_thread.join().expect("outcome publication");
-            assert!(registration.current().is_some(), "concurrent terminal outcome cannot be lost");
+            assert!(
+                registration.current().is_some(),
+                "concurrent terminal outcome cannot be lost"
+            );
         }
     }
 }

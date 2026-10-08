@@ -2023,11 +2023,18 @@ fs.writeFile = async (file, ...args) => {
             .find_map(|line| line.strip_prefix("page_hints: "))
             .expect("page/control hints are reported");
         let hints: Value = serde_json::from_str(hints_json).expect("valid page hint JSON");
-        assert!(hints["controls"].as_array().unwrap().iter().any(|control| {
-            control["selectors"].as_array().unwrap().iter().any(|selector| {
-                selector.as_str() == Some(r#"[aria-label="Save \22 draft\22  \5c  now"]"#)
-            })
-        }), "quotes and backslashes in control labels are CSS-escaped");
+        assert!(
+            hints["controls"].as_array().unwrap().iter().any(|control| {
+                control["selectors"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|selector| {
+                        selector.as_str() == Some(r#"[aria-label="Save \22 draft\22  \5c  now"]"#)
+                    })
+            }),
+            "quotes and backslashes in control labels are CSS-escaped"
+        );
 
         let inline_images = visual_fixture
             .content_items
@@ -2039,8 +2046,15 @@ fs.writeFile = async (file, ...args) => {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(inline_images.len(), 2, "one inline image per labeled capture");
-        assert_ne!(inline_images[0], inline_images[1], "fixture captures are distinct");
+        assert_eq!(
+            inline_images.len(),
+            2,
+            "one inline image per labeled capture"
+        );
+        assert_ne!(
+            inline_images[0], inline_images[1],
+            "fixture captures are distinct"
+        );
         const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
         let profile = std::fs::read_dir(visual_fixture_root.join("profiles"))
             .unwrap()
@@ -2053,10 +2067,9 @@ fs.writeFile = async (file, ...args) => {
             .find_map(|line| line.strip_prefix("artifact_manifest: "))
             .expect("saved manifest path is reported");
         let manifest_path = profile.join(manifest_relative_path);
-        let manifest: Value = serde_json::from_slice(
-            &std::fs::read(&manifest_path).expect("saved capture manifest"),
-        )
-        .expect("valid saved capture manifest");
+        let manifest: Value =
+            serde_json::from_slice(&std::fs::read(&manifest_path).expect("saved capture manifest"))
+                .expect("valid saved capture manifest");
         let captures = manifest["captures"].as_array().expect("manifest captures");
         assert_eq!(captures.len(), 2);
         for (index, expected_label) in ["top-wide", "bottom-narrow"].iter().enumerate() {
@@ -2064,13 +2077,21 @@ fs.writeFile = async (file, ...args) => {
             let expected_width = if index == 0 { 960 } else { 640 };
             assert_eq!(capture["order"], index + 1);
             assert_eq!(capture["label"], *expected_label);
-            assert_eq!(capture["metadata"]["requestedViewport"]["width"], expected_width);
-            assert_eq!(capture["metadata"]["effectiveViewport"]["width"], expected_width);
+            assert_eq!(
+                capture["metadata"]["requestedViewport"]["width"],
+                expected_width
+            );
+            assert_eq!(
+                capture["metadata"]["effectiveViewport"]["width"],
+                expected_width
+            );
             assert_eq!(capture["metadata"]["devicePixelRatio"], 2);
-            assert!(capture["metadata"]["clientViewport"]["width"]
-                .as_u64()
-                .unwrap()
-                > 0);
+            assert!(
+                capture["metadata"]["clientViewport"]["width"]
+                    .as_u64()
+                    .unwrap()
+                    > 0
+            );
             let saved = std::fs::read(
                 manifest_path
                     .parent()
@@ -2079,12 +2100,17 @@ fs.writeFile = async (file, ...args) => {
             )
             .expect("manifest-listed PNG exists");
             assert!(saved.starts_with(PNG_SIGNATURE));
-            assert_eq!(saved, inline_images[index], "saved PNG pairs with typed image by capture order");
+            assert_eq!(
+                saved, inline_images[index],
+                "saved PNG pairs with typed image by capture order"
+            );
         }
-        assert!(manifest["captures"][1]["metadata"]["scroll"]["y"]
-            .as_f64()
-            .unwrap()
-            > 0.0);
+        assert!(
+            manifest["captures"][1]["metadata"]["scroll"]["y"]
+                .as_f64()
+                .unwrap()
+                > 0.0
+        );
         let restoration = &manifest["restoration"];
         assert_eq!(restoration["success"], true);
         assert_eq!(
@@ -2115,7 +2141,8 @@ fs.writeFile = async (file, ...args) => {
         .await
         .expect("restoration readback mismatch response");
         assert!(!restore_mismatch.success);
-        let DynamicToolCallOutputContentItem::InputText { text } = &restore_mismatch.content_items[0]
+        let DynamicToolCallOutputContentItem::InputText { text } =
+            &restore_mismatch.content_items[0]
         else {
             panic!("restoration mismatch includes structured text");
         };

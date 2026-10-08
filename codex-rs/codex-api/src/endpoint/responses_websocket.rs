@@ -829,7 +829,11 @@ async fn run_websocket_response_stream(
                 }
                 match process_responses_event(event) {
                     Ok(Some(mut event)) => {
-                        if let ResponseEvent::Completed { started_at: event_started_at, .. } = &mut event {
+                        if let ResponseEvent::Completed {
+                            started_at: event_started_at,
+                            ..
+                        } = &mut event
+                        {
                             *event_started_at = Some(started_at.clone());
                         }
                         if let ResponseEvent::Created { response_id: id } = &event {

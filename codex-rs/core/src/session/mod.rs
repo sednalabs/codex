@@ -403,8 +403,8 @@ use codex_protocol::turn_input::TurnInputRequest;
 use codex_protocol::turn_input::TurnInputSubmission;
 use codex_protocol::turn_input::TurnStartOptions;
 use codex_protocol::user_input::UserInput;
-use codex_state::ProviderCallUsageRecord;
 use codex_skills_extension::HostSkillsService;
+use codex_state::ProviderCallUsageRecord;
 use codex_tools::ToolName;
 use codex_tools::UnifiedExecShellMode;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -1452,7 +1452,10 @@ impl Session {
     }
 
     pub(crate) fn mark_interrupted(&self) {
-        let publisher = self.services.local_agent_runtime.outcome_publisher(self.thread_id);
+        let publisher = self
+            .services
+            .local_agent_runtime
+            .outcome_publisher(self.thread_id);
         let current = publisher.snapshot();
         publisher.publish_interrupted(AgentOutcomeSnapshot {
             turn_id: current.turn_id,
@@ -1662,7 +1665,10 @@ impl Session {
                     }),
                     Some(AgentStatus::Interrupted)
                 ) {
-                    let publisher = self.services.local_agent_runtime.outcome_publisher(self.thread_id);
+                    let publisher = self
+                        .services
+                        .local_agent_runtime
+                        .outcome_publisher(self.thread_id);
                     let current = publisher.snapshot();
                     publisher.publish_interrupted(AgentOutcomeSnapshot {
                         turn_id: current.turn_id,
@@ -2432,14 +2438,16 @@ impl Session {
                 .analytics_events_client
                 .track_guardian_session_event(self.thread_id, &event);
         }
-        let published_outcome = self.publish_agent_outcome(turn_context, &legacy_source).await;
+        let published_outcome = self
+            .publish_agent_outcome(turn_context, &legacy_source)
+            .await;
         self.send_event_raw(event).await;
         self.maybe_notify_parent_of_terminal_turn(
             turn_context,
             &legacy_source,
             published_outcome.as_ref(),
         )
-            .await;
+        .await;
         self.maybe_mirror_event_text_to_realtime(&legacy_source)
             .await;
         self.maybe_clear_realtime_handoff_for_event(&legacy_source)
@@ -2473,14 +2481,15 @@ impl Session {
         let turn_id = turn_context.sub_id.clone();
         let readiness = match msg {
             EventMsg::TurnStarted(_) => AgentReadiness::Pending,
-            EventMsg::TurnComplete(event) if event.error.is_none() => {
-                completed_turn_readiness(
-                    turn_context.extension_data.get::<GoalTurnMarker>().as_deref(),
-                    &turn_id,
-                    &event.turn_id,
-                    &status,
-                )
-            }
+            EventMsg::TurnComplete(event) if event.error.is_none() => completed_turn_readiness(
+                turn_context
+                    .extension_data
+                    .get::<GoalTurnMarker>()
+                    .as_deref(),
+                &turn_id,
+                &event.turn_id,
+                &status,
+            ),
             EventMsg::TurnAborted(event) if event.reason == TurnAbortReason::Interrupted => {
                 interrupted_readiness(
                     event
@@ -2503,8 +2512,12 @@ impl Session {
             status,
             readiness,
         };
-        let publisher = self.services.local_agent_runtime.outcome_publisher(self.thread_id);
-        if matches!(msg, EventMsg::TurnAborted(event) if event.reason == TurnAbortReason::Interrupted) {
+        let publisher = self
+            .services
+            .local_agent_runtime
+            .outcome_publisher(self.thread_id);
+        if matches!(msg, EventMsg::TurnAborted(event) if event.reason == TurnAbortReason::Interrupted)
+        {
             Some(publisher.publish_interrupted(snapshot))
         } else {
             Some(publisher.publish(snapshot))
@@ -2564,7 +2577,10 @@ impl Session {
             .map(|outcome| outcome.readiness.clone())
             .unwrap_or_else(|| match (&status, msg) {
                 (AgentStatus::Interrupted, EventMsg::TurnAborted(event))
-                    if event.reason == TurnAbortReason::Interrupted => AgentReadiness::Pending,
+                    if event.reason == TurnAbortReason::Interrupted =>
+                {
+                    AgentReadiness::Pending
+                }
                 (AgentStatus::Completed(_), _) => AgentReadiness::Terminal,
                 _ => AgentReadiness::ActionRequired,
             });
@@ -4921,7 +4937,10 @@ impl Session {
         }
 
         let Some(started_at) = usage_context.started_at else {
-            warn!(response_id, "completed provider response missing request start; durable usage row skipped");
+            warn!(
+                response_id,
+                "completed provider response missing request start; durable usage row skipped"
+            );
             return;
         };
         let Some(state_db) = self.state_db() else {
@@ -4965,7 +4984,11 @@ impl Session {
             input_tokens_cache_write: token_count(cache_write_tokens),
             output_tokens: token_count(output_tokens),
             total_tokens: token_count(total_tokens),
-            status: if usage.is_some() { "ok" } else { "provider_usage_missing" },
+            status: if usage.is_some() {
+                "ok"
+            } else {
+                "provider_usage_missing"
+            },
         };
         if let Err(error) = state_db.record_provider_call_usage(&record).await {
             warn!(response_id, %error, "failed to persist completed provider usage; continuing response handling");

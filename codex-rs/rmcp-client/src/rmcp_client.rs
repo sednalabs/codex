@@ -897,7 +897,8 @@ impl RmcpClient {
                             options,
                         )
                         .await?;
-                    let guard = RequestCancellationGuard::new(request.peer.clone(), request.id.clone());
+                    let guard =
+                        RequestCancellationGuard::new(request.peer.clone(), request.id.clone());
                     let result = request.await_response().await;
                     if matches!(&result, Ok(_) | Err(ServiceError::McpError(_))) {
                         guard.disarm();
@@ -923,7 +924,9 @@ impl RmcpClient {
                 let service_error = match operation_error {
                     ClientOperationError::Service(error)
                     | ClientOperationError::UncertainService { source: error } => error,
-                    ClientOperationError::Timeout { .. } => return authentication_required_result(error),
+                    ClientOperationError::Timeout { .. } => {
+                        return authentication_required_result(error);
+                    }
                 };
                 let ServiceError::TransportSend(transport) = service_error else {
                     return authentication_required_result(error);
@@ -1273,8 +1276,9 @@ impl RmcpClient {
                         Err(err) => Err(err),
                     }
                 } else {
-                    let mut http_config = StreamableHttpClientTransportConfig::with_uri(url.clone())
-                        .reinit_on_expired_session(false);
+                    let mut http_config =
+                        StreamableHttpClientTransportConfig::with_uri(url.clone())
+                            .reinit_on_expired_session(false);
                     if let Some(StreamableHttpBearerToken::Resolved(bearer_token)) = bearer_token {
                         http_config = http_config.auth_header(bearer_token.clone());
                     }
@@ -1535,7 +1539,9 @@ impl RmcpClient {
         if label != "tools/list" {
             return false;
         }
-        let ClientOperationError::Service(rmcp::service::ServiceError::TransportSend(error)) = error else {
+        let ClientOperationError::Service(rmcp::service::ServiceError::TransportSend(error)) =
+            error
+        else {
             return false;
         };
 
