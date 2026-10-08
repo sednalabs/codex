@@ -39,7 +39,10 @@ use codex_model_provider_info::CHATGPT_CODEX_BASE_URL;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::WireApi;
 use codex_model_provider_info::create_oss_provider_with_base_url;
+use codex_models_manager::ModelsManagerConfig;
+use codex_models_manager::manager::ModelsManager;
 use codex_models_manager::manager::SharedModelsManager;
+use codex_models_manager::manager::StaticModelsManager;
 use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
 use codex_protocol::auth::AuthMode;
@@ -1084,6 +1087,165 @@ async fn responses_http_preserves_raw_tool_metadata_for_openai_custom_endpoint()
     let body: serde_json::Value = serde_json::from_slice(&requests[0].body)?;
     assert_eq!(body["input"], serde_json::to_value(vec![output.clone()])?);
     assert_eq!(prompt.input, vec![output]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn bundled_gpt6_models_build_and_send_expected_responses_requests() -> anyhow::Result<()> {
+    let slugs = [
+        ("gpt-6.1-sol", true),
+        ("gpt-6-sol", true),
+        ("gpt-6-luna", true),
+        ("test-only-unbundled-model-fallback", false),
+    ];
+    let manager = StaticModelsManager::new(
+        /*auth_manager*/ None,
+        codex_models_manager::bundled_models_response()?,
+    );
+    let mut model_infos = Vec::new();
+    for (slug, has_catalog_metadata) in slugs {
+        let model_info = manager
+            .get_model_info(slug, &ModelsManagerConfig::default())
+            .await;
+        assert_eq!(
+            model_info.used_fallback_model_metadata,
+            !has_catalog_metadata,
+            "unexpected bundled metadata resolution for {slug}"
+        );
+        model_infos.push(model_info);
+    }
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(
+            ResponseTemplate::new(/*status*/ 200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(concat!(
+                    "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-1\"}}\n\n",
+                    "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\"}}\n\n",
+                )),
+        )
+        .expect(/*requests*/ 4)
+        .mount(&server)
+        .await;
+    let mut provider =
+        ModelProviderInfo::create_openai_provider(Some(format!("{}/v1", server.uri())));
+    provider.requires_openai_auth = false;
+    provider.supports_websockets = false;
+    let mut client = test_model_client(SessionSource::Cli);
+    Arc::get_mut(&mut client.state)
+        .expect("test client should have unique session state")
+        .provider = create_model_provider(provider, /*auth_manager*/ None);
+
+    let tool = codex_tools::FreeformTool {
+        name: "exec".to_string(),
+        description: "Synthetic request fixture.".to_string(),
+        defer_loading: None,
+        format: codex_tools::FreeformToolFormat {
+            r#type: "grammar".to_string(),
+            syntax: "lark".to_string(),
+            definition: "start: /.+/".to_string(),
+        },
+    };
+    let prompt = Prompt {
+        input: vec![ResponseItem::from(ResponseInputItem::Message {
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "synthetic request only".to_string(),
+            }],
+            phase: None,
+        })],
+        tools: vec![ToolSpec::Freeform(tool)].into(),
+        parallel_tool_calls: true,
+        base_instructions: BaseInstructions {
+            text: "synthetic base instructions".to_string(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    for (index, ((slug, has_catalog_metadata), model_info)) in
+        slugs.iter().zip(model_infos.iter()).enumerate()
+    {
+        let responses_metadata = test_responses_metadata_for_client(
+            &client,
+            /*turn_id*/ None,
+            format!("{}:{index}", client.state.thread_id),
+            /*parent_thread_id*/ None,
+            TestCodexResponsesRequestKind::Turn,
+        );
+        let mut session = client.new_session();
+        let mut stream = session
+            .stream(
+                &prompt,
+                model_info,
+                &test_session_telemetry(),
+                /*effort*/ None,
+                codex_protocol::config_types::ReasoningSummary::None,
+                /*service_tier*/ None,
+                &responses_metadata,
+                &InferenceTraceContext::disabled(),
+            )
+            .await?;
+        let mut completed = false;
+        while let Some(event) = stream.next().await {
+            if let ResponseEvent::Completed { response_id, .. } = event? {
+                assert_eq!(response_id, "resp-1");
+                completed = true;
+            }
+        }
+        assert!(completed, "request for {slug} should complete");
+        assert_eq!(model_info.slug.as_str(), *slug);
+        assert_eq!(model_info.use_responses_lite, *has_catalog_metadata);
+    }
+
+    let requests = server.received_requests().await.expect("received requests");
+    assert_eq!(requests.len(), slugs.len());
+    for ((request, (slug, use_responses_lite)), model_info) in
+        requests.iter().zip(slugs).zip(model_infos.iter())
+    {
+        assert_eq!(request.url.path(), "/v1/responses");
+        assert_eq!(
+            request
+                .headers
+                .get("x-openai-internal-codex-responses-lite")
+                .and_then(|value| value.to_str().ok()),
+            use_responses_lite.then_some("true")
+        );
+
+        let body: serde_json::Value = serde_json::from_slice(&request.body)?;
+        assert_eq!(body["model"], slug);
+        assert_eq!(body["parallel_tool_calls"], !use_responses_lite);
+        if let Some(default_effort) = &model_info.default_reasoning_level {
+            assert_eq!(
+                body["reasoning"]["effort"],
+                serde_json::to_value(default_effort)?
+            );
+        }
+        let input = body["input"].as_array().expect("serialized input array");
+        assert_eq!(input.last().expect("user input")["role"], "user");
+        assert_eq!(
+            input.last().expect("user input")["content"][0]["text"],
+            "synthetic request only"
+        );
+        if use_responses_lite {
+            assert!(body.get("tools").is_none());
+            assert_eq!(input.len(), 3);
+            assert_eq!(input[0]["type"], "additional_tools");
+            assert_eq!(input[0]["role"], "developer");
+            assert_eq!(input[1]["type"], "message");
+            assert_eq!(input[1]["role"], "developer");
+            assert_eq!(input[1]["content"][0]["text"], "synthetic base instructions");
+            assert_eq!(body["text"]["verbosity"], "low");
+        } else {
+            assert!(body.get("tools").is_some());
+            assert_eq!(input.len(), 2);
+            assert_eq!(input[0]["type"], "message");
+            assert_eq!(input[0]["role"], "developer");
+            assert_eq!(input[0]["content"][0]["text"], "synthetic base instructions");
+        }
+    }
     Ok(())
 }
 

@@ -515,6 +515,105 @@ fn service_tier_test_catalog() -> codex_protocol::openai_models::ModelsResponse 
 }
 
 #[tokio::test]
+async fn multi_agent_v2_spawn_rejects_disabled_backend_model_and_omits_it_from_capped_error_list(
+) {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let mut catalog = codex_models_manager::bundled_models_response()
+        .expect("bundled models should parse");
+    let mut disabled_model = catalog
+        .models
+        .iter()
+        .find(|model| model.slug == "gpt-6.1-sol")
+        .expect("bundled catalog should contain the current Sol model")
+        .clone();
+    disabled_model.slug = "disabled-backend-model".to_string();
+    disabled_model.display_name = "Disabled backend model".to_string();
+    disabled_model.multi_agent_version = Some(MultiAgentVersion::Disabled);
+    disabled_model.priority = i32::MIN;
+    assert!(disabled_model.show_in_picker);
+    catalog.models.push(disabled_model);
+    session.services.models_manager = Arc::new(StaticModelsManager::new(
+        /*auth_manager*/ None,
+        catalog,
+    ));
+
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config);
+
+    let all_picker_models = session
+        .services
+        .models_manager
+        .list_models(
+            codex_models_manager::manager::RefreshStrategy::Offline,
+            turn.config.http_client_factory(),
+        )
+        .await;
+    assert!(
+        all_picker_models
+            .iter()
+            .filter(|model| model.show_in_picker)
+            .take(crate::agent::child_config::MAX_SPAWN_AGENT_MODEL_OVERRIDES)
+            .any(|model| model.model == "disabled-backend-model"),
+        "the synthetic model must be inside the error-list cap before backend filtering"
+    );
+
+    let expected_available = all_picker_models
+        .into_iter()
+        .filter(|model| model.show_in_picker)
+        .filter(|model| {
+            crate::agent::child_config::model_supports_multi_agent_backend(
+                model,
+                MultiAgentVersion::V2,
+            )
+        })
+        .take(crate::agent::child_config::MAX_SPAWN_AGENT_MODEL_OVERRIDES)
+        .map(|model| model.model)
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let err = SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "task_name": "disabled_backend_model",
+                "model": "disabled-backend-model",
+                "fork_turns": "none"
+            })),
+        ))
+        .await
+        .err()
+        .expect("a model disabled for V2 should be rejected");
+
+    let FunctionCallError::RespondToModel(message) = &err else {
+        panic!("backend rejection should be returned as a model-facing error");
+    };
+    let available = message
+        .strip_prefix(
+            "Unknown model `disabled-backend-model` for spawn_agent. Available models: ",
+        )
+        .expect("the rejection should contain the available-model list");
+    assert!(
+        !available
+            .split(", ")
+            .any(|model| model == "disabled-backend-model"),
+        "a Disabled backend model must not be advertised for a V2 child"
+    );
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(format!(
+            "Unknown model `disabled-backend-model` for spawn_agent. Available models: {expected_available}"
+        ))
+    );
+}
+
+#[tokio::test]
 async fn spawn_agent_service_tier_uses_root_preference_when_root_model_cannot_support_it() {
     let (_session, turn) = make_session_and_context().await;
     let mut config = (*turn.config).clone();
