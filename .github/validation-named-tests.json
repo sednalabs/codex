@@ -1,0 +1,181 @@
+{
+  "schema_version": "rust-tests-command-manifest-v1",
+  "targets": [
+    {
+      "package": "codex-app-server",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal", "rust_integration"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-app-server", "--lib", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-app-server", "--lib", "--", "--test-threads=1"]
+    },
+    {
+      "package": "codex-app-server-protocol",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal", "rust_integration"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-app-server-protocol", "--lib", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-app-server-protocol", "--lib", "--", "--test-threads=1"]
+    },
+    {
+      "package": "codex-config",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal", "rust_integration"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-config", "--lib", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-config", "--lib", "--", "--test-threads=1"]
+    },
+    {
+      "package": "codex-code-mode-host",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal", "rust_integration"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-code-mode-host", "--lib", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-code-mode-host", "--lib", "--", "--test-threads=1"]
+    },
+    {
+      "package": "codex-agent-graph-store",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal", "rust_integration"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-agent-graph-store", "--lib", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-agent-graph-store", "--lib", "--", "--test-threads=1"]
+    },
+    {
+      "package": "codex-core",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal", "rust_integration"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-core", "--lib", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-core", "--lib", "--", "--test-threads=1"]
+    },
+    {
+      "package": "codex-core",
+      "target_kind": "integration",
+      "target": "all",
+      "profiles": ["rust_minimal", "rust_integration"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-core", "--test", "all", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-core", "--test", "all", "--", "--test-threads=1"]
+    },
+    {
+      "package": "codex-core-api",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal", "rust_integration"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-core-api", "--lib", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-core-api", "--lib", "--", "--test-threads=1"]
+    },
+    {
+      "package": "codex-exec",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal", "rust_integration"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-exec", "--lib", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-exec", "--lib", "--", "--test-threads=1"]
+    },
+    {
+      "package": "codex-goal-extension",
+      "target_kind": "integration",
+      "target": "capacity_retry_continuity",
+      "profiles": ["rust_minimal", "rust_integration"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-goal-extension", "--test", "capacity_retry_continuity", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-goal-extension", "--test", "capacity_retry_continuity", "--", "--test-threads=1"]
+    },
+    {
+      "package": "codex-goal-extension",
+      "target_kind": "integration",
+      "target": "goal_scheduler_native_wait",
+      "profiles": ["rust_minimal", "rust_integration"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-goal-extension", "--test", "goal_scheduler_native_wait", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-goal-extension", "--test", "goal_scheduler_native_wait", "--", "--test-threads=1"]
+    },
+    {
+      "package": "codex-mcp",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal", "rust_integration"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-mcp", "--lib", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-mcp", "--lib", "--", "--test-threads=1"]
+    },
+    {
+      "package": "codex-mcp-server",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal", "rust_integration"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-mcp-server", "--lib", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-mcp-server", "--lib", "--", "--test-threads=1"]
+    },
+    {
+      "package": "codex-model-provider",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal", "rust_integration"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-model-provider", "--lib", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-model-provider", "--lib", "--", "--test-threads=1"]
+    },
+    {
+      "package": "codex-model-provider-info",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal", "rust_integration"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-model-provider-info", "--lib", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-model-provider-info", "--lib", "--", "--test-threads=1"]
+    },
+    {
+      "package": "codex-models-manager",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal", "rust_integration"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-models-manager", "--lib", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-models-manager", "--lib", "--", "--test-threads=1"]
+    },
+    {
+      "package": "codex-prompts",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal", "rust_integration"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-prompts", "--lib", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-prompts", "--lib", "--", "--test-threads=1"]
+    },
+    {
+      "package": "codex-protocol",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal", "rust_integration"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-protocol", "--lib", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-protocol", "--lib", "--", "--test-threads=1"]
+    },
+    {
+      "package": "codex-state",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal", "rust_integration"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-state", "--lib", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-state", "--lib", "--", "--test-threads=1"]
+    },
+    {
+      "package": "codex-thread-store",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal", "rust_integration"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-thread-store", "--lib", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-thread-store", "--lib", "--", "--test-threads=1"]
+    },
+    {
+      "package": "codex-tui",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal", "rust_integration"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-tui", "--lib", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-tui", "--lib", "--", "--test-threads=1"]
+    },
+    {
+      "package": "codex-tui",
+      "target_kind": "integration",
+      "target": "all",
+      "profiles": ["rust_minimal", "rust_integration"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-tui", "--test", "all", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-tui", "--test", "all", "--", "--test-threads=1"]
+    }
+  ]
+}
