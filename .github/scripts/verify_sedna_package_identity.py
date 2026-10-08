@@ -345,7 +345,19 @@ def verify_extracted_package(
             )
     except (OSError, subprocess.SubprocessError):
         return fail("packaged_cli_version_unavailable")
-    if result.returncode != 0 or result.stdout.strip() != expected_cli:
+    if result.returncode != 0:
+        return fail("packaged_cli_version_unavailable")
+    actual_cli = result.stdout.strip()
+    if actual_cli != expected_cli:
+        print(
+            json.dumps(
+                {
+                    "expected_cli_version": expected_cli,
+                    "actual_cli_version": actual_cli,
+                }
+            ),
+            file=sys.stderr,
+        )
         return fail("packaged_cli_version_mismatch")
 
     expected_header = f"OpenAI Codex (v{args.expected_version})"
