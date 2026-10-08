@@ -681,12 +681,11 @@ mod tests {
             .fetch_all(pool)
             .await
             .expect("ledger preimage");
-            let schema = sqlx::query_as(
-                "SELECT type, name, sql FROM sqlite_schema ORDER BY type, name",
-            )
-            .fetch_all(pool)
-            .await
-            .expect("schema and receipt-table preimage");
+            let schema =
+                sqlx::query_as("SELECT type, name, sql FROM sqlite_schema ORDER BY type, name")
+                    .fetch_all(pool)
+                    .await
+                    .expect("schema and receipt-table preimage");
             let data = sqlx::query_as("SELECT id, title, updated_at FROM threads ORDER BY id")
                 .fetch_all(pool)
                 .await

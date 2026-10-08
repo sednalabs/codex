@@ -142,7 +142,10 @@ impl GoalRuntimeHandle {
         let Some(thread_manager) = self.inner.thread_manager.upgrade() else {
             return false;
         };
-        thread_manager.get_thread(self.inner.thread_id).await.is_ok()
+        thread_manager
+            .get_thread(self.inner.thread_id)
+            .await
+            .is_ok()
     }
 
     pub(crate) fn thread_id(&self) -> ThreadId {

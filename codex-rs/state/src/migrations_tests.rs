@@ -973,8 +973,8 @@ async fn repairs_recency_migration_that_was_applied_as_version_38() {
          )",
     )
     .execute(&pool)
-        .await
-        .expect("seed synthetic legacy recency data");
+    .await
+    .expect("seed synthetic legacy recency data");
     run_state_migrations(&pool, &STATE_MIGRATOR)
         .await
         .expect("current migrations should apply after repair");

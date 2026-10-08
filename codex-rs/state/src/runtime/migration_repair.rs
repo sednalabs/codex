@@ -428,12 +428,12 @@ async fn schema_object_exists(
     connection: &mut SqliteConnection,
     name: &str,
 ) -> anyhow::Result<bool> {
-    Ok(sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name = ?)",
+    Ok(
+        sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name = ?)")
+            .bind(name)
+            .fetch_one(&mut *connection)
+            .await?,
     )
-    .bind(name)
-    .fetch_one(&mut *connection)
-    .await?)
 }
 
 async fn validate_attachment_and_feedback_effects(
@@ -483,12 +483,9 @@ async fn validate_attachment_and_feedback_effects(
         let flags_match = flags.is_some_and(|row| {
             row.get::<i64, _>("unique") == 0 && row.get::<i64, _>("partial") == 0
         });
-        let expected = ["attachment_type", "identity_key", "thread_id"]
-            .map(|name| Some(name.to_string()));
-        if owner.as_deref() != Some("thread_attachments")
-            || columns != expected
-            || !flags_match
-        {
+        let expected =
+            ["attachment_type", "identity_key", "thread_id"].map(|name| Some(name.to_string()));
+        if owner.as_deref() != Some("thread_attachments") || columns != expected || !flags_match {
             anyhow::bail!("attachment reverse index shape disagrees with migration 59");
         }
     }

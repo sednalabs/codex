@@ -601,13 +601,17 @@ async fn canonical_gaps_and_55_59_60_effect_mismatches_reject_without_bridge_wri
                     "early_60" => 60,
                     _ => unreachable!(),
                 };
-                sqlx::query(embedded(&STATE_MIGRATOR, version).expect("effect SQL").sql.as_ref())
-                    .execute(&pool)
-                    .await
-                    .expect("apply schema effect without its ledger row");
+                sqlx::query(
+                    embedded(&STATE_MIGRATOR, version)
+                        .expect("effect SQL")
+                        .sql
+                        .as_ref(),
+                )
+                .execute(&pool)
+                .await
+                .expect("apply schema effect without its ledger row");
             }
-            "missing_59" | "wrong_59_owner" | "wrong_59_order" | "unique_59"
-            | "partial_59" => {
+            "missing_59" | "wrong_59_owner" | "wrong_59_order" | "unique_59" | "partial_59" => {
                 sqlx::query("DROP INDEX idx_thread_attachments_identity_thread")
                     .execute(&pool)
                     .await
@@ -635,8 +639,8 @@ async fn canonical_gaps_and_55_59_60_effect_mismatches_reject_without_bridge_wri
                         .expect("synthetic reverse index mismatch");
                 }
             }
-            "missing_60" | "type_60" | "nullable_60" | "pk_60" | "fk_60"
-            | "extra_60" | "default_60" => {
+            "missing_60" | "type_60" | "nullable_60" | "pk_60" | "fk_60" | "extra_60"
+            | "default_60" => {
                 sqlx::query("DROP TABLE guardian_review_feedback")
                     .execute(&pool)
                     .await
@@ -723,21 +727,25 @@ async fn cancelling_after_bridge_writes_rolls_back_on_the_same_connection() {
         })
         .await
     });
-    writes_observed.await.expect("bridge reached its write seam");
+    writes_observed
+        .await
+        .expect("bridge reached its write seam");
     task.abort();
-    assert!(task.await.expect_err("bridge task should abort").is_cancelled());
+    assert!(
+        task.await
+            .expect_err("bridge task should abort")
+            .is_cancelled()
+    );
 
     let mut transaction = pool
         .begin_with("BEGIN IMMEDIATE")
         .await
         .expect("same pooled connection must be reusable after cancellation");
     assert_eq!(
-        sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM _sqlx_migrations WHERE version < 0",
-        )
-        .fetch_one(&mut *transaction)
-        .await
-        .expect("temporary rekey versions must be rolled back"),
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM _sqlx_migrations WHERE version < 0",)
+            .fetch_one(&mut *transaction)
+            .await
+            .expect("temporary rekey versions must be rolled back"),
         0
     );
     transaction.rollback().await.expect("release writer slot");
@@ -761,14 +769,12 @@ async fn shifted_identity_cannot_hide_malformed_canonical_tail() {
         .expect("canonical through 60 and fork through F3 should apply");
         seed_thread(&pool).await;
         let shifted = embedded(&STATE_MIGRATOR, FORK_9000).expect("known shifted 24 target");
-        sqlx::query(
-            "UPDATE _sqlx_migrations SET description = ?, checksum = ? WHERE version = 24",
-        )
-        .bind(shifted.description.as_ref())
-        .bind(shifted.checksum.as_ref())
-        .execute(&pool)
-        .await
-        .expect("make the exact recognized shifted 24 identity");
+        sqlx::query("UPDATE _sqlx_migrations SET description = ?, checksum = ? WHERE version = 24")
+            .bind(shifted.description.as_ref())
+            .bind(shifted.checksum.as_ref())
+            .execute(&pool)
+            .await
+            .expect("make the exact recognized shifted 24 identity");
         if missing_57 {
             sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 57")
                 .execute(&pool)

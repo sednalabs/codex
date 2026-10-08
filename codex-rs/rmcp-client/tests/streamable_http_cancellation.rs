@@ -104,9 +104,13 @@ async fn handle_mcp(State(state): State<ServerState>, Json(request): Json<Value>
                 return response;
             }
             if name == Some("terminal-error") {
-                let body = match serde_json::to_vec(&json!({"jsonrpc":"2.0","id":request.get("id"),"error":{"code":-32603,"message":"terminal test error"}})) {
+                let body = match serde_json::to_vec(
+                    &json!({"jsonrpc":"2.0","id":request.get("id"),"error":{"code":-32603,"message":"terminal test error"}}),
+                ) {
                     Ok(body) => body,
-                    Err(error) => panic!("failed to encode terminal JSON-RPC test response: {error}"),
+                    Err(error) => {
+                        panic!("failed to encode terminal JSON-RPC test response: {error}")
+                    }
                 };
                 let mut response = Response::new(Body::from(body));
                 response

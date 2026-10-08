@@ -373,7 +373,9 @@ where
                 && goal.goal_id == *expected_goal_id
                 && goal.status == codex_state::ThreadGoalStatus::Active
                 && accounting.current_turn_id().as_deref() == Some(turn_id)
-                && accounting.current_active_goal_id_for_turn(turn_id).as_deref()
+                && accounting
+                    .current_active_goal_id_for_turn(turn_id)
+                    .as_deref()
                     == Some(expected_goal_id.as_str())
             {
                 let continuation_deferred = self
@@ -382,10 +384,12 @@ where
                     .has_thread_goal_continuation_deferral(runtime.thread_id())
                     .await
                     .unwrap_or(true);
-                let still_current_after_deferral =
-                    accounting.current_turn_id().as_deref() == Some(turn_id)
-                        && accounting.current_active_goal_id_for_turn(turn_id).as_deref()
-                            == Some(expected_goal_id.as_str());
+                let still_current_after_deferral = accounting.current_turn_id().as_deref()
+                    == Some(turn_id)
+                    && accounting
+                        .current_active_goal_id_for_turn(turn_id)
+                        .as_deref()
+                        == Some(expected_goal_id.as_str());
                 if still_current_after_deferral {
                     let capability = async {
                         !continuation_deferred && runtime.can_schedule_continuation().await
@@ -664,8 +668,7 @@ async fn publish_goal_turn_outcome<F>(
     turn_id: &str,
     goal_id: &str,
     capability: F,
-)
-where
+) where
     F: Future<Output = bool>,
 {
     let capability_available = capability.await;
@@ -673,7 +676,10 @@ where
     // The capability future may yield while a newer generation becomes
     // current. Never publish an old turn's marker or parent options afterward.
     if accounting.current_turn_id().as_deref() != Some(turn_id)
-        || accounting.current_active_goal_id_for_turn(turn_id).as_deref() != Some(goal_id)
+        || accounting
+            .current_active_goal_id_for_turn(turn_id)
+            .as_deref()
+            != Some(goal_id)
     {
         return;
     }
@@ -689,7 +695,10 @@ where
     });
 
     if accounting.current_turn_id().as_deref() == Some(turn_id)
-        && accounting.current_active_goal_id_for_turn(turn_id).as_deref() == Some(goal_id)
+        && accounting
+            .current_active_goal_id_for_turn(turn_id)
+            .as_deref()
+            == Some(goal_id)
         && let Some(options) = thread_store.get::<TurnStartOptions>()
     {
         thread_store.insert_if(
@@ -764,9 +773,7 @@ mod tests {
         release_tx
             .send(true)
             .expect("capability lookup should still be waiting");
-        let (turn_store, thread_store) = publish
-            .await
-            .expect("publication task should finish");
+        let (turn_store, thread_store) = publish.await.expect("publication task should finish");
 
         assert!(turn_store.get::<GoalTurnMarker>().is_none());
         assert_eq!(
