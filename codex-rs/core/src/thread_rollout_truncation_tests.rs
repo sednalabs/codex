@@ -99,7 +99,7 @@ fn last_n_fork_turns_does_not_count_or_retain_synthetic_checkpoint_summary() {
         assistant_msg("retained answer"),
     ])];
 
-    let truncated = truncate_rollout_to_last_n_fork_turns(&rollout, 1);
+    let truncated = truncate_rollout_to_last_n_fork_turns(&rollout, 2);
     let RolloutItem::Compacted(checkpoint) = &truncated[0] else {
         panic!("checkpoint should be retained as the active history container");
     };
