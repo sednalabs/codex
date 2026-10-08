@@ -54,6 +54,7 @@ jobs:
       package_version: ${{ steps.identity.outputs.package_version }}
       workflow_host_sha: ${{ steps.identity.outputs.workflow_host_sha }}
       workflow_host_tree: ${{ steps.identity.outputs.workflow_host_tree }}
+      package_available: ${{ steps.identity.outputs.package_available }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -133,6 +134,38 @@ jobs:
           fi
           package_version="${base_version}-ci.${GITHUB_RUN_NUMBER}+g${source_short}"
 
+          required_package_paths=(
+            "justfile"
+            "scripts/codex_package/test_cargo.py"
+            "scripts/codex_package/test_layout.py"
+            "scripts/codex_package/smoke_tests/pyproject.toml"
+            "scripts/codex_package/smoke_tests/uv.lock"
+            "scripts/codex_package/smoke_tests/test_codex_package.py"
+            "scripts/codex_package/smoke_tests/first_binary/artifact.py"
+            "scripts/codex_package/smoke_tests/first_binary/conftest.py"
+            "scripts/codex_package/smoke_tests/first_binary/package_acceptance.py"
+            "scripts/codex_package/smoke_tests/first_binary/test_tui_package_version.py"
+            "scripts/codex_package/smoke_tests/first_binary/test_tui_agents_acceptance.py"
+            "scripts/codex_package/smoke_tests/first_binary/tui_pty.py"
+          )
+          missing_package_paths=()
+          for path in "${required_package_paths[@]}"; do
+            if ! git cat-file -e "${SOURCE_SHA}:${path}" 2>/dev/null; then
+              missing_package_paths+=("${path}")
+            fi
+          done
+          if ! justfile_contents="$(git show "${SOURCE_SHA}:justfile" 2>/dev/null)" || ! grep -Fq "assemble-codex-package" <<< "${justfile_contents}"; then
+            missing_package_paths+=("justfile:assemble-codex-package")
+          fi
+          if [[ "${#missing_package_paths[@]}" -eq 0 ]]; then
+            package_available=true
+          else
+            package_available=false
+            echo "Package artifacts are unavailable for this exact source; required package inputs are missing:" >&2
+            printf '  %s\n' "${missing_package_paths[@]}" >&2
+            echo "::notice title=Package route not yet available::No package or consumer proof will be produced until the exact source includes the assembler and smoke-test inputs."
+          fi
+
           {
             echo "source_sha=${SOURCE_SHA}"
             echo "source_tree=${source_tree}"
@@ -140,11 +173,12 @@ jobs:
             echo "package_version=${package_version}"
             echo "workflow_host_sha=${WORKFLOW_HOST_SHA}"
             echo "workflow_host_tree=${workflow_host_tree}"
+            echo "package_available=${package_available}"
           } >> "${GITHUB_OUTPUT}"
 
   prepare-source:
     name: Generate exact-source locks and schemas
-    if: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
+    if: ${{ needs.identity.outputs.package_available == 'true' }}
     needs: identity
     runs-on: ubuntu-24.04
     timeout-minutes: 210
@@ -284,9 +318,22 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+  package-unavailable:
+    name: Package route unavailable for this exact source
+    if: ${{ needs.identity.outputs.package_available != 'true' }}
+    needs: identity
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Report missing package inputs without claiming artifact proof
+        env:
+          SOURCE_SHA: ${{ needs.identity.outputs.source_sha }}
+        run: |
+          echo "Package preparation and package consumption are skipped for ${SOURCE_SHA}."
+          echo "The identity job listed the missing assembler/smoke-test inputs; this is not package or consumer acceptance."
+
   build-package:
     name: Build exact Linux package pair (${{ matrix.target }})
-    if: ${{ (github.event_name == 'pull_request' && needs.prepare-source.outputs.source_ready == 'true') || (github.event_name == 'workflow_dispatch' && inputs.operation == 'package') }}
+    if: ${{ needs.identity.outputs.package_available == 'true' && needs.prepare-source.outputs.source_ready == 'true' && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.operation == 'package')) }}
     needs:
       - identity
       - prepare-source
@@ -346,13 +393,6 @@ jobs:
             echo "Could not check out a clean exact source tree for packaging." >&2
             exit 1
           fi
-
-      - name: Require clean generated outputs for a package build
-        if: ${{ needs.prepare-source.outputs.source_ready != 'true' }}
-        shell: bash
-        run: |
-          echo "Selected source needs generated-output intake before it can be packaged; inspect the prepare artifact." >&2
-          exit 1
 
       - name: Prepare standard Linux CI build paths
         uses: ./.github/actions/setup-ci
@@ -482,7 +522,7 @@ jobs:
 
   consume-package:
     name: Consume exact downloaded packages (${{ matrix.target }})
-    if: ${{ (github.event_name == 'pull_request' && needs.prepare-source.outputs.source_ready == 'true') || (github.event_name == 'workflow_dispatch' && inputs.operation == 'package') }}
+    if: ${{ needs.identity.outputs.package_available == 'true' && needs.prepare-source.outputs.source_ready == 'true' && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.operation == 'package')) }}
     needs:
       - identity
       - prepare-source
