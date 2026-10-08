@@ -5,6 +5,7 @@
 
 use super::LocalAgentControl;
 use crate::TurnStartOptions;
+use crate::agent::api::AgentReadiness;
 use crate::agent::api::AgentTurnOutcome;
 use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
@@ -37,6 +38,9 @@ impl LocalAgentControl {
         else {
             return;
         };
+        if is_quiet_goal_continuation(&outcome.status, &outcome.readiness) {
+            return;
+        }
         let parent_thread_id = *parent_thread_id;
         let status = outcome.status;
         let Some(parent_agent_path) = child_agent_path
@@ -89,20 +93,13 @@ impl LocalAgentControl {
             }
         }
 
-        let message = match (&status, outcome.error_info) {
-            (AgentStatus::Errored(error), Some(CodexErrorInfo::TooManyDenials)) => {
-                Some(format_guardian_interruption_message(
-                    parent_agent_path.clone(),
-                    child_agent_path.clone(),
-                    error,
-                ))
-            }
-            _ => format_inter_agent_completion_message(
-                parent_agent_path.clone(),
-                child_agent_path.clone(),
-                &status,
-            ),
-        };
+        let message = format_parent_outcome_message(
+            &parent_agent_path,
+            &child_agent_path,
+            &status,
+            &outcome.readiness,
+            outcome.error_info.as_ref(),
+        );
         let Some(message) = message else {
             return;
         };
@@ -151,5 +148,113 @@ impl LocalAgentControl {
                 },
             );
         }
+    }
+}
+
+fn format_parent_outcome_message(
+    parent_agent_path: &AgentPath,
+    child_agent_path: &AgentPath,
+    status: &AgentStatus,
+    readiness: &AgentReadiness,
+    error_info: Option<&CodexErrorInfo>,
+) -> Option<String> {
+    match (status, readiness, error_info) {
+        (AgentStatus::Completed(_), AgentReadiness::GoalContinuing { .. }, _) => None,
+        (AgentStatus::Interrupted, AgentReadiness::ActionRequired, _) => Some(format!(
+            "Agent {child_agent_path} was interrupted and requires action before it can continue."
+        )),
+        (
+            AgentStatus::Errored(error),
+            _,
+            Some(CodexErrorInfo::TooManyDenials),
+        ) => Some(format_guardian_interruption_message(
+            parent_agent_path.clone(),
+            child_agent_path.clone(),
+            error,
+        )),
+        _ => format_inter_agent_completion_message(
+            parent_agent_path.clone(),
+            child_agent_path.clone(),
+            status,
+        ),
+    }
+}
+
+fn is_quiet_goal_continuation(status: &AgentStatus, readiness: &AgentReadiness) -> bool {
+    matches!(status, AgentStatus::Completed(_))
+        && matches!(readiness, AgentReadiness::GoalContinuing { .. })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_parent_outcome_message;
+    use super::is_quiet_goal_continuation;
+    use crate::agent::api::AgentReadiness;
+    use codex_protocol::AgentPath;
+    use codex_protocol::protocol::AgentStatus;
+
+    fn paths() -> (AgentPath, AgentPath) {
+        (
+            AgentPath::try_from("/root").expect("valid parent path"),
+            AgentPath::try_from("/root/child").expect("valid child path"),
+        )
+    }
+
+    #[test]
+    fn action_required_interruption_is_handed_back_but_quiet_states_are_not() {
+        let (parent, child) = paths();
+        let message = format_parent_outcome_message(
+            &parent,
+            &child,
+            &AgentStatus::Interrupted,
+            &AgentReadiness::ActionRequired,
+            None,
+        );
+        assert!(message.is_some());
+
+        assert_eq!(
+            format_parent_outcome_message(
+                &parent,
+                &child,
+                &AgentStatus::Interrupted,
+                &AgentReadiness::Pending,
+                None,
+            ),
+            None
+        );
+        assert_eq!(
+            format_parent_outcome_message(
+                &parent,
+                &child,
+                &AgentStatus::Interrupted,
+                &AgentReadiness::GoalContinuing {
+                    goal_id: "goal-1".to_owned(),
+                    turn_id: "turn-1".to_owned(),
+                },
+                None,
+            ),
+            None
+        );
+        assert_eq!(
+            format_parent_outcome_message(
+                &parent,
+                &child,
+                &AgentStatus::Completed(Some("intermediate goal output".to_owned())),
+                &AgentReadiness::GoalContinuing {
+                    goal_id: "goal-1".to_owned(),
+                    turn_id: "turn-2".to_owned(),
+                },
+                None,
+            ),
+            None,
+            "intermediate goal completion must not become parent mailbox activity"
+        );
+        assert!(is_quiet_goal_continuation(
+            &AgentStatus::Completed(Some("intermediate goal output".to_owned())),
+            &AgentReadiness::GoalContinuing {
+                goal_id: "goal-1".to_owned(),
+                turn_id: "turn-2".to_owned(),
+            }
+        ));
     }
 }

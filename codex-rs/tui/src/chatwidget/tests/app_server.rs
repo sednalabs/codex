@@ -747,6 +747,8 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
                 prompt: Some("Explore the repo".to_string()),
                 model: Some("gpt-5".to_string()),
                 reasoning_effort: Some(ReasoningEffortConfig::High),
+                wait_outcome: None,
+                queued_update_count: None,
                 agents_states: HashMap::new(),
             },
         }),
@@ -766,6 +768,8 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
                 prompt: Some("Explore the repo".to_string()),
                 model: None,
                 reasoning_effort: None,
+                wait_outcome: None,
+                queued_update_count: None,
                 agents_states: HashMap::from([(
                     spawned_thread_id.to_string(),
                     AppServerCollabAgentState {
@@ -1418,6 +1422,8 @@ async fn live_app_server_collab_wait_items_render_history() {
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                wait_outcome: None,
+                queued_update_count: None,
                 agents_states: HashMap::new(),
             },
         }),
@@ -1441,6 +1447,8 @@ async fn live_app_server_collab_wait_items_render_history() {
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                wait_outcome: None,
+                queued_update_count: None,
                 agents_states: HashMap::from([
                     (
                         receiver_thread_id.to_string(),
@@ -1471,6 +1479,73 @@ async fn live_app_server_collab_wait_items_render_history() {
 }
 
 #[tokio::test]
+async fn live_and_cold_replay_wait_outcome_fields_reach_history_renderer() {
+    for replay_kind in [None, Some(ReplayKind::ThreadSnapshot)] {
+        let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+        let sender_thread_id = ThreadId::new();
+        let receiver_thread_id = ThreadId::new();
+        chat.handle_server_notification(
+            ServerNotification::ItemStarted(ItemStartedNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                started_at_ms: 0,
+                item: AppServerThreadItem::CollabAgentToolCall {
+                    id: "wait-outcome".to_string(),
+                    tool: AppServerCollabAgentTool::Wait,
+                    status: AppServerCollabAgentToolCallStatus::InProgress,
+                    sender_thread_id: sender_thread_id.to_string(),
+                    receiver_thread_ids: vec![receiver_thread_id.to_string()],
+                    prompt: None,
+                    model: None,
+                    reasoning_effort: None,
+                    wait_outcome: None,
+                    queued_update_count: None,
+                    agents_states: HashMap::new(),
+                },
+            }),
+            replay_kind,
+        );
+        chat.handle_server_notification(
+            ServerNotification::ItemCompleted(ItemCompletedNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                completed_at_ms: 0,
+                item: AppServerThreadItem::CollabAgentToolCall {
+                    id: "wait-outcome".to_string(),
+                    tool: AppServerCollabAgentTool::Wait,
+                    status: AppServerCollabAgentToolCallStatus::Completed,
+                    sender_thread_id: sender_thread_id.to_string(),
+                    receiver_thread_ids: vec![receiver_thread_id.to_string()],
+                    prompt: None,
+                    model: None,
+                    reasoning_effort: None,
+                    wait_outcome: Some(
+                        codex_app_server_protocol::WaitAgentOutcome::TargetTerminalAll,
+                    ),
+                    queued_update_count: Some(3),
+                    agents_states: HashMap::from([(
+                        receiver_thread_id.to_string(),
+                        AppServerCollabAgentState {
+                            status: AppServerCollabAgentStatus::Completed,
+                            message: None,
+                        },
+                    )]),
+                },
+            }),
+            replay_kind,
+        );
+
+        let rendered = drain_insert_history(&mut rx)
+            .iter()
+            .map(|lines| lines_to_single_string(lines))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("All target agents became actionable."));
+        assert!(rendered.contains("Queued quiet updates: 3"));
+    }
+}
+
+#[tokio::test]
 async fn live_app_server_collab_spawn_completed_renders_requested_model_and_effort() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     let sender_thread_id =
@@ -1492,6 +1567,8 @@ async fn live_app_server_collab_spawn_completed_renders_requested_model_and_effo
                 prompt: Some("Explore the repo".to_string()),
                 model: Some("gpt-5".to_string()),
                 reasoning_effort: Some(ReasoningEffortConfig::High),
+                wait_outcome: None,
+                queued_update_count: None,
                 agents_states: HashMap::new(),
             },
         }),
@@ -1512,6 +1589,8 @@ async fn live_app_server_collab_spawn_completed_renders_requested_model_and_effo
                 prompt: Some("Explore the repo".to_string()),
                 model: Some("gpt-5".to_string()),
                 reasoning_effort: Some(ReasoningEffortConfig::High),
+                wait_outcome: None,
+                queued_update_count: None,
                 agents_states: HashMap::from([(
                     spawned_thread_id.to_string(),
                     AppServerCollabAgentState {

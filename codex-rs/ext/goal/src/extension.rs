@@ -4,6 +4,8 @@ use std::sync::Weak;
 use codex_analytics::AnalyticsEventsClient;
 use codex_core::ThreadManager;
 use codex_core::TurnStartOptions;
+use codex_core::GoalTurnMarker;
+use codex_core::GoalTurnReadiness;
 use codex_extension_api::ConfigContributor;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionEventSink;
@@ -347,9 +349,36 @@ where
                 return;
             }
             let accounting = runtime.accounting_state();
-            if accounting
-                .current_active_goal_id_for_turn(turn_id)
-                .is_some()
+            let active_goal_id = accounting.current_active_goal_id_for_turn(turn_id);
+            if let Some(expected_goal_id) = active_goal_id.as_ref()
+                && let Ok(Some(goal)) = self
+                    .state_dbs
+                    .thread_goals()
+                    .get_thread_goal(runtime.thread_id())
+                    .await
+                && goal.goal_id == *expected_goal_id
+                && goal.status == codex_state::ThreadGoalStatus::Active
+            {
+                let continuation_deferred = self
+                    .state_dbs
+                    .thread_goals()
+                    .has_thread_goal_continuation_deferral(runtime.thread_id())
+                    .await
+                    .unwrap_or(true);
+                let readiness = if !continuation_deferred
+                    && runtime.can_schedule_continuation().await
+                {
+                    GoalTurnReadiness::Continuing
+                } else {
+                    GoalTurnReadiness::ActionRequired
+                };
+                input.turn_store.insert(GoalTurnMarker {
+                    goal_id: expected_goal_id.clone(),
+                    turn_id: turn_id.to_string(),
+                    readiness,
+                });
+            }
+            if active_goal_id.is_some()
                 && let Some(options) = input.thread_store.get::<TurnStartOptions>()
             {
                 input.thread_store.insert_if(

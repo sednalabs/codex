@@ -14,7 +14,11 @@ use std::time::UNIX_EPOCH;
 use crate::agent::AgentStatus;
 use crate::agent::agent_status_from_event;
 use crate::agent::api::AgentConfigUpdate;
+use crate::agent::api::AgentOutcomeSnapshot;
+use crate::agent::api::AgentReadiness;
 use crate::agent::api::AgentTurnOutcome;
+use crate::agent::api::GoalTurnMarker;
+use crate::agent::api::GoalTurnReadiness;
 use crate::agent::control::AgentControlInit;
 use crate::agent::status::is_final;
 use crate::agents_md_manager::SessionInstructions;
@@ -1425,6 +1429,13 @@ impl Session {
     }
 
     pub(crate) fn mark_interrupted(&self) {
+        let publisher = self.services.local_agent_runtime.outcome_publisher(self.thread_id);
+        let current = publisher.snapshot();
+        publisher.publish_interrupted(AgentOutcomeSnapshot {
+            turn_id: current.turn_id,
+            status: AgentStatus::Interrupted,
+            readiness: AgentReadiness::Pending,
+        });
         self.agent_status.send_replace(AgentStatus::Interrupted);
     }
 
@@ -1628,6 +1639,13 @@ impl Session {
                     }),
                     Some(AgentStatus::Interrupted)
                 ) {
+                    let publisher = self.services.local_agent_runtime.outcome_publisher(self.thread_id);
+                    let current = publisher.snapshot();
+                    publisher.publish_interrupted(AgentOutcomeSnapshot {
+                        turn_id: current.turn_id,
+                        status: AgentStatus::Interrupted,
+                        readiness: AgentReadiness::Pending,
+                    });
                     self.agent_status.send_replace(AgentStatus::Interrupted);
                 }
                 let previous_turn_settings = self
@@ -2391,8 +2409,13 @@ impl Session {
                 .analytics_events_client
                 .track_guardian_session_event(self.thread_id, &event);
         }
+        let published_outcome = self.publish_agent_outcome(turn_context, &legacy_source).await;
         self.send_event_raw(event).await;
-        self.maybe_notify_parent_of_terminal_turn(turn_context, &legacy_source)
+        self.maybe_notify_parent_of_terminal_turn(
+            turn_context,
+            &legacy_source,
+            published_outcome.as_ref(),
+        )
             .await;
         self.maybe_mirror_event_text_to_realtime(&legacy_source)
             .await;
@@ -2412,11 +2435,65 @@ impl Session {
         }
     }
 
+    async fn publish_agent_outcome(
+        &self,
+        turn_context: &TurnContext,
+        msg: &EventMsg,
+    ) -> Option<AgentOutcomeSnapshot> {
+        let mut status = agent_status_from_event(msg)?;
+        let terminal_error = turn_context.terminal_error.lock().await.clone();
+        if let Some(error) = terminal_error.as_ref()
+            && matches!(msg, EventMsg::TurnComplete(_))
+        {
+            status = AgentStatus::Errored(error.message.clone());
+        }
+        let turn_id = turn_context.sub_id.clone();
+        let readiness = match msg {
+            EventMsg::TurnStarted(_) => AgentReadiness::Pending,
+            EventMsg::TurnComplete(event) if event.error.is_none() => {
+                completed_turn_readiness(
+                    turn_context.extension_data.get::<GoalTurnMarker>().as_deref(),
+                    &turn_id,
+                    &event.turn_id,
+                    &status,
+                )
+            }
+            EventMsg::TurnAborted(event) if event.reason == TurnAbortReason::Interrupted => {
+                interrupted_readiness(
+                    event
+                        .error
+                        .as_ref()
+                        .and_then(|error| error.codex_error_info.clone()),
+                )
+            }
+            EventMsg::TurnAborted(event) if event.reason == TurnAbortReason::BudgetLimited => {
+                AgentReadiness::ActionRequired
+            }
+            EventMsg::TurnAborted(_) | EventMsg::TurnComplete(_) | EventMsg::Error(_) => {
+                AgentReadiness::ActionRequired
+            }
+            EventMsg::ShutdownComplete => AgentReadiness::Terminal,
+            _ => AgentReadiness::Pending,
+        };
+        let snapshot = AgentOutcomeSnapshot {
+            turn_id: Some(turn_id),
+            status,
+            readiness,
+        };
+        let publisher = self.services.local_agent_runtime.outcome_publisher(self.thread_id);
+        if matches!(msg, EventMsg::TurnAborted(event) if event.reason == TurnAbortReason::Interrupted) {
+            Some(publisher.publish_interrupted(snapshot))
+        } else {
+            Some(publisher.publish(snapshot))
+        }
+    }
+
     /// Forwards terminal turn events from spawned MultiAgentV2 children to their direct parent.
     async fn maybe_notify_parent_of_terminal_turn(
         &self,
         turn_context: &TurnContext,
         msg: &EventMsg,
+        published_outcome: Option<&AgentOutcomeSnapshot>,
     ) {
         if turn_context.multi_agent_version != MultiAgentVersion::V2 {
             return;
@@ -2459,7 +2536,16 @@ impl Session {
                 }
             }
         };
-        if !is_final(&status) {
+        let readiness = published_outcome
+            .filter(|outcome| outcome.turn_id.as_deref() == Some(turn_context.sub_id.as_str()))
+            .map(|outcome| outcome.readiness.clone())
+            .unwrap_or_else(|| match (&status, msg) {
+                (AgentStatus::Interrupted, EventMsg::TurnAborted(event))
+                    if event.reason == TurnAbortReason::Interrupted => AgentReadiness::Pending,
+                (AgentStatus::Completed(_), _) => AgentReadiness::Terminal,
+                _ => AgentReadiness::ActionRequired,
+            });
+        if !readiness.wakes_wait() {
             return;
         }
 
@@ -2476,6 +2562,7 @@ impl Session {
                         .initiating_agent_path()
                         .cloned(),
                     status,
+                    readiness,
                     error_info,
                 },
                 &self.services.rollout_thread_trace,
@@ -5222,6 +5309,106 @@ async fn build_hooks_config(
         plugin_hook_load_warnings,
         shell_program: hook_shell_program,
         shell_args: hook_shell_argv,
+    }
+}
+
+fn completed_turn_readiness(
+    marker: Option<&GoalTurnMarker>,
+    current_turn_id: &str,
+    event_turn_id: &str,
+    status: &AgentStatus,
+) -> AgentReadiness {
+    if matches!(status, AgentStatus::Errored(_) | AgentStatus::NotFound) {
+        return AgentReadiness::ActionRequired;
+    }
+    match marker {
+        Some(marker)
+            if marker.turn_id == current_turn_id
+                && marker.turn_id == event_turn_id
+                && !marker.goal_id.trim().is_empty() =>
+        {
+            match marker.readiness {
+                GoalTurnReadiness::Continuing => AgentReadiness::GoalContinuing {
+                    goal_id: marker.goal_id.clone(),
+                    turn_id: marker.turn_id.clone(),
+                },
+                GoalTurnReadiness::ActionRequired => AgentReadiness::ActionRequired,
+            }
+        }
+        _ => AgentReadiness::Terminal,
+    }
+}
+
+fn interrupted_readiness(error_info: Option<CodexErrorInfo>) -> AgentReadiness {
+    if error_info == Some(CodexErrorInfo::TooManyDenials) {
+        AgentReadiness::ActionRequired
+    } else {
+        AgentReadiness::Pending
+    }
+}
+
+#[cfg(test)]
+mod completed_turn_readiness_tests {
+    use super::*;
+
+    #[test]
+    fn only_current_goal_marker_suppresses_successful_turn_handback() {
+        let current = GoalTurnMarker {
+            goal_id: "goal-current".to_string(),
+            turn_id: "turn-current".to_string(),
+            readiness: GoalTurnReadiness::Continuing,
+        };
+        assert!(matches!(
+            completed_turn_readiness(
+                Some(&current),
+                "turn-current",
+                "turn-current",
+                &AgentStatus::Completed(None),
+            ),
+            AgentReadiness::GoalContinuing { .. }
+        ));
+        assert_eq!(
+            completed_turn_readiness(
+                Some(&current),
+                "turn-current",
+                "turn-stale",
+                &AgentStatus::Completed(None),
+            ),
+            AgentReadiness::Terminal
+        );
+        assert_eq!(
+            completed_turn_readiness(
+                None,
+                "turn-current",
+                "turn-current",
+                &AgentStatus::Errored("failed".to_string()),
+            ),
+            AgentReadiness::ActionRequired
+        );
+        assert_eq!(
+            completed_turn_readiness(
+                Some(&current),
+                "turn-current",
+                "turn-current",
+                &AgentStatus::Errored("budget-limited".to_string()),
+            ),
+            AgentReadiness::ActionRequired,
+            "a terminal error must outrank a matching goal-continuation marker"
+        );
+    }
+
+    #[test]
+    fn only_authoritative_interruption_abort_is_actionable() {
+        assert_eq!(
+            interrupted_readiness(None),
+            AgentReadiness::Pending,
+            "ordinary interruption is quiet"
+        );
+        assert_eq!(
+            interrupted_readiness(Some(CodexErrorInfo::TooManyDenials)),
+            AgentReadiness::ActionRequired,
+            "guardian denial handback is actionable"
+        );
     }
 }
 

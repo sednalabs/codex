@@ -303,7 +303,7 @@ pub fn create_wait_agent_tool_v1(options: WaitAgentTimeoutOptions) -> ToolSpec {
 pub fn create_wait_agent_tool_v2(options: WaitAgentTimeoutOptions) -> ToolSpec {
     ToolSpec::Function(ResponsesApiTool {
         name: "wait_agent".to_string(),
-        description: "Wait for a mailbox update from any live agent, including queued messages and final-status notifications. The wait also ends early when new user input is steered into the active turn. Does not return the content; returns either a summary of which agents have updates (if any), an interruption summary for steered input, or a timeout summary if no activity arrives before the deadline."
+        description: "Wait for mailbox activity, or pass exact agent targets to wait for actionable agent completion. With targets, return_when selects whether any target or all targets must become actionable. The wait also ends early when new user input is steered into the active turn. Does not return agent content; returns a concise outcome summary."
             .to_string(),
         strict: false,
         defer_loading: None,
@@ -545,7 +545,23 @@ fn wait_output_schema_v2() -> Value {
             },
             "timed_out": {
                 "type": "boolean",
-                "description": "Whether the wait call returned because no mailbox update arrived before the timeout."
+                "description": "Whether the wait call returned because no target or mailbox activity arrived before the timeout."
+            },
+            "outcome": {
+                "type": "string",
+                "enum": [
+                    "target_terminal_any",
+                    "target_terminal_all",
+                    "exact_target_actionable_message",
+                    "targetless_actionable_message",
+                    "unattributed_mailbox_activity",
+                    "ambiguous_mailbox_activity",
+                    "terminal_completion",
+                    "operator_steer",
+                    "timeout",
+                    "subscription_loss"
+                ],
+                "description": "The observed reason the wait returned, when available."
             }
         },
         "required": ["message", "timed_out"],
@@ -915,13 +931,28 @@ fn wait_agent_tool_parameters_v1(options: WaitAgentTimeoutOptions) -> JsonSchema
 }
 
 fn wait_agent_tool_parameters_v2(options: WaitAgentTimeoutOptions) -> JsonSchema {
-    let properties = BTreeMap::from([(
-        "timeout_ms".to_string(),
-        JsonSchema::number(Some(format!(
-            "Timeout in milliseconds. Defaults to {}, min {}, max {}.",
-            options.default_timeout_ms, options.min_timeout_ms, options.max_timeout_ms,
-        ))),
-    )]);
+    let properties = BTreeMap::from([
+        (
+            "targets".to_string(),
+            JsonSchema::array(
+                JsonSchema::string(None),
+                Some("Exact agent IDs to wait on. Omit for mailbox activity.".to_string()),
+            ),
+        ),
+        (
+            "return_when".to_string(),
+            JsonSchema::string(Some(
+                "Use 'any' (default) to return when one target is actionable, or 'all' to wait for every target.".to_string(),
+            )),
+        ),
+        (
+            "timeout_ms".to_string(),
+            JsonSchema::number(Some(format!(
+                "Timeout in milliseconds. Defaults to {}, min {}, max {}.",
+                options.default_timeout_ms, options.min_timeout_ms, options.max_timeout_ms,
+            ))),
+        ),
+    ]);
 
     JsonSchema::object(properties, /*required*/ None, Some(false.into()))
 }

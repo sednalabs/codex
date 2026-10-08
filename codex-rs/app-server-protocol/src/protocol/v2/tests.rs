@@ -8,6 +8,7 @@ use codex_protocol::items::AgentMessageItem;
 use codex_protocol::items::CollabAgentTool as CoreCollabAgentTool;
 use codex_protocol::items::CollabAgentToolCallItem;
 use codex_protocol::items::CollabAgentToolCallStatus as CoreCollabAgentToolCallStatus;
+use codex_protocol::items::WaitAgentOutcome as CoreWaitAgentOutcome;
 use codex_protocol::items::CommandExecutionItem;
 use codex_protocol::items::CommandExecutionStatus as CoreCommandExecutionStatus;
 use codex_protocol::items::DynamicToolCallItem;
@@ -22,6 +23,7 @@ use codex_protocol::items::TurnItem;
 use codex_protocol::items::UserMessageItem;
 use codex_protocol::items::WebSearchItem as CoreWebSearchItem;
 use codex_protocol::mcp::CallToolResult;
+use codex_protocol::protocol::CollabAgentRef as CoreCollabAgentRef;
 use codex_protocol::mcp::McpServerInfo;
 use codex_protocol::memory_citation::MemoryCitation as CoreMemoryCitation;
 use codex_protocol::memory_citation::MemoryCitationEntry as CoreMemoryCitationEntry;
@@ -3414,7 +3416,13 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         status: CoreCollabAgentToolCallStatus::Completed,
         sender_thread_id,
         receiver_thread_ids: vec![receiver_thread_id],
-        receiver_agents: Vec::new(),
+        receiver_agents: vec![CoreCollabAgentRef {
+            thread_id: receiver_thread_id,
+            agent_nickname: Some("Scout".to_string()),
+            agent_role: Some("explorer".to_string()),
+        }],
+        wait_outcome: Some(CoreWaitAgentOutcome::TargetTerminalAll),
+        queued_update_count: Some(2),
         prompt: Some("continue".to_string()),
         model: None,
         reasoning_effort: None,
@@ -3431,6 +3439,13 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             status: CollabAgentToolCallStatus::Completed,
             sender_thread_id: sender_thread_id.to_string(),
             receiver_thread_ids: vec![receiver_thread_id.to_string()],
+            receiver_agents: Some(vec![CollabAgentRef {
+                thread_id: receiver_thread_id.to_string(),
+                agent_nickname: Some("Scout".to_string()),
+                agent_role: Some("explorer".to_string()),
+            }]),
+            wait_outcome: Some(WaitAgentOutcome::TargetTerminalAll),
+            queued_update_count: Some(2),
             prompt: Some("continue".to_string()),
             model: None,
             reasoning_effort: None,

@@ -5,7 +5,12 @@ use super::LocalAgentControl;
 use super::execution::AgentExecutionLimiter;
 use super::residency::V2Residency;
 use crate::agent::api::AgentControl;
+use crate::agent::api::AgentOutcomePublisher;
+use crate::agent::api::AgentWaitRegistration;
+use crate::agent::api::AgentWaitReturnWhen;
+use crate::agent::api::SharedAgentWaitRegistry;
 use crate::agent::registry::AgentRegistry;
+use crate::agent::types::AgentMetadata;
 use crate::config::RolloutBudgetConfig;
 use crate::rollout_budget::RolloutBudget;
 use crate::thread_manager::AgentTreeShutdownFailure;
@@ -17,6 +22,7 @@ use arc_swap::ArcSwapOption;
 use codex_extension_api::ThreadInstructionsProvider;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
+use codex_protocol::protocol::AgentStatus;
 use codex_protocol::error::AgentErrorContext;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
@@ -25,6 +31,7 @@ use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::PoisonError;
 use std::sync::Weak;
+use std::collections::HashMap;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use tokio_util::task::task_tracker::TaskTrackerToken;
@@ -202,6 +209,9 @@ pub(crate) struct LocalAgentRuntime {
     /// Shared by every session in this tree, including private delegates.
     pub(crate) shutdown: CancellationToken,
     shutdown_state: Arc<AgentTreeShutdownState>,
+    /// Per-thread outcome publishers share the same lock as active wait latches.
+    outcomes: Arc<Mutex<HashMap<ThreadId, Arc<AgentOutcomePublisher>>>>,
+    wait_registry: SharedAgentWaitRegistry,
 }
 
 impl LocalAgentRuntime {
@@ -218,6 +228,8 @@ impl LocalAgentRuntime {
             mailboxes: Arc::default(),
             shutdown: CancellationToken::new(),
             shutdown_state: Arc::default(),
+            outcomes: Arc::default(),
+            wait_registry: Arc::new(Mutex::new(Default::default())),
             agent_execution_limiter: Arc::default(),
             rollout_budget: Arc::default(),
             root_service_tier: Arc::new(ArcSwapOption::from(None)),
@@ -235,6 +247,40 @@ impl LocalAgentRuntime {
             session_id,
             runtime: self.clone(),
         }
+    }
+
+    pub(crate) fn outcome_publisher(&self, thread_id: ThreadId) -> Arc<AgentOutcomePublisher> {
+        let mut outcomes = self.outcomes.lock().unwrap_or_else(PoisonError::into_inner);
+        outcomes
+            .entry(thread_id)
+            .or_insert_with(|| Arc::new(AgentOutcomePublisher::new(thread_id, self.wait_registry.clone())))
+            .clone()
+    }
+
+    pub(crate) fn register_agent_wait(
+        &self,
+        targets: Vec<ThreadId>,
+        return_when: AgentWaitReturnWhen,
+    ) -> AgentWaitRegistration {
+        crate::agent::api::register_agent_wait(&self.wait_registry, targets, return_when)
+    }
+
+    pub(crate) fn owns_agent(&self, thread_id: ThreadId) -> bool {
+        self.registry.agent_metadata_for_thread(thread_id).is_some()
+    }
+
+    pub(crate) fn agent_metadata(&self, thread_id: ThreadId) -> Option<AgentMetadata> {
+        self.registry.agent_metadata_for_thread(thread_id)
+    }
+
+    pub(crate) async fn raw_agent_status(&self, thread_id: ThreadId) -> Option<AgentStatus> {
+        let Some(manager) = self.manager.upgrade() else {
+            return None;
+        };
+        let Ok(thread) = manager.get_thread(thread_id).await else {
+            return None;
+        };
+        Some(thread.agent_status().await)
     }
 }
 

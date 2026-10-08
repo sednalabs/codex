@@ -29,8 +29,10 @@ pub use codex_protocol::items::AgentMessageDelivery;
 pub use codex_protocol::items::AsyncUserInputQuestion;
 use codex_protocol::items::CollabAgentTool as CoreCollabAgentTool;
 use codex_protocol::items::CollabAgentToolCallStatus as CoreCollabAgentToolCallStatus;
+use codex_protocol::protocol::CollabAgentRef as CoreCollabAgentRef;
 use codex_protocol::items::CommandExecutionStatus as CoreCommandExecutionStatus;
 use codex_protocol::items::DynamicToolCallStatus as CoreDynamicToolCallStatus;
+use codex_protocol::items::WaitAgentOutcome as CoreWaitAgentOutcome;
 pub use codex_protocol::items::McpAppDisplayMode;
 pub use codex_protocol::items::McpAppUi;
 use codex_protocol::items::McpToolCallStatus as CoreMcpToolCallStatus;
@@ -383,6 +385,18 @@ pub enum ThreadItem {
         /// Thread ID of the receiving agent, when applicable. In case of spawn operation,
         /// this corresponds to the newly spawned agent.
         receiver_thread_ids: Vec<String>,
+        /// Receiver identity metadata captured when the wait began.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        receiver_agents: Option<Vec<CollabAgentRef>>,
+        /// Actual reason a V2 wait call returned, when available.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        wait_outcome: Option<WaitAgentOutcome>,
+        /// Newly published quiet mailbox updates still queued at completion.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        queued_update_count: Option<u32>,
         /// Prompt text sent as part of the collab tool call, when available.
         prompt: Option<String>,
         /// Model requested for the spawned agent, when applicable.
@@ -972,6 +986,13 @@ impl From<CoreTurnItem> for ThreadItem {
                     .into_iter()
                     .map(String::from)
                     .collect(),
+                receiver_agents: if call.receiver_agents.is_empty() {
+                    None
+                } else {
+                    Some(call.receiver_agents.into_iter().map(CollabAgentRef::from).collect())
+                },
+                wait_outcome: call.wait_outcome.map(WaitAgentOutcome::from),
+                queued_update_count: call.queued_update_count,
                 prompt: call.prompt,
                 model: call.model,
                 reasoning_effort: call.reasoning_effort,
@@ -1292,6 +1313,58 @@ pub enum CollabAgentStatus {
     Errored,
     Shutdown,
     NotFound,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase", export_to = "v2/")]
+pub struct CollabAgentRef {
+    pub thread_id: String,
+    pub agent_nickname: Option<String>,
+    pub agent_role: Option<String>,
+}
+
+impl From<CoreCollabAgentRef> for CollabAgentRef {
+    fn from(agent: CoreCollabAgentRef) -> Self {
+        Self {
+            thread_id: agent.thread_id.to_string(),
+            agent_nickname: agent.agent_nickname,
+            agent_role: agent.agent_role,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase", export_to = "v2/")]
+pub enum WaitAgentOutcome {
+    TargetTerminalAny,
+    TargetTerminalAll,
+    ExactTargetActionableMessage,
+    TargetlessActionableMessage,
+    UnattributedMailboxActivity,
+    AmbiguousMailboxActivity,
+    TerminalCompletion,
+    OperatorSteer,
+    Timeout,
+    SubscriptionLoss,
+}
+
+impl From<CoreWaitAgentOutcome> for WaitAgentOutcome {
+    fn from(outcome: CoreWaitAgentOutcome) -> Self {
+        match outcome {
+            CoreWaitAgentOutcome::TargetTerminalAny => Self::TargetTerminalAny,
+            CoreWaitAgentOutcome::TargetTerminalAll => Self::TargetTerminalAll,
+            CoreWaitAgentOutcome::ExactTargetActionableMessage => Self::ExactTargetActionableMessage,
+            CoreWaitAgentOutcome::TargetlessActionableMessage => Self::TargetlessActionableMessage,
+            CoreWaitAgentOutcome::UnattributedMailboxActivity => Self::UnattributedMailboxActivity,
+            CoreWaitAgentOutcome::AmbiguousMailboxActivity => Self::AmbiguousMailboxActivity,
+            CoreWaitAgentOutcome::TerminalCompletion => Self::TerminalCompletion,
+            CoreWaitAgentOutcome::OperatorSteer => Self::OperatorSteer,
+            CoreWaitAgentOutcome::Timeout => Self::Timeout,
+            CoreWaitAgentOutcome::SubscriptionLoss => Self::SubscriptionLoss,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]

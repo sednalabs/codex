@@ -3,6 +3,7 @@ use crate::protocol::item_builders::build_command_execution_begin_item;
 use crate::protocol::item_builders::build_command_execution_end_item;
 use crate::protocol::item_builders::convert_patch_changes;
 use crate::protocol::v2::AgentMessageDeltaNotification;
+use crate::protocol::v2::CollabAgentRef;
 use crate::protocol::v2::CollabAgentState;
 use crate::protocol::v2::CollabAgentTool;
 use crate::protocol::v2::CollabAgentToolCallStatus;
@@ -82,6 +83,9 @@ pub fn item_event_to_server_notification(
                 status: CollabAgentToolCallStatus::InProgress,
                 sender_thread_id: begin_event.sender_thread_id.to_string(),
                 receiver_thread_ids: Vec::new(),
+                receiver_agents: None,
+                wait_outcome: None,
+                queued_update_count: None,
                 prompt: Some(begin_event.prompt),
                 model: Some(begin_event.model),
                 reasoning_effort: Some(begin_event.reasoning_effort),
@@ -121,6 +125,9 @@ pub fn item_event_to_server_notification(
                 status,
                 sender_thread_id: end_event.sender_thread_id.to_string(),
                 receiver_thread_ids,
+                receiver_agents: None,
+                wait_outcome: None,
+                queued_update_count: None,
                 prompt: Some(end_event.prompt),
                 model: Some(end_event.model),
                 reasoning_effort: Some(end_event.reasoning_effort),
@@ -141,6 +148,9 @@ pub fn item_event_to_server_notification(
                 status: CollabAgentToolCallStatus::InProgress,
                 sender_thread_id: begin_event.sender_thread_id.to_string(),
                 receiver_thread_ids,
+                receiver_agents: None,
+                wait_outcome: None,
+                queued_update_count: None,
                 prompt: Some(begin_event.prompt),
                 model: None,
                 reasoning_effort: None,
@@ -169,6 +179,9 @@ pub fn item_event_to_server_notification(
                 status,
                 sender_thread_id: end_event.sender_thread_id.to_string(),
                 receiver_thread_ids: vec![receiver_id.clone()],
+                receiver_agents: None,
+                wait_outcome: None,
+                queued_update_count: None,
                 prompt: Some(end_event.prompt),
                 model: None,
                 reasoning_effort: None,
@@ -209,6 +222,16 @@ pub fn item_event_to_server_notification(
                 status: CollabAgentToolCallStatus::InProgress,
                 sender_thread_id: begin_event.sender_thread_id.to_string(),
                 receiver_thread_ids,
+                receiver_agents: {
+                    let agents = begin_event
+                        .receiver_agents
+                        .into_iter()
+                        .map(CollabAgentRef::from)
+                        .collect::<Vec<_>>();
+                    (!agents.is_empty()).then_some(agents)
+                },
+                wait_outcome: None,
+                queued_update_count: None,
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
@@ -245,6 +268,20 @@ pub fn item_event_to_server_notification(
                 status,
                 sender_thread_id: end_event.sender_thread_id.to_string(),
                 receiver_thread_ids,
+                receiver_agents: {
+                    let agents = end_event
+                        .agent_statuses
+                        .into_iter()
+                        .map(|agent| CollabAgentRef {
+                            thread_id: agent.thread_id.to_string(),
+                            agent_nickname: agent.agent_nickname,
+                            agent_role: agent.agent_role,
+                        })
+                        .collect::<Vec<_>>();
+                    (!agents.is_empty()).then_some(agents)
+                },
+                wait_outcome: None,
+                queued_update_count: None,
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
@@ -264,6 +301,9 @@ pub fn item_event_to_server_notification(
                 status: CollabAgentToolCallStatus::InProgress,
                 sender_thread_id: begin_event.sender_thread_id.to_string(),
                 receiver_thread_ids: vec![begin_event.receiver_thread_id.to_string()],
+                receiver_agents: None,
+                wait_outcome: None,
+                queued_update_count: None,
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
@@ -297,6 +337,9 @@ pub fn item_event_to_server_notification(
                 status,
                 sender_thread_id: end_event.sender_thread_id.to_string(),
                 receiver_thread_ids: vec![receiver_id],
+                receiver_agents: None,
+                wait_outcome: None,
+                queued_update_count: None,
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
@@ -316,6 +359,9 @@ pub fn item_event_to_server_notification(
                 status: CollabAgentToolCallStatus::InProgress,
                 sender_thread_id: begin_event.sender_thread_id.to_string(),
                 receiver_thread_ids: vec![begin_event.receiver_thread_id.to_string()],
+                receiver_agents: None,
+                wait_outcome: None,
+                queued_update_count: None,
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
@@ -349,6 +395,9 @@ pub fn item_event_to_server_notification(
                 status,
                 sender_thread_id: end_event.sender_thread_id.to_string(),
                 receiver_thread_ids: vec![receiver_id],
+                receiver_agents: None,
+                wait_outcome: None,
+                queued_update_count: None,
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
@@ -538,6 +587,9 @@ mod tests {
                     status: CollabAgentToolCallStatus::InProgress,
                     sender_thread_id: event.sender_thread_id.to_string(),
                     receiver_thread_ids: vec![event.receiver_thread_id.to_string()],
+                    receiver_agents: None,
+                    wait_outcome: None,
+                    queued_update_count: None,
                     prompt: None,
                     model: None,
                     reasoning_effort: None,
@@ -577,6 +629,9 @@ mod tests {
                     status: CollabAgentToolCallStatus::Failed,
                     sender_thread_id: event.sender_thread_id.to_string(),
                     receiver_thread_ids: vec![receiver_id.clone()],
+                    receiver_agents: None,
+                    wait_outcome: None,
+                    queued_update_count: None,
                     prompt: None,
                     model: None,
                     reasoning_effort: None,

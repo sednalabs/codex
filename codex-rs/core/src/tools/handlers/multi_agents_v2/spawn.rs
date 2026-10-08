@@ -84,6 +84,8 @@ impl ToolExecutor<ToolInvocation> for Handler {
                     sender_thread_id,
                     receiver_thread_ids,
                     receiver_agents: Vec::new(),
+                    wait_outcome: None,
+                    queued_update_count: None,
                     prompt: None,
                     model: agent_snapshot.map(|snapshot| snapshot.model.clone()),
                     reasoning_effort: agent_snapshot

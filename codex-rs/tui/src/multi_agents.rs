@@ -14,6 +14,7 @@ use codex_app_server_protocol::CollabAgentTool;
 use codex_app_server_protocol::CollabAgentToolCallStatus;
 use codex_app_server_protocol::SubAgentActivityKind;
 use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::WaitAgentOutcome;
 use codex_protocol::ThreadId;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use crossterm::event::KeyCode;
@@ -212,6 +213,8 @@ pub(crate) fn tool_call_history_cell(
         receiver_thread_ids,
         prompt,
         agents_states,
+        wait_outcome,
+        queued_update_count,
         ..
     } = item
     else {
@@ -270,6 +273,8 @@ pub(crate) fn tool_call_history_cell(
                 Some(waiting_end(
                     receiver_thread_ids,
                     agents_states,
+                    *wait_outcome,
+                    *queued_update_count,
                     &mut agent_metadata,
                 ))
             }
@@ -407,10 +412,35 @@ fn waiting_begin(
 fn waiting_end(
     receiver_thread_ids: &[String],
     agents_states: &std::collections::HashMap<String, CollabAgentState>,
+    wait_outcome: Option<WaitAgentOutcome>,
+    queued_update_count: Option<u32>,
     agent_metadata: &mut impl FnMut(ThreadId) -> AgentMetadata,
 ) -> PlainHistoryCell {
-    let details = wait_complete_lines(receiver_thread_ids, agents_states, agent_metadata);
+    let mut details = wait_complete_lines(receiver_thread_ids, agents_states, agent_metadata);
+    if let Some(outcome) = wait_outcome {
+        details.push(Line::from(Span::from(wait_outcome_summary(outcome))));
+    }
+    if let Some(queued_update_count) = queued_update_count {
+        details.push(Line::from(Span::from(format!(
+            "Queued quiet updates: {queued_update_count}"
+        ))));
+    }
     collab_event(title_text("Finished waiting"), details)
+}
+
+fn wait_outcome_summary(outcome: WaitAgentOutcome) -> &'static str {
+    match outcome {
+        WaitAgentOutcome::TargetTerminalAny => "A target agent became actionable.",
+        WaitAgentOutcome::TargetTerminalAll => "All target agents became actionable.",
+        WaitAgentOutcome::ExactTargetActionableMessage => "An exact target sent an actionable message.",
+        WaitAgentOutcome::TargetlessActionableMessage => "An agent sent an actionable message.",
+        WaitAgentOutcome::UnattributedMailboxActivity => "Agent mailbox activity occurred.",
+        WaitAgentOutcome::AmbiguousMailboxActivity => "Agent mailbox activity occurred; its source is unknown.",
+        WaitAgentOutcome::TerminalCompletion => "A process completed.",
+        WaitAgentOutcome::OperatorSteer => "Interrupted by new input.",
+        WaitAgentOutcome::Timeout => "Timed out.",
+        WaitAgentOutcome::SubscriptionLoss => "Wait ended because updates were unavailable.",
+    }
 }
 
 fn close_end(
@@ -733,6 +763,8 @@ mod tests {
                 prompt: Some("Compute 11! and reply with just the integer result.".to_string()),
                 model: Some("gpt-5".to_string()),
                 reasoning_effort: Some(ReasoningEffortConfig::High),
+                wait_outcome: None,
+                queued_update_count: None,
                 agents_states: HashMap::from([(
                     robie_id.to_string(),
                     agent_state(CollabAgentStatus::PendingInit, /*message*/ None),
@@ -753,6 +785,8 @@ mod tests {
                 prompt: Some("Please continue and return the answer only.".to_string()),
                 model: None,
                 reasoning_effort: None,
+                wait_outcome: None,
+                queued_update_count: None,
                 agents_states: HashMap::from([(
                     robie_id.to_string(),
                     agent_state(CollabAgentStatus::Running, /*message*/ None),
@@ -773,6 +807,8 @@ mod tests {
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                wait_outcome: None,
+                queued_update_count: None,
                 agents_states: HashMap::new(),
             },
             /*cached_spawn_request*/ None,
@@ -790,6 +826,8 @@ mod tests {
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                wait_outcome: None,
+                queued_update_count: None,
                 agents_states: HashMap::from([
                     (
                         robie_id.to_string(),
@@ -816,6 +854,8 @@ mod tests {
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                wait_outcome: None,
+                queued_update_count: None,
                 agents_states: HashMap::from([(
                     robie_id.to_string(),
                     agent_state(CollabAgentStatus::Completed, Some("39916800")),
@@ -832,6 +872,43 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n\n");
         assert_snapshot!("collab_agent_transcript", snapshot);
+    }
+
+    #[test]
+    fn wait_outcome_and_queued_count_render_without_message_content() {
+        let sender = ThreadId::new();
+        let target = ThreadId::new();
+        let item = ThreadItem::CollabAgentToolCall {
+            id: "call-wait".to_string(),
+            tool: CollabAgentTool::Wait,
+            status: CollabAgentToolCallStatus::Completed,
+            sender_thread_id: sender.to_string(),
+            receiver_thread_ids: vec![target.to_string()],
+            prompt: None,
+            model: None,
+            reasoning_effort: None,
+            wait_outcome: Some(WaitAgentOutcome::TargetTerminalAll),
+            queued_update_count: Some(2),
+            agents_states: HashMap::from([(
+                target.to_string(),
+                agent_state(CollabAgentStatus::Completed, None),
+            )]),
+        };
+        let cell = tool_call_history_cell(
+            &item,
+            /*cached_spawn_request*/ None,
+            |thread_id| metadata_for(thread_id, target, ThreadId::new()),
+        )
+        .expect("completed wait renders");
+        let rendered = cell
+            .display_lines(/*width*/ 120)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(rendered.contains("All target agents became actionable."));
+        assert!(rendered.contains("Queued quiet updates: 2"));
     }
 
     #[cfg(target_os = "macos")]
@@ -900,6 +977,8 @@ mod tests {
                 prompt: Some(String::new()),
                 model: Some("gpt-5".to_string()),
                 reasoning_effort: Some(ReasoningEffortConfig::High),
+                wait_outcome: None,
+                queued_update_count: None,
                 agents_states: HashMap::from([(
                     robie_id.to_string(),
                     agent_state(CollabAgentStatus::PendingInit, /*message*/ None),
@@ -939,6 +1018,8 @@ mod tests {
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                wait_outcome: None,
+                queued_update_count: None,
                 agents_states: HashMap::from([(
                     robie_id.to_string(),
                     agent_state(CollabAgentStatus::Interrupted, /*message*/ None),
