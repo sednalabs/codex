@@ -36,15 +36,35 @@ MAX_ARCHIVE_UNPACKED_BYTES = 1024 * 1024 * 1024
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="verify_sedna_package_identity")
-    parser.add_argument("--archive", type=Path, required=True)
-    parser.add_argument("--report", type=Path, required=True)
+    parser.add_argument("--archive", type=Path)
+    parser.add_argument("--report", type=Path)
     parser.add_argument("--target", required=True)
     parser.add_argument("--cargo-version", required=True)
     parser.add_argument("--expected-version", required=True)
     parser.add_argument("--source-sha", required=True)
     parser.add_argument("--predecessor-source-sha", required=True)
     parser.add_argument("--workflow-host-sha", required=True)
+    parser.add_argument(
+        "--validate-inputs-only",
+        action="store_true",
+        help="validate provenance arguments before an expensive package build",
+    )
     return parser.parse_args()
+
+
+def identity_input_failure(args: argparse.Namespace) -> str | None:
+    for field in (
+        "source_sha",
+        "predecessor_source_sha",
+        "workflow_host_sha",
+    ):
+        if SOURCE_SHA.fullmatch(getattr(args, field)) is None:
+            return f"invalid_{field}"
+    if SEMVER.fullmatch(args.expected_version) is None:
+        return "invalid_expected_version"
+    if not args.expected_version.endswith(f"+g{args.source_sha[:8]}"):
+        return "expected_version_source_mismatch"
+    return None
 
 
 def archive_sha256(path: Path) -> str:
@@ -225,14 +245,14 @@ def fail(code: str) -> int:
 
 def main() -> int:
     args = parse_args()
-    if (
-        SOURCE_SHA.fullmatch(args.source_sha) is None
-        or SOURCE_SHA.fullmatch(args.predecessor_source_sha) is None
-        or SOURCE_SHA.fullmatch(args.workflow_host_sha) is None
-        or SEMVER.fullmatch(args.expected_version) is None
-        or not args.expected_version.endswith(f"+g{args.source_sha[:8]}")
-    ):
-        return fail("invalid_identity_input")
+    input_failure = identity_input_failure(args)
+    if input_failure is not None:
+        return fail(input_failure)
+    if args.validate_inputs_only:
+        print(json.dumps({"outcome": "ok", "identity_inputs": "valid"}))
+        return 0
+    if args.archive is None or args.report is None:
+        return fail("package_archive_and_report_required")
 
     try:
         archive = args.archive.resolve(strict=True)

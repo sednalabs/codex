@@ -164,6 +164,17 @@ jobs:
           printf '%s\n' "${source_status}" >&2
           exit 1
         fi
+        source_sha="$(git rev-parse HEAD)"
+        predecessor_source_sha="$(git show -s --format=%P HEAD | cut -d' ' -f1)"
+        workflow_host_sha="$(git -C ../.workflow-src rev-parse HEAD)"
+        python3 ../.workflow-src/.github/scripts/verify_sedna_package_identity.py \
+          --target x86_64-unknown-linux-gnu \
+          --cargo-version 0.0.0 \
+          --expected-version "${CODEX_RELEASE_VERSION}" \
+          --source-sha "${source_sha}" \
+          --predecessor-source-sha "${predecessor_source_sha}" \
+          --workflow-host-sha "${workflow_host_sha}" \
+          --validate-inputs-only
         cargo build --locked --target x86_64-unknown-linux-gnu --release --bin codex --bin codex-code-mode-host --bin codex-responses-api-proxy
         mkdir -p ../dist
 
@@ -212,9 +223,9 @@ jobs:
           --target x86_64-unknown-linux-gnu \
           --cargo-version 0.0.0 \
           --expected-version "${CODEX_RELEASE_VERSION}" \
-          --source-sha "$(git rev-parse HEAD)" \
-          --predecessor-source-sha "$(git show -s --format=%P HEAD | cut -d' ' -f1)" \
-          --workflow-host-sha "$(git -C ../.workflow-src rev-parse HEAD)"
+          --source-sha "${source_sha}" \
+          --predecessor-source-sha "${predecessor_source_sha}" \
+          --workflow-host-sha "${workflow_host_sha}"
 
         python3 - <<'PY' > "../dist/${archive_base}.json"
         import json
@@ -263,6 +274,17 @@ jobs:
           printf '%s\n' "${source_status}" >&2
           exit 1
         fi
+        source_sha="$(git rev-parse HEAD)"
+        predecessor_source_sha="$(git show -s --format=%P HEAD | cut -d' ' -f1)"
+        workflow_host_sha="$(git -C ../.workflow-src rev-parse HEAD)"
+        python3 ../.workflow-src/.github/scripts/verify_sedna_package_identity.py \
+          --target aarch64-unknown-linux-gnu \
+          --cargo-version 0.0.0 \
+          --expected-version "${CODEX_RELEASE_VERSION}" \
+          --source-sha "${source_sha}" \
+          --predecessor-source-sha "${predecessor_source_sha}" \
+          --workflow-host-sha "${workflow_host_sha}" \
+          --validate-inputs-only
         cargo build --locked --target aarch64-unknown-linux-gnu --release --bin codex --bin codex-code-mode-host --bin codex-responses-api-proxy
         mkdir -p ../dist
 
@@ -311,9 +333,9 @@ jobs:
           --target aarch64-unknown-linux-gnu \
           --cargo-version 0.0.0 \
           --expected-version "${CODEX_RELEASE_VERSION}" \
-          --source-sha "$(git rev-parse HEAD)" \
-          --predecessor-source-sha "$(git show -s --format=%P HEAD | cut -d' ' -f1)" \
-          --workflow-host-sha "$(git -C ../.workflow-src rev-parse HEAD)"
+          --source-sha "${source_sha}" \
+          --predecessor-source-sha "${predecessor_source_sha}" \
+          --workflow-host-sha "${workflow_host_sha}"
 
         python3 - <<'PY' > "../dist/${archive_base}.json"
         import json
