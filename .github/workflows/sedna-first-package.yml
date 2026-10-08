@@ -7,6 +7,19 @@ on:
   pull_request:
     branches:
       - main
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - ".cargo/**"
+      - "MODULE.bazel"
+      - "MODULE.bazel.lock"
+      - "codex-rs/**"
+      - "justfile"
+      - "scripts/codex_package/**"
+      - "sdk/python/**"
+      - ".github/actions/**"
+      - ".github/scripts/**"
+      - "rust-toolchain.toml"
     # Candidate code remains in an unprivileged pull_request context.
     types:
       - opened
@@ -581,6 +594,8 @@ jobs:
             file "${binary}" | grep -F '${{ matrix.binary_kind }}'
             readelf -l "${binary}" | grep -F '${{ matrix.loader }}'
           done
+          chmod 0755 dist/codex-responses-api-proxy
+          test -x dist/codex-responses-api-proxy
           dist/codex-responses-api-proxy --help >/dev/null
 
       - name: Set up Python consumer environment
