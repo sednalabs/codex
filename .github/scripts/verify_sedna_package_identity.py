@@ -316,9 +316,9 @@ def verify_extracted_package(
             return fail("packaged_helper_missing")
 
     expected_cli = (
-        f"codex {args.cargo_version} (Sedna v{args.expected_version})"
+        f"codex-cli {args.cargo_version} (Sedna v{args.expected_version})"
         if args.cargo_version == "0.0.0"
-        else f"codex {args.cargo_version}"
+        else f"codex-cli {args.cargo_version}"
     )
     try:
         version_env = os.environ.copy()
