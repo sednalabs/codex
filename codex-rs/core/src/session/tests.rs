@@ -53,6 +53,26 @@ use codex_config::types::ToolSuggestDisabledTool;
 use codex_config::types::WindowsSandboxModeToml;
 use core_test_support::test_codex::TurnInputRequest as ExternalTurnInputRequest;
 
+#[test]
+fn provider_model_provenance_rejects_header_body_conflicts() {
+    assert_eq!(
+        trustworthy_response_model(Some("gpt-header"), Some("gpt-header")),
+        Some("gpt-header".to_string())
+    );
+    assert_eq!(
+        trustworthy_response_model(Some("gpt-header"), Some("gpt-body")),
+        None
+    );
+    assert_eq!(
+        trustworthy_response_model(Some("gpt-header"), None),
+        Some("gpt-header".to_string())
+    );
+    assert_eq!(
+        trustworthy_response_model(None, Some("gpt-body")),
+        Some("gpt-body".to_string())
+    );
+}
+
 use codex_features::Feature;
 use codex_file_system::FileSystemSandboxContext;
 use codex_http_client::ClientRouteClass;
@@ -7307,8 +7327,35 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
     agent_control: LocalAgentControl,
 ) -> anyhow::Result<(Arc<Session>, async_channel::Receiver<Event>)> {
     let codex_home = tempfile::tempdir().expect("create temp dir");
-    let mut config = build_test_config(codex_home.path()).await;
-    config.ephemeral = true;
+    let (session, rx_event, _thread_store) =
+        make_session_with_usage_state_and_agent_control_and_rx(
+            initial_history,
+            session_source,
+            agent_control,
+            codex_home.path(),
+            /*enable_usage_state*/ false,
+            /*parent_thread_id*/ None,
+            /*shared_thread_store*/ None,
+        )
+        .await?;
+    Ok((session, rx_event))
+}
+
+async fn make_session_with_usage_state_and_agent_control_and_rx(
+    initial_history: InitialHistory,
+    session_source: SessionSource,
+    agent_control: LocalAgentControl,
+    codex_home: &Path,
+    enable_usage_state: bool,
+    parent_thread_id: Option<ThreadId>,
+    shared_thread_store: Option<Arc<dyn codex_thread_store::ThreadStore>>,
+) -> anyhow::Result<(
+    Arc<Session>,
+    async_channel::Receiver<Event>,
+    Arc<dyn codex_thread_store::ThreadStore>,
+)> {
+    let mut config = build_test_config(codex_home).await;
+    config.ephemeral = !enable_usage_state;
     let config = Arc::new(config);
     let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("Test API Key"));
     let models_manager = models_manager_with_provider(
@@ -7368,7 +7415,7 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
         session_source: session_source.clone(),
         history_mode: Default::default(),
         forked_from_thread_id: None,
-        parent_thread_id: None,
+        parent_thread_id,
         thread_source: None,
         originator: "test_originator".to_string(),
         dynamic_tools: Vec::new(),
@@ -7388,6 +7435,21 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
     ));
     let environment_manager = Arc::new(EnvironmentManager::default_for_tests());
 
+    let thread_store: Arc<dyn codex_thread_store::ThreadStore> = match shared_thread_store {
+        Some(thread_store) => thread_store,
+        None => Arc::new(codex_thread_store::LocalThreadStore::new(
+            codex_thread_store::LocalThreadStoreConfig::from_config(config.as_ref()),
+            Some(
+                codex_state::StateRuntime::init(
+                    config.sqlite.clone(),
+                    config.model_provider_id.clone(),
+                )
+                .await
+                .expect("state db should initialize"),
+            ),
+        )),
+    };
+    let retained_thread_store = Arc::clone(&thread_store);
     let session = Session::new(
         /*startup*/ None,
         session_configuration,
@@ -7418,17 +7480,7 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
         /*inherited_environments*/ None,
         /*analytics_events_client*/ None,
         crate::passthrough_image_store(),
-        Arc::new(codex_thread_store::LocalThreadStore::new(
-            codex_thread_store::LocalThreadStoreConfig::from_config(config.as_ref()),
-            Some(
-                codex_state::StateRuntime::init(
-                    config.sqlite.clone(),
-                    config.model_provider_id.clone(),
-                )
-                .await
-                .expect("state db should initialize"),
-            ),
-        )),
+        thread_store,
         codex_rollout_trace::ThreadTraceContext::disabled(),
         /*attestation_provider*/ None,
         /*external_time_provider*/ None,
@@ -7438,7 +7490,229 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
     )
     .await?;
 
-    Ok((session, rx_event))
+    Ok((session, rx_event, retained_thread_store))
+}
+
+#[tokio::test]
+async fn completed_response_usage_joins_real_session_lineage_and_survives_writer_failure() {
+    let codex_home = tempfile::tempdir().expect("create shared usage fixture home");
+    let (root, root_events, thread_store) =
+        make_session_with_usage_state_and_agent_control_and_rx(
+            InitialHistory::New,
+            SessionSource::Exec,
+            LocalAgentControl::default(),
+            codex_home.path(),
+            /*enable_usage_state*/ true,
+            /*parent_thread_id*/ None,
+            /*shared_thread_store*/ None,
+        )
+        .await
+        .expect("create persistent root session");
+    let child_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id: root.thread_id(),
+        depth: 1,
+        agent_path: None,
+        agent_nickname: None,
+        agent_role: None,
+    });
+    let (child, child_events, _shared_store) =
+        make_session_with_usage_state_and_agent_control_and_rx(
+            InitialHistory::New,
+            child_source,
+            LocalAgentControl::default(),
+            codex_home.path(),
+            /*enable_usage_state*/ true,
+            /*parent_thread_id*/ Some(root.thread_id()),
+            /*shared_thread_store*/ Some(thread_store),
+        )
+        .await
+        .expect("create child session on shared state store");
+
+    let root_state = root.state_db().expect("root should expose state db");
+    let child_state = child.state_db().expect("child should expose state db");
+    assert!(Arc::ptr_eq(&root_state, &child_state));
+    let root_turn = root.new_default_turn().await;
+    let child_turn = child.new_default_turn().await;
+    let failure_turn = child.new_default_turn().await;
+    let usage = TokenUsage {
+        input_tokens: 25,
+        cached_input_tokens: 5,
+        cache_write_input_tokens: 1,
+        output_tokens: 3,
+        reasoning_output_tokens: 0,
+        total_tokens: 33,
+        codex_rollout_budget_units: None,
+    };
+    let usage_metadata = ResponseUsageMetadata {
+        amount: Some("fixture-amount".to_string()),
+        metadata: Some(json!({"fixture": "raw-completion"})),
+    };
+    let root_response_id = "usage-fixture-root-response";
+    let child_response_id = "usage-fixture-child-response";
+    let root_started_at = "2000-01-01T00:00:00Z".to_string();
+    root.record_observed_response_completed(
+        &root_turn,
+        root_response_id,
+        Some(&usage),
+        Some(&usage_metadata),
+        ProviderResponseUsageContext {
+            started_at: Some(root_started_at.clone()),
+            provider: "openai".to_string(),
+            requested_model: "gpt-6-sol".to_string(),
+            actual_model_used: Some("gpt-6-luna".to_string()),
+            requested_service_tier: Some("default".to_string()),
+            actual_service_tier: Some("priority".to_string()),
+        },
+    )
+    .await;
+    let child_started_at = "2000-01-01T00:00:01Z".to_string();
+    child
+        .record_observed_response_completed(
+            &child_turn,
+            child_response_id,
+            Some(&usage),
+            Some(&usage_metadata),
+            ProviderResponseUsageContext {
+                started_at: Some(child_started_at.clone()),
+                provider: "openai".to_string(),
+                requested_model: "gpt-6-sol".to_string(),
+                actual_model_used: Some("gpt-6-luna".to_string()),
+                requested_service_tier: Some("default".to_string()),
+                actual_service_tier: Some("priority".to_string()),
+            },
+        )
+        .await;
+
+    let rows = sqlx::query_as::<
+        _,
+        (
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            String,
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            String,
+            String,
+            String,
+        ),
+    >(
+        "SELECT t.thread_id, t.parent_thread_id, t.root_thread_id, t.fork_parent_thread_id, p.request_id, p.input_tokens_uncached, p.input_tokens_cached, p.input_tokens_cache_write, p.output_tokens, p.total_tokens, p.actual_model_used, p.actual_service_tier, p.actual_service_tier_source, p.started_at, p.completed_at, p.status FROM usage_threads AS t JOIN usage_provider_calls AS p ON p.thread_id = t.thread_id WHERE p.request_id IN (?, ?) ORDER BY p.request_id",
+    )
+    .bind(root_response_id)
+    .bind(child_response_id)
+    .fetch_all(root_state.usage_pool().as_ref())
+    .await
+    .expect("read joined provider calls and session lineage");
+    assert_eq!(rows.len(), 2);
+    let root_row = rows
+        .iter()
+        .find(|row| row.4 == root_response_id)
+        .expect("root response row");
+    assert_eq!(root_row.0, root.thread_id().to_string());
+    assert_eq!(root_row.1, None);
+    assert_eq!(root_row.2, Some(root.thread_id().to_string()));
+    assert_eq!(root_row.3, None);
+    assert_eq!(root_row.5, Some(20));
+    assert_eq!(root_row.6, Some(5));
+    assert_eq!(root_row.7, Some(1));
+    assert_eq!(root_row.8, Some(3));
+    assert_eq!(root_row.9, Some(33));
+    assert_eq!(root_row.10.as_deref(), Some("gpt-6-luna"));
+    assert_eq!(root_row.11.as_deref(), Some("priority"));
+    assert_eq!(root_row.12.as_deref(), Some("provider_response"));
+    assert_eq!(root_row.13, root_started_at);
+    assert!(
+        chrono::DateTime::parse_from_rfc3339(&root_row.14)
+            .expect("completed timestamp")
+            > chrono::DateTime::parse_from_rfc3339(&root_row.13)
+                .expect("request start timestamp")
+    );
+    assert_eq!(root_row.15, "ok");
+    let child_row = rows
+        .iter()
+        .find(|row| row.4 == child_response_id)
+        .expect("child response row");
+    assert_eq!(child_row.0, child.thread_id().to_string());
+    assert_eq!(child_row.1, Some(root.thread_id().to_string()));
+    assert_eq!(child_row.2, Some(root.thread_id().to_string()));
+    assert_eq!(child_row.3, None);
+    assert_eq!(child_row.5, Some(20));
+    assert_eq!(child_row.6, Some(5));
+    assert_eq!(child_row.7, Some(1));
+    assert_eq!(child_row.8, Some(3));
+    assert_eq!(child_row.9, Some(33));
+    assert_eq!(child_row.10.as_deref(), Some("gpt-6-luna"));
+    assert_eq!(child_row.11.as_deref(), Some("priority"));
+    assert_eq!(child_row.12.as_deref(), Some("provider_response"));
+    assert_eq!(child_row.13, child_started_at);
+    assert!(
+        chrono::DateTime::parse_from_rfc3339(&child_row.14)
+            .expect("completed timestamp")
+            > chrono::DateTime::parse_from_rfc3339(&child_row.13)
+                .expect("request start timestamp")
+    );
+    assert_eq!(child_row.15, "ok");
+
+    let root_raw_completion = loop {
+        let event = root_events.recv().await.expect("root raw completion event");
+        if let EventMsg::RawResponseCompleted(completed) = event.msg
+            && completed.response_id == root_response_id
+        {
+            break completed;
+        }
+    };
+    assert_eq!(root_raw_completion.token_usage, Some(usage.clone()));
+    assert_eq!(root_raw_completion.usage_metadata, Some(usage_metadata.clone()));
+    let child_raw_completion = loop {
+        let event = child_events.recv().await.expect("child raw completion event");
+        if let EventMsg::RawResponseCompleted(completed) = event.msg
+            && completed.response_id == child_response_id
+        {
+            break completed;
+        }
+    };
+    assert_eq!(child_raw_completion.token_usage, Some(usage.clone()));
+    assert_eq!(child_raw_completion.usage_metadata, Some(usage_metadata.clone()));
+
+    root_state.usage_pool().close().await;
+    let failed_response_id = "usage-fixture-after-writer-close";
+    child
+        .record_observed_response_completed(
+            &failure_turn,
+            failed_response_id,
+            Some(&usage),
+            Some(&usage_metadata),
+            ProviderResponseUsageContext {
+                started_at: Some(chrono::Utc::now().to_rfc3339()),
+                provider: "openai".to_string(),
+                requested_model: "gpt-6-sol".to_string(),
+                actual_model_used: None,
+                requested_service_tier: Some("default".to_string()),
+                actual_service_tier: None,
+            },
+        )
+        .await;
+    loop {
+        let event = child_events
+            .recv()
+            .await
+            .expect("raw completion survives usage writer failure");
+        if let EventMsg::RawResponseCompleted(completed) = event.msg
+            && completed.response_id == failed_response_id
+        {
+            assert_eq!(completed.token_usage, Some(usage));
+            assert_eq!(completed.usage_metadata, Some(usage_metadata));
+            break;
+        }
+    }
 }
 
 #[tokio::test]

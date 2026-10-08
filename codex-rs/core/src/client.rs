@@ -2520,6 +2520,9 @@ where
                     token_usage,
                     usage_metadata,
                     end_turn,
+                    response_model,
+                    service_tier,
+                    started_at,
                 }) => {
                     feedback_tags!(last_model_response_id = &response_id);
                     if let Some(usage) = &token_usage {
@@ -2543,6 +2546,9 @@ where
                             token_usage,
                             usage_metadata,
                             end_turn,
+                            response_model,
+                            service_tier,
+                            started_at,
                         }))
                         .await
                         .is_err()

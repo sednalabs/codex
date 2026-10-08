@@ -86,9 +86,12 @@ pub enum ResponseEvent {
     SafetyBuffering(SafetyBuffering),
     OutputItemDone(ResponseItem),
     OutputItemAdded(ResponseItem),
-    /// Emitted when the server includes `OpenAI-Model` on the stream response.
+    /// Emitted when the server reports a model, with its request scope retained.
     /// This can differ from the requested model when backend safety routing applies.
-    ServerModel(String),
+    ServerModel {
+        model: String,
+        scope: ServerModelScope,
+    },
     /// Emitted when the server recommends additional account verification.
     ModelVerifications(Vec<ModelVerification>),
     /// Emitted when the server includes moderation metadata for first-party turn presentation.
@@ -101,6 +104,12 @@ pub enum ResponseEvent {
         response_id: String,
         token_usage: Option<TokenUsage>,
         usage_metadata: Option<ResponseUsageMetadata>,
+        /// Model reported in this completed response body, when present.
+        response_model: Option<String>,
+        /// Service tier reported in this completed response body, when present.
+        service_tier: Option<String>,
+        /// Wall-clock start of this exact Responses request attempt, when available.
+        started_at: Option<String>,
         /// Did the model affirmatively end its turn? Some providers do not set this,
         /// so we rely on fallback logic when this is `None`.
         end_turn: Option<bool>,
@@ -129,6 +138,14 @@ pub enum ResponseEvent {
     },
     RateLimits(RateLimitSnapshot),
     ModelsEtag(String),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ServerModelScope {
+    /// The observation belongs to the current Responses request.
+    CurrentResponse,
+    /// The observation came from a WebSocket upgrade and is connection metadata only.
+    WebSocketConnection,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

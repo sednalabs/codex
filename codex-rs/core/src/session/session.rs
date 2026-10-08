@@ -1211,6 +1211,21 @@ impl Session {
                 error!("failed to initialize thread persistence: {e:#}");
                 e
             })?;
+        if let Some(state_db) = state_db_ctx.as_ref() {
+            let parent = session_configuration.parent_thread_id.clone();
+            let fork_parent = forked_from_id.clone();
+            let usage_thread = codex_state::UsageThreadRecord {
+                thread_id: thread_id.to_string(),
+                parent_thread_id: parent.map(|id| id.to_string()),
+                root_thread_id: (parent.is_none() && fork_parent.is_none())
+                    .then(|| thread_id.to_string()),
+                fork_parent_thread_id: fork_parent.map(|id| id.to_string()),
+                source: Some(session_configuration.session_source.to_string()),
+            };
+            if let Err(error) = state_db.record_usage_thread(&usage_thread).await {
+                warn!(thread_id = %thread_id, %error, "failed to persist usage thread lineage; continuing session initialization");
+            }
+        }
         let session_result: anyhow::Result<Arc<Self>> = async {
             if let InitialHistory::Resumed(resumed) = &mut initial_history
                 && let Some(history) = resume_context

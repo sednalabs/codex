@@ -979,23 +979,55 @@ async fn responses_websocket_request_prewarm_traces_logical_request() {
 async fn responses_websocket_reuses_connection_after_session_drop() {
     skip_if_no_network!();
 
-    let server = start_websocket_server(vec![vec![
-        vec![ev_response_created("resp-1"), ev_completed("resp-1")],
-        vec![ev_response_created("resp-2"), ev_completed("resp-2")],
-    ]])
+    let mut completed_one = ev_completed("resp-1");
+    completed_one["response"]["model"] = json!("body-model-one");
+    let mut completed_two = ev_completed("resp-2");
+    completed_two["response"]["model"] = json!("body-model-two");
+    let server = start_websocket_server_with_headers(vec![WebSocketConnectionConfig {
+        requests: vec![
+            vec![ev_response_created("resp-1"), completed_one],
+            vec![
+                ev_response_created("resp-2"),
+                json!({
+                    "type": "response.metadata",
+                    "headers": {"openai-model": "header-model-two"}
+                }),
+                completed_two,
+            ],
+        ],
+        response_headers: vec![("openai-model".to_string(), "upgrade-model".to_string())],
+        accept_delay: None,
+        close_after_requests: true,
+    }])
     .await;
 
     let harness = websocket_harness(&server).await;
     let prompt_one = prompt_with_input(vec![message_item("hello")]);
     let prompt_two = prompt_with_input(vec![message_item("again")]);
 
-    {
+    let first = {
         let mut client_session = harness.client.new_session();
-        stream_until_complete(&mut client_session, &harness, &prompt_one).await;
-    }
+        collect_response_provenance(&mut client_session, &harness, &prompt_one).await
+    };
+    let second = {
+        let mut client_session = harness.client.new_session();
+        collect_response_provenance(&mut client_session, &harness, &prompt_two).await
+    };
 
-    let mut client_session = harness.client.new_session();
-    stream_until_complete(&mut client_session, &harness, &prompt_two).await;
+    assert_eq!(first.0.as_deref(), Some("body-model-one"));
+    assert_eq!(second.0.as_deref(), Some("body-model-two"));
+    assert!(first.1.is_some());
+    assert!(second.1.is_some());
+    assert_ne!(first.1, second.1);
+    assert!(first.2.iter().any(|(model, scope)| {
+        model == "upgrade-model" && *scope == codex_api::ServerModelScope::WebSocketConnection
+    }));
+    assert!(second.2.iter().any(|(model, scope)| {
+        model == "upgrade-model" && *scope == codex_api::ServerModelScope::WebSocketConnection
+    }));
+    assert!(second.2.iter().any(|(model, scope)| {
+        model == "header-model-two" && *scope == codex_api::ServerModelScope::CurrentResponse
+    }));
 
     assert_eq!(server.handshakes().len(), 1);
     assert_eq!(server.single_connection().len(), 2);
@@ -3005,6 +3037,40 @@ async fn stream_until_complete(
         /*service_tier*/ None,
     )
     .await;
+}
+
+async fn collect_response_provenance(
+    client_session: &mut ModelClientSession,
+    harness: &WebsocketTestHarness,
+    prompt: &Prompt,
+) -> (Option<String>, Option<String>, Vec<(String, codex_api::ServerModelScope)>) {
+    let responses_metadata = turn_metadata(harness, /*turn_id*/ None);
+    let mut stream = client_session
+        .stream(
+            prompt,
+            &harness.model_info,
+            &harness.session_telemetry,
+            harness.effort.clone(),
+            harness.summary,
+            /*service_tier*/ None,
+            &responses_metadata,
+            &InferenceTraceContext::disabled(),
+        )
+        .await
+        .expect("websocket stream failed");
+    let mut scoped_models = Vec::new();
+    while let Some(event) = stream.next().await {
+        match event.expect("websocket stream failed") {
+            ResponseEvent::ServerModel { model, scope } => scoped_models.push((model, scope)),
+            ResponseEvent::Completed {
+                response_model,
+                started_at,
+                ..
+            } => return (response_model, started_at, scoped_models),
+            _ => {}
+        }
+    }
+    panic!("websocket stream ended without response.completed")
 }
 
 async fn stream_until_complete_with_model_info(

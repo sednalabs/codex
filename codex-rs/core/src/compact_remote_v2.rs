@@ -405,7 +405,16 @@ async fn run_remote_compaction_request_v2(
             )
             .await
         {
-            Ok(stream) => collect_compaction_output(sess, turn_context, stream).await,
+            Ok(stream) => {
+                collect_compaction_output(
+                    sess,
+                    turn_context,
+                    step_context.settings.model_info.slug.clone(),
+                    step_context.settings.service_tier.clone(),
+                    stream,
+                )
+                .await
+            }
             Err(err) => Err(err),
         };
 
@@ -430,6 +439,8 @@ async fn run_remote_compaction_request_v2(
 async fn collect_compaction_output(
     sess: &Session,
     turn_context: &TurnContext,
+    requested_model: String,
+    requested_service_tier: Option<String>,
     mut stream: ResponseStream,
 ) -> CodexResult<RemoteCompactionV2Output> {
     let mut output_item_count = 0usize;
@@ -437,6 +448,7 @@ async fn collect_compaction_output(
     let mut compaction_output = None;
     let mut completed_response_id = None;
     let mut completed_token_usage = None;
+    let mut current_response_server_model: Option<String> = None;
     while let Some(event) = stream.next().await {
         match event? {
             ResponseEvent::OutputItemDone(item) => {
@@ -448,10 +460,18 @@ async fn collect_compaction_output(
                     }
                 }
             }
+            ResponseEvent::ServerModel { model, scope } => {
+                if scope == codex_api::ServerModelScope::CurrentResponse {
+                    current_response_server_model = Some(model);
+                }
+            }
             ResponseEvent::Completed {
                 response_id,
                 token_usage,
                 usage_metadata,
+                response_model,
+                service_tier,
+                started_at,
                 ..
             } => {
                 sess.record_observed_response_completed(
@@ -459,6 +479,17 @@ async fn collect_compaction_output(
                     &response_id,
                     token_usage.as_ref(),
                     usage_metadata.as_ref(),
+                    crate::session::ProviderResponseUsageContext {
+                        started_at,
+                        provider: turn_context.config.model_provider_id.clone(),
+                        requested_model: requested_model.clone(),
+                        actual_model_used: crate::session::trustworthy_response_model(
+                            current_response_server_model.as_deref(),
+                            response_model.as_deref(),
+                        ),
+                        requested_service_tier: requested_service_tier.clone(),
+                        actual_service_tier: service_tier,
+                    },
                 )
                 .await;
                 completed_response_id = Some(response_id);
@@ -1247,13 +1278,22 @@ mod tests {
                     metadata: Some(serde_json::json!({ "extra": { "label": "example" } })),
                 }),
                 end_turn: Some(true),
+                response_model: None,
+                service_tier: None,
+                started_at: Some("2026-10-09T00:00:00.000000001Z".to_string()),
             }),
         ]);
 
         let (sess, turn_context, rx) =
             crate::session::tests::make_session_and_context_with_rx().await;
-        let output = collect_compaction_output(&sess, &turn_context, stream)
-            .await
+        let output = collect_compaction_output(
+            &sess,
+            &turn_context,
+            turn_context.model_info().slug.clone(),
+            turn_context.config.service_tier.clone(),
+            stream,
+        )
+        .await
             .expect("compaction should be collected");
 
         assert_eq!(output.compaction_output, compaction);

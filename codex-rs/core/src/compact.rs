@@ -795,6 +795,7 @@ async fn drain_to_completed(
         )
         .await?;
     let mut output = Vec::new();
+    let mut current_response_server_model: Option<String> = None;
     loop {
         let maybe_event = stream.next().await;
         let Some(event) = maybe_event else {
@@ -829,10 +830,18 @@ async fn drain_to_completed(
             Ok(ResponseEvent::RateLimits(snapshot)) => {
                 sess.update_rate_limits(turn_context, snapshot).await;
             }
+            Ok(ResponseEvent::ServerModel { model, scope }) => {
+                if scope == codex_api::ServerModelScope::CurrentResponse {
+                    current_response_server_model = Some(model);
+                }
+            }
             Ok(ResponseEvent::Completed {
                 response_id,
                 token_usage,
                 usage_metadata,
+                response_model,
+                service_tier,
+                started_at,
                 ..
             }) => {
                 sess.record_observed_response_completed(
@@ -840,6 +849,17 @@ async fn drain_to_completed(
                     &response_id,
                     token_usage.as_ref(),
                     usage_metadata.as_ref(),
+                    crate::session::ProviderResponseUsageContext {
+                        started_at,
+                        provider: turn_context.config.model_provider_id.clone(),
+                        requested_model: turn_context.model_info().slug.clone(),
+                        actual_model_used: crate::session::trustworthy_response_model(
+                            current_response_server_model.as_deref(),
+                            response_model.as_deref(),
+                        ),
+                        requested_service_tier: turn_context.config.service_tier.clone(),
+                        actual_service_tier: service_tier,
+                    },
                 )
                 .await;
                 sess.update_token_usage_info(turn_context, token_usage.as_ref())

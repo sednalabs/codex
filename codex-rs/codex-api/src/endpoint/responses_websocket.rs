@@ -3,6 +3,7 @@ use crate::common::ResponseEvent;
 use crate::common::ResponseStream;
 use crate::common::ResponsesWsRequest;
 use crate::common::SafetyBufferingTreatment;
+use crate::common::ServerModelScope;
 use crate::common::WS_REQUEST_HEADER_TRACEPARENT_CLIENT_METADATA_KEY;
 use crate::error::ApiError;
 use crate::provider::Provider;
@@ -12,6 +13,8 @@ use crate::safety_buffering::treatment_from_headers;
 use crate::sse::ResponsesStreamEvent;
 use crate::sse::process_responses_event;
 use crate::telemetry::WebsocketTelemetry;
+use chrono::SecondsFormat;
+use chrono::Utc;
 use codex_client::TransportError;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::RetryAfter;
@@ -286,7 +289,12 @@ impl ResponsesWebsocketConnection {
             )]
             async move {
                 if let Some(model) = server_model {
-                    let _ = tx_event.send(Ok(ResponseEvent::ServerModel(model))).await;
+                    let _ = tx_event
+                        .send(Ok(ResponseEvent::ServerModel {
+                            model,
+                            scope: ServerModelScope::WebSocketConnection,
+                        }))
+                        .await;
                 }
                 if server_reasoning_included {
                     let _ = tx_event
@@ -675,7 +683,7 @@ async fn run_websocket_response_stream(
 ) -> Result<(), ApiError> {
     let mut last_server_model: Option<String> = None;
     let mut safety_buffering_treatment = SafetyBufferingTreatment::default();
-    send_websocket_request(
+    let started_at = send_websocket_request(
         ws_stream,
         request_text,
         idle_timeout,
@@ -694,7 +702,7 @@ async fn run_websocket_response_stream(
                 response.map_err(|_| ApiError::Stream("idle timeout waiting for websocket".into()))
             }
             Ok(()) = &mut interrupt, if response_id.is_some() => {
-                send_websocket_request(
+                let _ = send_websocket_request(
                     ws_stream,
                     serde_json::json!({
                         "type": "response.interrupt",
@@ -705,7 +713,7 @@ async fn run_websocket_response_stream(
                     /*telemetry*/ None,
                     timing_log_context.connection_reused,
                 )
-                .await?;
+                    .await?;
                 continue;
             }
         };
@@ -782,7 +790,10 @@ async fn run_websocket_response_stream(
                     && last_server_model.as_deref() != Some(model.as_str())
                 {
                     let _ = tx_event
-                        .send(Ok(ResponseEvent::ServerModel(model.clone())))
+                        .send(Ok(ResponseEvent::ServerModel {
+                            model: model.clone(),
+                            scope: ServerModelScope::CurrentResponse,
+                        }))
                         .await;
                     last_server_model = Some(model);
                 }
@@ -817,7 +828,10 @@ async fn run_websocket_response_stream(
                     ));
                 }
                 match process_responses_event(event) {
-                    Ok(Some(event)) => {
+                    Ok(Some(mut event)) => {
+                        if let ResponseEvent::Completed { started_at: event_started_at, .. } = &mut event {
+                            *event_started_at = Some(started_at.clone());
+                        }
                         if let ResponseEvent::Created { response_id: id } = &event {
                             response_id.clone_from(id);
                         }
@@ -897,7 +911,8 @@ async fn send_websocket_request(
     idle_timeout: Duration,
     telemetry: Option<&Arc<dyn WebsocketTelemetry>>,
     connection_reused: bool,
-) -> Result<(), ApiError> {
+) -> Result<String, ApiError> {
+    let started_at = Utc::now().to_rfc3339_opts(SecondsFormat::Nanos, true);
     let request_start = Instant::now();
     let result = tokio::time::timeout(
         idle_timeout,
@@ -917,7 +932,7 @@ async fn send_websocket_request(
 
     result?;
 
-    Ok(())
+    Ok(started_at)
 }
 
 fn serialize_websocket_request(request: &ResponsesWsRequest<'_>) -> Result<String, ApiError> {

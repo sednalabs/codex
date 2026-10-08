@@ -103,6 +103,8 @@ use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::util::SubscriberInitExt;
 use wiremock::Mock;
 use wiremock::MockServer;
+use wiremock::Request;
+use wiremock::Respond;
 use wiremock::ResponseTemplate;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
@@ -1022,17 +1024,37 @@ fn websocket_continuation_reports_unavailable_response_state() {
 async fn responses_http_preserves_raw_tool_metadata_for_openai_custom_endpoint()
 -> anyhow::Result<()> {
     let server = MockServer::start().await;
+    #[derive(Clone)]
+    struct RetryClockScript {
+        attempts: Arc<AtomicUsize>,
+        observed_at: Arc<Mutex<Vec<chrono::DateTime<chrono::Utc>>>>,
+    }
+    impl Respond for RetryClockScript {
+        fn respond(&self, _request: &Request) -> ResponseTemplate {
+            self.observed_at
+                .lock()
+                .expect("retry timestamps lock")
+                .push(chrono::Utc::now());
+            if self.attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                ResponseTemplate::new(/*status*/ 503).insert_header("retry-after", "0")
+            } else {
+                ResponseTemplate::new(/*status*/ 200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(concat!(
+                        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-1\"}}\n\n",
+                        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\"}}\n\n",
+                    ))
+            }
+        }
+    }
+    let retry_script = RetryClockScript {
+        attempts: Arc::new(AtomicUsize::new(0)),
+        observed_at: Arc::new(Mutex::new(Vec::new())),
+    };
     Mock::given(method("POST"))
         .and(path("/v1/responses"))
-        .respond_with(
-            ResponseTemplate::new(/*status*/ 200)
-                .insert_header("content-type", "text/event-stream")
-                .set_body_string(concat!(
-                    "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-1\"}}\n\n",
-                    "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\"}}\n\n",
-                )),
-        )
-        .expect(/*requests*/ 1)
+        .respond_with(retry_script.clone())
+        .expect(/*requests*/ 2)
         .mount(&server)
         .await;
     let mut provider =
@@ -1075,18 +1097,44 @@ async fn responses_http_preserves_raw_tool_metadata_for_openai_custom_endpoint()
         )
         .await?;
     let mut completed = false;
+    let mut started_at = None;
     while let Some(event) = stream.next().await {
-        if let ResponseEvent::Completed { response_id, .. } = event? {
+        if let ResponseEvent::Completed {
+            response_id,
+            started_at: response_started_at,
+            ..
+        } = event?
+        {
             assert_eq!(response_id, "resp-1");
+            started_at = response_started_at;
             completed = true;
         }
     }
     assert!(completed);
     let requests = server.received_requests().await.expect("received requests");
-    assert_eq!(requests.len(), 1);
-    let body: serde_json::Value = serde_json::from_slice(&requests[0].body)?;
+    assert_eq!(requests.len(), 2);
+    let body: serde_json::Value = serde_json::from_slice(&requests[1].body)?;
     assert_eq!(body["input"], serde_json::to_value(vec![output.clone()])?);
     assert_eq!(prompt.input, vec![output]);
+    let observed_at = retry_script
+        .observed_at
+        .lock()
+        .expect("retry timestamps lock")
+        .clone();
+    assert_eq!(observed_at.len(), 2);
+    let started_at = chrono::DateTime::parse_from_rfc3339(
+        started_at.as_deref().expect("completed response request start"),
+    )?
+    .timestamp_nanos_opt()
+    .expect("request start timestamp range");
+    assert!(
+        started_at > observed_at[0].timestamp_nanos_opt().expect("503 timestamp range"),
+        "successful response start must follow the failed 503 attempt"
+    );
+    assert!(
+        started_at <= observed_at[1].timestamp_nanos_opt().expect("200 timestamp range"),
+        "successful response start must precede its successful HTTP request"
+    );
     Ok(())
 }
 
@@ -1835,6 +1883,9 @@ async fn response_stream_records_last_model_feedback_ids() {
             token_usage: None,
             usage_metadata: None,
             end_turn: Some(true),
+            response_model: None,
+            service_tier: None,
+            started_at: None,
         }),
     ]);
     let (mut stream, _) = super::map_response_events(
@@ -2350,6 +2401,9 @@ async fn intercepted_output_reaches_trace_and_websocket_bookkeeping() -> anyhow:
             token_usage: None,
             usage_metadata: None,
             end_turn: None,
+            response_model: None,
+            service_tier: None,
+            started_at: None,
         }))
         .await?;
     drop(tx_event);

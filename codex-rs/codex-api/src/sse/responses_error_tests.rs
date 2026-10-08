@@ -39,6 +39,7 @@ async fn flex_failure_with_retry_header_ends_stream_immediately() {
                 headers: HeaderMap::new(),
                 bytes: Box::pin(bytes),
             },
+            /*started_at*/ None,
             Duration::from_secs(60),
             /*telemetry*/ None,
             /*turn_state*/ None,

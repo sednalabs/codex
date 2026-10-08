@@ -3,6 +3,7 @@ use crate::common::ResponseEvent;
 use crate::common::ResponseStream;
 use crate::common::SafetyBuffering;
 use crate::common::SafetyBufferingTreatment;
+use crate::common::ServerModelScope;
 use crate::error::ApiError;
 use crate::error::parse_flex_unavailable;
 use crate::rate_limits::parse_all_rate_limits;
@@ -36,6 +37,7 @@ const TRUSTED_ACCESS_FOR_CYBER_VERIFICATION: &str = "trusted_access_for_cyber";
 
 pub fn spawn_response_stream(
     stream_response: StreamResponse,
+    started_at: Option<String>,
     idle_timeout: Duration,
     telemetry: Option<Arc<dyn SseTelemetry>>,
     turn_state: Option<Arc<OnceLock<String>>>,
@@ -73,7 +75,12 @@ pub fn spawn_response_stream(
     let (tx_event, rx_event) = mpsc::channel::<Result<ResponseEvent, ApiError>>(1600);
     tokio::spawn(async move {
         if let Some(model) = server_model {
-            let _ = tx_event.send(Ok(ResponseEvent::ServerModel(model))).await;
+            let _ = tx_event
+                .send(Ok(ResponseEvent::ServerModel {
+                    model,
+                    scope: ServerModelScope::CurrentResponse,
+                }))
+                .await;
         }
         for snapshot in rate_limit_snapshots {
             let _ = tx_event.send(Ok(ResponseEvent::RateLimits(snapshot))).await;
@@ -92,6 +99,7 @@ pub fn spawn_response_stream(
             idle_timeout,
             telemetry,
             safety_buffering_treatment,
+            started_at,
         )
         .await;
     });
@@ -107,6 +115,10 @@ pub fn spawn_response_stream(
 #[allow(dead_code)]
 struct ResponseCompleted {
     id: String,
+    #[serde(default)]
+    model: Option<Value>,
+    #[serde(default)]
+    service_tier: Option<Value>,
     #[serde(default)]
     usage: Option<ResponseCompletedUsage>,
     usage_metadata: Option<ResponseUsageMetadata>,
@@ -447,6 +459,15 @@ pub fn process_responses_event(
                             response_id: resp.id,
                             token_usage: resp.usage.map(Into::into),
                             usage_metadata: resp.usage_metadata,
+                            response_model: resp
+                                .model
+                                .and_then(|model| model.as_str().map(str::to_owned))
+                                .filter(|model| !model.trim().is_empty()),
+                            service_tier: resp
+                                .service_tier
+                                .and_then(|tier| tier.as_str().map(str::to_owned))
+                                .filter(|tier| !tier.trim().is_empty()),
+                            started_at: None,
                             end_turn: if interrupted {
                                 Some(false)
                             } else {
@@ -517,6 +538,7 @@ pub async fn process_sse(
         idle_timeout,
         telemetry,
         SafetyBufferingTreatment::default(),
+        None,
     )
     .await;
 }
@@ -527,6 +549,7 @@ async fn process_sse_with_treatment(
     idle_timeout: Duration,
     telemetry: Option<Arc<dyn SseTelemetry>>,
     safety_buffering_treatment: SafetyBufferingTreatment,
+    started_at: Option<String>,
 ) {
     let mut stream = stream.eventsource();
     let mut response_error: Option<ApiError> = None;
@@ -593,7 +616,10 @@ async fn process_sse_with_treatment(
             && last_server_model.as_deref() != Some(model.as_str())
         {
             if tx_event
-                .send(Ok(ResponseEvent::ServerModel(model.clone())))
+                .send(Ok(ResponseEvent::ServerModel {
+                    model: model.clone(),
+                    scope: ServerModelScope::CurrentResponse,
+                }))
                 .await
                 .is_err()
             {
@@ -627,7 +653,14 @@ async fn process_sse_with_treatment(
         }
 
         match process_responses_event(event) {
-            Ok(Some(event)) => {
+            Ok(Some(mut event)) => {
+                if let ResponseEvent::Completed {
+                    started_at: completed_started_at,
+                    ..
+                } = &mut event
+                {
+                    *completed_started_at = started_at.clone();
+                }
                 let is_completed = matches!(event, ResponseEvent::Completed { .. });
                 if tx_event.send(Ok(event)).await.is_err() {
                     return;
@@ -832,6 +865,7 @@ mod tests {
                 token_usage,
                 usage_metadata,
                 end_turn,
+                ..
             }) => {
                 assert_eq!(response_id, "resp1");
                 assert!(token_usage.is_none());
@@ -1030,6 +1064,7 @@ mod tests {
                 token_usage,
                 usage_metadata,
                 end_turn,
+                ..
             }) => {
                 assert_eq!(response_id, "resp1");
                 assert!(token_usage.is_none());
@@ -1522,6 +1557,7 @@ mod tests {
 
         let mut stream = spawn_response_stream(
             stream_response,
+            Some("2026-10-09T00:00:00.000000001Z".to_string()),
             idle_timeout(),
             /*telemetry*/ None,
             /*turn_state*/ None,
@@ -1534,8 +1570,9 @@ mod tests {
             .expect("expected server model event")
             .expect("expected ok event");
         match event {
-            ResponseEvent::ServerModel(model) => {
+            ResponseEvent::ServerModel { model, scope } => {
                 assert_eq!(model, CYBER_RESTRICTED_MODEL_FOR_TESTS);
+                assert_eq!(scope, ServerModelScope::CurrentResponse);
             }
             other => panic!("expected server model event, got {other:?}"),
         }
@@ -1562,6 +1599,7 @@ mod tests {
 
         let mut stream = spawn_response_stream(
             stream_response,
+            Some("2026-10-09T00:00:00.000000002Z".to_string()),
             idle_timeout(),
             /*telemetry*/ None,
             /*turn_state*/ None,
@@ -1576,10 +1614,17 @@ mod tests {
                 .iter()
                 .any(|event| matches!(event, ResponseEvent::ModelVerifications(_)))
         );
+        assert_matches!(
+            events.last(),
+            Some(ResponseEvent::Completed {
+                started_at: Some(started_at),
+                ..
+            }) if started_at == "2026-10-09T00:00:00.000000002Z"
+        );
     }
 
     #[tokio::test]
-    async fn process_sse_ignores_response_model_field_in_payload() {
+    async fn process_sse_keeps_completed_response_model_and_tier_scoped_to_body() {
         let events = run_sse(vec![
             json!({
                 "type": "response.created",
@@ -1592,7 +1637,8 @@ mod tests {
                 "type": "response.completed",
                 "response": {
                     "id": "resp-1",
-                    "model": CYBER_RESTRICTED_MODEL_FOR_TESTS
+                    "model": CYBER_RESTRICTED_MODEL_FOR_TESTS,
+                    "service_tier": "priority"
                 }
             }),
         ])
@@ -1607,7 +1653,13 @@ mod tests {
                 token_usage: None,
                 usage_metadata: None,
                 end_turn: None,
+                response_model: Some(model),
+                service_tier: Some(tier),
+                started_at: None,
+                ..
             } if response_id == "resp-1"
+                && model == CYBER_RESTRICTED_MODEL_FOR_TESTS
+                && tier == "priority"
         );
     }
 
@@ -1635,7 +1687,10 @@ mod tests {
         assert_eq!(events.len(), 3);
         assert_matches!(
             &events[0],
-            ResponseEvent::ServerModel(model) if model == CYBER_RESTRICTED_MODEL_FOR_TESTS
+            ResponseEvent::ServerModel {
+                model,
+                scope: ServerModelScope::CurrentResponse,
+            } if model == CYBER_RESTRICTED_MODEL_FOR_TESTS
         );
         assert_matches!(
             &events[1],
@@ -1648,6 +1703,7 @@ mod tests {
                 token_usage: None,
                 usage_metadata: None,
                 end_turn: None,
+                ..
             } if response_id == "resp-1"
         );
     }
@@ -1684,6 +1740,7 @@ mod tests {
                 token_usage: None,
                 usage_metadata: None,
                 end_turn: None,
+                ..
             } if response_id == "resp-1"
         );
     }
@@ -1720,6 +1777,7 @@ mod tests {
                 token_usage: None,
                 usage_metadata: None,
                 end_turn: None,
+                ..
             } if response_id == "resp-1"
         );
     }

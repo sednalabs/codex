@@ -2607,6 +2607,7 @@ async fn try_run_sampling_request(
     let defer_streamed_turn_items_for_contributors =
         !sess.services.extensions.turn_item_contributors().is_empty();
     let mut active_item_is_streaming_to_client = false;
+    let mut current_response_server_model: Option<String> = None;
     let receiving_span = trace_span!("receiving_stream");
     let outcome: CodexResult<SamplingRequestResult> = loop {
         let handle_responses = trace_span!(
@@ -2891,17 +2892,20 @@ async fn try_run_sampling_request(
                     active_item_is_streaming_to_client = stream_item_to_client;
                 }
             }
-            ResponseEvent::ServerModel(server_model) => {
+            ResponseEvent::ServerModel { model: server_model, scope } => {
                 if !turn_context
                     .server_model_warning_emitted
                     .load(Ordering::Relaxed)
                     && sess
-                        .maybe_warn_on_server_model_mismatch(&step_context, server_model)
+                        .maybe_warn_on_server_model_mismatch(&step_context, server_model.clone())
                         .await
                 {
                     turn_context
                         .server_model_warning_emitted
                         .store(true, Ordering::Relaxed);
+                }
+                if scope == codex_api::ServerModelScope::CurrentResponse {
+                    current_response_server_model = Some(server_model);
                 }
             }
             ResponseEvent::ModelVerifications(verifications) => {
@@ -2951,6 +2955,9 @@ async fn try_run_sampling_request(
                 token_usage,
                 usage_metadata,
                 end_turn,
+                response_model,
+                service_tier,
+                started_at,
             } => {
                 sess.services
                     .analytics_events_client
@@ -2974,6 +2981,17 @@ async fn try_run_sampling_request(
                     &response_id,
                     token_usage.as_ref(),
                     usage_metadata.as_ref(),
+                    crate::session::ProviderResponseUsageContext {
+                        started_at,
+                        provider: turn_context.config.model_provider_id.clone(),
+                        requested_model: step_context.settings.model_info.slug.clone(),
+                        actual_model_used: crate::session::trustworthy_response_model(
+                            current_response_server_model.as_deref(),
+                            response_model.as_deref(),
+                        ),
+                        requested_service_tier: step_context.settings.service_tier.clone(),
+                        actual_service_tier: service_tier,
+                    },
                 )
                 .await;
                 let budget_result = sess

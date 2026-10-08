@@ -403,6 +403,7 @@ use codex_protocol::turn_input::TurnInputRequest;
 use codex_protocol::turn_input::TurnInputSubmission;
 use codex_protocol::turn_input::TurnStartOptions;
 use codex_protocol::user_input::UserInput;
+use codex_state::ProviderCallUsageRecord;
 use codex_skills_extension::HostSkillsService;
 use codex_tools::ToolName;
 use codex_tools::UnifiedExecShellMode;
@@ -519,6 +520,28 @@ pub(crate) const INITIAL_SUBMIT_ID: &str = "";
 pub(crate) const SUBMISSION_CHANNEL_CAPACITY: usize = 512;
 const CYBER_VERIFY_URL: &str = "https://chatgpt.com/cyber";
 const CYBER_SAFETY_URL: &str = "https://developers.openai.com/codex/concepts/cyber-safety";
+
+pub(crate) struct ProviderResponseUsageContext {
+    pub(crate) started_at: Option<String>,
+    pub(crate) provider: String,
+    pub(crate) requested_model: String,
+    pub(crate) actual_model_used: Option<String>,
+    pub(crate) requested_service_tier: Option<String>,
+    pub(crate) actual_service_tier: Option<String>,
+}
+
+pub(crate) fn trustworthy_response_model(
+    response_header_model: Option<&str>,
+    body_model: Option<&str>,
+) -> Option<String> {
+    match (response_header_model, body_model) {
+        (Some(header), Some(body)) if header == body => Some(body.to_string()),
+        (Some(_), Some(_)) => None,
+        (Some(header), None) => Some(header.to_string()),
+        (None, Some(body)) => Some(body.to_string()),
+        (None, None) => None,
+    }
+}
 
 impl Session {
     /// Spawn and initialize a new session.
@@ -4869,7 +4892,9 @@ impl Session {
         response_id: &str,
         usage: Option<&TokenUsage>,
         usage_metadata: Option<&ResponseUsageMetadata>,
+        usage_context: ProviderResponseUsageContext,
     ) {
+        let completed_at = Utc::now().to_rfc3339();
         self.send_event(
             turn_context,
             EventMsg::RawResponseCompleted(RawResponseCompletedEvent {
@@ -4879,22 +4904,72 @@ impl Session {
             }),
         )
         .await;
-        let Some(usage) = usage else {
+        if let Some(usage) = usage {
+            let record = self.state.lock().await.record_token_usage(
+                self.thread_id,
+                &turn_context.sub_id,
+                self.session_id(),
+                turn_context
+                    .turn_metadata_state
+                    .root_turn_id()
+                    .unwrap_or_else(|| turn_context.sub_id.clone()),
+                response_id.to_string(),
+                usage,
+            );
+            self.persist_rollout_items(&[RolloutItem::TokenUsageRecord(record)])
+                .await;
+        }
+
+        let Some(started_at) = usage_context.started_at else {
+            warn!(response_id, "completed provider response missing request start; durable usage row skipped");
             return;
         };
-        let record = self.state.lock().await.record_token_usage(
-            self.thread_id,
-            &turn_context.sub_id,
-            self.session_id(),
-            turn_context
-                .turn_metadata_state
-                .root_turn_id()
-                .unwrap_or_else(|| turn_context.sub_id.clone()),
-            response_id.to_string(),
-            usage,
-        );
-        self.persist_rollout_items(&[RolloutItem::TokenUsageRecord(record)])
-            .await;
+        let Some(state_db) = self.state_db() else {
+            return;
+        };
+        let token_count = |value: Option<i64>| value.filter(|value| *value >= 0);
+        let input_tokens = usage.map(|usage| usage.input_tokens);
+        let cached_tokens = usage.map(|usage| usage.cached_input_tokens);
+        let cache_write_tokens = usage.map(|usage| usage.cache_write_input_tokens);
+        let output_tokens = usage.map(|usage| usage.output_tokens);
+        let total_tokens = usage.map(|usage| usage.total_tokens);
+        let actual_model_used = usage_context.actual_model_used;
+        let actual_service_tier = usage_context.actual_service_tier;
+        let actual_service_tier_source = actual_service_tier
+            .as_ref()
+            .map(|_| "provider_response".to_string());
+        let record = ProviderCallUsageRecord {
+            provider_call_id: uuid::Uuid::new_v4().to_string(),
+            thread_id: self.thread_id.to_string(),
+            turn_id: turn_context.sub_id.clone(),
+            provider: usage_context.provider,
+            provider_account_scope: None,
+            requested_model: usage_context.requested_model,
+            actual_model_used,
+            response_id: response_id.to_string(),
+            requested_service_tier: usage_context.requested_service_tier,
+            actual_service_tier,
+            actual_service_tier_source,
+            fast_mode_requested: None,
+            fast_mode_used: None,
+            billing_surface: None,
+            account_plan: None,
+            started_at,
+            completed_at,
+            input_tokens_uncached: token_count(
+                input_tokens
+                    .zip(cached_tokens)
+                    .map(|(input, cached)| input.saturating_sub(cached)),
+            ),
+            input_tokens_cached: token_count(cached_tokens),
+            input_tokens_cache_write: token_count(cache_write_tokens),
+            output_tokens: token_count(output_tokens),
+            total_tokens: token_count(total_tokens),
+            status: if usage.is_some() { "ok" } else { "provider_usage_missing" },
+        };
+        if let Err(error) = state_db.record_provider_call_usage(&record).await {
+            warn!(response_id, %error, "failed to persist completed provider usage; continuing response handling");
+        }
     }
 
     pub(crate) async fn record_token_usage_info(

@@ -1,7 +1,10 @@
 use crate::auth::SharedAuthProvider;
 use crate::error::ApiError;
 use crate::provider::Provider;
+use crate::telemetry::WithStatus;
 use crate::telemetry::run_with_request_telemetry;
+use chrono::SecondsFormat;
+use chrono::Utc;
 use codex_client::EncodedJsonBody;
 use codex_client::HttpTransport;
 use codex_client::Request;
@@ -15,6 +18,17 @@ use http::Method;
 use serde_json::Value;
 use std::sync::Arc;
 use tracing::instrument;
+
+struct StartedStreamResponse {
+    stream: StreamResponse,
+    started_at: String,
+}
+
+impl WithStatus for StartedStreamResponse {
+    fn status(&self) -> http::StatusCode {
+        self.stream.status
+    }
+}
 
 pub(crate) struct EndpointSession<T: HttpTransport> {
     transport: T,
@@ -126,7 +140,7 @@ impl<T: HttpTransport> EndpointSession<T> {
         extra_headers: HeaderMap,
         body: Option<EncodedJsonBody>,
         configure: C,
-    ) -> Result<StreamResponse, ApiError>
+    ) -> Result<(StreamResponse, String), ApiError>
     where
         C: Fn(&mut Request),
     {
@@ -145,12 +159,16 @@ impl<T: HttpTransport> EndpointSession<T> {
                 let transport = &self.transport;
                 async move {
                     let req = auth.apply_auth(req).await.map_err(TransportError::from)?;
-                    transport.stream(req).await
+                    let started_at = Utc::now().to_rfc3339_opts(SecondsFormat::Nanos, true);
+                    transport
+                        .stream(req)
+                        .await
+                        .map(|stream| StartedStreamResponse { stream, started_at })
                 }
             },
         )
         .await?;
 
-        Ok(stream)
+        Ok((stream.stream, stream.started_at))
     }
 }

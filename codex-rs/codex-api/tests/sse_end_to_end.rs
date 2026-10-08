@@ -170,6 +170,9 @@ async fn responses_stream_parses_items_and_completed_end_to_end() -> Result<()> 
             token_usage,
             usage_metadata,
             end_turn,
+            response_model: _,
+            service_tier: _,
+            started_at: _,
         } => {
             assert_eq!(response_id, "resp1");
             assert_eq!(
