@@ -226,6 +226,24 @@ impl InputQueue {
                 .is_some_and(|(_, _, updates)| *updates.borrow())
     }
 
+    /// Count locally observed pending communications without draining them. A host controller
+    /// exposes only a pending bit, so its contribution makes the total unknown while set.
+    pub(crate) async fn pending_mailbox_communication_count(&self) -> Option<u32> {
+        let controller_pending_before = self
+            .controller
+            .as_ref()
+            .is_some_and(|(_, _, updates)| *updates.borrow());
+        let local_count = self.mailbox_pending_mails.lock().await.len();
+        let controller_pending_after = self
+            .controller
+            .as_ref()
+            .is_some_and(|(_, _, updates)| *updates.borrow());
+        observed_pending_mail_count(
+            local_count,
+            controller_pending_before || controller_pending_after,
+        )
+    }
+
     pub(crate) async fn has_trigger_turn_mailbox_items(&self) -> bool {
         self.mailbox_pending_mails
             .lock()
@@ -459,6 +477,14 @@ impl InputQueue {
     }
 }
 
+fn observed_pending_mail_count(local_count: usize, controller_pending: bool) -> Option<u32> {
+    if controller_pending {
+        None
+    } else {
+        u32::try_from(local_count).ok()
+    }
+}
+
 impl TurnInputQueue {
     fn has_user_input(&self) -> bool {
         self.items
@@ -563,6 +589,36 @@ mod tests {
             content.to_string(),
             trigger_turn,
         )
+    }
+
+    #[test]
+    fn controller_pending_bit_keeps_total_count_unknown() {
+        assert_eq!(observed_pending_mail_count(2, /*controller_pending*/ false), Some(2));
+        assert_eq!(observed_pending_mail_count(2, /*controller_pending*/ true), None);
+        assert_eq!(observed_pending_mail_count(0, /*controller_pending*/ false), Some(0));
+    }
+
+    #[tokio::test]
+    async fn pending_mailbox_count_is_observational_and_does_not_drain() {
+        let input_queue = InputQueue::new();
+        for content in ["one", "two"] {
+            input_queue
+                .enqueue_mailbox_communication(
+                    make_mail(
+                        AgentPath::root(),
+                        AgentPath::try_from("/root/worker").expect("agent path"),
+                        content,
+                        /*trigger_turn*/ false,
+                    ),
+                    Default::default(),
+                )
+                .await;
+        }
+
+        assert_eq!(input_queue.pending_mailbox_communication_count().await, Some(2));
+        assert!(input_queue.has_pending_mailbox_items().await);
+        assert_eq!(input_queue.drain_mailbox().await.len(), 2);
+        assert_eq!(input_queue.pending_mailbox_communication_count().await, Some(0));
     }
 
     #[tokio::test]
