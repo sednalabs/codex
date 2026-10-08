@@ -96,6 +96,17 @@ pub enum SessionPickerViewMode {
     Dense,
 }
 
+/// Presentation used for weekly rate-limit pacing in the status line.
+#[derive(Serialize, Deserialize, Debug, Default, Copy, Clone, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum WeeklyLimitPacingStyle {
+    /// Describe usage as on, over, or under pace.
+    #[default]
+    Qualitative,
+    /// Show remaining usage as a percentage of remaining time.
+    Ratio,
+}
+
 impl SessionPickerViewMode {
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -916,6 +927,11 @@ pub struct Tui {
     /// When unset, the TUI defaults to: `model-with-reasoning`, `current-dir`, and `thread-name`.
     #[serde(default)]
     pub status_line: Option<Vec<String>>,
+
+    /// How the weekly rate-limit status-line item describes pacing.
+    /// Defaults to `qualitative`; `ratio` is an explicit opt-in.
+    #[serde(default)]
+    pub weekly_limit_pacing_style: WeeklyLimitPacingStyle,
 
     /// Color status line items with colors derived from the active syntax theme.
     /// Defaults to `true`.

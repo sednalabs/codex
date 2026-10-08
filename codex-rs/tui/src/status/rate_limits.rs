@@ -72,6 +72,8 @@ pub(crate) struct RateLimitWindowDisplay {
     pub used_percent: f64,
     /// Human-readable local reset time.
     pub resets_at: Option<String>,
+    /// Provider reset instant in Unix seconds, retained for deterministic pacing calculations.
+    pub resets_at_unix_seconds: Option<i64>,
     /// Window length in minutes when provided by the server.
     pub window_minutes: Option<i64>,
 }
@@ -88,10 +90,14 @@ impl RateLimitWindowDisplay {
             .map(|dt| dt.with_timezone(&Local));
         let resets_at =
             resets_at_utc.map(|dt| format_reset_timestamp(dt, captured_at, clock_format));
+        let resets_at_unix_seconds = window
+            .resets_at
+            .filter(|seconds| DateTime::<Utc>::from_timestamp(*seconds, 0).is_some());
 
         Self {
             used_percent: f64::from(window.used_percent),
             resets_at,
+            resets_at_unix_seconds,
             window_minutes: window.window_duration_mins,
         }
     }
@@ -113,6 +119,13 @@ pub(crate) struct RateLimitSnapshotDisplay {
     pub credits: Option<CreditsSnapshotDisplay>,
     /// Optional effective monthly credit limit from workspace spend controls.
     pub individual_limit: Option<SpendControlLimitSnapshotDisplay>,
+}
+
+impl RateLimitSnapshotDisplay {
+    pub(crate) fn is_stale_at(&self, now: DateTime<Local>) -> bool {
+        now.signed_duration_since(self.captured_at)
+            > ChronoDuration::minutes(RATE_LIMIT_STALE_THRESHOLD_MINUTES)
+    }
 }
 
 /// Display-ready credits state extracted from protocol snapshots.
@@ -245,8 +258,7 @@ pub(crate) fn compose_rate_limit_data_many(
         {
             continue;
         }
-        stale |= now.signed_duration_since(snapshot.captured_at)
-            > ChronoDuration::minutes(RATE_LIMIT_STALE_THRESHOLD_MINUTES);
+        stale |= snapshot.is_stale_at(now);
         stale |= snapshot
             .individual_limit
             .as_ref()
@@ -460,6 +472,7 @@ mod tests {
         RateLimitWindowDisplay {
             used_percent,
             resets_at: Some("soon".to_string()),
+            resets_at_unix_seconds: None,
             window_minutes: Some(300),
         }
     }
@@ -522,11 +535,13 @@ mod tests {
             primary: Some(RateLimitWindowDisplay {
                 used_percent: 20.0,
                 resets_at: Some("soon".to_string()),
+                resets_at_unix_seconds: None,
                 window_minutes: Some(60),
             }),
             secondary: Some(RateLimitWindowDisplay {
                 used_percent: 40.0,
                 resets_at: Some("later".to_string()),
+                resets_at_unix_seconds: None,
                 window_minutes: Some(2 * 60),
             }),
             credits: None,

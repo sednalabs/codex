@@ -451,6 +451,55 @@ impl ChatWidget {
         Some(format!("{label} {remaining:.0}% left"))
     }
 
+    pub(super) fn status_line_weekly_limit_display(
+        &self,
+        window: Option<&RateLimitWindowDisplay>,
+        snapshot: &crate::status::RateLimitSnapshotDisplay,
+        now: chrono::DateTime<chrono::Local>,
+        label: &str,
+    ) -> Option<String> {
+        let base = self.status_line_limit_display(window, label)?;
+        let window = window?;
+        if snapshot.is_stale_at(now) {
+            return Some(base);
+        }
+        let Some(reset_seconds) = window.resets_at_unix_seconds else {
+            return Some(base);
+        };
+        let Some(window_seconds) = window.window_minutes.and_then(|minutes| minutes.checked_mul(60))
+        else {
+            return Some(base);
+        };
+        if window_seconds <= 0 || !window.used_percent.is_finite() {
+            return Some(base);
+        }
+        let Some(seconds_remaining) = reset_seconds.checked_sub(snapshot.captured_at.timestamp()) else {
+            return Some(base);
+        };
+        if seconds_remaining < 0 {
+            return Some(base);
+        }
+        let time_remaining_pct =
+            ((seconds_remaining as f64 / window_seconds as f64) * 100.0).clamp(0.0, 100.0);
+        let usage_remaining_pct = (100.0 - window.used_percent).clamp(0.0, 100.0);
+        match self.local_settings.tui.weekly_limit_pacing_style {
+            codex_config::types::WeeklyLimitPacingStyle::Qualitative => {
+                let pace_delta = usage_remaining_pct - time_remaining_pct;
+                let signal = if pace_delta.abs() <= 3.0 {
+                    "on pace".to_string()
+                } else if pace_delta < 0.0 {
+                    format!("over {}%", pace_delta.abs().ceil() as i64)
+                } else {
+                    format!("under {}%", pace_delta.abs().ceil() as i64)
+                };
+                Some(format!("{base} ({signal})"))
+            }
+            codex_config::types::WeeklyLimitPacingStyle::Ratio => {
+                Some(format!("{base}/{}%", time_remaining_pct.round() as i64))
+            }
+        }
+    }
+
     pub(super) fn status_line_reasoning_effort_label(
         effort: Option<&ReasoningEffortConfig>,
     ) -> String {

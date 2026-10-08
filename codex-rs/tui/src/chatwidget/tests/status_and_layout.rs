@@ -950,6 +950,109 @@ async fn status_line_single_monthly_primary_omits_weekly_limit_item() {
 }
 
 #[tokio::test]
+async fn weekly_pacing_is_opt_in_deterministic_and_base_only_without_fresh_timing() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let now = chrono::Local::now();
+    let reset = now.timestamp() + 302_400;
+    chat.rate_limit_snapshots_by_limit_id.insert(
+        "codex".to_string(),
+        crate::status::RateLimitSnapshotDisplay {
+            limit_name: "codex".to_string(),
+            normal_model_slug: None,
+            captured_at: now,
+            primary: Some(crate::status::RateLimitWindowDisplay {
+                used_percent: 60.0,
+                resets_at: None,
+                resets_at_unix_seconds: Some(reset),
+                window_minutes: Some(10_080),
+            }),
+            secondary: None,
+            credits: None,
+            individual_limit: None,
+        },
+    );
+    let item = crate::bottom_pane::StatusLineItem::WeeklyLimit;
+
+    assert_eq!(
+        chat.status_line_value_for_item_at(item, now),
+        Some("weekly 40% left (over 10%)".to_string())
+    );
+    chat.config.tui_weekly_limit_pacing_style =
+        codex_config::types::WeeklyLimitPacingStyle::Ratio;
+    assert_eq!(
+        chat.status_line_value_for_item_at(item, now),
+        Some("weekly 40% left/50%".to_string())
+    );
+
+    chat.rate_limit_snapshots_by_limit_id
+        .get_mut("codex")
+        .unwrap()
+        .captured_at = now - chrono::Duration::minutes(15);
+    assert_eq!(
+        chat.status_line_value_for_item_at(item, now),
+        Some("weekly 40% left/50%".to_string()),
+        "the exact freshness boundary remains eligible"
+    );
+    chat.rate_limit_snapshots_by_limit_id
+        .get_mut("codex")
+        .unwrap()
+        .captured_at = now - chrono::Duration::minutes(15) - chrono::Duration::seconds(1);
+    assert_eq!(
+        chat.status_line_value_for_item_at(item, now),
+        Some("weekly 40% left".to_string()),
+        "stale data must not show pacing"
+    );
+    let snapshot = chat.rate_limit_snapshots_by_limit_id.get_mut("codex").unwrap();
+    snapshot.captured_at = now;
+    snapshot.primary.as_mut().unwrap().resets_at_unix_seconds = None;
+    assert_eq!(
+        chat.status_line_value_for_item_at(item, now),
+        Some("weekly 40% left".to_string()),
+        "missing reset timing must leave the usage-only base"
+    );
+    let window = chat
+        .rate_limit_snapshots_by_limit_id
+        .get_mut("codex")
+        .unwrap()
+        .primary
+        .as_mut()
+        .unwrap();
+    window.resets_at_unix_seconds = Some(reset);
+    window.window_minutes = None;
+    assert_eq!(
+        chat.status_line_value_for_item_at(item, now),
+        Some("weekly 40% left".to_string()),
+        "partial timing must leave the usage-only base"
+    );
+    let window = chat
+        .rate_limit_snapshots_by_limit_id
+        .get_mut("codex")
+        .unwrap()
+        .primary
+        .as_mut()
+        .unwrap();
+    window.window_minutes = Some(10_080);
+    window.resets_at_unix_seconds = Some(now.timestamp());
+    assert_eq!(
+        chat.status_line_value_for_item_at(item, now),
+        Some("weekly 40% left/0%".to_string()),
+        "a reset exactly at capture time has zero time remaining"
+    );
+    chat.rate_limit_snapshots_by_limit_id
+        .get_mut("codex")
+        .unwrap()
+        .primary
+        .as_mut()
+        .unwrap()
+        .resets_at_unix_seconds = Some(now.timestamp() - 1);
+    assert_eq!(
+        chat.status_line_value_for_item_at(item, now),
+        Some("weekly 40% left".to_string()),
+        "a reset before capture time is invalid and must not show pacing"
+    );
+}
+
+#[tokio::test]
 async fn status_line_secondary_only_non_weekly_limit_omits_primary_limit_item() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 

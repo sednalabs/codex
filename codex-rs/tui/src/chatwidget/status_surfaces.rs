@@ -209,8 +209,9 @@ impl ChatWidget {
         }
 
         let mut segments = Vec::new();
+        let pacing_now = chrono::Local::now();
         for item in &selections.status_line_items {
-            if let Some(value) = self.status_line_value_for_item(*item) {
+            if let Some(value) = self.status_line_value_for_item_at(*item, pacing_now) {
                 segments.push((*item, value));
             }
         }
@@ -710,6 +711,18 @@ impl ChatWidget {
     /// this to keep partially available status lines readable while waiting for session, token, or
     /// git metadata.
     pub(super) fn status_line_value(&mut self, item: StatusLineItem) -> Option<String> {
+        self.status_line_value_for_item_at(item, chrono::Local::now())
+    }
+
+    pub(super) fn status_line_value_for_item(&mut self, item: StatusLineItem) -> Option<String> {
+        self.status_line_value_for_item_at(item, chrono::Local::now())
+    }
+
+    pub(super) fn status_line_value_for_item_at(
+        &mut self,
+        item: StatusLineItem,
+        pacing_now: chrono::DateTime<chrono::Local>,
+    ) -> Option<String> {
         match item {
             StatusLineItem::ModelName => Some(self.model_display_name().to_string()),
             StatusLineItem::ModelWithReasoning => Some(self.model_with_reasoning_display_name()),
@@ -766,12 +779,19 @@ impl ChatWidget {
                 self.status_line_limit_display(Some(window), &label)
             }
             StatusLineItem::WeeklyLimit => {
-                let (window, is_secondary) = self
-                    .rate_limit_snapshots_by_limit_id
-                    .get("codex")
-                    .and_then(weekly_status_window)?;
+                let snapshot = self.rate_limit_snapshots_by_limit_id.get("codex")?;
+                let (window, is_secondary) = weekly_status_window(snapshot)?;
                 let label = limit_label_for_window(window.window_minutes, is_secondary);
-                self.status_line_limit_display(Some(window), &label)
+                if matches_window_label(window, "weekly") {
+                    self.status_line_weekly_limit_display(
+                        Some(window),
+                        snapshot,
+                        pacing_now,
+                        &label,
+                    )
+                } else {
+                    self.status_line_limit_display(Some(window), &label)
+                }
             }
             StatusLineItem::CodexVersion => Some(CODEX_CLI_VERSION.to_string()),
             StatusLineItem::ContextWindowSize => self

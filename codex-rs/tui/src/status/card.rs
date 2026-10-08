@@ -737,17 +737,18 @@ impl StatusHistoryCell {
         }
         let mut lines = Vec::new();
 
-        let account_value = self.account.as_ref().map(|account| match account {
-            StatusAccountDisplay::ChatGpt { email, plan } => match (email, plan) {
+        let account_value = match self.account.as_ref() {
+            Some(StatusAccountDisplay::ChatGpt { email, plan }) => match (email, plan) {
                 (Some(email), Some(plan)) => format!("{email} ({plan})"),
                 (Some(email), None) => email.clone(),
-                (None, Some(plan)) => plan.clone(),
-                (None, None) => "ChatGPT".to_string(),
+                (None, Some(plan)) => format!("ChatGPT identity unavailable — {plan}"),
+                (None, None) => "ChatGPT identity unavailable".to_string(),
             },
-            StatusAccountDisplay::ApiKey => {
+            Some(StatusAccountDisplay::ApiKey) => {
                 "API key configured (run codex login to use ChatGPT)".to_string()
             }
-        });
+            None => "No account data available".to_string(),
+        };
 
         let mut labels: Vec<String> = vec!["Model", "Directory", "Permissions", "Agents.md"]
             .into_iter()
@@ -770,9 +771,7 @@ impl StatusHistoryCell {
         if self.model_provider.is_some() {
             push_label(&mut labels, &mut seen, "Model provider");
         }
-        if account_value.is_some() {
-            push_label(&mut labels, &mut seen, "Account");
-        }
+        push_label(&mut labels, &mut seen, "Account");
         if thread_name.is_some() {
             push_label(&mut labels, &mut seen, "Thread name");
         }
@@ -832,9 +831,7 @@ impl StatusHistoryCell {
         lines.push(formatter.line("Permissions", vec![Span::from(self.permissions.clone())]));
         lines.push(formatter.line("Agents.md", vec![Span::from(agents_summary)]));
 
-        if let Some(account_value) = account_value {
-            lines.push(formatter.line("Account", vec![Span::from(account_value)]));
-        }
+        lines.push(formatter.line("Account", vec![Span::from(account_value)]));
 
         if let Some(thread_name) = thread_name {
             lines.push(formatter.line("Thread name", vec![Span::from(thread_name.to_string())]));
