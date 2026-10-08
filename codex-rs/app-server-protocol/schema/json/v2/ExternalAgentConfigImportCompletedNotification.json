@@ -1,5 +1,6 @@
 {
-  "$defs": {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
     "ExternalAgentConfigImportItemTypeFailure": {
       "properties": {
         "cwd": {
@@ -18,7 +19,7 @@
           "type": "string"
         },
         "itemType": {
-          "$ref": "#/$defs/ExternalAgentConfigMigrationItemType"
+          "$ref": "#/definitions/ExternalAgentConfigMigrationItemType"
         },
         "message": {
           "type": "string"
@@ -37,8 +38,8 @@
         }
       },
       "required": [
-        "itemType",
         "failureStage",
+        "itemType",
         "message"
       ],
       "type": "object"
@@ -52,7 +53,7 @@
           ]
         },
         "itemType": {
-          "$ref": "#/$defs/ExternalAgentConfigMigrationItemType"
+          "$ref": "#/definitions/ExternalAgentConfigMigrationItemType"
         },
         "source": {
           "type": [
@@ -61,6 +62,14 @@
           ]
         },
         "target": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "default": null,
+          "description": "Original title for an imported session; null for other item types.",
           "type": [
             "string",
             "null"
@@ -76,24 +85,24 @@
       "properties": {
         "failures": {
           "items": {
-            "$ref": "#/$defs/ExternalAgentConfigImportItemTypeFailure"
+            "$ref": "#/definitions/ExternalAgentConfigImportItemTypeFailure"
           },
           "type": "array"
         },
         "itemType": {
-          "$ref": "#/$defs/ExternalAgentConfigMigrationItemType"
+          "$ref": "#/definitions/ExternalAgentConfigMigrationItemType"
         },
         "successes": {
           "items": {
-            "$ref": "#/$defs/ExternalAgentConfigImportItemTypeSuccess"
+            "$ref": "#/definitions/ExternalAgentConfigImportItemTypeSuccess"
           },
           "type": "array"
         }
       },
       "required": [
+        "failures",
         "itemType",
-        "successes",
-        "failures"
+        "successes"
       ],
       "type": "object"
     },
@@ -113,14 +122,13 @@
       "type": "string"
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "importId": {
       "type": "string"
     },
     "itemTypeResults": {
       "items": {
-        "$ref": "#/$defs/ExternalAgentConfigImportTypeResult"
+        "$ref": "#/definitions/ExternalAgentConfigImportTypeResult"
       },
       "type": "array"
     }

@@ -1,5 +1,6 @@
 {
-  "$defs": {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
     "RealtimeConversationVersion": {
       "enum": [
         "v1",
@@ -9,7 +10,6 @@
       "type": "string"
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "EXPERIMENTAL - emitted when thread realtime startup is accepted.",
   "properties": {
     "realtimeSessionId": {
@@ -22,7 +22,7 @@
       "type": "string"
     },
     "version": {
-      "$ref": "#/$defs/RealtimeConversationVersion"
+      "$ref": "#/definitions/RealtimeConversationVersion"
     }
   },
   "required": [

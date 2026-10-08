@@ -59,23 +59,21 @@ pub trait AgentGraphStore: Send + Sync {
         status_filter: Option<ThreadSpawnEdgeStatus>,
     ) -> AgentGraphStoreFuture<'_, Vec<ThreadId>>;
 
-    /// List persisted descendants through a bounded recovery path.
+    /// List persisted descendants through the bounded recovery path.
     ///
-    /// Implementations should report when the recursive safety limit was reached. The default
-    /// keeps storage implementations source-compatible, but cannot provide a limit marker; such
-    /// implementations must only be used where an unbounded legacy result is acceptable.
+    /// Implementations must report whether more than the recovery limit exists and must not
+    /// substitute an unbounded result when bounded traversal is unavailable.
     fn list_thread_spawn_descendants_bounded(
         &self,
         root_thread_id: ThreadId,
         status_filter: Option<ThreadSpawnEdgeStatus>,
     ) -> AgentGraphStoreFuture<'_, ThreadSpawnDescendants> {
-        Box::pin(async move {
-            self.list_thread_spawn_descendants(root_thread_id, status_filter)
-                .await
-                .map(|thread_ids| ThreadSpawnDescendants {
-                    thread_ids,
-                    relation_limit_reached: false,
-                })
+        let _ = (root_thread_id, status_filter);
+        Box::pin(async {
+            Err(crate::AgentGraphStoreError::Internal {
+                message: "bounded thread-spawn descendant recovery is unsupported by this store"
+                    .to_string(),
+            })
         })
     }
 }

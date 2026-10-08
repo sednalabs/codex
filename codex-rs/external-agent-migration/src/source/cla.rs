@@ -19,10 +19,6 @@ pub struct ClaSource;
 impl ClaSource {
     pub const CONFIG_DIR: &'static str = ".claude";
     pub const CONFIG_MD: &'static str = "CLAUDE.md";
-    pub const HOOKS_DIR: &'static str = "hooks";
-    pub const LOCAL_SETTINGS_FILE: &'static str = "settings.local.json";
-    pub const MCP_CONFIG_FILE: &'static str = ".mcp.json";
-    pub const PROJECT_CONFIG_FILE: &'static str = ".claude.json";
     pub const SETTINGS_FILE: &'static str = "settings.json";
     pub const REWRITE_PROFILE: RewriteProfile = RewriteProfile::new(
         Self::CONFIG_MD,

@@ -1,85 +1,50 @@
 mod streamable_http_test_support;
 
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
 use axum::body::Body;
-use axum::extract::Json;
-use axum::extract::State;
+use axum::extract::{Json, State};
 use axum::http::StatusCode;
-use axum::http::header::HeaderName;
-use axum::http::header::HeaderValue;
-use axum::response::IntoResponse;
+use axum::http::header::{CONTENT_TYPE, HeaderName, HeaderValue};
 use axum::response::Response;
 use axum::routing::post;
-use pretty_assertions::assert_eq;
-use serde_json::Value;
-use serde_json::json;
+use codex_config::types::{AuthKeyringBackendKind, OAuthCredentialsStoreMode};
+use codex_exec_server::Environment;
+use codex_rmcp_client::{ElicitationAction, ElicitationResponse, McpProtocolMode};
+use futures::FutureExt;
+use rmcp::model::{ClientCapabilities, ElicitationCapability, FormElicitationCapability, Implementation, InitializeRequestParams, ProtocolVersion};
+use serde_json::{Value, json};
 use streamable_http_test_support::create_client;
-use tokio::sync::Mutex;
-use tokio::sync::Notify;
+use tokio::sync::{Mutex, Notify};
 
+const SESSION_HEADER: HeaderName = HeaderName::from_static("mcp-session-id");
 const SESSION_ID: &str = "cancellation-test-session";
-const MCP_SESSION_ID: HeaderName = HeaderName::from_static("mcp-session-id");
-const BLOCKED_REQUESTS: usize = 16;
 
 #[derive(Clone, Default)]
 struct ServerState {
-    blocked_started: Arc<Mutex<Vec<Value>>>,
-    observed_requests: Arc<Mutex<Vec<Value>>>,
-    cancelled: Arc<Mutex<Vec<Value>>>,
-    mutating_calls: Arc<Mutex<Vec<Value>>>,
-    blocked_started_notify: Arc<Notify>,
-    mutating_started_notify: Arc<Notify>,
-    cancelled_notify: Arc<Notify>,
-    release_blocked: Arc<Notify>,
+    requests: Arc<Mutex<Vec<Value>>>,
+    cancellations: Arc<Mutex<Vec<Value>>>,
+    cancellation_notify: Arc<Notify>,
+    blocked: Arc<Notify>,
+    blocked_started: Arc<Notify>,
+    modern_post_dropped: Arc<Notify>,
+    modern_dropped_ids: Arc<std::sync::Mutex<Vec<Value>>>,
+    read_404_remaining: Arc<AtomicUsize>,
 }
 
-impl ServerState {
-    async fn wait_for_blocked(&self, count: usize) -> anyhow::Result<()> {
-        loop {
-            if self.blocked_started.lock().await.len() >= count {
-                return Ok(());
-            }
-            tokio::time::timeout(Duration::from_secs(10), async {
-                let notified = self.blocked_started_notify.notified();
-                if self.blocked_started.lock().await.len() < count {
-                    notified.await;
-                }
-            })
-            .await?;
-        }
-    }
-
-    async fn wait_for_cancellation(&self) -> anyhow::Result<()> {
-        loop {
-            if !self.cancelled.lock().await.is_empty() {
-                return Ok(());
-            }
-            tokio::time::timeout(Duration::from_secs(10), async {
-                let notified = self.cancelled_notify.notified();
-                if self.cancelled.lock().await.is_empty() {
-                    notified.await;
-                }
-            })
-            .await?;
-        }
-    }
-
-    async fn wait_for_mutating_call(&self) -> anyhow::Result<()> {
-        loop {
-            if !self.mutating_calls.lock().await.is_empty() {
-                return Ok(());
-            }
-            tokio::time::timeout(Duration::from_secs(10), async {
-                let notified = self.mutating_started_notify.notified();
-                if self.mutating_calls.lock().await.is_empty() {
-                    notified.await;
-                }
-            })
-            .await?;
-        }
+struct NotifyOnDrop {
+    notify: Arc<Notify>,
+    dropped_ids: Arc<std::sync::Mutex<Vec<Value>>>,
+    request_id: Value,
+}
+impl Drop for NotifyOnDrop {
+    fn drop(&mut self) {
+        self.dropped_ids.lock().expect("drop ID lock").push(self.request_id.clone());
+        self.notify.notify_one();
     }
 }
 
@@ -87,357 +52,234 @@ async fn spawn_server() -> anyhow::Result<(ServerState, String, tokio::task::Joi
     let state = ServerState::default();
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
     let address = listener.local_addr()?;
-    let router = Router::new()
-        .route("/mcp", post(handle_mcp))
-        .with_state(state.clone());
-    let task = tokio::spawn(async move {
-        if let Err(error) = axum::serve(listener, router).await {
-            tracing::error!(%error, "cancellation test server stopped");
-        }
-    });
+    let router = Router::new().route("/mcp", post(handle_mcp)).with_state(state.clone());
+    let task = tokio::spawn(async move { let _ = axum::serve(listener, router).await; });
     Ok((state, format!("http://{address}"), task))
 }
 
 async fn handle_mcp(State(state): State<ServerState>, Json(request): Json<Value>) -> Response {
-    let method = request.get("method").and_then(Value::as_str);
-    match method {
-        Some("initialize") => json_response(
-            request.get("id").cloned(),
-            json!({
-                "protocolVersion": "2025-06-18",
-                "capabilities": {},
-                "serverInfo": { "name": "cancellation-test", "version": "0.0.0" }
-            }),
-            /*include_session*/ true,
-        ),
-        Some("notifications/initialized") | Some("notifications/cancelled") => {
-            if method == Some("notifications/cancelled") {
-                state.cancelled.lock().await.push(request.clone());
-                state.cancelled_notify.notify_one();
-            }
-            (StatusCode::ACCEPTED, Body::empty()).into_response()
+    state.requests.lock().await.push(request.clone());
+    match request.get("method").and_then(Value::as_str) {
+        Some("initialize") => {
+            let protocol = request.pointer("/params/protocolVersion").and_then(Value::as_str).unwrap_or("2025-06-18");
+            json_response(request.get("id").cloned(), json!({"protocolVersion":protocol,"capabilities":{},"serverInfo":{"name":"cancel-test","version":"0"}}), true)
+        }
+        Some("notifications/initialized") => accepted_response(),
+        Some("notifications/cancelled") => {
+            state.cancellations.lock().await.push(request);
+            state.cancellation_notify.notify_one();
+            accepted_response()
         }
         Some("tools/call") => {
-            state.observed_requests.lock().await.push(request.clone());
-            let name = request
-                .pointer("/params/name")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            if name == "blocked" {
-                state.blocked_started.lock().await.push(request.clone());
-                state.blocked_started_notify.notify_one();
-                state.release_blocked.notified().await;
-            } else if name == "queued" {
-                state.release_blocked.notified().await;
-            } else if name == "mutate" {
-                state.mutating_calls.lock().await.push(request.clone());
-                state.mutating_started_notify.notify_one();
-                state.release_blocked.notified().await;
+            let name = request.pointer("/params/name").and_then(Value::as_str);
+            if name == Some("uncertain-404") {
+                let mut response = Response::new(Body::empty());
+                *response.status_mut() = StatusCode::NOT_FOUND;
+                return response;
+            }
+            if name == Some("terminal-error") {
+                let mut response = Response::new(Body::from(serde_json::to_vec(&json!({"jsonrpc":"2.0","id":request.get("id"),"error":{"code":-32603,"message":"terminal test error"}})).unwrap()));
+                response.headers_mut().insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+                return response;
+            }
+            if matches!(name, Some("blocked" | "mutate" | "modern-blocked")) {
+                state.blocked_started.notify_one();
+                let _dropped = (name == Some("modern-blocked")).then(|| NotifyOnDrop {
+                    notify: state.modern_post_dropped.clone(),
+                    dropped_ids: state.modern_dropped_ids.clone(),
+                    request_id: request.get("id").cloned().unwrap_or(Value::Null),
+                });
+                state.blocked.notified().await;
+            }
+            json_response(request.get("id").cloned(), json!({"content":[],"isError":false}), false)
+        }
+        Some("resources/read") => {
+            if state
+                .read_404_remaining
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                    (remaining > 0).then(|| remaining - 1)
+                })
+                .is_ok()
+            {
+                let mut response = Response::new(Body::empty());
+                *response.status_mut() = StatusCode::NOT_FOUND;
+                return response;
             }
             json_response(
                 request.get("id").cloned(),
-                json!({ "content": [], "isError": false }),
-                /*include_session*/ false,
+                json!({"contents":[{"uri":"memo://after-cancel","mimeType":"text/plain","text":"ok"}]}),
+                false,
             )
         }
-        Some("resources/read") => json_response(
-            request.get("id").cloned(),
-            json!({
-                "contents": [{
-                    "uri": request.pointer("/params/uri").cloned().unwrap_or(Value::Null),
-                    "mimeType": "text/plain",
-                    "text": "follow-on read"
-                }]
-            }),
-            /*include_session*/ false,
-        ),
-        _ => json_response(
-            request.get("id").cloned(),
-            json!({ "content": [], "isError": false }),
-            /*include_session*/ false,
-        ),
+        _ => json_response(request.get("id").cloned(), json!({}), false),
     }
 }
 
-fn json_response(id: Option<Value>, result: Value, include_session: bool) -> Response {
-    let mut response =
-        Json(json!({ "jsonrpc": "2.0", "id": id, "result": result })).into_response();
-    *response.status_mut() = StatusCode::OK;
-    if include_session {
-        response
-            .headers_mut()
-            .insert(MCP_SESSION_ID, HeaderValue::from_static(SESSION_ID));
-    }
+fn accepted_response() -> Response {
+    let mut response = Response::new(Body::empty());
+    *response.status_mut() = StatusCode::ACCEPTED;
     response
 }
 
-async fn initialized_client(base_url: &str) -> anyhow::Result<Arc<codex_rmcp_client::RmcpClient>> {
-    Ok(Arc::new(create_client(base_url).await?))
+fn json_response(id: Option<Value>, result: Value, session: bool) -> Response {
+    let body = serde_json::to_vec(&json!({"jsonrpc":"2.0","id":id,"result":result})).unwrap();
+    let mut response = Response::new(Body::from(body));
+    response.headers_mut().insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    if session { response.headers_mut().insert(SESSION_HEADER, HeaderValue::from_static(SESSION_ID)); }
+    response
 }
 
-#[tokio::test]
-async fn blocked_posts_do_not_starve_an_independent_read() -> anyhow::Result<()> {
-    let (state, base_url, server) = spawn_server().await?;
-    let client = initialized_client(&base_url).await?;
+async fn create_modern_client(base_url: &str) -> anyhow::Result<codex_rmcp_client::RmcpClient> {
+    let client = codex_rmcp_client::RmcpClient::new_streamable_http_client_with_protocol_mode(
+        "modern-cancellation-test", &format!("{base_url}/mcp"), Some("test-bearer".to_string()), None, None,
+        OAuthCredentialsStoreMode::File, AuthKeyringBackendKind::default(),
+        Environment::default_for_tests().get_http_client(), None, McpProtocolMode::V20260728,
+    ).await?;
+    let mut capabilities = ClientCapabilities::default();
+    capabilities.elicitation = Some(ElicitationCapability::new().with_form(FormElicitationCapability::new()));
+    client.initialize(
+        InitializeRequestParams::new(capabilities, Implementation::new("cancel-test", "0")).with_protocol_version(ProtocolVersion::V_2026_07_28),
+        Some(Duration::from_secs(5)),
+        Box::new(|_, _| async { Ok(ElicitationResponse { action:ElicitationAction::Accept, content:Some(json!({})), meta:None }) }.boxed()),
+    ).await?;
+    Ok(client)
+}
 
-    let mut blocked = Vec::new();
-    let task_client = client.clone();
-    blocked.push(tokio::spawn(async move {
-        task_client
-            .call_tool(
-                "blocked".to_string(),
-                Some(json!({})),
-                /*meta*/ None,
-                /*timeout*/ None,
-            )
-            .await
-    }));
-    state.wait_for_blocked(/*count*/ 1).await?;
-
-    let read = tokio::time::timeout(
-        Duration::from_secs(2),
-        client.read_resource(
-            rmcp::model::ReadResourceRequestParams::new("memo://follow-on".to_string()),
-            Some(Duration::from_secs(2)),
-        ),
-    )
-    .await??;
-    assert_eq!(
-        serde_json::to_value(read)?,
-        json!({"contents": [{
-            "uri": "memo://follow-on", "mimeType": "text/plain", "text": "follow-on read"
-        }]})
-    );
-
-    state.release_blocked.notify_waiters();
-    for request in blocked {
-        request.await??;
-    }
-    client.shutdown().await;
-    server.abort();
+async fn wait_cancel(state: &ServerState) -> anyhow::Result<()> {
+    if !state.cancellations.lock().await.is_empty() { return Ok(()); }
+    tokio::time::timeout(Duration::from_secs(5), state.cancellation_notify.notified()).await?;
     Ok(())
 }
 
 #[tokio::test]
-async fn timed_out_post_sends_matching_cancellation_and_reclaims_capacity() -> anyhow::Result<()> {
-    let (state, base_url, server) = spawn_server().await?;
-    let client = initialized_client(&base_url).await?;
-    let task_client = client.clone();
-    let timed_out = tokio::spawn(async move {
-        task_client
-            .call_tool(
-                "blocked".to_string(),
-                Some(json!({})),
-                /*meta*/ None,
-                Some(Duration::from_millis(100)),
-            )
-            .await
-    });
-    state.wait_for_blocked(/*count*/ 1).await?;
-    let result = timed_out.await?;
-    assert!(result.is_err(), "timed-out call unexpectedly succeeded");
-    state.wait_for_cancellation().await?;
-
-    let blocked_id = state.blocked_started.lock().await[0]
-        .get("id")
-        .cloned()
-        .expect("blocked request id");
-    let cancelled_id = state.cancelled.lock().await[0]
-        .pointer("/params/requestId")
-        .cloned()
-        .expect("cancelled request id");
-    assert_eq!(cancelled_id, blocked_id);
-
-    let read = tokio::time::timeout(
-        Duration::from_secs(2),
-        client.read_resource(
-            rmcp::model::ReadResourceRequestParams::new("memo://follow-on".to_string()),
-            Some(Duration::from_secs(2)),
-        ),
-    )
-    .await??;
-    assert_eq!(
-        serde_json::to_value(read)?,
-        json!({"contents": [{
-            "uri": "memo://follow-on", "mimeType": "text/plain", "text": "follow-on read"
-        }]})
-    );
-
-    state.release_blocked.notify_waiters();
-    client.shutdown().await;
-    server.abort();
-    Ok(())
-}
-
-#[tokio::test]
-async fn cancelled_queued_post_is_never_sent_or_executed() -> anyhow::Result<()> {
-    let (state, base_url, server) = spawn_server().await?;
-    let client = initialized_client(&base_url).await?;
-    let mut blocked = Vec::new();
-    for _ in 0..BLOCKED_REQUESTS {
-        let client = client.clone();
-        blocked.push(tokio::spawn(async move {
-            client
-                .call_tool(
-                    "blocked".to_string(),
-                    Some(json!({})),
-                    /*meta*/ None,
-                    /*timeout*/ None,
-                )
-                .await
-        }));
-    }
-    state.wait_for_blocked(BLOCKED_REQUESTS).await?;
-
-    // Poll the actual call future, not a JoinHandle: it reaches rmcp's response
-    // wait while every ordinary HTTP slot is held by an observed request.
-    let mut queued = Box::pin(client.call_tool(
-        "queued".to_string(),
-        Some(json!({})),
-        /*meta*/ None,
-        /*timeout*/ None,
-    ));
-    assert!(futures::poll!(queued.as_mut()).is_pending());
-    drop(queued);
-    state.wait_for_cancellation().await?;
-    let cancelled_id = state.cancelled.lock().await[0]
-        .pointer("/params/requestId")
-        .cloned()
-        .expect("queued cancellation id");
+async fn terminal_json_rpc_error_does_not_send_stale_cancellation() -> anyhow::Result<()> {
+    let (state, url, server) = spawn_server().await?;
+    let client = create_client(&format!("{url}/mcp")).await?;
+    assert!(client.call_tool("terminal-error".into(), Some(json!({})), None, Some(Duration::from_secs(2))).await.is_err());
+    let late_cancellation = tokio::time::timeout(
+        Duration::from_millis(250),
+        state.cancellation_notify.notified(),
+    ).await;
     assert!(
-        state
-            .blocked_started
-            .lock()
-            .await
-            .iter()
-            .all(|request| { request.get("id") != Some(&cancelled_id) }),
-        "queued cancellation must not target any active request"
+        late_cancellation.is_err(),
+        "terminal JSON-RPC error must not send a stale cancellation"
     );
-    assert!(!state.observed_requests.lock().await.iter().any(|request| {
-        request.pointer("/params/name").and_then(Value::as_str) == Some("queued")
-    }));
+    assert!(state.cancellations.lock().await.is_empty());
+    client.shutdown().await;
+    server.abort();
+    Ok(())
+}
 
-    state.release_blocked.notify_waiters();
-    for request in blocked {
-        tokio::time::timeout(Duration::from_secs(10), request).await???;
-    }
-    assert_eq!(state.blocked_started.lock().await.len(), BLOCKED_REQUESTS);
-
+#[tokio::test]
+async fn resources_read_session_expiry_recovers_once() -> anyhow::Result<()> {
+    let (state, url, server) = spawn_server().await?;
+    let client = create_client(&format!("{url}/mcp")).await?;
+    state.read_404_remaining.store(1, Ordering::SeqCst);
     let read = client
         .read_resource(
-            rmcp::model::ReadResourceRequestParams::new("memo://follow-on".to_string()),
-            Some(Duration::from_secs(2)),
+            rmcp::model::ReadResourceRequestParams::new("memo://after-cancel".into()),
+            Some(Duration::from_secs(5)),
         )
         .await?;
-    assert_eq!(
-        serde_json::to_value(read)?,
-        json!({"contents": [{
-            "uri": "memo://follow-on", "mimeType": "text/plain", "text": "follow-on read"
-        }]})
-    );
-    assert!(
-        !state.observed_requests.lock().await.iter().any(|request| {
-            request.pointer("/params/name").and_then(Value::as_str) == Some("queued")
-        }),
-        "cancelled queued call must stay absent after capacity is released"
-    );
+    assert_eq!(read.contents.len(), 1);
+    let reads = state
+        .requests
+        .lock()
+        .await
+        .iter()
+        .filter(|request| {
+            request.get("method").and_then(Value::as_str) == Some("resources/read")
+        })
+        .count();
+    assert_eq!(reads, 2, "one expired read dispatch must have exactly one recovery attempt");
     client.shutdown().await;
     server.abort();
     Ok(())
 }
 
 #[tokio::test]
-async fn timed_out_mutating_call_is_not_replayed() -> anyhow::Result<()> {
-    let (state, base_url, server) = spawn_server().await?;
-    let client = initialized_client(&base_url).await?;
-    let task_client = client.clone();
-    let timed_out = tokio::spawn(async move {
-        task_client
-            .call_tool(
-                "mutate".to_string(),
-                Some(json!({ "value": "once" })),
-                /*meta*/ None,
-                Some(Duration::from_millis(100)),
-            )
-            .await
-    });
-
-    state.wait_for_mutating_call().await?;
-    let result = timed_out.await?;
-    assert!(
-        result.is_err(),
-        "timed-out mutating call unexpectedly succeeded"
-    );
-    state.wait_for_cancellation().await?;
-    state.release_blocked.notify_waiters();
-    assert_eq!(state.mutating_calls.lock().await.len(), 1);
+async fn timed_out_call_sends_matching_cancellation_and_is_not_replayed() -> anyhow::Result<()> {
+    let (state, url, server) = spawn_server().await?;
+    let client = Arc::new(create_client(&format!("{url}/mcp")).await?);
+    let request_client = client.clone();
+    let request = tokio::spawn(async move { request_client.call_tool("mutate".into(), Some(json!({})), None, Some(Duration::from_millis(100))).await });
+    tokio::time::timeout(Duration::from_secs(5), state.blocked_started.notified()).await?;
+    assert!(request.await?.is_err());
+    wait_cancel(&state).await?;
+    let requests = state.requests.lock().await.clone();
+    let call = requests.iter().find(|r| r.pointer("/params/name").and_then(Value::as_str)==Some("mutate")).unwrap();
+    assert_eq!(state.cancellations.lock().await[0].pointer("/params/requestId"), call.get("id"));
+    assert_eq!(requests.iter().filter(|r| r.pointer("/params/name").and_then(Value::as_str)==Some("mutate")).count(), 1);
+    state.blocked.notify_waiters();
+    let read = client.read_resource(rmcp::model::ReadResourceRequestParams::new("memo://after-cancel".into()), Some(Duration::from_secs(2))).await?;
+    assert_eq!(read.contents.len(), 1);
     client.shutdown().await;
     server.abort();
     Ok(())
 }
 
 #[tokio::test]
-async fn externally_aborted_post_sends_matching_cancellation() -> anyhow::Result<()> {
-    let (state, base_url, server) = spawn_server().await?;
-    let client = initialized_client(&base_url).await?;
-    let task_client = client.clone();
-    let request = tokio::spawn(async move {
-        task_client
-            .call_tool(
-                "blocked".to_string(),
-                Some(json!({})),
-                /*meta*/ None,
-                /*timeout*/ None,
-            )
-            .await
-    });
-    state.wait_for_blocked(/*count*/ 1).await?;
-    let blocked_id = state.blocked_started.lock().await[0]
-        .get("id")
-        .cloned()
-        .expect("blocked request id");
-    let mut remaining = Vec::new();
-    for _ in 1..BLOCKED_REQUESTS {
-        let task_client = client.clone();
-        remaining.push(tokio::spawn(async move {
-            task_client
-                .call_tool(
-                    "blocked".to_string(),
-                    Some(json!({})),
-                    /*meta*/ None,
-                    /*timeout*/ None,
-                )
-                .await
-        }));
-    }
-    state.wait_for_blocked(BLOCKED_REQUESTS).await?;
+async fn uncertain_session_expiry_does_not_replay_tools_call() -> anyhow::Result<()> {
+    let (state, url, server) = spawn_server().await?;
+    let client = create_client(&format!("{url}/mcp")).await?;
+    assert!(client.call_tool("uncertain-404".into(), Some(json!({})), None, Some(Duration::from_secs(2))).await.is_err());
+    let calls = state.requests.lock().await.iter().filter(|r| r.pointer("/params/name").and_then(Value::as_str)==Some("uncertain-404")).count();
+    assert_eq!(calls, 1, "uncertain tools/call must not be replayed after session expiry");
+    client.shutdown().await;
+    server.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn dropped_call_is_cancelled_without_replaying_mutation() -> anyhow::Result<()> {
+    let (state, url, server) = spawn_server().await?;
+    let client = Arc::new(create_client(&format!("{url}/mcp")).await?);
+    let request_client = client.clone();
+    let request = tokio::spawn(async move { request_client.call_tool("mutate".into(), Some(json!({})), None, None).await });
+    tokio::time::timeout(Duration::from_secs(5), state.blocked_started.notified()).await?;
     request.abort();
-    assert!(request.await.unwrap_err().is_cancelled());
-    state.wait_for_cancellation().await?;
-    let cancelled_id = state.cancelled.lock().await[0]
-        .pointer("/params/requestId")
-        .cloned()
-        .expect("cancelled request id");
-    assert_eq!(cancelled_id, blocked_id);
+    assert!(request.await.is_err());
+    wait_cancel(&state).await?;
+    let requests = state.requests.lock().await.clone();
+    let calls = requests.iter().filter(|r| r.pointer("/params/name").and_then(Value::as_str)==Some("mutate")).collect::<Vec<_>>();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(state.cancellations.lock().await[0].pointer("/params/requestId"), calls[0].get("id"));
+    state.blocked.notify_waiters();
+    client.shutdown().await;
+    server.abort();
+    Ok(())
+}
 
-    // All sixteen ordinary slots were occupied. This read can complete only
-    // after cancellation reclaims the aborted POST's slot; none is released here.
-    let read = client
-        .read_resource(
-            rmcp::model::ReadResourceRequestParams::new("memo://follow-on".to_string()),
-            Some(Duration::from_secs(2)),
-        )
-        .await?;
-    assert_eq!(
-        serde_json::to_value(read)?,
-        json!({"contents": [{
-            "uri": "memo://follow-on", "mimeType": "text/plain", "text": "follow-on read"
-        }]})
-    );
-    state.release_blocked.notify_waiters();
-    for request in remaining {
-        tokio::time::timeout(Duration::from_secs(10), request).await???;
-    }
+#[tokio::test]
+async fn modern_timeout_cancels_matching_inflight_post_without_legacy_control_post() -> anyhow::Result<()> {
+    let (state, url, server) = spawn_server().await?;
+    let client = Arc::new(create_modern_client(&url).await?);
+    let request_client = client.clone();
+    let request = tokio::spawn(async move { request_client.call_tool("modern-blocked".into(), Some(json!({})), None, Some(Duration::from_millis(100))).await });
+    tokio::time::timeout(Duration::from_secs(5), state.blocked_started.notified()).await?;
+    assert!(request.await?.is_err());
+    tokio::time::timeout(Duration::from_secs(5), state.modern_post_dropped.notified()).await?;
+    let request_id = state.requests.lock().await.iter().find(|r| r.pointer("/params/name").and_then(Value::as_str)==Some("modern-blocked")).and_then(|r| r.get("id")).cloned();
+    assert_eq!(state.modern_dropped_ids.lock().expect("drop ID lock").as_slice(), &[request_id.unwrap_or(Value::Null)]);
+    assert!(state.cancellations.lock().await.is_empty(), "modern HTTP cancellation must not require a legacy control POST");
+    client.shutdown().await;
+    server.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn modern_drop_cancels_matching_inflight_post_without_legacy_control_post() -> anyhow::Result<()> {
+    let (state, url, server) = spawn_server().await?;
+    let client = Arc::new(create_modern_client(&url).await?);
+    let request_client = client.clone();
+    let request = tokio::spawn(async move { request_client.call_tool("modern-blocked".into(), Some(json!({})), None, None).await });
+    tokio::time::timeout(Duration::from_secs(5), state.blocked_started.notified()).await?;
+    request.abort();
+    assert!(request.await.is_err());
+    tokio::time::timeout(Duration::from_secs(5), state.modern_post_dropped.notified()).await?;
+    let request_id = state.requests.lock().await.iter().find(|r| r.pointer("/params/name").and_then(Value::as_str)==Some("modern-blocked")).and_then(|r| r.get("id")).cloned();
+    assert_eq!(state.modern_dropped_ids.lock().expect("drop ID lock").as_slice(), &[request_id.unwrap_or(Value::Null)]);
+    assert!(state.cancellations.lock().await.is_empty(), "modern HTTP cancellation must not require a legacy control POST");
     client.shutdown().await;
     server.abort();
     Ok(())

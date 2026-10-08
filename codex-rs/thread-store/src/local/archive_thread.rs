@@ -1,14 +1,17 @@
 use super::LocalThreadStore;
-use super::helpers::matching_rollout_file_name;
+use super::helpers::owned_rollout_paths_from_index;
+use super::helpers::restore_rollout_moves;
+use super::helpers::rollout_path_is_archived;
 use super::helpers::scoped_rollout_path;
-use crate::ArchiveThreadParams;
+use super::helpers::validated_rollout_file_name;
 use crate::ArchiveThreadsParams;
 use crate::ThreadStoreError;
 use crate::ThreadStoreResult;
 use chrono::Utc;
-use codex_rollout::find_thread_path_by_id_str;
+use codex_rollout::RolloutReferenceIndex;
 use tracing::warn;
 
+use super::thread_rollout_resolver;
 pub(super) async fn archive_threads(
     store: &LocalThreadStore,
     params: ArchiveThreadsParams,
@@ -29,26 +32,28 @@ pub(super) async fn archive_threads(
     let mut _live_writer_guards = Vec::with_capacity(lock_thread_ids.len());
     for thread_id in &lock_thread_ids {
         _live_writer_guards.push(store.live_writer_locks.lock(*thread_id).await);
-        if store
-            .live_recorders
-            .lock()
-            .await
-            .get(thread_id)
-            .is_some_and(|entry| entry.writer_lock.is_some())
-        {
+        if store.live_recorders.lock().await.contains_key(thread_id) {
             return Err(ThreadStoreError::Conflict {
                 message: format!("thread {thread_id} already has an active writer"),
             });
         }
     }
-    let _writer_guards = store
-        .acquire_paginated_writer_locks(&lock_thread_ids)
-        .await?;
+    let _writer_guards = store.acquire_writer_locks(&lock_thread_ids).await?;
+    // Only inspect active files whose names belong to the threads being archived.
+    let reference_index = RolloutReferenceIndex::scan_unarchived_threads(
+        store.config.codex_home.as_path(),
+        &thread_ids,
+    )
+    .await
+    .map_err(|err| ThreadStoreError::Internal {
+        message: format!("failed to scan thread rollout files: {err}"),
+    })?;
 
     let parent_thread_id = thread_ids[0];
     let mut archived_thread_ids = Vec::new();
     for thread_id in thread_ids {
-        match archive_thread(store, ArchiveThreadParams { thread_id }).await {
+        let rollout_paths = owned_rollout_paths_from_index(&reference_index, thread_id);
+        match archive_thread_with_paths(store, thread_id, rollout_paths).await {
             Ok(()) => archived_thread_ids.push(thread_id),
             Err(err) if archived_thread_ids.is_empty() => return Err(err),
             Err(err) => warn!(
@@ -59,35 +64,18 @@ pub(super) async fn archive_threads(
     Ok(archived_thread_ids)
 }
 
-pub(super) async fn archive_thread(
+async fn archive_thread_with_paths(
     store: &LocalThreadStore,
-    params: ArchiveThreadParams,
+    thread_id: codex_protocol::ThreadId,
+    mut rollout_paths: Vec<std::path::PathBuf>,
 ) -> ThreadStoreResult<()> {
-    let thread_id = params.thread_id;
     let state_db_ctx = store.state_db().await;
-    let rollout_path = find_thread_path_by_id_str(
-        store.config.codex_home.as_path(),
-        &thread_id.to_string(),
-        state_db_ctx.as_deref(),
-    )
-    .await
-    .map_err(|err| ThreadStoreError::InvalidRequest {
-        message: format!("failed to locate thread id {thread_id}: {err}"),
-    })?
-    .ok_or_else(|| ThreadStoreError::InvalidRequest {
-        message: format!("no rollout found for thread id {thread_id}"),
-    })?;
-
-    let canonical_rollout_path = scoped_rollout_path(
-        store.config.codex_home.join(codex_rollout::SESSIONS_SUBDIR),
-        rollout_path.as_path(),
-        "sessions",
-    )?;
-    let file_name = matching_rollout_file_name(
-        canonical_rollout_path.as_path(),
-        thread_id,
-        rollout_path.as_path(),
-    )?;
+    let selected_rollout_path = thread_rollout_resolver::resolve_current(store, thread_id)
+        .await?
+        .map(|resolved| resolved.path)
+        .ok_or_else(|| ThreadStoreError::InvalidRequest {
+            message: format!("no rollout found for thread id {thread_id}"),
+        })?;
 
     let archive_folder = store
         .config
@@ -96,17 +84,67 @@ pub(super) async fn archive_thread(
     std::fs::create_dir_all(&archive_folder).map_err(|err| ThreadStoreError::Internal {
         message: format!("failed to archive thread: {err}"),
     })?;
-    let archived_path = archive_folder.join(&file_name);
-    std::fs::rename(&canonical_rollout_path, &archived_path).map_err(|err| {
-        ThreadStoreError::Internal {
-            message: format!("failed to archive thread: {err}"),
+    if !rollout_paths.contains(&selected_rollout_path) {
+        rollout_paths.push(selected_rollout_path.clone());
+    }
+    let mut archived_path = None;
+    let mut rollout_moves = Vec::new();
+    for rollout_path in rollout_paths {
+        if rollout_path_is_archived(store.config.codex_home.as_path(), rollout_path.as_path()) {
+            continue;
         }
+        let canonical_rollout_path = scoped_rollout_path(
+            store.config.codex_home.join(codex_rollout::SESSIONS_SUBDIR),
+            rollout_path.as_path(),
+            "sessions",
+        )?;
+        let file_name =
+            validated_rollout_file_name(canonical_rollout_path.as_path(), rollout_path.as_path())?;
+        let destination = archive_folder.join(&file_name);
+        if rollout_path == selected_rollout_path {
+            archived_path = Some(destination.clone());
+        }
+        if !rollout_moves
+            .iter()
+            .any(|(source, _)| source == &canonical_rollout_path)
+        {
+            rollout_moves.push((canonical_rollout_path, destination));
+        }
+    }
+    let archived_path = archived_path.ok_or_else(|| ThreadStoreError::Internal {
+        message: format!("failed to archive selected rollout for thread {thread_id}"),
     })?;
 
-    if let Some(ctx) = state_db_ctx {
-        let _ = ctx
+    for (index, (source, destination)) in rollout_moves.iter().enumerate() {
+        if let Err(err) = std::fs::rename(source, destination) {
+            if let Err(restore_err) = restore_rollout_moves(&rollout_moves[..index]) {
+                return Err(ThreadStoreError::Internal {
+                    message: format!(
+                        "failed to archive thread: {err}; failed to restore moved rollouts: {restore_err}"
+                    ),
+                });
+            }
+            return Err(ThreadStoreError::Internal {
+                message: format!("failed to archive thread: {err}"),
+            });
+        }
+    }
+
+    if let Some(ctx) = state_db_ctx
+        && let Err(err) = ctx
             .mark_archived(thread_id, archived_path.as_path(), Utc::now())
-            .await;
+            .await
+    {
+        if let Err(restore_err) = restore_rollout_moves(&rollout_moves) {
+            return Err(ThreadStoreError::Internal {
+                message: format!(
+                    "failed to update archived thread metadata: {err}; failed to restore moved rollouts: {restore_err}"
+                ),
+            });
+        }
+        return Err(ThreadStoreError::Internal {
+            message: format!("failed to update archived thread metadata: {err}"),
+        });
     }
     Ok(())
 }
@@ -126,6 +164,7 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
+    use crate::ArchiveThreadParams;
     use crate::ListThreadsParams;
     use crate::ThreadSortKey;
     use crate::ThreadStore;
@@ -173,42 +212,52 @@ mod tests {
         let home = TempDir::new().expect("temp dir");
         let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
         let owner = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
-        let parent_uuid = Uuid::from_u128(203);
-        let parent_thread_id =
-            ThreadId::from_string(&parent_uuid.to_string()).expect("valid parent thread id");
-        let parent_path = write_session_file_with_history_mode(
-            home.path(),
-            "2025-01-03T12-00-00",
-            parent_uuid,
-            ThreadHistoryMode::Paginated,
-        )
-        .expect("parent session file");
-        let child_uuid = Uuid::from_u128(204);
-        let child_thread_id =
-            ThreadId::from_string(&child_uuid.to_string()).expect("valid child thread id");
-        let child_path = write_session_file_with_history_mode(
-            home.path(),
-            "2025-01-03T12-00-01",
-            child_uuid,
-            ThreadHistoryMode::Paginated,
-        )
-        .expect("child session file");
-        let _owner_guard = owner
-            .writer_lock_coordinator
-            .acquire(child_thread_id)
-            .expect("acquire child writer lock");
+        for (parent_uuid, child_uuid, history_mode) in [
+            (
+                Uuid::from_u128(203),
+                Uuid::from_u128(204),
+                ThreadHistoryMode::Legacy,
+            ),
+            (
+                Uuid::from_u128(206),
+                Uuid::from_u128(207),
+                ThreadHistoryMode::Paginated,
+            ),
+        ] {
+            let parent_thread_id =
+                ThreadId::from_string(&parent_uuid.to_string()).expect("valid parent thread id");
+            let parent_path = write_session_file_with_history_mode(
+                home.path(),
+                "2025-01-03T12-00-00",
+                parent_uuid,
+                history_mode,
+            )
+            .expect("parent session file");
+            let child_thread_id =
+                ThreadId::from_string(&child_uuid.to_string()).expect("valid child thread id");
+            let child_path = write_session_file_with_history_mode(
+                home.path(),
+                "2025-01-03T12-00-01",
+                child_uuid,
+                history_mode,
+            )
+            .expect("child session file");
+            let _owner_guard = owner
+                .acquire_writer_lock(child_thread_id)
+                .expect("acquire child writer lock");
 
-        let error = store
-            .archive_threads(ArchiveThreadsParams {
-                thread_ids: vec![parent_thread_id, child_thread_id],
-                writer_lock_thread_ids: Vec::new(),
-            })
-            .await
-            .expect_err("owned descendant should block archive");
+            let error = store
+                .archive_threads(ArchiveThreadsParams {
+                    thread_ids: vec![parent_thread_id, child_thread_id],
+                    writer_lock_thread_ids: Vec::new(),
+                })
+                .await
+                .expect_err("owned descendant should block archive");
 
-        assert!(matches!(error, ThreadStoreError::Conflict { .. }));
-        assert!(parent_path.exists());
-        assert!(child_path.exists());
+            assert!(matches!(error, ThreadStoreError::Conflict { .. }));
+            assert!(parent_path.exists());
+            assert!(child_path.exists());
+        }
     }
 
     #[tokio::test]
@@ -241,7 +290,8 @@ mod tests {
                 allowed_sources: Vec::new(),
                 model_providers: None,
                 cwd_filters: None,
-                is_pinned: None,
+                section: None,
+                project_id: None,
                 archived: true,
                 search_term: None,
                 relation_filter: None,
@@ -259,13 +309,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn archive_thread_updates_sqlite_metadata_when_present() {
+    async fn archive_thread_deduplicates_rollout_paths_and_updates_sqlite_metadata() {
         let home = TempDir::new().expect("temp dir");
         let config = test_config(home.path());
         let uuid = Uuid::from_u128(202);
         let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
         let active_path =
             write_session_file(home.path(), "2025-01-03T12-00-00", uuid).expect("session file");
+        let alternate_directory = active_path
+            .parent()
+            .expect("session directory")
+            .join("alternate");
+        std::fs::create_dir(&alternate_directory).expect("alternate session directory");
+        let selected_rollout_path = alternate_directory
+            .join("..")
+            .join(active_path.file_name().expect("file name"));
         let runtime = codex_state::StateRuntime::init(
             codex_state::SqliteConfig::new_for_testing(home.path().abs()),
             config.default_model_provider_id.clone(),
@@ -279,7 +337,7 @@ mod tests {
             .expect("backfill should be complete");
         let mut builder = codex_state::ThreadMetadataBuilder::new(
             thread_id,
-            active_path.clone(),
+            selected_rollout_path,
             Utc::now(),
             SessionSource::Cli,
         );

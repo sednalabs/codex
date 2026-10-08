@@ -1,55 +1,37 @@
 use super::*;
-use crate::environment_selection::TurnEnvironmentState;
-use crate::mcp_tool_call::MCP_TOOL_APPROVAL_DECLINE_SYNTHETIC;
-use crate::mcp_tool_call::MCP_TOOL_APPROVAL_QUESTION_ID_PREFIX;
 use async_channel::bounded;
-use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
-use codex_protocol::approvals::ExecApprovalRequestEvent;
-use codex_protocol::approvals::GuardianAssessmentAction;
-use codex_protocol::approvals::GuardianAssessmentStatus;
-use codex_protocol::approvals::GuardianCommandSource;
-use codex_protocol::config_types::ApprovalsReviewer;
+use codex_extension_api::ExtensionFuture;
+use codex_extension_api::ExtensionRegistryBuilder;
+use codex_extension_api::ThreadLifecycleContributor;
+use codex_extension_api::ThreadStartInput;
 use codex_protocol::error::CodexErrorDetails;
-use codex_protocol::models::NetworkPermissions;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::AgentStatus;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::McpInvocation;
 use codex_protocol::protocol::McpStartupCompleteEvent;
 use codex_protocol::protocol::McpStartupStatus;
 use codex_protocol::protocol::McpStartupUpdateEvent;
 use codex_protocol::protocol::RawResponseItemEvent;
-use codex_protocol::protocol::ReviewDecision;
-use codex_protocol::protocol::TokenCountEvent;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
-use codex_protocol::request_permissions::RequestPermissionProfile;
-use codex_protocol::request_permissions::RequestPermissionsEvent;
-use codex_protocol::request_permissions::RequestPermissionsResponse;
-use codex_protocol::request_user_input::RequestUserInputAnswer;
-use codex_protocol::request_user_input::RequestUserInputEvent;
-use codex_protocol::request_user_input::RequestUserInputQuestion;
-use core_test_support::PathBufExt;
-use core_test_support::test_path_buf;
+use futures::FutureExt;
 use pretty_assertions::assert_eq;
-use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::Mutex;
-use tokio::sync::oneshot;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use tokio::sync::watch;
-use tokio::time::Duration;
 use tokio::time::timeout;
 
-#[tokio::test]
-async fn dropped_approval_review_fails_closed() {
-    let (tx, rx) = oneshot::channel();
-    drop(tx);
+struct ThreadStartRecorder(Arc<AtomicUsize>);
 
-    assert_eq!(
-        receive_approval_review(rx).await,
-        ReviewDecision::denied("automatic approval review could not complete")
-    );
+impl ThreadLifecycleContributor<Config> for ThreadStartRecorder {
+    fn on_thread_start<'a>(
+        &'a self,
+        _input: ThreadStartInput<'a, Config>,
+    ) -> ExtensionFuture<'a, ()> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Box::pin(std::future::ready(()))
+    }
 }
 
 #[tokio::test]
@@ -57,7 +39,6 @@ async fn forward_events_filters_private_events_before_blocked_send_is_cancelled(
     let (tx_events, rx_events) = bounded(SUBMISSION_CHANNEL_CAPACITY);
     let (tx_sub, rx_sub) = bounded(SUBMISSION_CHANNEL_CAPACITY);
     let (_agent_status_tx, agent_status) = watch::channel(AgentStatus::PendingInit);
-    let (session, ctx, _rx_evt) = crate::session::tests::make_session_and_context_with_rx().await;
     let io = Arc::new(SessionIo {
         tx_sub,
         rx_event: rx_events,
@@ -70,10 +51,11 @@ async fn forward_events_filters_private_events_before_blocked_send_is_cancelled(
         .send(Event {
             id: "full".to_string(),
             msg: EventMsg::TurnAborted(TurnAbortedEvent {
+                root_turn_id: None,
                 turn_id: Some("turn-1".to_string()),
                 started_at: None,
                 reason: TurnAbortReason::Interrupted,
-                provider_usage: None,
+                error: None,
                 completed_at: None,
                 duration_ms: None,
             }),
@@ -84,11 +66,7 @@ async fn forward_events_filters_private_events_before_blocked_send_is_cancelled(
     let cancel = CancellationToken::new();
     let forward = tokio::spawn(forward_events(
         Arc::clone(&io),
-        Arc::clone(&session),
         tx_out.clone(),
-        session,
-        ctx,
-        Arc::new(Mutex::new(HashMap::new())),
         cancel.clone(),
     ));
 
@@ -154,65 +132,6 @@ async fn forward_events_filters_private_events_before_blocked_send_is_cancelled(
 }
 
 #[tokio::test]
-async fn forward_events_forwards_token_count() {
-    let (tx_events, rx_events) = bounded(1);
-    let (tx_sub, _rx_sub) = bounded(SUBMISSION_CHANNEL_CAPACITY);
-    let (_agent_status_tx, agent_status) = watch::channel(AgentStatus::PendingInit);
-    let (session, ctx, _rx_evt) = crate::session::tests::make_session_and_context_with_rx().await;
-    let io = Arc::new(SessionIo {
-        tx_sub,
-        rx_event: rx_events,
-        agent_status,
-        session_loop_termination: completed_session_loop_termination(),
-    });
-
-    let (tx_out, rx_out) = bounded(1);
-    let cancel = CancellationToken::new();
-    let forward = tokio::spawn(forward_events(
-        Arc::clone(&io),
-        Arc::clone(&session),
-        tx_out,
-        session,
-        ctx,
-        Arc::new(Mutex::new(HashMap::new())),
-        cancel,
-    ));
-
-    tx_events
-        .send(Event {
-            id: "token".to_string(),
-            msg: EventMsg::TokenCount(TokenCountEvent {
-                info: None,
-                rate_limits: None,
-                provider: None,
-                model_used: None,
-                requested_service_tier: None,
-                actual_service_tier: None,
-                actual_service_tier_source: None,
-                fast_mode_requested: None,
-                fast_mode_used: None,
-                billing_surface: None,
-                account_plan: None,
-            }),
-        })
-        .await
-        .unwrap();
-    drop(tx_events);
-
-    let received = rx_out
-        .recv()
-        .await
-        .expect("token count event not forwarded");
-    assert_eq!("token", received.id);
-    assert!(matches!(received.msg, EventMsg::TokenCount(_)));
-
-    timeout(Duration::from_millis(1000), forward)
-        .await
-        .expect("forward_events hung")
-        .expect("forward_events join error");
-}
-
-#[tokio::test]
 async fn forward_ops_preserves_submission_trace_context() {
     let (tx_sub, rx_sub) = bounded(SUBMISSION_CHANNEL_CAPACITY);
     let (_tx_events, rx_events) = bounded(SUBMISSION_CHANNEL_CAPACITY);
@@ -230,24 +149,36 @@ async fn forward_ops_preserves_submission_trace_context() {
     let submission = Submission {
         id: "sub-1".to_string(),
         op: Op::Interrupt,
-        client_user_message_id: None,
+        turn_extension_init: None,
         trace: Some(codex_protocol::protocol::W3cTraceContext {
             traceparent: Some(
                 "00-1234567890abcdef1234567890abcdef-1234567890abcdef-01".to_string(),
             ),
             tracestate: Some("vendor=state".to_string()),
         }),
+        parent_turn_id: Some("parent-turn".to_string()),
+        root_turn_id: Some("root-turn".to_string()),
+        residency_guard: None,
     };
-    tx_ops.send(submission.clone()).await.unwrap();
+    tx_ops.send(submission).await.unwrap();
     drop(tx_ops);
 
     let forwarded = timeout(Duration::from_secs(1), rx_sub.recv())
         .await
         .expect("forward_ops hung")
         .expect("forwarded submission missing");
-    assert_eq!(submission.id, forwarded.id);
-    assert_eq!(submission.op, forwarded.op);
-    assert_eq!(submission.trace, forwarded.trace);
+    assert_eq!("sub-1", forwarded.id);
+    assert!(matches!(forwarded.op, Op::Interrupt));
+    assert_eq!(
+        forwarded.trace,
+        Some(codex_protocol::protocol::W3cTraceContext {
+            traceparent: Some(
+                "00-1234567890abcdef1234567890abcdef-1234567890abcdef-01".to_string(),
+            ),
+            tracestate: Some("vendor=state".to_string()),
+        })
+    );
+    assert_eq!(Some("parent-turn".to_string()), forwarded.parent_turn_id);
 
     timeout(Duration::from_secs(1), forward)
         .await
@@ -257,455 +188,263 @@ async fn forward_ops_preserves_submission_trace_context() {
 
 #[tokio::test]
 async fn run_codex_thread_interactive_respects_pre_cancelled_spawn() {
-    let (parent_session, parent_ctx, _rx_events) =
-        crate::session::tests::make_session_and_context_with_rx().await;
-    let cancel_token = CancellationToken::new();
-    cancel_token.cancel();
+    for shutdown_requested in [false, true] {
+        let (parent_session, parent_ctx, _rx_events) =
+            crate::session::tests::make_session_and_context_with_rx().await;
+        if shutdown_requested {
+            parent_session
+                .services
+                .local_agent_runtime
+                .request_shutdown();
+        }
+        let mut config = parent_ctx.config.as_ref().clone();
+        config.permissions.approval_policy = Constrained::allow_only(AskForApproval::Never);
+        let cancel_token = CancellationToken::new();
+        cancel_token.cancel();
+        let parent_environments = parent_ctx.initial_environments.clone();
 
-    let result = timeout(
-        Duration::from_secs(/*secs*/ 1),
-        run_codex_thread_interactive(
-            parent_ctx.config.as_ref().clone(),
+        let result = timeout(
+            Duration::from_secs(/*secs*/ 1),
+            run_codex_thread_interactive(
+                config,
+                Arc::clone(&parent_session.services.auth_manager),
+                Arc::clone(&parent_session.services.models_manager),
+                parent_session,
+                parent_ctx,
+                parent_environments,
+                cancel_token,
+                SubAgentSource::Review,
+                codex_extension_api::SessionIsolation::Inherit,
+                /*initial_history*/ None,
+                crate::session::GitEnrichmentPolicy::Fresh,
+                codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
+            ),
+        )
+        .await
+        .expect("cancelled delegate spawn should not hang");
+
+        let error = result.err().expect("cancelled delegate spawn should fail");
+        assert!(
+            matches!(error.details(), CodexErrorDetails::TurnAborted),
+            "unexpected cancelled delegate spawn error (shutdown_requested={shutdown_requested}): {error}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn delegate_start_analytics_honors_child_opt_out_with_enabled_parent() {
+    use codex_analytics::AnalyticsEventsClient;
+    use codex_login::CodexAuth;
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::path;
+
+    let server = MockServer::start().await;
+    Mock::given(path("/codex/analytics-events/events"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    let client = AnalyticsEventsClient::new(
+        AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing()),
+        server.uri(),
+        /*analytics_enabled*/ Some(true),
+    );
+    let (mut parent_session, parent_ctx, _rx_events) =
+        crate::session::tests::make_session_and_context_with_rx().await;
+    Arc::get_mut(&mut parent_session)
+        .expect("parent session should be uniquely owned")
+        .services
+        .analytics_events_client = client.clone();
+    parent_session
+        .set_app_server_client_info(
+            Some("codex-test".to_string()),
+            Some("1.0.0".to_string()),
+            /*mcp_elicitations_auto_deny*/ false,
+        )
+        .await
+        .expect("set parent client metadata");
+
+    let mut expected_events = Vec::new();
+    for analytics_enabled in [false, true] {
+        let mut config = parent_ctx.config.as_ref().clone();
+        config.permissions.approval_policy = Constrained::allow_only(AskForApproval::Never);
+        config.analytics_enabled = Some(analytics_enabled);
+        let (session, io) = run_codex_thread_interactive(
+            config,
             Arc::clone(&parent_session.services.auth_manager),
             Arc::clone(&parent_session.services.models_manager),
-            parent_session,
-            parent_ctx,
-            cancel_token,
+            Arc::clone(&parent_session),
+            Arc::clone(&parent_ctx),
+            parent_ctx.initial_environments.clone(),
+            CancellationToken::new(),
             SubAgentSource::Review,
+            codex_extension_api::SessionIsolation::Inherit,
             /*initial_history*/ None,
             crate::session::GitEnrichmentPolicy::Fresh,
             codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
+        )
+        .await
+        .expect("delegate session should start");
+        if analytics_enabled {
+            expected_events.push(serde_json::json!([
+                "codex_thread_initialized",
+                session.thread_id().to_string(),
+            ]));
+        }
+        io.shutdown_and_wait()
+            .await
+            .expect("delegate session should shut down");
+    }
+    client.flush().await;
+    let events = server
+        .received_requests()
+        .await
+        .expect("analytics requests")
+        .into_iter()
+        .flat_map(|request| {
+            let payload: Value = serde_json::from_slice(&request.body).expect("analytics payload");
+            payload["events"].as_array().expect("events array").clone()
+        })
+        .map(|event| serde_json::json!([event["event_type"], event["event_params"]["thread_id"]]))
+        .collect::<Vec<_>>();
+    assert_eq!(events, expected_events);
+}
+
+#[tokio::test]
+async fn delegate_isolation_does_not_depend_on_attribution() {
+    let (mut parent_session, parent_ctx, _rx_events) =
+        crate::session::tests::make_session_and_context_with_rx().await;
+    let thread_starts = Arc::new(AtomicUsize::new(0));
+    let mut extensions = ExtensionRegistryBuilder::<Config>::new();
+    extensions
+        .thread_lifecycle_contributor(Arc::new(ThreadStartRecorder(Arc::clone(&thread_starts))));
+    Arc::get_mut(&mut parent_session)
+        .expect("parent session should be uniquely owned")
+        .services
+        .extensions = Arc::new(extensions.build());
+
+    for (subagent_source, isolation, expected_thread_starts, expected_thread_source) in [
+        (
+            SubAgentSource::Other(crate::guardian::GUARDIAN_REVIEWER_NAME.to_string()),
+            codex_extension_api::SessionIsolation::Isolated,
+            0,
+            ThreadSource::GuardianReview,
         ),
+        (
+            SubAgentSource::Review,
+            codex_extension_api::SessionIsolation::Isolated,
+            0,
+            ThreadSource::Subagent,
+        ),
+        (
+            SubAgentSource::Review,
+            codex_extension_api::SessionIsolation::Inherit,
+            1,
+            ThreadSource::Subagent,
+        ),
+    ] {
+        let mut config = parent_ctx.config.as_ref().clone();
+        config.permissions.approval_policy = Constrained::allow_only(AskForApproval::Never);
+        let (session, io) = run_codex_thread_interactive(
+            config,
+            Arc::clone(&parent_session.services.auth_manager),
+            Arc::clone(&parent_session.services.models_manager),
+            Arc::clone(&parent_session),
+            Arc::clone(&parent_ctx),
+            parent_ctx.initial_environments.clone(),
+            CancellationToken::new(),
+            subagent_source,
+            isolation,
+            /*initial_history*/ None,
+            crate::session::GitEnrichmentPolicy::Fresh,
+            codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
+        )
+        .await
+        .expect("delegate session should start");
+
+        assert_eq!(
+            session
+                .services
+                .extensions
+                .thread_lifecycle_contributors()
+                .len(),
+            expected_thread_starts
+        );
+        assert_eq!(thread_starts.load(Ordering::SeqCst), expected_thread_starts);
+        assert_eq!(
+            session.thread_config_snapshot().await.thread_source,
+            Some(expected_thread_source)
+        );
+        io.shutdown_and_wait()
+            .await
+            .expect("delegate session should shut down");
+    }
+}
+
+#[tokio::test]
+async fn run_codex_thread_interactive_rejects_approval_policy_that_can_prompt() {
+    let (parent_session, parent_ctx, _rx_events) =
+        crate::session::tests::make_session_and_context_with_rx().await;
+    let mut config = parent_ctx.config.as_ref().clone();
+    config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
+    let parent_environments = parent_ctx.initial_environments.clone();
+
+    let result = run_codex_thread_interactive(
+        config,
+        Arc::clone(&parent_session.services.auth_manager),
+        Arc::clone(&parent_session.services.models_manager),
+        parent_session,
+        parent_ctx,
+        parent_environments,
+        CancellationToken::new(),
+        SubAgentSource::Review,
+        codex_extension_api::SessionIsolation::Inherit,
+        /*initial_history*/ None,
+        crate::session::GitEnrichmentPolicy::Fresh,
+        codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
     )
-    .await
-    .expect("cancelled delegate spawn should not hang");
+    .await;
 
     assert!(matches!(
         result,
-        Err(err) if matches!(err.details(), CodexErrorDetails::TurnAborted)
+        Err(err)
+            if matches!(
+                err.details(),
+                CodexErrorDetails::InvalidRequest(message)
+                    if message == "Codex delegates require approval policy `never`"
+            )
     ));
 }
 
+/// Private delegates participate in tree shutdown even though they are not manager-visible.
 #[tokio::test]
-async fn handle_request_permissions_uses_tool_call_id_for_round_trip() {
-    let (parent_session, mut parent_ctx, rx_events) =
+async fn tree_shutdown_waits_for_private_delegate() {
+    let (parent, context, _events) =
         crate::session::tests::make_session_and_context_with_rx().await;
-    *parent_session.active_turn.lock().await = Some(crate::state::ActiveTurn::default());
-    let parent_ctx_mut = Arc::get_mut(&mut parent_ctx).expect("single turn context ref");
-    let TurnEnvironmentState::Ready(environment) = &mut parent_ctx_mut.environments.environments[0]
-    else {
-        panic!("expected ready primary environment");
-    };
-    environment.environment_id = "remote".to_string();
-
-    let (tx_sub, rx_sub) = bounded(SUBMISSION_CHANNEL_CAPACITY);
-    let (_tx_events, rx_events_child) = bounded(SUBMISSION_CHANNEL_CAPACITY);
-    let (_agent_status_tx, agent_status) = watch::channel(AgentStatus::PendingInit);
-    let io = Arc::new(SessionIo {
-        tx_sub,
-        rx_event: rx_events_child,
-        agent_status,
-        session_loop_termination: completed_session_loop_termination(),
-    });
-
-    let call_id = "tool-call-1".to_string();
-    let expected_response = RequestPermissionsResponse {
-        permissions: RequestPermissionProfile {
-            network: Some(NetworkPermissions {
-                enabled: Some(true),
-            }),
-            ..RequestPermissionProfile::default()
-        },
-        scope: PermissionGrantScope::Turn,
-        strict_auto_review: false,
-    };
-    #[allow(deprecated)]
-    let delegated_cwd = parent_ctx.cwd.join("delegated-cwd");
-    let cancel_token = CancellationToken::new();
-    let request_call_id = call_id.clone();
-    let request_cwd = delegated_cwd.clone();
-
-    let handle = tokio::spawn({
-        let io = Arc::clone(&io);
-        let parent_session = Arc::clone(&parent_session);
-        let parent_ctx = Arc::clone(&parent_ctx);
-        let cancel_token = cancel_token.clone();
-        async move {
-            handle_request_permissions(
-                io.as_ref(),
-                &parent_session,
-                &parent_ctx,
-                RequestPermissionsEvent {
-                    call_id: request_call_id,
-                    turn_id: "child-turn-1".to_string(),
-                    environment_id: Some("remote".to_string()),
-                    started_at_ms: 0,
-                    reason: Some("need access".to_string()),
-                    permissions: RequestPermissionProfile {
-                        network: Some(NetworkPermissions {
-                            enabled: Some(true),
-                        }),
-                        ..RequestPermissionProfile::default()
-                    },
-                    cwd: Some(request_cwd),
-                },
-                &cancel_token,
-            )
-            .await;
-        }
-    });
-
-    let request_event = timeout(Duration::from_secs(1), rx_events.recv())
-        .await
-        .expect("request_permissions event timed out")
-        .expect("request_permissions event missing");
-    let EventMsg::RequestPermissions(request) = request_event.msg else {
-        panic!("expected RequestPermissions event");
-    };
-    assert_eq!(request.call_id, call_id.clone());
-    assert_eq!(request.environment_id.as_deref(), Some("remote"));
-    assert_eq!(request.cwd, Some(delegated_cwd));
-
-    parent_session
-        .notify_request_permissions_response(&call_id, expected_response.clone())
-        .await;
-
-    timeout(Duration::from_secs(1), handle)
-        .await
-        .expect("handle_request_permissions hung")
-        .expect("handle_request_permissions join error");
-
-    let submission = timeout(Duration::from_secs(1), rx_sub.recv())
-        .await
-        .expect("request_permissions response timed out")
-        .expect("request_permissions response missing");
-    assert_eq!(
-        submission.op,
-        Op::RequestPermissionsResponse {
-            id: call_id,
-            response: expected_response,
-        }
-    );
-}
-
-#[tokio::test]
-async fn handle_request_user_input_preserves_non_blocking_flag_for_round_trip() {
-    let (parent_session, parent_ctx, rx_events) =
-        crate::session::tests::make_session_and_context_with_rx().await;
-    *parent_session.active_turn.lock().await = Some(crate::state::ActiveTurn::default());
-
-    let (tx_sub, rx_sub) = bounded(SUBMISSION_CHANNEL_CAPACITY);
-    let (_tx_events, rx_events_child) = bounded(SUBMISSION_CHANNEL_CAPACITY);
-    let (_agent_status_tx, agent_status) = watch::channel(AgentStatus::PendingInit);
-    let io = Arc::new(SessionIo {
-        tx_sub,
-        rx_event: rx_events_child,
-        agent_status,
-        session_loop_termination: completed_session_loop_termination(),
-    });
-    let pending_mcp_invocations = Arc::new(Mutex::new(HashMap::new()));
-    let cancel_token = CancellationToken::new();
-    let child_event_id = "child-request-1".to_string();
-    let parent_user_input_id = parent_ctx.sub_id.clone();
-    let expected_response = RequestUserInputResponse {
-        answers: HashMap::from([(
-            "q1".to_string(),
-            RequestUserInputAnswer {
-                answers: vec!["yes".to_string()],
-            },
-        )]),
-    };
-
-    let handle = tokio::spawn({
-        let io = Arc::clone(&io);
-        let parent_session = Arc::clone(&parent_session);
-        let parent_ctx = Arc::clone(&parent_ctx);
-        let pending_mcp_invocations = Arc::clone(&pending_mcp_invocations);
-        let cancel_token = cancel_token.clone();
-        let child_event_id = child_event_id.clone();
-        async move {
-            handle_request_user_input(
-                io.as_ref(),
-                child_event_id,
-                &parent_session,
-                &parent_ctx,
-                &pending_mcp_invocations,
-                RequestUserInputEvent {
-                    call_id: "child-call-1".to_string(),
-                    turn_id: "child-turn-1".to_string(),
-                    questions: vec![RequestUserInputQuestion {
-                        id: "q1".to_string(),
-                        header: "Confirm".to_string(),
-                        question: "Continue?".to_string(),
-                        is_other: false,
-                        is_secret: false,
-                        options: None,
-                    }],
-                    is_blocking: false,
-                    auto_resolution_ms: None,
-                },
-                &cancel_token,
-            )
-            .await;
-        }
-    });
-
-    let request_event = timeout(Duration::from_secs(1), rx_events.recv())
-        .await
-        .expect("request_user_input event timed out")
-        .expect("request_user_input event missing");
-    let EventMsg::RequestUserInput(request) = request_event.msg else {
-        panic!("expected RequestUserInput event");
-    };
-    assert_eq!(request.call_id, parent_user_input_id);
-    assert_eq!(request.is_blocking, false);
-
-    parent_session
-        .notify_user_input_response(&parent_user_input_id, expected_response.clone())
-        .await;
-
-    timeout(Duration::from_secs(1), handle)
-        .await
-        .expect("handle_request_user_input hung")
-        .expect("handle_request_user_input join error");
-
-    let submission = timeout(Duration::from_secs(1), rx_sub.recv())
-        .await
-        .expect("request_user_input response timed out")
-        .expect("request_user_input response missing");
-    assert_eq!(
-        submission.op,
-        Op::UserInputAnswer {
-            id: child_event_id,
-            response: expected_response,
-        }
-    );
-}
-
-#[tokio::test]
-async fn handle_exec_approval_uses_call_id_for_guardian_review_and_approval_id_for_reply() {
-    let (parent_session, parent_ctx, rx_events) =
-        crate::session::tests::make_session_and_context_with_rx().await;
-    let mut parent_ctx = Arc::try_unwrap(parent_ctx).expect("single turn context ref");
-    let mut config = (*parent_ctx.config).clone();
-    config.approvals_reviewer = ApprovalsReviewer::AutoReview;
-    parent_ctx.config = Arc::new(config);
-    parent_ctx
-        .approval_policy
-        .set(AskForApproval::OnRequest)
-        .expect("set on-request policy");
-    let parent_ctx = Arc::new(parent_ctx);
-
-    let (tx_sub, rx_sub) = bounded(SUBMISSION_CHANNEL_CAPACITY);
-    let (_tx_events, rx_events_child) = bounded(SUBMISSION_CHANNEL_CAPACITY);
-    let (_agent_status_tx, agent_status) = watch::channel(AgentStatus::PendingInit);
-    let io = Arc::new(SessionIo {
-        tx_sub,
-        rx_event: rx_events_child,
-        agent_status,
-        session_loop_termination: completed_session_loop_termination(),
-    });
-
-    let cancel_token = CancellationToken::new();
-    let handle = tokio::spawn({
-        let io = Arc::clone(&io);
-        let parent_session = Arc::clone(&parent_session);
-        let parent_ctx = Arc::clone(&parent_ctx);
-        let cancel_token = cancel_token.clone();
-        async move {
-            handle_exec_approval(
-                io.as_ref(),
-                "child-turn-1".to_string(),
-                &parent_session,
-                &parent_ctx,
-                ExecApprovalRequestEvent {
-                    call_id: "command-item-1".to_string(),
-                    plugin_id: Some("sample@openai-curated".to_string()),
-                    script_path: Some("scripts/run.py".to_string()),
-                    approval_id: Some("callback-approval-1".to_string()),
-                    turn_id: "child-turn-1".to_string(),
-                    environment_id: Some("remote".to_string()),
-                    started_at_ms: 0,
-                    command: vec!["rm".to_string(), "-rf".to_string(), "tmp".to_string()],
-                    cwd: test_path_buf("/tmp").abs(),
-                    reason: Some("unsafe subcommand".to_string()),
-                    network_approval_context: None,
-                    proposed_execpolicy_amendment: None,
-                    proposed_network_policy_amendments: None,
-                    additional_permissions: None,
-                    available_decisions: Some(vec![
-                        ReviewDecision::Approved,
-                        ReviewDecision::Abort,
-                    ]),
-                    parsed_cmd: Vec::new(),
-                },
-                &cancel_token,
-            )
-            .await;
-        }
-    });
-
-    let assessment_event = timeout(Duration::from_secs(2), async {
-        loop {
-            let event = rx_events.recv().await.expect("guardian assessment event");
-            if let EventMsg::GuardianAssessment(assessment) = event.msg {
-                return assessment;
-            }
-        }
-    })
+    let mut config = context.config.as_ref().clone();
+    config.permissions.approval_policy = Constrained::allow_only(AskForApproval::Never);
+    let (_, io) = run_codex_thread_interactive(
+        config,
+        Arc::clone(&parent.services.auth_manager),
+        Arc::clone(&parent.services.models_manager),
+        Arc::clone(&parent),
+        Arc::clone(&context),
+        context.initial_environments.clone(),
+        CancellationToken::new(),
+        SubAgentSource::Review,
+        codex_extension_api::SessionIsolation::Isolated,
+        /*initial_history*/ None,
+        crate::session::GitEnrichmentPolicy::Fresh,
+        codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
+    )
     .await
-    .expect("timed out waiting for guardian assessment");
-    let expected_action = GuardianAssessmentAction::Command {
-        source: GuardianCommandSource::Shell,
-        command: "rm -rf tmp".to_string(),
-        cwd: test_path_buf("/tmp").abs(),
-    };
-    assert!(!assessment_event.id.is_empty());
-    assert_eq!(
-        assessment_event.target_item_id.as_deref(),
-        Some("command-item-1")
-    );
-    assert_eq!(
-        assessment_event.plugin_id.as_deref(),
-        Some("sample@openai-curated")
-    );
-    assert_eq!(
-        assessment_event.script_path.as_deref(),
-        Some("scripts/run.py")
-    );
-    assert_eq!(assessment_event.turn_id, parent_ctx.sub_id);
-    assert_eq!(
-        assessment_event.status,
-        GuardianAssessmentStatus::InProgress
-    );
-    assert_eq!(assessment_event.risk_level, None);
-    assert_eq!(assessment_event.user_authorization, None);
-    assert_eq!(assessment_event.rationale, None);
-    assert_eq!(assessment_event.decision_source, None);
-    assert_eq!(assessment_event.action, expected_action);
+    .expect("start private delegate");
 
-    cancel_token.cancel();
-
-    timeout(Duration::from_secs(2), handle)
+    let shutdown = parent.services.local_agent_runtime.request_shutdown();
+    timeout(Duration::from_secs(/*secs*/ 10), shutdown.wait())
         .await
-        .expect("handle_exec_approval hung")
-        .expect("handle_exec_approval join error");
-
-    let submission = timeout(Duration::from_secs(2), rx_sub.recv())
-        .await
-        .expect("exec approval response timed out")
-        .expect("exec approval response missing");
-    assert_eq!(
-        submission.op,
-        Op::ExecApproval {
-            id: "callback-approval-1".to_string(),
-            turn_id: Some("child-turn-1".to_string()),
-            decision: ReviewDecision::Abort,
-        }
-    );
-}
-
-#[tokio::test]
-async fn delegated_mcp_guardian_abort_returns_synthetic_decline_answer() {
-    let (parent_session, parent_ctx, _rx_events) =
-        crate::session::tests::make_session_and_context_with_rx().await;
-    let mut parent_ctx = Arc::try_unwrap(parent_ctx).expect("single turn context ref");
-    let mut config = (*parent_ctx.config).clone();
-    config.approvals_reviewer = ApprovalsReviewer::AutoReview;
-    parent_ctx.config = Arc::new(config);
-    parent_ctx
-        .approval_policy
-        .set(AskForApproval::OnRequest)
-        .expect("set on-request policy");
-    let parent_ctx = Arc::new(parent_ctx);
-
-    let pending_mcp_invocations = Arc::new(Mutex::new(HashMap::from([(
-        "call-1".to_string(),
-        PendingMcpInvocation {
-            invocation: McpInvocation {
-                server: "custom_server".to_string(),
-                tool: "dangerous_tool".to_string(),
-                arguments: None,
-            },
-            metadata: None,
-        },
-    )])));
-    let cancel_token = CancellationToken::new();
-    cancel_token.cancel();
-
-    let response = maybe_auto_review_mcp_request_user_input(
-        &parent_session,
-        &parent_ctx,
-        &pending_mcp_invocations,
-        &RequestUserInputEvent {
-            call_id: "call-1".to_string(),
-            turn_id: "child-turn-1".to_string(),
-            questions: vec![RequestUserInputQuestion {
-                id: format!("{MCP_TOOL_APPROVAL_QUESTION_ID_PREFIX}_call-1"),
-                header: "Approve app tool call?".to_string(),
-                question: "Allow this app tool?".to_string(),
-                is_other: false,
-                is_secret: false,
-                options: None,
-            }],
-            is_blocking: true,
-            auto_resolution_ms: None,
-        },
-        &cancel_token,
-    )
-    .await;
-
-    assert_eq!(
-        response,
-        Some(RequestUserInputResponse {
-            answers: HashMap::from([(
-                format!("{MCP_TOOL_APPROVAL_QUESTION_ID_PREFIX}_call-1"),
-                RequestUserInputAnswer {
-                    answers: vec![MCP_TOOL_APPROVAL_DECLINE_SYNTHETIC.to_string()],
-                },
-            )]),
-        })
-    );
-}
-
-#[tokio::test]
-async fn delegated_mcp_user_reviewer_returns_none_without_metadata() {
-    let (parent_session, parent_ctx, _rx_events) =
-        crate::session::tests::make_session_and_context_with_rx().await;
-    let pending_mcp_invocations = Arc::new(Mutex::new(HashMap::from([(
-        "call-1".to_string(),
-        PendingMcpInvocation {
-            invocation: McpInvocation {
-                server: CODEX_APPS_MCP_SERVER_NAME.to_string(),
-                tool: "dangerous_tool".to_string(),
-                arguments: None,
-            },
-            metadata: None,
-        },
-    )])));
-    let cancel_token = CancellationToken::new();
-
-    let event = RequestUserInputEvent {
-        call_id: "call-1".to_string(),
-        turn_id: "child-turn-1".to_string(),
-        questions: vec![RequestUserInputQuestion {
-            id: format!("{MCP_TOOL_APPROVAL_QUESTION_ID_PREFIX}_call-1"),
-            header: "Approve app tool call?".to_string(),
-            question: "Allow this app tool?".to_string(),
-            is_other: false,
-            is_secret: false,
-            options: None,
-        }],
-        is_blocking: true,
-        auto_resolution_ms: None,
-    };
-    let response = maybe_auto_review_mcp_request_user_input(
-        &parent_session,
-        &parent_ctx,
-        &pending_mcp_invocations,
-        &event,
-        &cancel_token,
-    )
-    .await;
-    assert_eq!(response, None);
+        .expect("tree shutdown should wait for the private delegate")
+        .expect("private delegate should shut down cleanly");
+    assert!(io.session_loop_termination.now_or_never().is_some());
 }

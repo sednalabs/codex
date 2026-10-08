@@ -18,6 +18,8 @@ fn failed_turn_does_not_overwrite_output_last_message_file() {
                 text: "partial answer".to_string(),
                 phase: None,
                 memory_citation: None,
+                delivery: None,
+                questions: None,
             },
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
@@ -30,15 +32,15 @@ fn failed_turn_does_not_overwrite_output_last_message_file() {
 
     let status = processor.process_server_notification(ServerNotification::TurnCompleted(
         codex_app_server_protocol::TurnCompletedNotification {
-            final_model: None,
-            model_snapshot: None,
             thread_id: "thread-1".to_string(),
             turn: codex_app_server_protocol::Turn {
                 id: "turn-1".to_string(),
+                root_turn_id: None,
                 items_view: codex_app_server_protocol::TurnItemsView::Full,
                 items: Vec::new(),
                 status: TurnStatus::Failed,
                 error: Some(codex_app_server_protocol::TurnError {
+                    misalignment: None,
                     message: "turn failed".to_string(),
                     additional_details: None,
                     codex_error_info: None,
@@ -76,8 +78,6 @@ fn runtime_warning_emits_a_non_fatal_error_item() {
         collected,
         CollectedThreadEvents {
             events: vec![ThreadEvent::ItemCompleted(ItemCompletedEvent {
-                thread_id: None,
-                turn_id: None,
                 item: ExecThreadItem {
                     id: "item_0".to_string(),
                     details: ThreadItemDetails::Error(ErrorItem {
@@ -104,7 +104,9 @@ fn mcp_tool_call_result_preserves_meta_in_jsonl_event() {
                 arguments: json!({"search_query": [{"q": "OpenAI Codex CLI documentation"}]}),
                 app_context: None,
                 mcp_app_resource_uri: None,
+                mcp_app_ui: None,
                 plugin_id: None,
+                read_only_hint: None,
                 result: Some(Box::new(codex_app_server_protocol::McpToolCallResult {
                     content: vec![json!({"type": "text", "text": "search result"})],
                     structured_content: None,
@@ -122,7 +124,7 @@ fn mcp_tool_call_result_preserves_meta_in_jsonl_event() {
     assert_eq!(collected.status, CodexStatus::Running);
     assert_eq!(collected.events.len(), 1);
 
-    let ThreadEvent::ItemCompleted(ItemCompletedEvent { item, .. }) = &collected.events[0] else {
+    let ThreadEvent::ItemCompleted(ItemCompletedEvent { item }) = &collected.events[0] else {
         panic!("expected item.completed event");
     };
     let ThreadItemDetails::McpToolCall(item) = &item.details else {

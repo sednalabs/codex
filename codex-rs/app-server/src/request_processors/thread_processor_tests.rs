@@ -39,7 +39,7 @@ mod thread_list_cwd_filter_tests {
 mod background_terminal_pagination_tests {
     use super::super::paginate_background_terminals;
     use codex_app_server_protocol::ThreadBackgroundTerminal;
-    use codex_utils_absolute_path::AbsolutePathBuf;
+    use codex_utils_path_uri::LegacyAppPathString;
     use pretty_assertions::assert_eq;
 
     fn terminal(process_id: &str) -> ThreadBackgroundTerminal {
@@ -49,7 +49,7 @@ mod background_terminal_pagination_tests {
             item_id: format!("item-{process_id}"),
             process_id: process_id.to_string(),
             command: format!("command-{process_id}"),
-            cwd: AbsolutePathBuf::from_absolute_path(cwd).expect("absolute cwd"),
+            cwd: LegacyAppPathString::from_string(cwd),
             os_pid: None,
             cpu_percent: None,
             rss_kb: None,
@@ -121,29 +121,14 @@ mod thread_processor_behavior_tests {
     use codex_model_provider_info::ModelProviderInfo;
     use codex_model_provider_info::WireApi;
     use codex_protocol::ThreadId;
-    use codex_protocol::config_types::ApprovalsReviewer;
     use codex_protocol::config_types::CollaborationMode;
     use codex_protocol::config_types::ModeKind;
-    use codex_protocol::config_types::ReasoningSummary;
     use codex_protocol::config_types::Settings;
-    use codex_protocol::dynamic_tools::DynamicToolCapability;
-    use codex_protocol::models::ActivePermissionProfile;
-    use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS;
-    use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_READ_ONLY;
-    use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
     use codex_protocol::models::PermissionProfile;
     use codex_protocol::openai_models::ReasoningEffort;
-    use codex_protocol::permissions::FileSystemAccessMode;
-    use codex_protocol::permissions::FileSystemPath;
-    use codex_protocol::permissions::FileSystemSandboxEntry;
-    use codex_protocol::permissions::NetworkSandboxPolicy;
     use codex_protocol::protocol::AskForApproval;
-    use codex_protocol::protocol::SandboxPolicy;
     use codex_protocol::protocol::SessionSource;
     use codex_protocol::protocol::SubAgentSource;
-    use codex_protocol::protocol::ThreadSettingsAppliedEvent;
-    use codex_protocol::protocol::ThreadSettingsSnapshot;
-    use codex_protocol::protocol::TurnContextItem;
     use codex_protocol::protocol::TurnEnvironmentSelections;
     use codex_state::ThreadMetadataBuilder;
     use codex_thread_store::StoredThread;
@@ -162,15 +147,22 @@ mod thread_processor_behavior_tests {
         name: impl Into<String>,
         input_schema: Value,
         defer_loading: bool,
-    ) -> ApiDynamicToolSpec {
-        ApiDynamicToolSpec {
-            namespace: namespace.map(ToString::to_string),
+    ) -> DynamicToolSpec {
+        let function = DynamicToolFunctionSpec {
             name: name.into(),
             description: "test".to_string(),
             input_schema,
             defer_loading,
-            persist_on_resume: true,
-            capability: None,
+        };
+        match namespace {
+            Some(namespace) => {
+                DynamicToolSpec::Namespace(codex_app_server_protocol::DynamicToolNamespaceSpec {
+                    name: namespace.to_string(),
+                    description: "test namespace".to_string(),
+                    tools: vec![DynamicToolNamespaceTool::Function(function)],
+                })
+            }
+            None => DynamicToolSpec::Function(function),
         }
     }
 
@@ -196,53 +188,6 @@ mod thread_processor_behavior_tests {
             /*defer_loading*/ false,
         )];
         validate_dynamic_tools(&tools).expect("valid schema");
-    }
-
-    #[test]
-    fn validate_dynamic_tools_accepts_deferred_bare_native_computer_use_tool() {
-        let tools = vec![dynamic_tool(
-            /*namespace*/ None,
-            "android_observe",
-            json!({"type": "object", "properties": {}}),
-            /*defer_loading*/ true,
-        )];
-
-        validate_dynamic_tools(&tools).expect("deferred native computer-use tool is valid");
-    }
-
-    #[test]
-    fn validate_dynamic_tools_rejects_deferred_bare_ordinary_tool() {
-        let tools = vec![dynamic_tool(
-            /*namespace*/ None,
-            "ordinary_tool",
-            json!({"type": "object", "properties": {}}),
-            /*defer_loading*/ true,
-        )];
-
-        let err = validate_dynamic_tools(&tools).expect_err("ordinary deferred tool is invalid");
-        assert!(
-            err.contains("must include a namespace"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn capability_bearing_native_dynamic_tool_requires_thread_reload() {
-        let mut tool = dynamic_tool(
-            /*namespace*/ None,
-            "browser_observe",
-            json!({"type": "object", "properties": {}}),
-            /*defer_loading*/ false,
-        );
-        tool.persist_on_resume = false;
-        tool.capability = Some(DynamicToolCapability {
-            family: Some("computer_use".to_string()),
-            capability_scope: Some("session".to_string()),
-            mutation_class: None,
-            lease_mode: None,
-        });
-
-        assert!(dynamic_tools_require_thread_reload(Some(&[tool])));
     }
 
     #[test]
@@ -307,25 +252,26 @@ mod thread_processor_behavior_tests {
 
     #[test]
     fn validate_dynamic_tools_rejects_duplicate_name_in_same_namespace() {
-        let schema = json!({
-            "type": "object",
-            "properties": {},
-            "additionalProperties": false
-        });
-        let tools = vec![
-            dynamic_tool(
-                Some("codex_app"),
-                "my_tool",
-                schema.clone(),
-                /*defer_loading*/ true,
-            ),
-            dynamic_tool(
-                Some("codex_app"),
-                "my_tool",
-                schema,
-                /*defer_loading*/ true,
-            ),
-        ];
+        let function = || DynamicToolFunctionSpec {
+            name: "my_tool".to_string(),
+            description: "test".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+            defer_loading: true,
+        };
+        let tools = vec![DynamicToolSpec::Namespace(
+            codex_app_server_protocol::DynamicToolNamespaceSpec {
+                name: "codex_app".to_string(),
+                description: "test namespace".to_string(),
+                tools: vec![
+                    DynamicToolNamespaceTool::Function(function()),
+                    DynamicToolNamespaceTool::Function(function()),
+                ],
+            },
+        )];
         let err = validate_dynamic_tools(&tools).expect_err("duplicate name");
         assert!(err.contains("codex_app"), "unexpected error: {err}");
         assert!(err.contains("my_tool"), "unexpected error: {err}");
@@ -345,6 +291,7 @@ mod thread_processor_behavior_tests {
         ))];
         let active_turn = Turn {
             id: "live-turn".to_string(),
+            root_turn_id: None,
             items: vec![ThreadItem::UserMessage {
                 id: "live-user-message".to_string(),
                 client_id: None,
@@ -389,20 +336,18 @@ mod thread_processor_behavior_tests {
 
     #[test]
     fn validate_dynamic_tools_rejects_reserved_namespace() {
-        for namespace in ["mcp__server__", "collaboration"] {
-            let tools = vec![dynamic_tool(
-                Some(namespace),
-                "my_tool",
-                json!({
-                    "type": "object",
-                    "properties": {},
-                    "additionalProperties": false
-                }),
-                /*defer_loading*/ false,
-            )];
-            let err = validate_dynamic_tools(&tools).expect_err("reserved namespace");
-            assert!(err.contains("reserved"), "unexpected error: {err}");
-        }
+        let tools = vec![dynamic_tool(
+            Some("mcp__server__"),
+            "my_tool",
+            json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+            /*defer_loading*/ false,
+        )];
+        let err = validate_dynamic_tools(&tools).expect_err("reserved namespace");
+        assert!(err.contains("reserved"), "unexpected error: {err}");
     }
 
     #[test]
@@ -466,7 +411,7 @@ mod thread_processor_behavior_tests {
     #[test]
     fn validate_dynamic_tools_rejects_namespace_fields_over_limits() {
         let long_namespace = "a".repeat(65);
-        let tools = vec![dynamic_tool(
+        let mut tools = vec![dynamic_tool(
             Some(&long_namespace),
             "lookup_ticket",
             json!({
@@ -479,6 +424,14 @@ mod thread_processor_behavior_tests {
         let err = validate_dynamic_tools(&tools).expect_err("namespace too long");
         assert!(err.contains("at most 64"), "unexpected error: {err}");
         assert!(err.contains(&long_namespace), "unexpected error: {err}");
+
+        let DynamicToolSpec::Namespace(namespace) = &mut tools[0] else {
+            unreachable!("expected namespace")
+        };
+        namespace.name = "tickets".to_string();
+        namespace.description = "a".repeat(1025);
+        let err = validate_dynamic_tools(&tools).expect_err("namespace description too long");
+        assert!(err.contains("at most 1024"), "unexpected error: {err}");
     }
 
     #[test]
@@ -507,6 +460,7 @@ mod thread_processor_behavior_tests {
         let thread_id =
             ThreadId::from_string("00000000-0000-0000-0000-000000000123").expect("valid thread");
         let stored_thread = StoredThread {
+            originator: None,
             thread_id,
             extra_config: None,
             rollout_path: Some(PathBuf::from("/tmp/thread.jsonl")),
@@ -521,7 +475,11 @@ mod thread_processor_behavior_tests {
             updated_at: updated_at.with_timezone(&Utc),
             recency_at: updated_at.with_timezone(&Utc),
             archived_at: None,
-            is_pinned: false,
+            section: None,
+            section_position: None,
+            section_entered_at: None,
+            project_id: None,
+            daybreak_enabled: None,
             cwd: PathBuf::from("/tmp"),
             cli_version: "0.0.0".to_string(),
             source: SessionSource::Cli,
@@ -548,84 +506,6 @@ mod thread_processor_behavior_tests {
             summary.updated_at.as_deref(),
             Some("2025-01-02T03:04:06.789Z")
         );
-    }
-
-    #[test]
-    fn requested_permissions_trust_project_uses_permission_profile_intent() {
-        let cwd = test_path_buf("/tmp/project").abs();
-        let full_access_profile = codex_protocol::models::PermissionProfile::Disabled;
-        let workspace_write_profile = codex_protocol::models::PermissionProfile::workspace_write();
-        let read_only_profile = codex_protocol::models::PermissionProfile::read_only();
-        let split_write_profile =
-            codex_protocol::models::PermissionProfile::from_runtime_permissions(
-                &FileSystemSandboxPolicy::restricted(vec![
-                    FileSystemSandboxEntry {
-                        path: FileSystemPath::Path { path: cwd.clone() },
-                        access: FileSystemAccessMode::Write,
-                        missing_path_behavior: None,
-                    },
-                    FileSystemSandboxEntry {
-                        path: FileSystemPath::GlobPattern {
-                            pattern: "/tmp/project/**/*.env".to_string(),
-                        },
-                        access: FileSystemAccessMode::Deny,
-                        missing_path_behavior: None,
-                    },
-                ]),
-                NetworkSandboxPolicy::Restricted,
-            );
-
-        assert!(requested_permissions_trust_project(
-            &ConfigOverrides {
-                permission_profile: Some(full_access_profile),
-                ..Default::default()
-            },
-            cwd.as_path()
-        ));
-        assert!(requested_permissions_trust_project(
-            &ConfigOverrides {
-                permission_profile: Some(workspace_write_profile),
-                ..Default::default()
-            },
-            cwd.as_path()
-        ));
-        assert!(requested_permissions_trust_project(
-            &ConfigOverrides {
-                permission_profile: Some(split_write_profile),
-                ..Default::default()
-            },
-            cwd.as_path()
-        ));
-        assert!(requested_permissions_trust_project(
-            &ConfigOverrides {
-                default_permissions: Some(BUILT_IN_PERMISSION_PROFILE_WORKSPACE.to_string()),
-                ..Default::default()
-            },
-            cwd.as_path()
-        ));
-        assert!(requested_permissions_trust_project(
-            &ConfigOverrides {
-                default_permissions: Some(
-                    BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS.to_string()
-                ),
-                ..Default::default()
-            },
-            cwd.as_path()
-        ));
-        assert!(!requested_permissions_trust_project(
-            &ConfigOverrides {
-                permission_profile: Some(read_only_profile),
-                ..Default::default()
-            },
-            cwd.as_path()
-        ));
-        assert!(!requested_permissions_trust_project(
-            &ConfigOverrides {
-                default_permissions: Some(BUILT_IN_PERMISSION_PROFILE_READ_ONLY.to_string()),
-                ..Default::default()
-            },
-            cwd.as_path()
-        ));
     }
 
     #[test]
@@ -715,10 +595,12 @@ mod thread_processor_behavior_tests {
         let session_provider = ModelProviderInfo {
             name: "session".to_string(),
             base_url: Some("http://127.0.0.1:8061/api/codex".to_string()),
+            model_catalog_url: None,
             env_key: None,
             env_key_instructions: None,
             experimental_bearer_token: None,
             auth: None,
+            gateway_oauth: None,
             aws: None,
             wire_api: WireApi::Responses,
             query_params: None,
@@ -731,6 +613,8 @@ mod thread_processor_behavior_tests {
             requires_openai_auth: false,
             supports_websockets: true,
             supports_standalone_web_search: false,
+            capabilities: None,
+            include_internal_metadata: false,
         };
         let config_manager = ConfigManager::new(
             temp_dir.path().to_path_buf(),
@@ -796,17 +680,19 @@ mod thread_processor_behavior_tests {
             base_instructions: None,
             developer_instructions: None,
             personality: None,
-            dynamic_tools: None,
             exclude_turns: false,
             initial_turns_page: None,
         };
         let config_snapshot = ThreadConfigSnapshot {
+            turn_extension_init: Default::default(),
+            disabled_plugin_ids: Vec::new(),
             model: "gpt-5".to_string(),
             model_provider_id: "openai".to_string(),
             service_tier: Some("flex".to_string()),
             approval_policy: codex_protocol::protocol::AskForApproval::OnRequest,
             approvals_reviewer: codex_protocol::config_types::ApprovalsReviewer::User,
             permission_profile: codex_protocol::models::PermissionProfile::Disabled,
+            full_access: false,
             active_permission_profile: None,
             environments: TurnEnvironmentSelections::new(cwd, Vec::new()),
             workspace_roots: Vec::new(),
@@ -853,92 +739,6 @@ mod thread_processor_behavior_tests {
         metadata.model = model.map(ToString::to_string);
         metadata.reasoning_effort = reasoning_effort;
         Ok(metadata)
-    }
-
-    #[test]
-    fn merge_persisted_approval_and_permissions_prefers_later_turn_context() -> Result<()> {
-        let thread_id = ThreadId::from_string("3f941c35-29b3-493b-b0a4-e25800d9aeb0")?;
-        let cwd = test_path_buf("/tmp").abs();
-        let turn_permission_profile = PermissionProfile::read_only();
-        let thread_history = InitialHistory::Resumed(ResumedHistory {
-            conversation_id: thread_id,
-            history: Arc::new(vec![
-                RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(
-                    ThreadSettingsAppliedEvent {
-                        thread_settings: ThreadSettingsSnapshot {
-                            model: "persisted-model".to_string(),
-                            model_provider_id: "persisted-provider".to_string(),
-                            service_tier: None,
-                            approval_policy: AskForApproval::Never,
-                            approvals_reviewer: ApprovalsReviewer::AutoReview,
-                            permission_profile: PermissionProfile::workspace_write(),
-                            active_permission_profile: Some(ActivePermissionProfile {
-                                id: "persisted-profile".to_string(),
-                                extends: None,
-                            }),
-                            cwd: cwd.clone(),
-                            reasoning_effort: None,
-                            reasoning_summary: None,
-                            personality: None,
-                            collaboration_mode: CollaborationMode {
-                                mode: ModeKind::Default,
-                                settings: Settings {
-                                    model: "persisted-model".to_string(),
-                                    reasoning_effort: None,
-                                    developer_instructions: None,
-                                },
-                            },
-                        },
-                    },
-                )),
-                RolloutItem::TurnContext(TurnContextItem {
-                    turn_id: Some("later-turn".to_string()),
-                    cwd,
-                    workspace_roots: None,
-                    current_date: None,
-                    timezone: None,
-                    approval_policy: AskForApproval::UnlessTrusted,
-                    approvals_reviewer: Some(ApprovalsReviewer::User),
-                    sandbox_policy: SandboxPolicy::ReadOnly {
-                        network_access: false,
-                    },
-                    permission_profile: Some(turn_permission_profile.clone()),
-                    network: None,
-                    file_system_sandbox_policy: None,
-                    model: "turn-model".to_string(),
-                    comp_hash: None,
-                    personality: None,
-                    collaboration_mode: None,
-                    multi_agent_version: None,
-                    multi_agent_mode: None,
-                    realtime_active: None,
-                    effort: None,
-                    summary: ReasoningSummary::Auto,
-                }),
-            ]),
-            rollout_path: None,
-        });
-        let mut typesafe_overrides = ConfigOverrides::default();
-
-        merge_persisted_approval_and_permissions(
-            &thread_history,
-            /*request_overrides*/ None,
-            &mut typesafe_overrides,
-        );
-
-        assert_eq!(
-            (
-                typesafe_overrides.approval_policy,
-                typesafe_overrides.permission_profile,
-                typesafe_overrides.default_permissions,
-            ),
-            (
-                Some(AskForApproval::UnlessTrusted),
-                Some(turn_permission_profile),
-                None,
-            )
-        );
-        Ok(())
     }
 
     #[test]
@@ -1125,9 +925,9 @@ mod thread_processor_behavior_tests {
 
     #[tokio::test]
     async fn read_summary_from_rollout_returns_empty_preview_when_no_user_message() -> Result<()> {
-        use codex_protocol::protocol::RolloutItem;
-        use codex_protocol::protocol::RolloutLine;
         use codex_protocol::protocol::SessionMetaLine;
+        use codex_rollout::RolloutItem;
+        use codex_rollout::RolloutLine;
         use std::fs;
         use std::fs::FileTimes;
 
@@ -1183,9 +983,9 @@ mod thread_processor_behavior_tests {
 
     #[tokio::test]
     async fn read_summary_from_rollout_preserves_agent_nickname() -> Result<()> {
-        use codex_protocol::protocol::RolloutItem;
-        use codex_protocol::protocol::RolloutLine;
         use codex_protocol::protocol::SessionMetaLine;
+        use codex_rollout::RolloutItem;
+        use codex_rollout::RolloutLine;
         use std::fs;
 
         let temp_dir = TempDir::new()?;
@@ -1235,9 +1035,9 @@ mod thread_processor_behavior_tests {
 
     #[tokio::test]
     async fn read_summary_from_rollout_preserves_forked_from_id() -> Result<()> {
-        use codex_protocol::protocol::RolloutItem;
-        use codex_protocol::protocol::RolloutLine;
         use codex_protocol::protocol::SessionMetaLine;
+        use codex_rollout::RolloutItem;
+        use codex_rollout::RolloutLine;
         use std::fs;
 
         let temp_dir = TempDir::new()?;
@@ -1400,7 +1200,9 @@ mod thread_processor_behavior_tests {
             state.track_current_turn_event(
                 "turn-1",
                 &EventMsg::TurnStarted(codex_protocol::protocol::TurnStartedEvent {
+                    turn_attribution: None,
                     turn_id: "turn-1".to_string(),
+                    root_turn_id: None,
                     trace_id: None,
                     started_at: None,
                     model_context_window: None,

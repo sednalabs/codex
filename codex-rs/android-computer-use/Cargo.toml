@@ -16,7 +16,6 @@ workspace = true
 base64 = { workspace = true }
 codex-app-server-protocol = { workspace = true }
 codex-protocol = { workspace = true }
-codex-tools = { workspace = true }
 codex-utils-home-dir = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
 serde = { workspace = true, features = ["derive"] }

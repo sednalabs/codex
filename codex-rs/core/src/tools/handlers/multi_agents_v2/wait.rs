@@ -1,40 +1,18 @@
 use super::*;
-use crate::agent::agent_resolver::resolve_agent_targets;
-use crate::agent::status::is_final;
-use crate::session::input_queue::InputQueue;
-use crate::session::input_queue::InputQueueActivity;
-use crate::session::input_queue::is_actionable_wait_communication;
-use crate::session::session::Session;
-use crate::session::turn_context::TurnContext;
-use crate::tools::context::FunctionToolOutput;
+use crate::agent::agent_resolver::resolve_agent_target;
+use crate::agent::api::AgentWaitRegistration;
+use crate::agent::api::AgentWaitReturnWhen;
+use crate::agent::api::AgentWaitResult;
+use crate::session::InputQueue;
+use crate::session::InputQueueActivity;
 use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
 use crate::tools::handlers::multi_agents_spec::create_wait_agent_tool_v2;
-use crate::tools::tool_runtime_capabilities::ToolRuntimeCapabilities;
-use crate::tools::tool_runtime_capabilities::registered_tool_runtime_capabilities;
-use codex_protocol::AgentPath;
-use codex_protocol::ThreadId;
-use codex_protocol::error::CodexErrorDetails;
-use codex_protocol::items::AgentDeliveryDisposition;
-use codex_protocol::items::AgentDeliveryIntent;
-use codex_protocol::items::AgentNotificationContent;
-use codex_protocol::items::AgentNotificationOrigin;
-use codex_protocol::items::AgentNotificationSummary;
-use codex_protocol::items::AgentWakeCause;
-use codex_protocol::protocol::AgentCommunicationOrigin;
-use codex_protocol::protocol::CollabAgentRef;
-use codex_protocol::protocol::CollabWaitingCompletionReason;
-use codex_protocol::protocol::SessionSource;
 use codex_tools::ToolSpec;
-use futures::StreamExt;
-use futures::future;
-use futures::stream::FuturesUnordered;
-use serde_json::json;
+use codex_protocol::ThreadId;
+use codex_protocol::items::WaitAgentOutcome;
+use codex_protocol::protocol::AgentStatus;
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::time::Duration;
-use std::time::SystemTime;
-use std::time::UNIX_EPOCH;
-use tokio::sync::watch::Receiver;
 use tokio::time::Instant;
 
 #[derive(Default)]
@@ -48,91 +26,6 @@ impl Handler {
     }
 }
 
-pub(crate) fn resolve_wait_timeout_ms(
-    requested_timeout_ms: Option<i64>,
-    min_wait_timeout_ms: i64,
-    max_wait_timeout_ms: i64,
-    default_wait_timeout_ms: i64,
-) -> Result<i64, FunctionCallError> {
-    let min_timeout_ms = min_wait_timeout_ms.clamp(0, MAX_MULTI_AGENT_V2_WAIT_TIMEOUT_MS);
-    let max_timeout_ms =
-        max_wait_timeout_ms.clamp(min_timeout_ms, MAX_MULTI_AGENT_V2_WAIT_TIMEOUT_MS);
-    let default_timeout_ms = default_wait_timeout_ms.clamp(min_timeout_ms, max_timeout_ms);
-
-    match requested_timeout_ms {
-        Some(ms) if ms < min_timeout_ms => Err(FunctionCallError::RespondToModel(format!(
-            "timeout_ms must be at least {min_timeout_ms}"
-        ))),
-        Some(ms) if ms > max_timeout_ms => Err(FunctionCallError::RespondToModel(format!(
-            "timeout_ms must be at most {max_timeout_ms}"
-        ))),
-        Some(ms) => Ok(ms),
-        None => Ok(default_timeout_ms),
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WakeSource {
-    TargetCompletion,
-    Mailbox,
-    OperatorMessage,
-    RuntimeSystemEvent,
-    Timeout,
-    SubscriptionLoss,
-}
-
-impl WakeSource {
-    fn completion_reason(self) -> CollabWaitingCompletionReason {
-        match self {
-            WakeSource::TargetCompletion => CollabWaitingCompletionReason::Terminal,
-            WakeSource::Mailbox | WakeSource::OperatorMessage | WakeSource::RuntimeSystemEvent => {
-                CollabWaitingCompletionReason::Mailbox
-            }
-            WakeSource::Timeout => CollabWaitingCompletionReason::Timeout,
-            WakeSource::SubscriptionLoss => CollabWaitingCompletionReason::SubscriptionLoss,
-        }
-    }
-
-    fn wake_cause(self) -> AgentWakeCause {
-        match self {
-            Self::TargetCompletion => AgentWakeCause::ChildTerminalTransition,
-            Self::Mailbox => AgentWakeCause::ChildActionableMessage,
-            Self::OperatorMessage => AgentWakeCause::OperatorMessage,
-            Self::RuntimeSystemEvent => AgentWakeCause::RuntimeSystemEvent,
-            Self::Timeout => AgentWakeCause::TimeoutLeaseExpiry,
-            Self::SubscriptionLoss => AgentWakeCause::RuntimeSystemEvent,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct CompletionRule {
-    return_when: ReturnWhen,
-}
-
-impl CompletionRule {
-    fn new(return_when: ReturnWhen) -> Self {
-        Self { return_when }
-    }
-
-    fn is_satisfied(
-        self,
-        statuses: &HashMap<ThreadId, AgentStatus>,
-        receiver_thread_ids: &[ThreadId],
-    ) -> bool {
-        if receiver_thread_ids.is_empty() {
-            return false;
-        }
-
-        match self.return_when {
-            ReturnWhen::Any => !statuses.is_empty(),
-            ReturnWhen::All => receiver_thread_ids
-                .iter()
-                .all(|id| statuses.get(id).is_some_and(is_final)),
-        }
-    }
-}
-
 impl ToolExecutor<ToolInvocation> for Handler {
     fn tool_name(&self) -> ToolName {
         ToolName::plain("wait_agent")
@@ -142,7 +35,10 @@ impl ToolExecutor<ToolInvocation> for Handler {
         create_wait_agent_tool_v2(self.options)
     }
 
-    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
+    where
+        ToolInvocation: 'a,
+    {
         Box::pin(self.handle_call(invocation))
     }
 }
@@ -161,94 +57,92 @@ impl Handler {
         } = invocation;
         let arguments = function_arguments(payload)?;
         let args: WaitArgs = parse_arguments(&arguments)?;
-        let wait_capability = registered_tool_runtime_capabilities().wait_agent;
-        let native_event_capable = wait_capability
-            .is_some_and(|capability| capability.native_event_wait && capability.mailbox_wake);
-        if args.native_event_wait && !native_event_capable {
+        let min_timeout_ms = turn.config.multi_agent_v2.min_wait_timeout_ms;
+        let max_timeout_ms = turn.config.multi_agent_v2.max_wait_timeout_ms;
+        let default_timeout_ms = turn.config.multi_agent_v2.default_wait_timeout_ms;
+        let requested_timeout_ms = args.timeout_ms;
+        let mut targets = Vec::with_capacity(args.targets.len());
+        for target in &args.targets {
+            targets.push(resolve_agent_target(&session, &turn, target).await?);
+        }
+        let mut unique_targets = std::collections::HashSet::with_capacity(targets.len());
+        if targets.iter().any(|target| !unique_targets.insert(*target)) {
             return Err(FunctionCallError::RespondToModel(
-                "native_event_wait requires native_event_wait and mailbox_wake capabilities"
-                    .to_string(),
+                "targets must resolve to unique agents".to_string(),
             ));
         }
-        if args.native_event_wait
-            && args.targets.is_empty()
-            && !targetless_native_wait_allowed(&turn.session_source)
-        {
-            return Err(FunctionCallError::RespondToModel(
-                "targetless native_event_wait is reserved for root and orchestrator agents; provide at least one target"
-                    .to_string(),
-            ));
-        }
-        // Ensure a root session has registry metadata before resolving or
-        // validating targets. Direct ThreadId targets bypass the resolver, so
-        // this registration must happen before the current path is captured.
-        session
-            .services
-            .agent_control
-            .register_session_root(session.thread_id, turn.parent_thread_id);
-        let current_agent_path = turn.session_source.get_agent_path().or_else(|| {
-            session
-                .services
-                .agent_control
-                .get_agent_metadata(session.thread_id)
-                .and_then(|metadata| metadata.agent_path)
-        });
-        let receiver_thread_ids = if args.targets.is_empty() {
-            Vec::new()
-        } else {
-            resolve_agent_targets(&session, &turn, args.targets).await?
-        };
-        let mut seen = HashSet::with_capacity(receiver_thread_ids.len());
-        for id in &receiver_thread_ids {
-            if !seen.insert(*id) {
+        for target in &targets {
+            if !session.services.local_agent_runtime.owns_agent(*target) {
                 return Err(FunctionCallError::RespondToModel(
-                    "targets must resolve to unique agents".to_string(),
+                    "targeted completion waits require an agent managed by the local runtime"
+                        .to_string(),
                 ));
             }
         }
-        if args.native_event_wait {
-            for receiver_thread_id in &receiver_thread_ids {
-                let target_agent_path = session
+        let current_agent_path = turn.session_source.get_agent_path().or_else(|| {
+            session
+                .services
+                .local_agent_runtime
+                .agent_metadata(session.thread_id)
+                .and_then(|metadata| metadata.agent_path)
+        });
+        for target in &targets {
+            let target_agent_path = session
+                .services
+                .local_agent_runtime
+                .agent_metadata(*target)
+                .and_then(|metadata| metadata.agent_path);
+            if let Some(message) = reverse_wait_error(
+                current_agent_path.as_ref(),
+                target_agent_path.as_ref(),
+            ) {
+                return Err(FunctionCallError::RespondToModel(message));
+            }
+        }
+        let timeout_ms = match requested_timeout_ms {
+            Some(ms) if ms > max_timeout_ms => {
+                return Err(FunctionCallError::RespondToModel(format!(
+                    "timeout_ms must be at most {max_timeout_ms}"
+                )));
+            }
+            Some(ms) => ms.max(min_timeout_ms),
+            None => default_timeout_ms,
+        };
+
+        let turn_state = session
+            .input_queue
+            .turn_state_for_sub_id(&session.active_turn, &turn.sub_id)
+            .await;
+        let mailbox_enqueue_watermark = session.input_queue.mailbox_enqueue_watermark().await;
+        let (mut activity_rx, pending_activity) = session
+            .input_queue
+            .subscribe_activity(turn_state.as_deref())
+            .await;
+        let return_when = match args.return_when {
+            ReturnWhen::Any => AgentWaitReturnWhen::Any,
+            ReturnWhen::All => AgentWaitReturnWhen::All,
+        };
+        let mut agent_wait = (!targets.is_empty()).then(|| {
+            session
+                .services
+                .local_agent_runtime
+                .register_agent_wait(targets.clone(), return_when)
+        });
+        if let Some(registration) = agent_wait.as_mut() {
+            for target in &targets {
+                let status = session
                     .services
-                    .agent_control
-                    .get_agent_metadata(*receiver_thread_id)
-                    .and_then(|metadata| metadata.agent_path);
-                if let Some(message) =
-                    reverse_wait_error(current_agent_path.as_ref(), target_agent_path.as_ref())
-                {
-                    return Err(FunctionCallError::RespondToModel(message));
+                    .local_agent_runtime
+                    .raw_agent_status(*target)
+                    .await;
+                if let Some(status) = status {
+                    registration.seed_raw_status(*target, status);
                 }
             }
         }
-        let mut receiver_agents = Vec::with_capacity(receiver_thread_ids.len());
-        for receiver_thread_id in &receiver_thread_ids {
-            let agent_metadata = session
-                .services
-                .agent_control
-                .get_agent_metadata(*receiver_thread_id)
-                .unwrap_or_default();
-            receiver_agents.push(CollabAgentRef {
-                thread_id: *receiver_thread_id,
-                agent_nickname: agent_metadata.agent_nickname,
-                agent_role: agent_metadata.agent_role,
-            });
-        }
-
-        let timeout_ms = resolve_wait_timeout_ms(
-            args.timeout_ms,
-            turn.config.multi_agent_v2.min_wait_timeout_ms,
-            turn.config.multi_agent_v2.max_wait_timeout_ms,
-            turn.config.multi_agent_v2.default_wait_timeout_ms,
-        )?;
-        let (mut input_activity_rx, pending_input_activity) = session
-            .input_queue
-            .subscribe_activity(/*turn_state*/ None)
-            .await;
-        let pending_input_activity = session
-            .input_queue
-            .pending_wait_input_activity(&session.active_turn)
-            .await
-            .or(pending_input_activity);
+        let initial_agent_outcome = agent_wait.as_mut().and_then(AgentWaitRegistration::current);
+        let mut agents_states = agent_wait_states(initial_agent_outcome.as_ref());
+        let receiver_agents = receiver_agent_refs(&session, &targets);
 
         session
             .emit_turn_item_started(
@@ -258,188 +152,269 @@ impl Handler {
                     tool: CollabAgentTool::Wait,
                     status: CollabAgentToolCallStatus::InProgress,
                     sender_thread_id: session.thread_id,
-                    receiver_thread_ids: receiver_thread_ids.clone(),
+                    receiver_thread_ids: targets.clone(),
                     receiver_agents: receiver_agents.clone(),
+                    wait_outcome: None,
+                    queued_update_count: None,
                     prompt: None,
                     model: None,
                     reasoning_effort: None,
-                    requested_model: None,
-                    requested_reasoning_effort: None,
-                    agents_states: Default::default(),
-                    wake_notifications: None,
-                    completion_reason: None,
-                    wake_cause: None,
+                    agents_states: agents_states.clone(),
                 }),
             )
             .await;
 
-        let mut status_rxs = Vec::with_capacity(receiver_thread_ids.len());
-        let mut final_statuses = HashMap::new();
-        for id in &receiver_thread_ids {
-            match session.services.agent_control.subscribe_status(*id).await {
-                Ok(rx) => {
-                    let status = rx.borrow().clone();
-                    if is_final(&status) {
-                        final_statuses.insert(*id, status);
-                    } else {
-                        status_rxs.push((*id, rx));
-                    }
-                }
-                Err(err) if matches!(err.details(), CodexErrorDetails::ThreadNotFound(_)) => {
-                    final_statuses.insert(*id, AgentStatus::NotFound);
-                }
-                Err(err) => {
-                    let agents_states =
-                        collect_current_wait_statuses(session.as_ref(), &receiver_thread_ids).await;
-                    emit_wait_completion(
-                        session.as_ref(),
-                        turn.as_ref(),
-                        call_id.clone(),
-                        receiver_thread_ids.clone(),
-                        receiver_agents.clone(),
-                        agents_states,
-                        CollabWaitingCompletionReason::SubscriptionLoss,
-                        mailbox_snapshot(
-                            session.as_ref(),
-                            &call_id,
-                            &receiver_thread_ids,
-                            target_set_relation(receiver_thread_ids.is_empty()),
-                            WakeSource::SubscriptionLoss,
-                        )
-                        .await
-                        .notifications,
-                        Some(AgentWakeCause::RuntimeSystemEvent),
-                    )
-                    .await;
-                    return Err(collab_agent_error(*id, err));
-                }
-            }
-        }
-
-        let return_when = wait_capability
-            .filter(|capability| capability.return_when)
-            .map_or(ReturnWhen::Any, |_| args.return_when);
-        // All waits use the typed actionable-input predicate below. Targetless
-        // root/orchestrator waits retain their native lifecycle and lease
-        // behavior, but ordinary queue-only progress remains durable instead
-        // of ending the active wait.
-        let wake_on_mailbox = wait_capability.is_some_and(|capability| capability.mailbox_wake);
-        let native_event_wait = args.native_event_wait && native_event_capable;
-        let completion_rule = CompletionRule::new(return_when);
-        let wake_source = if let Some(wake_source) = ready_wake_source(
-            session.as_ref(),
-            completion_rule,
-            &mut final_statuses,
-            &receiver_thread_ids,
-            wake_on_mailbox,
-            pending_input_activity,
-            !receiver_thread_ids.is_empty(),
-            &mut status_rxs,
-        )
-        .await
-        {
-            wake_source
+        let wait_started = Instant::now();
+        let deadline = wait_started + Duration::from_millis(timeout_ms as u64);
+        let outcome = if let Some(outcome) = initial_agent_outcome {
+            WaitOutcome::TargetTerminal(outcome)
         } else {
-            wait_for_wake_source(
-                session.clone(),
-                &mut input_activity_rx,
-                status_rxs,
-                &receiver_thread_ids,
-                completion_rule,
-                &mut final_statuses,
-                wake_on_mailbox,
-                !receiver_thread_ids.is_empty(),
-                &call_id,
-                native_event_wait,
-                lease_timer_enabled(native_event_wait, timeout_ms),
-                Instant::now() + Duration::from_millis(timeout_ms as u64),
-                #[cfg(test)] /*lease_observer*/ None,
-            )
-            .await
+            wait_for_activity(&mut activity_rx, pending_activity, deadline, &mut agent_wait).await
         };
-        let completion_reason = wake_source.completion_reason();
-
-        let candidate_pending_ids = receiver_thread_ids
-            .iter()
-            .filter(|receiver_thread_id| !final_statuses.contains_key(receiver_thread_id))
-            .copied()
-            .collect::<Vec<_>>();
-        let mut pending_statuses = Vec::with_capacity(candidate_pending_ids.len());
-        for pending_thread_id in &candidate_pending_ids {
-            pending_statuses.push((
-                *pending_thread_id,
-                session
-                    .services
-                    .agent_control
-                    .get_status(*pending_thread_id)
-                    .await,
-            ));
+        if let WaitOutcome::TargetTerminal(outcome) = &outcome {
+            agents_states = agent_wait_states(Some(outcome));
         }
-        let statuses_by_id = merge_wait_end_statuses(final_statuses.clone(), pending_statuses);
-        let pending_thread_ids = pending_wait_thread_ids(&receiver_thread_ids, &statuses_by_id);
-        let mailbox = mailbox_snapshot(
-            session.as_ref(),
-            &call_id,
-            &receiver_thread_ids,
-            target_set_relation(receiver_thread_ids.is_empty()),
-            wake_source,
-        )
-        .await;
-        let result = WaitAgentResult::new(
-            receiver_thread_ids.clone(),
-            pending_thread_ids,
-            completion_reason,
-            mailbox.notifications,
-            mailbox.provenance,
+        let queued_update_count = session
+            .input_queue
+            .pending_mailbox_communication_count_since(mailbox_enqueue_watermark)
+            .await;
+        // A completed wait may wake for a message, user input, or its timeout.
+        // Dropped waits do not have an observed outcome and are not included.
+        turn.session_telemetry.record_duration(
+            "codex.multi_agent.wait.duration_ms",
+            wait_started.elapsed(),
+            &[(
+                "outcome",
+                match &outcome {
+                    WaitOutcome::MailboxActivity => "mailbox",
+                    WaitOutcome::Steered => "steered",
+                    WaitOutcome::TargetTerminal(_) => "target_terminal",
+                    WaitOutcome::TimedOut => "timed_out",
+                    WaitOutcome::SubscriptionLoss => "subscription_loss",
+                },
+            )],
         );
-        tracing::debug!(
-            target: "codex.native_wait",
-            call_id = %call_id,
-            wake_cause = ?result.wake_provenance.wake_cause,
-            queued_update_count = result.wake_provenance.queued_update_count,
-            helper_returned_at_ms = result.wake_provenance.helper_returned_at_ms,
-            provider_turn_started = ?result.wake_provenance.provider_turn_started,
-            "native_wait_helper_returned"
+        let result = WaitAgentResult::from_outcome(&outcome, requested_timeout_ms, timeout_ms);
+        let completed_item = completed_wait_item(
+            call_id,
+            session.thread_id,
+            targets,
+            receiver_agents,
+            &outcome,
+            queued_update_count,
+            agents_states,
         );
 
-        emit_wait_completion(
-            session.as_ref(),
-            turn.as_ref(),
-            call_id,
-            receiver_thread_ids,
-            receiver_agents,
-            statuses_by_id,
-            completion_reason,
-            result.wake_notifications.clone().unwrap_or_default(),
-            Some(result.wake_provenance.wake_cause),
-        )
-        .await;
+        session
+            .emit_turn_item_completed(
+                &turn,
+                TurnItem::CollabAgentToolCall(completed_item),
+            )
+            .await;
 
         Ok(boxed_tool_output(result))
     }
 }
 
-/// A targetless native wait has no status subscription to complete it and its
-/// lease expiry is deliberately renewed by the runtime. Keep that mailbox-only
-/// surface for the root and explicitly designated orchestrators, which own
-/// coordination across turns. Leaf and unclassified subagents must name the
-/// child they are awaiting so a decision-complete result cannot strand their
-/// parent behind an indefinitely renewed wait.
-fn targetless_native_wait_allowed(session_source: &SessionSource) -> bool {
-    !session_source.is_non_root_agent()
-        || session_source
-            .get_agent_role()
-            .is_some_and(|role| role.eq_ignore_ascii_case("orchestrator"))
+impl CoreToolRuntime for Handler {
+    fn matches_kind(&self, payload: &ToolPayload) -> bool {
+        matches!(payload, ToolPayload::Function { .. })
+    }
 }
 
-/// A native wait on the current agent or one of its ancestors creates a reverse
-/// dependency: the ancestor normally waits for this child to return, so both
-/// sides can remain in native waits forever. Bounded non-native status waits
-/// retain their existing compatibility, while descendants and unrelated peers
-/// remain valid native wait targets.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WaitArgs {
+    #[serde(default)]
+    targets: Vec<String>,
+    timeout_ms: Option<i64>,
+    #[serde(default)]
+    return_when: ReturnWhen,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum ReturnWhen {
+    #[default]
+    Any,
+    All,
+}
+
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub(crate) struct WaitAgentResult {
+    pub(crate) message: String,
+    pub(crate) timed_out: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) outcome: Option<WaitAgentOutcome>,
+}
+
+impl WaitAgentResult {
+    fn from_outcome(
+        outcome: &WaitOutcome,
+        requested_timeout_ms: Option<i64>,
+        timeout_ms: i64,
+    ) -> Self {
+        let message = match outcome {
+            WaitOutcome::MailboxActivity => "Wait completed.",
+            WaitOutcome::Steered => "Wait interrupted by new input.",
+            WaitOutcome::TargetTerminal(_) => "Target agent completion is actionable.",
+            WaitOutcome::TimedOut => "Wait timed out.",
+            WaitOutcome::SubscriptionLoss => "Wait ended because a subscription was lost.",
+        };
+        let message = match requested_timeout_ms {
+            Some(requested_timeout_ms) if requested_timeout_ms < timeout_ms => format!(
+                "{message}\n\nRequested timeout of {requested_timeout_ms}ms was clamped to the minimum of {timeout_ms}ms."
+            ),
+            Some(_) | None => message.to_string(),
+        };
+        Self {
+            message,
+            timed_out: matches!(outcome, WaitOutcome::TimedOut),
+            outcome: Some(outcome.protocol_outcome()),
+        }
+    }
+}
+
+impl ToolOutput for WaitAgentResult {
+    fn log_output(&self) -> String {
+        tool_output_json_text(self, "wait_agent")
+    }
+
+    fn success_for_logging(&self) -> bool {
+        true
+    }
+
+    fn to_response_item(&self, call_id: &str, payload: &ToolPayload) -> ResponseInputItem {
+        tool_output_response_item(call_id, payload, self, /*success*/ None, "wait_agent")
+    }
+
+    fn code_mode_result(&self, _payload: &ToolPayload) -> JsonValue {
+        tool_output_code_mode_result(self, "wait_agent")
+    }
+}
+
+#[derive(Clone, Debug)]
+enum WaitOutcome {
+    MailboxActivity,
+    Steered,
+    TargetTerminal(AgentWaitResult),
+    TimedOut,
+    SubscriptionLoss,
+}
+
+impl WaitOutcome {
+    fn protocol_outcome(&self) -> WaitAgentOutcome {
+        match self {
+            Self::MailboxActivity => WaitAgentOutcome::UnattributedMailboxActivity,
+            Self::Steered => WaitAgentOutcome::OperatorSteer,
+            Self::TargetTerminal(result) if result.all_targets => WaitAgentOutcome::TargetTerminalAll,
+            Self::TargetTerminal(_) => WaitAgentOutcome::TargetTerminalAny,
+            Self::TimedOut => WaitAgentOutcome::Timeout,
+            Self::SubscriptionLoss => WaitAgentOutcome::SubscriptionLoss,
+        }
+    }
+}
+
+fn completed_wait_item(
+    id: String,
+    sender_thread_id: ThreadId,
+    receiver_thread_ids: Vec<ThreadId>,
+    receiver_agents: Vec<codex_protocol::protocol::CollabAgentRef>,
+    outcome: &WaitOutcome,
+    queued_update_count: Option<u32>,
+    agents_states: HashMap<ThreadId, AgentStatus>,
+) -> CollabAgentToolCallItem {
+    CollabAgentToolCallItem {
+        id,
+        tool: CollabAgentTool::Wait,
+        status: CollabAgentToolCallStatus::Completed,
+        sender_thread_id,
+        receiver_thread_ids,
+        receiver_agents,
+        wait_outcome: Some(outcome.protocol_outcome()),
+        queued_update_count,
+        prompt: None,
+        model: None,
+        reasoning_effort: None,
+        agents_states,
+    }
+}
+
+async fn wait_for_activity(
+    activity_rx: &mut tokio::sync::watch::Receiver<InputQueueActivity>,
+    pending_activity: Option<InputQueueActivity>,
+    deadline: Instant,
+    agent_wait: &mut Option<AgentWaitRegistration>,
+) -> WaitOutcome {
+    if let Some(activity) = pending_activity {
+        return activity_wake_outcome(activity, agent_wait);
+    }
+    if let Some(outcome) = agent_wait.as_mut().and_then(AgentWaitRegistration::current) {
+        return WaitOutcome::TargetTerminal(outcome);
+    }
+    let has_agent_wait = agent_wait.is_some();
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep_until(deadline) => return WaitOutcome::TimedOut,
+            activity = activity_rx.changed() => match activity {
+                Ok(()) => return activity_wake_outcome(*activity_rx.borrow_and_update(), agent_wait),
+                Err(_) => return WaitOutcome::SubscriptionLoss,
+            },
+            agent = async { agent_wait.as_mut().expect("guarded by has_agent_wait").as_mut().unwrap().changed().await }, if has_agent_wait => match agent {
+                Ok(Some(outcome)) => return WaitOutcome::TargetTerminal(outcome),
+                Ok(None) => {},
+                Err(_) => return WaitOutcome::SubscriptionLoss,
+            }
+        }
+    }
+}
+
+fn activity_wake_outcome(
+    activity: InputQueueActivity,
+    agent_wait: &mut Option<AgentWaitRegistration>,
+) -> WaitOutcome {
+    match activity {
+        InputQueueActivity::Mailbox => agent_wait
+            .as_mut()
+            .and_then(AgentWaitRegistration::current)
+            .map_or(WaitOutcome::MailboxActivity, WaitOutcome::TargetTerminal),
+        InputQueueActivity::Steer => WaitOutcome::Steered,
+    }
+}
+
+fn agent_wait_states(
+    outcome: Option<&AgentWaitResult>,
+) -> HashMap<ThreadId, AgentStatus> {
+    outcome
+        .into_iter()
+        .flat_map(|outcome| outcome.outcomes.iter())
+        .map(|(thread_id, outcome)| (*thread_id, outcome.status.clone()))
+        .collect()
+}
+
+fn receiver_agent_refs(
+    session: &crate::session::session::Session,
+    targets: &[ThreadId],
+) -> Vec<codex_protocol::protocol::CollabAgentRef> {
+    targets
+        .iter()
+        .filter_map(|thread_id| {
+            session
+                .services
+                .local_agent_runtime
+                .agent_metadata(*thread_id)
+                .map(|metadata| codex_protocol::protocol::CollabAgentRef {
+                    thread_id: *thread_id,
+                    agent_nickname: metadata.agent_nickname,
+                    agent_role: metadata.agent_role,
+                })
+        })
+        .collect()
+}
+
 fn reverse_wait_error(
-    current_agent_path: Option<&AgentPath>,
-    target_agent_path: Option<&AgentPath>,
+    current_agent_path: Option<&codex_protocol::AgentPath>,
+    target_agent_path: Option<&codex_protocol::AgentPath>,
 ) -> Option<String> {
     let (Some(current), Some(target)) = (current_agent_path, target_agent_path) else {
         return None;
@@ -456,1223 +431,120 @@ fn reverse_wait_error(
     })
 }
 
-fn lease_timer_enabled(native_event_wait: bool, timeout_ms: i64) -> bool {
-    !native_event_wait || timeout_ms > 0
-}
-
-impl CoreToolRuntime for Handler {
-    fn matches_kind(&self, payload: &ToolPayload) -> bool {
-        matches!(payload, ToolPayload::Function { .. })
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct WaitArgs {
-    #[serde(default)]
-    #[serde(alias = "ids")]
-    targets: Vec<String>,
-    timeout_ms: Option<i64>,
-    #[serde(default)]
-    return_when: ReturnWhen,
-    #[serde(default)]
-    native_event_wait: bool,
-}
-
-#[derive(Debug, Deserialize, Clone, Copy)]
-#[serde(rename_all = "lowercase")]
-#[derive(Default)]
-enum ReturnWhen {
-    #[default]
-    Any,
-    All,
-}
-
-#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub(crate) struct WaitAgentResult {
-    pub(crate) message: String,
-    pub(crate) requested_ids: Vec<ThreadId>,
-    pub(crate) pending_ids: Vec<ThreadId>,
-    pub(crate) completion_reason: CollabWaitingCompletionReason,
-    pub(crate) timed_out: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) wake_notifications: Option<Vec<AgentNotificationSummary>>,
-    /// Structured cause/disposition receipt. `provider_turn_started` remains
-    /// unknown unless an authoritative provider boundary supplied evidence.
-    #[serde(default)]
-    pub(crate) wake_provenance: WakeProvenance,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-pub(crate) struct WakeProvenance {
-    pub(crate) wake_cause: AgentWakeCause,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) actor: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) sender_agent_path: Option<AgentPath>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) sender_thread_id: Option<ThreadId>,
-    pub(crate) wait_id: String,
-    pub(crate) target_set_relation: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) causal_event_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) causal_event_time_ms: Option<u64>,
-    pub(crate) queued_update_count: usize,
-    pub(crate) queued_update_sequences: Vec<u64>,
-    /// Entries observed in the queue that did not cause this wake. This
-    /// includes ordinary progress and any encrypted/unavailable envelopes.
-    pub(crate) noncausal_update_sequences: Vec<u64>,
-    /// Sender intent and runtime disposition for every observed queued update;
-    /// message payloads are intentionally not copied into this receipt.
-    pub(crate) queued_updates: Vec<QueuedUpdateReceipt>,
-    pub(crate) helper_returned_at_ms: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) provider_turn_started: Option<bool>,
-}
-
-impl Default for WakeProvenance {
-    fn default() -> Self {
-        Self {
-            wake_cause: AgentWakeCause::RuntimeSystemEvent,
-            actor: None,
-            sender_agent_path: None,
-            sender_thread_id: None,
-            wait_id: "test".to_string(),
-            target_set_relation: "unknown".to_string(),
-            causal_event_id: None,
-            causal_event_time_ms: None,
-            queued_update_count: 0,
-            queued_update_sequences: Vec::new(),
-            noncausal_update_sequences: Vec::new(),
-            queued_updates: Vec::new(),
-            helper_returned_at_ms: 0,
-            provider_turn_started: None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-pub(crate) struct QueuedUpdateReceipt {
-    pub(crate) sequence: u64,
-    pub(crate) sender_agent_path: AgentPath,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) sender_thread_id: Option<ThreadId>,
-    pub(crate) intent: AgentDeliveryIntent,
-    pub(crate) enqueued_at_ms: u64,
-    pub(crate) ended_active_wait: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) delivered_to_model_at_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) displayed_at_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) actual_wake_cause: Option<AgentWakeCause>,
-}
-
-const MAX_NOTIFICATION_PREVIEW_CHARS: usize = 240;
-
-#[derive(Debug)]
-struct MailboxSnapshot {
-    notifications: Vec<AgentNotificationSummary>,
-    provenance: WakeProvenance,
-}
-
-async fn mailbox_snapshot(
-    session: &Session,
-    wait_id: &str,
-    receiver_thread_ids: &[ThreadId],
-    target_set_relation: String,
-    wake_source: WakeSource,
-) -> MailboxSnapshot {
-    let mut entries = session.input_queue.snapshot_mailbox_communications().await;
-    entries.extend(
-        session
-            .input_queue
-            .snapshot_pending_mailbox_communications(&session.active_turn)
-            .await,
-    );
-    entries.sort_unstable_by_key(|(_, sequence, _)| *sequence);
-    let target_agent_paths = receiver_thread_ids
-        .iter()
-        .filter_map(|thread_id| {
-            session
-                .services
-                .agent_control
-                .get_agent_metadata(*thread_id)
-                .and_then(|metadata| metadata.agent_path)
-        })
-        .collect::<Vec<_>>();
-    let causal_entry = (wake_source == WakeSource::Mailbox)
-        .then(|| {
-            let actionable = entries
-                .iter()
-                .map(|(communication, _, _)| communication)
-                .collect::<Vec<_>>();
-            causal_mailbox_index(
-                &actionable,
-                receiver_thread_ids.is_empty(),
-                &target_agent_paths,
-            )
-            .and_then(|index| entries.get(index).cloned())
-        })
-        .flatten();
-    let wake_cause = if wake_source == WakeSource::Mailbox {
-        causal_entry
-            .as_ref()
-            .map(|(communication, _, _)| {
-                if communication.origin == Some(AgentCommunicationOrigin::Result) {
-                    AgentWakeCause::ChildTerminalTransition
-                } else {
-                    AgentWakeCause::ChildActionableMessage
-                }
-            })
-            .unwrap_or(AgentWakeCause::UnrelatedMailboxEvent)
-    } else {
-        wake_source.wake_cause()
-    };
-    let causal_event_id = causal_entry
-        .as_ref()
-        .and_then(|(communication, sequence, _)| {
-            communication
-                .id
-                .as_ref()
-                .map(ToString::to_string)
-                .or_else(|| Some(format!("mailbox-sequence-{sequence}")))
-        });
-    let causal_event_time_ms = causal_entry
-        .as_ref()
-        .map(|(_, _, enqueued_at_ms)| *enqueued_at_ms);
-    let causal_sequence = causal_entry.as_ref().map(|(_, sequence, _)| *sequence);
-    let mut reported_entries: Vec<_> = entries
-        .into_iter()
-        .take(InputQueue::MAX_MAILBOX_NOTIFICATION_SNAPSHOT)
-        .collect();
-    if let Some(causal_entry) = causal_entry.as_ref()
-        && !reported_entries
-            .iter()
-            .any(|(_, sequence, _)| Some(*sequence) == causal_sequence)
-    {
-        let _ = reported_entries.pop();
-        reported_entries.push(causal_entry.clone());
-        reported_entries.sort_unstable_by_key(|(_, sequence, _)| *sequence);
-    }
-    let queued_update_count = reported_entries.len();
-    let queued_update_sequences = reported_entries
-        .iter()
-        .map(|(_, sequence, _)| *sequence)
-        .collect();
-    let noncausal_update_sequences = reported_entries
-        .iter()
-        .map(|(_, sequence, _)| *sequence)
-        .filter(|sequence| Some(*sequence) != causal_sequence)
-        .collect();
-    let queued_updates = reported_entries
-        .iter()
-        .map(|(communication, sequence, enqueued_at_ms)| {
-            let is_causal = causal_sequence == Some(*sequence);
-            let intent = if communication.origin == Some(AgentCommunicationOrigin::Result) {
-                AgentDeliveryIntent::TerminalHandoff
-            } else if communication.trigger_turn {
-                AgentDeliveryIntent::ActionableWakeRequested
-            } else {
-                AgentDeliveryIntent::QueueOnly
-            };
-            QueuedUpdateReceipt {
-                sequence: *sequence,
-                sender_agent_path: communication.author.clone(),
-                sender_thread_id: session
-                    .services
-                    .agent_control
-                    .agent_id_for_path(&communication.author),
-                intent,
-                enqueued_at_ms: *enqueued_at_ms,
-                ended_active_wait: is_causal,
-                delivered_to_model_at_ms: None,
-                displayed_at_ms: None,
-                actual_wake_cause: is_causal.then_some(wake_cause),
-            }
-        })
-        .collect();
-    let sender_agent_path = causal_entry
-        .as_ref()
-        .map(|(communication, _, _)| communication.author.clone());
-    let sender_thread_id = sender_agent_path
-        .as_ref()
-        .and_then(|path| session.services.agent_control.agent_id_for_path(path));
-    let actor = sender_agent_path.as_ref().map(ToString::to_string);
-
-    // Only the causal actionable/terminal plaintext is copied into the wait
-    // result. The mailbox itself remains the durable source for every queued
-    // update, so unrelated progress is delivered to the resumed model once
-    // rather than being duplicated by a notification (or an
-    // encrypted-unavailable summary).
-    let notifications = reported_entries
-        .into_iter()
-        .filter_map(|(communication, sequence, enqueued_at_ms)| {
-            let is_causal = causal_entry
-                .as_ref()
-                .is_some_and(|(_, causal_sequence, _)| *causal_sequence == sequence);
-            if !is_causal {
-                return None;
-            }
-            if communication.encrypted_content.is_some()
-                || communication.content.is_empty()
-                || (!communication.trigger_turn
-                    && communication.origin != Some(AgentCommunicationOrigin::Result))
-            {
-                return None;
-            }
-            let sender_thread_id = session
-                .services
-                .agent_control
-                .agent_id_for_path(&communication.author);
-            let preview = communication
-                .content
-                .chars()
-                .take(MAX_NOTIFICATION_PREVIEW_CHARS)
-                .collect::<String>();
-            let mut bounded = communication.content.chars();
-            let _ = bounded
-                .by_ref()
-                .take(MAX_NOTIFICATION_PREVIEW_CHARS)
-                .count();
-            let truncated = bounded.next().is_some();
-            let intent = if communication.origin == Some(AgentCommunicationOrigin::Result) {
-                AgentDeliveryIntent::TerminalHandoff
-            } else {
-                AgentDeliveryIntent::ActionableWakeRequested
-            };
-            Some(AgentNotificationSummary {
-                communication_id: communication.id,
-                sequence,
-                origin: if communication.origin == Some(AgentCommunicationOrigin::Result) {
-                    AgentNotificationOrigin::TurnResult
-                } else {
-                    AgentNotificationOrigin::ExplicitMessage
-                },
-                sender_agent_path: communication.author,
-                sender_thread_id,
-                content: AgentNotificationContent::PlaintextPreview {
-                    text: preview,
-                    truncated,
-                },
-                disposition: Some(AgentDeliveryDisposition {
-                    intent,
-                    enqueued_at_ms: Some(enqueued_at_ms),
-                    ended_active_wait: is_causal,
-                    wait_id: Some(wait_id.to_string()),
-                    target_set_relation: Some(target_set_relation.clone()),
-                    // A wait result is emitted from the active parent turn;
-                    // provider sampling after this boundary remains unknown.
-                    parent_turn_started: Some(true),
-                    delivered_to_model_at_ms: None,
-                    delivered_turn_id: None,
-                    displayed_at_ms: None,
-                    actual_wake_cause: is_causal.then_some(wake_cause),
-                    queued_update_count: Some(queued_update_count),
-                }),
-            })
-        })
-        .collect();
-
-    MailboxSnapshot {
-        notifications,
-        provenance: WakeProvenance {
-            wake_cause,
-            actor,
-            sender_agent_path,
-            sender_thread_id,
-            wait_id: wait_id.to_string(),
-            target_set_relation,
-            causal_event_id,
-            causal_event_time_ms,
-            queued_update_count,
-            queued_update_sequences,
-            noncausal_update_sequences,
-            queued_updates,
-            helper_returned_at_ms: current_time_ms(),
-            // The core runtime has no authoritative provider-turn callback at
-            // this seam; retain unknown rather than inferring a wake/spend.
-            provider_turn_started: None,
-        },
-    }
-}
-
-fn mailbox_sender_is_exact_target(sender: &AgentPath, target_agent_paths: &[AgentPath]) -> bool {
-    target_agent_paths.iter().any(|target| target == sender)
-}
-
-fn mailbox_entry_is_causal(
-    communication: &codex_protocol::protocol::InterAgentCommunication,
-    targetless_wait: bool,
-    target_agent_paths: &[AgentPath],
-) -> bool {
-    is_actionable_wait_communication(communication)
-        && (targetless_wait
-            || mailbox_sender_is_exact_target(&communication.author, target_agent_paths))
-}
-
-fn causal_mailbox_index(
-    entries: &[&codex_protocol::protocol::InterAgentCommunication],
-    targetless_wait: bool,
-    target_agent_paths: &[AgentPath],
-) -> Option<usize> {
-    let actionable = entries
-        .iter()
-        .enumerate()
-        .filter(|(_, communication)| is_actionable_wait_communication(communication))
-        .collect::<Vec<_>>();
-    if targetless_wait {
-        return actionable.first().map(|(index, _)| *index);
-    }
-    if actionable.len() != 1 {
-        return None;
-    }
-    let &(index, communication) = actionable.first()?;
-    mailbox_sender_is_exact_target(&communication.author, target_agent_paths).then_some(index)
-}
-
-fn target_set_relation(targetless: bool) -> String {
-    if targetless {
-        "targetless_root_orchestrator".to_string()
-    } else {
-        "exact_target_set".to_string()
-    }
-}
-
-fn current_time_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
-        .unwrap_or_default()
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn ready_wake_source(
-    session: &Session,
-    completion_rule: CompletionRule,
-    final_statuses: &mut HashMap<ThreadId, AgentStatus>,
-    receiver_thread_ids: &[ThreadId],
-    wake_on_mailbox: bool,
-    pending_input_activity: Option<InputQueueActivity>,
-    _exact_target_wait: bool,
-    status_rxs: &mut [(ThreadId, Receiver<AgentStatus>)],
-) -> Option<WakeSource> {
-    if completion_rule.is_satisfied(final_statuses, receiver_thread_ids) {
-        Some(WakeSource::TargetCompletion)
-    } else if wake_on_mailbox
-        && (pending_input_activity.is_some_and(|activity| activity != InputQueueActivity::Mailbox)
-            || session
-                .input_queue
-                .has_pending_wait_input(&session.active_turn)
-                .await)
-    {
-        let latest = collect_current_wait_statuses(session, receiver_thread_ids).await;
-        final_statuses.extend(latest.into_iter().filter(|(_, status)| is_final(status)));
-        if completion_rule.is_satisfied(final_statuses, receiver_thread_ids) {
-            Some(WakeSource::TargetCompletion)
-        } else if status_rxs
-            .iter()
-            .any(|(id, rx)| rx.has_changed().is_err() && !final_statuses.contains_key(id))
-        {
-            Some(WakeSource::SubscriptionLoss)
-        } else {
-            Some(match pending_input_activity {
-                Some(InputQueueActivity::Steer) => WakeSource::OperatorMessage,
-                Some(
-                    InputQueueActivity::TerminalCompletion | InputQueueActivity::RuntimeSystemEvent,
-                ) => WakeSource::RuntimeSystemEvent,
-                _ => WakeSource::Mailbox,
-            })
-        }
-    } else {
-        None
-    }
-}
-
-impl WaitAgentResult {
-    fn new(
-        requested_ids: Vec<ThreadId>,
-        pending_ids: Vec<ThreadId>,
-        completion_reason: CollabWaitingCompletionReason,
-        notifications: Vec<AgentNotificationSummary>,
-        wake_provenance: WakeProvenance,
-    ) -> Self {
-        let base_message = match completion_reason {
-            CollabWaitingCompletionReason::Terminal => "Wait completed.",
-            CollabWaitingCompletionReason::Mailbox => "Wait woke due to mailbox activity.",
-            CollabWaitingCompletionReason::Timeout => "Wait timed out.",
-            CollabWaitingCompletionReason::SubscriptionLoss => {
-                "Wait ended because its event subscription was lost."
-            }
-        };
-        let message = format!(
-            "{base_message} wake_cause={}; queued_updates={}; provider_turn_started=unknown.",
-            wake_cause_label(wake_provenance.wake_cause),
-            wake_provenance.queued_update_count,
-        );
-        Self {
-            message,
-            requested_ids,
-            pending_ids,
-            completion_reason,
-            timed_out: matches!(completion_reason, CollabWaitingCompletionReason::Timeout),
-            wake_notifications: (!notifications.is_empty()).then_some(notifications),
-            wake_provenance,
-        }
-    }
-
-    fn output_value(&self, capabilities: ToolRuntimeCapabilities) -> JsonValue {
-        let wait_capability = capabilities.wait_agent;
-        let mut output = serde_json::Map::from_iter([
-            ("message".to_string(), json!(self.message)),
-            ("requested_ids".to_string(), json!(self.requested_ids)),
-            ("timed_out".to_string(), json!(self.timed_out)),
-        ]);
-        if wait_capability.is_some_and(|capability| capability.pending_ids) {
-            output.insert("pending_ids".to_string(), json!(self.pending_ids));
-        }
-        if wait_capability.is_some_and(|capability| capability.completion_reason) {
-            output.insert(
-                "completion_reason".to_string(),
-                json!(self.completion_reason),
-            );
-        }
-        if let Some(notifications) = &self.wake_notifications {
-            output.insert("wake_notifications".to_string(), json!(notifications));
-        }
-        output.insert("wake_provenance".to_string(), json!(self.wake_provenance));
-        JsonValue::Object(output)
-    }
-
-    fn output_json_text(&self, capabilities: ToolRuntimeCapabilities) -> String {
-        self.output_value(capabilities).to_string()
-    }
-}
-
-fn wake_cause_label(cause: AgentWakeCause) -> &'static str {
-    match cause {
-        AgentWakeCause::OperatorMessage => "operator_message",
-        AgentWakeCause::ChildActionableMessage => "child_actionable_message",
-        AgentWakeCause::ChildTerminalTransition => "child_terminal_transition",
-        AgentWakeCause::UnrelatedMailboxEvent => "unrelated_mailbox_event",
-        AgentWakeCause::TimeoutLeaseExpiry => "timeout_lease_expiry",
-        AgentWakeCause::CancellationInterruption => "cancellation_interruption",
-        AgentWakeCause::PersistentGoalContinuation => "persistent_goal_continuation",
-        AgentWakeCause::RuntimeSystemEvent => "runtime_system_event",
-    }
-}
-
-fn merge_wait_end_statuses<I>(
-    mut final_statuses: HashMap<ThreadId, AgentStatus>,
-    pending_statuses: I,
-) -> HashMap<ThreadId, AgentStatus>
-where
-    I: IntoIterator<Item = (ThreadId, AgentStatus)>,
-{
-    for (thread_id, status) in pending_statuses {
-        final_statuses.insert(thread_id, status);
-    }
-    final_statuses
-}
-
-fn pending_wait_thread_ids(
-    receiver_thread_ids: &[ThreadId],
-    statuses_by_id: &HashMap<ThreadId, AgentStatus>,
-) -> Vec<ThreadId> {
-    receiver_thread_ids
-        .iter()
-        .filter(|receiver_thread_id| !statuses_by_id.get(receiver_thread_id).is_some_and(is_final))
-        .copied()
-        .collect()
-}
-
-async fn collect_current_wait_statuses(
-    session: &Session,
-    receiver_thread_ids: &[ThreadId],
-) -> HashMap<ThreadId, AgentStatus> {
-    let mut statuses = HashMap::with_capacity(receiver_thread_ids.len());
-    for receiver_thread_id in receiver_thread_ids {
-        statuses.insert(
-            *receiver_thread_id,
-            session
-                .services
-                .agent_control
-                .get_status(*receiver_thread_id)
-                .await,
-        );
-    }
-    statuses
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn emit_wait_completion(
-    session: &Session,
-    turn: &TurnContext,
-    call_id: String,
-    receiver_thread_ids: Vec<ThreadId>,
-    receiver_agents: Vec<CollabAgentRef>,
-    agents_states: HashMap<ThreadId, AgentStatus>,
-    completion_reason: CollabWaitingCompletionReason,
-    notifications: Vec<AgentNotificationSummary>,
-    wake_cause: Option<AgentWakeCause>,
-) {
-    let status = if completion_reason == CollabWaitingCompletionReason::SubscriptionLoss
-        // Subscription loss is an unsuccessful lifecycle outcome even when
-        // the last authoritative statuses are still running.
-        || agents_states.values().any(|agent_status| {
-        matches!(
-            agent_status,
-            AgentStatus::Errored(_) | AgentStatus::NotFound
-        )
-    }) {
-        CollabAgentToolCallStatus::Failed
-    } else {
-        CollabAgentToolCallStatus::Completed
-    };
-
-    session
-        .emit_turn_item_completed(
-            turn,
-            TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
-                id: call_id,
-                tool: CollabAgentTool::Wait,
-                status,
-                sender_thread_id: session.thread_id,
-                receiver_thread_ids,
-                receiver_agents,
-                prompt: None,
-                model: None,
-                reasoning_effort: None,
-                requested_model: None,
-                requested_reasoning_effort: None,
-                agents_states,
-                wake_notifications: (!notifications.is_empty()).then_some(notifications),
-                completion_reason: Some(completion_reason),
-                wake_cause,
-            }),
-        )
-        .await;
-}
-
-impl ToolOutput for WaitAgentResult {
-    fn log_preview(&self) -> String {
-        self.output_json_text(registered_tool_runtime_capabilities())
-    }
-
-    fn success_for_logging(&self) -> bool {
-        true
-    }
-
-    fn to_response_item(&self, call_id: &str, payload: &ToolPayload) -> ResponseInputItem {
-        FunctionToolOutput::from_text(
-            self.output_json_text(registered_tool_runtime_capabilities()),
-            /*success*/ None,
-        )
-        .to_response_item(call_id, payload)
-    }
-
-    fn code_mode_result(&self, _payload: &ToolPayload) -> JsonValue {
-        self.output_value(registered_tool_runtime_capabilities())
-    }
-}
-
-async fn wait_for_final_status(
-    session: std::sync::Arc<Session>,
-    thread_id: ThreadId,
-    mut status_rx: Receiver<AgentStatus>,
-) -> Option<(ThreadId, AgentStatus, bool)> {
-    let mut status = status_rx.borrow().clone();
-    if is_final(&status) {
-        return Some((thread_id, status, false));
-    }
-
-    loop {
-        if status_rx.changed().await.is_err() {
-            let latest = session.services.agent_control.get_status(thread_id).await;
-            // A closed subscription is an actionable identity/lifecycle loss
-            // when the authoritative status is not already terminal. Surface
-            // it as a terminal NotFound state so native mode cannot silently
-            // re-arm forever or hot-loop on a dead channel.
-            return Some((thread_id, latest, true));
-        }
-        status = status_rx.borrow().clone();
-        if is_final(&status) {
-            return Some((thread_id, status, false));
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn wait_for_wake_source(
-    session: std::sync::Arc<Session>,
-    input_activity_rx: &mut tokio::sync::watch::Receiver<InputQueueActivity>,
-    status_rxs: Vec<(ThreadId, Receiver<AgentStatus>)>,
-    receiver_thread_ids: &[ThreadId],
-    completion_rule: CompletionRule,
-    final_statuses: &mut HashMap<ThreadId, AgentStatus>,
-    wake_on_mailbox: bool,
-    _exact_target_wait: bool,
-    call_id: &str,
-    native_event_wait: bool,
-    lease_timer_enabled: bool,
-    mut deadline: Instant,
-    #[cfg(test)] mut lease_observer: Option<&mut (dyn FnMut() + Send)>,
-) -> WakeSource {
-    let lease_duration = if lease_timer_enabled {
-        deadline
-            .saturating_duration_since(Instant::now())
-            .max(Duration::from_millis(1))
-    } else {
-        Duration::ZERO
-    };
-    let closure_rxs = status_rxs
-        .iter()
-        .map(|(id, rx)| (*id, rx.clone()))
-        .collect::<Vec<_>>();
-    let mut futures = FuturesUnordered::new();
-    for (id, rx) in status_rxs {
-        let session = session.clone();
-        futures.push(wait_for_final_status(session, id, rx));
-    }
-
-    loop {
-        if completion_rule.is_satisfied(final_statuses, receiver_thread_ids) {
-            return WakeSource::TargetCompletion;
-        }
-
-        let timer = if lease_timer_enabled {
-            future::Either::Left(tokio::time::sleep_until(deadline))
-        } else {
-            future::Either::Right(future::pending())
-        };
-        tokio::pin!(timer);
-
-        tokio::select! {
-            maybe_status = futures.next(), if !futures.is_empty() => {
-                match maybe_status {
-                    Some(Some((id, status, subscription_lost))) => {
-                        let is_terminal = is_final(&status);
-                        if is_terminal {
-                            final_statuses.insert(id, status);
-                        }
-                        if subscription_lost {
-                            let latest = collect_current_wait_statuses(
-                                session.as_ref(),
-                                receiver_thread_ids,
-                            )
-                            .await;
-                            final_statuses.extend(
-                                latest
-                                    .into_iter()
-                                    .filter(|(_, status)| is_final(status)),
-                            );
-                            if !is_terminal {
-                                return if completion_rule.is_satisfied(
-                                    final_statuses,
-                                    receiver_thread_ids,
-                                ) {
-                                    WakeSource::TargetCompletion
-                                } else {
-                                    WakeSource::SubscriptionLoss
-                                };
-                            }
-                            // A terminally-closing subscription is only a
-                            // completion wake when the requested any/all
-                            // rule is satisfied. Otherwise keep the other
-                            // status subscriptions armed.
-                            if completion_rule.is_satisfied(
-                                final_statuses,
-                                receiver_thread_ids,
-                            ) {
-                                return WakeSource::TargetCompletion;
-                            }
-                        }
-                    }
-                    Some(None) => {}
-                    None => {}
-                }
-            }
-            input_activity_changed = input_activity_rx.changed(), if wake_on_mailbox || native_event_wait => {
-                match input_activity_changed {
-                    Ok(())
-                        if session
-                            .input_queue
-                            .has_pending_wait_input(&session.active_turn)
-                            .await =>
-                    {
-                        let latest = collect_current_wait_statuses(
-                            session.as_ref(),
-                            receiver_thread_ids,
-                        )
-                        .await;
-                        final_statuses.extend(
-                            latest
-                                .into_iter()
-                                .filter(|(_, status)| is_final(status)),
-                        );
-                        let status_loss = closure_rxs.iter().any(|(id, rx)| {
-                            rx.has_changed().is_err() && !final_statuses.contains_key(id)
-                        });
-                        if completion_rule.is_satisfied(final_statuses, receiver_thread_ids) {
-                            return WakeSource::TargetCompletion;
-                        } else if status_loss {
-                            return WakeSource::SubscriptionLoss;
-                        }
-                        return match *input_activity_rx.borrow() {
-                            InputQueueActivity::Steer => WakeSource::OperatorMessage,
-                            InputQueueActivity::TerminalCompletion
-                            | InputQueueActivity::RuntimeSystemEvent => {
-                                WakeSource::RuntimeSystemEvent
-                            }
-                            InputQueueActivity::Mailbox => WakeSource::Mailbox,
-                        };
-                    }
-                    Err(_) => {
-                        // The mailbox subscription is gone. End the pending
-                        // invocation so the owner can re-establish identity;
-                        // never re-arm a closed receiver in a hot loop.
-                        let latest = collect_current_wait_statuses(
-                            session.as_ref(),
-                            receiver_thread_ids,
-                        )
-                        .await;
-                        final_statuses.extend(
-                            latest
-                                .into_iter()
-                                .filter(|(_, status)| is_final(status)),
-                        );
-                        return if completion_rule.is_satisfied(
-                            final_statuses,
-                            receiver_thread_ids,
-                        ) {
-                            WakeSource::TargetCompletion
-                        } else {
-                            WakeSource::SubscriptionLoss
-                        };
-                    }
-                    _ => {}
-                }
-            }
-            _ = &mut timer => {
-                if native_event_wait {
-                    tracing::trace!(
-                        target: "codex.native_wait",
-                        "native_wait_lease_renewed call_id={call_id}"
-                    );
-                    #[cfg(test)]
-                    if let Some(observer) = lease_observer.as_deref_mut() {
-                        observer();
-                    }
-                    // The timeout is an internal lease/observation expiry. Keep
-                    // this invocation owned by the runtime and re-arm the
-                    // same subscriptions without producing a tool result or
-                    // starting another model/provider turn.
-                    deadline = Instant::now() + lease_duration;
-                    continue;
-                }
-                return WakeSource::Timeout;
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codex_protocol::protocol::SubAgentSource;
+    use crate::agent::api::AgentOutcomePublisher;
+    use crate::agent::api::AgentOutcomeSnapshot;
+    use crate::agent::api::AgentReadiness;
+    use crate::agent::api::AgentWaitRegistry;
+    use crate::agent::api::AgentWaitReturnWhen;
+    use crate::agent::api::register_agent_wait;
+    use codex_protocol::AgentPath;
+    use codex_protocol::protocol::AgentStatus;
+    use std::sync::Arc;
+    use std::sync::Mutex;
+
+    #[test]
+    fn reverse_wait_rejects_self_and_ancestor_targets() {
+        let current = AgentPath::try_from("/root/worker/child").expect("current path");
+        let ancestor = AgentPath::try_from("/root/worker").expect("ancestor path");
+        let sibling = AgentPath::try_from("/root/other").expect("sibling path");
+        assert!(reverse_wait_error(Some(&current), Some(&current)).is_some());
+        assert!(reverse_wait_error(Some(&current), Some(&ancestor)).is_some());
+        assert!(reverse_wait_error(Some(&current), Some(&sibling)).is_none());
+        assert!(reverse_wait_error(None, Some(&ancestor)).is_none());
+    }
+
+    #[test]
+    fn target_wait_outcome_preserves_any_vs_all() {
+        let result = AgentWaitResult {
+            all_targets: false,
+            outcomes: Vec::new(),
+        };
+        assert_eq!(
+            WaitOutcome::TargetTerminal(result).protocol_outcome(),
+            WaitAgentOutcome::TargetTerminalAny
+        );
+        let result = AgentWaitResult {
+            all_targets: true,
+            outcomes: Vec::new(),
+        };
+        assert_eq!(
+            WaitOutcome::TargetTerminal(result).protocol_outcome(),
+            WaitAgentOutcome::TargetTerminalAll
+        );
+    }
 
     #[tokio::test]
-    async fn positive_native_lease_reports_each_rearm_before_terminal_wake() {
-        let (session, _turn) = crate::session::tests::make_session_and_context().await;
-        let target_id = ThreadId::new();
-        let (status_tx, status_rx) = tokio::sync::watch::channel(AgentStatus::Running);
-        let expiries = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let observer_expiries = expiries.clone();
-        let wait = tokio::spawn(async move {
-            let (mut input_activity_rx, _) = session
-                .input_queue
-                .subscribe_activity(/*turn_state*/ None)
-                .await;
-            let mut final_statuses = HashMap::new();
-            let status_rxs = vec![(target_id, status_rx)];
-            let mut observer = || {
-                observer_expiries.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            };
-            wait_for_wake_source(
-                session.into(),
-                &mut input_activity_rx,
-                status_rxs,
-                &[target_id],
-                CompletionRule::new(ReturnWhen::Any),
-                &mut final_statuses,
-                /*wake_on_mailbox*/ false,
-                /*exact_target_wait*/ true,
-                "test-native-wait-call",
-                /*native_event_wait*/ true,
-                /*lease_timer_enabled*/ true,
-                Instant::now() + Duration::from_millis(5),
-                /*lease_observer*/ Some(&mut observer),
+    async fn mailbox_wakeup_rechecks_concurrently_latched_target_outcome() {
+        let registry = Arc::new(Mutex::new(AgentWaitRegistry::default()));
+        let target = ThreadId::new();
+        let publisher = AgentOutcomePublisher::new(target, registry.clone());
+        publisher.publish(AgentOutcomeSnapshot {
+            turn_id: Some("turn-1".to_string()),
+            status: AgentStatus::Running,
+            readiness: AgentReadiness::Pending,
+        });
+        let registration = register_agent_wait(
+            &registry,
+            vec![target],
+            AgentWaitReturnWhen::Any,
+        );
+        let mut agent_wait = Some(registration);
+        let input_queue = InputQueue::new();
+        let watermark = input_queue.mailbox_enqueue_watermark().await;
+        let (mut activity_rx, pending) = input_queue.subscribe_activity(None).await;
+        assert_eq!(pending, None);
+        input_queue
+            .enqueue_mailbox_communication(
+                codex_protocol::protocol::InterAgentCommunication::new(
+                    AgentPath::root(),
+                    AgentPath::try_from("/root/worker").expect("agent path"),
+                    Vec::new(),
+                    "quiet update".to_string(),
+                    /*trigger_turn*/ false,
+                ),
+                Default::default(),
             )
-            .await
+            .await;
+        activity_rx.changed().await.expect("mailbox activity");
+        publisher.publish(AgentOutcomeSnapshot {
+            turn_id: Some("turn-1".to_string()),
+            status: AgentStatus::Completed(Some("done".to_string())),
+            readiness: AgentReadiness::Terminal,
         });
 
-        tokio::time::timeout(Duration::from_secs(1), async {
-            while expiries.load(std::sync::atomic::Ordering::SeqCst) < 2 {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("native lease should rearm at least twice");
-        status_tx
-            .send(AgentStatus::Shutdown)
-            .expect("status receiver should remain active");
-
-        assert_eq!(
-            wait.await.expect("wait task should join"),
-            WakeSource::TargetCompletion
+        let outcome = activity_wake_outcome(
+            *activity_rx.borrow_and_update(),
+            &mut agent_wait,
         );
-        assert!(expiries.load(std::sync::atomic::Ordering::SeqCst) >= 2);
-    }
-
-    #[test]
-    fn wake_source_maps_to_public_completion_reason() {
-        assert_eq!(
-            WakeSource::TargetCompletion.completion_reason(),
-            CollabWaitingCompletionReason::Terminal
-        );
-        assert_eq!(
-            WakeSource::Mailbox.completion_reason(),
-            CollabWaitingCompletionReason::Mailbox
-        );
-        assert_eq!(
-            WakeSource::RuntimeSystemEvent.wake_cause(),
-            AgentWakeCause::RuntimeSystemEvent
-        );
-        assert_eq!(
-            WakeSource::Timeout.completion_reason(),
-            CollabWaitingCompletionReason::Timeout
-        );
-        assert_eq!(
-            WakeSource::SubscriptionLoss.completion_reason(),
-            CollabWaitingCompletionReason::SubscriptionLoss
-        );
-    }
-
-    #[test]
-    fn subscription_loss_result_is_not_a_timeout() {
-        let result = WaitAgentResult::new(
+        let WaitOutcome::TargetTerminal(result) = outcome else {
+            panic!("latched target outcome must win over concurrently ready mailbox activity");
+        };
+        assert_eq!(result.outcomes.len(), 1);
+        assert_eq!(result.outcomes[0].0, target);
+        assert_eq!(result.outcomes[0].1.turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(result.outcomes[0].1.status, AgentStatus::Completed(Some("done".to_string())));
+        let queued_update_count = input_queue
+            .pending_mailbox_communication_count_since(watermark)
+            .await;
+        let item = completed_wait_item(
+            "wait-call".to_string(),
+            ThreadId::new(),
+            vec![target],
             Vec::new(),
-            Vec::new(),
-            CollabWaitingCompletionReason::SubscriptionLoss,
-            Vec::new(),
-            WakeProvenance::default(),
+            &WaitOutcome::TargetTerminal(result.clone()),
+            queued_update_count,
+            agent_wait_states(Some(&result)),
         );
-        assert!(!result.timed_out);
-        assert!(result.message.contains("subscription"));
-    }
-
-    #[test]
-    fn all_completion_waits_for_remaining_targets_after_terminal_closure() {
-        let first = ThreadId::new();
-        let second = ThreadId::new();
-        let mut statuses = HashMap::from([(first, AgentStatus::Completed(None))]);
-        let rule = CompletionRule::new(ReturnWhen::All);
-        assert!(!rule.is_satisfied(&statuses, &[first, second]));
-        statuses.insert(second, AgentStatus::Completed(None));
-        assert!(rule.is_satisfied(&statuses, &[first, second]));
-    }
-
-    #[test]
-    fn completion_rule_distinguishes_any_from_all() {
-        let finished_id = ThreadId::new();
-        let running_id = ThreadId::new();
-        let receiver_thread_ids = vec![finished_id, running_id];
-        let statuses = HashMap::from([(
-            finished_id,
-            AgentStatus::Completed(Some("done".to_string())),
-        )]);
-
-        assert!(CompletionRule::new(ReturnWhen::Any).is_satisfied(&statuses, &receiver_thread_ids));
-        assert!(
-            !CompletionRule::new(ReturnWhen::All).is_satisfied(&statuses, &receiver_thread_ids)
-        );
-    }
-
-    #[test]
-    fn merge_wait_end_statuses_includes_pending_targets() {
-        let completed_id = ThreadId::new();
-        let refreshed_completed_id = ThreadId::new();
-        let statuses_by_id = merge_wait_end_statuses(
-            HashMap::from([(
-                completed_id,
-                AgentStatus::Completed(Some("done".to_string())),
-            )]),
-            [(
-                refreshed_completed_id,
-                AgentStatus::Completed(Some("just finished".to_string())),
-            )],
-        );
-
+        assert_eq!(item.wait_outcome, Some(WaitAgentOutcome::TargetTerminalAny));
+        assert_eq!(item.queued_update_count, Some(1));
         assert_eq!(
-            statuses_by_id.get(&completed_id),
+            item.agents_states.get(&target),
             Some(&AgentStatus::Completed(Some("done".to_string())))
         );
-        assert_eq!(
-            statuses_by_id.get(&refreshed_completed_id),
-            Some(&AgentStatus::Completed(Some("just finished".to_string())))
-        );
-        assert!(
-            pending_wait_thread_ids(&[completed_id, refreshed_completed_id], &statuses_by_id)
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn resolve_wait_timeout_uses_configured_default() {
-        assert_eq!(
-            resolve_wait_timeout_ms(
-                /*requested_timeout_ms*/ None, /*min_wait_timeout_ms*/ 1,
-                /*max_wait_timeout_ms*/ 1_000, /*default_wait_timeout_ms*/ 50
-            )
-            .expect("configured default should be accepted"),
-            50
-        );
-    }
-
-    #[test]
-    fn native_zero_timeout_disables_internal_lease_timer() {
-        assert!(!lease_timer_enabled(
-            /*native_event_wait*/ true, /*timeout_ms*/ 0
-        ));
-        assert!(lease_timer_enabled(
-            /*native_event_wait*/ true, /*timeout_ms*/ 1
-        ));
-        assert!(lease_timer_enabled(
-            /*native_event_wait*/ false, /*timeout_ms*/ 0
-        ));
-    }
-
-    #[test]
-    fn targetless_native_wait_is_reserved_for_root_and_orchestrator_agents() {
-        let root = SessionSource::VSCode;
-        let orchestrator = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-            parent_thread_id: ThreadId::new(),
-            depth: 1,
-            agent_path: None,
-            agent_nickname: None,
-            agent_role: Some("orchestrator".to_string()),
-        });
-        let reviewer = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-            parent_thread_id: ThreadId::new(),
-            depth: 1,
-            agent_path: None,
-            agent_nickname: None,
-            agent_role: Some("reviewer".to_string()),
-        });
-        let unclassified = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-            parent_thread_id: ThreadId::new(),
-            depth: 1,
-            agent_path: None,
-            agent_nickname: None,
-            agent_role: None,
-        });
-
-        assert!(targetless_native_wait_allowed(&root));
-        assert!(targetless_native_wait_allowed(&orchestrator));
-        assert!(!targetless_native_wait_allowed(&reviewer));
-        assert!(!targetless_native_wait_allowed(&unclassified));
-    }
-
-    #[test]
-    fn reverse_wait_rejects_parent_and_self_but_allows_noncyclic_targets() {
-        let parent = AgentPath::try_from("/root/staff_r2_signing").expect("parent path");
-        let reviewer = AgentPath::try_from("/root/staff_r2_signing/staff_custody_review")
-            .expect("reviewer path");
-        let child = AgentPath::try_from("/root/staff_r2_signing/staff_custody_review/worker")
-            .expect("child path");
-        let sibling =
-            AgentPath::try_from("/root/staff_r2_signing/other_review").expect("sibling path");
-
-        let parent_error = reverse_wait_error(Some(&reviewer), Some(&parent))
-            .expect("a reviewer must not wait on its parent");
-        assert!(parent_error.contains("current agent or an ancestor"));
-        assert!(reverse_wait_error(Some(&reviewer), Some(&reviewer)).is_some());
-        assert!(reverse_wait_error(Some(&reviewer), Some(&child)).is_none());
-        assert!(reverse_wait_error(Some(&reviewer), Some(&sibling)).is_none());
-    }
-
-    #[test]
-    fn reverse_wait_guard_is_conservative_when_paths_are_unknown() {
-        let reviewer = AgentPath::try_from("/root/staff_r2_signing/staff_custody_review")
-            .expect("reviewer path");
-        let parent = AgentPath::try_from("/root/staff_r2_signing").expect("parent path");
-
-        assert!(reverse_wait_error(/*current_agent_path*/ None, Some(&parent)).is_none());
-        assert!(reverse_wait_error(Some(&reviewer), /*target_agent_path*/ None).is_none());
-    }
-
-    #[test]
-    fn exact_target_mailbox_causality_excludes_siblings_and_nested_descendants() {
-        let target = AgentPath::try_from("/root/reviewer").expect("target path");
-        let sibling = AgentPath::try_from("/root/other_reviewer").expect("sibling path");
-        let nested_descendant =
-            AgentPath::try_from("/root/reviewer/worker").expect("nested descendant path");
-        let targets = vec![target.clone()];
-
-        assert!(mailbox_sender_is_exact_target(&target, &targets));
-        assert!(!mailbox_sender_is_exact_target(&sibling, &targets));
-        assert!(!mailbox_sender_is_exact_target(
-            &nested_descendant,
-            &targets
-        ));
-    }
-
-    #[test]
-    fn mailbox_causality_distinguishes_target_wake_from_queued_progress() {
-        let target = AgentPath::try_from("/root/reviewer").expect("target path");
-        let sibling = AgentPath::try_from("/root/other_reviewer").expect("sibling path");
-        let targets = vec![target.clone()];
-        let target_wake = codex_protocol::protocol::InterAgentCommunication::new(
-            target,
-            AgentPath::root(),
-            Vec::new(),
-            "wake".to_string(),
-            /*trigger_turn*/ true,
-        );
-        let sibling_wake = codex_protocol::protocol::InterAgentCommunication::new(
-            sibling,
-            AgentPath::root(),
-            Vec::new(),
-            "sibling wake".to_string(),
-            /*trigger_turn*/ true,
-        );
-        let queued_progress = codex_protocol::protocol::InterAgentCommunication::new(
-            AgentPath::try_from("/root/reviewer").expect("target path"),
-            AgentPath::root(),
-            Vec::new(),
-            "progress".to_string(),
-            /*trigger_turn*/ false,
-        );
-
-        assert!(mailbox_entry_is_causal(
-            &target_wake,
-            /*targetless_wait*/ false,
-            &targets
-        ));
-        assert!(!mailbox_entry_is_causal(
-            &sibling_wake,
-            /*targetless_wait*/ false,
-            &targets
-        ));
-        assert!(!mailbox_entry_is_causal(
-            &queued_progress,
-            /*targetless_wait*/ false,
-            &targets
-        ));
-    }
-
-    #[test]
-    fn mailbox_causality_is_conservative_when_outside_target_entries_are_present() {
-        let target = AgentPath::try_from("/root/reviewer").expect("target path");
-        let sibling = AgentPath::try_from("/root/other_reviewer").expect("sibling path");
-        let target_wake = codex_protocol::protocol::InterAgentCommunication::new(
-            target,
-            AgentPath::root(),
-            Vec::new(),
-            "target result".to_string(),
-            /*trigger_turn*/ false,
-        );
-        let target_wake = codex_protocol::protocol::InterAgentCommunication {
-            origin: Some(AgentCommunicationOrigin::Result),
-            ..target_wake
-        };
-        let sibling_wake = codex_protocol::protocol::InterAgentCommunication::new(
-            sibling,
-            AgentPath::root(),
-            Vec::new(),
-            "sibling result".to_string(),
-            /*trigger_turn*/ false,
-        );
-        let sibling_wake = codex_protocol::protocol::InterAgentCommunication {
-            origin: Some(AgentCommunicationOrigin::Result),
-            ..sibling_wake
-        };
-        let targets = vec![AgentPath::try_from("/root/reviewer").expect("target path")];
-        let entries = vec![&target_wake, &sibling_wake];
-
-        assert_eq!(
-            causal_mailbox_index(&entries, /*targetless_wait*/ false, &targets),
-            None
-        );
-        assert_eq!(
-            causal_mailbox_index(&[&target_wake], /*targetless_wait*/ false, &targets),
-            Some(0)
-        );
-        assert_eq!(
-            causal_mailbox_index(&[&sibling_wake], /*targetless_wait*/ false, &targets),
-            None
-        );
-    }
-
-    #[test]
-    fn wait_agent_output_omits_capability_owned_fields_without_provider() {
-        let requested_id = ThreadId::new();
-        let pending_id = ThreadId::new();
-        let result = WaitAgentResult::new(
-            vec![requested_id],
-            vec![pending_id],
-            CollabWaitingCompletionReason::Timeout,
-            Vec::new(),
-            WakeProvenance::default(),
-        );
-
-        let output = result.output_value(ToolRuntimeCapabilities::upstream_default());
-
-        assert!(
-            output["message"]
-                .as_str()
-                .is_some_and(|message| message.starts_with("Wait timed out."))
-        );
-        assert_eq!(output["requested_ids"], json!([requested_id]));
-        assert_eq!(output["timed_out"], json!(true));
-        assert!(
-            !output
-                .as_object()
-                .expect("output should be object")
-                .contains_key("pending_ids")
-        );
-        assert!(
-            !output
-                .as_object()
-                .expect("output should be object")
-                .contains_key("completion_reason")
-        );
-    }
-
-    #[test]
-    fn status_classification_keeps_only_non_final_targets_pending() {
-        let finished_id = ThreadId::new();
-        let running_id = ThreadId::new();
-        let errored_id = ThreadId::new();
-        let receiver_thread_ids = vec![finished_id, running_id, errored_id];
-        let statuses = HashMap::from([
-            (
-                finished_id,
-                AgentStatus::Completed(Some("done".to_string())),
-            ),
-            (running_id, AgentStatus::Running),
-            (
-                errored_id,
-                AgentStatus::Errored("permission denied".to_string()),
-            ),
-        ]);
-        let pending_thread_ids = pending_wait_thread_ids(&receiver_thread_ids, &statuses);
-
-        assert_eq!(pending_thread_ids, vec![running_id]);
-        assert_eq!(statuses.get(&running_id), Some(&AgentStatus::Running));
-        assert_eq!(
-            statuses.get(&errored_id),
-            Some(&AgentStatus::Errored("permission denied".to_string()))
-        );
+        assert_eq!(queued_update_count, Some(1), "count observes without consuming");
+        assert!(input_queue.has_pending_mailbox_items().await);
     }
 }

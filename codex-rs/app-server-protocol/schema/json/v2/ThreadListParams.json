@@ -1,5 +1,6 @@
 {
-  "$defs": {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
     "SortDirection": {
       "enum": [
         "asc",
@@ -24,11 +25,9 @@
       "enum": [
         "created_at",
         "updated_at",
-        "recency_at"
+        "recency_at",
+        "section_position"
       ],
-      "type": "string"
-    },
-    "ThreadSource": {
       "type": "string"
     },
     "ThreadSourceKind": {
@@ -47,10 +46,9 @@
       "type": "string"
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "archived": {
-      "description": "Optional archived filter; when set to true, only archived threads are returned.\nIf false or null, only non-archived threads are returned.",
+      "description": "Optional archived filter; when set to true, only archived threads are returned. If false or null, only non-archived threads are returned.",
       "type": [
         "boolean",
         "null"
@@ -66,32 +64,45 @@
     "cwd": {
       "anyOf": [
         {
-          "$ref": "#/$defs/ThreadListCwdFilter"
+          "$ref": "#/definitions/ThreadListCwdFilter"
         },
         {
           "type": "null"
         }
       ],
-      "description": "Optional cwd filter or filters; when set, only threads whose session cwd\nexactly matches one of these paths are returned."
+      "description": "Optional cwd filter or filters; when set, only threads whose session cwd exactly matches one of these paths are returned."
     },
-    "isPinned": {
-      "description": "Optional pinned filter; when set, only threads matching this value are returned.",
+    "excludedThreadIds": {
+      "description": "Thread IDs to exclude before applying the result limit. Up to 100 entries; invalid IDs or a larger list are rejected, never truncated. Send the same exclusions on each page. Omitted, null, or empty means no exclusions.",
+      "items": {
+        "type": "string"
+      },
       "type": [
-        "boolean",
+        "array",
         "null"
       ]
     },
     "limit": {
       "description": "Optional page size; defaults to a reasonable server-side value.",
       "format": "uint32",
-      "minimum": 0,
+      "minimum": 0.0,
       "type": [
         "integer",
         "null"
       ]
     },
     "modelProviders": {
-      "description": "Optional provider filter; when set, only sessions recorded under these\nproviders are returned. When present but empty, includes all providers.",
+      "description": "Optional provider filter; when set, only sessions recorded under these providers are returned. When present but empty, includes all providers.",
+      "items": {
+        "type": "string"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "originators": {
+      "description": "Optional originator allowlist, matching any supplied value exactly. Supported by hosted backends only; the local app-server rejects a nonempty list. Omitted or empty lists leave originators unrestricted.",
       "items": {
         "type": "string"
       },
@@ -107,10 +118,17 @@
         "null"
       ]
     },
+    "sectionId": {
+      "description": "Omit to include every section, set to `null` for unsectioned threads, or provide a section ID to return only threads in that section.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "sortDirection": {
       "anyOf": [
         {
-          "$ref": "#/$defs/SortDirection"
+          "$ref": "#/definitions/SortDirection"
         },
         {
           "type": "null"
@@ -121,7 +139,7 @@
     "sortKey": {
       "anyOf": [
         {
-          "$ref": "#/$defs/ThreadSortKey"
+          "$ref": "#/definitions/ThreadSortKey"
         },
         {
           "type": "null"
@@ -130,19 +148,9 @@
       "description": "Optional sort key; defaults to created_at."
     },
     "sourceKinds": {
-      "description": "Optional source filter; when set, only sessions from these source kinds\nare returned. When omitted or empty, defaults to interactive sources.",
+      "description": "Optional source filter; when set, only sessions from these source kinds are returned. When omitted or empty, defaults to interactive sources.",
       "items": {
-        "$ref": "#/$defs/ThreadSourceKind"
-      },
-      "type": [
-        "array",
-        "null"
-      ]
-    },
-    "threadSources": {
-      "description": "Optional per-thread source filter; when omitted, side threads are excluded.",
-      "items": {
-        "$ref": "#/$defs/ThreadSource"
+        "$ref": "#/definitions/ThreadSourceKind"
       },
       "type": [
         "array",
@@ -150,7 +158,7 @@
       ]
     },
     "useStateDbOnly": {
-      "description": "If true, return from the state DB without scanning JSONL rollouts to\nrepair thread metadata. Omitted or false preserves scan-and-repair\nbehavior.",
+      "description": "If true, return from the state DB without scanning JSONL rollouts to repair thread metadata. Omitted or false preserves scan-and-repair behavior.",
       "type": "boolean"
     }
   },

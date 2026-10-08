@@ -4,11 +4,7 @@ use rmcp::model::RequestId;
 use rmcp::service::Peer;
 use rmcp::service::RoleClient;
 
-/// Sends a protocol cancellation when an in-flight request is dropped.
-///
-/// rmcp request handles intentionally do not cancel from `Drop`. The client
-/// uses this guard around the response future so caller cancellation and active
-/// timeout cancellation both reclaim the peer's pending request registration.
+/// Cancels the matching server request when the caller abandons its response future.
 pub(crate) struct RequestCancellationGuard {
     peer: Option<Peer<RoleClient>>,
     request_id: RequestId,
@@ -16,10 +12,7 @@ pub(crate) struct RequestCancellationGuard {
 
 impl RequestCancellationGuard {
     pub(crate) fn new(peer: Peer<RoleClient>, request_id: RequestId) -> Self {
-        Self {
-            peer: Some(peer),
-            request_id,
-        }
+        Self { peer: Some(peer), request_id }
     }
 
     pub(crate) fn disarm(mut self) {
@@ -29,13 +22,9 @@ impl RequestCancellationGuard {
 
 impl Drop for RequestCancellationGuard {
     fn drop(&mut self) {
-        let Some(peer) = self.peer.take() else {
-            return;
-        };
+        let Some(peer) = self.peer.take() else { return };
         let request_id = self.request_id.clone();
-        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-            return;
-        };
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else { return };
         let task = runtime.spawn(async move {
             let _ = peer
                 .send_notification(

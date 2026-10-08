@@ -74,7 +74,9 @@ pub(in crate::local) async fn search_thread_occurrences(
         &params.search_term,
     )?;
     let matcher = LiteralMatcher::new(params.search_term.as_str());
-    let lineage = store.resolve_rollout_lineage(params.thread_id).await?;
+    let lineage = store
+        .resolve_rollout_lineage(params.thread_id, /*initial_path*/ None)
+        .await?;
     let cursor_segment = cursor
         .as_ref()
         .map(|cursor| {
@@ -123,7 +125,13 @@ FROM (
       ON turns.thread_id = items.thread_id
      AND turns.turn_id = items.turn_id
     WHERE items.thread_id = ?
-      AND items.item_type = 'userMessage'
+      AND (
+          items.item_type = 'userMessage'
+          OR (
+              items.item_type = 'agentMessage'
+              AND json_extract(items.item_json, '$.phase') = 'partial_answer'
+          )
+      )
       AND items.rollout_ordinal >= ?
       AND items.rollout_ordinal < ?
       AND turns.rollout_ordinal >= ?
@@ -152,12 +160,12 @@ FROM (
 ORDER BY rollout_ordinal ASC
         "#,
         )
-        .bind(segment.thread_id().to_string())
+        .bind(segment.rollout_id().to_string())
         .bind(next_rollout_ordinal)
         .bind(end_rollout_ordinal)
         .bind(segment_start_ordinal)
         .bind(end_rollout_ordinal)
-        .bind(segment.thread_id().to_string())
+        .bind(segment.rollout_id().to_string())
         .bind(next_rollout_ordinal)
         .bind(end_rollout_ordinal)
         .bind(segment_start_ordinal)
@@ -332,13 +340,13 @@ fn searchable_text(item: &ThreadItem) -> Option<Cow<'_, str>> {
             (!text.is_empty()).then_some(Cow::Owned(text))
         }
         ThreadItem::HookPrompt { .. }
+        | ThreadItem::FunctionCallOutput { .. }
         | ThreadItem::Plan { .. }
         | ThreadItem::Reasoning { .. }
         | ThreadItem::CommandExecution { .. }
         | ThreadItem::FileChange { .. }
         | ThreadItem::McpToolCall { .. }
         | ThreadItem::DynamicToolCall { .. }
-        | ThreadItem::ComputerUseCall { .. }
         | ThreadItem::CollabAgentToolCall { .. }
         | ThreadItem::SubAgentActivity { .. }
         | ThreadItem::WebSearch(_)
@@ -415,21 +423,22 @@ impl LiteralMatcher {
             lowercase_start = lowercase_end;
         }
 
+        // Use two-pointer method to find matches in linear time.
+        let mut start_span = 0;
+        let mut end_span = 0;
         lowercase_text
             .match_indices(self.lowercase_needle.as_str())
             .take(limit)
             .filter_map(|(start, matched)| {
                 let end = start.saturating_add(matched.len());
-                let original_start = spans
-                    .iter()
-                    .find(|(lowercase, _)| lowercase.contains(&start))?
-                    .1
-                    .start;
-                let original_end = spans
-                    .iter()
-                    .find(|(lowercase, _)| lowercase.contains(&end.saturating_sub(1)))?
-                    .1
-                    .end;
+                while spans.get(start_span)?.0.end <= start {
+                    start_span += 1;
+                }
+                while spans.get(end_span)?.0.end <= end.saturating_sub(1) {
+                    end_span += 1;
+                }
+                let original_start = spans.get(start_span)?.1.start;
+                let original_end = spans.get(end_span)?.1.end;
                 Some(original_start..original_end)
             })
             .collect()

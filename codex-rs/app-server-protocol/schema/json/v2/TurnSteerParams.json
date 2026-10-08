@@ -1,17 +1,18 @@
 {
-  "$defs": {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
     "AdditionalContextEntry": {
       "properties": {
         "kind": {
-          "$ref": "#/$defs/AdditionalContextKind"
+          "$ref": "#/definitions/AdditionalContextKind"
         },
         "value": {
           "type": "string"
         }
       },
       "required": [
-        "value",
-        "kind"
+        "kind",
+        "value"
       ],
       "type": "object"
     },
@@ -26,18 +27,18 @@
       "properties": {
         "end": {
           "format": "uint",
-          "minimum": 0,
+          "minimum": 0.0,
           "type": "integer"
         },
         "start": {
           "format": "uint",
-          "minimum": 0,
+          "minimum": 0.0,
           "type": "integer"
         }
       },
       "required": [
-        "start",
-        "end"
+        "end",
+        "start"
       ],
       "type": "object"
     },
@@ -53,7 +54,11 @@
     "TextElement": {
       "properties": {
         "byteRange": {
-          "$ref": "#/$defs/ByteRange",
+          "allOf": [
+            {
+              "$ref": "#/definitions/ByteRange"
+            }
+          ],
           "description": "Byte range in the parent `text` buffer that this element occupies."
         },
         "placeholder": {
@@ -80,29 +85,57 @@
               "default": [],
               "description": "UI-defined spans within `text` used to render or persist special elements.",
               "items": {
-                "$ref": "#/$defs/TextElement"
+                "$ref": "#/definitions/TextElement"
               },
               "type": "array"
             },
             "type": {
-              "const": "text",
+              "enum": [
+                "text"
+              ],
               "title": "TextUserInputType",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "text"
+            "text",
+            "type"
           ],
           "title": "TextUserInput",
           "type": "object"
         },
         {
+          "anyOf": [
+            {
+              "properties": {
+                "url": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "url"
+              ],
+              "title": "UrlUserInput",
+              "type": "object"
+            },
+            {
+              "properties": {
+                "fileId": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "fileId"
+              ],
+              "title": "FileIdUserInput",
+              "type": "object"
+            }
+          ],
           "properties": {
             "detail": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/ImageDetail"
+                  "$ref": "#/definitions/ImageDetail"
                 },
                 {
                   "type": "null"
@@ -111,17 +144,15 @@
               "default": null
             },
             "type": {
-              "const": "image",
+              "enum": [
+                "image"
+              ],
               "title": "ImageUserInputType",
-              "type": "string"
-            },
-            "url": {
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "url"
+            "type"
           ],
           "title": "ImageUserInput",
           "type": "object"
@@ -131,7 +162,7 @@
             "detail": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/ImageDetail"
+                  "$ref": "#/definitions/ImageDetail"
                 },
                 {
                   "type": "null"
@@ -143,14 +174,16 @@
               "type": "string"
             },
             "type": {
-              "const": "localImage",
+              "enum": [
+                "localImage"
+              ],
               "title": "LocalImageUserInputType",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "path"
+            "path",
+            "type"
           ],
           "title": "LocalImageUserInput",
           "type": "object"
@@ -158,7 +191,9 @@
         {
           "properties": {
             "type": {
-              "const": "audio",
+              "enum": [
+                "audio"
+              ],
               "title": "AudioUserInputType",
               "type": "string"
             },
@@ -179,14 +214,16 @@
               "type": "string"
             },
             "type": {
-              "const": "localAudio",
+              "enum": [
+                "localAudio"
+              ],
               "title": "LocalAudioUserInputType",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "path"
+            "path",
+            "type"
           ],
           "title": "LocalAudioUserInput",
           "type": "object"
@@ -200,15 +237,17 @@
               "type": "string"
             },
             "type": {
-              "const": "skill",
+              "enum": [
+                "skill"
+              ],
               "title": "SkillUserInputType",
               "type": "string"
             }
           },
           "required": [
-            "type",
             "name",
-            "path"
+            "path",
+            "type"
           ],
           "title": "SkillUserInput",
           "type": "object"
@@ -222,15 +261,17 @@
               "type": "string"
             },
             "type": {
-              "const": "mention",
+              "enum": [
+                "mention"
+              ],
               "title": "MentionUserInputType",
               "type": "string"
             }
           },
           "required": [
-            "type",
             "name",
-            "path"
+            "path",
+            "type"
           ],
           "title": "MentionUserInput",
           "type": "object"
@@ -238,7 +279,6 @@
       ]
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "clientUserMessageId": {
       "type": [
@@ -247,12 +287,12 @@
       ]
     },
     "expectedTurnId": {
-      "description": "Required active turn id precondition. The request fails when it does not\nmatch the currently active turn.",
+      "description": "Required active turn id precondition. The request fails when it does not match the currently active turn.",
       "type": "string"
     },
     "input": {
       "items": {
-        "$ref": "#/$defs/UserInput"
+        "$ref": "#/definitions/UserInput"
       },
       "type": "array"
     },
@@ -261,9 +301,9 @@
     }
   },
   "required": [
-    "threadId",
+    "expectedTurnId",
     "input",
-    "expectedTurnId"
+    "threadId"
   ],
   "title": "TurnSteerParams",
   "type": "object"

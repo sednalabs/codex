@@ -7,22 +7,6 @@ use std::sync::PoisonError;
 
 type ErasedData = Arc<dyn Any + Send + Sync>;
 
-/// Stable identifier for a persistent storage namespace owned by an extension.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct ExtensionStorageId {
-    namespace: &'static str,
-}
-
-impl ExtensionStorageId {
-    pub const fn new(namespace: &'static str) -> Self {
-        Self { namespace }
-    }
-
-    pub const fn as_str(self) -> &'static str {
-        self.namespace
-    }
-}
-
 /// Typed values supplied before an [`ExtensionData`] scope is created.
 ///
 /// Hosts may retain a clone when later operations must use the same initial
@@ -118,6 +102,25 @@ impl ExtensionData {
         self.entries()
             .insert(TypeId::of::<T>(), Arc::new(value))
             .map(downcast_data)
+    }
+
+    /// Stores `value` only when `should_insert` accepts the current attachment.
+    ///
+    /// The predicate and insertion happen while this map is locked, so concurrent
+    /// callers cannot replace a value after checking a stale attachment.
+    pub fn insert_if<T>(&self, value: T, should_insert: impl FnOnce(Option<&T>) -> bool) -> bool
+    where
+        T: Any + Send + Sync,
+    {
+        let mut entries = self.entries();
+        let existing = entries
+            .get(&TypeId::of::<T>())
+            .map(|value| downcast_data::<T>(Arc::clone(value)));
+        if !should_insert(existing.as_deref()) {
+            return false;
+        }
+        entries.insert(TypeId::of::<T>(), Arc::new(value));
+        true
     }
 
     /// Removes and returns the attached value of type `T`, if one exists.

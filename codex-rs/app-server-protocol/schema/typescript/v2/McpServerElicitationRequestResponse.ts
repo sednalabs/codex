@@ -6,7 +6,7 @@ import type { McpServerElicitationAction } from "./McpServerElicitationAction";
 
 export type McpServerElicitationRequestResponse = { action: McpServerElicitationAction,
 /**
- * Structured user input for accepted elicitations, mirroring RMCP `ElicitResult`.
+ * Structured user input for accepted elicitations, mirroring RMCP `CreateElicitationResult`.
  *
  * This is nullable because decline/cancel responses have no content.
  */

@@ -1,18 +1,15 @@
 use crate::function_tool::FunctionCallError;
-use crate::original_image_detail::can_request_original_image_detail;
-use crate::original_image_detail::sanitize_original_image_detail;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
-use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
 use crate::tools::context::boxed_tool_output;
 use crate::tools::handlers::parse_arguments;
-use crate::tools::handlers::search_text::SearchTextBuilder;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
 use crate::tools::registry::ToolExposure;
+use codex_async_utils::OrCancelExt;
 use codex_protocol::dynamic_tools::DynamicToolFunctionSpec;
 use codex_protocol::dynamic_tools::DynamicToolNamespaceSpec;
 use codex_protocol::dynamic_tools::DynamicToolResponse;
@@ -29,9 +26,13 @@ use codex_tools::ToolSpec;
 use codex_tools::default_namespace_description;
 use codex_tools::dynamic_tool_to_responses_api_tool;
 use serde_json::Value;
-use serde_json::json;
+use std::env;
+use std::fs::OpenOptions;
+use std::io::Write as _;
+use std::path::PathBuf;
 use std::time::Instant;
 use tokio::sync::oneshot;
+use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 pub struct DynamicToolHandler {
@@ -42,15 +43,7 @@ pub struct DynamicToolHandler {
 
 impl DynamicToolHandler {
     pub fn new(tool: &DynamicToolFunctionSpec) -> Option<Self> {
-        let namespace = tool
-            .namespace
-            .as_ref()
-            .map(|name| DynamicToolNamespaceSpec {
-                name: name.clone(),
-                description: String::new(),
-                tools: Vec::new(),
-            });
-        Self::from_parts(tool, namespace.as_ref())
+        Self::from_parts(tool, /*namespace*/ None)
     }
 
     pub fn new_in_namespace(
@@ -118,7 +111,10 @@ impl ToolExecutor<ToolInvocation> for DynamicToolHandler {
         )
     }
 
-    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
+    where
+        ToolInvocation: 'a,
+    {
         Box::pin(self.handle_call(invocation))
     }
 }
@@ -133,8 +129,10 @@ impl DynamicToolHandler {
             turn,
             call_id,
             payload,
+            cancellation_token,
             ..
         } = invocation;
+        let diagnostic_call_id = call_id.clone();
 
         let arguments = match payload {
             ToolPayload::Function { arguments } => arguments,
@@ -152,34 +150,76 @@ impl DynamicToolHandler {
             call_id,
             self.tool_name.clone(),
             args,
+            cancellation_token,
         )
-        .await
-        .ok_or_else(|| {
-            FunctionCallError::RespondToModel(
+        .await;
+        let Some(response) = response else {
+            record_browser_core_output_stage(&diagnostic_call_id, false, false, 0);
+            return Err(FunctionCallError::RespondToModel(
                 "dynamic tool call was cancelled before receiving a response".to_string(),
-            )
-        })?;
+            ));
+        };
 
         let DynamicToolResponse {
             content_items,
             success,
         } = response;
-        let mut body = content_items
+        let body = content_items
             .into_iter()
             .map(FunctionCallOutputContentItem::from)
             .collect::<Vec<_>>();
-        sanitize_original_image_detail(
-            can_request_original_image_detail(&turn.model_info),
-            &mut body,
-        );
-        Ok(boxed_tool_output(FunctionToolOutput::from_content(
-            body,
-            Some(success),
-        )))
+        let output_item_count = body.len();
+        let output = boxed_tool_output(FunctionToolOutput::from_content(body, Some(success)));
+        record_browser_core_output_stage(&diagnostic_call_id, true, true, output_item_count);
+        Ok(output)
     }
 }
 
-impl CoreToolRuntime for DynamicToolHandler {}
+fn record_browser_core_output_stage(
+    call_id: &str,
+    response_received: bool,
+    function_output_constructed: bool,
+    output_item_count: usize,
+) {
+    if env::var("CODEX_TEST_BROWSER_OUTPUT_DIAGNOSTIC")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
+        return;
+    }
+    let (Ok(expected_call_id), Some(codex_home)) = (
+        env::var("CODEX_TEST_BROWSER_OUTPUT_DIAGNOSTIC_CALL_ID"),
+        env::var_os("CODEX_HOME"),
+    ) else {
+        return;
+    };
+    let path = PathBuf::from(codex_home).join("browser-output-stage-diagnostic.jsonl");
+    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
+        return;
+    };
+    let observation = serde_json::json!({
+        "stage": "core_function_output",
+        "call_id_matches_fixture": call_id == expected_call_id.as_str(),
+        "core_response_received": response_received,
+        "core_function_output_constructed": function_output_constructed,
+        "core_output_item_count": output_item_count,
+    });
+    if let Ok(mut line) = serde_json::to_vec(&observation) {
+        line.push(b'\n');
+        let _ = file.write_all(&line);
+    }
+}
+
+impl CoreToolRuntime for DynamicToolHandler {
+    fn finishes_on_cancellation(&self) -> bool {
+        true
+    }
+
+    fn is_third_party_tool(&self) -> bool {
+        true
+    }
+}
 
 #[expect(
     clippy::await_holding_invalid_type,
@@ -191,19 +231,26 @@ async fn request_dynamic_tool(
     call_id: String,
     tool_name: ToolName,
     arguments: Value,
+    cancellation_token: CancellationToken,
 ) -> Option<DynamicToolResponse> {
+    if cancellation_token.is_cancelled() {
+        return None;
+    }
     let namespace = tool_name.namespace;
     let tool = tool_name.name;
     let (tx_response, rx_response) = oneshot::channel();
     let event_id = call_id.clone();
     let prev_entry = {
         let mut active = session.active_turn.lock().await;
+        if cancellation_token.is_cancelled() {
+            return None;
+        }
         match active.as_mut() {
             Some(at) => {
                 let mut ts = at.turn_state.lock().await;
                 ts.insert_pending_dynamic_tool(call_id.clone(), tx_response)
             }
-            None => None,
+            None => return None,
         }
     };
     if prev_entry.is_some() {
@@ -227,7 +274,11 @@ async fn request_dynamic_tool(
             }),
         )
         .await;
-    let response = rx_response.await.ok();
+    let response = rx_response
+        .or_cancel(&cancellation_token)
+        .await
+        .ok()
+        .and_then(Result::ok);
 
     let item = match &response {
         Some(response) => DynamicToolCallItem {
@@ -263,3 +314,7 @@ async fn request_dynamic_tool(
 
     response
 }
+
+#[cfg(test)]
+#[path = "dynamic_tests.rs"]
+mod tests;

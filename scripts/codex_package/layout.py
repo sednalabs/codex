@@ -1,5 +1,6 @@
 """Canonical Codex package directory layout."""
 
+import hashlib
 import json
 import shutil
 import stat
@@ -90,6 +91,7 @@ def build_package_dir(
         "entrypoint": f"bin/{entrypoint_name}",
         "resourcesDir": "codex-resources",
         "pathDir": "codex-path",
+        "payloadSha256": package_payload_sha256(package_dir),
     }
     write_json(package_dir / "codex-package.json", metadata)
 
@@ -132,6 +134,11 @@ def validate_package_dir(
             raise RuntimeError(
                 f"Invalid package metadata field {key!r}: expected {expected!r}, got {actual!r}"
             )
+
+    if metadata.get("payloadSha256") != package_payload_sha256(package_dir):
+        raise RuntimeError(
+            "Package payload SHA-256 manifest does not match the package contents."
+        )
 
     required_files = [
         Path("bin") / variant.entrypoint_name(spec),
@@ -181,6 +188,30 @@ def write_json(path: Path, value: object) -> None:
     with open(path, "w", encoding="utf-8") as out:
         json.dump(value, out, indent=2)
         out.write("\n")
+
+
+def package_payload_sha256(package_dir: Path) -> dict[str, str]:
+    payloads = sorted(
+        (
+            path
+            for path in package_dir.rglob("*")
+            if path.is_file()
+            and path.relative_to(package_dir).as_posix() != "codex-package.json"
+        ),
+        key=lambda path: path.relative_to(package_dir).as_posix(),
+    )
+    return {
+        path.relative_to(package_dir).as_posix(): sha256_file(path)
+        for path in payloads
+    }
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as payload:
+        for chunk in iter(lambda: payload.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def is_executable(path: Path) -> bool:

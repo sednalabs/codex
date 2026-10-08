@@ -166,10 +166,6 @@ pub fn environment_id_from_cwd(cwd: &Path) -> String {
         }
     }
 
-    environment_id_from_cwd_fallback(cwd)
-}
-
-fn environment_id_from_cwd_fallback(cwd: &Path) -> String {
     let canonical = cwd
         .canonicalize()
         .unwrap_or_else(|_| cwd.to_path_buf())
@@ -178,13 +174,14 @@ fn environment_id_from_cwd_fallback(cwd: &Path) -> String {
     let mut hasher = Sha256::new();
     hasher.update(canonical.as_bytes());
     let digest = hasher.finalize();
-    let hex = digest_hex(digest);
+    let hex = format!("{digest:x}");
     let short = hex.get(..12).unwrap_or(hex.as_str());
     format!("cwd-{short}")
 }
 
-/// Computes the OS keyring account name used to store the local secrets passphrase.
-pub fn compute_keyring_account(codex_home: &Path) -> String {
+/// Computes the OS keyring account name used to store a local namespace's passphrase.
+/// Existing namespaces retain their shared key; gateway credentials use an independent key.
+pub fn compute_keyring_account(codex_home: &Path, namespace: LocalSecretsNamespace) -> String {
     let canonical = codex_home
         .canonicalize()
         .unwrap_or_else(|_| codex_home.to_path_buf())
@@ -193,20 +190,17 @@ pub fn compute_keyring_account(codex_home: &Path) -> String {
     let mut hasher = Sha256::new();
     hasher.update(canonical.as_bytes());
     let digest = hasher.finalize();
-    let hex = digest_hex(digest);
+    let hex = format!("{digest:x}");
     let short = hex.get(..16).unwrap_or(hex.as_str());
-    format!("secrets|{short}")
-}
-
-fn digest_hex(digest: impl AsRef<[u8]>) -> String {
-    use std::fmt::Write as _;
-
-    let digest = digest.as_ref();
-    let mut hex = String::with_capacity(digest.len() * 2);
-    for &byte in digest {
-        let _ = write!(&mut hex, "{byte:02x}");
+    let home_account = format!("secrets|{short}");
+    // Separate keys also prevent concurrent first writes to the gateway and primary
+    // stores from overwriting each other's newly generated encryption key.
+    match namespace {
+        LocalSecretsNamespace::GatewayOAuth => format!("{home_account}|gateway-oauth"),
+        LocalSecretsNamespace::ManagedSecrets
+        | LocalSecretsNamespace::CodexAuth
+        | LocalSecretsNamespace::McpOAuth => home_account,
     }
-    hex
 }
 
 pub(crate) fn keyring_service() -> &'static str {
@@ -222,7 +216,7 @@ mod tests {
     #[test]
     fn environment_id_fallback_has_cwd_prefix() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let env_id = environment_id_from_cwd_fallback(dir.path());
+        let env_id = environment_id_from_cwd(dir.path());
         let canonical = dir
             .path()
             .canonicalize()
@@ -232,7 +226,7 @@ mod tests {
         let mut hasher = Sha256::new();
         hasher.update(canonical.as_bytes());
         let digest = hasher.finalize();
-        let hex = digest_hex(digest);
+        let hex = format!("{digest:x}");
         let short = hex.get(..12).expect("digest has at least 12 chars");
         assert_eq!(env_id, format!("cwd-{short}"));
     }

@@ -42,23 +42,17 @@ pub struct ThreadStartedEvent {
     pub thread_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-pub struct TurnStartedEvent {
-    pub thread_id: String,
-    pub turn_id: String,
-}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS, Default)]
+
+pub struct TurnStartedEvent {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
 pub struct TurnCompletedEvent {
-    pub thread_id: String,
-    pub turn_id: String,
     pub usage: Usage,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
 pub struct TurnFailedEvent {
-    pub thread_id: String,
-    pub turn_id: String,
     pub error: ThreadErrorEvent,
 }
 
@@ -80,28 +74,16 @@ pub struct Usage {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
 pub struct ItemStartedEvent {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thread_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub turn_id: Option<String>,
     pub item: ThreadItem,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
 pub struct ItemCompletedEvent {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thread_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub turn_id: Option<String>,
     pub item: ThreadItem,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
 pub struct ItemUpdatedEvent {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thread_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub turn_id: Option<String>,
     pub item: ThreadItem,
 }
 
@@ -109,10 +91,6 @@ pub struct ItemUpdatedEvent {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
 pub struct ThreadErrorEvent {
     pub message: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thread_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub turn_id: Option<String>,
 }
 
 /// Canonical representation of a thread item and its domain-specific payload.
@@ -141,13 +119,6 @@ pub enum ThreadItemDetails {
     /// Represents a call to an MCP tool. The item starts when the invocation is
     /// dispatched and completes when the MCP server reports success or failure.
     McpToolCall(McpToolCallItem),
-    /// Represents a call to a brokered dynamic tool. The item starts when the
-    /// invocation is dispatched and completes when the client reports success or failure.
-    DynamicToolCall(DynamicToolCallItem),
-    /// Represents a call to a native computer-use adapter. The item starts when
-    /// the invocation is dispatched and completes when the adapter reports
-    /// success or failure.
-    ComputerUseCall(ComputerUseCallItem),
     /// Represents a call to a collab tool. The item starts when the collab tool is
     /// invoked and completes when the collab tool reports success or failure.
     CollabToolCall(CollabToolCallItem),
@@ -230,26 +201,6 @@ pub enum PatchChangeKind {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum McpToolCallStatus {
-    #[default]
-    InProgress,
-    Completed,
-    Failed,
-}
-
-/// The status of a dynamic tool call.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default, TS)]
-#[serde(rename_all = "snake_case")]
-pub enum DynamicToolCallStatus {
-    #[default]
-    InProgress,
-    Completed,
-    Failed,
-}
-
-/// The status of a computer-use call.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default, TS)]
-#[serde(rename_all = "snake_case")]
-pub enum ComputerUseCallStatus {
     #[default]
     InProgress,
     Completed,
@@ -342,45 +293,16 @@ pub struct McpToolCallItem {
     pub status: McpToolCallStatus,
 }
 
-/// A compact dynamic tool call item for exec JSON/JSONL output.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-pub struct DynamicToolCallItem {
-    pub tool: String,
-    #[serde(default)]
-    pub arguments: JsonValue,
-    pub status: DynamicToolCallStatus,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub preview: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub success: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub duration_ms: Option<i64>,
-}
-
-/// A compact native computer-use item for exec JSON/JSONL output.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-pub struct ComputerUseCallItem {
-    pub adapter: String,
-    pub tool: String,
-    #[serde(default)]
-    pub arguments: JsonValue,
-    pub status: ComputerUseCallStatus,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub preview: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub success: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub duration_ms: Option<i64>,
-}
-
 /// A web search request.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
 pub struct WebSearchItem {
     pub id: String,
     pub query: String,
     pub action: WebSearchAction,
+    /// Structured results returned by web search, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub results: Option<Vec<JsonValue>>,
 }
 
 /// An error notification.

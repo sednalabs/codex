@@ -20,7 +20,6 @@ use crate::analytics::GoalAnalytics;
 use crate::analytics::GoalEventAttribution;
 use crate::events::GoalEventEmitter;
 use crate::metrics::GoalMetrics;
-use crate::runtime::GoalRuntimeHandle;
 use crate::spec::CREATE_GOAL_TOOL_NAME;
 use crate::spec::GET_GOAL_TOOL_NAME;
 use crate::spec::UPDATE_GOAL_TOOL_NAME;
@@ -30,6 +29,7 @@ use crate::spec::create_update_goal_tool;
 
 #[derive(Clone)]
 pub(crate) struct GoalToolExecutor {
+    pub(crate) execution_allowed: bool,
     kind: GoalToolKind,
     thread_id: ThreadId,
     state_db: Arc<codex_state::StateRuntime>,
@@ -37,7 +37,7 @@ pub(crate) struct GoalToolExecutor {
     analytics: GoalAnalytics,
     event_emitter: GoalEventEmitter,
     metrics: GoalMetrics,
-    runtime: Arc<GoalRuntimeHandle>,
+    max_goal_token_budget: Option<i64>,
 }
 
 #[derive(Clone, Copy)]
@@ -82,17 +82,17 @@ impl GoalToolExecutor {
         analytics: GoalAnalytics,
         event_emitter: GoalEventEmitter,
         metrics: GoalMetrics,
-        runtime: Arc<GoalRuntimeHandle>,
     ) -> Self {
         Self {
             kind: GoalToolKind::Get,
+            execution_allowed: true,
             thread_id,
             state_db,
             accounting_state,
             analytics,
             event_emitter,
             metrics,
-            runtime,
+            max_goal_token_budget: None,
         }
     }
 
@@ -103,17 +103,18 @@ impl GoalToolExecutor {
         analytics: GoalAnalytics,
         event_emitter: GoalEventEmitter,
         metrics: GoalMetrics,
-        runtime: Arc<GoalRuntimeHandle>,
+        max_goal_token_budget: Option<i64>,
     ) -> Self {
         Self {
             kind: GoalToolKind::Create,
+            execution_allowed: true,
             thread_id,
             state_db,
             accounting_state,
             analytics,
             event_emitter,
             metrics,
-            runtime,
+            max_goal_token_budget,
         }
     }
 
@@ -124,22 +125,22 @@ impl GoalToolExecutor {
         analytics: GoalAnalytics,
         event_emitter: GoalEventEmitter,
         metrics: GoalMetrics,
-        runtime: Arc<GoalRuntimeHandle>,
     ) -> Self {
         Self {
             kind: GoalToolKind::Update,
+            execution_allowed: true,
             thread_id,
             state_db,
             accounting_state,
             analytics,
             event_emitter,
             metrics,
-            runtime,
+            max_goal_token_budget: None,
         }
     }
 }
 
-impl ToolExecutor<ToolCall> for GoalToolExecutor {
+impl<'call> ToolExecutor<ToolCall<'call>> for GoalToolExecutor {
     fn tool_name(&self) -> ToolName {
         ToolName::plain(match self.kind {
             GoalToolKind::Get => GET_GOAL_TOOL_NAME,
@@ -156,8 +157,19 @@ impl ToolExecutor<ToolCall> for GoalToolExecutor {
         }
     }
 
-    fn handle(&self, invocation: ToolCall) -> codex_extension_api::ToolExecutorFuture<'_> {
+    fn handle<'a>(
+        &'a self,
+        invocation: ToolCall<'call>,
+    ) -> codex_extension_api::ToolExecutorFuture<'a>
+    where
+        'call: 'a,
+    {
         Box::pin(async move {
+            if !self.execution_allowed {
+                return Err(FunctionCallError::RespondToModel(
+                    "Goal tools require a persistent thread.".to_string(),
+                ));
+            }
             match self.kind {
                 GoalToolKind::Get => self.handle_get(invocation).await,
                 GoalToolKind::Create => self.handle_create(invocation).await,
@@ -170,7 +182,7 @@ impl ToolExecutor<ToolCall> for GoalToolExecutor {
 impl GoalToolExecutor {
     async fn handle_get(
         &self,
-        invocation: ToolCall,
+        invocation: ToolCall<'_>,
     ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let _ = invocation.function_arguments()?;
         let goal = self
@@ -187,17 +199,14 @@ impl GoalToolExecutor {
 
     async fn handle_create(
         &self,
-        invocation: ToolCall,
+        invocation: ToolCall<'_>,
     ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let mut request: CreateGoalRequest = parse_arguments(invocation.function_arguments()?)?;
         request.objective = request.objective.trim().to_string();
         validate_thread_goal_objective(&request.objective)
             .map_err(FunctionCallError::RespondToModel)?;
-        validate_goal_budget(request.token_budget).map_err(FunctionCallError::RespondToModel)?;
-        let _goal_state_permit = self
-            .runtime
-            .goal_state_permit()
-            .await
+        request.token_budget = request.token_budget.or(self.max_goal_token_budget);
+        validate_goal_budget(request.token_budget, self.max_goal_token_budget)
             .map_err(FunctionCallError::RespondToModel)?;
 
         let goal = self
@@ -233,30 +242,26 @@ impl GoalToolExecutor {
 
     async fn handle_update(
         &self,
-        invocation: ToolCall,
+        invocation: ToolCall<'_>,
     ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let args: UpdateGoalArgs = parse_arguments(invocation.function_arguments()?)?;
         if !matches!(
             args.status,
-            ThreadGoalStatus::Complete | ThreadGoalStatus::Blocked
+            ThreadGoalStatus::Complete | ThreadGoalStatus::Blocked | ThreadGoalStatus::Paused
         ) {
             return Err(FunctionCallError::RespondToModel(
-                "update_goal can only mark the existing goal complete or blocked; pause, resume, budget-limited, and usage-limited status changes are controlled by the user or system"
+                "update_goal can only mark the existing goal complete, blocked, or paused at the user's explicit request; resume, budget-limited, and usage-limited status changes are controlled by the user or system"
                     .to_string(),
             ));
         }
-        let _goal_state_permit = self
-            .runtime
-            .goal_state_permit()
-            .await
-            .map_err(FunctionCallError::RespondToModel)?;
 
         self.account_active_goal_progress(
             match args.status {
                 ThreadGoalStatus::Complete => codex_state::GoalAccountingMode::ActiveOrComplete,
-                ThreadGoalStatus::Blocked => codex_state::GoalAccountingMode::ActiveOrStopped,
+                ThreadGoalStatus::Blocked | ThreadGoalStatus::Paused => {
+                    codex_state::GoalAccountingMode::ActiveOrStopped
+                }
                 ThreadGoalStatus::Active
-                | ThreadGoalStatus::Paused
                 | ThreadGoalStatus::UsageLimited
                 | ThreadGoalStatus::BudgetLimited => unreachable!("status validated above"),
             },
@@ -288,9 +293,6 @@ impl GoalToolExecutor {
                     "cannot update goal because this thread has no goal".to_string(),
                 )
             })?;
-        if let Err(err) = self.runtime.finalize_pending_goal_notification().await {
-            tracing::warn!("failed to forward deferred goal completion: {err}");
-        }
         self.metrics
             .record_terminal_if_status_changed(previous_status, &goal);
         self.analytics.status_changed(
@@ -313,7 +315,7 @@ impl GoalToolExecutor {
 
     fn emit_goal_updated_from_tool_call(
         &self,
-        invocation: &ToolCall,
+        invocation: &ToolCall<'_>,
         turn_id: Option<String>,
         goal: ThreadGoal,
     ) {
@@ -418,11 +420,22 @@ where
         .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))
 }
 
-pub(crate) fn validate_goal_budget(value: Option<i64>) -> Result<(), String> {
+pub(crate) fn validate_goal_budget(
+    value: Option<i64>,
+    max_goal_token_budget: Option<i64>,
+) -> Result<(), String> {
     if let Some(value) = value
         && value <= 0
     {
         return Err("goal budgets must be positive when provided".to_string());
+    }
+    if let Some(value) = value
+        && let Some(max_goal_token_budget) = max_goal_token_budget
+        && value > max_goal_token_budget
+    {
+        return Err(format!(
+            "goal token budget {value} exceeds the maximum allowed goal token budget of {max_goal_token_budget}"
+        ));
     }
     Ok(())
 }

@@ -1,5 +1,6 @@
 {
-  "$defs": {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
     "ExternalAgentConfigImportHistory": {
       "properties": {
         "completedAtMs": {
@@ -8,7 +9,7 @@
         },
         "failures": {
           "items": {
-            "$ref": "#/$defs/ExternalAgentConfigImportItemTypeFailure"
+            "$ref": "#/definitions/ExternalAgentConfigImportItemTypeFailure"
           },
           "type": "array"
         },
@@ -23,16 +24,16 @@
         },
         "successes": {
           "items": {
-            "$ref": "#/$defs/ExternalAgentConfigImportItemTypeSuccess"
+            "$ref": "#/definitions/ExternalAgentConfigImportItemTypeSuccess"
           },
           "type": "array"
         }
       },
       "required": [
-        "importId",
         "completedAtMs",
-        "successes",
-        "failures"
+        "failures",
+        "importId",
+        "successes"
       ],
       "type": "object"
     },
@@ -54,7 +55,7 @@
           "type": "string"
         },
         "itemType": {
-          "$ref": "#/$defs/ExternalAgentConfigMigrationItemType"
+          "$ref": "#/definitions/ExternalAgentConfigMigrationItemType"
         },
         "message": {
           "type": "string"
@@ -73,8 +74,8 @@
         }
       },
       "required": [
-        "itemType",
         "failureStage",
+        "itemType",
         "message"
       ],
       "type": "object"
@@ -88,7 +89,7 @@
           ]
         },
         "itemType": {
-          "$ref": "#/$defs/ExternalAgentConfigMigrationItemType"
+          "$ref": "#/definitions/ExternalAgentConfigMigrationItemType"
         },
         "source": {
           "type": [
@@ -97,6 +98,14 @@
           ]
         },
         "target": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "default": null,
+          "description": "Original title for an imported session; null for other item types.",
           "type": [
             "string",
             "null"
@@ -130,11 +139,11 @@
         },
         "sessionCount": {
           "format": "uint32",
-          "minimum": 0,
+          "minimum": 0.0,
           "type": "integer"
         },
         "source": {
-          "$ref": "#/$defs/ExternalAgentImportedConnectorSource"
+          "$ref": "#/definitions/ExternalAgentImportedConnectorSource"
         }
       },
       "required": [
@@ -151,24 +160,23 @@
       "type": "string"
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "connectors": {
       "items": {
-        "$ref": "#/$defs/ExternalAgentImportedConnectorCandidate"
+        "$ref": "#/definitions/ExternalAgentImportedConnectorCandidate"
       },
       "type": "array"
     },
     "data": {
       "items": {
-        "$ref": "#/$defs/ExternalAgentConfigImportHistory"
+        "$ref": "#/definitions/ExternalAgentConfigImportHistory"
       },
       "type": "array"
     }
   },
   "required": [
-    "data",
-    "connectors"
+    "connectors",
+    "data"
   ],
   "title": "ExternalAgentConfigImportHistoriesReadResponse",
   "type": "object"

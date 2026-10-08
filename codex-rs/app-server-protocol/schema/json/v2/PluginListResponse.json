@@ -1,7 +1,8 @@
 {
-  "$defs": {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
     "AbsolutePathBuf": {
-      "description": "A path that is guaranteed to be absolute and normalized (though it is not\nguaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set\nusing [AbsolutePathBufGuard::new]. If no base path is set, the\ndeserialization will fail unless the path being deserialized is already\nabsolute.",
+      "description": "A path that is guaranteed to be absolute and normalized (though it is not guaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set using [AbsolutePathBufGuard::new]. If no base path is set, the deserialization will fail unless the path being deserialized is already absolute.",
       "type": "string"
     },
     "MarketplaceInterface": {
@@ -18,7 +19,7 @@
     "MarketplaceLoadErrorInfo": {
       "properties": {
         "marketplacePath": {
-          "$ref": "#/$defs/AbsolutePathBuf"
+          "$ref": "#/definitions/AbsolutePathBuf"
         },
         "message": {
           "type": "string"
@@ -46,11 +47,22 @@
           "type": "string"
         },
         {
-          "const": "AVAILABLE",
-          "description": "Plugin-service currently sends `\"ENABLED\"` for available remote plugins.\nCodex app-server exposes `\"AVAILABLE\"` in its API; the alias keeps\ndecoding compatible with that upstream response.",
+          "description": "Plugin-service currently sends `\"ENABLED\"` for available remote plugins. Codex app-server exposes `\"AVAILABLE\"` in its API; the alias keeps decoding compatible with that upstream response.",
+          "enum": [
+            "AVAILABLE"
+          ],
           "type": "string"
         }
       ]
+    },
+    "PluginDisabledReason": {
+      "enum": [
+        "disabled_by_admin",
+        "plan_not_eligible",
+        "required_app_unavailable",
+        "unknown"
+      ],
+      "type": "string"
     },
     "PluginInstallPolicy": {
       "enum": [
@@ -90,7 +102,7 @@
         "composerIcon": {
           "anyOf": [
             {
-              "$ref": "#/$defs/AbsolutePathBuf"
+              "$ref": "#/definitions/AbsolutePathBuf"
             },
             {
               "type": "null"
@@ -106,7 +118,7 @@
           ]
         },
         "defaultPrompt": {
-          "description": "Starter prompts for the plugin. Capped at 3 entries with a maximum of\n128 characters per entry.",
+          "description": "Starter prompts for the plugin. Capped at 3 entries with a maximum of 128 characters per entry.",
           "items": {
             "type": "string"
           },
@@ -130,7 +142,7 @@
         "logo": {
           "anyOf": [
             {
-              "$ref": "#/$defs/AbsolutePathBuf"
+              "$ref": "#/definitions/AbsolutePathBuf"
             },
             {
               "type": "null"
@@ -141,7 +153,7 @@
         "logoDark": {
           "anyOf": [
             {
-              "$ref": "#/$defs/AbsolutePathBuf"
+              "$ref": "#/definitions/AbsolutePathBuf"
             },
             {
               "type": "null"
@@ -185,7 +197,7 @@
         "screenshots": {
           "description": "Local screenshot paths, resolved from the installed plugin package.",
           "items": {
-            "$ref": "#/$defs/AbsolutePathBuf"
+            "$ref": "#/definitions/AbsolutePathBuf"
           },
           "type": "array"
         },
@@ -210,8 +222,8 @@
       },
       "required": [
         "capabilities",
-        "screenshots",
-        "screenshotUrls"
+        "screenshotUrls",
+        "screenshots"
       ],
       "type": "object"
     },
@@ -220,7 +232,7 @@
         "interface": {
           "anyOf": [
             {
-              "$ref": "#/$defs/MarketplaceInterface"
+              "$ref": "#/definitions/MarketplaceInterface"
             },
             {
               "type": "null"
@@ -233,17 +245,17 @@
         "path": {
           "anyOf": [
             {
-              "$ref": "#/$defs/AbsolutePathBuf"
+              "$ref": "#/definitions/AbsolutePathBuf"
             },
             {
               "type": "null"
             }
           ],
-          "description": "Local marketplace file path when the marketplace is backed by a local file.\nRemote-only catalog marketplaces do not have a local path."
+          "description": "Local marketplace file path when the marketplace is backed by a local file. Remote-only catalog marketplaces do not have a local path."
         },
         "plugins": {
           "items": {
-            "$ref": "#/$defs/PluginSummary"
+            "$ref": "#/definitions/PluginSummary"
           },
           "type": "array"
         }
@@ -278,7 +290,7 @@
         "discoverability": {
           "anyOf": [
             {
-              "$ref": "#/$defs/PluginShareDiscoverability"
+              "$ref": "#/definitions/PluginShareDiscoverability"
             },
             {
               "type": "null"
@@ -298,7 +310,7 @@
         },
         "sharePrincipals": {
           "items": {
-            "$ref": "#/$defs/PluginSharePrincipal"
+            "$ref": "#/definitions/PluginSharePrincipal"
           },
           "type": [
             "array",
@@ -334,17 +346,17 @@
           "type": "string"
         },
         "principalType": {
-          "$ref": "#/$defs/PluginSharePrincipalType"
+          "$ref": "#/definitions/PluginSharePrincipalType"
         },
         "role": {
-          "$ref": "#/$defs/PluginSharePrincipalRole"
+          "$ref": "#/definitions/PluginSharePrincipalRole"
         }
       },
       "required": [
-        "principalType",
+        "name",
         "principalId",
-        "role",
-        "name"
+        "principalType",
+        "role"
       ],
       "type": "object"
     },
@@ -369,17 +381,19 @@
         {
           "properties": {
             "path": {
-              "$ref": "#/$defs/AbsolutePathBuf"
+              "$ref": "#/definitions/AbsolutePathBuf"
             },
             "type": {
-              "const": "local",
+              "enum": [
+                "local"
+              ],
               "title": "LocalPluginSourceType",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "path"
+            "path",
+            "type"
           ],
           "title": "LocalPluginSource",
           "type": "object"
@@ -405,7 +419,9 @@
               ]
             },
             "type": {
-              "const": "git",
+              "enum": [
+                "git"
+              ],
               "title": "GitPluginSourceType",
               "type": "string"
             },
@@ -433,7 +449,9 @@
               ]
             },
             "type": {
-              "const": "npm",
+              "enum": [
+                "npm"
+              ],
               "title": "NpmPluginSourceType",
               "type": "string"
             },
@@ -446,17 +464,19 @@
             }
           },
           "required": [
-            "type",
-            "package"
+            "package",
+            "type"
           ],
           "title": "NpmPluginSource",
           "type": "object"
         },
         {
-          "description": "The plugin is available in the remote catalog. Download metadata is\nkept server-side and is not exposed through the app-server API.",
+          "description": "The plugin is available in the remote catalog. Download metadata is kept server-side and is not exposed through the app-server API.",
           "properties": {
             "type": {
-              "const": "remote",
+              "enum": [
+                "remote"
+              ],
               "title": "RemotePluginSourceType",
               "type": "string"
             }
@@ -472,12 +492,39 @@
     "PluginSummary": {
       "properties": {
         "authPolicy": {
-          "$ref": "#/$defs/PluginAuthPolicy"
+          "$ref": "#/definitions/PluginAuthPolicy"
         },
         "availability": {
-          "$ref": "#/$defs/PluginAvailability",
+          "allOf": [
+            {
+              "$ref": "#/definitions/PluginAvailability"
+            }
+          ],
           "default": "AVAILABLE",
           "description": "Availability state for installing and using the plugin."
+        },
+        "disabledReason": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PluginDisabledReason"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Why the remote plugin is unavailable, when provided by plugin-service."
+        },
+        "eligiblePlanTypes": {
+          "default": null,
+          "description": "Raw plugin-service plan identifiers eligible to install the plugin.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
         },
         "enabled": {
           "type": "boolean"
@@ -486,12 +533,12 @@
           "type": "string"
         },
         "installPolicy": {
-          "$ref": "#/$defs/PluginInstallPolicy"
+          "$ref": "#/definitions/PluginInstallPolicy"
         },
         "installPolicySource": {
           "anyOf": [
             {
-              "$ref": "#/$defs/PluginInstallPolicySource"
+              "$ref": "#/definitions/PluginInstallPolicySource"
             },
             {
               "type": "null"
@@ -501,10 +548,19 @@
         "installed": {
           "type": "boolean"
         },
+        "installedAt": {
+          "default": null,
+          "description": "Unix timestamp in seconds when the remote plugin was installed, when available.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "interface": {
           "anyOf": [
             {
-              "$ref": "#/$defs/PluginInterface"
+              "$ref": "#/definitions/PluginInterface"
             },
             {
               "type": "null"
@@ -546,7 +602,7 @@
         "shareContext": {
           "anyOf": [
             {
-              "$ref": "#/$defs/PluginShareContext"
+              "$ref": "#/definitions/PluginShareContext"
             },
             {
               "type": "null"
@@ -555,7 +611,7 @@
           "description": "Remote sharing context associated with this plugin when available."
         },
         "source": {
-          "$ref": "#/$defs/PluginSource"
+          "$ref": "#/definitions/PluginSource"
         },
         "version": {
           "default": null,
@@ -567,18 +623,17 @@
         }
       },
       "required": [
-        "id",
-        "name",
-        "source",
-        "installed",
+        "authPolicy",
         "enabled",
+        "id",
         "installPolicy",
-        "authPolicy"
+        "installed",
+        "name",
+        "source"
       ],
       "type": "object"
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "featuredPluginIds": {
       "default": [],
@@ -590,13 +645,13 @@
     "marketplaceLoadErrors": {
       "default": [],
       "items": {
-        "$ref": "#/$defs/MarketplaceLoadErrorInfo"
+        "$ref": "#/definitions/MarketplaceLoadErrorInfo"
       },
       "type": "array"
     },
     "marketplaces": {
       "items": {
-        "$ref": "#/$defs/PluginMarketplaceEntry"
+        "$ref": "#/definitions/PluginMarketplaceEntry"
       },
       "type": "array"
     }

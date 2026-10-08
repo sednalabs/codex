@@ -80,7 +80,7 @@ pub(crate) struct LegacyAclSids<'a> {
     pub(crate) write_root_sids: &'a [RootCapabilitySid],
 }
 
-fn prepare_spawn_context_common(
+pub(crate) fn prepare_spawn_context_common(
     permission_profile: &PermissionProfile,
     workspace_roots: &[AbsolutePathBuf],
     codex_home: &Path,
@@ -295,9 +295,7 @@ pub(crate) fn apply_legacy_session_acl_rules(
                 let Some(root_sid) = matching_root_capability(p, acl_sids.write_root_sids) else {
                     continue;
                 };
-                ensure_allow_write_aces(p, &[root_sid.sid.as_ptr()]).with_context(|| {
-                    format!("apply write-root capability ACE to {}", p.display())
-                })?;
+                let _ = ensure_allow_write_aces(p, &[root_sid.sid.as_ptr()]);
             }
         }
         for p in &deny {

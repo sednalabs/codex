@@ -2,10 +2,10 @@
 source: tui/src/chatwidget/tests/guardian.rs
 expression: normalize_snapshot_paths(rendered)
 ---
-• Reviewing approval request (0s • esc esc to interrupt)
+• Reviewing approval request (0s • esc to interrupt)
   └ rm -rf '/tmp/current-review'
 
 
 › Ask Codex to do anything
 
-  gpt-6-astra default · /tmp/project
+  GPT-5.6-Sol default · /tmp/project

@@ -1,47 +1,35 @@
+use super::thread_input::ensure_direct_input_allowed;
 use super::*;
-use crate::outgoing_message::ConnectionId;
-use crate::outgoing_message::automatic_turn_connection_principal;
-use crate::outgoing_message::is_current_automatic_turn_principal;
-use crate::outgoing_message::parse_automatic_turn_connection_principal;
 use codex_agent_extension::AgentInvocation;
 use codex_agent_extension::AgentRun;
 use codex_agent_extension::AgentRunner;
-use codex_core::automatic_turn_context_fingerprint;
-use codex_protocol::automatic_turn::AutomaticTurnProvenance;
+use codex_app_server_protocol::ImageReference as V2ImageReference;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputContentItem;
-use codex_protocol::models::PermissionProfile;
+use codex_protocol::models::FunctionCallOutputPayload;
+use codex_protocol::models::ImageReference as CoreImageReference;
 use codex_protocol::protocol::AdditionalContextEntry as CoreAdditionalContextEntry;
 use codex_protocol::protocol::AdditionalContextKind as CoreAdditionalContextKind;
-use codex_protocol::protocol::MultiAgentVersion;
-use codex_protocol::protocol::SessionSource;
-use codex_protocol::protocol::SubAgentSource;
+use codex_protocol::protocol::TurnEnvironmentRequests;
+use codex_protocol::protocol::TurnSettingsUpdate;
+use codex_protocol::protocol::TurnSettingsUpdateOutcome;
 use codex_skills::system_cache_root_dir;
 
 use crate::image_url::REMOTE_IMAGE_URL_ERROR;
 use crate::image_url::is_remote_image_url;
 
-const DIRECT_INPUT_TO_MULTI_AGENT_V2_SUBAGENT_ERROR: &str =
-    "direct app-server input is not allowed for multi-agent v2 sub-agents";
-
-/// Mirrors the direct-input policy in both request validation and thread capability responses.
-pub(super) fn can_accept_direct_input(
-    multi_agent_version: Option<MultiAgentVersion>,
-    session_source: &SessionSource,
-) -> bool {
-    multi_agent_version != Some(MultiAgentVersion::V2)
-        || !matches!(
-            session_source,
-            SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
-        )
-}
-
-fn validate_user_input_image_urls(input: &[V2UserInput]) -> Result<(), JSONRPCErrorError> {
+pub(super) fn validate_user_input_image_urls(
+    input: &[V2UserInput],
+) -> Result<(), JSONRPCErrorError> {
     if input.iter().any(|item| {
         matches!(
             item,
-            V2UserInput::Image { url, .. } if is_remote_image_url(url)
+            V2UserInput::Image {
+                image: V2ImageReference::Inline { url },
+                ..
+            } if is_remote_image_url(url)
         )
     }) {
         return Err(invalid_request(REMOTE_IMAGE_URL_ERROR));
@@ -54,7 +42,7 @@ fn validate_response_item_image_urls(items: &[ResponseItem]) -> Result<(), JSONR
         ResponseItem::Message { content, .. } => content.iter().any(|item| {
             matches!(
                 item,
-                ContentItem::InputImage { image_url, .. } if is_remote_image_url(image_url)
+                ContentItem::InputImage { image: CoreImageReference::Inline { image_url }, .. } if is_remote_image_url(image_url)
             )
         }),
         ResponseItem::FunctionCallOutput { output, .. }
@@ -63,7 +51,7 @@ fn validate_response_item_image_urls(items: &[ResponseItem]) -> Result<(), JSONR
                 content.iter().any(|item| {
                     matches!(
                         item,
-                        FunctionCallOutputContentItem::InputImage { image_url, .. }
+                        FunctionCallOutputContentItem::InputImage { image: CoreImageReference::Inline { image_url }, .. }
                             if is_remote_image_url(image_url)
                     )
                 })
@@ -79,6 +67,7 @@ fn validate_response_item_image_urls(items: &[ResponseItem]) -> Result<(), JSONR
         | ResponseItem::WebSearchCall { .. }
         | ResponseItem::ImageGenerationCall { .. }
         | ResponseItem::Compaction { .. }
+        | ResponseItem::ConfigurationUpdate { .. }
         | ResponseItem::CompactionTrigger { .. }
         | ResponseItem::ContextCompaction { .. }
         | ResponseItem::AdditionalTools { .. }
@@ -93,18 +82,16 @@ fn validate_response_item_image_urls(items: &[ResponseItem]) -> Result<(), JSONR
 pub(crate) struct TurnRequestProcessor {
     agent_runner: AgentRunner,
     auth_manager: Arc<AuthManager>,
-    auth_admission: Arc<Mutex<()>>,
     thread_manager: Arc<ThreadManager>,
     outgoing: Arc<OutgoingMessageSender>,
     analytics_events_client: AnalyticsEventsClient,
-    arg0_paths: Arg0DispatchPaths,
     config: Arc<Config>,
     config_manager: ConfigManager,
     pending_thread_unloads: Arc<Mutex<HashSet<ThreadId>>>,
     thread_state_manager: ThreadStateManager,
     thread_watch_manager: ThreadWatchManager,
-    thread_list_state_permit: Arc<Semaphore>,
     skills_watcher: Arc<SkillsWatcher>,
+    turn_cost_worker: Option<crate::turn_cost_worker::TurnCostWorkerHandle>,
 }
 
 fn map_additional_context(
@@ -130,9 +117,17 @@ fn map_additional_context(
         .collect()
 }
 
+#[derive(Default)]
+struct ThreadEnvironmentOverride {
+    environment_requests: Option<TurnEnvironmentRequests>,
+    // Only default-environment updates replace the task's separately persisted root selection.
+    runtime_workspace_roots: Option<Vec<AbsolutePathBuf>>,
+}
+
 struct ThreadSettingsBuildParams {
     method: &'static str,
-    environments: Option<TurnEnvironmentSelections>,
+    disabled_plugin_ids: Option<Vec<String>>,
+    environment_override: ThreadEnvironmentOverride,
     approval_policy: Option<codex_app_server_protocol::AskForApproval>,
     approvals_reviewer: Option<codex_app_server_protocol::ApprovalsReviewer>,
     sandbox_policy: Option<codex_app_server_protocol::SandboxPolicy>,
@@ -149,45 +144,32 @@ impl TurnRequestProcessor {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         auth_manager: Arc<AuthManager>,
-        auth_admission: Arc<Mutex<()>>,
         thread_manager: Arc<ThreadManager>,
         outgoing: Arc<OutgoingMessageSender>,
         analytics_events_client: AnalyticsEventsClient,
-        arg0_paths: Arg0DispatchPaths,
         config: Arc<Config>,
         config_manager: ConfigManager,
         pending_thread_unloads: Arc<Mutex<HashSet<ThreadId>>>,
         thread_state_manager: ThreadStateManager,
         thread_watch_manager: ThreadWatchManager,
-        thread_list_state_permit: Arc<Semaphore>,
         skills_watcher: Arc<SkillsWatcher>,
+        turn_cost_worker: Option<crate::turn_cost_worker::TurnCostWorkerHandle>,
     ) -> Self {
         let agent_runner = AgentRunner::new(Arc::downgrade(&thread_manager));
         Self {
             agent_runner,
             auth_manager,
-            auth_admission,
             thread_manager,
             outgoing,
             analytics_events_client,
-            arg0_paths,
             config,
             config_manager,
             pending_thread_unloads,
             thread_state_manager,
             thread_watch_manager,
-            thread_list_state_permit,
             skills_watcher,
+            turn_cost_worker,
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn config_snapshot_for_test(
-        &self,
-        thread_id: ThreadId,
-    ) -> Option<ThreadConfigSnapshot> {
-        let thread = self.thread_manager.get_thread(thread_id).await.ok()?;
-        Some(thread.config_snapshot().await)
     }
 
     pub(crate) async fn turn_start(
@@ -196,7 +178,6 @@ impl TurnRequestProcessor {
         params: TurnStartParams,
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
-        supports_openai_form_elicitation: bool,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         validate_user_input_image_urls(&params.input)?;
         self.turn_start_inner(
@@ -204,7 +185,6 @@ impl TurnRequestProcessor {
             params,
             app_server_client_name,
             app_server_client_version,
-            /*supports_openai_form_elicitation*/ supports_openai_form_elicitation,
         )
         .await
         .map(|response| Some(response.into()))
@@ -212,9 +192,10 @@ impl TurnRequestProcessor {
 
     pub(crate) async fn thread_inject_items(
         &self,
+        request_id: &ConnectionRequestId,
         params: ThreadInjectItemsParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        self.thread_inject_items_response_inner(params)
+        self.thread_inject_items_response_inner(request_id, params)
             .await
             .map(|response| Some(response.into()))
     }
@@ -229,16 +210,54 @@ impl TurnRequestProcessor {
             .map(|response| Some(response.into()))
     }
 
+    pub(crate) async fn turn_settings_update(
+        &self,
+        request_id: &ConnectionRequestId,
+        params: TurnSettingsUpdateParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let (_, thread) = self.load_thread(&params.thread_id).await?;
+        self.ensure_direct_input_allowed(request_id, thread.as_ref())
+            .await?;
+        let (reply, outcome) = oneshot::channel();
+        self.submit_core_op(
+            request_id,
+            &thread,
+            Op::TurnSettings {
+                turn_id: params.turn_id,
+                update: TurnSettingsUpdate {
+                    approvals_reviewer: params
+                        .approvals_reviewer
+                        .map(codex_app_server_protocol::ApprovalsReviewer::to_core),
+                    environments: None,
+                    model: params.model,
+                    // Match thread/settings/update: public null does not clear effort.
+                    effort: params.effort.map(Some),
+                    summary: params.summary,
+                    service_tier: params.service_tier,
+                },
+                reply,
+            },
+        )
+        .await
+        .map_err(|err| internal_error(format!("failed to submit turn settings: {err}")))?;
+        let outcome = outcome
+            .await
+            .map_err(|_| internal_error("turn settings operation ended before replying"))?;
+        let status = match outcome {
+            TurnSettingsUpdateOutcome::Applied => TurnSettingsUpdateStatus::Applied,
+            TurnSettingsUpdateOutcome::TargetUnavailable => {
+                TurnSettingsUpdateStatus::TargetUnavailable
+            }
+            TurnSettingsUpdateOutcome::Rejected { reason } => return Err(invalid_request(reason)),
+        };
+        Ok(Some(TurnSettingsUpdateResponse { status }.into()))
+    }
+
     pub(crate) async fn turn_steer(
         &self,
         request_id: &ConnectionRequestId,
         params: TurnSteerParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        if is_automatic_turn_capability(params.client_user_message_id.as_deref()) {
-            return Err(invalid_request(
-                "automatic turn capabilities must be redeemed with turn/start",
-            ));
-        }
         validate_user_input_image_urls(&params.input)?;
         self.turn_steer_inner(request_id, params)
             .await
@@ -250,9 +269,11 @@ impl TurnRequestProcessor {
         request_id: &ConnectionRequestId,
         params: TurnInterruptParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        self.turn_interrupt_inner(request_id, params)
-            .await
-            .map(|response| response.map(Into::into))
+        let result = self.turn_interrupt_inner(request_id, params).await;
+        if let Err(error) = &result {
+            self.track_error_response(request_id, error, /*error_type*/ None);
+        }
+        result.map(|response| response.map(Into::into))
     }
 
     pub(crate) async fn thread_realtime_start(
@@ -321,6 +342,17 @@ impl TurnRequestProcessor {
         request_id: &ConnectionRequestId,
         params: ReviewStartParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        if matches!(params.delivery, Some(ApiReviewDelivery::Detached)) {
+            self.outgoing
+                .send_server_notification_to_connections(
+                    &[request_id.connection_id],
+                    ServerNotification::DeprecationNotice(DeprecationNoticeNotification {
+                        summary: "review/start with delivery \"detached\" is deprecated and will be removed in a future release.".to_string(),
+                        details: Some("Use thread/start followed by review/start with delivery \"inline\" for a separate review thread, or thread/fork followed by turn/start with your own review instructions.".to_string()),
+                    }),
+                )
+                .await;
+        }
         self.review_start_inner(request_id, params)
             .await
             .map(|()| None)
@@ -362,196 +394,11 @@ impl TurnRequestProcessor {
         request_id: &ConnectionRequestId,
         thread: &CodexThread,
     ) -> Result<(), JSONRPCErrorError> {
-        let config_snapshot = thread.config_snapshot().await;
-        if !can_accept_direct_input(
-            thread.multi_agent_version(),
-            &config_snapshot.session_source,
-        ) {
-            let error = invalid_request(DIRECT_INPUT_TO_MULTI_AGENT_V2_SUBAGENT_ERROR);
-            self.track_error_response(request_id, &error, /*error_type*/ None);
-            return Err(error);
-        }
-
-        Ok(())
-    }
-
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "each argument is an independent field of the persisted automatic-turn capability contract"
-    )]
-    async fn validate_automatic_turn_capability(
-        &self,
-        request_id: &ConnectionRequestId,
-        thread_id: ThreadId,
-        thread: &CodexThread,
-        client_user_message_id: Option<&str>,
-        operation_kind: &str,
-        expected_turn_id: Option<&str>,
-        request_settings_match: bool,
-    ) -> Result<(), JSONRPCErrorError> {
-        let Some(client_user_message_id) = client_user_message_id else {
-            return Ok(());
-        };
-        let Some(provenance) =
-            AutomaticTurnProvenance::decode_client_user_message_id(client_user_message_id)
-        else {
-            // Preserve ordinary client-message compatibility. The state projection will ignore
-            // malformed or unknown envelopes and never treat them as trusted provenance.
-            return Ok(());
-        };
-        if provenance.thread_id != thread_id.to_string() {
-            return Err(invalid_request(
-                "automatic turn capability belongs to another thread",
-            ));
-        }
-        let Some(state_db) = thread.state_db() else {
-            return Err(invalid_request("automatic turn capability is unavailable"));
-        };
-
-        let principal = automatic_turn_connection_principal(request_id.connection_id);
-        let Some((expected_principal, allowed_operation_kind, allowed_expected_turn_id, context)) =
-            state_db
-                .automatic_turn_capability_contract(
-                    thread_id,
-                    &provenance.trigger_turn_id,
-                    &provenance.capability,
-                )
-                .await
-        else {
-            return Err(invalid_request("automatic turn capability is not pending"));
-        };
-        let Some(expected_principal) = expected_principal else {
-            return Err(invalid_request(
-                "automatic turn capability has no server-selected owner",
-            ));
-        };
-        if allowed_operation_kind.as_deref() != Some(operation_kind)
-            || allowed_expected_turn_id.as_deref() != expected_turn_id
-        {
-            return Err(invalid_request(
-                "automatic turn capability does not authorize this operation",
-            ));
-        }
-        if !is_current_automatic_turn_principal(&expected_principal) {
-            return Err(invalid_request(
-                "automatic turn capability belongs to another app-server epoch",
-            ));
-        }
-        let Some((_, previous_connection)) =
-            parse_automatic_turn_connection_principal(&expected_principal)
-        else {
-            return Err(invalid_request(
-                "automatic turn capability has an invalid owner",
-            ));
-        };
-        if previous_connection != request_id.connection_id || principal != expected_principal {
-            return Err(invalid_request(
-                "automatic turn capability is bound to another connection",
-            ));
-        }
-        let Some(ticket_epochs) = state_db
-            .automatic_turn_capability_epochs(
-                thread_id,
-                &provenance.trigger_turn_id,
-                &provenance.capability,
-            )
+        ensure_direct_input_allowed(thread)
             .await
-        else {
-            return Err(invalid_request("automatic turn capability is not pending"));
-        };
-        let Some(current_epochs) = state_db.automatic_turn_current_epochs(thread_id).await else {
-            return Err(invalid_request(
-                "automatic turn capability epochs are unavailable",
-            ));
-        };
-        let current_context = automatic_turn_context_fingerprint(&thread.config_snapshot().await);
-        if ticket_epochs != current_epochs
-            || context.as_deref() != Some(current_context.as_str())
-            || !request_settings_match
-        {
-            let _ = state_db
-                .invalidate_automatic_turn_capability(
-                    thread_id,
-                    &provenance.trigger_turn_id,
-                    &provenance.capability,
-                )
-                .await;
-            return Err(invalid_request(
-                "automatic turn capability no longer matches the server-canonical context",
-            ));
-        }
-        Ok(())
-    }
-
-    async fn reserve_automatic_turn_capability(
-        &self,
-        thread_id: ThreadId,
-        thread: &CodexThread,
-        client_user_message_id: Option<&str>,
-        operation_kind: &str,
-        expected_turn_id: Option<&str>,
-        connection_id: ConnectionId,
-    ) -> Result<bool, JSONRPCErrorError> {
-        let Some(client_user_message_id) = client_user_message_id else {
-            return Ok(false);
-        };
-        let Some(provenance) =
-            AutomaticTurnProvenance::decode_client_user_message_id(client_user_message_id)
-        else {
-            return Ok(false);
-        };
-        let Some(state_db) = thread.state_db() else {
-            return Err(internal_error(
-                "automatic turn capability state is unavailable",
-            ));
-        };
-        let reserved = state_db
-            .reserve_automatic_turn_capability(
-                thread_id,
-                &provenance.trigger_turn_id,
-                &provenance.capability,
-                &automatic_turn_connection_principal(connection_id),
-                client_user_message_id,
-                operation_kind,
-                expected_turn_id,
-            )
-            .await
-            .map_err(|_| internal_error("failed to reserve automatic turn capability"))?;
-        if !reserved {
-            return Err(invalid_request(
-                "automatic turn capability was already admitted or is no longer pending",
-            ));
-        }
-        Ok(true)
-    }
-
-    async fn release_automatic_turn_capability(
-        &self,
-        thread_id: ThreadId,
-        thread: &CodexThread,
-        client_user_message_id: Option<&str>,
-    ) {
-        let Some(client_user_message_id) = client_user_message_id else {
-            return;
-        };
-        let Some(provenance) =
-            AutomaticTurnProvenance::decode_client_user_message_id(client_user_message_id)
-        else {
-            return;
-        };
-        let Some(state_db) = thread.state_db() else {
-            return;
-        };
-        if let Err(error) = state_db
-            .release_automatic_turn_capability(
-                thread_id,
-                &provenance.capability,
-                client_user_message_id,
-            )
-            .await
-        {
-            tracing::warn!(%error, "failed to release automatic turn capability admission");
-        }
+            .inspect_err(|error| {
+                self.track_error_response(request_id, error, /*error_type*/ None);
+            })
     }
 
     fn normalize_collaboration_mode(
@@ -648,16 +495,12 @@ impl TurnRequestProcessor {
         thread: &CodexThread,
         op: Op,
     ) -> CodexResult<String> {
-        self.thread_manager
-            .send_op_to_current_thread_with_trace(
-                thread,
-                op,
-                self.request_trace_context(request_id).await,
-            )
+        thread
+            .submit_with_trace(op, self.request_trace_context(request_id).await)
             .await
     }
 
-    fn input_too_large_error(actual_chars: usize) -> JSONRPCErrorError {
+    pub(super) fn input_too_large_error(actual_chars: usize) -> JSONRPCErrorError {
         let mut error = invalid_params(format!(
             "Input exceeds the maximum length of {MAX_USER_INPUT_TEXT_CHARS} characters."
         ));
@@ -669,7 +512,7 @@ impl TurnRequestProcessor {
         error
     }
 
-    fn validate_v2_input_limit(items: &[V2UserInput]) -> Result<(), JSONRPCErrorError> {
+    pub(super) fn validate_v2_input_limit(items: &[V2UserInput]) -> Result<(), JSONRPCErrorError> {
         let actual_chars: usize = items.iter().map(V2UserInput::text_char_count).sum();
         if actual_chars > MAX_USER_INPUT_TEXT_CHARS {
             return Err(Self::input_too_large_error(actual_chars));
@@ -677,48 +520,57 @@ impl TurnRequestProcessor {
         Ok(())
     }
 
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "the auth admission gate must remain held through automatic-turn validation and core submission"
-    )]
     async fn turn_start_inner(
         &self,
         request_id: ConnectionRequestId,
         params: TurnStartParams,
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
-        supports_openai_form_elicitation: bool,
     ) -> Result<TurnStartResponse, JSONRPCErrorError> {
-        // Settings invalidation and automatic-turn admission must observe one ordered
-        // settings/auth boundary. Keep the guard through validation, reservation, and core
-        // submission so a settings transition cannot interleave between those steps.
-        let _auth_admission = self.auth_admission.lock().await;
         let (thread_id, thread) =
             self.load_thread(&params.thread_id)
                 .await
                 .inspect_err(|error| {
                     self.track_error_response(&request_id, error, /*error_type*/ None);
                 })?;
-        let automatic_turn = validate_automatic_turn_start_shape(&params)?;
-        let request_settings_match = if automatic_turn {
-            let snapshot = thread.config_snapshot().await;
-            automatic_turn_start_settings_match_current(&params, &snapshot, self)
-        } else {
-            true
-        };
-        self.validate_automatic_turn_capability(
-            &request_id,
-            thread_id,
-            thread.as_ref(),
-            params.client_user_message_id.as_deref(),
-            "start",
-            /*expected_turn_id*/ None,
-            request_settings_match,
-        )
-        .await?;
         self.ensure_direct_input_allowed(&request_id, thread.as_ref())
             .await?;
-        if let Err(error) = Self::validate_v2_input_limit(&params.input) {
+        self.config_manager
+            .check_thread_model_provider(thread.config().await.as_ref())
+            .await
+            .map_err(|error| config_load_error(&error))?;
+        if let Some(tool_output) = &params.tool_output {
+            if !params.input.is_empty() {
+                return Err(invalid_request(
+                    "`toolOutput` cannot be combined with nonempty `input`",
+                ));
+            }
+            if tool_output.name.is_empty() {
+                return Err(invalid_request("`toolOutput.name` must not be empty"));
+            }
+        }
+        let actual_chars = params
+            .input
+            .iter()
+            .map(V2UserInput::text_char_count)
+            .sum::<usize>()
+            + params
+                .tool_output
+                .as_ref()
+                .map_or(0, |output| match &output.output {
+                    FunctionCallOutputBody::Text(text) => text.chars().count(),
+                    FunctionCallOutputBody::ContentItems(items) => items
+                        .iter()
+                        .map(|item| match item {
+                            FunctionCallOutputContentItem::InputText { text } => {
+                                text.chars().count()
+                            }
+                            _ => 0,
+                        })
+                        .sum(),
+                });
+        if actual_chars > MAX_USER_INPUT_TEXT_CHARS {
+            let error = Self::input_too_large_error(actual_chars);
             self.track_error_response(
                 &request_id,
                 &error,
@@ -735,46 +587,54 @@ impl TurnRequestProcessor {
         .inspect_err(|error| {
             self.track_error_response(&request_id, error, /*error_type*/ None);
         })?;
-        thread
-            .set_openai_form_elicitation_support(supports_openai_form_elicitation)
-            .await
-            .map_err(|err| {
-                internal_error(format!(
-                    "failed to update OpenAI form elicitation support: {err}"
-                ))
-            })?;
-
         let runtime_workspace_roots = params
             .runtime_workspace_roots
             .map(resolve_runtime_workspace_roots);
-        let environment_selections =
-            resolve_turn_environment_selections(self.thread_manager.as_ref(), params.environments)?;
+        let environment_requests =
+            resolve_turn_environment_requests(self.thread_manager.as_ref(), params.environments)?;
 
-        // Map v2 input items to core input items.
-        let mapped_items: Vec<CoreInputItem> = params
-            .input
-            .into_iter()
-            .map(V2UserInput::into_core)
-            .collect();
-        let client_user_message_id = params.client_user_message_id;
         let additional_context = map_additional_context(params.additional_context);
-        let turn_has_input = !mapped_items.is_empty();
+        let turn_has_input = !params.input.is_empty();
+        let input = if let Some(tool_output) = params.tool_output {
+            let item = ResponseItem::FunctionCallOutput {
+                id: None,
+                call_id: None,
+                name: Some(tool_output.name),
+                namespace: tool_output.namespace,
+                output: FunctionCallOutputPayload {
+                    body: tool_output.output,
+                    success: None,
+                },
+                internal_chat_message_metadata_passthrough: None,
+            };
+            validate_response_item_image_urls(std::slice::from_ref(&item))?;
+            TurnInput::ResponseItem(item)
+        } else {
+            TurnInput::UserInput {
+                content: params
+                    .input
+                    .into_iter()
+                    .map(V2UserInput::into_core)
+                    .collect(),
+                client_id: params.client_user_message_id,
+            }
+        };
         let cwd = resolve_request_cwd(params.cwd)?;
-        let environments = self
+        let environment_override = self
             .build_environment_override(
                 thread.as_ref(),
                 cwd,
                 runtime_workspace_roots,
-                environment_selections,
-                automatic_turn,
+                environment_requests,
             )
             .await;
-        let (thread_settings, settings_context_changed) = self
+        let thread_settings = self
             .build_thread_settings_overrides(
                 thread.as_ref(),
                 ThreadSettingsBuildParams {
                     method: "turn/start",
-                    environments,
+                    disabled_plugin_ids: params.disabled_plugin_ids,
+                    environment_override,
                     approval_policy: params.approval_policy,
                     approvals_reviewer: params.approvals_reviewer,
                     sandbox_policy: params.sandbox_policy,
@@ -788,104 +648,63 @@ impl TurnRequestProcessor {
                 },
             )
             .await?;
-        if automatic_turn && settings_context_changed {
-            return Err(invalid_request(
-                "automatic turn capability no longer matches the server-canonical context",
-            ));
-        }
-        if !automatic_turn
-            && settings_context_changed
-            && let Some(state_db) = thread.state_db()
-        {
-            state_db
-                .invalidate_automatic_turn_capabilities_for_thread(thread_id)
-                .await
-                .map_err(|err| {
-                    internal_error(format!(
-                        "failed to invalidate automatic turn capabilities before turn settings enqueue: {err}"
-                    ))
-                })?;
-        }
-        let parent_permission_profile_override =
-            thread_settings.permission_profile.clone().or_else(|| {
-                thread_settings
-                    .sandbox_policy
-                    .as_ref()
-                    .map(PermissionProfile::from_legacy_sandbox_policy)
-            });
 
-        // Start the turn by submitting the user input. Return its submission id as turn_id.
-        let turn_op = Op::UserInput {
-            items: mapped_items,
-            final_output_json_schema: params.output_schema,
-            responsesapi_client_metadata: params.responsesapi_client_metadata,
-            additional_context,
-            thread_settings,
-        };
-        let automatic_turn_admitted = if automatic_turn {
-            self.reserve_automatic_turn_capability(
-                thread_id,
-                thread.as_ref(),
-                client_user_message_id.as_deref(),
-                "start",
-                /*expected_turn_id*/ None,
-                request_id.connection_id,
+        let submission = thread
+            .start_or_steer_turn(
+                TurnInputRequest::new(input)
+                    .with_thread_settings(thread_settings)
+                    .on_start(TurnStartOptions {
+                        turn_trigger: params.turn_trigger,
+                        parent_turn_id: params.parent_turn_id,
+                        initiating_agent_path: None,
+                        root_turn_id: params.root_turn_id,
+                        final_output_json_schema: params.output_schema,
+                        service_tier: params.service_tier_for_turn,
+                        cyber_access_program: params.cyber_access_program.map(Into::into),
+                    })
+                    .with_additional_context(additional_context)
+                    .with_responses_metadata(params.responsesapi_client_metadata)
+                    .with_trace(self.request_trace_context(&request_id).await),
             )
-            .await?
-        } else {
-            false
-        };
-        let client_user_message_id_for_release = client_user_message_id.clone();
-        let principal = automatic_turn_connection_principal(request_id.connection_id);
-        let turn_id_result = if automatic_turn {
-            thread
-                .submit_user_input_with_client_user_message_id_and_principal(
-                    turn_op,
-                    self.request_trace_context(&request_id).await,
-                    client_user_message_id,
-                    Some(principal),
-                )
-                .await
-        } else {
-            thread
-                .submit_user_input_with_client_user_message_id_and_event_principal(
-                    turn_op,
-                    self.request_trace_context(&request_id).await,
-                    client_user_message_id,
-                    principal,
-                )
-                .await
-        };
-        let turn_id = match turn_id_result {
-            Ok(turn_id) => turn_id,
-            Err(err) => {
-                if automatic_turn_admitted {
-                    self.release_automatic_turn_capability(
-                        thread_id,
-                        thread.as_ref(),
-                        client_user_message_id_for_release.as_deref(),
-                    )
-                    .await;
-                }
-                let error = internal_error(format!("failed to start turn: {err}"));
+            .await
+            .map_err(|err| {
+                let error = internal_error(format!("failed to submit turn input: {err}"));
+                self.track_error_response(&request_id, &error, /*error_type*/ None);
+                error
+            })?;
+        let (turn_id, root_turn_id, started) = match submission {
+            TurnInputSubmission::Started {
+                turn_id,
+                root_turn_id,
+            } => (turn_id, root_turn_id, true),
+            TurnInputSubmission::Steered {
+                turn_id,
+                root_turn_id,
+            } => (turn_id, root_turn_id, false),
+            TurnInputSubmission::NotSubmitted { reason } => {
+                let error = if reason == NotSubmittedReason::ServerDraining {
+                    crate::error_code::server_draining_error()
+                } else {
+                    internal_error(format!("failed to submit turn input: {reason:?}"))
+                };
                 self.track_error_response(&request_id, &error, /*error_type*/ None);
                 return Err(error);
             }
         };
 
-        if turn_has_input {
+        if turn_has_input && started {
             let config_snapshot = thread.config_snapshot().await;
-            let parent_permission_profile =
-                parent_permission_profile_override.unwrap_or(config_snapshot.permission_profile);
-            codex_memories_write::start_memories_startup_task(
-                Arc::clone(&self.thread_manager),
-                Arc::clone(&self.auth_manager),
-                thread_id,
-                Arc::clone(&thread),
-                thread.config().await,
-                parent_permission_profile,
-                &config_snapshot.session_source,
-            );
+            if config_snapshot.is_primary_environment_configured() {
+                codex_memories_write::start_memories_startup_task(
+                    Arc::clone(&self.thread_manager),
+                    Arc::clone(&self.auth_manager),
+                    thread_id,
+                    Arc::clone(&thread),
+                    thread.config().await,
+                    config_snapshot.permission_profile,
+                    &config_snapshot.session_source,
+                );
+            }
         }
 
         self.outgoing
@@ -893,6 +712,7 @@ impl TurnRequestProcessor {
             .await;
         let turn = Turn {
             id: turn_id,
+            root_turn_id: Some(root_turn_id),
             items: vec![],
             items_view: TurnItemsView::NotLoaded,
             error: None,
@@ -910,76 +730,72 @@ impl TurnRequestProcessor {
         thread: &CodexThread,
         cwd: Option<AbsolutePathBuf>,
         workspace_roots: Option<Vec<AbsolutePathBuf>>,
-        environment_selections: Option<Vec<TurnEnvironmentSelection>>,
-        preserve_existing_selections: bool,
-    ) -> Option<TurnEnvironmentSelections> {
-        if cwd.is_none() && workspace_roots.is_none() && environment_selections.is_none() {
-            return None;
+        environment_requests: Option<Vec<TurnEnvironmentRequest>>,
+    ) -> ThreadEnvironmentOverride {
+        if cwd.is_none() && workspace_roots.is_none() && environment_requests.is_none() {
+            return ThreadEnvironmentOverride::default();
         }
 
-        // Explicit environment selections own their roots and pass through unchanged. Top-level
+        // Explicit environment requests own their workspace roots and pass through unchanged. Top-level
         // `runtimeWorkspaceRoots` is only a compatibility input for default environments.
-        if let Some(environment_selections) = environment_selections {
+        if let Some(environment_requests) = environment_requests {
             let legacy_fallback_cwd = match cwd {
                 Some(cwd) => cwd,
-                None => match environment_selections
+                None => match environment_requests
                     .iter()
-                    .find(|selection| selection.environment_id == LOCAL_ENVIRONMENT_ID)
-                    .and_then(|selection| selection.cwd.to_abs_path().ok())
+                    .find(|request| request.environment_id == LOCAL_ENVIRONMENT_ID)
+                    .and_then(|request| request.cwd.to_abs_path().ok())
                 {
                     Some(cwd) => cwd,
                     None => thread.config_snapshot().await.cwd().clone(),
                 },
             };
-            return Some(TurnEnvironmentSelections::new(
-                legacy_fallback_cwd,
-                environment_selections,
-            ));
+            return ThreadEnvironmentOverride {
+                environment_requests: Some(TurnEnvironmentRequests::new(
+                    legacy_fallback_cwd,
+                    environment_requests,
+                )),
+                ..Default::default()
+            };
         }
 
-        let snapshot = thread.config_snapshot().await;
-        if preserve_existing_selections {
-            return Some(snapshot.environments);
-        }
-        let current_cwd = snapshot.cwd().clone();
+        // Default-environment updates retain the task's fallback roots, not its active roots.
+        let snapshot = thread.thread_settings_snapshot().await;
+        let current_cwd = snapshot.cwd;
         let legacy_fallback_cwd = cwd.unwrap_or_else(|| current_cwd.clone());
         let workspace_roots = match workspace_roots {
             Some(workspace_roots) => workspace_roots,
-            None => {
-                // Match the pre-environment partial-update behavior: a cwd-only update retargets
-                // the old cwd root while preserving any additional roots. Deduplicate because the
-                // new cwd may already be present as an additional root.
-                let mut retargeted_workspace_roots = Vec::new();
-                for root in snapshot.workspace_roots {
-                    let root = if root == current_cwd {
-                        legacy_fallback_cwd.clone()
-                    } else {
-                        root
-                    };
-                    if !retargeted_workspace_roots.contains(&root) {
-                        retargeted_workspace_roots.push(root);
-                    }
-                }
-                retargeted_workspace_roots
-            }
+            None => path_utils::replace_path_and_deduplicate(
+                snapshot.runtime_workspace_roots.unwrap_or_default(),
+                current_cwd.as_path(),
+                legacy_fallback_cwd.clone(),
+            ),
         };
-        let environment_selections = self
+        let environment_requests = self
             .thread_manager
-            .default_environment_selections(&legacy_fallback_cwd, &workspace_roots);
-        Some(TurnEnvironmentSelections::new(
-            legacy_fallback_cwd,
-            environment_selections,
-        ))
+            .default_environment_requests(&legacy_fallback_cwd, &workspace_roots);
+        ThreadEnvironmentOverride {
+            environment_requests: Some(TurnEnvironmentRequests::new(
+                legacy_fallback_cwd,
+                environment_requests,
+            )),
+            runtime_workspace_roots: Some(workspace_roots),
+        }
     }
 
     async fn build_thread_settings_overrides(
         &self,
         thread: &CodexThread,
         params: ThreadSettingsBuildParams,
-    ) -> Result<(codex_protocol::protocol::ThreadSettingsOverrides, bool), JSONRPCErrorError> {
+    ) -> Result<codex_protocol::protocol::ThreadSettingsOverrides, JSONRPCErrorError> {
         let ThreadSettingsBuildParams {
             method,
-            environments,
+            disabled_plugin_ids,
+            environment_override:
+                ThreadEnvironmentOverride {
+                    environment_requests,
+                    runtime_workspace_roots,
+                },
             approval_policy,
             approvals_reviewer,
             sandbox_policy,
@@ -1000,7 +816,7 @@ impl TurnRequestProcessor {
 
         let collaboration_mode =
             collaboration_mode.map(|mode| self.normalize_collaboration_mode(mode));
-        let has_environment_override = environments.is_some();
+        let has_environment_override = environment_requests.is_some();
         // `thread/settings/update` only acknowledges that the update was queued.
         // Clients that send dependent partial updates should wait for
         // `thread/settings/updated` or combine the fields in one request.
@@ -1011,6 +827,7 @@ impl TurnRequestProcessor {
         };
 
         let has_any_overrides = has_environment_override
+            || disabled_plugin_ids.is_some()
             || approval_policy.is_some()
             || approvals_reviewer.is_some()
             || sandbox_policy.is_some()
@@ -1034,24 +851,16 @@ impl TurnRequestProcessor {
                         "{method} permission selection missing thread snapshot"
                     )));
                 };
-                let overrides = ConfigOverrides {
-                    cwd: environments
-                        .as_ref()
-                        .map(|environments| environments.legacy_fallback_cwd.to_path_buf()),
-                    default_permissions: Some(permissions),
-                    codex_linux_sandbox_exe: self.arg0_paths.codex_linux_sandbox_exe.clone(),
-                    main_execve_wrapper_exe: self.arg0_paths.main_execve_wrapper_exe.clone(),
-                    ..Default::default()
-                };
+                let thread_config = thread.config().await;
+                let cwd = environment_requests.as_ref().map_or_else(
+                    || snapshot.cwd().clone(),
+                    |environment_requests| environment_requests.legacy_fallback_cwd.clone(),
+                );
                 let config = self
                     .config_manager
-                    .load_for_cwd(
-                        /*request_overrides*/ None,
-                        overrides,
-                        Some(snapshot.cwd().to_path_buf()),
-                    )
+                    .load_permission_config_for_thread(&thread_config, cwd, permissions)
                     .await
-                    .map_err(|err| config_load_error(&err))?;
+                    .map_err(|error| config_load_error(&error))?;
                 // Startup config is allowed to fall back when requirements
                 // disallow a configured profile. An explicit settings update
                 // is different: reject it before accepting the request.
@@ -1072,12 +881,13 @@ impl TurnRequestProcessor {
             };
         let effort = effort.map(Some);
 
-        let mut settings_context_changed = false;
         if has_any_overrides {
-            let before = thread.config_snapshot().await;
-            let after = thread
+            thread
                 .preview_thread_settings_overrides(CodexThreadSettingsOverrides {
-                    environments: environments.clone(),
+                    turn_extension_init: None,
+                    disabled_plugin_ids: disabled_plugin_ids.clone(),
+                    environments: environment_requests.clone(),
+                    runtime_workspace_roots: runtime_workspace_roots.clone(),
                     approval_policy,
                     approvals_reviewer,
                     sandbox_policy: sandbox_policy.clone(),
@@ -1096,61 +906,52 @@ impl TurnRequestProcessor {
                 .map_err(|err| {
                     invalid_request(format!("invalid thread settings override: {err}"))
                 })?;
-            settings_context_changed = automatic_turn_context_fingerprint(&before)
-                != automatic_turn_context_fingerprint(&after);
         }
 
-        Ok((
-            codex_protocol::protocol::ThreadSettingsOverrides {
-                environments,
-                profile_workspace_roots,
-                approval_policy,
-                approvals_reviewer,
-                sandbox_policy,
-                permission_profile,
-                active_permission_profile,
-                windows_sandbox_level: None,
-                model,
-                effort,
-                summary,
-                service_tier,
-                collaboration_mode,
-                personality,
-            },
-            settings_context_changed,
-        ))
+        Ok(codex_protocol::protocol::ThreadSettingsOverrides {
+            disabled_plugin_ids,
+            environments: environment_requests,
+            runtime_workspace_roots,
+            profile_workspace_roots,
+            approval_policy,
+            approvals_reviewer,
+            sandbox_policy,
+            permission_profile,
+            active_permission_profile,
+            windows_sandbox_level: None,
+            model,
+            effort,
+            summary,
+            service_tier,
+            collaboration_mode,
+            personality,
+        })
     }
 
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "the auth admission gate must remain held through settings invalidation and core enqueue"
-    )]
     async fn thread_settings_update_inner(
         &self,
         request_id: &ConnectionRequestId,
         params: ThreadSettingsUpdateParams,
     ) -> Result<ThreadSettingsUpdateResponse, JSONRPCErrorError> {
-        // Serialize settings invalidation with automatic-turn validation/reservation. The guard
-        // spans the snapshot, invalidation, and core enqueue so no admitted turn can cross the
-        // settings transition boundary.
-        let _auth_admission = self.auth_admission.lock().await;
-        let (thread_id, thread) = self.load_thread(&params.thread_id).await?;
+        let (_, thread) = self.load_thread(&params.thread_id).await?;
+        self.ensure_direct_input_allowed(request_id, thread.as_ref())
+            .await?;
         let cwd = resolve_request_cwd(params.cwd)?;
-        let environments = self
+        let environment_override = self
             .build_environment_override(
                 thread.as_ref(),
                 cwd,
                 /*workspace_roots*/ None,
-                /*environment_selections*/ None,
-                /*preserve_existing_selections*/ false,
+                /*environment_requests*/ None,
             )
             .await;
-        let (thread_settings, _settings_context_changed) = self
+        let thread_settings = self
             .build_thread_settings_overrides(
                 thread.as_ref(),
                 ThreadSettingsBuildParams {
                     method: "thread/settings/update",
-                    environments,
+                    disabled_plugin_ids: params.disabled_plugin_ids,
+                    environment_override,
                     approval_policy: params.approval_policy,
                     approvals_reviewer: params.approvals_reviewer,
                     sandbox_policy: params.sandbox_policy,
@@ -1166,20 +967,13 @@ impl TurnRequestProcessor {
             .await?;
 
         if thread_settings != codex_protocol::protocol::ThreadSettingsOverrides::default() {
-            if let Some(state_db) = thread.state_db() {
-                state_db
-                    .invalidate_automatic_turn_capabilities_for_thread(thread_id)
-                    .await
-                    .map_err(|err| {
-                        internal_error(format!(
-                            "failed to invalidate automatic turn capabilities: {err}"
-                        ))
-                    })?;
-            }
             self.submit_core_op(
                 request_id,
                 thread.as_ref(),
-                Op::ThreadSettings { thread_settings },
+                Op::ThreadSettings {
+                    thread_settings,
+                    reply: None,
+                },
             )
             .await
             .map_err(|err| internal_error(format!("failed to update thread settings: {err}")))?;
@@ -1190,20 +984,12 @@ impl TurnRequestProcessor {
 
     async fn thread_inject_items_response_inner(
         &self,
+        request_id: &ConnectionRequestId,
         params: ThreadInjectItemsParams,
     ) -> Result<ThreadInjectItemsResponse, JSONRPCErrorError> {
-        let thread_id = ThreadId::from_string(&params.thread_id)
-            .map_err(|err| invalid_request(format!("invalid thread id: {err}")))?;
-
-        self.thread_manager
-            .ensure_response_item_injection_target(thread_id)
-            .await
-            .map_err(|err| match err.details() {
-                CodexErrorDetails::ThreadNotFound(thread_id) => {
-                    invalid_request(format!("thread not found: {thread_id}"))
-                }
-                _ => internal_error(format!("failed to resolve injection target: {err}")),
-            })?;
+        let (_, thread) = self.load_thread(&params.thread_id).await?;
+        self.ensure_direct_input_allowed(request_id, thread.as_ref())
+            .await?;
 
         let items = params
             .items
@@ -1217,20 +1003,13 @@ impl TurnRequestProcessor {
             .map_err(invalid_request)?;
         validate_response_item_image_urls(&items)?;
 
-        // Keep the cold-reload future out of the monolithic request dispatch stack.
-        Box::pin(self.thread_manager.inject_response_items(
-            (*self.config).clone(),
-            thread_id,
-            items,
-        ))
-        .await
-        .map_err(|err| match err.details() {
-            CodexErrorDetails::InvalidRequest(message) => invalid_request(message.clone()),
-            CodexErrorDetails::ThreadNotFound(thread_id) => {
-                invalid_request(format!("thread not found: {thread_id}"))
-            }
-            _ => internal_error(format!("failed to inject response items: {err}")),
-        })?;
+        thread
+            .inject_response_items(items)
+            .await
+            .map_err(|err| match err.details() {
+                CodexErrorDetails::InvalidRequest(message) => invalid_request(message.clone()),
+                _ => internal_error(format!("failed to inject response items: {err}")),
+            })?;
         Ok(ThreadInjectItemsResponse {})
     }
 
@@ -1266,6 +1045,10 @@ impl TurnRequestProcessor {
             })?;
         self.ensure_direct_input_allowed(request_id, thread.as_ref())
             .await?;
+        self.config_manager
+            .check_thread_model_provider(thread.config().await.as_ref())
+            .await
+            .map_err(|error| config_load_error(&error))?;
 
         if params.expected_turn_id.is_empty() {
             return Err(invalid_request("expectedTurnId must not be empty"));
@@ -1289,34 +1072,44 @@ impl TurnRequestProcessor {
             .collect();
         let additional_context = map_additional_context(params.additional_context);
 
-        let turn_id = match thread
-            .steer_input(
-                mapped_items,
-                additional_context,
-                Some(&params.expected_turn_id),
-                params.client_user_message_id,
-                params.responsesapi_client_metadata,
+        let submission = thread
+            .steer_turn(
+                TurnInputRequest::new(TurnInput::UserInput {
+                    content: mapped_items,
+                    client_id: params.client_user_message_id,
+                })
+                .with_additional_context(additional_context)
+                .with_responses_metadata(params.responsesapi_client_metadata),
+                params.expected_turn_id,
             )
             .await
-        {
-            Ok(turn_id) => turn_id,
-            Err(err) => {
-                let (message, data, error_type) = match err {
-                    SteerInputError::NoActiveTurn(_) => (
+            .map_err(|err| {
+                let error = internal_error(format!("failed to steer turn: {err}"));
+                self.track_error_response(request_id, &error, /*error_type*/ None);
+                error
+            })?;
+        let turn_id = match submission {
+            SteerSubmission::Steered { turn_id } => turn_id,
+            SteerSubmission::NotSubmitted { reason } => {
+                let (message, data, error_type) = match reason {
+                    NotSubmittedReason::ServerDraining => {
+                        return Err(crate::error_code::server_draining_error());
+                    }
+                    NotSubmittedReason::NoActiveTurn | NotSubmittedReason::NotIdle => (
                         "no active turn to steer".to_string(),
                         None,
                         Some(AnalyticsJsonRpcError::TurnSteer(
                             TurnSteerRequestError::NoActiveTurn,
                         )),
                     ),
-                    SteerInputError::ExpectedTurnMismatch { expected, actual } => (
+                    NotSubmittedReason::ExpectedTurnMismatch { expected, actual } => (
                         format!("expected active turn id `{expected}` but found `{actual}`"),
                         None,
                         Some(AnalyticsJsonRpcError::TurnSteer(
                             TurnSteerRequestError::ExpectedTurnMismatch,
                         )),
                     ),
-                    SteerInputError::ActiveTurnNotSteerable { turn_kind } => {
+                    NotSubmittedReason::ActiveTurnNotSteerable { turn_kind } => {
                         let (message, turn_steer_error) = match turn_kind {
                             codex_protocol::protocol::NonSteerableTurnKind::Review => (
                                 "cannot steer a review turn".to_string(),
@@ -1328,6 +1121,7 @@ impl TurnRequestProcessor {
                             ),
                         };
                         let error = TurnError {
+                            misalignment: None,
                             message: message.clone(),
                             codex_error_info: Some(CodexErrorInfo::ActiveTurnNotSteerable {
                                 turn_kind: turn_kind.into(),
@@ -1350,10 +1144,24 @@ impl TurnRequestProcessor {
                             Some(AnalyticsJsonRpcError::TurnSteer(turn_steer_error)),
                         )
                     }
-                    SteerInputError::EmptyInput => (
+                    NotSubmittedReason::EmptyInput => (
                         "input must not be empty".to_string(),
                         None,
                         Some(AnalyticsJsonRpcError::Input(InputError::Empty)),
+                    ),
+                    NotSubmittedReason::ActiveTurnOutputSchemaMismatch => (
+                        "active turn uses a different output schema".to_string(),
+                        None,
+                        None,
+                    ),
+                    NotSubmittedReason::PendingTriggerTurn
+                    | NotSubmittedReason::PlanMode
+                    | NotSubmittedReason::Superseded => (
+                        "no active turn to steer".to_string(),
+                        None,
+                        Some(AnalyticsJsonRpcError::TurnSteer(
+                            TurnSteerRequestError::NoActiveTurn,
+                        )),
                     ),
                 };
                 let mut error = invalid_request(message);
@@ -1371,6 +1179,8 @@ impl TurnRequestProcessor {
         thread_id: &str,
     ) -> Result<Option<(ThreadId, Arc<CodexThread>)>, JSONRPCErrorError> {
         let (thread_id, thread) = self.load_thread(thread_id).await?;
+        self.ensure_direct_input_allowed(request_id, thread.as_ref())
+            .await?;
 
         match self
             .ensure_conversation_listener(
@@ -1387,12 +1197,6 @@ impl TurnRequestProcessor {
             Err(error) => return Err(error),
         }
 
-        if !thread.enabled(Feature::RealtimeConversation) {
-            return Err(invalid_request(format!(
-                "thread {thread_id} does not support realtime conversation"
-            )));
-        }
-
         Ok(Some((thread_id, thread)))
     }
 
@@ -1401,6 +1205,36 @@ impl TurnRequestProcessor {
         request_id: &ConnectionRequestId,
         params: ThreadRealtimeStartParams,
     ) -> Result<Option<ThreadRealtimeStartResponse>, JSONRPCErrorError> {
+        let attaches_existing_call = matches!(
+            &params.transport,
+            Some(ThreadRealtimeStartTransport::ExistingCall { .. })
+        );
+        if attaches_existing_call {
+            let unsupported_option = if params.include_startup_context == Some(true) {
+                Some("includeStartupContext")
+            } else if params.prompt.is_some() {
+                Some("prompt")
+            } else if params
+                .initial_items
+                .as_ref()
+                .is_some_and(|items| !items.is_empty())
+            {
+                Some("initialItems")
+            } else if params.model.is_some() {
+                Some("model")
+            } else if params.voice.is_some() {
+                Some("voice")
+            } else if params.delegation_ack_filler.is_some() {
+                Some("delegationAckFiller")
+            } else {
+                None
+            };
+            if let Some(option) = unsupported_option {
+                return Err(invalid_request(format!(
+                    "existingCall transport does not support {option}"
+                )));
+            }
+        }
         let Some((_, thread)) = self
             .prepare_realtime_conversation_thread(request_id, &params.thread_id)
             .await?
@@ -1412,17 +1246,21 @@ impl TurnRequestProcessor {
             thread.as_ref(),
             Op::RealtimeConversationStart(ConversationStartParams {
                 client_managed_handoffs: params.client_managed_handoffs.unwrap_or(false),
+                delegation_ack_filler: params.delegation_ack_filler,
                 flush_transcript_tail_on_session_end: params
                     .flush_transcript_tail_on_session_end
                     .unwrap_or(false),
                 codex_responses_as_items: params.codex_responses_as_items.unwrap_or(false),
                 codex_response_item_prefix: params.codex_response_item_prefix,
                 codex_response_handoff_mode: params.codex_response_handoff_mode.unwrap_or_default(),
+                backend_reasoning_status: params.backend_reasoning_status,
                 codex_response_handoff_channel_prefixes: params
                     .codex_response_handoff_channel_prefixes,
                 model: params.model,
                 output_modality: params.output_modality,
-                include_startup_context: params.include_startup_context.unwrap_or(true),
+                include_startup_context: params
+                    .include_startup_context
+                    .unwrap_or(!attaches_existing_call),
                 initial_items: params
                     .initial_items
                     .unwrap_or_default()
@@ -1432,6 +1270,8 @@ impl TurnRequestProcessor {
                         role: item.role,
                     })
                     .collect(),
+                realtime_start_instructions: params.realtime_start_instructions,
+                realtime_end_instructions: params.realtime_end_instructions,
                 prompt: params.prompt,
                 realtime_session_id: params.realtime_session_id,
                 transport: params.transport.map(|transport| match transport {
@@ -1440,6 +1280,12 @@ impl TurnRequestProcessor {
                     }
                     ThreadRealtimeStartTransport::Webrtc { sdp } => {
                         ConversationStartTransport::Webrtc { sdp }
+                    }
+                    ThreadRealtimeStartTransport::ExistingCall { call_id } => {
+                        ConversationStartTransport::ExistingCall {
+                            call_id,
+                            sideband_base_url: None,
+                        }
                     }
                 }),
                 version: params.version,
@@ -1567,6 +1413,7 @@ impl TurnRequestProcessor {
 
         Turn {
             id: turn_id,
+            root_turn_id: None,
             items,
             items_view: TurnItemsView::NotLoaded,
             error: None,
@@ -1620,7 +1467,7 @@ impl TurnRequestProcessor {
         parent_thread: Arc<CodexThread>,
         prompt: &str,
     ) -> std::result::Result<(), JSONRPCErrorError> {
-        // AgentRunner::start still delegates to spawn_subagent, which forks from the parent's
+        // AgentRunner::start still delegates to spawn_legacy_subagent, which forks from the parent's
         // full history. Paginated threads only allow bounded model-context reads, so keep this
         // closed until detached review has a bounded fork path.
         if matches!(
@@ -1631,7 +1478,7 @@ impl TurnRequestProcessor {
                 "paginated threads do not support detached review",
             ));
         }
-        let mut config = self.config.as_ref().clone();
+        let mut config = parent_thread.config().await.as_ref().clone();
         if let Some(review_model) = &config.review_model {
             config.model = Some(review_model.clone());
         }
@@ -1643,7 +1490,7 @@ impl TurnRequestProcessor {
         } = self
             .agent_runner
             .start(
-                parent_thread.session_configured().thread_id,
+                parent_thread.startup_metadata().thread_id,
                 AgentInvocation {
                     config,
                     prompt: prompt.to_string(),
@@ -1672,7 +1519,9 @@ impl TurnRequestProcessor {
         };
 
         if let Some(mut thread) = stored_thread {
-            thread.session_id = review_thread.session_configured().session_id.to_string();
+            let config_snapshot = review_thread.config_snapshot().await;
+            apply_live_thread_settings(&mut thread, &config_snapshot);
+            thread.session_id = review_thread.startup_metadata().session_id.to_string();
             self.thread_watch_manager
                 .upsert_thread_silently(&thread.id)
                 .await;
@@ -1720,6 +1569,12 @@ impl TurnRequestProcessor {
         } = params;
 
         let (_, parent_thread) = self.load_thread(&thread_id).await?;
+        self.ensure_direct_input_allowed(request_id, parent_thread.as_ref())
+            .await?;
+        self.config_manager
+            .check_thread_model_provider(parent_thread.config().await.as_ref())
+            .await
+            .map_err(|error| config_load_error(&error))?;
         let (review_request, display_text, target_prompt) =
             Self::review_request_from_target(target)?;
         match delivery.unwrap_or(ApiReviewDelivery::Inline).to_core() {
@@ -1769,11 +1624,10 @@ impl TurnRequestProcessor {
             let is_running = matches!(thread.agent_status().await, AgentStatus::Running);
             {
                 let mut thread_state = thread_state.lock().await;
-                if let Some(active_turn) = thread_state.active_turn_snapshot() {
-                    if active_turn.id != turn_id {
+                if let Some(active_turn_id) = thread_state.active_turn_id() {
+                    if active_turn_id != turn_id {
                         return Err(invalid_request(format!(
-                            "expected active turn id {turn_id} but found {}",
-                            active_turn.id
+                            "expected active turn id {turn_id} but found {active_turn_id}"
                         )));
                     }
                 } else if thread_state.last_terminal_turn_id.as_deref() == Some(turn_id.as_str())
@@ -1824,10 +1678,10 @@ impl TurnRequestProcessor {
             outgoing: Arc::clone(&self.outgoing),
             pending_thread_unloads: Arc::clone(&self.pending_thread_unloads),
             thread_watch_manager: self.thread_watch_manager.clone(),
-            thread_list_state_permit: self.thread_list_state_permit.clone(),
-            fallback_model_provider: self.config.model_provider_id.clone(),
             codex_home: self.config.codex_home.to_path_buf(),
+            thread_unload_delay: self.config.thread_unload_delay,
             skills_watcher: Arc::clone(&self.skills_watcher),
+            turn_cost_worker: self.turn_cost_worker.clone(),
         }
     }
 
@@ -1847,121 +1701,6 @@ impl TurnRequestProcessor {
     }
 }
 
-fn is_canonical_automatic_turn_input(input: &[V2UserInput]) -> bool {
-    matches!(
-        input,
-        [V2UserInput::Text {
-            text,
-            text_elements,
-        }] if text == "continue" && text_elements.is_empty()
-    )
-}
-
-fn is_automatic_turn_capability(client_user_message_id: Option<&str>) -> bool {
-    client_user_message_id.is_some_and(|client_id| {
-        AutomaticTurnProvenance::decode_client_user_message_id(client_id).is_some()
-    })
-}
-
-fn validate_automatic_turn_start_shape(
-    params: &TurnStartParams,
-) -> Result<bool, JSONRPCErrorError> {
-    let Some(client_user_message_id) = params.client_user_message_id.as_deref() else {
-        return Ok(false);
-    };
-    if AutomaticTurnProvenance::decode_client_user_message_id(client_user_message_id).is_none() {
-        return Ok(false);
-    }
-    let canonical = is_canonical_automatic_turn_input(&params.input)
-        && params.responsesapi_client_metadata.is_none()
-        && params.additional_context.is_none()
-        && params.output_schema.is_none()
-        && params.multi_agent_mode.is_none();
-    if !canonical {
-        return Err(invalid_request(
-            "automatic turn retry must use the server-canonical continue operation",
-        ));
-    }
-    Ok(true)
-}
-
-fn automatic_turn_start_settings_match_current(
-    params: &TurnStartParams,
-    snapshot: &ThreadConfigSnapshot,
-    processor: &TurnRequestProcessor,
-) -> bool {
-    let cwd_matches = params
-        .cwd
-        .as_ref()
-        .is_none_or(|cwd| cwd.as_path() == snapshot.cwd().as_path());
-    let roots_match = params
-        .runtime_workspace_roots
-        .as_ref()
-        .is_none_or(|roots| roots == &snapshot.workspace_roots);
-    let approval_matches = params
-        .approval_policy
-        .as_ref()
-        .is_none_or(|approval| approval.to_core() == snapshot.approval_policy);
-    let reviewer_matches = params
-        .approvals_reviewer
-        .as_ref()
-        .is_none_or(|reviewer| reviewer.to_core() == snapshot.approvals_reviewer);
-    let sandbox_matches = params
-        .sandbox_policy
-        .as_ref()
-        .is_none_or(|sandbox| sandbox.to_core() == snapshot.sandbox_policy());
-    let permission_matches = params.permissions.as_ref().is_none_or(|permission| {
-        snapshot
-            .active_permission_profile
-            .as_ref()
-            .is_some_and(|active| active.id == *permission)
-    });
-    let model_matches = params
-        .model
-        .as_ref()
-        .is_none_or(|model| model == &snapshot.model);
-    let service_tier_matches = params
-        .service_tier
-        .as_ref()
-        .is_none_or(|service_tier| service_tier == &snapshot.service_tier);
-    let effort_matches = params
-        .effort
-        .as_ref()
-        .is_none_or(|effort| snapshot.reasoning_effort.as_ref() == Some(effort));
-    let summary_matches = params
-        .summary
-        .as_ref()
-        .is_none_or(|summary| snapshot.reasoning_summary.as_ref() == Some(summary));
-    let personality_matches = params
-        .personality
-        .as_ref()
-        .is_none_or(|personality| snapshot.personality.as_ref() == Some(personality));
-    let collaboration_matches = params.collaboration_mode.as_ref().is_none_or(|mode| {
-        processor.normalize_collaboration_mode(mode.clone()) == snapshot.collaboration_mode
-    });
-
-    // Environment selections and arbitrary context/output changes are not part of the retry
-    // contract. Omitted fields use the server's already-bound selections; supplied values are
-    // rejected unless they are one of the directly comparable current settings above.
-    params.environments.is_none()
-        && params.responsesapi_client_metadata.is_none()
-        && params.additional_context.is_none()
-        && params.output_schema.is_none()
-        && params.multi_agent_mode.is_none()
-        && cwd_matches
-        && roots_match
-        && approval_matches
-        && reviewer_matches
-        && sandbox_matches
-        && permission_matches
-        && model_matches
-        && service_tier_matches
-        && effort_matches
-        && summary_matches
-        && personality_matches
-        && collaboration_matches
-}
-
 fn xcode_26_4_mcp_elicitations_auto_deny(
     client_name: Option<&str>,
     client_version: Option<&str>,
@@ -1971,50 +1710,4 @@ fn xcode_26_4_mcp_elicitations_auto_deny(
     // TODO: Remove this compatibility hack once Xcode 26.4 ages out.
     client_name == Some("Xcode")
         && client_version.is_some_and(|version| version.starts_with("26.4"))
-}
-
-#[cfg(test)]
-mod automatic_turn_validation_tests {
-    use super::*;
-    use codex_protocol::ThreadId;
-
-    fn client_user_message_id() -> String {
-        AutomaticTurnProvenance::policy_retry(
-            ThreadId::new(),
-            "policy-turn",
-            /*attempt*/ 1,
-            /*max_attempts*/ 3,
-            "capability",
-        )
-        .expect("valid provenance")
-        .to_client_user_message_id()
-        .expect("valid client message id")
-    }
-
-    #[test]
-    fn automatic_turn_start_shape_allows_server_current_settings() {
-        let mut params = TurnStartParams {
-            client_user_message_id: Some(client_user_message_id()),
-            input: vec![V2UserInput::Text {
-                text: "continue".to_string(),
-                text_elements: Vec::new(),
-            }],
-            ..Default::default()
-        };
-        assert!(validate_automatic_turn_start_shape(&params).is_ok_and(|automatic| automatic));
-
-        params.model = Some("different-model".to_string());
-        assert!(validate_automatic_turn_start_shape(&params).is_ok_and(|automatic| automatic));
-    }
-
-    #[test]
-    fn automatic_turn_capability_is_not_accepted_by_steer() {
-        assert!(is_automatic_turn_capability(
-            Some(&client_user_message_id())
-        ));
-        assert!(!is_automatic_turn_capability(
-            /*client_user_message_id*/ None
-        ));
-        assert!(!is_automatic_turn_capability(Some("ordinary-client-id")));
-    }
 }

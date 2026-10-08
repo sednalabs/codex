@@ -1,5 +1,6 @@
 {
-  "$defs": {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
     "RequestId": {
       "anyOf": [
         {
@@ -12,18 +13,17 @@
       ]
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "requestId": {
-      "$ref": "#/$defs/RequestId"
+      "$ref": "#/definitions/RequestId"
     },
     "threadId": {
       "type": "string"
     }
   },
   "required": [
-    "threadId",
-    "requestId"
+    "requestId",
+    "threadId"
   ],
   "title": "ServerRequestResolvedNotification",
   "type": "object"

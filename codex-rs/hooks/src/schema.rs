@@ -1,13 +1,14 @@
 use schemars::JsonSchema;
-use schemars::Schema;
-use schemars::SchemaGenerator;
-use schemars::generate::SchemaSettings;
+use schemars::r#gen::SchemaGenerator;
+use schemars::r#gen::SchemaSettings;
+use schemars::schema::InstanceType;
+use schemars::schema::RootSchema;
+use schemars::schema::Schema;
+use schemars::schema::SchemaObject;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Map;
 use serde_json::Value;
-use serde_json::json;
-use std::borrow::Cow;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -35,6 +36,8 @@ const SUBAGENT_STOP_INPUT_FIXTURE: &str = "subagent-stop.command.input.schema.js
 const SUBAGENT_STOP_OUTPUT_FIXTURE: &str = "subagent-stop.command.output.schema.json";
 const STOP_INPUT_FIXTURE: &str = "stop.command.input.schema.json";
 const STOP_OUTPUT_FIXTURE: &str = "stop.command.output.schema.json";
+const INTERRUPT_INPUT_FIXTURE: &str = "interrupt.command.input.schema.json";
+const INTERRUPT_OUTPUT_FIXTURE: &str = "interrupt.command.output.schema.json";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(transparent)]
@@ -51,17 +54,15 @@ impl NullableString {
 }
 
 impl JsonSchema for NullableString {
-    fn schema_name() -> Cow<'static, str> {
-        "NullableString".into()
+    fn schema_name() -> String {
+        "NullableString".to_string()
     }
 
     fn json_schema(_gen: &mut SchemaGenerator) -> Schema {
-        schema_from_json_literal(
-            json!({
-                "type": ["string", "null"]
-            }),
-            "nullable string schema",
-        )
+        Schema::Object(SchemaObject {
+            instance_type: Some(vec![InstanceType::String, InstanceType::Null].into()),
+            ..Default::default()
+        })
     }
 }
 
@@ -119,6 +120,8 @@ pub(crate) enum HookEventNameWire {
     SubagentStop,
     #[serde(rename = "Stop")]
     Stop,
+    #[serde(rename = "Interrupt")]
+    Interrupt,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -475,6 +478,15 @@ pub(crate) struct SubagentStopCommandOutputWire {
     pub reason: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
+#[schemars(rename = "interrupt.command.output")]
+pub(crate) struct InterruptCommandOutputWire {
+    #[serde(default)]
+    pub system_message: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub(crate) enum BlockDecisionWire {
     #[serde(rename = "block")]
@@ -609,6 +621,22 @@ pub(crate) struct SubagentStopCommandInput {
     pub last_assistant_message: NullableString,
 }
 
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(rename = "interrupt.command.input")]
+pub(crate) struct InterruptCommandInput {
+    pub session_id: String,
+    /// Codex extension: expose the active turn id to internal turn-scoped hooks.
+    pub turn_id: String,
+    pub transcript_path: NullableString,
+    pub cwd: String,
+    #[schemars(schema_with = "interrupt_hook_event_name_schema")]
+    pub hook_event_name: String,
+    pub model: String,
+    #[schemars(schema_with = "permission_mode_schema")]
+    pub permission_mode: String,
+}
+
 pub fn write_schema_fixtures(schema_root: &Path) -> anyhow::Result<()> {
     let generated_dir = schema_root.join(GENERATED_DIR);
     ensure_empty_dir(&generated_dir)?;
@@ -697,6 +725,14 @@ pub fn write_schema_fixtures(schema_root: &Path) -> anyhow::Result<()> {
         &generated_dir.join(STOP_OUTPUT_FIXTURE),
         schema_json::<StopCommandOutputWire>()?,
     )?;
+    write_schema(
+        &generated_dir.join(INTERRUPT_INPUT_FIXTURE),
+        schema_json::<InterruptCommandInput>()?,
+    )?;
+    write_schema(
+        &generated_dir.join(INTERRUPT_OUTPUT_FIXTURE),
+        schema_json::<InterruptCommandOutputWire>()?,
+    )?;
 
     Ok(())
 }
@@ -719,56 +755,32 @@ where
     T: JsonSchema,
 {
     let schema = schema_for_type::<T>();
-    let mut value = serde_json::to_value(schema)?;
-    normalize_legacy_option_schema(&mut value);
+    let value = serde_json::to_value(schema)?;
     let value = canonicalize_json(&value);
     Ok(serde_json::to_vec_pretty(&value)?)
 }
 
-fn schema_for_type<T>() -> Schema
+fn schema_for_type<T>() -> RootSchema
 where
     T: JsonSchema,
 {
     SchemaSettings::draft07()
+        .with(|settings| {
+            settings.option_add_null_type = false;
+        })
         .into_generator()
         .into_root_schema_for::<T>()
 }
 
-fn schema_from_json_literal(value: Value, context: &str) -> Schema {
-    match value.try_into() {
-        Ok(schema) => schema,
-        Err(err) => panic!("{context} should be valid: {err}"),
-    }
-}
-
 fn canonicalize_json(value: &Value) -> Value {
-    canonicalize_json_with_key(/*key*/ None, value)
-}
-
-fn canonicalize_json_with_key(key: Option<&str>, value: &Value) -> Value {
     match value {
-        Value::String(text) if key == Some("description") => {
-            Value::String(text.split_whitespace().collect::<Vec<_>>().join(" "))
-        }
-        Value::Array(items) => {
-            let mut canonical_items: Vec<_> = items
-                .iter()
-                .map(|item| canonicalize_json_with_key(/*key*/ None, item))
-                .collect();
-            if key == Some("required") {
-                canonical_items.sort_by(|left, right| left.as_str().cmp(&right.as_str()));
-            }
-            Value::Array(canonical_items)
-        }
+        Value::Array(items) => Value::Array(items.iter().map(canonicalize_json).collect()),
         Value::Object(map) => {
             let mut entries: Vec<_> = map.iter().collect();
             entries.sort_by_key(|(key, _)| *key);
             let mut sorted = Map::with_capacity(map.len());
             for (key, child) in entries {
-                sorted.insert(
-                    key.clone(),
-                    canonicalize_json_with_key(Some(key.as_str()), child),
-                );
+                sorted.insert(key.clone(), canonicalize_json(child));
             }
             Value::Object(sorted)
         }
@@ -824,6 +836,10 @@ fn stop_hook_event_name_schema(_gen: &mut SchemaGenerator) -> Schema {
     string_const_schema("Stop")
 }
 
+fn interrupt_hook_event_name_schema(_gen: &mut SchemaGenerator) -> Schema {
+    string_const_schema("Interrupt")
+}
+
 fn permission_mode_schema(_gen: &mut SchemaGenerator) -> Schema {
     string_enum_schema(&[
         "default",
@@ -835,7 +851,7 @@ fn permission_mode_schema(_gen: &mut SchemaGenerator) -> Schema {
 }
 
 fn session_start_source_schema(_gen: &mut SchemaGenerator) -> Schema {
-    string_enum_schema(&["startup", "resume", "clear", "compact"])
+    string_enum_schema(&["startup", "resume", "clear", "compact", "fork"])
 }
 
 fn compaction_trigger_schema(_gen: &mut SchemaGenerator) -> Schema {
@@ -843,88 +859,26 @@ fn compaction_trigger_schema(_gen: &mut SchemaGenerator) -> Schema {
 }
 
 fn string_const_schema(value: &str) -> Schema {
-    schema_from_json_literal(
-        json!({
-            "type": "string",
-            "const": value,
-        }),
-        "string const schema",
-    )
+    let mut schema = SchemaObject {
+        instance_type: Some(InstanceType::String.into()),
+        ..Default::default()
+    };
+    schema.const_value = Some(Value::String(value.to_string()));
+    Schema::Object(schema)
 }
 
 fn string_enum_schema(values: &[&str]) -> Schema {
-    schema_from_json_literal(
-        json!({
-            "type": "string",
-            "enum": values,
-        }),
-        "string enum schema",
-    )
-}
-
-fn normalize_legacy_option_schema(value: &mut Value) {
-    match value {
-        Value::Array(items) => {
-            for item in items {
-                normalize_legacy_option_schema(item);
-            }
-        }
-        Value::Object(map) => {
-            for child in map.values_mut() {
-                normalize_legacy_option_schema(child);
-            }
-
-            let default_is_null = map.get("default").is_some_and(Value::is_null);
-            if !default_is_null {
-                return;
-            }
-
-            if let Some(Value::Array(types)) = map.get_mut("type") {
-                types.retain(|ty| ty != "null");
-                if types.len() == 1
-                    && let Some(single_type) = types.pop()
-                {
-                    map.insert("type".to_string(), single_type);
-                }
-            }
-
-            let Some(any_of) = map.remove("anyOf") else {
-                return;
-            };
-            let Value::Array(variants) = any_of else {
-                map.insert("anyOf".to_string(), any_of);
-                return;
-            };
-
-            let mut non_null_variants = Vec::new();
-            let mut removed_null_variant = false;
-            for variant in variants {
-                if is_null_schema_value(&variant) {
-                    removed_null_variant = true;
-                } else {
-                    non_null_variants.push(variant);
-                }
-            }
-
-            if removed_null_variant && !non_null_variants.is_empty() {
-                map.insert("allOf".to_string(), Value::Array(non_null_variants));
-            } else {
-                map.insert("anyOf".to_string(), Value::Array(non_null_variants));
-            }
-        }
-        _ => {}
-    }
-}
-
-fn is_null_schema_value(value: &Value) -> bool {
-    match value {
-        Value::Object(map) => match map.get("type") {
-            Some(Value::String(kind)) => kind == "null",
-            Some(Value::Array(types)) => !types.is_empty() && types.iter().all(|ty| ty == "null"),
-            _ => map.get("const").is_some_and(Value::is_null),
-        },
-        _ => false,
-    }
+    let mut schema = SchemaObject {
+        instance_type: Some(InstanceType::String.into()),
+        ..Default::default()
+    };
+    schema.enum_values = Some(
+        values
+            .iter()
+            .map(|value| Value::String((*value).to_string()))
+            .collect(),
+    );
+    Schema::Object(schema)
 }
 
 fn default_continue() -> bool {
@@ -933,6 +887,9 @@ fn default_continue() -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::INTERRUPT_INPUT_FIXTURE;
+    use super::INTERRUPT_OUTPUT_FIXTURE;
+    use super::InterruptCommandInput;
     use super::NullableString;
     use super::PERMISSION_REQUEST_INPUT_FIXTURE;
     use super::PERMISSION_REQUEST_OUTPUT_FIXTURE;
@@ -1045,6 +1002,12 @@ mod tests {
             STOP_OUTPUT_FIXTURE => {
                 include_str!("../schema/generated/stop.command.output.schema.json")
             }
+            INTERRUPT_INPUT_FIXTURE => {
+                include_str!("../schema/generated/interrupt.command.input.schema.json")
+            }
+            INTERRUPT_OUTPUT_FIXTURE => {
+                include_str!("../schema/generated/interrupt.command.output.schema.json")
+            }
             _ => panic!("unexpected fixture name: {name}"),
         }
     }
@@ -1095,6 +1058,8 @@ mod tests {
             SUBAGENT_STOP_OUTPUT_FIXTURE,
             STOP_INPUT_FIXTURE,
             STOP_OUTPUT_FIXTURE,
+            INTERRUPT_INPUT_FIXTURE,
+            INTERRUPT_OUTPUT_FIXTURE,
         ] {
             let expected = normalize_newlines(expected_fixture(fixture));
             let actual = std::fs::read_to_string(schema_root.join("generated").join(fixture))
@@ -1177,6 +1142,10 @@ mod tests {
             &schema_json::<StopCommandInput>().expect("serialize stop input schema"),
         )
         .expect("parse stop input schema");
+        let interrupt: Value = serde_json::from_slice(
+            &schema_json::<InterruptCommandInput>().expect("serialize interrupt input schema"),
+        )
+        .expect("parse interrupt input schema");
 
         for schema in [
             &pre_tool_use,
@@ -1188,6 +1157,7 @@ mod tests {
             &subagent_start,
             &subagent_stop,
             &stop,
+            &interrupt,
         ] {
             assert_eq!(schema["properties"]["turn_id"]["type"], "string");
             assert!(
@@ -1214,14 +1184,8 @@ mod tests {
 
         for schema in schemas {
             let schema: Value = serde_json::from_slice(&schema).expect("parse hook input schema");
-            assert_eq!(
-                schema["properties"]["agent_id"]["type"],
-                json!(["string", "null"])
-            );
-            assert_eq!(
-                schema["properties"]["agent_type"]["type"],
-                json!(["string", "null"])
-            );
+            assert_eq!(schema["properties"]["agent_id"]["type"], "string");
+            assert_eq!(schema["properties"]["agent_type"]["type"], "string");
             let required = schema["required"]
                 .as_array()
                 .expect("schema required fields");

@@ -18,14 +18,49 @@ async fn enabled_request_logging_emits_transport_url_and_body() {
 
 #[tokio::test]
 async fn disabled_request_logging_suppresses_transport_url_and_body() {
-    let logs = capture_transport_logs(HttpClient::new_without_request_logging(
-        test_reqwest_client(),
-    ))
-    .await;
+    let logs =
+        capture_transport_logs(HttpClient::new(test_reqwest_client()).without_request_logging())
+            .await;
 
     assert!(logs.contains("log capture sentinel"));
     assert!(!logs.contains("url-secret"));
     assert!(!logs.contains("body-secret"));
+
+    let controller = crate::NetworkPolicyController::default();
+    let policy = controller.policy();
+    controller.publish(policy.revision(), crate::DestinationPolicy::Unrestricted);
+    let factory = crate::HttpClientFactory::new(crate::OutboundProxyPolicy::ReqwestDefault)
+        .with_network_policy(policy);
+    let client =
+        crate::RouteAwareClientPool::new(factory, crate::ClientRouteClass::Api).into_client();
+    let logs = capture_transport_logs(client.clone()).await;
+    assert!(logs.contains("url-secret"));
+    let logs = capture_transport_logs(client.clone().without_request_logging()).await;
+    assert!(!logs.contains("url-secret"), "{logs}");
+    assert!(!logs.contains("body-secret"));
+    assert!(capture_transport_logs(client).await.contains("url-secret"));
+}
+
+#[tokio::test]
+async fn connection_failures_are_classified_without_exposing_request_urls() {
+    let unavailable_server =
+        std::net::TcpListener::bind(("127.0.0.1", 0)).expect("server port should bind");
+    let server_addr = unavailable_server
+        .local_addr()
+        .expect("server listener should have an address");
+    drop(unavailable_server);
+    let transport = ReqwestTransport::from_http_client(HttpClient::new(test_reqwest_client()));
+    let request = Request::new(
+        Method::POST,
+        format!("http://{server_addr}/responses?token=url-secret"),
+    );
+
+    let error = match transport.stream(request).await {
+        Err(TransportError::Connection(error)) => error,
+        Err(error) => panic!("expected a connection failure, got {error}"),
+        Ok(_) => panic!("an unavailable server should not return a response"),
+    };
+    assert!(!error.to_string().contains("url-secret"));
 }
 
 fn test_reqwest_client() -> reqwest::Client {
@@ -51,7 +86,8 @@ async fn capture_transport_logs(client: HttpClient) -> String {
             .with_writer(move || TestLogWriter(Arc::clone(&writer_buffer)))
             .with_filter(
                 tracing_subscriber::filter::Targets::new()
-                    .with_target("codex_http_client::transport", tracing::Level::TRACE),
+                    .with_target("codex_http_client::transport", tracing::Level::TRACE)
+                    .with_target("codex_http_client::client", tracing::Level::DEBUG),
             ),
     );
     let _guard = tracing::subscriber::set_default(subscriber);

@@ -4,29 +4,16 @@
 //! exec-cell grouping and unified exec wait state.
 
 use super::*;
+use crate::exec_cell::CommandOutput;
 
 impl ChatWidget {
     pub(super) fn flush_unified_exec_wait_streak(&mut self) {
         let Some(wait) = self.unified_exec_wait_streak.take() else {
             return;
         };
-        self.transcript.needs_final_message_separator = true;
-        if self
-            .transcript
-            .active_cell
-            .as_ref()
-            .and_then(|cell| {
-                cell.as_any()
-                    .downcast_ref::<history_cell::WaitPrimitiveCell>()
-            })
-            .is_some_and(history_cell::WaitPrimitiveCell::is_waiting_cell)
-        {
-            self.flush_active_cell();
-        } else {
-            let cell =
-                history_cell::new_terminal_wait_primitive(wait.terminal_wait, wait.command_display);
-            self.app_event_tx
-                .send(AppEvent::InsertHistoryCell(Box::new(cell)));
+        let cell = history_cell::new_unified_exec_interaction(wait.command_display, String::new());
+        if let Err(cell) = self.absorb_activity_detail(Box::new(cell)) {
+            self.app_event_tx.send(AppEvent::InsertHistoryCell(cell));
         }
         self.restore_reasoning_status_header();
     }
@@ -86,12 +73,7 @@ impl ChatWidget {
         }
     }
 
-    pub(super) fn on_terminal_interaction(
-        &mut self,
-        process_id: String,
-        stdin: String,
-        terminal_wait: Option<TerminalWaitInfo>,
-    ) {
+    pub(super) fn on_terminal_interaction(&mut self, process_id: String, stdin: String) {
         if !self.bottom_pane.is_task_running() {
             return;
         }
@@ -100,77 +82,40 @@ impl ChatWidget {
             .iter()
             .find(|process| process.key == process_id)
             .map(|process| process.command_display.clone());
-        let terminal_wait = terminal_wait.or_else(|| {
-            (stdin.is_empty() && command_display.is_some()).then_some(TerminalWaitInfo {
-                primitive: TerminalWaitPrimitive::WriteStdinEmptyPoll,
-                max_wait_ms: None,
-                heartbeat_interval_ms: None,
-            })
-        });
-        if stdin.is_empty() && command_display.is_none() && terminal_wait.is_none() {
+        if stdin.is_empty() && command_display.is_none() {
             return;
         }
 
         self.flush_answer_stream_with_separator();
         if stdin.is_empty() {
             // Empty stdin means we are polling for background output.
-            // Surface the wait primitive in the transcript-style active cell while keeping
-            // the bottom-pane header short so the interrupt hint remains visible.
+            // Surface this in the status indicator (single "waiting" surface) instead of
+            // the transcript. Keep the header short so the interrupt hint remains visible.
             self.bottom_pane.ensure_status_indicator();
             self.bottom_pane
                 .set_interrupt_hint_visible(/*visible*/ true);
             self.status_state.terminal_title_status_kind =
                 TerminalTitleStatusKind::WaitingForBackgroundTerminal;
             self.set_status(
-                format!(
-                    "Waiting · primitive: {}",
-                    terminal_wait
-                        .as_ref()
-                        .map(|wait| history_cell::terminal_wait_primitive_label(&wait.primitive))
-                        .unwrap_or("write_stdin(empty stdin poll)")
-                ),
+                "Waiting for background terminal".to_string(),
                 command_display.clone(),
                 StatusDetailsCapitalization::Preserve,
                 /*details_max_lines*/ 1,
             );
-            let terminal_wait = terminal_wait.unwrap_or(TerminalWaitInfo {
-                primitive: TerminalWaitPrimitive::WriteStdinEmptyPoll,
-                max_wait_ms: None,
-                heartbeat_interval_ms: None,
-            });
             match &mut self.unified_exec_wait_streak {
                 Some(wait) if wait.process_id == process_id => {
-                    wait.update_command_display(command_display.clone());
+                    wait.update_command_display(command_display);
                 }
                 Some(_) => {
                     self.flush_unified_exec_wait_streak();
-                    self.unified_exec_wait_streak = Some(UnifiedExecWaitStreak::new(
-                        process_id,
-                        command_display.clone(),
-                        terminal_wait.clone(),
-                    ));
+                    self.unified_exec_wait_streak =
+                        Some(UnifiedExecWaitStreak::new(process_id, command_display));
                 }
                 None => {
-                    self.unified_exec_wait_streak = Some(UnifiedExecWaitStreak::new(
-                        process_id,
-                        command_display.clone(),
-                        terminal_wait.clone(),
-                    ));
+                    self.unified_exec_wait_streak =
+                        Some(UnifiedExecWaitStreak::new(process_id, command_display));
                 }
             }
-            if let Some(cell) = self.transcript.active_cell.as_mut().and_then(|cell| {
-                cell.as_any_mut()
-                    .downcast_mut::<history_cell::WaitPrimitiveCell>()
-            }) && cell.is_waiting_cell()
-            {
-                cell.update_detail(command_display);
-            } else {
-                self.flush_active_cell();
-                self.transcript.active_cell = Some(Box::new(
-                    history_cell::new_terminal_wait_primitive(terminal_wait, command_display),
-                ));
-            }
-            self.bump_active_cell_revision();
             self.request_redraw();
         } else {
             if self
@@ -301,7 +246,6 @@ impl ChatWidget {
             command,
             source,
             command_actions,
-            terminal_wait,
             ..
         } = item
         else {
@@ -318,7 +262,6 @@ impl ChatWidget {
                 command: command.clone(),
                 parsed_cmd: parsed_cmd.clone(),
                 source,
-                terminal_wait: terminal_wait.clone(),
             },
         );
         let is_wait_interaction = matches!(source, ExecCommandSource::UnifiedExecInteraction);
@@ -348,7 +291,6 @@ impl ChatWidget {
                 parsed_cmd.clone(),
                 source,
                 /*interaction_input*/ None,
-                terminal_wait.clone(),
             )
         {
             self.bump_active_cell_revision();
@@ -361,8 +303,7 @@ impl ChatWidget {
                 parsed_cmd,
                 source,
                 /*interaction_input*/ None,
-                terminal_wait,
-                self.config.animations,
+                self.local_settings.tui.animations && self.local_settings.tui.effects.progress,
             )));
             self.bump_active_cell_revision();
         }
@@ -394,8 +335,8 @@ impl ChatWidget {
             command,
             process_id: _,
             source,
+            status,
             command_actions,
-            terminal_wait,
             aggregated_output,
             exit_code,
             duration_ms,
@@ -410,21 +351,44 @@ impl ChatWidget {
             .map(codex_app_server_protocol::CommandAction::into_core)
             .collect();
         let duration = Duration::from_millis(duration_ms.unwrap_or_default().max(0) as u64);
-        let exit_code = exit_code.unwrap_or_default();
+        let exit_code = if status == codex_app_server_protocol::CommandExecutionStatus::Completed {
+            exit_code.unwrap_or_default()
+        } else {
+            exit_code.filter(|code| *code != 0).unwrap_or(1)
+        };
         let aggregated_output = aggregated_output.unwrap_or_default();
 
         let running = self.running_commands.remove(&id);
         if self.suppressed_exec_calls.remove(&id) {
             return;
         }
-        let (command, parsed, source, terminal_wait) = match running {
-            Some(rc) => (rc.command, rc.parsed_cmd, rc.source, rc.terminal_wait),
-            None => (event_command, event_parsed, source, terminal_wait),
+        let (command, parsed, source) = match running {
+            Some(rc) => (rc.command, rc.parsed_cmd, rc.source),
+            None => (event_command, event_parsed, source),
         };
         let parsed = self.annotate_skill_reads_in_parsed_cmd(parsed);
         let is_unified_exec_interaction =
             matches!(source, ExecCommandSource::UnifiedExecInteraction);
         let is_user_shell = source == ExecCommandSource::UserShell;
+        // Completion-only replay has no begin event to join adjacent exploration. Extend only
+        // a finished, compatible group; an unrelated running group must retain orphan routing.
+        if let Some(cell) = self
+            .transcript
+            .active_cell
+            .as_mut()
+            .and_then(|cell| cell.as_any_mut().downcast_mut::<ExecCell>())
+            && !cell.is_active()
+            && !cell.should_flush()
+            && !cell.iter_calls().any(|call| call.call_id == id)
+        {
+            cell.add_call(
+                id.clone(),
+                command.clone(),
+                parsed.clone(),
+                source,
+                /*interaction_input*/ None,
+            );
+        }
         let end_target = match self.transcript.active_cell.as_ref() {
             Some(cell) => match cell.as_any().downcast_ref::<ExecCell>() {
                 Some(exec_cell) if exec_cell.iter_calls().any(|call| call.call_id == id) => {
@@ -433,13 +397,19 @@ impl ChatWidget {
                 Some(exec_cell) if exec_cell.is_active() => {
                     ExecEndTarget::OrphanHistoryWhileActiveExec
                 }
+                None if cell.as_any().is::<McpToolCallCell>()
+                    || cell
+                        .as_any()
+                        .downcast_ref::<history_cell::ComputerActivityCell>()
+                        .is_some_and(history_cell::ComputerActivityCell::is_active) =>
+                {
+                    ExecEndTarget::OrphanHistoryWhileActiveExec
+                }
                 Some(_) | None => ExecEndTarget::NewCell,
             },
             None => ExecEndTarget::NewCell,
         };
 
-        // Unified exec interaction rows intentionally hide command output text in the exec cell and
-        // instead render the interaction-specific content elsewhere in the UI.
         let output = if is_unified_exec_interaction {
             CommandOutput::new(exit_code, String::new())
         } else {
@@ -471,40 +441,50 @@ impl ChatWidget {
                     parsed,
                     source,
                     /*interaction_input*/ None,
-                    terminal_wait,
-                    self.config.animations,
+                    self.local_settings.tui.animations && self.local_settings.tui.effects.progress,
                 );
                 let completed = orphan.complete_call(&id, output, duration);
                 debug_assert!(completed, "new orphan exec cell should contain {id}");
-                self.transcript.needs_final_message_separator = true;
                 self.app_event_tx
                     .send(AppEvent::InsertHistoryCell(Box::new(orphan)));
                 self.request_redraw();
             }
             ExecEndTarget::NewCell => {
-                self.flush_active_cell();
                 let mut cell = new_active_exec_command(
                     id.clone(),
                     command,
                     parsed,
                     source,
                     /*interaction_input*/ None,
-                    terminal_wait,
-                    self.config.animations,
+                    self.local_settings.tui.animations && self.local_settings.tui.effects.progress,
                 );
                 let completed = cell.complete_call(&id, output, duration);
                 debug_assert!(completed, "new exec cell should contain {id}");
-                if cell.should_flush() {
-                    self.add_to_history(cell);
-                } else {
-                    self.transcript.active_cell = Some(Box::new(cell));
+                if let Some(active) = self
+                    .transcript
+                    .active_cell
+                    .as_mut()
+                    .and_then(|cell| cell.as_any_mut().downcast_mut::<ExecCell>())
+                    && !active.is_active()
+                    && active.is_exploring_cell()
+                    && cell.is_exploring_cell()
+                {
+                    // Replayed commands have completion events without matching starts.
+                    active.group.calls.extend(cell.group.calls);
                     self.bump_active_cell_revision();
                     self.request_redraw();
+                } else {
+                    self.flush_active_cell();
+                    if cell.should_flush() {
+                        self.add_to_history(cell);
+                    } else {
+                        self.transcript.active_cell = Some(Box::new(cell));
+                        self.bump_active_cell_revision();
+                        self.request_redraw();
+                    }
                 }
             }
         }
-        // Mark that actual work was done (command executed)
-        self.transcript.had_work_activity = true;
         if is_user_shell {
             self.maybe_send_next_queued_input();
         }

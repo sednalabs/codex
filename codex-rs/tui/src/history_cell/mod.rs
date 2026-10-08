@@ -10,9 +10,11 @@
 //! bumps the active-cell revision tracked by `ChatWidget`, so the cache key changes whenever the
 //! rendered transcript output can change.
 
+mod activity_group;
+pub(crate) use activity_group::ActivityGroup;
+
 use crate::diff_model::FileChange;
 use crate::diff_render::create_diff_summary;
-use crate::diff_render::display_path_for;
 use crate::exec_cell::CommandOutput;
 use crate::exec_cell::OutputLinesParams;
 use crate::exec_cell::TOOL_CALL_MAX_LINES;
@@ -21,7 +23,6 @@ use crate::exec_command::relativize_to_home;
 use crate::exec_command::strip_bash_lc_and_escape;
 use crate::legacy_core::config::Config;
 use crate::live_wrap::take_prefix_by_width;
-use crate::markdown::append_markdown;
 use crate::motion::MotionMode;
 use crate::motion::ReducedMotionIndicator;
 use crate::motion::activity_indicator;
@@ -31,18 +32,15 @@ use crate::render::line_utils::push_owned_lines;
 use crate::render::renderable::Renderable;
 use crate::session_state::ThreadSessionState;
 use crate::style::proposed_plan_style;
-use crate::style::user_message_style;
 use crate::terminal_hyperlinks::HyperlinkLine;
-use crate::terminal_hyperlinks::mark_buffer_hyperlinks;
+use crate::terminal_hyperlinks::HyperlinkParagraph;
 use crate::terminal_hyperlinks::plain_hyperlink_lines;
 use crate::terminal_hyperlinks::prefix_hyperlink_lines;
 use crate::terminal_hyperlinks::visible_lines;
-use crate::terminal_hyperlinks::visible_lines_ref;
 #[cfg(test)]
 use crate::test_support::PathBufExt;
 #[cfg(test)]
 use crate::test_support::test_path_buf;
-use crate::text_formatting::format_and_truncate_tool_result;
 use crate::text_formatting::truncate_text;
 use crate::tooltips;
 use crate::ui_consts::LIVE_PREFIX_COLS;
@@ -51,7 +49,6 @@ use crate::version::CODEX_CLI_VERSION;
 use crate::wrapping::RtOptions;
 use crate::wrapping::adaptive_wrap_line;
 use crate::wrapping::adaptive_wrap_lines;
-use base64::Engine;
 use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::McpAuthStatus;
 use codex_app_server_protocol::McpServerStatus;
@@ -61,7 +58,6 @@ use codex_app_server_protocol::ToolRequestUserInputQuestion;
 use codex_app_server_protocol::WebSearchAction;
 #[cfg(test)]
 use codex_config::types::McpServerTransportConfig;
-use codex_config::types::TuiTranscriptDetailMode;
 #[cfg(test)]
 use codex_mcp::qualified_mcp_tool_name_prefix;
 use codex_otel::RuntimeMetricsSummary;
@@ -84,9 +80,8 @@ use codex_protocol::user_input::TextElement;
 use codex_utils_absolute_path::AbsolutePathBuf;
 #[cfg(test)]
 use codex_utils_cli::format_env_display;
-use image::DynamicImage;
-use image::ImageReader;
 use ratatui::prelude::*;
+#[cfg(test)]
 use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
@@ -97,22 +92,20 @@ use ratatui::widgets::Paragraph;
 use ratatui::widgets::Wrap;
 use std::any::Any;
 use std::collections::HashMap;
-use std::io::Cursor;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
-use tracing::error;
 use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthStr;
 use url::Url;
 
 const RAW_DIFF_SUMMARY_WIDTH: usize = 10_000;
-const RAW_TOOL_OUTPUT_WIDTH: usize = 10_000;
 
+mod activity_details;
+pub(crate) mod activity_preview;
 mod approvals;
 mod base;
-mod computer_use;
+mod dynamic;
 mod exec;
 mod hook_cell;
 mod markdown_render_cache;
@@ -125,10 +118,15 @@ mod request_user_input;
 mod search;
 mod separators;
 mod session;
+mod spoken_artifacts;
+mod startup_warnings;
+mod warnings;
 
+pub(crate) use activity_details::ActivityDetails;
+pub(crate) use activity_preview::ActivityDisclosure;
 pub(crate) use approvals::*;
 pub(crate) use base::*;
-pub(crate) use computer_use::*;
+pub(crate) use dynamic::DynamicToolCallCell;
 pub(crate) use exec::*;
 pub(crate) use hook_cell::HookCell;
 pub(crate) use hook_cell::new_active_hook_cell;
@@ -142,6 +140,13 @@ pub(crate) use request_user_input::*;
 pub(crate) use search::*;
 pub(crate) use separators::*;
 pub(crate) use session::*;
+pub(crate) use startup_warnings::StartupWarningsCell;
+pub(crate) use warnings::WarningEntry;
+pub(crate) use warnings::WarningHistoryCell;
+pub(crate) use warnings::WarningId;
+pub(crate) use warnings::WarningKey;
+pub(crate) use warnings::warning_count;
+pub(crate) use warnings::warning_entries;
 
 #[cfg(test)]
 mod tests;
@@ -150,37 +155,6 @@ mod tests;
 pub(crate) enum HistoryRenderMode {
     Rich,
     Raw,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum TranscriptDetailMode {
-    Verbose,
-    Compact,
-}
-
-impl TranscriptDetailMode {
-    pub(crate) fn opposite(self) -> Self {
-        match self {
-            Self::Verbose => Self::Compact,
-            Self::Compact => Self::Verbose,
-        }
-    }
-
-    pub(crate) fn name(self) -> &'static str {
-        match self {
-            Self::Verbose => "verbose",
-            Self::Compact => "compact",
-        }
-    }
-}
-
-impl From<TuiTranscriptDetailMode> for TranscriptDetailMode {
-    fn from(mode: TuiTranscriptDetailMode) -> Self {
-        match mode {
-            TuiTranscriptDetailMode::Verbose => Self::Verbose,
-            TuiTranscriptDetailMode::Compact => Self::Compact,
-        }
-    }
 }
 
 pub(crate) fn raw_lines_from_source(source: &str) -> Vec<Line<'static>> {
@@ -223,21 +197,79 @@ pub(crate) fn plain_lines(lines: impl IntoIterator<Item = Line<'static>>) -> Vec
 /// heights when they apply additional layout logic beyond what
 /// `Paragraph::line_count` captures.
 pub(crate) trait HistoryCell: std::fmt::Debug + Send + Sync + Any {
+    /// Retain reasoning inside an activity group, or return it for normal insertion.
+    /// Call positions stay fixed as in-flight calls complete; other history cells decline it.
+    fn append_reasoning(&mut self, cell: Box<dyn HistoryCell>) -> Result<(), Box<dyn HistoryCell>> {
+        Err(cell)
+    }
+
+    /// Diagnostics exposed by the warnings picker, retaining their source and full text.
+    fn warning_entries(&self) -> Vec<WarningEntry> {
+        Vec::new()
+    }
+
+    /// Stable diagnostic identities, independent of rendered wrapping and duplicate delivery.
+    fn warning_keys(&self) -> Vec<WarningKey<'_>> {
+        Vec::new()
+    }
+
+    /// Original Markdown for semantic copy targets, independent of presentation.
+    fn copy_source(&self) -> Option<&str> {
+        None
+    }
+
     /// Returns the logical lines for the main chat viewport.
     fn display_lines(&self, width: u16) -> Vec<Line<'static>>;
 
     /// Returns copy-friendly plain logical lines for raw scrollback mode.
     fn raw_lines(&self) -> Vec<Line<'static>>;
 
+    /// Raw live presentation may omit transcript-only diagnostics without losing their source.
+    fn live_raw_lines(&self) -> Vec<Line<'static>> {
+        self.raw_lines()
+    }
+
     /// Returns rich visible lines plus terminal hyperlink metadata.
     fn display_hyperlink_lines(&self, width: u16) -> Vec<HyperlinkLine> {
         plain_hyperlink_lines(self.display_lines(width))
     }
 
+    /// Compact presentation for the owned transcript, which can reveal details in place.
+    #[allow(dead_code, reason = "Used by later layers of the TUI refresh stack.")]
+    fn compact_hyperlink_lines(&self, width: u16) -> Vec<HyperlinkLine> {
+        self.display_hyperlink_lines(width)
+    }
+
+    /// Rich presentation in a viewport that can redraw previously visible rows.
+    fn retained_hyperlink_lines(&self, width: u16, detailed: bool) -> Vec<HyperlinkLine> {
+        if detailed {
+            self.transcript_hyperlink_lines(width)
+        } else {
+            self.compact_hyperlink_lines(width)
+        }
+    }
+
+    /// Stable, namespaced member identities used to retain disclosure across grouping and replay.
+    /// Empty identities indicate ordinary content without a local disclosure control.
+    fn activity_ids(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Available activity details, preserving source order and any upstream truncation notices.
+    fn expanded_hyperlink_lines(&self, width: u16) -> Vec<HyperlinkLine> {
+        self.transcript_hyperlink_lines(width)
+    }
+
+    /// Details an activity offers beyond its compact presentation, if any.
+    /// Prefer source metadata so collapsed rendering does not materialize hidden content.
+    fn activity_disclosure(&self, _width: u16) -> Option<ActivityDisclosure> {
+        Some(ActivityDisclosure::Generic)
+    }
+
     fn display_lines_for_mode(&self, width: u16, mode: HistoryRenderMode) -> Vec<Line<'static>> {
         match mode {
             HistoryRenderMode::Rich => visible_lines(self.display_hyperlink_lines(width)),
-            HistoryRenderMode::Raw => self.raw_lines(),
+            HistoryRenderMode::Raw => self.live_raw_lines(),
         }
     }
 
@@ -248,7 +280,7 @@ pub(crate) trait HistoryCell: std::fmt::Debug + Send + Sync + Any {
     ) -> Vec<HyperlinkLine> {
         match mode {
             HistoryRenderMode::Rich => self.display_hyperlink_lines(width),
-            HistoryRenderMode::Raw => plain_hyperlink_lines(self.raw_lines()),
+            HistoryRenderMode::Raw => plain_hyperlink_lines(self.live_raw_lines()),
         }
     }
 
@@ -289,97 +321,16 @@ pub(crate) trait HistoryCell: std::fmt::Debug + Send + Sync + Any {
         plain_hyperlink_lines(self.transcript_lines(width))
     }
 
-    /// Returns transcript-overlay lines plus terminal hyperlink metadata for compact detail mode.
+    /// Whether the cached transcript layout remains valid across later frames.
     ///
-    /// Defaults to the viewport/display representation so cells without a transcript-specific
-    /// compact summary keep their current compact behavior.
-    fn compact_transcript_hyperlink_lines(&self, width: u16) -> Vec<HyperlinkLine> {
-        self.display_hyperlink_lines(width)
-    }
-
-    /// Returns transcript overlay lines for the selected render mode.
-    fn transcript_lines_for_mode(&self, width: u16, mode: HistoryRenderMode) -> Vec<Line<'static>> {
-        match mode {
-            HistoryRenderMode::Rich => self.transcript_lines(width),
-            HistoryRenderMode::Raw => self.raw_lines(),
-        }
-    }
-
-    /// Returns transcript overlay lines plus terminal hyperlink metadata for the selected render mode.
-    fn transcript_hyperlink_lines_for_mode(
-        &self,
-        width: u16,
-        mode: HistoryRenderMode,
-    ) -> Vec<HyperlinkLine> {
-        match mode {
-            HistoryRenderMode::Rich => self.transcript_hyperlink_lines(width),
-            HistoryRenderMode::Raw => plain_hyperlink_lines(self.raw_lines()),
-        }
-    }
-
-    /// Returns transcript overlay lines plus terminal hyperlink metadata for the selected detail mode.
-    fn transcript_hyperlink_lines_for_detail_mode(
-        &self,
-        width: u16,
-        render_mode: HistoryRenderMode,
-        detail_mode: TranscriptDetailMode,
-    ) -> Vec<HyperlinkLine> {
-        match detail_mode {
-            TranscriptDetailMode::Verbose => {
-                self.transcript_hyperlink_lines_for_mode(width, render_mode)
-            }
-            TranscriptDetailMode::Compact => self.compact_transcript_hyperlink_lines(width),
-        }
-    }
-
-    /// Returns the number of viewport rows for the transcript overlay.
-    ///
-    /// Uses the same `Paragraph::line_count` measurement as
-    /// `desired_height`. Contains a workaround for a ratatui bug where
-    /// a single whitespace-only line reports 2 rows instead of 1.
-    #[allow(dead_code)]
-    fn desired_transcript_height(&self, width: u16) -> u16 {
-        self.desired_transcript_height_for_mode(width, HistoryRenderMode::Rich)
-    }
-
-    fn desired_transcript_height_for_mode(&self, width: u16, mode: HistoryRenderMode) -> u16 {
-        let lines = visible_lines(self.transcript_hyperlink_lines_for_mode(width, mode));
-        desired_wrapped_line_height(lines, width)
-    }
-
-    fn desired_transcript_height_for_detail_mode(
-        &self,
-        width: u16,
-        render_mode: HistoryRenderMode,
-        detail_mode: TranscriptDetailMode,
-    ) -> u16 {
-        let lines = visible_lines(self.transcript_hyperlink_lines_for_detail_mode(
-            width,
-            render_mode,
-            detail_mode,
-        ));
-        desired_wrapped_line_height(lines, width)
-    }
-
-    /// Whether the transcript height remains valid across later overlay renders.
-    ///
-    /// Cells backed by external state should return `false` so the pager remeasures them before
-    /// rendering instead of reusing a height that may now clip their content.
+    /// Cells backed by external state should return `false` so the shared viewport refreshes
+    /// their rendered text and source mapping each frame instead of reusing stale content.
     fn has_stable_transcript_height(&self) -> bool {
         true
     }
 
     fn is_stream_continuation(&self) -> bool {
         false
-    }
-
-    fn is_user_prompt(&self) -> bool {
-        false
-    }
-
-    /// Returns finalized raw markdown that can represent this cell in a copied transcript turn.
-    fn transcript_copy_markdown(&self) -> Option<&str> {
-        None
     }
 
     /// Returns a coarse "animation tick" when transcript output is time-dependent.
@@ -397,30 +348,10 @@ pub(crate) trait HistoryCell: std::fmt::Debug + Send + Sync + Any {
     }
 }
 
-fn desired_wrapped_line_height(lines: Vec<Line<'static>>, width: u16) -> u16 {
-    // Workaround: ratatui's line_count returns 2 for a single
-    // whitespace-only line. Clamp to 1 in that case.
-    if let [line] = &lines[..]
-        && line
-            .spans
-            .iter()
-            .all(|s| s.content.chars().all(char::is_whitespace))
-    {
-        return 1;
-    }
-
-    Paragraph::new(Text::from(lines))
-        .wrap(Wrap { trim: false })
-        .line_count(width)
-        .try_into()
-        .unwrap_or(0)
-}
-
 impl Renderable for Box<dyn HistoryCell> {
     fn render(&self, area: Rect, buf: &mut Buffer) {
         let hyperlink_lines = self.display_hyperlink_lines(area.width);
-        let lines = visible_lines_ref(&hyperlink_lines);
-        let paragraph = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false });
+        let paragraph = HyperlinkParagraph::new(&hyperlink_lines, Style::default());
         let y = if area.height == 0 {
             0
         } else {
@@ -432,8 +363,7 @@ impl Renderable for Box<dyn HistoryCell> {
         // Active-cell content can reflow dramatically during resize/stream updates. Clear the
         // entire draw area first so stale glyphs from previous frames never linger.
         Clear.render(area, buf);
-        paragraph.scroll((y, 0)).render(area, buf);
-        mark_buffer_hyperlinks(buf, area, &hyperlink_lines, usize::from(y));
+        paragraph.scroll(y).render(area, buf);
     }
     fn desired_height(&self, width: u16) -> u16 {
         HistoryCell::desired_height(self.as_ref(), width)
