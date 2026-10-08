@@ -34,6 +34,8 @@ codex-app-server-daemon = { workspace = true }
 codex-app-server-protocol = { workspace = true }
 codex-arg0 = { workspace = true }
 codex-backend-client = { workspace = true }
+codex-android-computer-use = { workspace = true }
+codex-browser-computer-use = { workspace = true }
 codex-install-context = { workspace = true }
 codex-cloud-config = { workspace = true }
 codex-config = { workspace = true }
@@ -112,6 +114,7 @@ textwrap = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = [
     "io-std",
+    "io-util",
     "macros",
     "process",
     "rt-multi-thread",

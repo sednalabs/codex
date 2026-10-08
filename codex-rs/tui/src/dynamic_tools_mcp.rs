@@ -43,6 +43,7 @@ use serde_json::Value;
 use serde_json::json;
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::PoisonError;
 use std::sync::RwLock;
@@ -63,6 +64,36 @@ impl ThreadToolTransport {
         &self,
         config: &crate::legacy_core::config::Config,
     ) -> std::io::Result<()> {
+        if !crate::android_computer_use_provider::specs_for_codex_home(config.codex_home.as_path())
+            .is_empty()
+            && config
+                .mcp_servers
+                .get()
+                .contains_key(crate::android_computer_use_provider::NAMESPACE)
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!(
+                    "MCP server key `{}` is reserved by Android dynamic tools; rename that server before starting this thread",
+                    crate::android_computer_use_provider::NAMESPACE
+                ),
+            ));
+        }
+        if !crate::desktop_computer_use_provider::specs_for_codex_home(config.codex_home.as_path())
+            .is_empty()
+            && config
+                .mcp_servers
+                .get()
+                .contains_key(crate::desktop_computer_use_provider::NAMESPACE)
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!(
+                    "MCP server key `{}` is reserved by Desktop dynamic tools; rename that server before starting this thread",
+                    crate::desktop_computer_use_provider::NAMESPACE
+                ),
+            ));
+        }
         if let Self::Mcp(server) = self
             && config.mcp_servers.get().contains_key(server.namespace)
         {
@@ -74,17 +105,33 @@ impl ThreadToolTransport {
         Ok(())
     }
 
-    pub(crate) fn configure(&self, params: &mut ThreadStartParams) {
-        match self {
-            Self::Disabled => params.dynamic_tools = None,
-            Self::Dynamic => {
-                params.dynamic_tools = Some(dynamic_tools::non_delegation_tool_specs());
-            }
+    pub(crate) fn configure(
+        &self,
+        params: &mut ThreadStartParams,
+        codex_home: &Path,
+    ) -> Result<(), String> {
+        crate::browser_dynamic_tools::validate_no_reserved_name_conflict(params)?;
+        crate::android_computer_use_provider::validate_no_reserved_name_conflict(params)?;
+        crate::desktop_computer_use_provider::validate_no_reserved_name_conflict(params)?;
+        let mut specs = match self {
+            Self::Disabled => Vec::new(),
+            Self::Dynamic => dynamic_tools::non_delegation_tool_specs(),
             Self::Mcp(_) => {
-                params.dynamic_tools = None;
                 self.configure_mcp(&mut params.config);
+                Vec::new()
             }
-        }
+        };
+        specs.extend(crate::browser_dynamic_tools::specs_for_codex_home(
+            codex_home,
+        ));
+        specs.extend(crate::android_computer_use_provider::specs_for_codex_home(
+            codex_home,
+        ));
+        specs.extend(crate::desktop_computer_use_provider::specs_for_codex_home(
+            codex_home,
+        ));
+        params.dynamic_tools = (!specs.is_empty()).then_some(specs);
+        Ok(())
     }
 
     pub(crate) fn configure_mcp(&self, config: &mut Option<HashMap<String, Value>>) {
@@ -95,6 +142,17 @@ impl ThreadToolTransport {
             );
         }
     }
+}
+
+pub(crate) fn has_task_tools(params: &ThreadStartParams) -> bool {
+    params.dynamic_tools.as_ref().is_some_and(|specs| {
+        specs.iter().any(
+            |spec| matches!(spec, DynamicToolSpec::Namespace(namespace) if namespace.name == dynamic_tools::NAMESPACE),
+        )
+    }) || params
+        .config
+        .as_ref()
+        .is_some_and(|config| config.contains_key("mcp_servers.codex_tui"))
 }
 
 #[derive(Clone)]
@@ -399,5 +457,210 @@ impl ServerHandler for DynamicToolMcpHandler {
             CallToolResult::error(content)
         }
         .into())
+    }
+}
+
+#[cfg(test)]
+mod native_computer_use_registration_tests {
+    use super::*;
+    use crate::legacy_core::config::ConfigBuilder;
+    use codex_app_server_protocol::DynamicToolSpec;
+    use serde_json::json;
+
+    fn configured_native_computer_use_home() -> tempfile::TempDir {
+        let home = tempfile::tempdir().expect("temporary computer-use home");
+        std::fs::write(
+            home.path().join("browser-computer-use.json"),
+            r#"{"provider":"playwright"}"#,
+        )
+        .expect("write browser config");
+        std::fs::write(
+            home.path().join("android-computer-use.json"),
+            r#"{"mcp_url":"http://127.0.0.1:1/mcp"}"#,
+        )
+        .expect("write Android config");
+        std::fs::write(
+            home.path().join("desktop-computer-use.json"),
+            r#"{"provider":"command","command":["not-executed"]}"#,
+        )
+        .expect("write Desktop config");
+        home
+    }
+
+    fn has_browser_namespace(params: &ThreadStartParams) -> bool {
+        params.dynamic_tools.as_ref().is_some_and(|specs| {
+            specs.iter().any(
+                |spec| matches!(spec, DynamicToolSpec::Namespace(namespace) if namespace.name == crate::browser_dynamic_tools::NAMESPACE),
+            )
+        })
+    }
+
+    fn namespace_tool_names(params: &ThreadStartParams, name: &str) -> Vec<String> {
+        params
+            .dynamic_tools
+            .as_ref()
+            .into_iter()
+            .flatten()
+            .filter_map(|spec| match spec {
+                DynamicToolSpec::Namespace(namespace) if namespace.name == name => Some(namespace),
+                _ => None,
+            })
+            .flat_map(|namespace| namespace.tools.iter())
+            .filter_map(|tool| match tool {
+                codex_app_server_protocol::DynamicToolNamespaceTool::Function(function) => {
+                    Some(function.name.clone())
+                }
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn configured_native_provider_specs_are_registered_for_each_transport() {
+        let home = configured_native_computer_use_home();
+
+        let mut disabled = ThreadStartParams::default();
+        ThreadToolTransport::Disabled
+            .configure(&mut disabled, home.path())
+            .expect("disabled task transport must retain native providers");
+        assert!(has_browser_namespace(&disabled));
+        assert_eq!(
+            namespace_tool_names(&disabled, crate::android_computer_use_provider::NAMESPACE),
+            vec![
+                "android_observe".to_string(),
+                "android_step".to_string(),
+                "android_install_build_from_run".to_string()
+            ]
+        );
+        assert_eq!(
+            namespace_tool_names(&disabled, crate::desktop_computer_use_provider::NAMESPACE),
+            vec!["desktop_observe".to_string(), "desktop_step".to_string()]
+        );
+        assert!(!has_task_tools(&disabled));
+
+        let mut dynamic = ThreadStartParams::default();
+        ThreadToolTransport::Dynamic
+            .configure(&mut dynamic, home.path())
+            .expect("dynamic task transport must include native providers");
+        assert!(dynamic.dynamic_tools.as_ref().is_some_and(|specs| {
+            specs.iter().any(
+                |spec| matches!(spec, DynamicToolSpec::Namespace(namespace) if namespace.name == dynamic_tools::NAMESPACE),
+            )
+        }));
+        assert!(has_browser_namespace(&dynamic));
+        assert_eq!(
+            namespace_tool_names(&dynamic, crate::android_computer_use_provider::NAMESPACE),
+            vec![
+                "android_observe".to_string(),
+                "android_step".to_string(),
+                "android_install_build_from_run".to_string()
+            ]
+        );
+        assert_eq!(
+            namespace_tool_names(&dynamic, crate::desktop_computer_use_provider::NAMESPACE),
+            vec!["desktop_observe".to_string(), "desktop_step".to_string()]
+        );
+        assert!(has_task_tools(&dynamic));
+
+        let server = DynamicToolMcpServer {
+            connection: Arc::new(RwLock::new(None)),
+            config: json!({"url":"http://127.0.0.1/mcp"}),
+            namespace: "codex_tui",
+            task: tokio::spawn(async {}),
+        };
+        let mut mcp = ThreadStartParams::default();
+        ThreadToolTransport::Mcp(Arc::new(server))
+            .configure(&mut mcp, home.path())
+            .expect("MCP task transport must include native providers");
+        assert!(has_browser_namespace(&mcp));
+        assert_eq!(
+            namespace_tool_names(&mcp, crate::android_computer_use_provider::NAMESPACE),
+            vec![
+                "android_observe".to_string(),
+                "android_step".to_string(),
+                "android_install_build_from_run".to_string()
+            ]
+        );
+        assert_eq!(
+            namespace_tool_names(&mcp, crate::desktop_computer_use_provider::NAMESPACE),
+            vec!["desktop_observe".to_string(), "desktop_step".to_string()]
+        );
+        assert!(has_task_tools(&mcp));
+        assert!(
+            mcp.config
+                .as_ref()
+                .is_some_and(|config| config.contains_key("mcp_servers.codex_tui"))
+        );
+    }
+
+    #[tokio::test]
+    async fn persisted_android_server_collision_is_rejected_only_when_provider_is_configured() {
+        let home = tempfile::tempdir().expect("temporary Codex home");
+        std::fs::write(
+            home.path().join("config.toml"),
+            "[mcp_servers.codex_android]\nurl = 'http://127.0.0.1:1/mcp'\n",
+        )
+        .expect("write persisted MCP server config");
+        std::fs::write(
+            home.path().join("android-computer-use.json"),
+            r#"{"mcp_url":"http://127.0.0.1:1/android-mcp"}"#,
+        )
+        .expect("write Android provider config");
+
+        let configured = ConfigBuilder::default()
+            .codex_home(home.path().to_path_buf())
+            .build()
+            .await
+            .expect("load config with both namespace claimants");
+        let error = ThreadToolTransport::Disabled
+            .validate_config(&configured)
+            .expect_err("persisted MCP claimant must not mask the Android provider");
+        assert!(error.to_string().contains("codex_android"));
+
+        std::fs::remove_file(home.path().join("android-computer-use.json"))
+            .expect("remove Android provider config");
+        let unconfigured = ConfigBuilder::default()
+            .codex_home(home.path().to_path_buf())
+            .build()
+            .await
+            .expect("load config with only the MCP server");
+        ThreadToolTransport::Disabled
+            .validate_config(&unconfigured)
+            .expect("unclaimed Android namespace must not reject an unrelated MCP server");
+    }
+
+    #[tokio::test]
+    async fn persisted_desktop_server_collision_is_rejected_only_when_provider_is_configured() {
+        let home = tempfile::tempdir().expect("temporary Codex home");
+        std::fs::write(
+            home.path().join("config.toml"),
+            "[mcp_servers.codex_desktop]\nurl = 'http://127.0.0.1:1/mcp'\n",
+        )
+        .expect("write persisted MCP server config");
+        std::fs::write(
+            home.path().join("desktop-computer-use.json"),
+            r#"{"provider":"command","command":["not-executed"]}"#,
+        )
+        .expect("write Desktop provider config");
+
+        let configured = ConfigBuilder::default()
+            .codex_home(home.path().to_path_buf())
+            .build()
+            .await
+            .expect("load config with both namespace claimants");
+        let error = ThreadToolTransport::Disabled
+            .validate_config(&configured)
+            .expect_err("persisted MCP claimant must not mask the Desktop provider");
+        assert!(error.to_string().contains("codex_desktop"));
+
+        std::fs::remove_file(home.path().join("desktop-computer-use.json"))
+            .expect("remove Desktop provider config");
+        let unconfigured = ConfigBuilder::default()
+            .codex_home(home.path().to_path_buf())
+            .build()
+            .await
+            .expect("load config with only the MCP server");
+        ThreadToolTransport::Disabled
+            .validate_config(&unconfigured)
+            .expect("unclaimed Desktop namespace must not reject an unrelated MCP server");
     }
 }
