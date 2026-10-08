@@ -31,7 +31,9 @@ SEMVER = re.compile(
     r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?\Z"
 )
 MAX_ARCHIVE_MEMBERS = 256
-MAX_ARCHIVE_UNPACKED_BYTES = 1024 * 1024 * 1024
+# Release-mode Codex binaries with embedded debug information exceed 1 GiB;
+# keep extraction bounded while leaving room for the CLI, helpers, and resources.
+MAX_ARCHIVE_UNPACKED_BYTES = 2 * 1024 * 1024 * 1024
 
 
 def parse_args() -> argparse.Namespace:
