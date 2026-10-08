@@ -645,7 +645,9 @@ mod tests {
             Some(0)
         );
         assert_eq!(
-            observed_pending_mail_count(/*local_count*/ None, /*controller_pending*/ false),
+            observed_pending_mail_count(
+                /*local_count*/ None, /*controller_pending*/ false
+            ),
             None
         );
     }

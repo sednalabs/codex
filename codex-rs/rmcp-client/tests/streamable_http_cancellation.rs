@@ -151,7 +151,11 @@ async fn handle_mcp(State(state): State<ServerState>, Json(request): Json<Value>
                 /*session*/ false,
             )
         }
-        _ => json_response(request.get("id").cloned(), json!({}), /*session*/ false),
+        _ => json_response(
+            request.get("id").cloned(),
+            json!({}),
+            /*session*/ false,
+        ),
     }
 }
 

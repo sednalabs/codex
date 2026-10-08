@@ -8952,11 +8952,13 @@ async fn replace_chat_widget_reseeds_collab_agent_metadata_for_replay() {
                                 codex_app_server_protocol::CollabAgentToolCallStatus::InProgress,
                             sender_thread_id: ThreadId::new().to_string(),
                             receiver_thread_ids: vec![receiver_thread_id.to_string()],
-                            receiver_agents: Some(vec![codex_app_server_protocol::CollabAgentRef {
-                                thread_id: receiver_thread_id.to_string(),
-                                agent_nickname: Some("Robie".to_string()),
-                                agent_role: Some("explorer".to_string()),
-                            }]),
+                            receiver_agents: Some(vec![
+                                codex_app_server_protocol::CollabAgentRef {
+                                    thread_id: receiver_thread_id.to_string(),
+                                    agent_nickname: Some("Robie".to_string()),
+                                    agent_role: Some("explorer".to_string()),
+                                },
+                            ]),
                             prompt: None,
                             model: None,
                             reasoning_effort: None,

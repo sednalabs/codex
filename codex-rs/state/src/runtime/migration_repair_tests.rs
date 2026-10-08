@@ -27,7 +27,10 @@ fn upstream_through(last: i64) -> Migrator {
 }
 
 fn old_fork_56_58() -> Migrator {
-    let mut migrations = upstream_through(/*last*/ 55).iter().cloned().collect::<Vec<_>>();
+    let mut migrations = upstream_through(/*last*/ 55)
+        .iter()
+        .cloned()
+        .collect::<Vec<_>>();
     for (old, target) in LEGACY_FORK_IDS.iter().take(3) {
         let current = embedded(&STATE_MIGRATOR, *target).expect("fork migration is embedded");
         migrations.push(Migration::new(
@@ -42,7 +45,10 @@ fn old_fork_56_58() -> Migrator {
 }
 
 fn old_fork_alias_pair() -> Migrator {
-    let mut migrations = upstream_through(/*last*/ 55).iter().cloned().collect::<Vec<_>>();
+    let mut migrations = upstream_through(/*last*/ 55)
+        .iter()
+        .cloned()
+        .collect::<Vec<_>>();
     for (old, target) in LEGACY_FORK_IDS
         .iter()
         .filter(|(old, _)| *old == 9001 || *old == 9002)
@@ -60,7 +66,10 @@ fn old_fork_alias_pair() -> Migrator {
 }
 
 fn shifted_fork_through(last: i64) -> Migrator {
-    let mut migrations = upstream_through(/*last*/ 23).iter().cloned().collect::<Vec<_>>();
+    let mut migrations = upstream_through(/*last*/ 23)
+        .iter()
+        .cloned()
+        .collect::<Vec<_>>();
     for (old, _, target) in SHIFTED.iter().filter(|(old, _, _)| *old <= last) {
         let current = embedded(&STATE_MIGRATOR, *target).expect("shifted target is embedded");
         migrations.push(Migration::new(

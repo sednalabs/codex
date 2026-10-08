@@ -72,6 +72,7 @@ const MAX_MCP_POST_BODY_BYTES: usize = 1024 * 1024;
 #[derive(Clone, Default)]
 struct PostFailureState {
     armed_failure: Arc<Mutex<Option<ArmedFailure>>>,
+    session_ordinals: Arc<Mutex<HashMap<String, u64>>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -536,49 +537,123 @@ async fn fail_mcp_post_when_armed(
         }
     };
     let has_session_id = parts.headers.contains_key(MCP_SESSION_ID_HEADER);
+    let session_id = parts
+        .headers
+        .get(MCP_SESSION_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(ToString::to_string);
+    let request_session_ordinal = match session_id.as_deref() {
+        Some(session_id) => Some(session_ordinal(&state, session_id).await.0),
+        None => None,
+    };
+    let http_method = parts.method.to_string();
     let mcp_method = request_mcp_method(&body_bytes);
+    let mcp_method_for_log = mcp_method
+        .as_deref()
+        .map(|method| method.chars().take(96).collect::<String>());
 
+    let mut armed_target = None;
+    let mut armed_remaining_before = None;
+    let mut armed_remaining_after = None;
+    let mut armed_match = false;
+    let mut injected_failure = None;
     {
         let mut armed_failure = state.armed_failure.lock().await;
-        if let Some(failure) = armed_failure.as_mut()
-            && failure.remaining > 0
-            && match failure.target {
-                ArmedFailureTarget::Initialize => !has_session_id,
-                ArmedFailureTarget::InitializedNotification => {
-                    has_session_id && mcp_method.as_deref() == Some("notifications/initialized")
+        if let Some(failure) = armed_failure.as_mut() {
+            armed_target = Some(match failure.target {
+                ArmedFailureTarget::Initialize => "initialize",
+                ArmedFailureTarget::InitializedNotification => "initialized_notification",
+                ArmedFailureTarget::Session => "session",
+            });
+            armed_remaining_before = Some(failure.remaining);
+            let matches_target = failure.remaining > 0
+                && match failure.target {
+                    ArmedFailureTarget::Initialize => !has_session_id,
+                    ArmedFailureTarget::InitializedNotification => {
+                        has_session_id
+                            && mcp_method.as_deref() == Some("notifications/initialized")
+                    }
+                    ArmedFailureTarget::Session => {
+                        has_session_id
+                            && mcp_method.as_deref() != Some("notifications/initialized")
+                    }
+                };
+            if matches_target {
+                armed_match = true;
+                failure.remaining -= 1;
+                let status = failure.status;
+                let www_authenticate_headers = failure.www_authenticate_headers.clone();
+                let content_type = failure.content_type.clone();
+                let body = failure
+                    .body
+                    .clone()
+                    .unwrap_or_else(|| format!("forced session failure with status {status}"));
+                armed_remaining_after = Some(failure.remaining);
+                injected_failure = Some((
+                    status,
+                    www_authenticate_headers,
+                    content_type,
+                    body,
+                ));
+                if failure.remaining == 0 {
+                    *armed_failure = None;
                 }
-                ArmedFailureTarget::Session => {
-                    has_session_id && mcp_method.as_deref() != Some("notifications/initialized")
-                }
+            } else {
+                armed_remaining_after = Some(failure.remaining);
             }
-        {
-            failure.remaining -= 1;
-            let status = failure.status;
-            let www_authenticate_headers = failure.www_authenticate_headers.clone();
-            let content_type = failure.content_type.clone();
-            let body = failure
-                .body
-                .clone()
-                .unwrap_or_else(|| format!("forced session failure with status {status}"));
-            if failure.remaining == 0 {
-                *armed_failure = None;
-            }
-            let mut response = Response::new(Body::from(body));
-            *response.status_mut() = status;
-            if let Some(content_type) = content_type {
-                response.headers_mut().insert(CONTENT_TYPE, content_type);
-            }
-            for www_authenticate_header in www_authenticate_headers {
-                response
-                    .headers_mut()
-                    .append(WWW_AUTHENTICATE, www_authenticate_header);
-            }
-            return response;
         }
     }
 
-    next.run(Request::from_parts(parts, Body::from(body_bytes)))
-        .await
+    if let Some((status, www_authenticate_headers, content_type, body)) = injected_failure {
+        let mut response = Response::new(Body::from(body));
+        *response.status_mut() = status;
+        if let Some(content_type) = content_type {
+            response.headers_mut().insert(CONTENT_TYPE, content_type);
+        }
+        for www_authenticate_header in www_authenticate_headers {
+            response
+                .headers_mut()
+                .append(WWW_AUTHENTICATE, www_authenticate_header);
+        }
+        eprintln!(
+            "fixture_mcp_request http_method={http_method} mcp_method={mcp_method_for_log:?} session_header_present={} session_ordinal={request_session_ordinal:?} armed_target={armed_target:?} armed_remaining_before={armed_remaining_before:?} armed_match={armed_match} armed_remaining_after={armed_remaining_after:?} response_status={} issued_session_ordinal=None issued_session_new=None",
+            has_session_id,
+            response.status(),
+        );
+        return response;
+    }
+
+    let response = next
+        .run(Request::from_parts(parts, Body::from(body_bytes)))
+        .await;
+    let issued_session_id = response
+        .headers()
+        .get(MCP_SESSION_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(ToString::to_string);
+    let (issued_session_ordinal, issued_session_new) = match issued_session_id.as_deref() {
+        Some(session_id) => {
+            let (ordinal, is_new) = session_ordinal(&state, session_id).await;
+            (Some(ordinal), Some(is_new))
+        }
+        None => (None, None),
+    };
+    eprintln!(
+        "fixture_mcp_request http_method={http_method} mcp_method={mcp_method_for_log:?} session_header_present={} session_ordinal={request_session_ordinal:?} armed_target={armed_target:?} armed_remaining_before={armed_remaining_before:?} armed_match={armed_match} armed_remaining_after={armed_remaining_after:?} response_status={} issued_session_ordinal={issued_session_ordinal:?} issued_session_new={issued_session_new:?}",
+        has_session_id,
+        response.status(),
+    );
+    response
+}
+
+async fn session_ordinal(state: &PostFailureState, session_id: &str) -> (u64, bool) {
+    let mut session_ordinals = state.session_ordinals.lock().await;
+    if let Some(ordinal) = session_ordinals.get(session_id) {
+        return (*ordinal, false);
+    }
+    let next_ordinal = session_ordinals.len() as u64 + 1;
+    session_ordinals.insert(session_id.to_string(), next_ordinal);
+    (next_ordinal, true)
 }
 
 fn request_mcp_method(body: &[u8]) -> Option<String> {

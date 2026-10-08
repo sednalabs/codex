@@ -750,9 +750,9 @@ mod tests {
             .await
             .expect_err("guarded state opens must reject unknown migration identities");
         assert!(
-            error.chain().any(
-                <dyn std::error::Error + 'static>::is::<super::recovery::RuntimeDbInitError>
-            )
+            error
+                .chain()
+                .any(<dyn std::error::Error + 'static>::is::<super::recovery::RuntimeDbInitError>)
         );
         assert!(format!("{error:#}").contains("state migration 9999 has an unknown identity"));
         assert!(telemetry.counters().iter().any(|event| {
