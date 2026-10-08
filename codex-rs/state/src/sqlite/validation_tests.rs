@@ -74,6 +74,71 @@ async fn runtime_opens_recover_or_report_corruption_by_database_policy() -> anyh
         pool.close().await;
         tokio::fs::rename(&fixture, &path).await?;
 
+        if path == sqlite.usage_db_path() {
+            let telemetry = CorruptionTelemetry::default();
+            // A durable usage ledger cannot be reconstructed from rollouts.
+            // Reusing a cloned configuration must not cache a failed check as safe.
+            for _ in 0..2 {
+                let error = StateRuntime::init_with_telemetry_for_tests(
+                    sqlite.clone(),
+                    "openai".to_string(),
+                    &telemetry,
+                )
+                .await
+                .err()
+                .expect("confirmed usage corruption must reject runtime initialization");
+                assert!(error.chain().any(|cause| {
+                    cause
+                        .downcast_ref::<super::super::RuntimeDbCorruptionDetected>()
+                        .is_some()
+                }));
+                assert!(error.chain().any(|cause| {
+                    cause
+                        .downcast_ref::<crate::runtime::recovery::RuntimeDbInitError>()
+                        .is_some()
+                }));
+                assert!(error.to_string().contains("failed to open usage DB"));
+                assert!(error.to_string().contains(&path.display().to_string()));
+                assert!(tokio::fs::try_exists(&path).await?);
+                assert!(!tokio::fs::try_exists(home.join("db-backups")).await?);
+
+                // Writable connection setup precedes quick_check. Assert logical
+                // data and absence of migrations, not whole-file byte equality.
+                let pool = sqlite
+                    .open_read_only_pool(&path, /*busy_timeout*/ None)
+                    .await?;
+                assert_eq!(
+                    sqlx::query_scalar::<_, Option<i64>>("SELECT value FROM sample")
+                        .fetch_all(&pool)
+                        .await?,
+                    vec![None]
+                );
+                assert_eq!(
+                    sqlx::query_scalar::<_, String>(
+                        "SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name",
+                    )
+                    .fetch_all(&pool)
+                    .await?,
+                    vec!["sample".to_string()]
+                );
+                pool.close().await;
+            }
+            assert_eq!(
+                *telemetry.0.lock().expect("telemetry lock"),
+                vec![
+                    CorruptionEvent {
+                        count: 1,
+                        tags: BTreeMap::from([("db".to_string(), "usage".to_string())]),
+                    },
+                    CorruptionEvent {
+                        count: 1,
+                        tags: BTreeMap::from([("db".to_string(), "usage".to_string())]),
+                    },
+                ]
+            );
+            continue;
+        }
+
         if path == sqlite.thread_history_db_path() {
             let telemetry = CorruptionTelemetry::default();
             // Unrelated corruption must not disable lazy history reads when the

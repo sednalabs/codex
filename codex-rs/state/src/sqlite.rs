@@ -37,12 +37,25 @@ const MEMORIES_DB_FILENAME: &str = "memories_1.sqlite";
 const QUEUE_DB_FILENAME: &str = "queue_1.sqlite";
 const STATE_DB_FILENAME: &str = "state_5.sqlite";
 const THREAD_HISTORY_DB_FILENAME: &str = "thread_history_1.sqlite";
+const USAGE_DB_FILENAME: &str = "usage_1.sqlite";
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum RecoveryMode {
     BackupAndRebuild,
     Unavailable,
+    RejectCorruption,
 }
+
+#[derive(Debug)]
+struct RuntimeDbCorruptionDetected;
+
+impl std::fmt::Display for RuntimeDbCorruptionDetected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SQLite quick_check confirmed corruption; automatic ledger rebuild is disabled")
+    }
+}
+
+impl std::error::Error for RuntimeDbCorruptionDetected {}
 
 #[derive(Clone, Copy)]
 struct RuntimeDbSpec {
@@ -131,7 +144,17 @@ const THREAD_HISTORY_DB: RuntimeDbSpec = RuntimeDbSpec {
     recovery: RecoveryMode::Unavailable,
 };
 
-const RUNTIME_DBS: [RuntimeDbSpec; 7] = [
+const USAGE_DB: RuntimeDbSpec = RuntimeDbSpec {
+    label: "usage DB",
+    filename: USAGE_DB_FILENAME,
+    kind: DbKind::Usage,
+    open_phase: "open_usage",
+    migrate_phase: "migrate_usage",
+    background_reclamation: false,
+    recovery: RecoveryMode::RejectCorruption,
+};
+
+const RUNTIME_DBS: [RuntimeDbSpec; 8] = [
     STATE_DB,
     LOGS_DB,
     GOALS_DB,
@@ -139,6 +162,7 @@ const RUNTIME_DBS: [RuntimeDbSpec; 7] = [
     MEMORIES_V2_DB,
     QUEUE_DB,
     THREAD_HISTORY_DB,
+    USAGE_DB,
 ];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -224,6 +248,11 @@ impl SqliteConfig {
         THREAD_HISTORY_DB.path(self.home())
     }
 
+    /// Return the path to the durable usage ledger database.
+    pub fn usage_db_path(&self) -> PathBuf {
+        USAGE_DB.path(self.home())
+    }
+
     /// Return the paths to every database managed by the state runtime.
     pub fn runtime_db_paths(&self) -> Vec<RuntimeDbPath> {
         RUNTIME_DBS
@@ -293,6 +322,15 @@ impl SqliteConfig {
             .await
     }
 
+    pub(super) async fn open_usage_db(
+        &self,
+        migrator: &Migrator,
+        telemetry_override: Option<&dyn DbTelemetry>,
+    ) -> anyhow::Result<SqlitePool> {
+        self.open_runtime_db(USAGE_DB, migrator, telemetry_override)
+            .await
+    }
+
     async fn open_runtime_db(
         &self,
         spec: RuntimeDbSpec,
@@ -318,6 +356,17 @@ impl SqliteConfig {
         let migrate_result = async {
             if matches!(spec.kind, DbKind::State) {
                 repair_legacy_recency_migration_version(&pool, migrator).await?;
+            }
+            if matches!(spec.kind, DbKind::Usage) {
+                let usage_migrator =
+                    crate::runtime::usage_migration_compat::migrator_for_usage_database(
+                        &pool, migrator,
+                    )
+                    .await?;
+                return usage_migrator
+                    .run(&pool)
+                    .await
+                    .map_err(anyhow::Error::from);
             }
             migrator.run(&pool).await.map_err(anyhow::Error::from)
         }
@@ -410,15 +459,16 @@ impl SqliteConfig {
             }
         };
         let pool = connect().await?;
-        let validation_result = self
-            .quick_check_manager
-            .quick_check_once(
-                &pool,
-                path,
-                // Limit startup validation to 100 ms.
-                Duration::from_millis(/*millis*/ 100),
-            )
-            .await;
+        let validation_budget = Duration::from_millis(/*millis*/ 100);
+        let validation_result = if recovery == RecoveryMode::RejectCorruption {
+            // Failed attempts are cached by the shared manager. Durable ledgers
+            // must not treat a later open of the same corrupt file as checked.
+            validation::quick_check(&pool, Instant::now() + validation_budget).await
+        } else {
+            self.quick_check_manager
+                .quick_check_once(&pool, path, validation_budget)
+                .await
+        };
 
         let Ok(result) = validation_result else {
             pool.close().await;
@@ -428,6 +478,10 @@ impl SqliteConfig {
         if result == validation::QuickCheckOutcome::CorruptedNeedsFixed {
             tracing::error!(database = %path.display(), "SQLite quick check detected corruption");
             telemetry::record_corruption(telemetry_override, recover_spec.map(|spec| spec.kind));
+            if recovery == RecoveryMode::RejectCorruption {
+                pool.close().await;
+                return Err(RuntimeDbCorruptionDetected.into());
+            }
             if recovery == RecoveryMode::BackupAndRebuild {
                 pool.close().await;
                 let backups = crate::backup_runtime_db_for_fresh_start(path).await?;

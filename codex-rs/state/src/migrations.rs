@@ -10,6 +10,7 @@ pub(crate) static MEMORIES_MIGRATOR: Migrator = sqlx_macros::migrate!("./memory_
 pub(crate) static QUEUE_MIGRATOR: Migrator = sqlx_macros::migrate!("./queue_migrations");
 pub(crate) static THREAD_HISTORY_MIGRATOR: Migrator =
     sqlx_macros::migrate!("./thread_history_migrations");
+pub(crate) static USAGE_MIGRATOR: Migrator = sqlx_macros::migrate!("./usage_migrations");
 
 /// Allow an older Codex binary to open a database that has already been
 /// migrated by a newer binary running in parallel.
@@ -46,6 +47,10 @@ pub(crate) fn runtime_memories_migrator() -> Migrator {
 
 pub(crate) fn runtime_queue_migrator() -> Migrator {
     runtime_migrator(&QUEUE_MIGRATOR)
+}
+
+pub(crate) fn runtime_usage_migrator() -> Migrator {
+    runtime_migrator(&USAGE_MIGRATOR)
 }
 
 // The paginated history projector will call this when it takes ownership of opening the database.
