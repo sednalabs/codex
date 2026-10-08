@@ -18,6 +18,7 @@ Debug symbols for all shipped binaries arrive in a separate companion archive.
 Each package contains one entrypoint, not both codex and codex-app-server.
 """
 
+import hashlib
 import json
 import shutil
 import subprocess
@@ -65,6 +66,26 @@ def test_cli_version_matches_release_sources(package: SmokePackage) -> None:
     manifest = tomllib.loads((root / "codex-rs/Cargo.toml").read_text())
     version = manifest["workspace"]["package"]["version"]
     assert package.run("--version").stdout == f"codex-cli {version}\n"
+
+
+def test_package_manifests_bind_all_extracted_payloads(package: SmokePackage) -> None:
+    """Each downloaded package manifest hashes its exact extracted payload."""
+    for package_root in (package.cli_root, package.app_server_root):
+        manifest = json.loads(
+            (package_root / "codex-package.json").read_text(encoding="utf-8")
+        )
+        payload_hashes: dict[str, str] = {}
+        for path in sorted(package_root.rglob("*")):
+            relative_path = path.relative_to(package_root).as_posix()
+            if not path.is_file() or relative_path == "codex-package.json":
+                continue
+            digest = hashlib.sha256()
+            with path.open("rb") as payload:
+                for chunk in iter(lambda: payload.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            payload_hashes[relative_path] = digest.hexdigest()
+
+        assert manifest.get("payloadSha256") == payload_hashes, package_root
 
 
 @pytest.mark.parametrize("entrypoint", ["codex", "codex-app-server"])

@@ -160,6 +160,28 @@ class PackageLayoutTest(unittest.TestCase):
                 include_zsh=False,
             )
 
+            manifest = json.loads(
+                (package_dir / "codex-package.json").read_text(encoding="utf-8")
+            )
+            payload_files = {
+                path.relative_to(package_dir).as_posix(): hashlib.sha256(
+                    path.read_bytes()
+                ).hexdigest()
+                for path in sorted(package_dir.rglob("*"))
+                if path.is_file()
+                and path.relative_to(package_dir).as_posix() != "codex-package.json"
+            }
+            self.assertEqual(manifest["payloadSha256"], payload_files)
+
+            (package_dir / "codex-path" / "rg").write_bytes(b"modified helper")
+            with self.assertRaisesRegex(RuntimeError, "payload SHA-256"):
+                validate_package_dir(
+                    package_dir,
+                    PACKAGE_VARIANTS["codex-app-server"],
+                    TARGET_SPECS["x86_64-unknown-linux-musl"],
+                    include_zsh=False,
+                )
+
             self.assertTrue((package_dir / "bin" / "codex-code-mode-host").is_file())
 
 
