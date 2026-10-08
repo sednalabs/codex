@@ -245,12 +245,13 @@ ON CONFLICT(child_thread_id) DO UPDATE SET
                 let mut builder = QueryBuilder::<Sqlite>::new(
                     "SELECT child_thread_id FROM thread_spawn_edges WHERE parent_thread_id IN (",
                 );
-                let mut parents = builder.separated(", ");
-                for parent_thread_id in parent_batch {
-                    parents.push_bind(parent_thread_id.to_string());
+                {
+                    let mut parents = builder.separated(", ");
+                    for parent_thread_id in parent_batch {
+                        parents.push_bind(parent_thread_id.to_string());
+                    }
+                    parents.push_unseparated(")");
                 }
-                parents.push_unseparated(")");
-                drop(parents);
                 if let Some(status) = status {
                     builder.push(" AND status = ").push_bind(status.to_string());
                 }
@@ -271,9 +272,9 @@ ON CONFLICT(child_thread_id) DO UPDATE SET
                             overflow_children.push(ThreadId::try_from(child_id)?);
                         }
                     }
-                    overflow_children.sort_by_key(|thread_id| thread_id.to_string());
+                    overflow_children.sort_by_key(std::string::ToString::to_string);
                     next_frontier.extend(overflow_children.into_iter().take(remaining));
-                    next_frontier.sort_by_key(|thread_id| thread_id.to_string());
+                    next_frontier.sort_by_key(std::string::ToString::to_string);
                     let mut thread_ids = descendants;
                     thread_ids.extend(next_frontier);
                     return Ok(crate::ThreadSpawnDescendants {
@@ -290,7 +291,7 @@ ON CONFLICT(child_thread_id) DO UPDATE SET
                 }
             }
 
-            next_frontier.sort_by_key(|thread_id| thread_id.to_string());
+            next_frontier.sort_by_key(std::string::ToString::to_string);
             descendants.extend(next_frontier.iter().copied());
             frontier = next_frontier;
         }

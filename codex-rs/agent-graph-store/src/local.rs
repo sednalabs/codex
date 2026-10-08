@@ -402,7 +402,7 @@ mod tests {
         }
 
         let descendants = store
-            .list_thread_spawn_descendants_bounded(root_thread_id, None)
+            .list_thread_spawn_descendants_bounded(root_thread_id, /*status_filter*/ None)
             .await
             .expect("bounded cyclic traversal should terminate");
         assert_eq!(
@@ -446,7 +446,7 @@ mod tests {
         }
 
         let exact_limit = store
-            .list_thread_spawn_descendants_bounded(root_thread_id, None)
+            .list_thread_spawn_descendants_bounded(root_thread_id, /*status_filter*/ None)
             .await
             .expect("exact-limit traversal should succeed");
         assert_eq!(
@@ -464,7 +464,7 @@ mod tests {
             .await
             .expect("overflow descendant edge should insert");
         let overflow = store
-            .list_thread_spawn_descendants_bounded(root_thread_id, None)
+            .list_thread_spawn_descendants_bounded(root_thread_id, /*status_filter*/ None)
             .await
             .expect("overflow traversal should succeed");
         assert_eq!(

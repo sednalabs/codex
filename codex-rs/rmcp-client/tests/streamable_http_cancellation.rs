@@ -276,6 +276,16 @@ async fn timed_out_call_sends_matching_cancellation_and_is_not_replayed() -> any
     let (state, url, server) = spawn_server().await?;
     let client = Arc::new(create_client(&format!("{url}/mcp")).await?);
     let request_client = client.clone();
+    let request = tokio::spawn(async move {
+        request_client
+            .call_tool(
+                "mutate".into(),
+                Some(json!({})),
+                /*meta*/ None,
+                Some(Duration::from_millis(100)),
+            )
+            .await
+    });
     tokio::time::timeout(Duration::from_secs(5), state.blocked_started.notified()).await?;
     assert!(request.await?.is_err());
     wait_cancel(&state).await?;
@@ -346,7 +356,12 @@ async fn dropped_call_is_cancelled_without_replaying_mutation() -> anyhow::Resul
     let request_client = client.clone();
     let request = tokio::spawn(async move {
         request_client
-            .call_tool("mutate".into(), Some(json!({})), /*meta*/ None, /*timeout*/ None)
+            .call_tool(
+                "mutate".into(),
+                Some(json!({})),
+                /*meta*/ None,
+                /*timeout*/ None,
+            )
             .await
     });
     tokio::time::timeout(Duration::from_secs(5), state.blocked_started.notified()).await?;
@@ -421,7 +436,12 @@ async fn modern_drop_cancels_matching_inflight_post_without_legacy_control_post(
     let request_client = client.clone();
     let request = tokio::spawn(async move {
         request_client
-            .call_tool("modern-blocked".into(), Some(json!({})), /*meta*/ None, /*timeout*/ None)
+            .call_tool(
+                "modern-blocked".into(),
+                Some(json!({})),
+                /*meta*/ None,
+                /*timeout*/ None,
+            )
             .await
     });
     tokio::time::timeout(Duration::from_secs(5), state.blocked_started.notified()).await?;

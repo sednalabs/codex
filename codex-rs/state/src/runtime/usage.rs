@@ -739,8 +739,8 @@ mod tests {
 
     #[tokio::test]
     async fn account_scopes_do_not_alias_in_either_write_order() {
-        account_scope_order_fixture(true).await;
-        account_scope_order_fixture(false).await;
+        account_scope_order_fixture(/*account_first*/ true).await;
+        account_scope_order_fixture(/*account_first*/ false).await;
     }
 
     #[tokio::test]
@@ -1009,7 +1009,7 @@ mod tests {
                 "thread-missing",
                 "response-missing-usage",
                 "provider_usage_missing",
-                None,
+                /*usage*/ None,
             ))
             .await
             .expect("persist completed response with missing usage");
@@ -1395,7 +1395,7 @@ mod tests {
             "scenario-thread",
             "response-missing-usage",
             "provider_usage_missing",
-            None,
+            /*usage*/ None,
         );
         missing_usage.actual_model_used = Some("gpt-6.1-sol".to_string());
         missing_usage.actual_service_tier = None;

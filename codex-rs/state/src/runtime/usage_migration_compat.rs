@@ -179,11 +179,11 @@ mod tests {
     #[test]
     fn shipped_main_checksums_are_sqlx_sha384_values() {
         assert_eq!(
-            shipped_main_migration(1).checksum.as_ref(),
+            shipped_main_migration(/*version*/ 1).checksum.as_ref(),
             OLD_MAIN_0001_CHECKSUM
         );
         assert_eq!(
-            shipped_main_migration(5).checksum.as_ref(),
+            shipped_main_migration(/*version*/ 5).checksum.as_ref(),
             OLD_MAIN_0005_CHECKSUM
         );
     }

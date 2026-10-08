@@ -364,7 +364,7 @@ async fn wait_for_activity(
                 Ok(()) => return activity_wake_outcome(*activity_rx.borrow_and_update(), agent_wait),
                 Err(_) => return WaitOutcome::SubscriptionLoss,
             },
-            agent = async { agent_wait.as_mut().expect("guarded by has_agent_wait").as_mut().unwrap().changed().await }, if has_agent_wait => match agent {
+            agent = async { agent_wait.as_mut().expect("guarded by has_agent_wait").changed().await }, if has_agent_wait => match agent {
                 Ok(Some(outcome)) => return WaitOutcome::TargetTerminal(outcome),
                 Ok(None) => {},
                 Err(_) => return WaitOutcome::SubscriptionLoss,

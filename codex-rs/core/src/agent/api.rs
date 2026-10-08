@@ -338,7 +338,7 @@ impl AgentWaitRegistration {
 
     pub(crate) async fn changed(
         &mut self,
-    ) -> Result<Option<AgentWaitResult>, watch::error::RecvError> {
+    ) -> std::result::Result<Option<AgentWaitResult>, watch::error::RecvError> {
         self.receiver.changed().await?;
         Ok(self.current())
     }
