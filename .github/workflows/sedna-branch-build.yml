@@ -87,6 +87,7 @@ jobs:
     uses: ./.github/workflows/_sedna-linux-rust.yml
     with:
       checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
+      checkout_fetch_depth: 2
       summary_title: Branch build
       setup_rusty_v8: true
       release_version: ${{ needs.metadata.outputs.preview_version }}
@@ -254,6 +255,7 @@ jobs:
     uses: ./.github/workflows/_sedna-linux-rust.yml
     with:
       checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
+      checkout_fetch_depth: 2
       runner: ubuntu-24.04-arm
       target: aarch64-unknown-linux-gnu
       summary_title: Branch build
