@@ -153,6 +153,11 @@ jobs:
         PY
           exit 0
         fi
+        export CODEX_REPO_ROOT="${GITHUB_WORKSPACE}"
+        if [[ ! -f "${CODEX_REPO_ROOT}/scripts/build_codex_package.py" ]]; then
+          echo "The selected source checkout is missing scripts/build_codex_package.py." >&2
+          exit 1
+        fi
         source_status="$(git status --porcelain --untracked-files=normal)"
         if [[ -n "${source_status}" ]]; then
           echo "Refusing to build a preview from a dirty source tree." >&2
@@ -247,6 +252,11 @@ jobs:
       artifact_path: dist/*
       display_ref: ${{ needs.metadata.outputs.display_ref }}
       run_command: |
+        export CODEX_REPO_ROOT="${GITHUB_WORKSPACE}"
+        if [[ ! -f "${CODEX_REPO_ROOT}/scripts/build_codex_package.py" ]]; then
+          echo "The selected source checkout is missing scripts/build_codex_package.py." >&2
+          exit 1
+        fi
         source_status="$(git status --porcelain --untracked-files=normal)"
         if [[ -n "${source_status}" ]]; then
           echo "Refusing to build a preview from a dirty source tree." >&2
