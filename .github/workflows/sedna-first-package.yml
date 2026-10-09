@@ -267,7 +267,7 @@ jobs:
             cd codex-rs
             INSTA_UPDATE=always cargo test -p codex-tui --lib \
               status::tests::status_snapshot_shows_chatgpt_plan_without_email \
-              -- --exact
+              -- --exact --nocapture
           )
           (
             cd codex-rs
