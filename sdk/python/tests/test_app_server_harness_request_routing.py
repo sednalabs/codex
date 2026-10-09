@@ -8,7 +8,6 @@ import urllib.error
 import urllib.request
 
 import pytest
-
 from app_server_harness import MockResponsesServer
 
 
