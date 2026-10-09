@@ -152,7 +152,9 @@ class MockResponsesServer:
         """Stop the background HTTP server thread."""
         # Release request handlers before server_close waits for active threads.
         with self._routing_lock:
-            gates = [route.gate for route in self._request_routes if route.gate is not None]
+            gates = [
+                route.gate for route in self._request_routes if route.gate is not None
+            ]
         for gate in gates:
             gate.set()
         if self._thread.is_alive():
@@ -180,7 +182,9 @@ class MockResponsesServer:
         """Queue one SSE body for the next `/v1/responses` request."""
         with self._routing_lock:
             if self._response_mode == "request-matched":
-                raise RuntimeError("FIFO and request-matched response modes cannot be mixed")
+                raise RuntimeError(
+                    "FIFO and request-matched response modes cannot be mixed"
+                )
             self._response_mode = "fifo"
             self._responses.put(MockSseResponse(body, delay_between_events_s))
 
@@ -206,12 +210,16 @@ class MockResponsesServer:
         )
         with self._routing_lock:
             if self._response_mode == "fifo":
-                raise RuntimeError("FIFO and request-matched response modes cannot be mixed")
+                raise RuntimeError(
+                    "FIFO and request-matched response modes cannot be mixed"
+                )
             self._response_mode = "request-matched"
             self._request_routes.append(route)
         return route
 
-    def enqueue_assistant_message(self, text: str, *, response_id: str = "resp-1") -> None:
+    def enqueue_assistant_message(
+        self, text: str, *, response_id: str = "resp-1"
+    ) -> None:
         """Queue a completed assistant-message model response."""
         self.enqueue_sse(
             sse(
@@ -240,7 +248,9 @@ class MockResponsesServer:
                 lambda: any(predicate(request) for request in self._requests), timeout_s
             )
             if not matched:
-                raise AssertionError("timed out waiting for a matching Responses request")
+                raise AssertionError(
+                    "timed out waiting for a matching Responses request"
+                )
             return next(request for request in self._requests if predicate(request))
 
     def routing_errors(self) -> list[str]:
@@ -267,7 +277,9 @@ class MockResponsesServer:
                 lambda: len(self._requests) >= count, timeout_s
             )
             if not matched:
-                raise AssertionError(f"expected {count} requests, got {len(self._requests)}")
+                raise AssertionError(
+                    f"expected {count} requests, got {len(self._requests)}"
+                )
             return list(self._requests)
 
     def _record_request(
@@ -291,10 +303,13 @@ class MockResponsesServer:
         with self._routing_lock:
             if self._response_mode != "request-matched":
                 return self._responses.get_nowait()
-            matches = [route for route in self._request_routes if route.predicate(request)]
+            matches = [
+                route for route in self._request_routes if route.predicate(request)
+            ]
             if len(matches) != 1:
                 message = (
-                    "unmatched Responses request" if not matches
+                    "unmatched Responses request"
+                    if not matches
                     else f"ambiguous Responses request matched {len(matches)} routes"
                 )
                 self._routing_errors.append(message)
@@ -339,7 +354,9 @@ class AppServerHarness:
     def app_server_config(self) -> CodexConfig:
         """Prefer the CI binary, then a local debug build, then the installed runtime."""
         binary_name = "codex.exe" if os.name == "nt" else "codex"
-        debug_binary = Path(__file__).resolve().parents[3] / "codex-rs/target/debug" / binary_name
+        debug_binary = (
+            Path(__file__).resolve().parents[3] / "codex-rs/target/debug" / binary_name
+        )
         codex_bin = os.environ.get("CODEX_EXEC_PATH")
         if codex_bin is None and debug_binary.is_file():
             codex_bin = str(debug_binary)
@@ -356,7 +373,9 @@ class AppServerHarness:
     def _write_config(self) -> None:
         """Write config.toml that routes model calls to the mock server."""
         config_toml = self.codex_home / "config.toml"
-        requires_openai_auth = "requires_openai_auth = true\n" if self.requires_openai_auth else ""
+        requires_openai_auth = (
+            "requires_openai_auth = true\n" if self.requires_openai_auth else ""
+        )
         config_toml.write_text(
             f"""
 model = "mock-model"
@@ -427,7 +446,9 @@ class _ResponsesHandler(BaseHTTPRequestHandler):
             return
         request = self.server.mock._record_request(self, body)
 
-        if not (self.path.endswith("/v1/responses") or self.path.endswith("/responses")):
+        if not (
+            self.path.endswith("/v1/responses") or self.path.endswith("/responses")
+        ):
             self.send_error(404, f"unexpected POST {self.path}")
             return
 

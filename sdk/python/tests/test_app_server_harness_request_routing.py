@@ -24,7 +24,7 @@ def _post(server: MockResponsesServer, marker: str) -> bytes:
 
 def test_fifo_response_selection_remains_the_default() -> None:
     with MockResponsesServer() as server:
-        body = "event: response.completed\ndata: {\"response\":{\"id\":\"fifo\"}}\n\n"
+        body = 'event: response.completed\ndata: {"response":{"id":"fifo"}}\n\n'
         server.enqueue_sse(body)
         assert _post(server, "fifo") == body.encode("utf-8")
 
@@ -67,7 +67,9 @@ def test_request_routes_match_exact_requests_and_wait_outside_selector_lock() ->
 
         thread_b = threading.Thread(target=send, args=(server, "b", done_b))
         thread_b.start()
-        assert done_b.wait(5), "sibling request could not select while route A was gated"
+        assert done_b.wait(5), (
+            "sibling request could not select while route A was gated"
+        )
         assert responses.get("b") == response_b.encode("utf-8")
         assert not done_a.is_set(), "route A escaped its closed gate"
 
@@ -77,7 +79,10 @@ def test_request_routes_match_exact_requests_and_wait_outside_selector_lock() ->
         thread_a.join(timeout=1)
         thread_b.join(timeout=1)
         assert not errors, errors
-        assert {request.body_json()["marker"] for request in server.requests()} == {"a", "b"}
+        assert {request.body_json()["marker"] for request in server.requests()} == {
+            "a",
+            "b",
+        }
 
 
 @pytest.mark.parametrize(
@@ -117,7 +122,9 @@ def test_unused_one_shot_routes_fail_at_teardown() -> None:
 
 
 def test_one_shot_route_cannot_be_reused() -> None:
-    with pytest.raises(AssertionError, match="one-shot Responses route was matched more than once"):
+    with pytest.raises(
+        AssertionError, match="one-shot Responses route was matched more than once"
+    ):
         with MockResponsesServer() as server:
             server.enqueue_sse_for_request(
                 lambda request: request.body_json().get("marker") == "repeat",
