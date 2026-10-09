@@ -200,10 +200,10 @@ impl App {
                 let mut description_parts = vec![uuid];
                 if let Some(metadata) = self.agent_navigation.source_metadata(thread_id) {
                     if let Some(model) = metadata.model.as_deref() {
-                        description_parts.push(format!("selected model: {model}"));
+                        description_parts.push(format!("configured model: {model}"));
                     }
                     if let Some(effort) = metadata.reasoning_effort.as_ref() {
-                        description_parts.push(format!("selected effort: {effort}"));
+                        description_parts.push(format!("configured effort: {effort}"));
                     }
                     if let Some(provider) = metadata.provider.as_deref() {
                         description_parts.push(format!("session provider: {provider}"));
@@ -243,10 +243,52 @@ impl App {
                     }
                 }
                 let description = description_parts.join(" • ");
+                let selected_description = (!is_primary).then(|| {
+                    let metadata = self.agent_navigation.source_metadata(thread_id);
+                    let parent = metadata
+                        .and_then(|metadata| metadata.parent_thread_id.as_deref())
+                        .unwrap_or("unknown");
+                    let path = entry
+                        .agent_path
+                        .as_deref()
+                        .filter(|path| !path.trim().is_empty())
+                        .unwrap_or("unknown");
+                    let status = if entry.is_closed {
+                        "not loaded"
+                    } else if entry.is_running {
+                        "running"
+                    } else {
+                        "not running"
+                    };
+                    let mut selected_description_parts = vec![
+                        description.clone(),
+                        format!("Path: {path}"),
+                        format!("Parent: {parent}"),
+                        format!("Status: {status}"),
+                    ];
+                    if metadata.is_none() {
+                        selected_description_parts
+                            .push("provider-effective identity: unverified".to_string());
+                    }
+                    if metadata
+                        .and_then(|metadata| metadata.model.as_deref())
+                        .is_none()
+                    {
+                        selected_description_parts.push("Configured model: unknown".to_string());
+                    }
+                    if metadata
+                        .and_then(|metadata| metadata.reasoning_effort.as_ref())
+                        .is_none()
+                    {
+                        selected_description_parts.push("Configured effort: unknown".to_string());
+                    }
+                    selected_description_parts.join(" • ")
+                });
                 SelectionItem {
                     name: name.clone(),
                     name_prefix_spans: agent_picker_status_dot_spans(entry.is_closed),
                     description: Some(description.clone()),
+                    selected_description,
                     is_current: self.active_thread_id == Some(thread_id),
                     actions: vec![Box::new(move |tx| {
                         tx.send(AppEvent::SelectAgentThread(id));
@@ -347,6 +389,22 @@ impl App {
                 let is_closed = matches!(
                     thread.status,
                     codex_app_server_protocol::ThreadStatus::NotLoaded
+                );
+                self.agent_navigation.set_source_metadata(
+                    thread_id,
+                    super::agent_navigation::AgentPickerSourceMetadata {
+                        provider: Some(thread.model_provider.clone()),
+                        task_name: Some(agent_path.clone().unwrap_or_default()),
+                        created_at: Some(thread.created_at),
+                        updated_at: Some(thread.updated_at),
+                        ..Default::default()
+                    },
+                );
+                self.agent_navigation.set_configured_thread_metadata(
+                    thread_id,
+                    thread.parent_thread_id.clone(),
+                    thread.model.clone(),
+                    thread.reasoning_effort.clone(),
                 );
                 self.upsert_agent_picker_thread(
                     thread_id,

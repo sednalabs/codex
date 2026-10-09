@@ -165,13 +165,18 @@ impl App {
             self.agent_navigation.set_source_metadata(
                 thread_id,
                 AgentPickerSourceMetadata {
-                    model: thread.model.clone(),
-                    reasoning_effort: thread.reasoning_effort.clone(),
                     provider: Some(thread.model_provider.clone()),
                     task_name: Some(agent_path.clone().unwrap_or_default()),
                     created_at: Some(thread.created_at),
                     updated_at: Some(thread.updated_at),
+                    ..Default::default()
                 },
+            );
+            self.agent_navigation.set_configured_thread_metadata(
+                thread_id,
+                thread.parent_thread_id.clone(),
+                thread.model.clone(),
+                thread.reasoning_effort.clone(),
             );
             self.agent_navigation.set_agent_path(thread_id, agent_path);
             if !live && update_liveness {

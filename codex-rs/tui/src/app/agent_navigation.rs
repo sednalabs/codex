@@ -58,6 +58,7 @@ pub(crate) struct AgentNavigationState {
 
 #[derive(Debug, Default, Clone)]
 pub(crate) struct AgentPickerSourceMetadata {
+    pub(crate) parent_thread_id: Option<String>,
     pub(crate) model: Option<String>,
     pub(crate) reasoning_effort: Option<ReasoningEffortConfig>,
     pub(crate) provider: Option<String>,
@@ -90,12 +91,33 @@ pub(super) struct AgentPickerRefreshState {
 }
 
 impl AgentNavigationState {
+    /// Replaces fields observed from an authoritative thread read/list response.
+    ///
+    /// `None` means the source did not expose a value, so it clears any stale configured
+    /// identity. Status-only picker updates do not call this method and preserve the last
+    /// authoritative observation.
+    pub(crate) fn set_configured_thread_metadata(
+        &mut self,
+        thread_id: ThreadId,
+        parent_thread_id: Option<String>,
+        model: Option<String>,
+        reasoning_effort: Option<ReasoningEffortConfig>,
+    ) {
+        let current = self.source_metadata.entry(thread_id).or_default();
+        current.parent_thread_id = parent_thread_id;
+        current.model = model;
+        current.reasoning_effort = reasoning_effort;
+    }
+
     pub(crate) fn set_source_metadata(
         &mut self,
         thread_id: ThreadId,
         metadata: AgentPickerSourceMetadata,
     ) {
         let current = self.source_metadata.entry(thread_id).or_default();
+        if metadata.parent_thread_id.is_some() {
+            current.parent_thread_id = metadata.parent_thread_id;
+        }
         if metadata.model.is_some() {
             current.model = metadata.model;
         }
@@ -588,6 +610,50 @@ mod tests {
         assert_eq!(metadata.provider.as_deref(), Some("openai"));
         assert_eq!(metadata.created_at, None);
         assert_eq!(metadata.updated_at, None);
+    }
+
+    #[test]
+    fn authoritative_picker_identity_clears_stale_values_but_status_upserts_preserve_it() {
+        let mut state = AgentNavigationState::default();
+        let thread_id = ThreadId::new();
+        state.set_configured_thread_metadata(
+            thread_id,
+            Some("parent-thread".to_string()),
+            Some("gpt-6.1-sol".to_string()),
+            Some(ReasoningEffortConfig::High),
+        );
+
+        state.upsert(
+            thread_id,
+            Some("worker".to_string()),
+            Some("worker".to_string()),
+            /*is_closed*/ false,
+        );
+        let metadata = state.source_metadata(thread_id).expect("metadata retained");
+        assert_eq!(metadata.parent_thread_id.as_deref(), Some("parent-thread"));
+        assert_eq!(metadata.model.as_deref(), Some("gpt-6.1-sol"));
+        assert_eq!(metadata.reasoning_effort, Some(ReasoningEffortConfig::High));
+
+        state.set_configured_thread_metadata(thread_id, None, None, None);
+        let metadata = state
+            .source_metadata(thread_id)
+            .expect("authoritative unknown retained");
+        assert_eq!(metadata.parent_thread_id, None);
+        assert_eq!(metadata.model, None);
+        assert_eq!(metadata.reasoning_effort, None);
+
+        state.set_configured_thread_metadata(thread_id, None, Some("model".to_string()), None);
+        state.remove(thread_id);
+        assert_eq!(state.source_metadata(thread_id), None);
+
+        state.set_configured_thread_metadata(
+            thread_id,
+            Some("parent-thread".to_string()),
+            None,
+            None,
+        );
+        state.clear();
+        assert_eq!(state.source_metadata(thread_id), None);
     }
 
     #[test]

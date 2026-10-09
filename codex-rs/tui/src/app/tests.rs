@@ -2225,6 +2225,79 @@ async fn open_agent_picker_keeps_missing_threads_for_replay() -> Result<()> {
 }
 
 #[tokio::test]
+async fn subagents_picker_selected_description_keeps_configured_descendant_details() -> Result<()> {
+    let mut app = Box::pin(make_test_app()).await;
+    let root_thread_id = ThreadId::new();
+    let child_thread_id = ThreadId::new();
+    let nested_thread_id = ThreadId::new();
+    app.primary_thread_id = Some(root_thread_id);
+    app.active_thread_id = Some(root_thread_id);
+    app.upsert_agent_picker_thread(
+        root_thread_id,
+        /*agent_nickname*/ None,
+        /*agent_role*/ None,
+        /*is_closed*/ false,
+    );
+    app.upsert_agent_picker_thread(
+        child_thread_id,
+        Some("worker".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ false,
+    );
+    app.agent_navigation
+        .set_agent_path(child_thread_id, Some("1/2/worker".to_string()));
+    app.agent_navigation.set_configured_thread_metadata(
+        child_thread_id,
+        Some(root_thread_id.to_string()),
+        Some("gpt-6.1-sol".to_string()),
+        Some(ReasoningEffortConfig::High),
+    );
+    app.agent_navigation.mark_running(child_thread_id);
+    app.upsert_agent_picker_thread(
+        nested_thread_id,
+        Some("nested".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ true,
+    );
+    app.agent_navigation
+        .set_agent_path(nested_thread_id, Some("1/2/worker/1".to_string()));
+    app.agent_navigation.set_configured_thread_metadata(
+        nested_thread_id,
+        Some(child_thread_id.to_string()),
+        None,
+        None,
+    );
+
+    let params = app.agent_picker_selection_view_params(Some(1));
+    let child_description = params.items[1]
+        .selected_description
+        .as_deref()
+        .expect("selected descendant details");
+    assert!(child_description.contains(&child_thread_id.to_string()));
+    assert!(child_description.contains(&root_thread_id.to_string()));
+    assert!(child_description.contains("1/2/worker"));
+    assert!(child_description.contains("gpt-6.1-sol"));
+    assert!(child_description.contains("high"));
+    assert!(child_description.contains("Status: running"));
+
+    let nested_description = params.items[2]
+        .selected_description
+        .as_deref()
+        .expect("selected nested descendant details");
+    assert!(nested_description.contains(&child_thread_id.to_string()));
+    assert!(nested_description.contains("1/2/worker/1"));
+    assert!(nested_description.contains("Configured model: unknown"));
+    assert!(nested_description.contains("Configured effort: unknown"));
+    assert!(nested_description.contains("Status: not loaded"));
+
+    app.chat_widget.show_selection_view(params);
+    let narrow_render = render_bottom_popup(&app.chat_widget, /*width*/ 40);
+    assert!(narrow_render.contains("gpt-6.1-sol"));
+    assert!(narrow_render.contains("Status: running"));
+    Ok(())
+}
+
+#[tokio::test]
 async fn open_agent_picker_preserves_cached_metadata_for_replay_threads() -> Result<()> {
     let mut app = Box::pin(make_test_app()).await;
     let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
