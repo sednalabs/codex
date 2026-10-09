@@ -32,6 +32,7 @@ REPOSITORY = "sednalabs/codex"
 WORKFLOW_PATH = ".github/workflows/sedna-branch-build.yml"
 API_ROOT = "https://api.github.com"
 PAGE_SIZE = 100
+MAX_REPOSITORY_ARTIFACT_PAGES = 10
 MAX_BRANCH_SCAN_CANDIDATES = 12
 EXECUTABLES = ("codex", "codex-responses-api-proxy", "codex-code-mode-host")
 TARGETS = {
@@ -254,32 +255,6 @@ def fetch_run(api: GitHubApi, run_id: int) -> dict[str, Any]:
     return run
 
 
-def list_workflow_runs(api: GitHubApi, branch: str) -> Iterator[dict[str, Any]]:
-    for page in range(1, 11):
-        query = urllib.parse.urlencode(
-            {
-                "event": "workflow_dispatch",
-                "status": "completed",
-                "branch": branch,
-                "per_page": PAGE_SIZE,
-                "page": page,
-            }
-        )
-        payload = api.json(
-            f"/repos/{REPOSITORY}/actions/workflows/sedna-branch-build.yml/runs?{query}"
-        )
-        runs = payload.get("workflow_runs")
-        if not isinstance(runs, list):
-            fail("GitHub workflow-runs response omitted workflow_runs")
-        if not runs:
-            return
-        for run in runs:
-            if isinstance(run, dict) and run.get("status") == "completed" and run.get("conclusion") == "success":
-                yield run
-        if len(runs) < PAGE_SIZE:
-            return
-
-
 def list_artifacts(api: GitHubApi, run_id: int) -> list[dict[str, Any]]:
     artifacts: list[dict[str, Any]] = []
     for page in range(1, 11):
@@ -293,6 +268,33 @@ def list_artifacts(api: GitHubApi, run_id: int) -> list[dict[str, Any]]:
         if len(rows) < PAGE_SIZE:
             break
     return artifacts
+
+
+def list_repository_artifacts(api: GitHubApi) -> Iterator[dict[str, Any]]:
+    total_count: int | None = None
+    for page in range(1, MAX_REPOSITORY_ARTIFACT_PAGES + 1):
+        payload = api.json(
+            f"/repos/{REPOSITORY}/actions/artifacts?per_page={PAGE_SIZE}&page={page}"
+        )
+        rows = payload.get("artifacts")
+        count = payload.get("total_count")
+        if (
+            not isinstance(rows, list)
+            or not isinstance(count, int)
+            or isinstance(count, bool)
+            or count < 0
+        ):
+            fail("GitHub repository-artifacts response omitted its artifact list or total count")
+        total_count = count
+        if total_count > PAGE_SIZE * MAX_REPOSITORY_ARTIFACT_PAGES:
+            fail("too many repository artifacts to resolve a branch safely; use exact --run-id")
+        if not rows:
+            return
+        yield from (row for row in rows if isinstance(row, dict))
+        if len(rows) < PAGE_SIZE:
+            return
+    if total_count is not None and total_count > PAGE_SIZE * MAX_REPOSITORY_ARTIFACT_PAGES:
+        fail("too many repository artifacts to resolve a branch safely; use exact --run-id")
 
 
 def artifact_for_run(api: GitHubApi, run: dict[str, Any], target: str, prefix: str | None = None) -> dict[str, Any]:
@@ -424,27 +426,63 @@ def choose_branch_runs(api: GitHubApi, branch: str, target: str) -> list[tuple[d
         fail("branch name produces an empty preview-artifact slug")
     prefix = f"sedna-branch-{slug}-"
     pattern = re.compile(r"^(?P<prefix>.+)-(?P<sha>[0-9a-f]{8})-" + re.escape(target) + r"$")
-    candidates: list[tuple[dict[str, Any], dict[str, Any], str]] = []
-    for run in list_workflow_runs(api, branch):
-        try:
-            validate_run(run)
-        except InstallError:
+    candidates: list[tuple[datetime, int, dict[str, Any], str]] = []
+    seen_artifact_ids: set[int] = set()
+    for artifact in list_repository_artifacts(api):
+        name = artifact.get("name")
+        if not isinstance(name, str) or not name.startswith(prefix):
             continue
-        for artifact in list_artifacts(api, run["id"]):
-            if artifact.get("expired") is True:
-                continue
-            name = artifact.get("name")
-            if not isinstance(name, str) or not name.startswith(prefix):
-                continue
-            match = pattern.fullmatch(name)
-            if match:
-                candidates.append((run, artifact, match.group("sha")))
+        match = pattern.fullmatch(name)
+        if match is None:
+            continue
+        if artifact.get("expired") is not False:
+            continue
+        workflow_run = artifact.get("workflow_run")
+        run_id = workflow_run.get("id") if isinstance(workflow_run, dict) else None
+        artifact_id = artifact.get("id")
+        if (
+            not isinstance(run_id, int)
+            or isinstance(run_id, bool)
+            or run_id <= 0
+            or not isinstance(artifact_id, int)
+            or isinstance(artifact_id, bool)
+            or artifact_id <= 0
+        ):
+            fail("matching repository artifact is missing its exact run or artifact ID")
+        if artifact_id in seen_artifact_ids:
+            fail("GitHub repository-artifacts response repeated a matching artifact ID")
+        seen_artifact_ids.add(artifact_id)
+        created_at = artifact.get("created_at")
+        if not isinstance(created_at, str):
+            fail(f"matching artifact {artifact_id} omitted its creation time")
+        try:
+            created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        except ValueError:
+            fail(f"matching artifact {artifact_id} has an invalid creation time")
+        if created.tzinfo is None:
+            fail(f"matching artifact {artifact_id} has a timezone-free creation time")
+        candidates.append((created.astimezone(timezone.utc), run_id, artifact, match.group("sha")))
+
     if not candidates:
         fail(f"no retained successful branch-build artifacts matched {branch!r} for {target}")
-    candidates.sort(key=lambda row: (row[0].get("created_at", ""), row[0].get("id", 0)), reverse=True)
-    if len(candidates) > MAX_BRANCH_SCAN_CANDIDATES:
-        candidates = candidates[:MAX_BRANCH_SCAN_CANDIDATES]
-    return candidates
+    candidates.sort(key=lambda row: (row[0], row[1], row[2]["id"]), reverse=True)
+    candidates = candidates[:MAX_BRANCH_SCAN_CANDIDATES]
+
+    run_ids = [run_id for _, run_id, _, _ in candidates]
+    if len(run_ids) != len(set(run_ids)):
+        fail("multiple matching package artifacts were published by one workflow run")
+
+    verified_candidates: list[tuple[dict[str, Any], dict[str, Any], str]] = []
+    for _, run_id, artifact, short_sha in candidates:
+        run = api.json(f"/repos/{REPOSITORY}/actions/runs/{run_id}")
+        try:
+            validate_run(run, run_id)
+        except InstallError:
+            continue
+        verified_candidates.append((run, artifact, short_sha))
+    if not verified_candidates:
+        fail(f"no retained successful branch-build artifacts matched {branch!r} for {target}")
+    return verified_candidates
 
 
 def resolve_artifact(api: GitHubApi, args: argparse.Namespace, target: str, temp: Path) -> Artifact:
@@ -456,7 +494,10 @@ def resolve_artifact(api: GitHubApi, args: argparse.Namespace, target: str, temp
     else:
         candidates = choose_branch_runs(api, args.branch, target)
         run, record, short_sha = candidates[0]
+        repo_artifact_id = record["id"]
         record = artifact_for_run(api, run, target, f"sedna-branch-{branch_slug(args.branch)}-")
+        if record["id"] != repo_artifact_id:
+            fail("selected repository artifact did not match the workflow run artifact listing")
         artifact = read_artifact(api, run, record, target, temp)
         if artifact.ref != args.branch or not artifact.source_sha.startswith(short_sha):
             fail("latest branch artifact does not match the requested ref and source SHA")

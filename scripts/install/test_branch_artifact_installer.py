@@ -183,11 +183,17 @@ class RedirectArtifactHandler(http.server.BaseHTTPRequestHandler):
 
 
 class FakeApi:
-    def __init__(self, artifacts: dict[int, tuple[int, bytes]], created: dict[int, str] | None = None):
+    def __init__(
+        self,
+        artifacts: dict[int, tuple[int, bytes]],
+        created: dict[int, str] | None = None,
+        dispatch_branches: dict[int, str] | None = None,
+    ):
         self.payloads = {artifact_id: data for artifact_id, (_, data) in artifacts.items()}
         self.records: dict[int, dict] = {}
         self.runs: dict[int, dict] = {}
         self.created = created or {}
+        self.dispatch_branches = dispatch_branches or {}
         self.artifacts_by_run: dict[int, list[dict]] = {}
         for index, (artifact_id, (run_id, data)) in enumerate(artifacts.items()):
             with zipfile.ZipFile(io.BytesIO(data)) as archive:
@@ -196,29 +202,46 @@ class FakeApi:
             source_sha = metadata["commit"]
             ref = metadata["ref"]
             target = metadata.get("target", TARGET)
+            created_at = self.created.get(run_id, f"2026-10-09T00:00:{index:02d}Z")
             self.records[artifact_id] = {
                 "id": artifact_id,
                 "name": f"sedna-branch-{installer.branch_slug(ref)}-{source_sha[:8]}-{target}",
                 "digest": f"sha256:{sha(data)}",
                 "expired": False,
                 "workflow_run": {"id": run_id},
+                "created_at": created_at,
             }
+            dispatch_branch = self.dispatch_branches.get(run_id, ref)
             self.runs[run_id] = {
                 "id": run_id,
                 "event": "workflow_dispatch",
                 "status": "completed",
                 "conclusion": "success",
                 "repository": {"full_name": installer.REPOSITORY},
-                "path": f"{installer.WORKFLOW_PATH}@refs/heads/main",
-                "head_branch": ref,
+                "path": f"{installer.WORKFLOW_PATH}@refs/heads/{dispatch_branch}",
+                "head_branch": dispatch_branch,
                 "head_sha": WORKFLOW_SHA,
-                "created_at": self.created.get(run_id, f"2026-10-09T00:00:{index:02d}Z"),
+                "created_at": created_at,
             }
             self.artifacts_by_run.setdefault(run_id, []).append(self.records[artifact_id])
         self.runs_payload = list(self.runs.values())
 
     def json(self, path: str):
         parsed = urllib.parse.urlsplit(path)
+        if parsed.path.endswith("/actions/artifacts"):
+            query = urllib.parse.parse_qs(parsed.query)
+            page = int(query.get("page", ["1"])[0])
+            per_page = int(query.get("per_page", ["100"])[0])
+            records = sorted(
+                self.records.values(),
+                key=lambda row: row["created_at"],
+                reverse=True,
+            )
+            offset = (page - 1) * per_page
+            return {
+                "total_count": len(records),
+                "artifacts": records[offset : offset + per_page],
+            }
         if "/actions/workflows/" in parsed.path and "/runs" in parsed.path:
             query = urllib.parse.parse_qs(parsed.query)
             page = query.get("page", ["1"])[0]
@@ -243,8 +266,12 @@ class FakeApi:
         return sha(data)
 
 
-def make_api(artifacts: dict[int, tuple[int, bytes]], created: dict[int, str] | None = None) -> FakeApi:
-    return FakeApi(artifacts, created)
+def make_api(
+    artifacts: dict[int, tuple[int, bytes]],
+    created: dict[int, str] | None = None,
+    dispatch_branches: dict[int, str] | None = None,
+) -> FakeApi:
+    return FakeApi(artifacts, created, dispatch_branches)
 
 
 class BranchArtifactInstallerTests(unittest.TestCase):
@@ -326,6 +353,13 @@ class BranchArtifactInstallerTests(unittest.TestCase):
         artifact = installer.resolve_artifact(api, args, TARGET, self.root / "branch-download")
         self.assertEqual(artifact.source_sha, SOURCE_SHA)
         self.assertEqual(artifact.run["id"], 1002)
+
+    def test_branch_selection_matches_product_ref_not_dispatch_branch(self) -> None:
+        api = make_api({41: (1001, action_artifact(1001))}, dispatch_branches={1001: "main"})
+        args = SimpleNamespace(run_id=None, branch=BRANCH)
+        artifact = installer.resolve_artifact(api, args, TARGET, self.root / "cross-ref-dispatch")
+        self.assertEqual(artifact.ref, BRANCH)
+        self.assertEqual(artifact.run["head_branch"], "main")
 
     def test_branch_selection_skips_expired_latest_artifact(self) -> None:
         api = make_api(
