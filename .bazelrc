@@ -209,6 +209,21 @@ common:ci-windows-cross --platforms=//:windows_x86_64_gnullvm
 common:ci-windows-cross --extra_execution_platforms=//:rbe,//:windows_x86_64_msvc
 common:ci-windows-cross --extra_toolchains=//:windows_gnullvm_tests_on_msvc_host_toolchain
 
+# Preserve the Windows GNU target and test contract without a remote executor.
+# Host tools use the existing native Windows/MSVC execution toolchain, while
+# target binaries (including source-built V8) retain the gnullvm ABI.
+common:ci-windows-local-gnullvm --config=ci-windows
+common:ci-windows-local-gnullvm --build_metadata=TAG_windows_cross_compile=true
+common:ci-windows-local-gnullvm --host_platform=//:local_windows_msvc
+common:ci-windows-local-gnullvm --platforms=//:windows_x86_64_gnullvm
+common:ci-windows-local-gnullvm --extra_execution_platforms=//:windows_x86_64_msvc
+common:ci-windows-local-gnullvm --extra_toolchains=//:windows_gnullvm_tests_on_msvc_host_toolchain
+common:ci-windows-local-gnullvm --strategy=TestRunner=local
+common:ci-windows-local-gnullvm --strategy=V8Mksnapshot=local
+common:ci-windows-local-gnullvm --local_test_jobs=8
+common:ci-windows-local-gnullvm --test_env=RUST_TEST_THREADS=1
+common:ci-windows-local-gnullvm --test_env=CODEX_BAZEL_TEST_SKIP_FILTERS=command_safety::powershell_parser::tests::,suite::code_mode::code_mode_can_call_hidden_dynamic_tools,tests::windows_tests::conpty_ctrl_c_interrupts_powershell_foreground_child
+
 # Linux-only V8 CI config.
 common:ci-v8 --config=ci
 common:ci-v8 --build_metadata=TAG_workflow=v8

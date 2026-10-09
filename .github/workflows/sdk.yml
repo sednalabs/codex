@@ -3,11 +3,13 @@ name: sdk
 on:
   workflow_call:
 
+env:
+  CODEX_BAZEL_LOCAL_ONLY: "1"
+  BUILDBUDDY_API_KEY: ""
+
 jobs:
   python-sdk-installation:
-    runs-on:
-      group: ${{ github.event.repository.name }}-runners
-      labels: ${{ github.event.repository.name }}-linux-x64
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Checkout repository
@@ -36,9 +38,7 @@ jobs:
             '
 
   sdks:
-    runs-on:
-      group: ${{ github.event.repository.name }}-runners
-      labels: ${{ github.event.repository.name }}-linux-x64
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     environment:
       name: bazel
@@ -76,15 +76,11 @@ jobs:
 
       - name: Build codex and the code-mode host with Bazel
         id: build_bazel
-        env:
-          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         shell: bash
         run: |
           set -euo pipefail
-          # Use the shared CI wrapper so fork PRs fall back cleanly when
-          # BuildBuddy credentials are unavailable. This workflow needs the
-          # built binaries on disk afterwards, so ask the wrapper to override
-          # CI's default remote_download_minimal behavior.
+          # Keep both binaries runner-local. They must be on disk afterwards
+          # for SDK tests to execute this exact CLI and its sibling helper.
           ./.github/scripts/run-bazel-ci.sh \
             --remote-download-toplevel \
             -- \

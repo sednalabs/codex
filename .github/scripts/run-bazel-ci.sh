@@ -83,18 +83,37 @@ case "${RUNNER_OS:-}" in
     ;;
 esac
 
+local_execution_only="${CODEX_BAZEL_LOCAL_ONLY:-0}"
+if [[ "$local_execution_only" == "1" ]]; then
+  # Local-only CI never derives its execution policy from credential presence.
+  unset BUILDBUDDY_API_KEY
+  ci_config=ci-bazel
+  if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
+    ci_config=ci-windows
+    if [[ $windows_cross_compile -eq 1 ]]; then
+      ci_config=ci-windows-local-gnullvm
+      windows_msvc_host_platform=1
+    fi
+  fi
+fi
+
 print_bazel_test_log_tails() {
   local console_log="$1"
   local testlogs_dir
 
   local -a bazel_info_args=(info)
-  if [[ -n "${BUILDBUDDY_API_KEY:-}" ]]; then
+  if [[ "$local_execution_only" == "1" || -n "${BUILDBUDDY_API_KEY:-}" ]]; then
     # `bazel info` needs the same CI config as the failed test invocation so
     # platform-specific output roots match. On Windows, omitting `ci-windows`
     # would point at `local_windows-fastbuild` even when the test ran with the
     # MSVC host platform under `local_windows_msvc-fastbuild`.
     bazel_info_args+=("--config=${ci_config}")
   fi
+  for arg in "${bazel_args[@]}"; do
+    case "$arg" in
+      --platforms=*) bazel_info_args+=("$arg") ;;
+    esac
+  done
 
   # Only pass flags that affect Bazel's output-root selection or repository
   # lookup. Test/build-only flags such as execution logs or remote download
@@ -255,7 +274,7 @@ if [[ ${#bazel_args[@]} -eq 0 || ${#bazel_targets[@]} -eq 0 ]]; then
   exit 1
 fi
 
-if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && -z "${BUILDBUDDY_API_KEY:-}" ]]; then
+if [[ "$local_execution_only" != "1" && "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && -z "${BUILDBUDDY_API_KEY:-}" ]]; then
   # Windows cross-compilation depends on authenticated RBE. Preserve the local
   # Windows build shape when credentials are unavailable.
   ci_config=ci-windows
@@ -383,7 +402,10 @@ trap 'rm -f "$bazel_console_log"' EXIT
 bazel_run_args=(
   "${bazel_args[@]}"
 )
-if [[ -n "${BUILDBUDDY_API_KEY:-}" ]]; then
+if [[ "$local_execution_only" == "1" ]]; then
+  echo "Runner-local Bazel execution is required."
+  bazel_run_args+=("--config=${ci_config}")
+elif [[ -n "${BUILDBUDDY_API_KEY:-}" ]]; then
   echo "BuildBuddy API key is available; using remote Bazel configuration."
   bazel_run_args+=("--config=${ci_config}")
 else

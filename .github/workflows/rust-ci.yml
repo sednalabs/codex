@@ -3,6 +3,10 @@ on:
   workflow_call:
   workflow_dispatch:
 
+env:
+  CODEX_BAZEL_LOCAL_ONLY: "1"
+  BUILDBUDDY_API_KEY: ""
+
 jobs:
   # --- Detect changed paths so the fast PR workflow only runs relevant jobs ---
   changed:
@@ -206,7 +210,6 @@ jobs:
         uses: ./.github/actions/run-argument-comment-lint
         with:
           target: ${{ runner.os }}
-          buildbuddy-api-key: ${{ secrets.BUILDBUDDY_API_KEY }}
 
       - name: Check for a clean worktree
         if: always() && !cancelled() && steps.argument_comment_lint_gate.outputs.run == 'true'

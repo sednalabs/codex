@@ -22,6 +22,22 @@ REMOTE_EXECUTION_CONFIGS = {
     "--config=ci-v8",
     "--config=ci-windows-cross",
 }
+LOCAL_EXECUTION_CONFIGS = {
+    "ci-bazel",
+    "ci-windows",
+    "ci-windows-local-gnullvm",
+    "argument-comment-lint",
+    "clippy",
+}
+LOCAL_EXECUTION_ARGS = [
+    "--remote_executor=",
+    "--remote_cache=",
+    "--bes_backend=",
+    "--experimental_remote_downloader=",
+    "--spawn_strategy=local",
+    "--strategy_regexp=.*=local",
+    "--jobs=HOST_CPUS",
+]
 # Honor either explicit setting so the wrapper never overrides the caller's
 # choice when it supplies the CI default below.
 REMOTE_REPO_CONTENTS_CACHE_STARTUP_OPTIONS = {
@@ -106,13 +122,66 @@ def uses_remote_execution(args: Sequence[str]) -> bool:
 
 
 def remote_config(args: Sequence[str], env: Mapping[str, str]) -> str | None:
-    if not env.get("BUILDBUDDY_API_KEY"):
+    if env.get("CODEX_BAZEL_LOCAL_ONLY") == "1" or not env.get("BUILDBUDDY_API_KEY"):
         return None
 
     config = OPENAI_REMOTE_CONFIG if uses_openai_host(env) else GENERIC_REMOTE_CONFIG
     if uses_remote_execution(args):
         config += "-rbe"
     return config
+
+
+def local_execution_args(args: Sequence[str]) -> list[str]:
+    """Keep vetted target configs, refusing an explicit remote execution route."""
+    try:
+        separator_idx = args.index("--")
+    except ValueError:
+        separator_idx = len(args)
+    bazel_args = args[:separator_idx]
+    for arg in bazel_args:
+        if arg in {
+            "--config",
+            "--remote_executor",
+            "--remote_cache",
+            "--bes_backend",
+            "--experimental_remote_downloader",
+            "--host_platform",
+            "--platforms",
+            "--extra_execution_platforms",
+        }:
+            raise ValueError("local-only CI requires explicit option=value syntax")
+        if arg.startswith("--config="):
+            config = arg.removeprefix("--config=")
+            if config not in LOCAL_EXECUTION_CONFIGS:
+                raise ValueError(
+                    f"configuration is not vetted for local-only CI: {config}"
+                )
+        if arg.startswith(
+            (
+                "--remote_executor=",
+                "--remote_cache=",
+                "--bes_backend=",
+                "--experimental_remote_downloader=",
+            )
+        ) and arg.partition("=")[2]:
+            raise ValueError("remote endpoint is not permitted in local-only CI")
+        if arg.startswith(
+            ("--host_platform=", "--platforms=", "--extra_execution_platforms=")
+        ):
+            if "//:rbe" in arg.partition("=")[2].split(","):
+                raise ValueError("RBE platform is not permitted in local-only CI")
+
+    command = next((arg for arg in bazel_args if not arg.startswith("-")), None)
+    # Analysis/query/info commands do not execute build or test actions and
+    # cannot all accept build-strategy flags. Execution commands enforce these
+    # last, after any command-line or user-RC settings, before the target/argv
+    # separator. Repository downloads and GitHub Actions caches stay local.
+    guard_args = (
+        LOCAL_EXECUTION_ARGS
+        if command in {"build", "test", "run", "coverage"}
+        else []
+    )
+    return [*bazel_args, *guard_args, *args[separator_idx:]]
 
 
 def bazel_args_without_remote_execution(args: Sequence[str]) -> list[str]:
@@ -139,7 +208,9 @@ def bazel_args_with_remote_config(
         raise ValueError("expected a Bazel command")
 
     config = remote_config(args, env)
-    if config is None:
+    if env.get("CODEX_BAZEL_LOCAL_ONLY") == "1":
+        configured_args = local_execution_args(args)
+    elif config is None:
         configured_args = bazel_args_without_remote_execution(args)
     else:
         # `remote_config()` returns a configuration only when this key is present.
@@ -189,7 +260,12 @@ def bazel_command(*args: str, env: Mapping[str, str] | None = None) -> list[str]
 
 def main() -> None:
     config = remote_config(sys.argv[1:], os.environ)
-    if config is None:
+    if os.environ.get("CODEX_BAZEL_LOCAL_ONLY") == "1":
+        print(
+            "Runner-local Bazel execution is required; BuildBuddy is disabled.",
+            file=sys.stderr,
+        )
+    elif config is None:
         print(
             "BuildBuddy key unavailable; using local Bazel configuration.",
             file=sys.stderr,

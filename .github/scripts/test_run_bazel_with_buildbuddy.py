@@ -12,6 +12,72 @@ import run_bazel_with_buildbuddy
 
 
 class RunBazelWithBuildBuddyTest(unittest.TestCase):
+    def test_local_only_ignores_key_and_preserves_windows_gnu_config(self) -> None:
+        env = {"CODEX_BAZEL_LOCAL_ONLY": "1", "BUILDBUDDY_API_KEY": "token"}
+        args = [
+            "test",
+            "--config=ci-windows-local-gnullvm",
+            "--host_platform=//:local_windows_msvc",
+            "--",
+            "//codex-rs/...",
+        ]
+        self.assertIsNone(run_bazel_with_buildbuddy.remote_config(args, env))
+        self.assertEqual(
+            run_bazel_with_buildbuddy.bazel_args_with_remote_config(args, env),
+            [
+                "test",
+                "--config=ci-windows-local-gnullvm",
+                "--host_platform=//:local_windows_msvc",
+                "--remote_executor=",
+                "--remote_cache=",
+                "--bes_backend=",
+                "--experimental_remote_downloader=",
+                "--spawn_strategy=local",
+                "--strategy_regexp=.*=local",
+                "--jobs=HOST_CPUS",
+                "--",
+                "//codex-rs/...",
+            ],
+        )
+
+    def test_local_only_refuses_remote_config_endpoint_and_platform(self) -> None:
+        env = {"CODEX_BAZEL_LOCAL_ONLY": "1", "BUILDBUDDY_API_KEY": "token"}
+        for arg in (
+            "--config=ci-windows-cross",
+            "--config=ci-linux",
+            "--config=buildbuddy-generic-rbe",
+            "--config=unvetted",
+            "--remote_executor=grpcs://example.invalid",
+            "--remote_cache=grpcs://example.invalid",
+            "--bes_backend=grpcs://example.invalid",
+            "--experimental_remote_downloader=grpcs://example.invalid",
+            "--host_platform=//:rbe",
+            "--platforms=//:rbe",
+            "--extra_execution_platforms=//:windows_x86_64_msvc,//:rbe",
+            "--config",
+            "--remote_executor",
+            "--platforms",
+        ):
+            with self.subTest(arg=arg), self.assertRaises(ValueError):
+                run_bazel_with_buildbuddy.bazel_args_with_remote_config(
+                    ["build", arg, "--", "//codex-rs/..."], env
+                )
+
+    def test_local_only_preserves_program_arguments_and_analysis_commands(self) -> None:
+        env = {"CODEX_BAZEL_LOCAL_ONLY": "1", "BUILDBUDDY_API_KEY": "token"}
+        args = ["run", "//codex-rs/cli:codex", "--", "--config=remote"]
+        self.assertEqual(
+            run_bazel_with_buildbuddy.bazel_args_with_remote_config(args, env),
+            [*args[:2], *run_bazel_with_buildbuddy.LOCAL_EXECUTION_ARGS, *args[2:]],
+        )
+        for command in ("query", "cquery", "aquery", "info"):
+            with self.subTest(command=command):
+                args = [command, "--config=ci-bazel", "//codex-rs/..."]
+                self.assertEqual(
+                    run_bazel_with_buildbuddy.bazel_args_with_remote_config(args, env),
+                    args,
+                )
+
     def github_env(
         self,
         temp_dir: str,
