@@ -338,7 +338,11 @@ jobs:
             x86_64-unknown-linux-gnu) prefix=linux_x86_64 ;;
             *) exit 1 ;;
           esac
-          bazel build --config=release //codex-rs/voice-host:codex-voice-host //third_party/voice:native_runtime
+          ./.github/scripts/run_bazel_with_buildbuddy.py build \
+            --config=release \
+            "--platforms=@rules_rs//rs/platforms:${voice_target}" \
+            //codex-rs/voice-host:codex-voice-host \
+            //third_party/voice:native_runtime
           source="bazel-bin/third_party/voice/native_runtime_${prefix}"
           output="${RUNNER_TEMP}/signed-voice/${APP_TARGET}"
           mkdir -p "$output"
@@ -617,7 +621,11 @@ jobs:
           # Release tags bump Cargo.toml without rewriting the workspace lockfile.
           # Refresh workspace versions before Bazel reads the Cargo dependency graph.
           (cd codex-rs && cargo update --workspace)
-          bazel build --config=release --macos_minimum_os=14.0 //codex-rs/voice-host:codex-voice-host //third_party/voice:native_runtime
+          ./.github/scripts/run_bazel_with_buildbuddy.py build \
+            --config=release \
+            --macos_minimum_os=14.0 \
+            //codex-rs/voice-host:codex-voice-host \
+            //third_party/voice:native_runtime
           runtime="bazel-bin/third_party/voice/native_runtime_${PREFIX}"
           PYTHONPATH=third_party/voice python3 - "$runtime" "$TARGET" <<'PY'
           from pathlib import Path

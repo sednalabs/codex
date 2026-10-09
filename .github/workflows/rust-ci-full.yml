@@ -142,7 +142,7 @@ jobs:
         run: |
           ./.github/scripts/run-argument-comment-lint-bazel.sh \
             --config=argument-comment-lint \
-            --platforms=//:local_windows \
+            --platforms=//:local_windows_msvc \
             --keep_going \
             --build_metadata=COMMIT_SHA=${GITHUB_SHA}
 
@@ -442,7 +442,7 @@ jobs:
       runner: ubuntu-24.04
       target: x86_64-unknown-linux-gnu
       profile: ci-test
-      artifact_id: linux-x64
+      artifact_id: linux-x64-remote
       remote_env: true
       use_sccache: true
     secrets: inherit
