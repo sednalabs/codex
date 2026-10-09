@@ -366,7 +366,6 @@ jobs:
       WORKFLOW_HOST_SHA: ${{ needs.identity.outputs.workflow_host_sha }}
       WORKFLOW_HOST_TREE: ${{ needs.identity.outputs.workflow_host_tree }}
       TARGET: ${{ matrix.target }}
-      DIST_DIR: ${{ runner.temp }}/sedna-first-dist
       BINARY_KIND: ${{ matrix.binary_kind }}
       LOADER: ${{ matrix.loader }}
     steps:
@@ -426,6 +425,8 @@ jobs:
       - name: Build canonical packages and shipped proxy
         working-directory: codex-rs
         shell: bash
+        env:
+          DIST_DIR: ${{ runner.temp }}/sedna-first-dist
         run: |
           set -euo pipefail
           if [[ "$(git rev-parse HEAD)" != "${SOURCE_SHA}" || "$(git rev-parse HEAD^{tree})" != "${SOURCE_TREE}" ]]; then
