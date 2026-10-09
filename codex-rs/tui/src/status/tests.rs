@@ -351,6 +351,7 @@ async fn status_snapshot_includes_reasoning_details() {
 
 #[tokio::test]
 async fn status_snapshot_shows_chatgpt_plan_without_email() {
+    eprintln!("status diagnostic phase: fixture setup started");
     let temp_home = TempDir::new().expect("temp home");
     let profile_path = temp_home.path().join("work.config.toml");
     let loader_overrides = LoaderOverrides {
@@ -383,6 +384,8 @@ async fn status_snapshot_shows_chatgpt_plan_without_email() {
     write_models_cache(temp_home.path())
         .await
         .expect("write models cache");
+    eprintln!("status diagnostic phase: fixture setup completed");
+    eprintln!("status diagnostic phase: embedded app-server start started");
     let mut app_server = crate::start_app_server_for_picker(
         &config,
         &crate::AppServerTarget::Embedded,
@@ -393,11 +396,16 @@ async fn status_snapshot_shows_chatgpt_plan_without_email() {
     )
     .await
     .expect("start embedded app server");
+    eprintln!("status diagnostic phase: embedded app-server start completed");
+    eprintln!("status diagnostic phase: bootstrap started");
     let bootstrap = app_server
         .bootstrap(&config)
         .await
         .expect("bootstrap app server session");
+    eprintln!("status diagnostic phase: bootstrap completed");
+    eprintln!("status diagnostic phase: embedded app-server shutdown started");
     app_server.shutdown().await.expect("shut down app server");
+    eprintln!("status diagnostic phase: embedded app-server shutdown completed");
     let account_display = bootstrap
         .status_account_display
         .expect("bootstrap should return ChatGPT account display");
@@ -415,6 +423,7 @@ async fn status_snapshot_shows_chatgpt_plan_without_email() {
         .expect("timestamp");
     let model_slug = get_model_offline_for_tests(config.model.as_deref());
 
+    eprintln!("status diagnostic phase: status composite construction started");
     let composite = new_status_output(
         &config,
         Some(&account_display),
@@ -430,9 +439,14 @@ async fn status_snapshot_shows_chatgpt_plan_without_email() {
         /*collaboration_mode*/ None,
         /*reasoning_effort_override*/ None,
     );
+    eprintln!("status diagnostic phase: status composite construction completed");
+    eprintln!("status diagnostic phase: status render started");
     let sanitized =
         sanitize_directory(render_lines(&composite.display_lines(/*width*/ 80))).join("\n");
+    eprintln!("status diagnostic phase: status render completed");
+    eprintln!("status diagnostic phase: snapshot assertion started");
     assert_snapshot!(sanitized);
+    eprintln!("status diagnostic phase: snapshot assertion completed");
 }
 
 #[tokio::test]
