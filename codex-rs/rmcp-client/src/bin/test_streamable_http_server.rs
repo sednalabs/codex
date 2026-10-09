@@ -542,10 +542,6 @@ async fn fail_mcp_post_when_armed(
         .get(MCP_SESSION_ID_HEADER)
         .and_then(|value| value.to_str().ok())
         .map(ToString::to_string);
-    let request_session_ordinal = match session_id.as_deref() {
-        Some(session_id) => Some(session_ordinal(&state, session_id).await.0),
-        None => None,
-    };
     let http_method = parts.method.to_string();
     let mcp_method = request_mcp_method(&body_bytes);
     let mcp_method_for_log = mcp_method
@@ -603,6 +599,11 @@ async fn fail_mcp_post_when_armed(
             }
         }
     }
+
+    let request_session_ordinal = match session_id.as_deref() {
+        Some(session_id) => Some(session_ordinal(&state, session_id).await.0),
+        None => None,
+    };
 
     if let Some((status, www_authenticate_headers, content_type, body)) = injected_failure {
         let mut response = Response::new(Body::from(body));
