@@ -79,6 +79,9 @@ jobs:
             uv run --frozen --project scripts ruff format --diff \
               .github/scripts/run_bazel_with_buildbuddy.py \
               scripts/install/test_branch_artifact_installer.py || true
+            uv run --frozen --project sdk/python --only-group format ruff format --diff \
+              sdk/python/tests/app_server_harness.py \
+              sdk/python/tests/test_app_server_harness_request_routing.py || true
           fi
           if pnpm run format; then
             exit 0

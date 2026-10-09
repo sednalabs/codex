@@ -99,9 +99,13 @@ jobs:
             voice_query='rdeps(//..., set(//third_party/voice:native_prefix //third_party/voice:native_runtime //third_party/voice:native_link //third_party/voice:native_sdk))'
             coverage_dir="${RUNNER_TEMP}/musl-coverage"
             mkdir -p "${coverage_dir}"
-            ./.github/scripts/run-bazel-query-ci.sh --output=label -- "${target_query}" \
+            ./.github/scripts/run-bazel-query-ci.sh \
+              --repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1 \
+              --output=label -- "${target_query}" \
               | LC_ALL=C sort -u > "${coverage_dir}/all-targets.txt"
-            ./.github/scripts/run-bazel-query-ci.sh --output=label -- "(${target_query}) intersect ${voice_query}" \
+            ./.github/scripts/run-bazel-query-ci.sh \
+              --repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1 \
+              --output=label -- "(${target_query}) intersect ${voice_query}" \
               | LC_ALL=C sort -u > "${coverage_dir}/voice-exclusions.txt"
             LC_ALL=C comm -23 "${coverage_dir}/all-targets.txt" "${coverage_dir}/voice-exclusions.txt" \
               > "${coverage_dir}/musl-targets.txt"
@@ -133,6 +137,9 @@ jobs:
             --test_verbose_timeout_warnings
             --build_metadata=COMMIT_SHA=${GITHUB_SHA}
           )
+          if [[ "${RUNNER_OS:-}" == "Linux" ]]; then
+            bazel_test_args+=(--repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1)
+          fi
           if [[ "${TARGET}" == "x86_64-unknown-linux-musl" ]]; then
             # Explicit query labels retain the wildcard's platform filtering.
             bazel_test_args+=(--skip_incompatible_explicit_targets)
@@ -233,7 +240,9 @@ jobs:
 
           # Keep query and selection in the foreground so failures cannot leave
           # different jobs assigning different partial target lists.
-          ./.github/scripts/run-bazel-query-ci.sh --output=label -- "${bazel_test_query}" \
+          ./.github/scripts/run-bazel-query-ci.sh \
+            --repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1 \
+            --output=label -- "${bazel_test_query}" \
             | LC_ALL=C sort > "${bazel_targets_file}"
           python .github/scripts/select_windows_bazel_targets.py \
             --shard "${BAZEL_TEST_SHARD}" \
@@ -243,6 +252,7 @@ jobs:
 
           bazel_test_args=(
             test
+            --repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1
             --skip_incompatible_explicit_targets
             --test_tag_filters=-argument-comment-lint
             --test_verbose_timeout_warnings
