@@ -369,13 +369,24 @@ impl InProcessClientHandle {
     }
 }
 
+// Temporary opt-in diagnostic for the isolated status-test startup overflow; remove with repair.
+fn status_start_diagnostic(phase: &str) {
+    if std::env::var_os("CODEX_TEST_STATUS_START_DIAGNOSTIC").is_some() {
+        eprintln!("status diagnostic phase: {phase}");
+    }
+}
+
 /// Starts an in-process app-server runtime and performs initialize handshake.
 ///
 /// This function sends `initialize` followed by `initialized` before returning
 /// the handle, so callers receive a ready-to-use runtime. If initialize fails,
 /// the runtime is shut down and an `InvalidData` error is returned.
 pub async fn start(mut args: InProcessStartArgs) -> IoResult<InProcessClientHandle> {
-    if let Ok(Some(err)) = check_execpolicy_for_warnings(&args.config.config_layer_stack).await {
+    status_start_diagnostic("in-process start entered");
+    status_start_diagnostic("exec-policy warning check started");
+    let warning_check = check_execpolicy_for_warnings(&args.config.config_layer_stack).await;
+    status_start_diagnostic("exec-policy warning check returned");
+    if let Ok(Some(err)) = warning_check {
         let (path, range) = crate::exec_policy_warning_location(&err);
         args.config_warnings.push(ConfigWarningNotification {
             summary: "Error parsing rules; custom rules not applied.".to_string(),
@@ -385,14 +396,20 @@ pub async fn start(mut args: InProcessStartArgs) -> IoResult<InProcessClientHand
         });
     }
     let initialize = args.initialize.clone();
-    let client = Box::pin(start_uninitialized(args)).await?;
+    status_start_diagnostic("start_uninitialized started");
+    let client_result = Box::pin(start_uninitialized(args)).await;
+    status_start_diagnostic("start_uninitialized returned");
+    let client = client_result?;
 
-    let initialize_response = client
+    status_start_diagnostic("initialize request started");
+    let initialize_result = client
         .request(ClientRequest::Initialize {
             request_id: RequestId::Integer(0),
             params: initialize,
         })
-        .await?;
+        .await;
+    status_start_diagnostic("initialize request returned");
+    let initialize_response = initialize_result?;
     if let Err(error) = initialize_response {
         let _ = client.shutdown().await;
         return Err(IoError::new(
@@ -400,7 +417,9 @@ pub async fn start(mut args: InProcessStartArgs) -> IoResult<InProcessClientHand
             format!("in-process initialize failed: {}", error.message),
         ));
     }
+    status_start_diagnostic("initialized notification started");
     client.notify(ClientNotification::Initialized)?;
+    status_start_diagnostic("initialized notification returned");
 
     Ok(client)
 }
@@ -425,6 +444,8 @@ async fn run_outbound_router(
 }
 
 async fn start_uninitialized(mut args: InProcessStartArgs) -> IoResult<InProcessClientHandle> {
+    status_start_diagnostic("start_uninitialized entered");
+    status_start_diagnostic("ConfigManager construction started");
     let config_manager = ConfigManager::new(
         args.config.codex_home.to_path_buf(),
         args.cli_overrides,
@@ -435,18 +456,27 @@ async fn start_uninitialized(mut args: InProcessStartArgs) -> IoResult<InProcess
         args.thread_config_loader,
     )
     .with_embedded_network_policy(args.embedded_network_policy);
-    let auth_manager = bootstrap::configure(
+    status_start_diagnostic("ConfigManager construction returned");
+    status_start_diagnostic("bootstrap configure/auth started");
+    let auth_manager_result = bootstrap::configure(
         &config_manager,
         &mut args.config,
         args.enable_codex_api_key_env,
     )
-    .await?;
+    .await;
+    status_start_diagnostic("bootstrap configure/auth returned");
+    let auth_manager = auth_manager_result?;
     let channel_capacity = args.channel_capacity.max(1);
-    let installation_id = resolve_installation_id(&args.config.codex_home).await?;
+    status_start_diagnostic("installation id resolution started");
+    let installation_id_result = resolve_installation_id(&args.config.codex_home).await;
+    status_start_diagnostic("installation id resolution returned");
+    let installation_id = installation_id_result?;
     let (client_tx, mut client_rx) = mpsc::channel::<InProcessClientMessage>(channel_capacity);
     let (event_tx, event_rx) = mpsc::channel::<InProcessServerEvent>(channel_capacity);
 
+    status_start_diagnostic("RPC runtime spawn started");
     let runtime_handle = tokio::spawn(async move {
+        status_start_diagnostic("RPC runtime task entered");
         let (outgoing_tx, outgoing_rx) = mpsc::channel::<OutgoingEnvelope>(channel_capacity);
         let analytics_events_client =
             analytics_events_client_from_config(Arc::clone(&auth_manager), args.config.as_ref());
@@ -493,7 +523,9 @@ async fn start_uninitialized(mut args: InProcessStartArgs) -> IoResult<InProcess
 
         let processor_outgoing = Arc::clone(&outgoing_message_sender);
         let (processor_tx, mut processor_rx) = mpsc::channel::<ProcessorCommand>(channel_capacity);
+        status_start_diagnostic("MessageProcessor task spawn started");
         let mut processor_handle = tokio::spawn(async move {
+            status_start_diagnostic("MessageProcessor construction started");
             let processor = Arc::new(MessageProcessor::new(MessageProcessorArgs {
                 outgoing: Arc::clone(&processor_outgoing),
                 analytics_events_client,
@@ -516,6 +548,7 @@ async fn start_uninitialized(mut args: InProcessStartArgs) -> IoResult<InProcess
                 remote_control_handle: None,
                 plugin_startup_tasks: Some(PluginStartupConfig::Current),
             }));
+            status_start_diagnostic("MessageProcessor construction completed");
             let mut thread_created_rx = processor.thread_created_receiver();
             let session = Arc::new(ConnectionSessionState::new(
                 crate::transport::ConnectionOrigin::InProcess,
@@ -598,6 +631,7 @@ async fn start_uninitialized(mut args: InProcessStartArgs) -> IoResult<InProcess
             processor.drain_background_tasks().await;
             processor.shutdown_threads().await;
         });
+        status_start_diagnostic("MessageProcessor task spawned");
         let mut pending_request_responses =
             HashMap::<RequestId, oneshot::Sender<PendingClientRequestResponse>>::new();
         let mut shutdown_ack = None;
@@ -806,7 +840,9 @@ async fn start_uninitialized(mut args: InProcessStartArgs) -> IoResult<InProcess
             let _ = done_tx.send(());
         }
     });
+    status_start_diagnostic("RPC runtime spawn returned");
 
+    status_start_diagnostic("in-process handle construction started");
     Ok(InProcessClientHandle {
         client: InProcessClientSender { client_tx },
         event_rx,
