@@ -168,17 +168,26 @@ def main(binary):
             nodes = {row["session_id"]: row for row in tree["items"]}
             own = collections.defaultdict(lambda: dict.fromkeys(FIELDS, 0))
             per_model = collections.defaultdict(set)
+            per_model_own = collections.defaultdict(lambda: dict.fromkeys(FIELDS, 0))
+            per_model_modes = collections.defaultdict(set)
             per_mode = collections.defaultdict(set)
             per_tier = collections.defaultdict(set)
             own_credits = collections.defaultdict(lambda: D(0))
+            per_model_credits = collections.defaultdict(lambda: D(0))
             unpriced = collections.defaultdict(collections.Counter)
+            per_model_unpriced = collections.defaultdict(collections.Counter)
             unknown_modes = set()
             for event in exported:
                 session_id = event["session_id"]
                 vector = event["usage"]
+                model = event.get("model") or "unknown"
+                model_key = (session_id, model)
                 for field in FIELDS:
-                    own[session_id][field] += int(vector.get(field, 0) or 0)
-                per_model[session_id].add(event.get("model") or "unknown")
+                    amount = int(vector.get(field, 0) or 0)
+                    own[session_id][field] += amount
+                    per_model_own[model_key][field] += amount
+                per_model[session_id].add(model)
+                per_model_modes[model_key].add(event.get("service_mode") or "unknown")
                 per_mode[session_id].add(event.get("service_mode") or "unknown")
                 per_tier[session_id].add(event.get("service_tier") or "unknown")
                 mode = event.get("service_mode")
@@ -187,8 +196,35 @@ def main(binary):
                 credits, unpriced_reason = credits_for_event(event)
                 if unpriced_reason:
                     unpriced[session_id][unpriced_reason] += 1
+                    per_model_unpriced[model_key][unpriced_reason] += 1
                 else:
                     own_credits[session_id] += credits
+                    per_model_credits[model_key] += credits
+
+            def recorded_model_rows(session_id):
+                rows = []
+                for model in sorted(per_model[session_id]):
+                    model_key = (session_id, model)
+                    statuses = per_model_unpriced[model_key]
+                    model_credits = (None if statuses else
+                                     str(per_model_credits[model_key].quantize(D("0.00000001"))))
+                    rows.append({
+                        "recorded_model": model,
+                        "recorded_modes": sorted(per_model_modes[model_key]),
+                        "own_usage": dict(per_model_own[model_key]),
+                        "estimated_credits": model_credits,
+                        "unpriced_event_statuses": dict(statuses),
+                    })
+                return rows
+
+            def aggregate_model_credits(session_id, model_rows):
+                if not model_rows or any(row["estimated_credits"] is None for row in model_rows):
+                    return None
+                raw_total = sum(
+                    (per_model_credits[(session_id, row["recorded_model"])] for row in model_rows),
+                    D(0),
+                )
+                return str(raw_total.quantize(D("0.00000001")))
 
             known_ids = set(ROSTER)
             assert {"pilot-root", "pilot-child", "pilot-grandchild"} <= set(nodes)
@@ -208,6 +244,35 @@ def main(binary):
             assert unpriced["pilot-grandchild"]["no_effective_rate"] == 1
             assert unpriced["pilot-grandchild"]["unknown_model"] == 1
             assert {"synthetic-boundary-model", "synthetic-second-model"} <= per_model["pilot-child"]
+            child_model_rows = {row["recorded_model"]: row
+                                for row in recorded_model_rows("pilot-child")}
+            assert set(child_model_rows) == {"synthetic-boundary-model", "synthetic-second-model"}
+            assert child_model_rows["synthetic-boundary-model"]["own_usage"] == {
+                "input": 300, "cached_input": 60, "cache_write_input": 30,
+                "output": 60, "reasoning_output": 6, "total": 360,
+            }
+            assert child_model_rows["synthetic-boundary-model"]["estimated_credits"] == "0.00721000"
+            assert child_model_rows["synthetic-second-model"]["own_usage"] == {
+                "input": 100, "cached_input": 20, "cache_write_input": 10,
+                "output": 20, "reasoning_output": 2, "total": 120,
+            }
+            assert child_model_rows["synthetic-second-model"]["estimated_credits"] == "0.00103500"
+            assert not child_model_rows["synthetic-boundary-model"]["unpriced_event_statuses"]
+            assert not child_model_rows["synthetic-second-model"]["unpriced_event_statuses"]
+            grandchild_model_rows = {row["recorded_model"]: row
+                                     for row in recorded_model_rows("pilot-grandchild")}
+            assert grandchild_model_rows["synthetic-boundary-model"]["unpriced_event_statuses"] == {
+                "unknown_mode": 1,
+            }
+            assert grandchild_model_rows["synthetic-second-model"]["unpriced_event_statuses"] == {
+                "no_effective_rate": 1,
+            }
+            assert grandchild_model_rows["model-without-rate"]["unpriced_event_statuses"] == {
+                "unknown_model": 1,
+            }
+            assert all(grandchild_model_rows[model]["estimated_credits"] is None for model in (
+                "synthetic-boundary-model", "synthetic-second-model", "model-without-rate",
+            ))
 
             # Boundary proof: same model is valued under both fixture rate versions.
             standard_boundary_events = [event for event in exported
@@ -230,7 +295,15 @@ def main(binary):
             report = []
             for session_id, entry in ROSTER.items():
                 node = nodes.get(session_id, {})
-                own_tokens = own.get(session_id, dict.fromkeys(FIELDS, 0))
+                model_rows = recorded_model_rows(session_id)
+                own_tokens = (dict.fromkeys(FIELDS, 0) if model_rows else None)
+                if model_rows:
+                    for model_row in model_rows:
+                        for field in FIELDS:
+                            own_tokens[field] += model_row["own_usage"][field]
+                    assert own_tokens == own.get(session_id, dict.fromkeys(FIELDS, 0))
+                else:
+                    assert session_id not in own
                 report.append({
                     "id": session_id, "parent_id": entry["parent_id"],
                     "configured_model": entry["configured_model"],
@@ -238,13 +311,29 @@ def main(binary):
                     "recorded_modes": sorted(per_mode[session_id]),
                     "recorded_tiers": sorted(per_tier[session_id]),
                     "provider_effective_model": "unavailable",
+                    "usage_status": ("recorded" if model_rows else "no_recorded_usage"),
                     "usage_recorded": session_id in own,
+                    "own_usage_by_recorded_model": model_rows,
                     "own_usage": own_tokens,
-                    "tree_usage": node.get("subtree_usage", own_tokens),
-                    "estimated_credits": (None if unpriced[session_id]
-                                           else str(own_credits[session_id].quantize(D("0.00000001")))),
+                    "tree_usage": node.get("subtree_usage") if node else own_tokens,
+                    "estimated_credits": aggregate_model_credits(session_id, model_rows),
                     "unpriced_event_statuses": dict(unpriced[session_id]),
                 })
+            roster_by_id = {row["id"]: row for row in report}
+            idle_child = roster_by_id["pilot-idle-child"]
+            assert idle_child["usage_status"] == "no_recorded_usage"
+            assert idle_child["usage_recorded"] is False
+            assert idle_child["estimated_credits"] is None
+            assert idle_child["own_usage"] is None
+            assert idle_child["tree_usage"] is None
+            unknown_id_model_rows = recorded_model_rows("pilot-unrostered-session")
+            unknown_id_usage_status = (
+                "recorded" if any(row["own_usage"]["total"] > 0 for row in unknown_id_model_rows)
+                else "no_recorded_usage"
+            )
+            assert unknown_id_usage_status == "recorded"
+            assert idle_child["usage_status"] != unknown_id_usage_status
+
             root_tree = nodes["pilot-root"]["subtree_usage"]
             expected_tree = dict.fromkeys(FIELDS, 0)
             for session_id in ("pilot-root", "pilot-child", "pilot-grandchild"):
@@ -264,6 +353,8 @@ def main(binary):
                 "accounting_label": "fixture-only estimated credits; not a price, billed amount, debit, or provider attestation",
                 "roster": report,
                 "unknown_ids": [{"id": "pilot-unrostered-session",
+                                 "usage_status": unknown_id_usage_status,
+                                 "own_usage_by_recorded_model": unknown_id_model_rows,
                                  "own_usage": own["pilot-unrostered-session"],
                                  "recorded_models": sorted(per_model["pilot-unrostered-session"]),
                                  "recorded_modes": sorted(per_mode["pilot-unrostered-session"]),
