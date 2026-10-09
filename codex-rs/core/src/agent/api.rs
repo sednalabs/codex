@@ -590,9 +590,8 @@ pub(crate) fn register_agent_wait(
         .filter_map(|target| {
             let snapshot = state.snapshots.get(target)?;
             let turn_id = snapshot.turn_id.as_ref()?;
-            (state.current_turns.get(target) == Some(turn_id)
-                && snapshot.readiness.wakes_wait())
-            .then(|| (*target, snapshot.clone()))
+            (state.current_turns.get(target) == Some(turn_id) && snapshot.readiness.wakes_wait())
+                .then(|| (*target, snapshot.clone()))
         })
         .collect();
     let wait = ActiveAgentWait {
@@ -922,9 +921,7 @@ mod agent_wait_registry_tests {
         ));
 
         let mut current = register_agent_wait(&registry, vec![target], AgentWaitReturnWhen::Any);
-        let current_result = current
-            .current()
-            .expect("current turn terminal is seeded");
+        let current_result = current.current().expect("current turn terminal is seeded");
         assert_eq!(
             current_result.outcomes[0].1.turn_id.as_deref(),
             Some("turn-1")
