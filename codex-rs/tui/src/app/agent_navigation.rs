@@ -644,7 +644,7 @@ mod tests {
 
         state.set_configured_thread_metadata(thread_id, None, Some("model".to_string()), None);
         state.remove(thread_id);
-        assert_eq!(state.source_metadata(thread_id), None);
+        assert!(state.source_metadata(thread_id).is_none());
 
         state.set_configured_thread_metadata(
             thread_id,
@@ -653,7 +653,7 @@ mod tests {
             None,
         );
         state.clear();
-        assert_eq!(state.source_metadata(thread_id), None);
+        assert!(state.source_metadata(thread_id).is_none());
     }
 
     #[test]
