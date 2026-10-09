@@ -263,7 +263,17 @@ jobs:
 
           (cd codex-rs && cargo update --workspace)
           just write-config-schema
-          (cd codex-rs && INSTA_UPDATE=always cargo test -p codex-tui --lib status::tests)
+          (
+            cd codex-rs
+            INSTA_UPDATE=always cargo test -p codex-tui --lib \
+              status::tests::status_snapshot_shows_chatgpt_plan_without_email \
+              -- --exact
+          )
+          (
+            cd codex-rs
+            INSTA_UPDATE=always cargo test -p codex-tui --lib status::tests \
+              -- --test-threads=1 --skip status::tests::status_snapshot_shows_chatgpt_plan_without_email
+          )
           just write-app-server-schema
           just bazel-lock-update
 
