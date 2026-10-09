@@ -102,6 +102,12 @@ async fn recovery_retains_originator_without_initial_credentials() -> anyhow::Re
             /*www_authenticate_headers*/ &[],
         )
         .await?;
+        client
+            .list_tools(
+                /*params*/ None,
+                /*timeout*/ Some(std::time::Duration::from_secs(5)),
+            )
+            .await?;
         assert_eq!(
             call_echo_tool(&client, "recovered").await?,
             expected_echo_result("recovered")

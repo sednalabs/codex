@@ -82,30 +82,34 @@ mod tests {
 
     #[test]
     fn unrelated_namespace_can_reuse_local_browser_tool_names() {
-        let mut params = ThreadStartParams::default();
-        params.dynamic_tools = Some(vec![DynamicToolSpec::Namespace(DynamicToolNamespaceSpec {
-            name: "other_namespace".to_string(),
-            description: String::new(),
-            tools: vec![DynamicToolNamespaceTool::Function(
-                DynamicToolFunctionSpec {
-                    name: "browser_step".to_string(),
-                    description: String::new(),
-                    input_schema: json!({"type":"object"}),
-                    defer_loading: false,
-                },
-            )],
-        })]);
+        let params = ThreadStartParams {
+            dynamic_tools: Some(vec![DynamicToolSpec::Namespace(DynamicToolNamespaceSpec {
+                name: "other_namespace".to_string(),
+                description: String::new(),
+                tools: vec![DynamicToolNamespaceTool::Function(
+                    DynamicToolFunctionSpec {
+                        name: "browser_step".to_string(),
+                        description: String::new(),
+                        input_schema: json!({"type":"object"}),
+                        defer_loading: false,
+                    },
+                )],
+            })]),
+            ..Default::default()
+        };
         assert!(validate_no_reserved_name_conflict(&params).is_ok());
     }
 
     #[test]
     fn reserved_collisions_are_rejected_without_mutating_inputs() {
-        let mut params = ThreadStartParams::default();
-        params.dynamic_tools = Some(vec![DynamicToolSpec::Namespace(DynamicToolNamespaceSpec {
-            name: NAMESPACE.to_string(),
-            description: String::new(),
-            tools: Vec::new(),
-        })]);
+        let mut params = ThreadStartParams {
+            dynamic_tools: Some(vec![DynamicToolSpec::Namespace(DynamicToolNamespaceSpec {
+                name: NAMESPACE.to_string(),
+                description: String::new(),
+                tools: Vec::new(),
+            })]),
+            ..Default::default()
+        };
         let before = params.dynamic_tools.clone();
         assert!(validate_no_reserved_name_conflict(&params).is_err());
         assert_eq!(params.dynamic_tools, before);

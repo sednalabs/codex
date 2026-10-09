@@ -90,6 +90,17 @@ async fn handle_mcp(State(state): State<ServerState>, Json(request): Json<Value>
                 /*session*/ true,
             )
         }
+        Some("server/discover") => json_response(
+            request.get("id").cloned(),
+            json!({
+                "resultType": "complete",
+                "supportedVersions": ["2026-07-28"],
+                "capabilities": {},
+                "ttlMs": 0,
+                "cacheScope": "private"
+            }),
+            /*session*/ false,
+        ),
         Some("notifications/initialized") => accepted_response(),
         Some("notifications/cancelled") => {
             state.cancellations.lock().await.push(request);
@@ -230,7 +241,7 @@ async fn wait_cancel(state: &ServerState) -> anyhow::Result<()> {
 #[tokio::test]
 async fn terminal_json_rpc_error_does_not_send_stale_cancellation() -> anyhow::Result<()> {
     let (state, url, server) = spawn_server().await?;
-    let client = create_client(&format!("{url}/mcp")).await?;
+    let client = create_client(&url).await?;
     assert!(
         client
             .call_tool(
@@ -260,7 +271,7 @@ async fn terminal_json_rpc_error_does_not_send_stale_cancellation() -> anyhow::R
 #[tokio::test]
 async fn resources_read_session_expiry_recovers_once() -> anyhow::Result<()> {
     let (state, url, server) = spawn_server().await?;
-    let client = create_client(&format!("{url}/mcp")).await?;
+    let client = create_client(&url).await?;
     state.read_404_remaining.store(1, Ordering::SeqCst);
     let read = client
         .read_resource(
@@ -288,7 +299,7 @@ async fn resources_read_session_expiry_recovers_once() -> anyhow::Result<()> {
 #[tokio::test]
 async fn timed_out_call_sends_matching_cancellation_and_is_not_replayed() -> anyhow::Result<()> {
     let (state, url, server) = spawn_server().await?;
-    let client = Arc::new(create_client(&format!("{url}/mcp")).await?);
+    let client = Arc::new(create_client(&url).await?);
     let request_client = client.clone();
     let request = tokio::spawn(async move {
         request_client
@@ -335,7 +346,7 @@ async fn timed_out_call_sends_matching_cancellation_and_is_not_replayed() -> any
 #[tokio::test]
 async fn uncertain_session_expiry_does_not_replay_tools_call() -> anyhow::Result<()> {
     let (state, url, server) = spawn_server().await?;
-    let client = create_client(&format!("{url}/mcp")).await?;
+    let client = create_client(&url).await?;
     assert!(
         client
             .call_tool(
@@ -366,7 +377,7 @@ async fn uncertain_session_expiry_does_not_replay_tools_call() -> anyhow::Result
 #[tokio::test]
 async fn dropped_call_is_cancelled_without_replaying_mutation() -> anyhow::Result<()> {
     let (state, url, server) = spawn_server().await?;
-    let client = Arc::new(create_client(&format!("{url}/mcp")).await?);
+    let client = Arc::new(create_client(&url).await?);
     let request_client = client.clone();
     let request = tokio::spawn(async move {
         request_client

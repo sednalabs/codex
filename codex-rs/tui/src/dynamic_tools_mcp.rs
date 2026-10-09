@@ -506,9 +506,9 @@ mod native_computer_use_registration_tests {
                 _ => None,
             })
             .flat_map(|namespace| namespace.tools.iter())
-            .filter_map(|tool| match tool {
+            .map(|tool| match tool {
                 codex_app_server_protocol::DynamicToolNamespaceTool::Function(function) => {
-                    Some(function.name.clone())
+                    function.name.clone()
                 }
             })
             .collect()

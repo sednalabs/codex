@@ -333,8 +333,17 @@ async fn auto_store_remains_pinned_across_session_recovery_child() -> anyhow::Re
     // reevaluates Auto, it adopts the stale File token and this operation incorrectly succeeds.
     state.fail_reads.store(true, Ordering::SeqCst);
 
-    match call_echo_tool(&client, "recovery-must-not-fallback").await {
-        Ok(result) => assert_eq!(result, expected_echo_result("recovery-must-not-fallback")),
+    match client
+        .list_tools(
+            /*params*/ None,
+            /*timeout*/ Some(std::time::Duration::from_secs(5)),
+        )
+        .await
+    {
+        Ok(_) => assert_eq!(
+            call_echo_tool(&client, "recovery-must-not-fallback").await?,
+            expected_echo_result("recovery-must-not-fallback")
+        ),
         Err(error) => {
             let error_chain = format!("{error:#}");
             assert!(
