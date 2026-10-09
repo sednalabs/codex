@@ -634,7 +634,12 @@ mod tests {
         assert_eq!(metadata.model.as_deref(), Some("gpt-6.1-sol"));
         assert_eq!(metadata.reasoning_effort, Some(ReasoningEffortConfig::High));
 
-        state.set_configured_thread_metadata(thread_id, None, None, None);
+        state.set_configured_thread_metadata(
+            thread_id,
+            /*parent_thread_id*/ None,
+            /*model*/ None,
+            /*reasoning_effort*/ None,
+        );
         let metadata = state
             .source_metadata(thread_id)
             .expect("authoritative unknown retained");
@@ -642,15 +647,20 @@ mod tests {
         assert_eq!(metadata.model, None);
         assert_eq!(metadata.reasoning_effort, None);
 
-        state.set_configured_thread_metadata(thread_id, None, Some("model".to_string()), None);
+        state.set_configured_thread_metadata(
+            thread_id,
+            /*parent_thread_id*/ None,
+            Some("model".to_string()),
+            /*reasoning_effort*/ None,
+        );
         state.remove(thread_id);
         assert!(state.source_metadata(thread_id).is_none());
 
         state.set_configured_thread_metadata(
             thread_id,
             Some("parent-thread".to_string()),
-            None,
-            None,
+            /*model*/ None,
+            /*reasoning_effort*/ None,
         );
         state.clear();
         assert!(state.source_metadata(thread_id).is_none());

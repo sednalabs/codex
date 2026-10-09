@@ -2264,8 +2264,8 @@ async fn subagents_picker_selected_description_keeps_configured_descendant_detai
     app.agent_navigation.set_configured_thread_metadata(
         nested_thread_id,
         Some(child_thread_id.to_string()),
-        None,
-        None,
+        /*model*/ None,
+        /*reasoning_effort*/ None,
     );
 
     let params = app.agent_picker_selection_view_params(Some(1));
