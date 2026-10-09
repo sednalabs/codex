@@ -65,6 +65,12 @@ install:
     rustup show active-toolchain
     cargo fetch
 
+# Install the exact native Linux package from one successful branch-build run.
+[no-cd]
+[positional-arguments]
+install-branch-artifact *args:
+    python3 "{{ justfile_directory() }}/scripts/install_branch_artifact" "$@"
+
 [windows]
 install:
     #!powershell.exe -File

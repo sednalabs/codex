@@ -319,13 +319,14 @@ async fn modern_tool_mrtr_drives_form_and_url_elicitation_and_preserves_metadata
 }
 
 #[tokio::test]
-async fn modern_tool_mrtr_uses_recovered_protocol_after_legacy_session_expiry() -> anyhow::Result<()>
-{
+async fn legacy_tool_call_continues_after_session_expiry() -> anyhow::Result<()> {
     let server = MockServer::start().await;
     let calls = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let discoveries = Arc::new(Mutex::new(0usize));
     let sessions = Arc::new(Mutex::new(Vec::<String>::new()));
     let list_sessions = Arc::new(Mutex::new(Vec::<String>::new()));
     let recorded_calls = Arc::clone(&calls);
+    let recorded_discoveries = Arc::clone(&discoveries);
     let recorded_sessions = Arc::clone(&sessions);
     let recorded_list_sessions = Arc::clone(&list_sessions);
 
@@ -341,27 +342,29 @@ async fn modern_tool_mrtr_uses_recovered_protocol_after_legacy_session_expiry() 
             let body: Value = request.body_json().expect("valid JSON-RPC request");
             match body["method"].as_str() {
                 Some("server/discover") => {
-                    let mut sessions = recorded_sessions.lock().expect("sessions lock");
-                    if sessions.is_empty() {
-                        ResponseTemplate::new(200).set_body_json(json!({
-                            "jsonrpc": "2.0",
-                            "id": body["id"],
-                            "error": {"code": -32601, "message": "method not found"},
-                        }))
-                    } else {
-                        sessions.push("modern-session".to_owned());
-                        discover_response(&body).insert_header("mcp-session-id", "modern-session")
-                    }
+                    *recorded_discoveries.lock().expect("discoveries lock") += 1;
+                    ResponseTemplate::new(200).set_body_json(json!({
+                        "jsonrpc": "2.0",
+                        "id": body["id"],
+                        "error": {"code": -32601, "message": "method not found"},
+                    }))
                 }
                 Some("initialize") => {
+                    assert!(request.headers.get("mcp-session-id").is_none());
                     assert_eq!(
                         body.pointer("/params/protocolVersion"),
                         Some(&json!(ProtocolVersion::V_2025_06_18.as_str()))
                     );
-                    recorded_sessions
-                        .lock()
-                        .expect("sessions lock")
-                        .push("legacy-session".to_owned());
+                    let session_id = {
+                        let mut sessions = recorded_sessions.lock().expect("sessions lock");
+                        let session_id = match sessions.len() {
+                            0 => "legacy-session-1",
+                            1 => "legacy-session-2",
+                            other => panic!("unexpected initialize attempt: {other}"),
+                        };
+                        sessions.push(session_id.to_owned());
+                        session_id
+                    };
                     ResponseTemplate::new(200)
                         .set_body_json(json!({
                             "jsonrpc": "2.0",
@@ -372,7 +375,7 @@ async fn modern_tool_mrtr_uses_recovered_protocol_after_legacy_session_expiry() 
                                 "serverInfo": {"name": "mrtr-test", "version": "1.0.0"},
                             },
                         }))
-                        .insert_header("mcp-session-id", "legacy-session")
+                        .insert_header("mcp-session-id", session_id)
                 }
                 Some("notifications/initialized") => ResponseTemplate::new(202),
                 Some("tools/list") => {
@@ -396,17 +399,19 @@ async fn modern_tool_mrtr_uses_recovered_protocol_after_legacy_session_expiry() 
 
                     match attempt {
                         1 => {
-                            assert_eq!(session_id, "legacy-session");
+                            assert_eq!(session_id, "legacy-session-1");
                             ResponseTemplate::new(404)
                         }
                         2 => {
-                            assert_eq!(session_id, "modern-session");
+                            assert_eq!(session_id, "legacy-session-2");
                             result_response(&body, json!({"tools": []}))
                         }
                         other => panic!("unexpected tools/list recovery attempt: {other}"),
                     }
                 }
                 Some("tools/call") => {
+                    assert_eq!(body.pointer("/params/name"), Some(&json!("confirm")));
+                    assert_eq!(body.pointer("/params/arguments"), Some(&json!({})));
                     assert_eq!(
                         body.pointer("/params/_meta/requestContext"),
                         Some(&json!("caller-context"))
@@ -415,6 +420,16 @@ async fn modern_tool_mrtr_uses_recovered_protocol_after_legacy_session_expiry() 
                         body.pointer("/params/_meta/openai~1readOnly"),
                         Some(&json!(true))
                     );
+                    assert_eq!(
+                        body.pointer("/params/_meta/io.modelcontextprotocol~1protocolVersion"),
+                        None
+                    );
+                    let session_id = request
+                        .headers
+                        .get("mcp-session-id")
+                        .map(|session_id| session_id.to_str().expect("session id is valid text"))
+                        .expect("tools/call request carries its recovered session id");
+                    assert_eq!(session_id, "legacy-session-2");
                     let attempt = {
                         let mut calls = recorded_calls.lock().expect("requests lock");
                         calls.push(body.clone());
@@ -423,54 +438,17 @@ async fn modern_tool_mrtr_uses_recovered_protocol_after_legacy_session_expiry() 
 
                     match attempt {
                         1 => {
-                            assert_eq!(
-                                body.pointer(
-                                    "/params/_meta/io.modelcontextprotocol~1protocolVersion"
-                                ),
-                                Some(&json!(MODERN_VERSION))
-                            );
                             result_response(
                                 &body,
                                 json!({
-                                    "resultType": "input_required",
-                                    "inputRequests": {
-                                        "confirmation": elicitation_request("form"),
-                                    },
-                                    "requestState": OPAQUE_STATE,
+                                    "content": [{"type": "text", "text": "recovered legacy tool call"}],
                                 }),
                             )
                         }
-                        2 => {
-                            assert_eq!(
-                                body.pointer(
-                                    "/params/_meta/io.modelcontextprotocol~1protocolVersion"
-                                ),
-                                Some(&json!(MODERN_VERSION))
-                            );
-                            assert_eq!(
-                                body.pointer("/params/requestState"),
-                                Some(&json!(OPAQUE_STATE))
-                            );
-                            assert_eq!(
-                                body.pointer("/params/inputResponses/confirmation"),
-                                Some(&json!({
-                                    "action": "accept",
-                                    "content": {"confirmed": true},
-                                    "_meta": {"clientContext": "preserved"},
-                                }))
-                            );
-                            result_response(
-                                &body,
-                                json!({
-                                    "resultType": "complete",
-                                    "content": [{"type": "text", "text": "recovered MRTR completed"}],
-                                }),
-                            )
-                        }
-                        other => panic!("unexpected recovered MRTR attempt: {other}"),
+                        other => panic!("unexpected legacy tools/call attempt: {other}"),
                     }
                 }
-                other => panic!("unexpected recovered MRTR request: {other:?}"),
+                other => panic!("unexpected recovered legacy request: {other:?}"),
             }
         })
         .mount(&server)
@@ -497,20 +475,21 @@ async fn modern_tool_mrtr_uses_recovered_protocol_after_legacy_session_expiry() 
 
     assert_eq!(
         result.content[0].as_text().map(|text| text.text.as_str()),
-        Some("recovered MRTR completed")
+        Some("recovered legacy tool call")
     );
     assert_eq!(
         *sessions.lock().expect("sessions lock"),
-        vec!["legacy-session", "modern-session"]
+        vec!["legacy-session-1", "legacy-session-2"]
     );
     assert_eq!(
         *list_sessions.lock().expect("list sessions lock"),
-        vec!["legacy-session", "modern-session"]
+        vec!["legacy-session-1", "legacy-session-2"]
     );
-    assert_eq!(calls.lock().expect("requests lock").len(), 2);
+    assert_eq!(*discoveries.lock().expect("discoveries lock"), 2);
+    assert_eq!(calls.lock().expect("requests lock").len(), 1);
     assert_eq!(
         *elicitation_modes.lock().expect("elicitation lock"),
-        vec!["form"]
+        Vec::<String>::new()
     );
     client.shutdown().await;
     Ok(())
