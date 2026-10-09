@@ -13,6 +13,7 @@ expression: sanitized
   Directory:       [[workspace]]
   Permissions:     Profile locked (read-only, Ask for approval)
   Agents.md:       <none>
+  Account:         No account data available
 
   Token usage:     0 total  (0 input + 0 output)
   Context window:  100% left (0 used / 272K)

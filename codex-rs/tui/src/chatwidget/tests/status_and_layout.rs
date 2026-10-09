@@ -977,7 +977,8 @@ async fn weekly_pacing_is_opt_in_deterministic_and_base_only_without_fresh_timin
         chat.status_line_value_for_item_at(item, now),
         Some("weekly 40% left (over 10%)".to_string())
     );
-    chat.config.tui_weekly_limit_pacing_style = codex_config::types::WeeklyLimitPacingStyle::Ratio;
+    chat.local_settings.tui.weekly_limit_pacing_style =
+        codex_config::types::WeeklyLimitPacingStyle::Ratio;
     assert_eq!(
         chat.status_line_value_for_item_at(item, now),
         Some("weekly 40% left/50%".to_string())

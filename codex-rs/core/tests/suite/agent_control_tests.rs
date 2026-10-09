@@ -595,7 +595,11 @@ async fn host_mailbox_notifies_waiting_agent_and_delivers_once() -> anyhow::Resu
         .expect("wait_agent output");
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&wait_output)?,
-        serde_json::json!({"message": "Wait completed.", "timed_out": false})
+        serde_json::json!({
+            "message": "Wait completed.",
+            "timed_out": false,
+            "outcome": "unattributed_mailbox_activity",
+        })
     );
     assert_eq!(
         request

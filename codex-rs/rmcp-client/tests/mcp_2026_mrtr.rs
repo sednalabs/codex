@@ -390,9 +390,8 @@ async fn legacy_tool_call_continues_after_session_expiry() -> anyhow::Result<()>
                         })
                         .expect("tools/list request carries its session id");
                     let attempt = {
-                        let mut list_sessions = recorded_list_sessions
-                            .lock()
-                            .expect("list sessions lock");
+                        let mut list_sessions =
+                            recorded_list_sessions.lock().expect("list sessions lock");
                         list_sessions.push(session_id.clone());
                         list_sessions.len()
                     };
@@ -437,14 +436,12 @@ async fn legacy_tool_call_continues_after_session_expiry() -> anyhow::Result<()>
                     };
 
                     match attempt {
-                        1 => {
-                            result_response(
-                                &body,
-                                json!({
-                                    "content": [{"type": "text", "text": "recovered legacy tool call"}],
-                                }),
-                            )
-                        }
+                        1 => result_response(
+                            &body,
+                            json!({
+                                "content": [{"type": "text", "text": "recovered legacy tool call"}],
+                            }),
+                        ),
                         other => panic!("unexpected legacy tools/call attempt: {other}"),
                     }
                 }

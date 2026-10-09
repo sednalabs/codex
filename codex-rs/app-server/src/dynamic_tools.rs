@@ -32,9 +32,7 @@ pub(crate) async fn on_call_response(
         }
         Ok(Err(err)) if is_turn_transition_server_request_error(&err) => {
             record_browser_app_server_stage(
-                &call_id,
-                /*response_accepted*/ false,
-                /*response_submitted*/ false,
+                &call_id, /*response_accepted*/ false, /*response_submitted*/ false,
                 /*accepted_item_count*/ 0,
             );
             return;

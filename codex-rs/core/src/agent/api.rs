@@ -585,13 +585,26 @@ pub(crate) fn register_agent_wait(
         })
         .collect();
     let (tx, receiver) = watch::channel(None);
+    let outcomes = targets
+        .iter()
+        .filter_map(|target| {
+            let snapshot = state.snapshots.get(target)?;
+            let turn_id = snapshot.turn_id.as_ref()?;
+            (state.current_turns.get(target) == Some(turn_id)
+                && snapshot.readiness.wakes_wait())
+            .then(|| (*target, snapshot.clone()))
+        })
+        .collect();
     let wait = ActiveAgentWait {
         targets,
         return_when,
-        outcomes: HashMap::new(),
+        outcomes,
         tx,
     };
     state.waits.insert(id, wait);
+    if let Some(wait) = state.waits.get_mut(&id) {
+        AgentOutcomePublisher::complete_wait(wait);
+    }
     AgentWaitRegistration {
         id,
         registry: registry.clone(),
@@ -890,5 +903,42 @@ mod agent_wait_registry_tests {
                 "concurrent terminal outcome cannot be lost"
             );
         }
+    }
+
+    #[test]
+    fn registration_seeds_only_the_current_turn_terminal_snapshot() {
+        let registry = Arc::new(Mutex::new(AgentWaitRegistry::default()));
+        let target = ThreadId::new();
+        let publisher = AgentOutcomePublisher::new(target, registry.clone());
+        publisher.publish(snapshot(
+            "turn-1",
+            AgentStatus::Running,
+            AgentReadiness::Pending,
+        ));
+        publisher.publish(snapshot(
+            "turn-1",
+            AgentStatus::Completed(None),
+            AgentReadiness::Terminal,
+        ));
+
+        let mut current = register_agent_wait(&registry, vec![target], AgentWaitReturnWhen::Any);
+        let current_result = current
+            .current()
+            .expect("current turn terminal is seeded");
+        assert_eq!(
+            current_result.outcomes[0].1.turn_id.as_deref(),
+            Some("turn-1")
+        );
+
+        publisher.publish(snapshot(
+            "turn-2",
+            AgentStatus::Running,
+            AgentReadiness::Pending,
+        ));
+        let mut fresh = register_agent_wait(&registry, vec![target], AgentWaitReturnWhen::Any);
+        assert!(
+            fresh.current().is_none(),
+            "a fresh turn must not inherit turn-1"
+        );
     }
 }

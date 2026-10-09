@@ -920,7 +920,7 @@ mod tests {
             queued_update_count: Some(2),
             agents_states: HashMap::from([(
                 target.to_string(),
-                agent_state(CollabAgentStatus::Completed, None),
+                agent_state(CollabAgentStatus::Completed, /*message*/ None),
             )]),
         };
         let cell = tool_call_history_cell(&item, /*cached_spawn_request*/ None, |thread_id| {

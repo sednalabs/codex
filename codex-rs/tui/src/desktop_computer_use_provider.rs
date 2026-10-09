@@ -698,7 +698,7 @@ mod tests {
                 ..DesktopRuntimeEnv::default()
             };
             assert!(
-                DesktopRuntimeConfig::from_sources(None, env)
+                DesktopRuntimeConfig::from_sources(/* file */ None, env)
                     .unwrap()
                     .is_none()
             );
@@ -708,7 +708,7 @@ mod tests {
     #[tokio::test]
     async fn stdout_ceiling_rejects_instead_of_returning_truncated_json() {
         let (mut writer, reader) = tokio::io::duplex(32);
-        let reader_task = tokio::spawn(read_to_end_bounded(reader, 4));
+        let reader_task = tokio::spawn(read_to_end_bounded(reader, /* limit */ 4));
         writer.write_all(b"12345").await.unwrap();
         drop(writer);
         assert!(reader_task.await.unwrap().is_err());
@@ -717,7 +717,7 @@ mod tests {
     #[tokio::test]
     async fn stderr_is_drained_beyond_capture_limit_and_marks_truncation() {
         let (mut writer, reader) = tokio::io::duplex(32);
-        let reader_task = tokio::spawn(read_stderr_bounded(reader, 4));
+        let reader_task = tokio::spawn(read_stderr_bounded(reader, /* limit */ 4));
         writer.write_all(b"123456789").await.unwrap();
         drop(writer);
         let captured = reader_task.await.unwrap().unwrap();
@@ -751,7 +751,7 @@ mod tests {
             output
         }
 
-        let empty_response = json_response_with_text_len(0);
+        let empty_response = json_response_with_text_len(/* text_len */ 0);
         let exact_text_len = MAX_STDOUT_BYTES - empty_response.len();
         let exact_json = json_response_with_text_len(exact_text_len);
         assert_eq!(exact_json.len(), MAX_STDOUT_BYTES);
@@ -846,7 +846,7 @@ mod tests {
                 .to_string(),
         ];
         let started = std::time::Instant::now();
-        let result = run_provider_process(&argv, b"{}", Duration::from_secs(3), 4, 32).await;
+        let result = run_provider_process(&argv, b"{}", Duration::from_secs(3), /* stdout_limit */ 4, /* stderr_limit */ 32).await;
         assert!(
             result
                 .unwrap_err()
@@ -918,8 +918,7 @@ mod tests {
             ),
         ];
 
-        let result =
-            run_provider_process(&argv, b"{{}}", Duration::from_millis(500), 1024, 32).await;
+        let result = run_provider_process(&argv, b"{{}}", Duration::from_millis(500), /* stdout_limit */ 1024, /* stderr_limit */ 32).await;
         assert!(
             result
                 .unwrap_err()
@@ -950,7 +949,7 @@ mod tests {
         ];
         let task_argv = argv.clone();
         let task = tokio::spawn(async move {
-            run_provider_process(&task_argv, b"{}", Duration::from_secs(5), 1024, 32).await
+            run_provider_process(&task_argv, b"{}", Duration::from_secs(5), /* stdout_limit */ 1024, /* stderr_limit */ 32).await
         });
         tokio::time::timeout(Duration::from_secs(2), async {
             while !started.exists() {
