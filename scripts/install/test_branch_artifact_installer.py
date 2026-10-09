@@ -194,6 +194,7 @@ class FakeApi:
         self.runs: dict[int, dict] = {}
         self.created = created or {}
         self.dispatch_branches = dispatch_branches or {}
+        self.reported_artifact_total_count: int | None = None
         self.artifacts_by_run: dict[int, list[dict]] = {}
         for index, (artifact_id, (run_id, data)) in enumerate(artifacts.items()):
             with zipfile.ZipFile(io.BytesIO(data)) as archive:
@@ -239,7 +240,11 @@ class FakeApi:
             )
             offset = (page - 1) * per_page
             return {
-                "total_count": len(records),
+                "total_count": (
+                    len(records)
+                    if self.reported_artifact_total_count is None
+                    else self.reported_artifact_total_count
+                ),
                 "artifacts": records[offset : offset + per_page],
             }
         if "/actions/workflows/" in parsed.path and "/runs" in parsed.path:
@@ -360,6 +365,27 @@ class BranchArtifactInstallerTests(unittest.TestCase):
         artifact = installer.resolve_artifact(api, args, TARGET, self.root / "cross-ref-dispatch")
         self.assertEqual(artifact.ref, BRANCH)
         self.assertEqual(artifact.run["head_branch"], "main")
+
+    def test_branch_selection_disambiguates_colliding_product_ref_slugs(self) -> None:
+        colliding_ref = "feature-installer-test"
+        api = make_api(
+            {
+                41: (1001, action_artifact(1001, ref=BRANCH)),
+                42: (1002, action_artifact(1002, ref=colliding_ref)),
+            },
+            {1001: "2026-10-08T00:00:00Z", 1002: "2026-10-09T00:00:00Z"},
+        )
+        args = SimpleNamespace(run_id=None, branch=BRANCH)
+        artifact = installer.resolve_artifact(api, args, TARGET, self.root / "colliding-refs")
+        self.assertEqual(artifact.ref, BRANCH)
+        self.assertEqual(artifact.run["id"], 1001)
+
+    def test_branch_selection_rejects_incomplete_repository_artifact_pages(self) -> None:
+        api = make_api({41: (1001, action_artifact(1001))})
+        api.reported_artifact_total_count = 2
+        args = SimpleNamespace(run_id=None, branch=BRANCH)
+        with self.assertRaisesRegex(installer.InstallError, "pagination was incomplete"):
+            installer.resolve_artifact(api, args, TARGET, self.root / "incomplete-artifact-pages")
 
     def test_branch_selection_skips_expired_latest_artifact(self) -> None:
         api = make_api(

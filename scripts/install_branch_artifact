@@ -270,7 +270,8 @@ def list_artifacts(api: GitHubApi, run_id: int) -> list[dict[str, Any]]:
     return artifacts
 
 
-def list_repository_artifacts(api: GitHubApi) -> Iterator[dict[str, Any]]:
+def list_repository_artifacts(api: GitHubApi) -> list[dict[str, Any]]:
+    artifacts: list[dict[str, Any]] = []
     total_count: int | None = None
     for page in range(1, MAX_REPOSITORY_ARTIFACT_PAGES + 1):
         payload = api.json(
@@ -285,16 +286,21 @@ def list_repository_artifacts(api: GitHubApi) -> Iterator[dict[str, Any]]:
             or count < 0
         ):
             fail("GitHub repository-artifacts response omitted its artifact list or total count")
+        if total_count is not None and count != total_count:
+            fail("GitHub repository-artifacts total count changed during pagination")
         total_count = count
-        if total_count > PAGE_SIZE * MAX_REPOSITORY_ARTIFACT_PAGES:
+        if count > PAGE_SIZE * MAX_REPOSITORY_ARTIFACT_PAGES:
             fail("too many repository artifacts to resolve a branch safely; use exact --run-id")
+        if len(rows) > PAGE_SIZE:
+            fail("GitHub repository-artifacts page exceeded the requested page size")
         if not rows:
-            return
-        yield from (row for row in rows if isinstance(row, dict))
+            break
+        artifacts.extend(row for row in rows if isinstance(row, dict))
         if len(rows) < PAGE_SIZE:
-            return
-    if total_count is not None and total_count > PAGE_SIZE * MAX_REPOSITORY_ARTIFACT_PAGES:
-        fail("too many repository artifacts to resolve a branch safely; use exact --run-id")
+            break
+    if total_count is None or len(artifacts) != total_count:
+        fail("GitHub repository-artifacts pagination was incomplete; use exact --run-id")
+    return artifacts
 
 
 def artifact_for_run(api: GitHubApi, run: dict[str, Any], target: str, prefix: str | None = None) -> dict[str, Any]:
@@ -420,7 +426,11 @@ def read_artifact(api: GitHubApi, run: dict[str, Any], record: dict[str, Any], t
     return Artifact(run, record, metadata, files, source_sha, ref, target)
 
 
-def choose_branch_runs(api: GitHubApi, branch: str, target: str) -> list[tuple[dict[str, Any], dict[str, Any], str]]:
+def choose_branch_runs(
+    api: GitHubApi,
+    branch: str,
+    target: str,
+) -> tuple[list[tuple[dict[str, Any], dict[str, Any], str]], bool]:
     slug = branch_slug(branch)
     if not slug:
         fail("branch name produces an empty preview-artifact slug")
@@ -466,6 +476,7 @@ def choose_branch_runs(api: GitHubApi, branch: str, target: str) -> list[tuple[d
     if not candidates:
         fail(f"no retained successful branch-build artifacts matched {branch!r} for {target}")
     candidates.sort(key=lambda row: (row[0], row[1], row[2]["id"]), reverse=True)
+    scan_truncated = len(candidates) > MAX_BRANCH_SCAN_CANDIDATES
     candidates = candidates[:MAX_BRANCH_SCAN_CANDIDATES]
 
     run_ids = [run_id for _, run_id, _, _ in candidates]
@@ -482,7 +493,7 @@ def choose_branch_runs(api: GitHubApi, branch: str, target: str) -> list[tuple[d
         verified_candidates.append((run, artifact, short_sha))
     if not verified_candidates:
         fail(f"no retained successful branch-build artifacts matched {branch!r} for {target}")
-    return verified_candidates
+    return verified_candidates, scan_truncated
 
 
 def resolve_artifact(api: GitHubApi, args: argparse.Namespace, target: str, temp: Path) -> Artifact:
@@ -492,15 +503,31 @@ def resolve_artifact(api: GitHubApi, args: argparse.Namespace, target: str, temp
         record = artifact_for_run(api, run, target)
         artifact = read_artifact(api, run, record, target, temp)
     else:
-        candidates = choose_branch_runs(api, args.branch, target)
-        run, record, short_sha = candidates[0]
-        repo_artifact_id = record["id"]
-        record = artifact_for_run(api, run, target, f"sedna-branch-{branch_slug(args.branch)}-")
-        if record["id"] != repo_artifact_id:
-            fail("selected repository artifact did not match the workflow run artifact listing")
-        artifact = read_artifact(api, run, record, target, temp)
-        if artifact.ref != args.branch or not artifact.source_sha.startswith(short_sha):
-            fail("latest branch artifact does not match the requested ref and source SHA")
+        candidates, scan_truncated = choose_branch_runs(api, args.branch, target)
+        artifact = None
+        for run, repository_record, short_sha in candidates:
+            repo_artifact_id = repository_record["id"]
+            record = artifact_for_run(
+                api,
+                run,
+                target,
+                f"sedna-branch-{branch_slug(args.branch)}-",
+            )
+            if record["id"] != repo_artifact_id:
+                fail("selected repository artifact did not match the workflow run artifact listing")
+            candidate_temp = temp / f"candidate-{repo_artifact_id}"
+            candidate_temp.mkdir(mode=0o700)
+            candidate = read_artifact(api, run, record, target, candidate_temp)
+            if candidate.ref == args.branch:
+                if not candidate.source_sha.startswith(short_sha):
+                    fail("branch artifact name does not match its exact product source SHA")
+                artifact = candidate
+                break
+            shutil.rmtree(candidate_temp)
+        if artifact is None:
+            if scan_truncated:
+                fail("too many matching branch artifacts to disambiguate safely; use exact --run-id")
+            fail(f"no retained artifact metadata matched exact product ref {args.branch!r} for {target}")
     if args.branch is not None and artifact.ref != args.branch:
         fail("selected artifact does not match the requested branch ref")
     return artifact
