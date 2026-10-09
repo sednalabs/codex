@@ -1,0 +1,41 @@
+name: w15087 synthetic usage-tree pilot
+on:
+  push:
+    branches:
+      - pilot/w15087-usage-tree
+    paths:
+      - .github/workflows/w15087-usage-tree-pilot.yml
+      - pilot/w15087/run.py
+
+permissions:
+  contents: read
+
+jobs:
+  synthetic-usage-tree:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check out pilot harness
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Fetch and verify released candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          candidate="$RUNNER_TEMP/codex-usage"
+          curl --fail --location --silent --show-error \
+            https://github.com/zJay26/codex-usage/releases/download/v2.7.2/codex-usage-linux-amd64 \
+            --output "$candidate"
+          printf '%s  %s\n' \
+            3de794849f8d1668a1b9628a7a90af0288a8407ac46d898323e9bdcb9f0a5954 \
+            "$candidate" | sha256sum --check --status
+          chmod 0755 "$candidate"
+          "$candidate" --version | grep -F 'codex-usage 2.7.2 (8b63bb1'
+
+      - name: Run synthetic-only roster and rate adapter
+        shell: bash
+        run: python3 pilot/w15087/run.py "$RUNNER_TEMP/codex-usage"
