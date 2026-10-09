@@ -17,10 +17,45 @@ platform(
     name = "local_linux",
     constraint_values = [
         # We mark the local platform as glibc-compatible because musl-built rust cannot dlopen proc macros.
+        "@rules_rs//rs/platforms/constraints:glibc",
         "@llvm//constraints/libc:gnu.2.28",
     ],
     parents = ["@platforms//host"],
 )
+
+platform(
+    name = "linux_x86_64_gnu",
+    constraint_values = ["@llvm//constraints/libc:gnu.2.28"],
+    parents = ["@rules_rs//rs/platforms:x86_64-unknown-linux-gnu"],
+)
+
+platform(
+    name = "linux_aarch64_gnu",
+    constraint_values = ["@llvm//constraints/libc:gnu.2.28"],
+    parents = ["@rules_rs//rs/platforms:aarch64-unknown-linux-gnu"],
+)
+
+# GNU and static musl tests execute on the matching native GNU runner. Keep
+# the CPU explicit so a cross-built test cannot select the wrong host.
+[
+    toolchain(
+        name = "linux_" + cpu + "_" + libc + "_tests_toolchain",
+        exec_compatible_with = [
+            "@platforms//cpu:" + cpu,
+            "@platforms//os:linux",
+            "@rules_rs//rs/platforms/constraints:glibc",
+        ],
+        target_compatible_with = [
+            "@platforms//cpu:" + cpu,
+            "@platforms//os:linux",
+            "@rules_rs//rs/platforms/constraints:" + libc,
+        ],
+        toolchain = "@bazel_tools//tools/test:empty_toolchain",
+        toolchain_type = "@bazel_tools//tools/test:default_test_toolchain_type",
+    )
+    for cpu in ["x86_64", "aarch64"]
+    for libc in ["glibc", "musl"]
+]
 
 platform(
     name = "local_windows",

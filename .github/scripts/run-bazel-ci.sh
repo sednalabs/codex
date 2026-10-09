@@ -89,10 +89,11 @@ if [[ "$local_execution_only" == "1" ]]; then
   unset BUILDBUDDY_API_KEY
   ci_config=ci-bazel
   if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
-    ci_config=ci-windows
+    ci_config=ci-windows-local-msvc
+    windows_msvc_host_platform=1
     if [[ $windows_cross_compile -eq 1 ]]; then
-      ci_config=ci-windows-local-gnullvm
-      windows_msvc_host_platform=1
+      echo "Windows cross/RBE execution is not permitted in local-only CI; use the native MSVC lane." >&2
+      exit 1
     fi
   fi
 fi
@@ -282,6 +283,18 @@ if [[ "$local_execution_only" != "1" && "${RUNNER_OS:-}" == "Windows" && $window
 fi
 
 post_config_bazel_args=()
+if [[ "$local_execution_only" == "1" && "${RUNNER_OS:-}" == "Linux" ]]; then
+  has_target_platform=0
+  for arg in "${bazel_args[@]}"; do
+    if [[ "$arg" == --platforms=* ]]; then
+      has_target_platform=1
+      break
+    fi
+  done
+  if [[ $has_target_platform -eq 0 ]]; then
+    post_config_bazel_args+=("--platforms=//:local_linux")
+  fi
+fi
 if [[ "${RUNNER_OS:-}" == "Windows" && $windows_msvc_host_platform -eq 1 ]]; then
   has_host_platform_override=0
   for arg in "${bazel_args[@]}"; do

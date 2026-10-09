@@ -12,7 +12,7 @@ import run_bazel_with_buildbuddy
 
 
 class RunBazelWithBuildBuddyTest(unittest.TestCase):
-    def test_local_only_ignores_key_and_preserves_windows_gnu_config(self) -> None:
+    def test_local_only_ignores_key_and_preserves_native_windows_config(self) -> None:
         env = {
             "CODEX_BAZEL_LOCAL_ONLY": "1",
             "BUILDBUDDY_API_KEY": "token",
@@ -20,7 +20,7 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
         }
         args = [
             "test",
-            "--config=ci-windows-local-gnullvm",
+            "--config=ci-windows-local-msvc",
             "--host_platform=//:local_windows_msvc",
             "--",
             "//codex-rs/...",
@@ -30,7 +30,7 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
             run_bazel_with_buildbuddy.bazel_args_with_remote_config(args, env),
             [
                 "test",
-                "--config=ci-windows-local-gnullvm",
+                "--config=ci-windows-local-msvc",
                 "--host_platform=//:local_windows_msvc",
                 "--remote_executor=",
                 "--remote_cache=",
@@ -43,6 +43,50 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
                 "//codex-rs/...",
             ],
         )
+
+    def test_local_only_uses_concrete_gnu_and_preserves_genuine_musl(self) -> None:
+        env = {"CODEX_BAZEL_LOCAL_ONLY": "1", "RUNNER_OS": "Linux"}
+        for triple, platform in (
+            ("x86_64-unknown-linux-gnu", "//:linux_x86_64_gnu"),
+            ("aarch64-unknown-linux-gnu", "//:linux_aarch64_gnu"),
+            (
+                "x86_64-unknown-linux-musl",
+                "@rules_rs//rs/platforms:x86_64-unknown-linux-musl",
+            ),
+        ):
+            with self.subTest(triple=triple):
+                result = run_bazel_with_buildbuddy.bazel_args_with_remote_config(
+                    [
+                        "test",
+                        f"--platforms=@rules_rs//rs/platforms:{triple}",
+                        "--",
+                        "//codex-rs/...",
+                    ],
+                    env,
+                )
+                self.assertIn(f"--platforms={platform}", result)
+                self.assertIn("--remote_executor=", result)
+                self.assertIn("--strategy_regexp=.*=sandboxed,local", result)
+
+    def test_local_only_preserves_audited_release_configs_without_compute(self) -> None:
+        for config in (
+            "ci-windows-msvc",
+            "ci-macos",
+            "ci-v8",
+            "release",
+            "v8-release-compat",
+            "v8-target-x64",
+            "v8-target-arm64",
+            "rusty-v8-upstream-libcxx",
+        ):
+            with self.subTest(config=config):
+                result = run_bazel_with_buildbuddy.bazel_args_with_remote_config(
+                    ["build", f"--config={config}", "--", "//third_party/v8:all"],
+                    {"CODEX_BAZEL_LOCAL_ONLY": "1", "RUNNER_OS": "Linux"},
+                )
+                self.assertIn(f"--config={config}", result)
+                self.assertIn("--remote_executor=", result)
+                self.assertIn("--jobs=HOST_CPUS", result)
 
     def test_local_only_refuses_remote_config_endpoint_and_platform(self) -> None:
         env = {"CODEX_BAZEL_LOCAL_ONLY": "1", "BUILDBUDDY_API_KEY": "token"}

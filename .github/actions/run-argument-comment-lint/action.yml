@@ -27,7 +27,8 @@ runs:
     - name: Run argument comment lint on codex-rs via Bazel
       if: ${{ runner.os != 'Windows' }}
       env:
-        BUILDBUDDY_API_KEY: ${{ inputs.buildbuddy-api-key }}
+        CODEX_BAZEL_LOCAL_ONLY: "1"
+        BUILDBUDDY_API_KEY: ""
       shell: bash
       run: |
         bazel_targets="$(./tools/argument-comment-lint/list-bazel-targets.sh)"
@@ -43,11 +44,12 @@ runs:
     - name: Run argument comment lint on codex-rs via Bazel
       if: ${{ runner.os == 'Windows' }}
       env:
-        BUILDBUDDY_API_KEY: ${{ inputs.buildbuddy-api-key }}
+        CODEX_BAZEL_LOCAL_ONLY: "1"
+        BUILDBUDDY_API_KEY: ""
       shell: bash
       run: |
         ./.github/scripts/run-argument-comment-lint-bazel.sh \
           --config=argument-comment-lint \
-          --platforms=//:local_windows \
+          --platforms=//:windows_x86_64_msvc \
           --keep_going \
           --build_metadata=COMMIT_SHA=${GITHUB_SHA}

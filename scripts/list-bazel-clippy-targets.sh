@@ -27,9 +27,9 @@ manual_rust_test_targets="$(
     --output=label \
     -- 'kind("rust_test rule", attr(tags, "manual", //codex-rs/... except //codex-rs/v8-poc/...))'
 )"
-if [[ "${RUNNER_OS:-}" != "Windows" ]]; then
-  # Non-Windows clippy jobs lint the native test binaries; the
-  # Windows-cross binaries exist only for the fast Windows test leg.
+if [[ "${RUNNER_OS:-}" != "Windows" || $windows_cross_compile -eq 0 ]]; then
+  # Native Clippy jobs lint the native test binaries on every OS; the
+  # Windows-cross binaries belong only to the historical cross leg.
   manual_rust_test_targets="$(printf '%s\n' "${manual_rust_test_targets}" | grep -v -- '-windows-cross-bin$' || true)"
 elif [[ $windows_cross_compile -eq 1 ]]; then
   # `bazel query` is intentionally pre-analysis and does not remove targets

@@ -19,11 +19,8 @@ concurrency:
 
 jobs:
   test:
-    # PRs use the sharded Windows cross-compiled test jobs below. Post-merge
-    # pushes to main also run the native Windows test job for broader Windows
-    # signal without putting PR latency back on the critical path. When
-    # Code-mode unit tests run on every Bazel target. The Windows GNU shards
-    # build and test on their standard Windows runner, including source-built V8.
+    # GNU retains the complete target set. Musl excludes only the unsupported
+    # native voice aliases and their query-derived dependents, listed below.
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -80,8 +77,11 @@ jobs:
         run: ./scripts/check-module-bazel-lock.sh
 
       - name: bazel test //...
+        env:
+          TARGET: ${{ matrix.target }}
         shell: bash
         run: |
+          set -euo pipefail
           bazel_targets=(
             //...
             # Keep standalone V8 library targets out of the ordinary Bazel CI
@@ -91,23 +91,66 @@ jobs:
             -//codex-rs/v8-poc:v8-poc-unit-tests
           )
 
+          if [[ "${TARGET}" == "x86_64-unknown-linux-musl" ]]; then
+            # These aliases have GNU/macOS/MSVC branches, but no musl branch.
+            # Unconfigured reverse dependencies name every necessary exclusion;
+            # all of them remain in the complete GNU lane above.
+            target_query='//... except attr(tags, "manual", //...) except //third_party/v8:all except //codex-rs/v8-poc:v8-poc-unit-tests'
+            voice_query='rdeps(//..., set(//third_party/voice:native_prefix //third_party/voice:native_runtime //third_party/voice:native_link //third_party/voice:native_sdk))'
+            coverage_dir="${RUNNER_TEMP}/musl-coverage"
+            mkdir -p "${coverage_dir}"
+            ./.github/scripts/run-bazel-query-ci.sh --output=label -- "${target_query}" \
+              | LC_ALL=C sort -u > "${coverage_dir}/all-targets.txt"
+            ./.github/scripts/run-bazel-query-ci.sh --output=label -- "(${target_query}) intersect ${voice_query}" \
+              | LC_ALL=C sort -u > "${coverage_dir}/voice-exclusions.txt"
+            LC_ALL=C comm -23 "${coverage_dir}/all-targets.txt" "${coverage_dir}/voice-exclusions.txt" \
+              > "${coverage_dir}/musl-targets.txt"
+            mapfile -t bazel_targets < "${coverage_dir}/musl-targets.txt"
+            if [[ ${#bazel_targets[@]} -eq 0 ]]; then
+              echo "Musl target selection is empty; refusing an empty proof." >&2
+              exit 1
+            fi
+            {
+              echo '### Genuine musl coverage'
+              echo 'Native voice aliases lack musl configuration. Their exact reverse dependencies remain covered by GNU.'
+              printf 'Target query: `%s`\n\nExclusion query: `%s`\n' "${target_query}" "${voice_query}"
+              echo '```text'
+              cat "${coverage_dir}/voice-exclusions.txt"
+              echo '```'
+              printf 'Selected labels: %s; excluded labels: %s\n' \
+                "${#bazel_targets[@]}" "$(wc -l < "${coverage_dir}/voice-exclusions.txt")"
+            } | tee -a "${GITHUB_STEP_SUMMARY}"
+          fi
+
           bazel_wrapper_args=(
             --print-failed-action-summary
             --print-failed-test-logs
           )
           bazel_test_args=(
             test
-            --platforms=@rules_rs//rs/platforms:${{ matrix.target }}
+            --platforms=@rules_rs//rs/platforms:${TARGET}
             --test_tag_filters=-argument-comment-lint
             --test_verbose_timeout_warnings
             --build_metadata=COMMIT_SHA=${GITHUB_SHA}
           )
+          if [[ "${TARGET}" == "x86_64-unknown-linux-musl" ]]; then
+            # Explicit query labels retain the wildcard's platform filtering.
+            bazel_test_args+=(--skip_incompatible_explicit_targets)
+          fi
           ./.github/scripts/run-bazel-ci.sh \
             "${bazel_wrapper_args[@]}" \
             -- \
             "${bazel_test_args[@]}" \
             -- \
             "${bazel_targets[@]}"
+
+      - name: Upload exact musl coverage selection
+        if: always() && !cancelled() && matrix.target == 'x86_64-unknown-linux-musl'
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: musl-coverage-${{ github.sha }}
+          path: ${{ runner.temp }}/musl-coverage
+          if-no-files-found: error
 
       - name: Upload Bazel execution logs
         if: always() && !cancelled()
@@ -133,7 +176,7 @@ jobs:
         uses: ./.github/actions/check-clean-worktree
 
   test-windows-shard:
-    # Split Windows GNU tests across standard Windows hosts. Build actions and
+    # Split native Windows/MSVC tests across standard Windows hosts. Build actions and
     # test execution both remain on the assigned GitHub-hosted runner.
     timeout-minutes: 30
     strategy:
@@ -145,7 +188,7 @@ jobs:
           - 3
           - 4
     runs-on: windows-2025
-    name: Bazel test on windows-latest for x86_64-pc-windows-gnullvm shard ${{ matrix.shard }}/4
+    name: Bazel test on windows-latest for x86_64-pc-windows-msvc shard ${{ matrix.shard }}/4
     environment:
       name: bazel
       deployment: false
@@ -169,7 +212,7 @@ jobs:
         id: prepare_bazel
         uses: ./.github/actions/prepare-bazel-ci
         with:
-          target: x86_64-pc-windows-gnullvm
+          target: x86_64-pc-windows-msvc
           # Reuse the former monolithic Windows test cache for restores. Do
           # not save it from every shard below; duplicate uploads would sit on
           # the PR-blocking critical path after the useful test work is done.
@@ -210,7 +253,7 @@ jobs:
           ./.github/scripts/run-bazel-ci.sh \
             --print-failed-action-summary \
             --print-failed-test-logs \
-            --windows-cross-compile \
+            --windows-msvc-host-platform \
             --remote-download-toplevel \
             -- \
             "${bazel_test_args[@]}" \
@@ -222,7 +265,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: bazel-execution-logs-test-x86_64-pc-windows-gnullvm-shard-${{ matrix.shard }}
+          name: bazel-execution-logs-test-x86_64-pc-windows-msvc-shard-${{ matrix.shard }}
           path: ${{ runner.temp }}/bazel-execution-logs
           if-no-files-found: ignore
 
@@ -231,12 +274,11 @@ jobs:
         uses: ./.github/actions/check-clean-worktree
 
   test-windows:
-    # Preserve the existing required-check surface while the real work happens
-    # in the sharded Windows jobs above.
+    # Preserve the required aggregation while naming the real native ABI.
     if: always()
     needs: test-windows-shard
     runs-on: ubuntu-24.04
-    name: Bazel test on windows-latest for x86_64-pc-windows-gnullvm
+    name: Bazel test on windows-latest for x86_64-pc-windows-msvc
 
     steps:
       - name: Confirm Windows Bazel test shards passed
@@ -331,7 +373,7 @@ jobs:
       matrix:
         include:
           # Keep Linux lint coverage on x64 and add the arm64 macOS path that
-          # the Bazel test job already exercises. Add Windows gnullvm as well
+          # the Bazel test job already exercises. Add native Windows/MSVC as well
           # so PRs get Bazel-native lint signal on the same Windows toolchain
           # that the Bazel test job uses.
           - os: ubuntu-24.04
@@ -339,7 +381,7 @@ jobs:
           - os: macos-15
             target: aarch64-apple-darwin
           - os: windows-2025
-            target: x86_64-pc-windows-gnullvm
+            target: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
     name: Bazel clippy on ${{ matrix.os }} for ${{ matrix.target }}
     environment:
@@ -369,16 +411,8 @@ jobs:
           bazel_wrapper_args=()
           bazel_target_list_args=()
           if [[ "${RUNNER_OS}" == "Windows" ]]; then
-            # Keep the Windows GNU target and target list aligned with the
-            # test shards while executing build actions on this Windows host.
-            bazel_wrapper_args+=(--windows-cross-compile)
-            bazel_target_list_args+=(--windows-cross-compile)
-            if [[ "${CODEX_BAZEL_LOCAL_ONLY:-0}" != "1" && -z "${BUILDBUDDY_API_KEY:-}" ]]; then
-              # The fork fallback can see incompatible explicit Windows-cross
-              # internal test binaries in the generated target list. Preserve
-              # the old local-fallback behavior there.
-              bazel_clippy_args+=(--skip_incompatible_explicit_targets)
-            fi
+            bazel_wrapper_args+=(--windows-msvc-host-platform)
+            bazel_clippy_args+=(--platforms=//:windows_x86_64_msvc --skip_incompatible_explicit_targets)
           else
             bazel_clippy_args+=(--platforms=@rules_rs//rs/platforms:${{ matrix.target }})
           fi
@@ -432,7 +466,7 @@ jobs:
           - os: macos-15
             target: aarch64-apple-darwin
           - os: windows-2025
-            target: x86_64-pc-windows-gnullvm
+            target: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
     name: Verify release build on ${{ matrix.os }} for ${{ matrix.target }}
     environment:
@@ -462,8 +496,9 @@ jobs:
           # Rust debug assertions explicitly.
           bazel_wrapper_args=()
           if [[ "${RUNNER_OS}" == "Windows" ]]; then
-            # Use the same runner-local Windows GNU target as tests and Clippy.
-            bazel_wrapper_args+=(--windows-cross-compile)
+            # Compile assertions-off source on the same native MSVC path.
+            # This job does not produce a Windows release package.
+            bazel_wrapper_args+=(--windows-msvc-host-platform)
           fi
 
           bazel_build_args=(

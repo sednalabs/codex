@@ -25,9 +25,17 @@ REMOTE_EXECUTION_CONFIGS = {
 LOCAL_EXECUTION_CONFIGS = {
     "ci-bazel",
     "ci-windows",
-    "ci-windows-local-gnullvm",
+    "ci-windows-local-msvc",
+    "ci-windows-msvc",
+    "ci-macos",
+    "ci-v8",
     "argument-comment-lint",
     "clippy",
+    "release",
+    "v8-release-compat",
+    "v8-target-x64",
+    "v8-target-arm64",
+    "rusty-v8-upstream-libcxx",
 }
 LOCAL_ENDPOINT_ARGS = [
     "--remote_executor=",
@@ -134,7 +142,17 @@ def local_execution_args(args: Sequence[str], env: Mapping[str, str]) -> list[st
         separator_idx = args.index("--")
     except ValueError:
         separator_idx = len(args)
-    bazel_args = args[:separator_idx]
+    # rules_rs intentionally leaves GNU's concrete libc to the workspace.
+    # Select the reviewed GNU platforms without changing musl's Rust/LLVM ABI.
+    local_platforms = {
+        "--platforms=@rules_rs//rs/platforms:x86_64-unknown-linux-gnu": (
+            "--platforms=//:linux_x86_64_gnu"
+        ),
+        "--platforms=@rules_rs//rs/platforms:aarch64-unknown-linux-gnu": (
+            "--platforms=//:linux_aarch64_gnu"
+        ),
+    }
+    bazel_args = [local_platforms.get(arg, arg) for arg in args[:separator_idx]]
     for arg in bazel_args:
         if arg in {
             "--config",
