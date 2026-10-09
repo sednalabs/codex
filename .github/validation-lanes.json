@@ -2945,6 +2945,8 @@
         "pnpm-workspace.yaml",
         "scripts/install/install.sh",
         "scripts/install/install.ps1",
+        "scripts/install_branch_artifact",
+        "scripts/install/test_branch_artifact_installer.py",
         "scripts/stage_npm_packages.py",
         "scripts/list-bazel-clippy-targets.sh",
         ".github/scripts/verify_bazel_clippy_lints.py",
@@ -2960,7 +2962,9 @@
         "tools/argument-comment-lint/Cargo.lock",
         "codex-rs/skills/src/assets/samples/skill-creator/scripts/init_skill.py",
         "docs/divergences/index.yaml",
+        "docs/carry-divergence-ledger.md",
         "docs/downstream-regression-matrix.md",
+        ".github/scripts/validation-lanes/build-policy-sanity.sh",
         "justfile"
       ],
       "required_any_paths": [
@@ -2969,6 +2973,8 @@
         "MODULE.bazel.lock",
         "scripts/install/install.sh",
         "scripts/install/install.ps1",
+        "scripts/install_branch_artifact",
+        "scripts/install/test_branch_artifact_installer.py",
         "scripts/stage_npm_packages.py",
         "scripts/list-bazel-clippy-targets.sh",
         ".github/scripts/verify_bazel_clippy_lints.py",

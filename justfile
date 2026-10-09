@@ -84,8 +84,7 @@ install:
     rustup show active-toolchain
     cargo fetch
 
-# Install the exact same-source Linux core and code-mode host from a successful
-# branch-build workflow. Exact core runs require their exact host-only companion.
+# Install the exact native Linux package from one successful branch-build run.
 [no-cd]
 [positional-arguments]
 install-branch-artifact *args:

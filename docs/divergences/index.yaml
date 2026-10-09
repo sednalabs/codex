@@ -3668,20 +3668,22 @@
         "justfile",
         "scripts/install_branch_artifact",
         "scripts/install/test_branch_artifact_installer.py",
+        ".github/validation-lanes.json",
+        ".github/scripts/validation-lanes/build-policy-sanity.sh",
         "docs/carry-divergence-ledger.md",
         "docs/downstream-regression-matrix.md"
       ],
-      "behavior": "The installer resolves a latest successful product-ref build or an exact core run, then requires a same-source/ref/target code-mode-host companion. It binds each Actions artifact by exact run/artifact ID and SHA-256, strips authorization on cross-origin HTTPS redirects and rejects downgrades, rejects ambiguous or incomplete pairs, safely extracts native Linux x86_64/aarch64 executables, stages a versioned package and atomically switches managed launcher links with rollback while preserving prior packages.",
+      "behavior": "The installer resolves the latest successful full package for an exact product ref or one exact workflow run. It binds repository, workflow path/head, product ref/source SHA, run/artifact identity and digest, target, preview version and archive; rejects host-only/incomplete/ambiguous results; strips authorization on cross-origin HTTPS redirects and rejects downgrades; safely extracts native Linux x86_64/aarch64 executables; and stages a versioned package with atomic launcher activation and rollback while preserving prior packages.",
       "upstream_equivalent": false,
       "introduced_in": {"carry_commit": null, "upstream_commit": null},
       "guardrail_lane": "sedna-branch-artifact-installer-contract",
       "tests": ["just build-policy-sanity synthetic installer fixtures, cross-origin redirect checks, and public recipe dry-run via a loopback-only API fixture"],
       "owner": "downstream",
-      "notes": "Exact --run-id requires --host-run-id because normal and host-only runs reuse the artifact name. AArch64 installs require a retained matching host-only artifact; absence fails closed. This helper installs disposable branch previews, not releases.",
+      "notes": "Exact --run-id selects one full-package workflow run. The separate host_only=true artifact is not accepted or combined with another run. Missing full artifacts fail closed. This helper installs disposable branch previews, not releases.",
       "upstreamability_tier": "downstream-tooling",
       "boundary_type": "artifact-installation",
       "hotspot_files": ["justfile", "scripts/install_branch_artifact"],
-      "extraction_target": "upstream branch-artifact resolution and pairing contract"
+      "extraction_target": "upstream branch-artifact resolution contract"
     },
     {
       "id": "linux-preview-code-mode-host-artifact",

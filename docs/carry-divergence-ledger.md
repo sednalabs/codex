@@ -3732,59 +3732,59 @@ capacity; passing source tests alone does not prove an installed host adopted it
 The `sedna-branch-build` workflow has an opt-in `host_only=true` dispatch for
 `platform=linux-x86_64`. It builds only `codex-code-mode-host` with Cargo
 `--locked`, stages the executable, verifies its Linux x86_64 format, and runs
-`--help` before uploading a separate archive. The artifact metadata records the
-exact source commit and workflow commit; adjacent SHA-256 files cover both the
-binary and archive. The default preview dispatch continues to build the CLI and
-responses API proxy. Before Cargo runs, the host-only path sources the target's
+`--help` before uploading a separate supplemental archive. The artifact
+metadata records the exact source commit and workflow commit; adjacent SHA-256
+files cover both the binary and archive. The default Linux preview already
+builds the CLI, Responses API proxy, and code-mode host together; the branch
+installer accepts only that complete package and does not assemble outputs
+from separate runs. Before Cargo runs, the host-only path sources the target's
 existing `setup-rusty-v8.sh` helper, which downloads the matching Codex release
 archive and binding and verifies them against the target's pinned checksum
-manifest. Use the host-only artifact only with companion binaries built from
-the same source commit.
+manifest. The host-only artifact remains supplemental and is not an installer
+input.
 
 ## Linux branch-artifact installer
 
-The documented `just install-branch-artifact` recipe resolves disposable
+The `just install-branch-artifact` recipe resolves disposable
 `sedna-branch-build` outputs from `sednalabs/codex`; it is separate from the
 official-release asset installer. `--branch REF` selects the latest successful
-core build whose artifact metadata names that exact product ref. `--run-id CORE`
-requires `--host-run-id HOST`, because the core and `host_only` runs intentionally
-reuse an Actions artifact name. Branch mode can also take an explicit
-`--host-run-id` when a companion cannot be inferred unambiguously.
+full package run whose artifact metadata names that exact product ref.
+`--run-id RUN` selects one exact successful full-package workflow run; the
+current Linux workflow uploads the CLI, Responses API proxy, and code-mode host
+together in its single architecture-specific artifact. The supplemental
+`host_only=true` output is not accepted as a package or as an installer
+companion.
 
-The installer binds API run and artifact IDs, the API SHA-256 digest, artifact
-metadata repository/ref/product commit/workflow URL, target archive name, host
-workflow commit, and host archive/binary checksum sidecars. The CLI, Responses
-API proxy, and code-mode host must come from the same product commit, ref, and
-native Linux target even though their independent workflow run numbers and
-preview-version strings may differ. It rejects expired, missing, ambiguous,
-cross-ref, cross-source, cross-target, and unsafe archive contents; it never
-silently substitutes a core-only pair or an older branch source. Branch lookup
-is deliberately bounded to recent matching runs; collisions or too many
-candidates require exact run IDs.
+The installer binds the repository, workflow path, workflow-host head SHA,
+product ref and commit, run ID, artifact ID and API SHA-256 digest, preview
+version, native target and archive names. It rejects expired, missing,
+ambiguous, cross-ref, cross-source, cross-target, host-only, and unsafe archive
+contents; it never combines independent runs or silently substitutes an older
+branch source. Branch lookup is deliberately bounded to recent matching runs;
+use an exact `--run-id` when branch resolution cannot select one current full
+package.
 
 Authenticated API redirects retain bearer credentials only on the same HTTPS
 origin. Cross-origin artifact redirects strip authorization, proxy-authorization,
 and cookie headers; HTTPS downgrade and non-loopback HTTP test redirects fail
 closed.
 
-Linux x86_64 and AArch64 packages are supported when both core and host-only
-artifacts are retained. Some workflow revisions do not produce an AArch64
-host-only artifact; the installer accepts an explicit exact companion from a
-workflow revision that does, while validating that run's own workflow and the
-shared product source/ref/target. Missing AArch64 companions fail closed.
+Linux x86_64 and AArch64 are supported when the selected run contains the
+complete native package. A missing, incomplete, or wrong-architecture package
+fails closed rather than being assembled from other runs.
 
 After verification, the helper stages the three executables and source/run
 manifest in a new versioned directory under the standalone package root. It
 preserves previous versioned directories and any visible regular launcher as a
 backup, serializes activation with the release installer's lock, and atomically
 replaces `current` and `.local/bin/codex` links. A failed switch restores the
-previous links/launcher. `--dry-run` verifies and reports the selected pair
+previous links/launcher. `--dry-run` verifies and reports the selected package
 without inspecting or changing managed installation paths under `HOME` (the
 GitHub CLI may still read its configured token when no token environment
 variable is supplied). The synthetic hosted fixture invokes the public just
 recipe through a test-only loopback API endpoint and isolated home path;
 production requests remain pinned to GitHub's API. Synthetic API/artifact,
 cross-origin redirect, malformed archive,
-pair mismatch, dry-run, activation, and rollback fixtures run through
+single-run identity, dry-run, activation, and rollback fixtures run through
 `just build-policy-sanity` on hosted CI; they never download a real build or
 touch an operator home.

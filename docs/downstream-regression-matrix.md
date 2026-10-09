@@ -617,22 +617,20 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
     entries are restored and saved for repeat builds.
   - Treat it as artifact validation, not the primary downstream correctness
     gate.
-  - For a missing Linux x86_64 code-mode host, dispatch the same workflow with
-    `host_only=true` and the exact source commit in `ref`. This uploads a
-    separate host-only artifact after locked compilation and `--help` smoke;
-    the build sources that target's checksum-verifying V8 setup helper. Assemble
-    it only alongside CLI and proxy binaries from that same commit.
+  - The optional Linux x86_64 `host_only=true` dispatch uploads a supplemental
+    host artifact after locked compilation and `--help` smoke; the installer
+    intentionally does not combine that output with binaries from another run.
   - `just install-branch-artifact --branch REF` resolves the newest retained
-    successful product-source build for that exact ref and requires a matching
-    `codex-code-mode-host` companion before staging the CLI, proxy, and host
-    together under the standalone versioned-package directory. Exact run mode
-    is `--run-id CORE_RUN --host-run-id HOST_RUN`; the companion run cannot be
-    inferred safely from one run ID because core and host-only runs share the
-    Actions artifact name. `--dry-run` verifies provenance and architecture
+    successful full package run for that exact product ref. Exact-run mode is
+    `--run-id RUN`; the current Linux workflow includes `codex`,
+    `codex-responses-api-proxy`, and `codex-code-mode-host` in one
+    architecture-specific artifact. The separate `host_only=true` artifact is
+    rejected and is not combined with another run. `--dry-run` verifies
+    provenance and architecture
     without inspecting or modifying managed install paths under the home directory.
     The fixture-only installer checks are included in hosted
     `just build-policy-sanity`; they invoke the public recipe against a
-    loopback-only synthetic API endpoint and isolated home and cover paired
+    loopback-only synthetic API endpoint and isolated home and cover single-run
     source identity, run/artifact linkage, cross-origin authorization,
     proxy-authorization and cookie stripping, HTTPS downgrade rejection,
     checksums, archive safety, x86_64 and

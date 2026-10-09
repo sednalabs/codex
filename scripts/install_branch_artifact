@@ -32,7 +32,6 @@ REPOSITORY = "sednalabs/codex"
 WORKFLOW_PATH = ".github/workflows/sedna-branch-build.yml"
 API_ROOT = "https://api.github.com"
 PAGE_SIZE = 100
-MAX_BRANCH_CANDIDATES = 6
 MAX_BRANCH_SCAN_CANDIDATES = 12
 EXECUTABLES = ("codex", "codex-responses-api-proxy", "codex-code-mode-host")
 TARGETS = {
@@ -49,7 +48,6 @@ class InstallError(Exception):
 class Artifact:
     run: dict[str, Any]
     record: dict[str, Any]
-    kind: str
     metadata: dict[str, Any]
     files: dict[str, Path]
     source_sha: str
@@ -230,12 +228,18 @@ class GitHubApi:
 
 def validate_run(run: dict[str, Any], expected_run_id: int | None = None) -> int:
     run_id = run.get("id")
-    if not isinstance(run_id, int) or (expected_run_id is not None and run_id != expected_run_id):
+    if (
+        not isinstance(run_id, int)
+        or isinstance(run_id, bool)
+        or run_id <= 0
+        or (expected_run_id is not None and run_id != expected_run_id)
+    ):
         fail("workflow run record has an unexpected run id")
     if run.get("event") != "workflow_dispatch" or run.get("status") != "completed" or run.get("conclusion") != "success":
         fail(f"workflow run {run_id} is not a successful completed manual branch build")
     repository = run.get("repository")
-    if not isinstance(repository, dict) or repository.get("full_name", "").lower() != REPOSITORY:
+    repository_name = repository.get("full_name") if isinstance(repository, dict) else None
+    if not isinstance(repository_name, str) or repository_name.lower() != REPOSITORY:
         fail(f"workflow run {run_id} is not from {REPOSITORY}")
     path = run.get("path")
     if not isinstance(path, str) or path.partition("@")[0] != WORKFLOW_PATH:
@@ -309,10 +313,16 @@ def artifact_for_run(api: GitHubApi, run: dict[str, Any], target: str, prefix: s
     record = candidates[0]
     artifact_id = record.get("id")
     digest = record.get("digest")
-    if not isinstance(artifact_id, int) or not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+    if (
+        not isinstance(artifact_id, int)
+        or isinstance(artifact_id, bool)
+        or artifact_id <= 0
+        or not isinstance(digest, str)
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None
+    ):
         fail(f"workflow run {run_id} artifact is missing its exact ID or SHA-256 digest")
-    workflow_run = record.get("workflow_run") or {}
-    if workflow_run.get("id", run_id) != run_id:
+    workflow_run = record.get("workflow_run")
+    if not isinstance(workflow_run, dict) or workflow_run.get("id") != run_id:
         fail(f"artifact {artifact_id} is not attached to the selected workflow run")
     return record
 
@@ -352,8 +362,8 @@ def safe_zip_extract(archive_path: Path, digest_expected: str, destination: Path
 
 def read_artifact(api: GitHubApi, run: dict[str, Any], record: dict[str, Any], target: str, temp: Path) -> Artifact:
     run_id = validate_run(run)
-    workflow_run = record.get("workflow_run") or {}
-    if workflow_run.get("id", run_id) != run_id:
+    workflow_run = record.get("workflow_run")
+    if not isinstance(workflow_run, dict) or workflow_run.get("id") != run_id:
         fail(f"Actions artifact {record.get('id')} is not attached to selected run {run_id}")
     artifact_id = record["id"]
     expected_digest = record["digest"].removeprefix("sha256:")
@@ -370,7 +380,8 @@ def read_artifact(api: GitHubApi, run: dict[str, Any], record: dict[str, Any], t
         metadata = json.loads(metadata_files[0].read_text(encoding="utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
         fail(f"Actions artifact {artifact_id} metadata is not valid UTF-8 JSON")
-    if not isinstance(metadata, dict) or metadata.get("repository", "").lower() != REPOSITORY:
+    metadata_repository = metadata.get("repository") if isinstance(metadata, dict) else None
+    if not isinstance(metadata_repository, str) or metadata_repository.lower() != REPOSITORY:
         fail(f"Actions artifact {artifact_id} metadata repository is not {REPOSITORY}")
     source_sha = full_sha(metadata.get("commit"), f"Actions artifact {artifact_id} product commit")
     ref = metadata.get("ref")
@@ -380,73 +391,31 @@ def read_artifact(api: GitHubApi, run: dict[str, Any], record: dict[str, Any], t
     expected_workflow = f"https://github.com/{REPOSITORY}/actions/runs/{run_id}"
     if workflow != expected_workflow:
         fail(f"Actions artifact {artifact_id} workflow URL does not bind to selected run {run_id}")
-    target_fields = {target, target.replace("-unknown-linux-gnu", "")}
-    if metadata.get("target") is not None and metadata.get("target") not in target_fields:
+    if metadata.get("target") is not None and metadata.get("target") != target:
         fail(f"Actions artifact {artifact_id} target metadata does not match {target}")
     archive_name = archives[0].name
     target_suffix = f"-{target}.tar.gz"
     if not archive_name.endswith(target_suffix):
         fail(f"Actions artifact {artifact_id} archive name does not identify target {target}")
     preview_version = metadata.get("previewVersion")
-    if not isinstance(preview_version, str) or not preview_version:
+    if (
+        not isinstance(preview_version, str)
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.+-]{0,127}", preview_version) is None
+    ):
         fail(f"Actions artifact {artifact_id} metadata omitted previewVersion")
     if not preview_version.endswith(f"+g{source_sha[:8]}"):
         fail(f"Actions artifact {artifact_id} previewVersion does not match its product source SHA")
     expected_version = f"{preview_version.replace('+', '__')}-{target}.tar.gz"
-    is_host = metadata.get("artifact") == "codex-code-mode-host"
-    if is_host:
-        workflow_commit = full_sha(metadata.get("workflowCommit"), f"Actions artifact {artifact_id} workflowCommit")
-        if workflow_commit != run.get("head_sha"):
-            fail(f"host artifact {artifact_id} workflowCommit does not match workflow run head_sha")
-        if archive_name != f"codex-sedna-preview-host-{expected_version}":
-            fail(f"host artifact {artifact_id} archive name is not a host-only package")
-        binary_name = "codex-code-mode-host"
-        host_payload = safe_tar_extract(
-            archives[0],
-            temp / f"host-payload-{artifact_id}",
-            {binary_name},
-            target,
-        )
-        if metadata.get("binarySha256") != sha256_file(host_payload[binary_name]):
-            fail(f"host artifact {artifact_id} binary SHA-256 does not match its metadata")
-        files[binary_name] = host_payload[binary_name]
-        verify_sidecar(files, archive_name, binary_name, artifact_id)
-        kind = "host"
-    else:
-        if "artifact" in metadata:
-            fail(f"Actions artifact {artifact_id} names an unexpected payload type")
-        if archive_name != f"codex-sedna-preview-{expected_version}":
-            fail(f"core artifact {artifact_id} archive name is not a core preview package")
-        kind = "core"
-    expected_files = {archive_name, metadata_files[0].name}
-    if kind == "host":
-        expected_files.update(
-            {
-                f"{archive_name}.sha256",
-                f"{archive_name.removesuffix('.tar.gz')}.binary.sha256",
-            }
-        )
-    if set(files) != expected_files | ({"codex-code-mode-host"} if kind == "host" else set()):
+    if "artifact" in metadata or archive_name != f"codex-sedna-preview-{expected_version}":
+        fail(f"Actions artifact {artifact_id} is not a complete branch package")
+    if metadata_files[0].name != archive_name.removesuffix(".tar.gz") + ".json":
+        fail(f"Actions artifact {artifact_id} metadata filename does not match its package")
+    expected_artifact_name = f"sedna-branch-{branch_slug(ref)}-{source_sha[:8]}-{target}"
+    if record.get("name") != expected_artifact_name:
+        fail(f"Actions artifact {artifact_id} name does not bind its product ref, source SHA, and target")
+    if set(files) != {archive_name, metadata_files[0].name}:
         fail(f"Actions artifact {artifact_id} contains unexpected files")
-    return Artifact(run, record, kind, metadata, files, source_sha, ref, target)
-
-
-def verify_sidecar(files: dict[str, Path], archive_name: str, binary_name: str, artifact_id: int) -> None:
-    archive_digest = files.get(f"{archive_name}.sha256")
-    binary_digest = files.get(f"{archive_name.removesuffix('.tar.gz')}.binary.sha256")
-    if archive_digest is None or binary_digest is None:
-        fail(f"host artifact {artifact_id} is missing archive or binary checksum sidecars")
-    if parse_sha256_sidecar(archive_digest, archive_name) != sha256_file(files[archive_name]):
-        fail(f"host artifact {artifact_id} archive checksum mismatch")
-    if parse_sha256_sidecar(binary_digest, binary_name) != sha256_file(files[binary_name]):
-        fail(f"host artifact {artifact_id} binary checksum mismatch")
-
-
-def parse_sha256_sidecar(path: Path, expected_name: str) -> str:
-    fields = path.read_text(encoding="utf-8").strip().split()
-    if len(fields) != 2 or fields[1].lstrip("*") != expected_name or re.fullmatch(r"[0-9a-f]{64}", fields[0]) is None:
-        fail(f"invalid SHA-256 sidecar for {expected_name}")
-    return fields[0]
+    return Artifact(run, record, metadata, files, source_sha, ref, target)
 
 
 def choose_branch_runs(api: GitHubApi, branch: str, target: str) -> list[tuple[dict[str, Any], dict[str, Any], str]]:
@@ -462,6 +431,8 @@ def choose_branch_runs(api: GitHubApi, branch: str, target: str) -> list[tuple[d
         except InstallError:
             continue
         for artifact in list_artifacts(api, run["id"]):
+            if artifact.get("expired") is True:
+                continue
             name = artifact.get("name")
             if not isinstance(name, str) or not name.startswith(prefix):
                 continue
@@ -476,66 +447,22 @@ def choose_branch_runs(api: GitHubApi, branch: str, target: str) -> list[tuple[d
     return candidates
 
 
-def resolve_artifacts(api: GitHubApi, args: argparse.Namespace, target: str, temp: Path) -> tuple[Artifact, Artifact]:
+def resolve_artifact(api: GitHubApi, args: argparse.Namespace, target: str, temp: Path) -> Artifact:
     temp.mkdir(mode=0o700, parents=True, exist_ok=True)
     if args.run_id is not None:
-        if args.host_run_id is None:
-            fail("--run-id requires --host-run-id; core and host-only artifacts use the same Actions artifact name")
-        core_run = fetch_run(api, args.run_id)
-        host_run = fetch_run(api, args.host_run_id)
-        if core_run["id"] == host_run["id"]:
-            fail("--run-id and --host-run-id must name separate workflow runs")
-        core_record = artifact_for_run(api, core_run, target)
-        host_record = artifact_for_run(api, host_run, target)
-        core = read_artifact(api, core_run, core_record, target, temp)
-        host = read_artifact(api, host_run, host_record, target, temp)
+        run = fetch_run(api, args.run_id)
+        record = artifact_for_run(api, run, target)
+        artifact = read_artifact(api, run, record, target, temp)
     else:
-        branch_candidates = choose_branch_runs(api, args.branch, target)
-        core_prefix = f"sedna-branch-{branch_slug(args.branch)}-"
-        verified_candidates: list[Artifact] = []
-        core: Artifact | None = None
-        for run, record, short_sha in branch_candidates:
-            candidate = read_artifact(api, run, record, target, temp)
-            if candidate.ref == args.branch and candidate.source_sha.startswith(short_sha):
-                verified_candidates.append(candidate)
-                if candidate.kind == "core":
-                    core = candidate
-                    break
-        if core is None:
-            fail("latest successful branch source has no core artifact; use exact --run-id")
-        if args.host_run_id is not None:
-            explicit_host = fetch_run(api, args.host_run_id)
-            host_record = artifact_for_run(api, explicit_host, target, core_prefix)
-            host = read_artifact(api, explicit_host, host_record, target, temp)
-        else:
-            same_source_records = [
-                (run, record) for run, record, short_sha in branch_candidates
-                if short_sha == core.source_sha[:8] and run["id"] != core.run["id"]
-            ]
-            if len(same_source_records) > MAX_BRANCH_CANDIDATES:
-                fail("too many successful companion runs match this branch source; specify --host-run-id")
-            known_ids = {item.run["id"] for item in verified_candidates}
-            for run, record in same_source_records:
-                if run["id"] in known_ids:
-                    continue
-                candidate = read_artifact(api, run, record, target, temp)
-                if candidate.ref == core.ref and candidate.source_sha == core.source_sha:
-                    verified_candidates.append(candidate)
-            host_candidates = [
-                candidate for candidate in verified_candidates
-                if candidate.kind == "host" and candidate.source_sha == core.source_sha and candidate.ref == core.ref
-            ]
-            host_candidates.sort(key=lambda item: (item.run.get("created_at", ""), item.run.get("id", 0)), reverse=True)
-            host = host_candidates[0] if host_candidates else None
-            if host is None:
-                fail("no matching code-mode-host artifact found for latest branch source; provide --host-run-id")
-    if core.kind != "core" or host.kind != "host":
-        fail("selected run pair must contain one core artifact and one host-only artifact")
-    if core.source_sha != host.source_sha or core.ref != host.ref or core.target != host.target:
-        fail("core and host artifacts do not match on product source SHA, ref, and target")
-    if args.branch is not None and (core.ref != args.branch or host.ref != args.branch):
-        fail("selected artifacts do not match the requested branch ref")
-    return core, host
+        candidates = choose_branch_runs(api, args.branch, target)
+        run, record, short_sha = candidates[0]
+        record = artifact_for_run(api, run, target, f"sedna-branch-{branch_slug(args.branch)}-")
+        artifact = read_artifact(api, run, record, target, temp)
+        if artifact.ref != args.branch or not artifact.source_sha.startswith(short_sha):
+            fail("latest branch artifact does not match the requested ref and source SHA")
+    if args.branch is not None and artifact.ref != args.branch:
+        fail("selected artifact does not match the requested branch ref")
+    return artifact
 
 
 def elf_machine(path: Path, target: str) -> None:
@@ -585,26 +512,27 @@ def safe_tar_extract(archive_path: Path, destination: Path, expected_names: set[
     return extracted
 
 
-def package_files(core: Artifact, host: Artifact, destination: Path) -> tuple[dict[str, Path], dict[str, Any]]:
-    core_archive = next(path for path in core.files.values() if path.name.endswith(".tar.gz"))
-    host_archive = next(path for path in host.files.values() if path.name.endswith(".tar.gz"))
+def package_files(artifact: Artifact, destination: Path) -> tuple[dict[str, Path], dict[str, Any]]:
+    package_archive = next(path for path in artifact.files.values() if path.name.endswith(".tar.gz"))
     destination.mkdir(mode=0o700, parents=True, exist_ok=True)
     staged = destination / "payload"
     staged.mkdir(mode=0o700)
-    core_files = safe_tar_extract(core_archive, staged, {"codex", "codex-responses-api-proxy"}, core.target)
-    host_files = {"codex-code-mode-host": host.files["codex-code-mode-host"]}
-    files = {**core_files, **host_files}
+    files = safe_tar_extract(package_archive, staged, set(EXECUTABLES), artifact.target)
     manifest = {
         "schemaVersion": 1,
         "repository": REPOSITORY,
-        "ref": core.ref,
-        "commit": core.source_sha,
-        "target": core.target,
-        "previewVersion": core.metadata.get("previewVersion"),
-        "workflowRuns": {"core": core.run["id"], "host": host.run["id"]},
-        "artifacts": {
-            "core": {"id": core.record["id"], "digest": core.record["digest"]},
-            "host": {"id": host.record["id"], "digest": host.record["digest"]},
+        "ref": artifact.ref,
+        "commit": artifact.source_sha,
+        "workflowHeadSha": artifact.run["head_sha"],
+        "workflowPath": artifact.run["path"],
+        "target": artifact.target,
+        "previewVersion": artifact.metadata.get("previewVersion"),
+        "workflowRun": artifact.run["id"],
+        "artifact": {
+            "id": artifact.record["id"],
+            "name": artifact.record["name"],
+            "digest": artifact.record["digest"],
+            "archiveSha256": sha256_file(package_archive),
         },
         "binarySha256": {name: sha256_file(path) for name, path in sorted(files.items())},
     }
@@ -660,7 +588,7 @@ def install_package(files: dict[str, Path], manifest: dict[str, Any], dry_run: b
         print(
             "dry-run: verified "
             f"{REPOSITORY}@{manifest['ref']} ({manifest['commit']}) for {manifest['target']} "
-            f"from core run {manifest['workflowRuns']['core']} and host run {manifest['workflowRuns']['host']}"
+            f"from workflow run {manifest['workflowRun']}"
         )
         return
     raw_home = os.environ.get("HOME")
@@ -680,10 +608,7 @@ def install_package(files: dict[str, Path], manifest: dict[str, Any], dry_run: b
     bin_dir = configured_bin_dir
     releases_dir = install_root / "releases"
     backups_dir = install_root / "backups"
-    release_name = (
-        f"branch-{manifest['commit']}-{manifest['target']}"
-        f"-r{manifest['workflowRuns']['core']}-h{manifest['workflowRuns']['host']}"
-    )
+    release_name = f"branch-{manifest['commit']}-{manifest['target']}-r{manifest['workflowRun']}"
     release_dir = releases_dir / release_name
     visible_codex = bin_dir / "codex"
     current_path = install_root / "current"
@@ -767,29 +692,20 @@ def install_package(files: dict[str, Path], manifest: dict[str, Any], dry_run: b
                 atomic_symlink(previous_current, current_path, "current-restore")
             raise
         print(f"installed {REPOSITORY}@{manifest['ref']} ({manifest['commit']}) for {manifest['target']}")
-        print(f"core run {manifest['workflowRuns']['core']}; host run {manifest['workflowRuns']['host']}")
+        print(f"workflow run {manifest['workflowRun']}")
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Install exact same-source Sedna Linux branch-build artifacts; never install a core-only pair."
+        description="Install one exact verified Sedna Linux branch-build artifact for the native architecture."
     )
     selector = parser.add_mutually_exclusive_group(required=True)
     selector.add_argument("--branch", help="resolve the latest successful retained build for this exact product ref")
-    selector.add_argument("--run-id", type=int, help="exact successful core workflow run id")
-    parser.add_argument("--host-run-id", type=int, help="exact companion host-only run id; required with --run-id")
+    selector.add_argument("--run-id", type=int, help="exact successful full-package workflow run id")
     parser.add_argument("--dry-run", action="store_true", help="verify artifacts without inspecting or changing HOME install paths")
     args = parser.parse_args(argv)
-    if args.run_id is not None and args.host_run_id is None:
-        parser.error("--run-id requires --host-run-id because core and host-only runs reuse an Actions artifact name")
-    if args.branch is None and args.host_run_id is not None and args.run_id is None:
-        # With --branch, an explicit host run is allowed as the minimal exact
-        # companion override for a branch whose two runs cannot be inferred.
-        pass
     if args.run_id is not None and args.run_id <= 0:
         parser.error("--run-id must be a positive integer")
-    if args.host_run_id is not None and args.host_run_id <= 0:
-        parser.error("--host-run-id must be a positive integer")
     if args.branch is not None and not args.branch.strip():
         parser.error("--branch must be non-empty")
     return args
@@ -802,8 +718,8 @@ def main(argv: list[str] | None = None) -> int:
         api = GitHubApi(github_token())
         with tempfile.TemporaryDirectory(prefix="sedna-branch-install-") as raw_temp:
             temp = Path(raw_temp)
-            core, host = resolve_artifacts(api, args, target, temp)
-            verified_files, manifest = package_files(core, host, temp)
+            artifact = resolve_artifact(api, args, target, temp)
+            verified_files, manifest = package_files(artifact, temp)
             install_package(verified_files, manifest, args.dry_run)
         return 0
     except InstallError as error:
