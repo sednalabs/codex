@@ -403,7 +403,10 @@ class BranchArtifactInstallerTests(unittest.TestCase):
     def test_branch_lookup_rejects_multiple_artifacts_in_selected_run(self) -> None:
         api = make_api({41: (1001, action_artifact(1001)), 42: (1001, action_artifact(1001))})
         args = SimpleNamespace(run_id=None, branch=BRANCH)
-        with self.assertRaisesRegex(installer.InstallError, "2 usable artifacts"):
+        with self.assertRaisesRegex(
+            installer.InstallError,
+            "multiple matching package artifacts were published by one workflow run",
+        ):
             installer.resolve_artifact(api, args, TARGET, self.root / "branch-ambiguous")
 
     def test_branch_selection_fails_closed_if_newest_match_is_host_only(self) -> None:
