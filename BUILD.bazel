@@ -53,8 +53,14 @@ platform(
         toolchain = "@bazel_tools//tools/test:empty_toolchain",
         toolchain_type = "@bazel_tools//tools/test:default_test_toolchain_type",
     )
-    for cpu in ["x86_64", "aarch64"]
-    for libc in ["glibc", "musl"]
+    for cpu in [
+        "x86_64",
+        "aarch64",
+    ]
+    for libc in [
+        "glibc",
+        "musl",
+    ]
 ]
 
 platform(

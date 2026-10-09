@@ -171,14 +171,17 @@ def local_execution_args(args: Sequence[str], env: Mapping[str, str]) -> list[st
                 raise ValueError(
                     f"configuration is not vetted for local-only CI: {config}"
                 )
-        if arg.startswith(
-            (
-                "--remote_executor=",
-                "--remote_cache=",
-                "--bes_backend=",
-                "--experimental_remote_downloader=",
+        if (
+            arg.startswith(
+                (
+                    "--remote_executor=",
+                    "--remote_cache=",
+                    "--bes_backend=",
+                    "--experimental_remote_downloader=",
+                )
             )
-        ) and arg.partition("=")[2]:
+            and arg.partition("=")[2]
+        ):
             raise ValueError("remote endpoint is not permitted in local-only CI")
         if arg.startswith(
             ("--host_platform=", "--platforms=", "--extra_execution_platforms=")

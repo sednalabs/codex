@@ -38,7 +38,11 @@ LOADER.exec_module(installer)
 SOURCE_SHA = "a" * 40
 WORKFLOW_SHA = "b" * 40
 NATIVE_MACHINE = platform.machine().lower()
-TARGET = "aarch64-unknown-linux-gnu" if NATIVE_MACHINE in ("aarch64", "arm64") else "x86_64-unknown-linux-gnu"
+TARGET = (
+    "aarch64-unknown-linux-gnu"
+    if NATIVE_MACHINE in ("aarch64", "arm64")
+    else "x86_64-unknown-linux-gnu"
+)
 MACHINE = 183 if TARGET.startswith("aarch64") else 62
 BRANCH = "feature/installer-test"
 
@@ -189,7 +193,9 @@ class FakeApi:
         created: dict[int, str] | None = None,
         dispatch_branches: dict[int, str] | None = None,
     ):
-        self.payloads = {artifact_id: data for artifact_id, (_, data) in artifacts.items()}
+        self.payloads = {
+            artifact_id: data for artifact_id, (_, data) in artifacts.items()
+        }
         self.records: dict[int, dict] = {}
         self.runs: dict[int, dict] = {}
         self.created = created or {}
@@ -198,7 +204,9 @@ class FakeApi:
         self.artifacts_by_run: dict[int, list[dict]] = {}
         for index, (artifact_id, (run_id, data)) in enumerate(artifacts.items()):
             with zipfile.ZipFile(io.BytesIO(data)) as archive:
-                metadata_name = next(name for name in archive.namelist() if name.endswith(".json"))
+                metadata_name = next(
+                    name for name in archive.namelist() if name.endswith(".json")
+                )
                 metadata = json.loads(archive.read(metadata_name))
             source_sha = metadata["commit"]
             ref = metadata["ref"]
@@ -224,7 +232,9 @@ class FakeApi:
                 "head_sha": WORKFLOW_SHA,
                 "created_at": created_at,
             }
-            self.artifacts_by_run.setdefault(run_id, []).append(self.records[artifact_id])
+            self.artifacts_by_run.setdefault(run_id, []).append(
+                self.records[artifact_id]
+            )
         self.runs_payload = list(self.runs.values())
 
     def json(self, path: str):
@@ -302,9 +312,18 @@ class BranchArtifactInstallerTests(unittest.TestCase):
         self.assertEqual(manifest["workflowHeadSha"], WORKFLOW_SHA)
         self.assertEqual(manifest["target"], TARGET)
         self.assertEqual(manifest["artifact"]["id"], 41)
-        self.assertEqual(manifest["artifact"]["archiveSha256"], sha(next(p for p in artifact.files.values() if p.name.endswith(".tar.gz")).read_bytes()))
+        self.assertEqual(
+            manifest["artifact"]["archiveSha256"],
+            sha(
+                next(
+                    p for p in artifact.files.values() if p.name.endswith(".tar.gz")
+                ).read_bytes()
+            ),
+        )
 
-    def test_exact_run_id_is_sufficient_and_host_run_option_is_not_supported(self) -> None:
+    def test_exact_run_id_is_sufficient_and_host_run_option_is_not_supported(
+        self,
+    ) -> None:
         args = installer.parse_args(["--run-id", "1001"])
         self.assertEqual(args.run_id, 1001)
         with self.assertRaises(SystemExit):
@@ -324,10 +343,17 @@ class BranchArtifactInstallerTests(unittest.TestCase):
             installer.validate_run(run)
 
     def test_authenticated_redirect_rejects_https_downgrade(self) -> None:
-        request = urllib.request.Request("https://api.github.com/repos/example/actions/artifact")
+        request = urllib.request.Request(
+            "https://api.github.com/repos/example/actions/artifact"
+        )
         with self.assertRaises(urllib.error.HTTPError):
             installer.SafeRedirectHandler().redirect_request(
-                request, None, 302, "Found", {}, "http://downloads.example.invalid/artifact.zip"
+                request,
+                None,
+                302,
+                "Found",
+                {},
+                "http://downloads.example.invalid/artifact.zip",
             )
 
     def test_artifact_source_must_match_filename_and_preview_version(self) -> None:
@@ -337,7 +363,9 @@ class BranchArtifactInstallerTests(unittest.TestCase):
             lambda metadata: metadata.update(commit="c" * 40),
         )
         api = make_api({41: (1001, bad_package)})
-        with self.assertRaisesRegex(installer.InstallError, "previewVersion does not match"):
+        with self.assertRaisesRegex(
+            installer.InstallError, "previewVersion does not match"
+        ):
             self.resolve_exact(api)
 
     def test_host_only_artifact_is_rejected(self) -> None:
@@ -355,14 +383,20 @@ class BranchArtifactInstallerTests(unittest.TestCase):
             {1001: "2026-10-08T00:00:00Z", 1002: "2026-10-09T00:00:00Z"},
         )
         args = SimpleNamespace(run_id=None, branch=BRANCH)
-        artifact = installer.resolve_artifact(api, args, TARGET, self.root / "branch-download")
+        artifact = installer.resolve_artifact(
+            api, args, TARGET, self.root / "branch-download"
+        )
         self.assertEqual(artifact.source_sha, SOURCE_SHA)
         self.assertEqual(artifact.run["id"], 1002)
 
     def test_branch_selection_matches_product_ref_not_dispatch_branch(self) -> None:
-        api = make_api({41: (1001, action_artifact(1001))}, dispatch_branches={1001: "main"})
+        api = make_api(
+            {41: (1001, action_artifact(1001))}, dispatch_branches={1001: "main"}
+        )
         args = SimpleNamespace(run_id=None, branch=BRANCH)
-        artifact = installer.resolve_artifact(api, args, TARGET, self.root / "cross-ref-dispatch")
+        artifact = installer.resolve_artifact(
+            api, args, TARGET, self.root / "cross-ref-dispatch"
+        )
         self.assertEqual(artifact.ref, BRANCH)
         self.assertEqual(artifact.run["head_branch"], "main")
 
@@ -376,16 +410,24 @@ class BranchArtifactInstallerTests(unittest.TestCase):
             {1001: "2026-10-08T00:00:00Z", 1002: "2026-10-09T00:00:00Z"},
         )
         args = SimpleNamespace(run_id=None, branch=BRANCH)
-        artifact = installer.resolve_artifact(api, args, TARGET, self.root / "colliding-refs")
+        artifact = installer.resolve_artifact(
+            api, args, TARGET, self.root / "colliding-refs"
+        )
         self.assertEqual(artifact.ref, BRANCH)
         self.assertEqual(artifact.run["id"], 1001)
 
-    def test_branch_selection_rejects_incomplete_repository_artifact_pages(self) -> None:
+    def test_branch_selection_rejects_incomplete_repository_artifact_pages(
+        self,
+    ) -> None:
         api = make_api({41: (1001, action_artifact(1001))})
         api.reported_artifact_total_count = 2
         args = SimpleNamespace(run_id=None, branch=BRANCH)
-        with self.assertRaisesRegex(installer.InstallError, "pagination was incomplete"):
-            installer.resolve_artifact(api, args, TARGET, self.root / "incomplete-artifact-pages")
+        with self.assertRaisesRegex(
+            installer.InstallError, "pagination was incomplete"
+        ):
+            installer.resolve_artifact(
+                api, args, TARGET, self.root / "incomplete-artifact-pages"
+            )
 
     def test_branch_selection_skips_expired_latest_artifact(self) -> None:
         api = make_api(
@@ -397,17 +439,23 @@ class BranchArtifactInstallerTests(unittest.TestCase):
         )
         api.records[42]["expired"] = True
         args = SimpleNamespace(run_id=None, branch=BRANCH)
-        artifact = installer.resolve_artifact(api, args, TARGET, self.root / "branch-expired")
+        artifact = installer.resolve_artifact(
+            api, args, TARGET, self.root / "branch-expired"
+        )
         self.assertEqual(artifact.run["id"], 1001)
 
     def test_branch_lookup_rejects_multiple_artifacts_in_selected_run(self) -> None:
-        api = make_api({41: (1001, action_artifact(1001)), 42: (1001, action_artifact(1001))})
+        api = make_api(
+            {41: (1001, action_artifact(1001)), 42: (1001, action_artifact(1001))}
+        )
         args = SimpleNamespace(run_id=None, branch=BRANCH)
         with self.assertRaisesRegex(
             installer.InstallError,
             "multiple matching package artifacts were published by one workflow run",
         ):
-            installer.resolve_artifact(api, args, TARGET, self.root / "branch-ambiguous")
+            installer.resolve_artifact(
+                api, args, TARGET, self.root / "branch-ambiguous"
+            )
 
     def test_branch_selection_fails_closed_if_newest_match_is_host_only(self) -> None:
         api = make_api(
@@ -419,12 +467,19 @@ class BranchArtifactInstallerTests(unittest.TestCase):
         )
         args = SimpleNamespace(run_id=None, branch=BRANCH)
         with self.assertRaisesRegex(installer.InstallError, "complete branch package"):
-            installer.resolve_artifact(api, args, TARGET, self.root / "branch-host-only")
+            installer.resolve_artifact(
+                api, args, TARGET, self.root / "branch-host-only"
+            )
 
     def test_wrong_target_has_no_eligible_artifact(self) -> None:
         api = make_api({41: (1001, self.package_zip)})
         with self.assertRaisesRegex(installer.InstallError, "0 usable artifacts"):
-            installer.resolve_artifact(api, SimpleNamespace(run_id=1001, branch=None), "aarch64-unknown-linux-gnu", self.root / "wrong-target")
+            installer.resolve_artifact(
+                api,
+                SimpleNamespace(run_id=1001, branch=None),
+                "aarch64-unknown-linux-gnu",
+                self.root / "wrong-target",
+            )
 
     def test_artifact_must_be_attached_to_exact_run(self) -> None:
         api = make_api({41: (1001, self.package_zip)})
@@ -448,10 +503,16 @@ class BranchArtifactInstallerTests(unittest.TestCase):
         zip_path = self.root / "symlink.zip"
         zip_path.write_bytes(archive_bytes.getvalue())
         with self.assertRaisesRegex(installer.InstallError, "unsafe or duplicate"):
-            installer.safe_zip_extract(zip_path, sha(archive_bytes.getvalue()), self.root / "symlink-out")
+            installer.safe_zip_extract(
+                zip_path, sha(archive_bytes.getvalue()), self.root / "symlink-out"
+            )
 
     def test_unsafe_package_member_is_rejected(self) -> None:
-        unsafe_files = {"../codex": elf(), "codex-code-mode-host": elf(), "codex-responses-api-proxy": elf()}
+        unsafe_files = {
+            "../codex": elf(),
+            "codex-code-mode-host": elf(),
+            "codex-responses-api-proxy": elf(),
+        }
         bad_package = action_artifact(1001, package_files=unsafe_files)
         artifact = self.resolve_exact(make_api({41: (1001, bad_package)}))
         with self.assertRaisesRegex(installer.InstallError, "unsafe or unexpected"):
@@ -460,7 +521,9 @@ class BranchArtifactInstallerTests(unittest.TestCase):
     def test_wrong_elf_architecture_is_rejected(self) -> None:
         wrong_machine = 183 if MACHINE == 62 else 62
         binaries = {name: elf(wrong_machine) for name in installer.EXECUTABLES}
-        artifact = self.resolve_exact(make_api({41: (1001, action_artifact(1001, package_files=binaries))}))
+        artifact = self.resolve_exact(
+            make_api({41: (1001, action_artifact(1001, package_files=binaries))})
+        )
         with self.assertRaisesRegex(installer.InstallError, "expected"):
             installer.package_files(artifact, self.root / "wrong-arch")
 
@@ -469,7 +532,10 @@ class BranchArtifactInstallerTests(unittest.TestCase):
         files, manifest = installer.package_files(artifact, self.root / "dry-package")
         fake_home = self.root / "unopened-home"
         output = io.StringIO()
-        with patch.dict(os.environ, {"HOME": str(fake_home)}), contextlib.redirect_stdout(output):
+        with (
+            patch.dict(os.environ, {"HOME": str(fake_home)}),
+            contextlib.redirect_stdout(output),
+        ):
             installer.install_package(files, manifest, dry_run=True)
         self.assertFalse(fake_home.exists())
         self.assertIn("dry-run: verified", output.getvalue())
@@ -477,14 +543,20 @@ class BranchArtifactInstallerTests(unittest.TestCase):
 
     def test_public_just_recipe_dry_run_uses_loopback_fixture_api(self) -> None:
         api = make_api({41: (1001, self.package_zip)})
-        artifact_server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), RedirectArtifactHandler)
+        artifact_server = http.server.ThreadingHTTPServer(
+            ("127.0.0.1", 0), RedirectArtifactHandler
+        )
         artifact_server.fixture_api = api  # type: ignore[attr-defined]
         artifact_server.authorization_headers = []  # type: ignore[attr-defined]
-        artifact_thread = threading.Thread(target=artifact_server.serve_forever, daemon=True)
+        artifact_thread = threading.Thread(
+            target=artifact_server.serve_forever, daemon=True
+        )
         artifact_thread.start()
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FixtureHandler)
         server.fixture_api = api  # type: ignore[attr-defined]
-        server.redirect_artifact_root = f"http://127.0.0.1:{artifact_server.server_port}"
+        server.redirect_artifact_root = (
+            f"http://127.0.0.1:{artifact_server.server_port}"
+        )
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         fake_home = self.root / "recipe-home"
@@ -524,7 +596,9 @@ class BranchArtifactInstallerTests(unittest.TestCase):
 
     def test_activation_preserves_profile_files_and_previous_package(self) -> None:
         artifact = self.resolve_exact()
-        files, manifest = installer.package_files(artifact, self.root / "activate-package")
+        files, manifest = installer.package_files(
+            artifact, self.root / "activate-package"
+        )
         home = self.root / "home"
         home.mkdir()
         codex_home = home / "custom-codex-home"
@@ -547,7 +621,11 @@ class BranchArtifactInstallerTests(unittest.TestCase):
         (visible / "codex").symlink_to(old / "bin" / "codex")
         with patch.dict(
             os.environ,
-            {"HOME": str(home), "CODEX_HOME": str(codex_home), "CODEX_INSTALL_DIR": str(visible)},
+            {
+                "HOME": str(home),
+                "CODEX_HOME": str(codex_home),
+                "CODEX_INSTALL_DIR": str(visible),
+            },
             clear=False,
         ):
             installer.install_package(files, manifest, dry_run=False)
@@ -557,13 +635,20 @@ class BranchArtifactInstallerTests(unittest.TestCase):
         self.assertTrue((new_release / "bin" / "codex-responses-api-proxy").is_file())
         self.assertEqual(os.readlink(new_release / "codex"), "bin/codex")
         self.assertEqual(os.readlink(install_root / "current"), str(new_release))
-        self.assertEqual(os.readlink(visible / "codex"), str(install_root / "current" / "bin" / "codex"))
+        self.assertEqual(
+            os.readlink(visible / "codex"),
+            str(install_root / "current" / "bin" / "codex"),
+        )
         self.assertTrue((old / "codex").exists())
-        self.assertEqual({name: (codex_home / name).read_bytes() for name in protected}, protected)
+        self.assertEqual(
+            {name: (codex_home / name).read_bytes() for name in protected}, protected
+        )
 
     def test_activation_failure_rolls_back_both_symlinks(self) -> None:
         artifact = self.resolve_exact()
-        files, manifest = installer.package_files(artifact, self.root / "rollback-package")
+        files, manifest = installer.package_files(
+            artifact, self.root / "rollback-package"
+        )
         home = self.root / "rollback-home"
         home.mkdir()
         codex_home = home / "custom-codex-home"
@@ -584,7 +669,9 @@ class BranchArtifactInstallerTests(unittest.TestCase):
             "SEDNA_BRANCH_INSTALLER_TEST_FAIL_AT": "after-visible",
         }
         with patch.dict(os.environ, env, clear=False):
-            with self.assertRaisesRegex(installer.InstallError, "injected activation failure"):
+            with self.assertRaisesRegex(
+                installer.InstallError, "injected activation failure"
+            ):
                 installer.install_package(files, manifest, dry_run=False)
         self.assertEqual(os.readlink(install_root / "current"), str(old))
         self.assertEqual(os.readlink(visible / "codex"), str(old / "bin" / "codex"))
