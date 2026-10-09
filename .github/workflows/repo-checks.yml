@@ -74,6 +74,12 @@ jobs:
       - name: Prettier (run `pnpm run format:fix` to fix)
         if: ${{ !cancelled() && (success() || steps.fmt_check.outcome == 'failure') }}
         run: |
+          if [[ "${{ steps.fmt_check.outcome }}" == "failure" ]]; then
+            dotslash tools/buildifier -mode=diff -lint=off BUILD.bazel || true
+            uv run --frozen --project scripts ruff format --diff \
+              .github/scripts/run_bazel_with_buildbuddy.py \
+              scripts/install/test_branch_artifact_installer.py || true
+          fi
           if pnpm run format; then
             exit 0
           else
