@@ -379,7 +379,12 @@ async fn modern_tool_mrtr_uses_recovered_protocol_after_legacy_session_expiry() 
                     let session_id = request
                         .headers
                         .get("mcp-session-id")
-                        .cloned()
+                        .map(|session_id| {
+                            session_id
+                                .to_str()
+                                .expect("session id is valid text")
+                                .to_owned()
+                        })
                         .expect("tools/list request carries its session id");
                     let attempt = {
                         let mut list_sessions = recorded_list_sessions

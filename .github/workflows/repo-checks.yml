@@ -68,10 +68,28 @@ jobs:
         run: python3 scripts/readme_toc.py README.md
 
       - name: Check formatting (run `just fmt` to fix)
+        id: fmt_check
         run: just fmt-check
 
       - name: Prettier (run `pnpm run format:fix` to fix)
-        run: pnpm run format
+        if: ${{ !cancelled() && (success() || steps.fmt_check.outcome == 'failure') }}
+        run: |
+          if pnpm run format; then
+            exit 0
+          else
+            format_status=$?
+          fi
+          for format_file in \
+            docs/downstream-regression-matrix.md \
+            docs/downstream-tool-surface-matrix.md; do
+            formatted_file=$(mktemp)
+            if pnpm exec prettier "$format_file" > "$formatted_file"; then
+              diff --unified --label "$format_file" --label "$format_file (formatted)" \
+                "$format_file" "$formatted_file" || true
+            fi
+            rm -- "$formatted_file"
+          done
+          exit "$format_status"
 
       - name: Check for a clean worktree
         if: always() && !cancelled()
