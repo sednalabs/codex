@@ -151,6 +151,7 @@ jobs:
             "scripts/codex_package/smoke_tests/first_binary/tui_pty.py"
             "sdk/python/tests/app_server_harness.py"
             "sdk/python/tests/test_app_server_harness_request_routing.py"
+            "sdk/python/src/openai_codex/__init__.py"
           )
           missing_package_paths=()
           for path in "${required_package_paths[@]}"; do
