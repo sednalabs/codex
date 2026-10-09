@@ -13,7 +13,11 @@ import run_bazel_with_buildbuddy
 
 class RunBazelWithBuildBuddyTest(unittest.TestCase):
     def test_local_only_ignores_key_and_preserves_windows_gnu_config(self) -> None:
-        env = {"CODEX_BAZEL_LOCAL_ONLY": "1", "BUILDBUDDY_API_KEY": "token"}
+        env = {
+            "CODEX_BAZEL_LOCAL_ONLY": "1",
+            "BUILDBUDDY_API_KEY": "token",
+            "RUNNER_OS": "Windows",
+        }
         args = [
             "test",
             "--config=ci-windows-local-gnullvm",
@@ -68,7 +72,17 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
         args = ["run", "//codex-rs/cli:codex", "--", "--config=remote"]
         self.assertEqual(
             run_bazel_with_buildbuddy.bazel_args_with_remote_config(args, env),
-            [*args[:2], *run_bazel_with_buildbuddy.LOCAL_EXECUTION_ARGS, *args[2:]],
+            [
+                *args[:2],
+                "--remote_executor=",
+                "--remote_cache=",
+                "--bes_backend=",
+                "--experimental_remote_downloader=",
+                "--spawn_strategy=sandboxed,local",
+                "--strategy_regexp=.*=sandboxed,local",
+                "--jobs=HOST_CPUS",
+                *args[2:],
+            ],
         )
         for command in ("query", "cquery", "aquery", "info"):
             with self.subTest(command=command):
@@ -77,6 +91,21 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
                     run_bazel_with_buildbuddy.bazel_args_with_remote_config(args, env),
                     args,
                 )
+
+    def test_local_only_preserves_available_os_sandbox_strategies(self) -> None:
+        for runner_os, strategy in (
+            ("Linux", "sandboxed,local"),
+            ("macOS", "darwin-sandbox,local"),
+            ("Windows", "local"),
+        ):
+            with self.subTest(runner_os=runner_os):
+                result = run_bazel_with_buildbuddy.bazel_args_with_remote_config(
+                    ["build", "--config=ci-bazel", "--", "//codex-rs/..."],
+                    {"CODEX_BAZEL_LOCAL_ONLY": "1", "RUNNER_OS": runner_os},
+                )
+                self.assertIn(f"--spawn_strategy={strategy}", result)
+                self.assertIn(f"--strategy_regexp=.*={strategy}", result)
+                self.assertNotIn("remote", strategy.split(","))
 
     def github_env(
         self,

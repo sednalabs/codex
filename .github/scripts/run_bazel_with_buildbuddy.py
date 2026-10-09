@@ -29,14 +29,11 @@ LOCAL_EXECUTION_CONFIGS = {
     "argument-comment-lint",
     "clippy",
 }
-LOCAL_EXECUTION_ARGS = [
+LOCAL_ENDPOINT_ARGS = [
     "--remote_executor=",
     "--remote_cache=",
     "--bes_backend=",
     "--experimental_remote_downloader=",
-    "--spawn_strategy=local",
-    "--strategy_regexp=.*=local",
-    "--jobs=HOST_CPUS",
 ]
 # Honor either explicit setting so the wrapper never overrides the caller's
 # choice when it supplies the CI default below.
@@ -131,7 +128,7 @@ def remote_config(args: Sequence[str], env: Mapping[str, str]) -> str | None:
     return config
 
 
-def local_execution_args(args: Sequence[str]) -> list[str]:
+def local_execution_args(args: Sequence[str], env: Mapping[str, str]) -> list[str]:
     """Keep vetted target configs, refusing an explicit remote execution route."""
     try:
         separator_idx = args.index("--")
@@ -176,11 +173,18 @@ def local_execution_args(args: Sequence[str]) -> list[str]:
     # cannot all accept build-strategy flags. Execution commands enforce these
     # last, after any command-line or user-RC settings, before the target/argv
     # separator. Repository downloads and GitHub Actions caches stay local.
-    guard_args = (
-        LOCAL_EXECUTION_ARGS
-        if command in {"build", "test", "run", "coverage"}
-        else []
-    )
+    guard_args = []
+    if command in {"build", "test", "run", "coverage"}:
+        local_strategy = {
+            "Windows": "local",
+            "macOS": "darwin-sandbox,local",
+        }.get(env.get("RUNNER_OS"), "sandboxed,local")
+        guard_args = [
+            *LOCAL_ENDPOINT_ARGS,
+            f"--spawn_strategy={local_strategy}",
+            f"--strategy_regexp=.*={local_strategy}",
+            "--jobs=HOST_CPUS",
+        ]
     return [*bazel_args, *guard_args, *args[separator_idx:]]
 
 
@@ -209,7 +213,7 @@ def bazel_args_with_remote_config(
 
     config = remote_config(args, env)
     if env.get("CODEX_BAZEL_LOCAL_ONLY") == "1":
-        configured_args = local_execution_args(args)
+        configured_args = local_execution_args(args, env)
     elif config is None:
         configured_args = bazel_args_without_remote_execution(args)
     else:
