@@ -146,7 +146,11 @@ jobs:
             "scripts/codex_package/smoke_tests/conftest.py"
             "scripts/codex_package/smoke_tests/first_binary/test_tui_package_version.py"
             "scripts/codex_package/smoke_tests/first_binary/test_tui_agents_acceptance.py"
+            "scripts/codex_package/smoke_tests/first_binary/test_agent_control_model_acceptance.py"
+            "scripts/codex_package/smoke_tests/first_binary/test_agent_control_tui_acceptance.py"
             "scripts/codex_package/smoke_tests/first_binary/tui_pty.py"
+            "sdk/python/tests/app_server_harness.py"
+            "sdk/python/tests/test_app_server_harness_request_routing.py"
           )
           missing_package_paths=()
           for path in "${required_package_paths[@]}"; do
@@ -660,6 +664,9 @@ jobs:
             scripts/codex_package/smoke_tests/test_codex_package.py \
             scripts/codex_package/smoke_tests/first_binary/test_tui_package_version.py \
             scripts/codex_package/smoke_tests/first_binary/test_tui_agents_acceptance.py \
+            scripts/codex_package/smoke_tests/first_binary/test_agent_control_model_acceptance.py \
+            scripts/codex_package/smoke_tests/first_binary/test_agent_control_tui_acceptance.py \
+            sdk/python/tests/test_app_server_harness_request_routing.py \
             --compression gzip \
             --package-target "${TARGET}" \
             --cli-archive "dist/codex-cli-${TARGET}.tar.gz" \
