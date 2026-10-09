@@ -624,9 +624,15 @@ pub(crate) async fn start_app_server_for_picker(
 ) -> color_eyre::Result<AppServerSession> {
     let mut target = target.clone();
     let mut state_db = state_db;
+    #[cfg(test)]
+    eprintln!("status diagnostic phase: embedded network policy load started");
     let embedded_network_policy =
         codex_app_server_client::EmbeddedNetworkPolicy::load(&loader_overrides).await;
-    let app_server = start_app_server(
+    #[cfg(test)]
+    eprintln!("status diagnostic phase: embedded network policy load completed");
+    #[cfg(test)]
+    eprintln!("status diagnostic phase: start_app_server await started");
+    let app_server_result = start_app_server(
         &mut target,
         Arg0DispatchPaths::default(),
         config.clone(),
@@ -640,7 +646,10 @@ pub(crate) async fn start_app_server_for_picker(
         environment_manager,
         embedded_network_policy,
     )
-    .await?;
+    .await;
+    #[cfg(test)]
+    eprintln!("status diagnostic phase: start_app_server await returned");
+    let app_server = app_server_result?;
     Ok(
         AppServerSession::new(app_server, target.thread_params_mode())
             .with_local_codex_home(&config.codex_home),
