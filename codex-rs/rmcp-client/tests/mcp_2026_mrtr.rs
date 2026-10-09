@@ -324,8 +324,10 @@ async fn modern_tool_mrtr_uses_recovered_protocol_after_legacy_session_expiry() 
     let server = MockServer::start().await;
     let calls = Arc::new(Mutex::new(Vec::<Value>::new()));
     let sessions = Arc::new(Mutex::new(Vec::<String>::new()));
+    let list_sessions = Arc::new(Mutex::new(Vec::<String>::new()));
     let recorded_calls = Arc::clone(&calls);
     let recorded_sessions = Arc::clone(&sessions);
+    let recorded_list_sessions = Arc::clone(&list_sessions);
 
     Mock::given(method("GET"))
         .and(path("/mcp"))
@@ -373,6 +375,32 @@ async fn modern_tool_mrtr_uses_recovered_protocol_after_legacy_session_expiry() 
                         .insert_header("mcp-session-id", "legacy-session")
                 }
                 Some("notifications/initialized") => ResponseTemplate::new(202),
+                Some("tools/list") => {
+                    let session_id = request
+                        .headers
+                        .get("mcp-session-id")
+                        .cloned()
+                        .expect("tools/list request carries its session id");
+                    let attempt = {
+                        let mut list_sessions = recorded_list_sessions
+                            .lock()
+                            .expect("list sessions lock");
+                        list_sessions.push(session_id.clone());
+                        list_sessions.len()
+                    };
+
+                    match attempt {
+                        1 => {
+                            assert_eq!(session_id, "legacy-session");
+                            ResponseTemplate::new(404)
+                        }
+                        2 => {
+                            assert_eq!(session_id, "modern-session");
+                            result_response(&body, json!({"tools": []}))
+                        }
+                        other => panic!("unexpected tools/list recovery attempt: {other}"),
+                    }
+                }
                 Some("tools/call") => {
                     assert_eq!(
                         body.pointer("/params/_meta/requestContext"),
@@ -394,15 +422,6 @@ async fn modern_tool_mrtr_uses_recovered_protocol_after_legacy_session_expiry() 
                                 body.pointer(
                                     "/params/_meta/io.modelcontextprotocol~1protocolVersion"
                                 ),
-                                None
-                            );
-                            ResponseTemplate::new(404)
-                        }
-                        2 => {
-                            assert_eq!(
-                                body.pointer(
-                                    "/params/_meta/io.modelcontextprotocol~1protocolVersion"
-                                ),
                                 Some(&json!(MODERN_VERSION))
                             );
                             result_response(
@@ -416,7 +435,7 @@ async fn modern_tool_mrtr_uses_recovered_protocol_after_legacy_session_expiry() 
                                 }),
                             )
                         }
-                        3 => {
+                        2 => {
                             assert_eq!(
                                 body.pointer(
                                     "/params/_meta/io.modelcontextprotocol~1protocolVersion"
@@ -456,6 +475,12 @@ async fn modern_tool_mrtr_uses_recovered_protocol_after_legacy_session_expiry() 
     let client = create_client(&server, Arc::clone(&elicitation_modes))
         .await?
         .with_read_only_tools(/*requires_read_only_tools*/ true);
+    client
+        .list_tools(
+            /*params*/ None,
+            /*timeout*/ Some(Duration::from_secs(5)),
+        )
+        .await?;
     let result = client
         .call_tool(
             "confirm".into(),
@@ -473,7 +498,11 @@ async fn modern_tool_mrtr_uses_recovered_protocol_after_legacy_session_expiry() 
         *sessions.lock().expect("sessions lock"),
         vec!["legacy-session", "modern-session"]
     );
-    assert_eq!(calls.lock().expect("requests lock").len(), 3);
+    assert_eq!(
+        *list_sessions.lock().expect("list sessions lock"),
+        vec!["legacy-session", "modern-session"]
+    );
+    assert_eq!(calls.lock().expect("requests lock").len(), 2);
     assert_eq!(
         *elicitation_modes.lock().expect("elicitation lock"),
         vec!["form"]
