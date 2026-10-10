@@ -121,7 +121,7 @@ print_bazel_test_log_tails() {
   # mode can make `bazel info` fail, which would hide the real test log path.
   for arg in "${post_config_bazel_args[@]}"; do
     case "$arg" in
-      --host_platform=* | --repo_contents_cache=* | --repository_cache=*)
+      --host_platform=* | --repo_contents_cache=* | --repository_cache=* | --inject_repository=*)
         bazel_info_args+=("$arg")
         ;;
     esac
@@ -356,6 +356,25 @@ if [[ -n "${CODEX_BAZEL_EXECUTION_LOG_COMPACT_DIR:-}" ]]; then
 fi
 
 if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
+  if [[ "${CODEX_BAZEL_WINDOWS_VOICE_TOOLS:-0}" == "1" ]]; then
+    if [[ -z "${VOICE_WINDOWS_BAZEL_REPOSITORY:-}" || -z "${VOICE_WINDOWS_SYSTEM_ROOT:-}" || -z "${VOICE_WINDOWS_HOST_ARCH:-}" ]]; then
+      echo "Opted-in native Windows CI requires its verified tool repository and OS environment." >&2
+      exit 1
+    fi
+    voice_tools_root="$(cygpath -u "$VOICE_WINDOWS_BAZEL_REPOSITORY")"
+    if [[ ! -f "$voice_tools_root/voice-tools.json" ]]; then
+      echo "Verified Windows voice tool manifest is missing." >&2
+      exit 1
+    fi
+    post_config_bazel_args+=(
+      "--inject_repository=voice_windows_tools=${VOICE_WINDOWS_BAZEL_REPOSITORY}"
+      "--//third_party/voice:windows_installed_tools=@voice_windows_tools//:tools"
+      "--action_env=SystemRoot=${VOICE_WINDOWS_SYSTEM_ROOT}"
+      "--host_action_env=SystemRoot=${VOICE_WINDOWS_SYSTEM_ROOT}"
+      "--action_env=PROCESSOR_ARCHITECTURE=${VOICE_WINDOWS_HOST_ARCH}"
+      "--host_action_env=PROCESSOR_ARCHITECTURE=${VOICE_WINDOWS_HOST_ARCH}"
+    )
+  fi
   pass_windows_build_env=1
   if [[ $windows_cross_compile -eq 1 && -n "${BUILDBUDDY_API_KEY:-}" ]]; then
     # Remote build actions execute on Linux RBE workers. Passing the Windows

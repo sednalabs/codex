@@ -15,6 +15,7 @@ single_version_override(
     module_name = "llvm",
     patch_strip = 1,
     patches = [
+        "//patches:llvm_kernel_headers_available_arches.patch",
         "//patches:llvm_rusty_v8_custom_libcxx.patch",
         "//patches:llvm_windows_arm64_powl.patch",
         "//patches:llvm_windows_mingw_compat.patch",

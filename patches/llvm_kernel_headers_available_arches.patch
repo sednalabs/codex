@@ -1,0 +1,47 @@
+diff --git a/kernel/extension/kernel_headers.bzl b/kernel/extension/kernel_headers.bzl
+--- a/kernel/extension/kernel_headers.bzl
++++ b/kernel/extension/kernel_headers.bzl
+@@ -80,2 +80,13 @@ def _linux_kernel_version_map_content(decoded_index):
+     lines.append("}")
+     lines.append("")
++
++    lines.append("LINUX_KERNEL_ARCHITECTURES = {")
++    for version in sorted(decoded_index.keys()):
++        architectures = sorted([
++            arch
++            for arch in decoded_index[version].keys()
++            if arch in _SUPPORTED_ARCHS
++        ])
++        lines.append('    "{}": {},'.format(version, architectures))
++    lines.append("}")
++    lines.append("")
+diff --git a/kernel/extension/make_select_kernel_headers_repository_target.bzl b/kernel/extension/make_select_kernel_headers_repository_target.bzl
+--- a/kernel/extension/make_select_kernel_headers_repository_target.bzl
++++ b/kernel/extension/make_select_kernel_headers_repository_target.bzl
+@@ -1,4 +1,4 @@
+-load("@kernel_headers//:linux_kernel_version_map.bzl", "LINUX_KERNEL_VERSION_MAP")
++load("@kernel_headers//:linux_kernel_version_map.bzl", "LINUX_KERNEL_ARCHITECTURES", "LINUX_KERNEL_VERSION_MAP")
+ load("//constraints/kernel/linux:linux_kernel_versions.bzl", "LINUX_KERNEL_VERSIONS")
+ load("//constraints/libc:libc_versions.bzl", "LIBCS")
+ load("//platforms:common.bzl", "LIBC_SUPPORTED_TARGETS")
+@@ -8,2 +8,5 @@ load(":libc_kernel_versions.bzl", "LIBC_KERNEL_VERSIONS")
+ def _kernel_headers_repository_target(target_arch, kernel_version, bazel_target):
+-    return "@linux_kernel_headers_{}.{}//:{}".format(arch_to_kernel_arch(target_arch), kernel_version, bazel_target)
++    kernel_arch = arch_to_kernel_arch(target_arch)
++    if kernel_arch not in LINUX_KERNEL_ARCHITECTURES[kernel_version]:
++        return None
++    return "@linux_kernel_headers_{}.{}//:{}".format(kernel_arch, kernel_version, bazel_target)
+@@ -29,4 +32,5 @@ def _make_select_kernel_headers_repository_target_for_linux_kernel(kernel_version, bazel_target):
+     full_kernel_version = _linux_kernel_headers_version(kernel_version)
+     for (target_os, target_arch) in LIBC_SUPPORTED_TARGETS:
+         apparent_target = _kernel_headers_repository_target(target_arch, full_kernel_version, bazel_target)
+-        selection["@llvm//platforms/config:{}_{}".format(target_os, target_arch)] = apparent_target
++        if apparent_target != None:
++            selection["@llvm//platforms/config:{}_{}".format(target_os, target_arch)] = apparent_target
+@@ -42,4 +46,5 @@ def _make_select_kernel_headers_repository_target_from_libc(bazel_target):
+         for libc_version in LIBCS + ["unconstrained"]:
+             kernel_version = LIBC_KERNEL_VERSIONS[libc_version]
+             apparent_target = _kernel_headers_repository_target(target_arch, kernel_version, bazel_target)
+-            selection["@llvm//platforms/config:{}_{}_{}".format(target_os, target_arch, libc_version)] = apparent_target
++            if apparent_target != None:
++                selection["@llvm//platforms/config:{}_{}_{}".format(target_os, target_arch, libc_version)] = apparent_target
