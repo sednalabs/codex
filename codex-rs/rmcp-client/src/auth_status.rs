@@ -1110,7 +1110,8 @@ mod tests {
             &metadata,
         );
 
-        let trusted = verified_device_authorization_from_metadata(&metadata, true, &receipt)
+        let trusted =
+            verified_device_authorization_from_metadata(&metadata, /*discovered*/ true, &receipt)
             .expect("issuer-validated metadata should create a device capability");
 
         assert_eq!(trusted.issuer(), "https://issuer.example/tenant");
@@ -1180,8 +1181,8 @@ mod tests {
         ));
         let direct = discover_streamable_http_oauth(
             SyntheticDeviceAuthHttpClient::RESOURCE_URL,
-            None,
-            None,
+            /*http_headers*/ None,
+            /*env_http_headers*/ None,
             direct_client.clone(),
             OAuthDiscoveryTimeout::LOCAL,
             StreamableHttpRedirectMode::Legacy,
@@ -1213,11 +1214,11 @@ mod tests {
             direct_client.clone(),
             OAuthCredentialsStoreMode::File,
             AuthKeyringBackendKind::Direct,
-            None,
-            None,
+            /*http_headers*/ None,
+            /*env_http_headers*/ None,
             &[],
             Some("synthetic-client"),
-            None,
+            /*oauth_resource*/ None,
             |_| {},
         )
         .await
@@ -1256,7 +1257,7 @@ mod tests {
             fallback_receipt_client.clone(),
             HeaderMap::new(),
             SyntheticDeviceAuthHttpClient::RESOURCE_URL,
-            false,
+            /*has_configured_headers*/ false,
             StreamableHttpRedirectMode::Legacy,
         )
         .expect("synthetic HTTPS resource URL should configure the adapter");
@@ -1286,8 +1287,8 @@ mod tests {
         ));
         let fallback = discover_streamable_http_oauth(
             SyntheticDeviceAuthHttpClient::RESOURCE_URL,
-            None,
-            None,
+            /*http_headers*/ None,
+            /*env_http_headers*/ None,
             fallback_client.clone(),
             OAuthDiscoveryTimeout::LOCAL,
             StreamableHttpRedirectMode::Legacy,
@@ -1318,8 +1319,8 @@ mod tests {
         ));
         let redirected = discover_streamable_http_oauth(
             SyntheticDeviceAuthHttpClient::RESOURCE_URL,
-            None,
-            None,
+            /*http_headers*/ None,
+            /*env_http_headers*/ None,
             redirect_client.clone(),
             OAuthDiscoveryTimeout::LOCAL,
             StreamableHttpRedirectMode::Legacy,
@@ -1380,7 +1381,12 @@ mod tests {
             &missing_issuer,
         );
         assert!(
-            verified_device_authorization_from_metadata(&missing_issuer, true, &receipt).is_none()
+            verified_device_authorization_from_metadata(
+                &missing_issuer,
+                /*discovered*/ true,
+                &receipt,
+            )
+            .is_none()
         );
 
         let mut mismatched_issuer = metadata_json.clone();
@@ -1393,8 +1399,12 @@ mod tests {
             &mismatched_issuer,
         );
         assert!(
-            verified_device_authorization_from_metadata(&mismatched_issuer, true, &receipt)
-                .is_none()
+            verified_device_authorization_from_metadata(
+                &mismatched_issuer,
+                /*discovered*/ true,
+                &receipt,
+            )
+            .is_none()
         );
 
         let receipt = DeviceMetadataReceiptCollector::new_for_test();
@@ -1405,8 +1415,12 @@ mod tests {
         let mut changed_postimage = metadata.clone();
         changed_postimage.token_endpoint = "https://other.example/token".to_string();
         assert!(
-            verified_device_authorization_from_metadata(&changed_postimage, true, &receipt)
-                .is_none()
+            verified_device_authorization_from_metadata(
+                &changed_postimage,
+                /*discovered*/ true,
+                &receipt,
+            )
+            .is_none()
         );
 
         let receipt = DeviceMetadataReceiptCollector::new_for_test();
@@ -1418,7 +1432,14 @@ mod tests {
             "https://issuer.example/.well-known/openid-configuration",
             &metadata,
         );
-        assert!(verified_device_authorization_from_metadata(&metadata, true, &receipt).is_none());
+        assert!(
+            verified_device_authorization_from_metadata(
+                &metadata,
+                /*discovered*/ true,
+                &receipt,
+            )
+            .is_none()
+        );
     }
 
     #[tokio::test]
