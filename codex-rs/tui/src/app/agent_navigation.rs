@@ -635,9 +635,7 @@ mod tests {
         assert_eq!(metadata.reasoning_effort, Some(ReasoningEffortConfig::High));
 
         state.set_configured_thread_metadata(
-            thread_id,
-            /*parent_thread_id*/ None,
-            /*model*/ None,
+            thread_id, /*parent_thread_id*/ None, /*model*/ None,
             /*reasoning_effort*/ None,
         );
         let metadata = state
