@@ -58,7 +58,7 @@ async fn owned_clear_resets_navigation_and_retains_one_fresh_header() -> Result<
         .iter()
         .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
         .collect::<String>();
-    let expected_version = format!("v{}", crate::version::display_version());
+    let expected_version = format!("v{}", CODEX_CLI_VERSION);
     assert!(rendered_header.contains(expected_version.as_str()));
     app.chat_widget.set_raw_output_mode(/*enabled*/ true);
     assert_eq!(
