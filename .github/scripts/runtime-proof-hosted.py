@@ -103,6 +103,14 @@ ROOT_FIXTURE_SPAWN_ERROR = re.compile(
     r"(not_found|permission_denied|invalid_input|other)"
     r"(?: \(errno ([0-9]{1,5})\)| \(no errno\))"
 )
+ROOT_FIXTURE_ACK_FAILURE = re.compile(
+    r"^runtime-proof-root-ack-failure:"
+    r"(timeout|eof|would_block|connection_reset|broken_pipe|invalid_packet|other)$"
+)
+ROOT_FIXTURE_STARTUP_FAILURE = re.compile(
+    r"^runtime-proof-root-startup-failure:"
+    r"(runtime_auth|runtime_proof|provider_auth|runtime_config|runtime_protection|empty|unclassified|unavailable)$"
+)
 ROOT_FIXTURE_STAGE_NAMES = {
     "started",
     "fixture_started",
@@ -2291,6 +2299,8 @@ def run_ignored_root_test(
         if test_name == EXPECTED_CLI_TESTS[0]:
             stages = []
             spawn_errors = set()
+            ack_failures = set()
+            startup_failures = set()
             for line in result.stdout.splitlines():
                 match = ROOT_FIXTURE_STAGE.fullmatch(line.strip())
                 if match is not None and match.group(1) in ROOT_FIXTURE_STAGE_NAMES:
@@ -2298,6 +2308,12 @@ def run_ignored_root_test(
                 match = ROOT_FIXTURE_SPAWN_ERROR.search(line)
                 if match is not None:
                     spawn_errors.add((match.group(1), match.group(2) or "none"))
+                match = ROOT_FIXTURE_ACK_FAILURE.fullmatch(line.strip())
+                if match is not None:
+                    ack_failures.add(match.group(1))
+                match = ROOT_FIXTURE_STARTUP_FAILURE.fullmatch(line.strip())
+                if match is not None:
+                    startup_failures.add(match.group(1))
             last_stage = stages[-1] if stages else "none"
             details = f"; exit_code={result.returncode}; last_stage={last_stage}"
             if len(spawn_errors) == 1:
@@ -2307,6 +2323,18 @@ def run_ignored_root_test(
                 details += "; spawn_error_category=ambiguous"
             else:
                 details += "; spawn_error_category=not_reported"
+            if len(ack_failures) == 1:
+                details += f"; ack_error_category={next(iter(ack_failures))}"
+            elif ack_failures:
+                details += "; ack_error_category=ambiguous"
+            else:
+                details += "; ack_error_category=not_reported"
+            if len(startup_failures) == 1:
+                details += f"; child_startup_category={next(iter(startup_failures))}"
+            elif startup_failures:
+                details += "; child_startup_category=ambiguous"
+            else:
+                details += "; child_startup_category=not_reported"
         refuse(
             "explicit synthetic root fixture was not exactly one successful executed test: "
             f"{test_name}{details}"
