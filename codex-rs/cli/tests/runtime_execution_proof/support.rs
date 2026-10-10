@@ -10,6 +10,8 @@ use sha2::Sha256;
 use std::fs;
 use std::fs::File;
 use std::io::Read;
+use std::io::Seek;
+use std::io::SeekFrom;
 use std::io::Write;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
@@ -684,6 +686,7 @@ impl ProtectedRuntimeFixture {
         eprintln!("runtime-proof-root-stage:cli_executable_ready");
         let stdout = File::create(&self.output_path)?;
         let stderr = File::create(&self.errors_path)?;
+        let mut stderr_reader = stderr.try_clone()?;
         let (mut launcher, child_socket) = seqpacket_pair()?;
         let (auth_launcher, auth_child_socket) = seqpacket_pair()?;
         eprintln!("runtime-proof-root-stage:cli_channels_ready");
@@ -849,7 +852,7 @@ impl ProtectedRuntimeFixture {
             );
             eprintln!(
                 "runtime-proof-root-startup-failure:{}",
-                startup_error_category(&self.errors_path)
+                startup_error_category(&mut stderr_reader)
             );
             return Err(error).context("read protected CLI bootstrap acknowledgement");
         }
@@ -859,7 +862,7 @@ impl ProtectedRuntimeFixture {
             eprintln!("runtime-proof-root-ack-failure:invalid_packet");
             eprintln!(
                 "runtime-proof-root-startup-failure:{}",
-                startup_error_category(&self.errors_path)
+                startup_error_category(&mut stderr_reader)
             );
             anyhow::bail!("CLI bootstrap acknowledgement did not match");
         }
@@ -1066,15 +1069,19 @@ fn ack_error_category(kind: std::io::ErrorKind) -> &'static str {
     }
 }
 
-fn startup_error_category(path: &std::path::Path) -> &'static str {
-    let mut stderr = Vec::new();
-    let Ok(file) = File::open(path) else {
-        return "unavailable";
-    };
-    if file.take(64 * 1024).read_to_end(&mut stderr).is_err() {
+fn startup_error_category(stderr: &mut File) -> &'static str {
+    let mut captured_stderr = Vec::new();
+    if stderr.seek(SeekFrom::Start(0)).is_err() {
         return "unavailable";
     }
-    let stderr = String::from_utf8_lossy(&stderr);
+    if stderr
+        .take(64 * 1024)
+        .read_to_end(&mut captured_stderr)
+        .is_err()
+    {
+        return "unavailable";
+    }
+    let stderr = String::from_utf8_lossy(&captured_stderr);
     if stderr.trim().is_empty() {
         "empty"
     } else if stderr.contains("runtime auth") {
