@@ -6,15 +6,24 @@
 //! paths.
 
 use http::HeaderMap;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
+
+use codex_utils_rustls_provider::ensure_rustls_crypto_provider;
 
 use crate::BuildCustomCaTransportError;
 use crate::BuildRouteAwareHttpClientError;
 use crate::ClientRouteClass;
 use crate::HttpClient;
 use crate::HttpClientFactory;
+use crate::HttpClientTlsConfig;
 use crate::OutboundProxyRoute;
+use crate::chatgpt_cloudflare_cookies::ChatGptCookieStore;
+use crate::client::HttpClientBackend;
 use crate::client::RequestLogging;
+use crate::client::TransportClient;
 use crate::custom_ca::build_reqwest_client_with_custom_ca;
 use crate::with_chatgpt_cloudflare_cookie_store;
 
@@ -25,12 +34,23 @@ use crate::with_chatgpt_cloudflare_cookie_store;
 /// bypass the factory and are restricted to documented exceptional or legacy compatibility paths.
 #[derive(Clone)]
 pub struct HttpClientBuilder {
-    default_headers: Option<HeaderMap>,
+    http2_prior_knowledge: bool,
+    pub(crate) default_headers: Option<HeaderMap>,
     follow_redirects: bool,
-    retry_requests: bool,
+    pub(crate) redirect_observed: Option<Arc<AtomicBool>>,
     connect_timeout: Option<Duration>,
     chatgpt_cloudflare_cookie_store: bool,
-    request_logging: RequestLogging,
+    chatgpt_cookie_store: Option<Arc<ChatGptCookieStore>>,
+    pub(crate) request_logging: RequestLogging,
+    tls_backend: TlsBackend,
+    tls: HttpClientTlsConfig,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum TlsBackend {
+    #[default]
+    TransportDefault,
+    Rustls,
 }
 
 impl HttpClientFactory {
@@ -65,10 +85,32 @@ impl HttpClientFactory {
 }
 
 impl HttpClientBuilder {
+    /// Builds a strict pooled client with explicit TLS settings and the factory's proxy policy.
+    /// Route and transport construction failures are returned when sending a request.
+    pub fn build_with_tls(
+        mut self,
+        http_client_factory: &HttpClientFactory,
+        route_class: ClientRouteClass,
+        tls: HttpClientTlsConfig,
+    ) -> HttpClient {
+        self.tls = tls;
+        crate::RouteAwareClientPool::with_builder(http_client_factory.clone(), route_class, self)
+            .with_tls_backend_fallback()
+            .into_client()
+    }
+
+    /// Uses HTTP/2 for SDKs such as gRPC that require framed bidirectional bodies.
+    pub fn http2_prior_knowledge(mut self) -> Self {
+        // Native TLS may lack ALPN support; HTTPS HTTP/2 requires advertising h2.
+        self.tls_backend = TlsBackend::Rustls;
+        self.http2_prior_knowledge = true;
+        self
+    }
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Applies every configured value unless the request sets that header explicitly.
     pub fn default_headers(mut self, headers: HeaderMap) -> Self {
         self.default_headers = Some(headers);
         self
@@ -79,22 +121,24 @@ impl HttpClientBuilder {
         self
     }
 
-    /// Disables transport-internal retries, including HTTP/2 protocol NACK retries.
-    ///
-    /// Credential-bound requests use the observable application retry loop, where each attempt
-    /// can acquire and validate fresh authority. A transport retry would instead clone the
-    /// already-authorized wire request after that authority has been released.
-    ///
-    /// This does not disable hyper-util's stale pooled-connection recovery. That recovery is
-    /// limited to a reused connection that fails before any request bytes are written, so it does
-    /// not create another credential-bearing wire attempt.
-    pub fn without_retries(mut self) -> Self {
-        self.retry_requests = false;
+    /// Marks the supplied flag when a redirect is encountered, preserving the default policy.
+    /// Use a fresh flag for each operation whose retry safety depends on its redirect history.
+    pub fn with_redirect_tracking(mut self, redirect_observed: Arc<AtomicBool>) -> Self {
+        self.redirect_observed = Some(redirect_observed);
         self
     }
 
     pub(crate) fn follows_redirects(&self) -> bool {
         self.follow_redirects
+    }
+
+    pub(crate) fn request_logging_enabled(&self) -> bool {
+        self.request_logging == RequestLogging::Enabled
+    }
+
+    pub(crate) fn with_rustls_tls(mut self) -> Self {
+        self.tls_backend = TlsBackend::Rustls;
+        self
     }
 
     /// Limits only connection establishment, not the request as a whole.
@@ -105,6 +149,13 @@ impl HttpClientBuilder {
 
     pub fn with_chatgpt_cloudflare_cookie_store(mut self) -> Self {
         self.chatgpt_cloudflare_cookie_store = true;
+        self
+    }
+
+    /// Uses the factory's configured ChatGPT cookies without changing proxy behavior.
+    pub fn with_chatgpt_cookies(mut self, http_client_factory: &HttpClientFactory) -> Self {
+        self.chatgpt_cloudflare_cookie_store = true;
+        self.chatgpt_cookie_store = http_client_factory.chatgpt_cookie_store();
         self
     }
 
@@ -120,30 +171,56 @@ impl HttpClientBuilder {
     /// resolve a concrete direct or proxy route when the factory is configured with
     /// [`crate::OutboundProxyPolicy::RespectSystemProxy`].
     pub fn build_respecting_outbound_proxy_policy(
-        self,
+        mut self,
         http_client_factory: &HttpClientFactory,
         request_url: &str,
         route_class: ClientRouteClass,
     ) -> Result<HttpClient, BuildRouteAwareHttpClientError> {
-        let (builder, request_logging) = self.into_reqwest_parts();
+        if http_client_factory.network_policy().is_managed() {
+            return Ok(crate::RouteAwareClientPool::with_builder(
+                http_client_factory.clone(),
+                route_class,
+                self,
+            )
+            .into_client());
+        }
+        self.chatgpt_cookie_store = http_client_factory.chatgpt_cookie_store();
+        let (builder, request_logging, default_headers) = self.into_reqwest_parts();
         let inner = http_client_factory.build_reqwest_client(builder, request_url, route_class)?;
-        Ok(HttpClient::from_parts(inner, request_logging))
+        Ok(HttpClient::from_parts(
+            inner,
+            request_logging,
+            default_headers,
+        ))
     }
 
     /// Builds a client for a route that was already resolved by a route-aware caller.
     pub(crate) fn build_for_resolved_route(
-        self,
+        mut self,
         http_client_factory: &HttpClientFactory,
         route_class: ClientRouteClass,
         route: &OutboundProxyRoute,
-    ) -> Result<HttpClient, BuildRouteAwareHttpClientError> {
-        let (builder, request_logging) = self.into_reqwest_parts();
-        let inner = http_client_factory.build_reqwest_client_for_resolved_route(
+    ) -> Result<TransportClient, BuildRouteAwareHttpClientError> {
+        self.chatgpt_cookie_store = http_client_factory.chatgpt_cookie_store();
+        let explicit_roots = self.tls.root_certificate.is_some();
+        let (builder, request_logging, default_headers) = self.into_reqwest_parts();
+        let builder = crate::outbound_proxy::configure_builder_for_resolved_route(
             builder,
             route_class,
             route,
         )?;
-        Ok(HttpClient::from_parts(inner, request_logging))
+        let inner = if explicit_roots {
+            builder
+                .build()
+                .map_err(BuildRouteAwareHttpClientError::ExplicitTls)?
+        } else {
+            build_reqwest_client_with_custom_ca(builder)?
+        };
+        Ok(TransportClient::new(
+            inner,
+            request_logging,
+            default_headers,
+        ))
     }
 
     /// Builds a client using the transport's default proxy behavior.
@@ -186,7 +263,11 @@ impl HttpClientBuilder {
         note = "legacy custom-CA fallback only; use HttpClientFactory::build_client or build_respecting_outbound_proxy_policy"
     )]
     pub fn build_with_transport_default_proxy_and_custom_ca_fallback(self) -> HttpClient {
-        self.build_with_custom_ca_fallback(ProxyRouting::TransportDefault)
+        HttpClient {
+            backend: HttpClientBackend::Direct(
+                self.build_with_custom_ca_fallback(ProxyRouting::TransportDefault),
+            ),
+        }
     }
 
     /// Builds a direct client while preserving the legacy custom-CA fallback.
@@ -199,82 +280,72 @@ impl HttpClientBuilder {
         note = "legacy custom-CA fallback only; use build_direct and propagate construction errors"
     )]
     pub fn build_direct_with_custom_ca_fallback(self) -> HttpClient {
-        self.build_with_custom_ca_fallback(ProxyRouting::Direct)
+        HttpClient {
+            backend: HttpClientBackend::Direct(
+                self.build_with_custom_ca_fallback(ProxyRouting::Direct),
+            ),
+        }
     }
 
     fn build_with_proxy_routing(
-        self,
+        mut self,
         proxy_routing: ProxyRouting,
     ) -> Result<HttpClient, BuildCustomCaTransportError> {
         let request_logging = self.request_logging;
+        let default_headers = self.default_headers.take().unwrap_or_default();
         build_reqwest_client_with_custom_ca(self.reqwest_builder(proxy_routing))
-            .map(|inner| HttpClient::from_parts(inner, request_logging))
+            .map(|inner| HttpClient::from_parts(inner, request_logging, default_headers))
     }
 
-    fn build_with_custom_ca_fallback(self, proxy_routing: ProxyRouting) -> HttpClient {
-        self.build_with_custom_ca_fallback_using(
-            proxy_routing,
-            build_reqwest_client_with_custom_ca,
-            reqwest::ClientBuilder::build,
-        )
-    }
-
-    #[expect(
-        clippy::expect_used,
-        reason = "the minimal credential-bound client is an internal construction invariant"
-    )]
-    fn build_with_custom_ca_fallback_using<E>(
+    pub(crate) fn build_with_custom_ca_fallback(
         self,
+        proxy_routing: ProxyRouting,
+    ) -> TransportClient {
+        self.build_with_custom_ca_fallback_using(proxy_routing, build_reqwest_client_with_custom_ca)
+    }
+
+    fn build_with_custom_ca_fallback_using(
+        mut self,
         proxy_routing: ProxyRouting,
         build_with_custom_ca: impl FnOnce(
             reqwest::ClientBuilder,
         )
             -> Result<reqwest::Client, BuildCustomCaTransportError>,
-        build_fallback: impl FnOnce(reqwest::ClientBuilder) -> Result<reqwest::Client, E>,
-    ) -> HttpClient
-    where
-        E: std::fmt::Display,
-    {
+    ) -> TransportClient {
         let request_logging = self.request_logging;
-        match build_with_custom_ca(self.clone().reqwest_builder(proxy_routing)) {
-            Ok(inner) => HttpClient::from_parts(inner, request_logging),
+        let default_headers = self.default_headers.take().unwrap_or_default();
+        let inner = match build_with_custom_ca(self.clone().reqwest_builder(proxy_routing)) {
+            Ok(inner) => inner,
             Err(error) => {
+                tracing::event!(
+                    target: "codex_otel.log_only",
+                    tracing::Level::WARN,
+                    event.name = "codex.http_client.custom_ca_fallback",
+                    "HTTP client fell back to system root certificates"
+                );
                 tracing::warn!(error = %error, "failed to build HTTP client with custom CA");
-                build_fallback(self.clone().reqwest_builder(proxy_routing))
-                    .map(|inner| HttpClient::from_parts(inner, request_logging))
+                self.reqwest_builder(proxy_routing)
+                    .build()
                     .unwrap_or_else(|fallback_error| {
                         tracing::warn!(
                             error = %fallback_error,
                             "failed to build fallback HTTP client"
                         );
-                        // `Client::new()` would silently restore redirects and protocol-NACK
-                        // retries on credential-bound paths. Reapply both fail-closed policies on
-                        // the last-resort builder while leaving hyper-util's documented zero-write
-                        // stale-pool recovery enabled.
-                        let inner = self
-                            .last_resort_reqwest_builder()
-                            .build()
-                            .expect("minimal credential-bound HTTP client policy should build");
-                        HttpClient::from_parts(inner, request_logging)
+                        reqwest::Client::new()
                     })
             }
-        }
+        };
+        TransportClient::new(inner, request_logging, default_headers)
     }
 
-    fn last_resort_reqwest_builder(&self) -> reqwest::ClientBuilder {
-        let mut builder = reqwest::Client::builder();
-        if !self.follow_redirects {
-            builder = builder.redirect(reqwest::redirect::Policy::none());
-        }
-        if !self.retry_requests {
-            builder = builder.retry(reqwest::retry::never());
-        }
-        builder
-    }
-
-    fn into_reqwest_parts(self) -> (reqwest::ClientBuilder, RequestLogging) {
+    fn into_reqwest_parts(mut self) -> (reqwest::ClientBuilder, RequestLogging, HeaderMap) {
         let request_logging = self.request_logging;
-        (self.base_reqwest_builder(), request_logging)
+        let default_headers = self.default_headers.take().unwrap_or_default();
+        (
+            self.base_reqwest_builder(),
+            request_logging,
+            default_headers,
+        )
     }
 
     fn reqwest_builder(self, proxy_routing: ProxyRouting) -> reqwest::ClientBuilder {
@@ -287,20 +358,37 @@ impl HttpClientBuilder {
 
     fn base_reqwest_builder(self) -> reqwest::ClientBuilder {
         let mut builder = reqwest::Client::builder();
-        if let Some(default_headers) = self.default_headers {
-            builder = builder.default_headers(default_headers);
+        if self.http2_prior_knowledge {
+            builder = builder.http2_prior_knowledge();
+        }
+        if self.tls_backend == TlsBackend::Rustls || self.tls.client_identity.is_some() {
+            ensure_rustls_crypto_provider();
+            builder = builder.use_rustls_tls();
+        }
+        if let Some(certificate) = self.tls.root_certificate {
+            builder = builder
+                .tls_built_in_root_certs(false)
+                .add_root_certificate(certificate);
+        }
+        if let Some(identity) = self.tls.client_identity {
+            builder = builder.identity(identity).https_only(true);
         }
         if !self.follow_redirects {
             builder = builder.redirect(reqwest::redirect::Policy::none());
-        }
-        if !self.retry_requests {
-            builder = builder.retry(reqwest::retry::never());
+        } else if let Some(redirect_observed) = self.redirect_observed {
+            builder = builder.redirect(reqwest::redirect::Policy::custom(move |attempt| {
+                redirect_observed.store(/*val*/ true, Ordering::Relaxed);
+                reqwest::redirect::Policy::default().redirect(attempt)
+            }));
         }
         if let Some(connect_timeout) = self.connect_timeout {
             builder = builder.connect_timeout(connect_timeout);
         }
         if self.chatgpt_cloudflare_cookie_store {
-            builder = with_chatgpt_cloudflare_cookie_store(builder);
+            builder = match self.chatgpt_cookie_store {
+                Some(store) => builder.cookie_provider(store),
+                None => with_chatgpt_cloudflare_cookie_store(builder),
+            };
         }
         builder
     }
@@ -309,18 +397,22 @@ impl HttpClientBuilder {
 impl Default for HttpClientBuilder {
     fn default() -> Self {
         Self {
+            http2_prior_knowledge: false,
             default_headers: None,
             follow_redirects: true,
-            retry_requests: true,
+            redirect_observed: None,
             connect_timeout: None,
             chatgpt_cloudflare_cookie_store: false,
+            chatgpt_cookie_store: None,
             request_logging: RequestLogging::Enabled,
+            tls_backend: TlsBackend::TransportDefault,
+            tls: HttpClientTlsConfig::default(),
         }
     }
 }
 
 #[derive(Clone, Copy)]
-enum ProxyRouting {
+pub(crate) enum ProxyRouting {
     TransportDefault,
     Direct,
 }

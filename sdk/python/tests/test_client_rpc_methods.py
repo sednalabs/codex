@@ -1,22 +1,31 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import get_type_hints
 
 import pytest
-from pydantic import ValidationError
 
+from openai_codex._runtime_requirements import CheckoutCapabilities
 from openai_codex.client import CodexClient, _params_dict
+from openai_codex.errors import CodexError
 from openai_codex.generated.notification_registry import notification_turn_id
 from openai_codex.generated.v2_all import (
+    AbsolutePathBuf,
+    AccountRateLimitsUpdatedNotification,
+    AccountUpdatedNotification,
     AgentMessageDeltaNotification,
+    ApplyPatchGuardianApprovalReviewAction,
     ApprovalsReviewer,
-    CollabAgentToolCallThreadItem,
-    ItemCompletedNotification,
+    AuthRecoveryNotification,
+    CommandGuardianApprovalReviewAction,
+    GetAccountResponse,
+    PlanType,
     ReasoningEffort,
     ReasoningEffortOption,
     ThreadForkParams,
     ThreadListParams,
-    ThreadReadResponse,
+    ThreadQueueChangedNotification,
     ThreadResumeResponse,
     ThreadStartParams,
     ThreadTokenUsageUpdatedNotification,
@@ -24,50 +33,190 @@ from openai_codex.generated.v2_all import (
     TurnStartParams,
     WarningNotification,
 )
-from openai_codex.models import Notification, UnknownNotification
+from openai_codex.models import InitializeResponse, JsonObject, Notification, UnknownNotification
 from openai_codex.types import ThreadSource
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _legacy_collab_agent_tool_call() -> dict[str, object]:
-    return {
-        "agentsStates": {},
-        "id": "spawn-legacy",
-        "model": "gpt-effective",
-        "reasoningEffort": "medium",
-        "receiverThreadIds": ["child-1"],
-        "senderThreadId": "parent",
-        "status": "completed",
-        "tool": "spawnAgent",
-        "type": "collabAgentToolCall",
+@pytest.mark.parametrize(
+    ("model", "fields"),
+    [
+        (
+            CommandGuardianApprovalReviewAction,
+            {"type": "command", "command": "pwd", "source": "shell"},
+        ),
+        (
+            ApplyPatchGuardianApprovalReviewAction,
+            {"type": "applyPatch", "files": [AbsolutePathBuf("/workspace/file")]},
+        ),
+    ],
+)
+def test_approval_review_paths_preserve_existing_wrappers(model, fields) -> None:
+    action = model(cwd=AbsolutePathBuf("/workspace"), **fields)
+    expected = {
+        **fields,
+        "cwd": "/workspace",
     }
+    if "files" in expected:
+        expected["files"] = ["/workspace/file"]
+    assert action.model_dump(mode="json") == expected
+    assert isinstance(action.cwd, AbsolutePathBuf)
 
 
-def _thread_read_result(item: dict[str, object]) -> dict[str, object]:
-    return {
-        "thread": {
-            "cliVersion": "1.0.0",
-            "createdAt": 1,
-            "cwd": "/tmp",
-            "ephemeral": False,
-            "id": "thread-1",
-            "modelProvider": "openai",
-            "preview": "",
-            "sessionId": "session-1",
-            "source": "cli",
-            "status": {"type": "idle"},
-            "turns": [{"id": "turn-1", "items": [item], "status": "completed"}],
-            "updatedAt": 1,
-        }
-    }
+def _initialized_client(
+    monkeypatch: pytest.MonkeyPatch, metadata: JsonObject
+) -> tuple[CodexClient, list[tuple[str, JsonObject | None]]]:
+    client = CodexClient()
+    requests: list[tuple[str, JsonObject | None]] = []
+
+    def request_raw(method: str, params: JsonObject | None) -> JsonObject:
+        requests.append((method, params))
+        return metadata if method == "initialize" else {}
+
+    monkeypatch.setattr(client, "_request_raw", request_raw)
+    monkeypatch.setattr(client, "notify", lambda *_args: None)
+    client.initialize()
+    requests.clear()
+    return client, requests
 
 
-def _assert_null_collab_identity(item: CollabAgentToolCallThreadItem) -> None:
-    assert item.requested_model is None
-    assert item.requested_reasoning_effort is None
-    assert item.effective_model is None
-    assert item.effective_reasoning_effort is None
+@pytest.mark.parametrize(
+    ("method", "params"),
+    [
+        ("turn/start", {"input": [], "toolOutput": {"name": "delegate", "output": "Investigate"}}),
+        ("turn/start", {"input": [], "turnTrigger": "automation"}),
+        ("turn/start", {"input": [], "serviceTierForTurn": "default"}),
+        ("thread/resume", {"threadId": "thread-1", "excludeTurns": False}),
+        ("thread/fork", {"threadId": "thread-1", "excludeTurns": True}),
+    ],
+)
+@pytest.mark.parametrize("version", ["0.147.0", "0.149.0", "0.151.0-alpha.6", "unknown", ""])
+def test_new_options_reject_unsupported_runtime_before_sending(
+    monkeypatch: pytest.MonkeyPatch, method: str, params: JsonObject, version: str
+) -> None:
+    client, requests = _initialized_client(monkeypatch, {"userAgent": f"codex-cli/{version}"})
+
+    with pytest.raises(CodexError, match=r"Codex CLI 0\.151\.0 or newer"):
+        client.request(method, params, response_model=InitializeResponse)
+
+    assert requests == []
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"userAgent": "codex-cli/0.151.0 (Linux)"},
+        {"userAgent": "codex-cli 0.153.0"},
+        {"userAgent": "codex-cli/0.154.0-alpha.1"},
+        {"userAgent": "codex-cli/0.154.0-alpha.1.2"},
+        {"userAgent": "codex-cli/0.151.0.post1"},
+        {"userAgent": "unknown", "serverInfo": {"name": "codex", "version": "0.153.0"}},
+    ],
+)
+def test_new_options_accept_supported_runtime_metadata(
+    monkeypatch: pytest.MonkeyPatch, metadata: JsonObject
+) -> None:
+    client, requests = _initialized_client(monkeypatch, metadata)
+    params = {"input": [], "toolOutput": {"name": "delegate", "output": "Investigate"}}
+
+    client.request("turn/start", params, response_model=InitializeResponse)
+
+    assert requests == [("turn/start", params)]
+
+
+@pytest.mark.parametrize("supports_options", [True, False])
+def test_unversioned_checkout_probes_and_caches_its_own_schema(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, supports_options: bool
+) -> None:
+    client, requests = _initialized_client(monkeypatch, {"userAgent": "codex-cli/0.0.0"})
+    command = ("checkout-codex", "--config", "key=value", "app-server")
+    client._checkout_capabilities = CheckoutCapabilities(
+        command, str(tmp_path), {"CUSTOM": "value"}
+    )
+    probes = []
+
+    def generate_schema(args, **kwargs):
+        probes.append((args[:-1], kwargs))
+        output = Path(args[-1]) / "v2"
+        output.mkdir()
+        for name, fields in (
+            ("TurnStartParams", ["turnTrigger", "serviceTierForTurn"]),
+            ("ThreadResumeParams", ["excludeTurns"]),
+            ("ThreadForkParams", ["excludeTurns"]),
+        ):
+            (output / f"{name}.json").write_text(
+                json.dumps(
+                    {"properties": {field: {} for field in fields} if supports_options else {}}
+                )
+            )
+
+    monkeypatch.setattr("openai_codex._runtime_requirements.subprocess.run", generate_schema)
+    for method, params in (
+        ("turn/start", {"input": [], "turnTrigger": "automation"}),
+        ("thread/resume", {"threadId": "thread-1", "excludeTurns": False}),
+    ):
+        if supports_options:
+            client.request(method, params, response_model=InitializeResponse)
+        else:
+            with pytest.raises(CodexError, match="checkout does not support"):
+                client.request(method, params, response_model=InitializeResponse)
+    assert len(requests) == (2 if supports_options else 0)
+    assert probes == [
+        (
+            [*command, "generate-json-schema", "--experimental", "--out"],
+            {
+                "cwd": str(tmp_path),
+                "env": {"CUSTOM": "value"},
+                "capture_output": True,
+                "check": True,
+                "timeout": 30,
+            },
+        )
+    ]
+    client.close()
+    assert client._checkout_capabilities is None
+
+
+def test_unversioned_custom_launch_requires_verifiable_capabilities(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, requests = _initialized_client(monkeypatch, {"userAgent": "codex-cli/0.0.0"})
+    with pytest.raises(CodexError, match="Cannot verify an unversioned CLI"):
+        client.request(
+            "turn/start", {"turnTrigger": "automation"}, response_model=InitializeResponse
+        )
+    assert requests == []
+
+
+@pytest.mark.parametrize("metadata", [{}, {"userAgent": "codex-cli/0.147.0"}])
+def test_ordinary_requests_keep_working_on_old_or_unknown_runtime(
+    monkeypatch: pytest.MonkeyPatch, metadata: JsonObject
+) -> None:
+    client, requests = _initialized_client(monkeypatch, metadata)
+    params = {"input": [{"type": "text", "text": "Hello"}], "serviceTier": "default"}
+
+    client.request("turn/start", params, response_model=InitializeResponse)
+    client.request("thread/resume", {"threadId": "thread-1"}, response_model=InitializeResponse)
+    client.request("thread/fork", {"threadId": "thread-1"}, response_model=InitializeResponse)
+
+    assert requests == [
+        ("turn/start", params),
+        ("thread/resume", {"threadId": "thread-1"}),
+        ("thread/fork", {"threadId": "thread-1"}),
+    ]
+
+
+def test_new_options_require_fresh_initialize_metadata_after_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, requests = _initialized_client(monkeypatch, {"userAgent": "codex-cli/0.153.0"})
+    client.close()
+
+    with pytest.raises(CodexError, match="reported version is 'unknown'"):
+        client.request("thread/resume", {"excludeTurns": True}, response_model=InitializeResponse)
+
+    assert requests == []
 
 
 def test_generated_params_models_are_snake_case_and_dump_by_alias() -> None:
@@ -83,18 +232,56 @@ def test_generated_v2_bundle_has_single_shared_plan_type_definition() -> None:
     assert source.count("class PlanType(") == 1
 
 
-def test_reasoning_effort_preserves_enum_constants_and_accepts_future_values() -> None:
+def test_plan_type_accepts_business_prolite_from_newer_runtime() -> None:
+    """New runtime plan values should remain typed when using a codex_bin override."""
+    plan_type = "self_serve_business_prolite"
+    response = GetAccountResponse.model_validate(
+        {
+            "account": {
+                "type": "chatgpt",
+                "email": "user@example.com",
+                "planType": plan_type,
+            },
+            "requiresOpenaiAuth": True,
+        }
+    )
+    assert response.account is not None
+    assert response.account.root.plan_type.value == plan_type
+
+    client = CodexClient()
+    account_updated = client._coerce_notification(
+        "account/updated",
+        {"authMode": "chatgpt", "planType": plan_type},
+    )
+    assert isinstance(account_updated.payload, AccountUpdatedNotification)
+    assert account_updated.payload.plan_type == PlanType(plan_type)
+
+    rate_limits_updated = client._coerce_notification(
+        "account/rateLimits/updated",
+        {"rateLimits": {"planType": plan_type}},
+    )
+    assert isinstance(rate_limits_updated.payload, AccountRateLimitsUpdatedNotification)
+    assert rate_limits_updated.payload.rate_limits.plan_type == PlanType(plan_type)
+
+
+@pytest.mark.parametrize(
+    ("effort", "wire_value"),
+    [(ReasoningEffort.max, "max"), (ReasoningEffort.ultra, "ultra")],
+)
+def test_reasoning_effort_preserves_enum_constants_and_accepts_future_values(
+    effort: ReasoningEffort, wire_value: str
+) -> None:
     """Known effort members and new runtime values should share the enum-style API."""
     known_option = ReasoningEffortOption.model_validate(
         {"description": "Balanced", "reasoningEffort": "medium"}
     )
     future_option = ReasoningEffortOption.model_validate(
-        {"description": "Future", "reasoningEffort": "ultra"}
+        {"description": "Future", "reasoningEffort": "future"}
     )
     turn_params = TurnStartParams(
         thread_id="thread-1",
         input=[],
-        effort=ReasoningEffort.medium,
+        effort=effort,
     )
 
     assert {
@@ -105,194 +292,9 @@ def test_reasoning_effort_preserves_enum_constants_and_accepts_future_values() -
     } == {
         "known_member": "medium",
         "known_option": "medium",
-        "future_option": "ultra",
-        "turn_effort": "medium",
+        "future_option": "future",
+        "turn_effort": wire_value,
     }
-
-
-def test_collab_spawn_identity_is_phase_compatible_and_uses_camel_case_wire_names() -> None:
-    item = CollabAgentToolCallThreadItem.model_validate(
-        {
-            "agentsStates": {},
-            "id": "spawn-1",
-            "model": "gpt-effective",
-            "reasoningEffort": "medium",
-            "requestedModel": "gpt-requested",
-            "requestedReasoningEffort": "high",
-            "effectiveModel": "gpt-effective",
-            "effectiveReasoningEffort": "medium",
-            "receiverThreadIds": ["child-1"],
-            "senderThreadId": "parent",
-            "status": "completed",
-            "tool": "spawnAgent",
-            "type": "collabAgentToolCall",
-        }
-    )
-    assert item.model_dump(by_alias=True, exclude_none=True, mode="json") == {
-        "agentsStates": {},
-        "id": "spawn-1",
-        "effectiveModel": "gpt-effective",
-        "effectiveReasoningEffort": "medium",
-        "model": "gpt-effective",
-        "reasoningEffort": "medium",
-        "requestedModel": "gpt-requested",
-        "requestedReasoningEffort": "high",
-        "receiverThreadIds": ["child-1"],
-        "senderThreadId": "parent",
-        "status": "completed",
-        "tool": "spawnAgent",
-        "type": "collabAgentToolCall",
-    }
-    unknown_terminal = CollabAgentToolCallThreadItem.model_validate(
-        {
-            "agentsStates": {},
-            "effectiveModel": None,
-            "effectiveReasoningEffort": None,
-            "id": "spawn-unknown-terminal",
-            "requestedModel": "gpt-requested",
-            "requestedReasoningEffort": "high",
-            "receiverThreadIds": [],
-            "senderThreadId": "parent",
-            "status": "failed",
-            "tool": "spawnAgent",
-            "type": "collabAgentToolCall",
-        }
-    )
-    assert unknown_terminal.model is None
-    assert unknown_terminal.reasoning_effort is None
-    assert unknown_terminal.requested_model == "gpt-requested"
-    assert unknown_terminal.requested_reasoning_effort == "high"
-    assert unknown_terminal.effective_model is None
-    assert unknown_terminal.effective_reasoning_effort is None
-
-    historic = CollabAgentToolCallThreadItem.model_validate(
-        {
-            "agentsStates": {},
-            "id": "historic-spawn",
-            "model": "gpt-effective",
-            "reasoningEffort": "medium",
-            "receiverThreadIds": [],
-            "senderThreadId": "parent",
-            "status": "completed",
-            "tool": "spawnAgent",
-            "type": "collabAgentToolCall",
-        }
-    )
-    _assert_null_collab_identity(historic)
-
-
-def test_thread_read_response_normalizes_only_legacy_collab_identity(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    legacy_item = _legacy_collab_agent_tool_call()
-    response = _thread_read_result(legacy_item)
-    client = CodexClient()
-    monkeypatch.setattr(client, "_request_raw", lambda _method, _params: response)
-
-    parsed = client.request("thread/read", {}, response_model=ThreadReadResponse)
-    item = parsed.thread.turns[0].items[0].root
-
-    assert isinstance(item, CollabAgentToolCallThreadItem)
-    _assert_null_collab_identity(item)
-    assert all(
-        wire_name not in legacy_item
-        for wire_name in (
-            "requestedModel",
-            "requestedReasoningEffort",
-            "effectiveModel",
-            "effectiveReasoningEffort",
-        )
-    )
-
-
-def test_item_notification_normalizes_legacy_collab_identity_without_mutating_params() -> None:
-    legacy_item = _legacy_collab_agent_tool_call()
-    params = {
-        "completedAtMs": 2,
-        "item": legacy_item,
-        "threadId": "thread-1",
-        "turnId": "turn-1",
-    }
-
-    event = CodexClient()._coerce_notification("item/completed", params)
-
-    assert isinstance(event.payload, ItemCompletedNotification)
-    item = event.payload.item.root
-    assert isinstance(item, CollabAgentToolCallThreadItem)
-    _assert_null_collab_identity(item)
-    assert item.model == "gpt-effective"
-    assert all(
-        wire_name not in params["item"]
-        for wire_name in (
-            "requestedModel",
-            "requestedReasoningEffort",
-            "effectiveModel",
-            "effectiveReasoningEffort",
-        )
-    )
-
-
-def test_legacy_collab_normalization_does_not_touch_opaque_tool_arguments(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    opaque_arguments = {"type": "collabAgentToolCall", "value": "opaque"}
-    response = _thread_read_result(
-        {
-            "arguments": opaque_arguments,
-            "id": "dynamic-1",
-            "status": "completed",
-            "tool": "example",
-            "type": "dynamicToolCall",
-        }
-    )
-    client = CodexClient()
-    monkeypatch.setattr(client, "_request_raw", lambda _method, _params: response)
-
-    parsed = client.request("thread/read", {}, response_model=ThreadReadResponse)
-
-    assert parsed.thread.turns[0].items[0].root.arguments == opaque_arguments
-
-
-def test_collab_identity_transport_keeps_current_and_partial_shapes_strict(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    current_item = _legacy_collab_agent_tool_call()
-    current_item.update(
-        {
-            "requestedModel": None,
-            "requestedReasoningEffort": None,
-            "effectiveModel": None,
-            "effectiveReasoningEffort": None,
-        }
-    )
-
-    direct = CollabAgentToolCallThreadItem.model_validate(current_item)
-    _assert_null_collab_identity(direct)
-
-    partial_item = dict(current_item)
-    del partial_item["effectiveModel"]
-    with pytest.raises(ValidationError):
-        CollabAgentToolCallThreadItem.model_validate(partial_item)
-
-    client = CodexClient()
-    monkeypatch.setattr(
-        client,
-        "_request_raw",
-        lambda _method, _params: _thread_read_result(partial_item),
-    )
-    with pytest.raises(ValidationError):
-        client.request("thread/read", {}, response_model=ThreadReadResponse)
-
-    event = client._coerce_notification(
-        "item/completed",
-        {
-            "completedAtMs": 2,
-            "item": partial_item,
-            "threadId": "thread-1",
-            "turnId": "turn-1",
-        },
-    )
-    assert isinstance(event.payload, UnknownNotification)
 
 
 def test_thread_source_preserves_enum_constants_and_accepts_future_values() -> None:
@@ -394,6 +396,44 @@ def test_unknown_notifications_fall_back_to_unknown_payloads() -> None:
     assert event.method == "unknown/notification"
     assert isinstance(event.payload, UnknownNotification)
     assert event.payload.params["msg"] == {"type": "turn_aborted"}
+
+
+@pytest.mark.parametrize(
+    ("method", "params", "expected"),
+    [
+        (
+            "modelProvider/authRecoveryCompleted",
+            {
+                "provider": "openai",
+                "message": "Authentication recovered",
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+            },
+            AuthRecoveryNotification(
+                provider="openai",
+                message="Authentication recovered",
+                thread_id="thread-1",
+                turn_id="turn-1",
+            ),
+        ),
+        (
+            "thread/queue/changed",
+            {"threadId": "thread-1"},
+            ThreadQueueChangedNotification(thread_id="thread-1"),
+        ),
+        ("warning", {"message": "heads up"}, WarningNotification(message="heads up")),
+        (
+            "future/notification",
+            {"newField": "value"},
+            UnknownNotification(params={"newField": "value"}),
+        ),
+    ],
+)
+def test_decoded_notifications_match_the_declared_payload_type(method, params, expected) -> None:
+    event = CodexClient()._coerce_notification(method, params)
+
+    assert event == Notification(method=method, payload=expected)
+    assert isinstance(event.payload, get_type_hints(Notification)["payload"])
 
 
 def test_invalid_notification_payload_falls_back_to_unknown() -> None:
@@ -577,9 +617,10 @@ def test_client_reader_routes_interleaved_turn_notifications_by_turn_id() -> Non
     )
 
 
-def test_turn_notification_router_buffers_events_before_registration() -> None:
-    """Early turn events should be replayed once their TurnHandle registers."""
+def test_turn_notification_router_starts_at_explicit_registration() -> None:
+    """Explicit registration receives events from when the caller attaches."""
     client = CodexClient()
+    client.register_turn_notifications("turn-1")
     client._router.route_notification(
         client._coerce_notification(
             "item/agentMessage/delta",
@@ -592,7 +633,6 @@ def test_turn_notification_router_buffers_events_before_registration() -> None:
         )
     )
 
-    client.register_turn_notifications("turn-1")
     event = client.next_turn_notification("turn-1")
 
     assert isinstance(event.payload, AgentMessageDeltaNotification)
@@ -626,7 +666,7 @@ def test_turn_notification_router_clears_unregistered_turn_when_completed() -> N
         )
     )
 
-    assert client._router._pending_turn_notifications == {}
+    assert client._router._turn_states == {}
 
 
 def test_turn_notification_router_routes_unknown_turn_notifications() -> None:

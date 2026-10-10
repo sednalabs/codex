@@ -1,5 +1,6 @@
 {
-  "$defs": {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
     "CreditsSnapshot": {
       "properties": {
         "balance": {
@@ -28,13 +29,18 @@
         "plus",
         "pro",
         "prolite",
+        "promax",
         "team",
+        "self_serve_business_prolite",
         "self_serve_business_usage_based",
         "business",
         "ent26",
+        "enterprise_cbp_automation",
         "enterprise_cbp_usage_based",
         "enterprise",
         "edu",
+        "edu_plus",
+        "edu_pro",
         "unknown"
       ],
       "type": "string"
@@ -54,7 +60,7 @@
         "credits": {
           "anyOf": [
             {
-              "$ref": "#/$defs/CreditsSnapshot"
+              "$ref": "#/definitions/CreditsSnapshot"
             },
             {
               "type": "null"
@@ -64,7 +70,7 @@
         "individualLimit": {
           "anyOf": [
             {
-              "$ref": "#/$defs/SpendControlLimitSnapshot"
+              "$ref": "#/definitions/SpendControlLimitSnapshot"
             },
             {
               "type": "null"
@@ -83,10 +89,17 @@
             "null"
           ]
         },
+        "normalModelSlug": {
+          "description": "Normal model whose display name and reasoning options describe this quota alias.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "planType": {
           "anyOf": [
             {
-              "$ref": "#/$defs/PlanType"
+              "$ref": "#/definitions/PlanType"
             },
             {
               "type": "null"
@@ -96,7 +109,7 @@
         "primary": {
           "anyOf": [
             {
-              "$ref": "#/$defs/RateLimitWindow"
+              "$ref": "#/definitions/RateLimitWindow"
             },
             {
               "type": "null"
@@ -106,7 +119,7 @@
         "rateLimitReachedType": {
           "anyOf": [
             {
-              "$ref": "#/$defs/RateLimitReachedType"
+              "$ref": "#/definitions/RateLimitReachedType"
             },
             {
               "type": "null"
@@ -116,7 +129,7 @@
         "secondary": {
           "anyOf": [
             {
-              "$ref": "#/$defs/RateLimitWindow"
+              "$ref": "#/definitions/RateLimitWindow"
             },
             {
               "type": "null"
@@ -178,18 +191,17 @@
       },
       "required": [
         "limit",
-        "used",
         "remainingPercent",
-        "resetsAt"
+        "resetsAt",
+        "used"
       ],
       "type": "object"
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "Sparse rolling rate-limit update.\n\nClients should merge available values into the most recent `account/rateLimits/read` response\nor refetch that snapshot. Nullable account metadata may be unavailable in a rolling update and\ndoes not clear a previously observed value.",
+  "description": "Sparse rolling rate-limit update.\n\nClients should merge available values into the most recent `account/rateLimits/read` response or refetch that snapshot. Nullable account metadata may be unavailable in a rolling update and does not clear a previously observed value.",
   "properties": {
     "rateLimits": {
-      "$ref": "#/$defs/RateLimitSnapshot"
+      "$ref": "#/definitions/RateLimitSnapshot"
     }
   },
   "required": [

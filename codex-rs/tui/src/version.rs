@@ -1,78 +1,54 @@
-/// The current Codex release version used for semver comparisons and persistence.
-pub const CODEX_CLI_VERSION: &str = codex_utils_version::RELEASE_VERSION;
+/// The current Codex CLI version as embedded at compile time.
+///
+/// Keep this upstream-compatible value for provider/client metadata and update
+/// checks. Human-facing package headers should use [`display_version`].
+pub const CODEX_CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// The human-readable version label shown in user-facing surfaces.
-pub const CODEX_DISPLAY_VERSION: &str = codex_utils_version::DISPLAY_VERSION;
+/// The version shown in a human-facing TUI session header.
+///
+/// Branch packages may keep Cargo's upstream-compatible `0.0.0` package
+/// version while carrying their progressive identity in `codex-package.json`.
+/// Prefer that manifest version when it is not the source-build placeholder;
+/// source builds and ordinary upstream releases retain their existing display.
+pub fn display_version() -> &'static str {
+    use std::sync::OnceLock;
 
-/// The GitHub repository used for release/update checks.
-pub const CODEX_RELEASE_REPOSITORY: &str = match option_env!("CODEX_RELEASE_REPOSITORY") {
-    Some(repository) => repository,
-    None => "sednalabs/codex",
-};
-
-/// The tag prefix used to derive a version string from release tags.
-#[cfg_attr(debug_assertions, allow(dead_code))]
-pub const CODEX_RELEASE_TAG_PREFIX: &str = match option_env!("CODEX_RELEASE_TAG_PREFIX") {
-    Some(prefix) => prefix,
-    None => "v",
-};
-
-/// The npm package used for self-update guidance when the binary is npm-managed.
-#[cfg_attr(debug_assertions, allow(dead_code))]
-pub const CODEX_UPDATE_NPM_PACKAGE: &str = match option_env!("CODEX_UPDATE_NPM_PACKAGE") {
-    Some(package) => package,
-    None => "@openai/codex",
-};
-
-/// The brew cask used for self-update guidance when the binary is brew-managed.
-#[cfg_attr(debug_assertions, allow(dead_code))]
-pub const CODEX_UPDATE_BREW_CASK: &str = match option_env!("CODEX_UPDATE_BREW_CASK") {
-    Some(cask) => cask,
-    None => "codex",
-};
-
-/// Whether this binary was compiled for the Sedna release/update channel.
-#[cfg_attr(debug_assertions, allow(dead_code))]
-pub fn is_sedna_release_channel() -> bool {
-    codex_utils_version::is_sedna_release_identity(
-        option_env!("CODEX_RELEASE_REPOSITORY"),
-        option_env!("CODEX_RELEASE_TAG_PREFIX"),
-    )
+    static DISPLAY_VERSION: OnceLock<String> = OnceLock::new();
+    DISPLAY_VERSION
+        .get_or_init(|| {
+            let packaged_version = codex_build_info::BuildInfo::get().version().to_string();
+            format_display_version(CODEX_CLI_VERSION, &packaged_version)
+        })
+        .as_str()
 }
 
-#[cfg_attr(debug_assertions, allow(dead_code))]
-pub fn installation_options_url() -> String {
-    format!("https://github.com/{CODEX_RELEASE_REPOSITORY}")
-}
-
-#[cfg_attr(debug_assertions, allow(dead_code))]
-pub fn latest_release_api_url() -> String {
-    format!("https://api.github.com/repos/{CODEX_RELEASE_REPOSITORY}/releases/latest")
-}
-
-#[cfg_attr(debug_assertions, allow(dead_code))]
-pub fn latest_release_notes_url() -> String {
-    format!("https://github.com/{CODEX_RELEASE_REPOSITORY}/releases/latest")
+fn format_display_version(cargo_version: &str, packaged_version: &str) -> String {
+    if packaged_version != "0.0.0" {
+        packaged_version.to_string()
+    } else {
+        cargo_version.to_string()
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::format_display_version;
+
     #[test]
-    fn sedna_update_identity_requires_both_explicit_build_values() {
-        assert!(codex_utils_version::is_sedna_release_identity(
-            Some("sednalabs/codex"),
-            Some("v")
-        ));
-        for identity in [
-            (None, None),
-            (Some("sednalabs/codex"), None),
-            (None, Some("v")),
-            (Some("openai/codex"), Some("v")),
-            (Some("sednalabs/codex"), Some("rust-v")),
-        ] {
-            assert!(!codex_utils_version::is_sedna_release_identity(
-                identity.0, identity.1
-            ));
-        }
+    fn package_manifest_version_is_used_for_progressive_display() {
+        assert_eq!(
+            format_display_version("0.0.0", "0.0.0-sedna.0-ci.798+g2ac6f684"),
+            "0.0.0-sedna.0-ci.798+g2ac6f684"
+        );
+    }
+
+    #[test]
+    fn unchanged_release_version_keeps_upstream_display() {
+        assert_eq!(format_display_version("0.153.0", "0.153.0"), "0.153.0");
+    }
+
+    #[test]
+    fn missing_package_version_keeps_cargo_fallback() {
+        assert_eq!(format_display_version("0.153.0", "0.0.0"), "0.153.0");
     }
 }

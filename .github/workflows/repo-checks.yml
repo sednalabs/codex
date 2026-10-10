@@ -2,42 +2,20 @@ name: repo-checks
 
 on:
   workflow_call:
-    inputs:
-      run_policy:
-        description: Run repository structural policy checks.
-        required: false
-        type: boolean
-        default: true
-      run_package:
-        description: Run package builder and installer checks.
-        required: false
-        type: boolean
-        default: true
-      run_format:
-        description: Run repository formatting checks.
-        required: false
-        type: boolean
-        default: true
-      run_readme:
-        description: Run root README policy checks.
-        required: false
-        type: boolean
-        default: true
-
-permissions:
-  contents: read
 
 jobs:
-  policy:
-    if: ${{ inputs.run_policy }}
+  build-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
+    env:
+      NODE_OPTIONS: --max-old-space-size=4096
     steps:
       - name: Checkout repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+
+      - uses: ./.github/actions/setup-ci
 
       - name: Verify codex-rs Cargo manifests inherit workspace settings
         run: python3 .github/scripts/verify_cargo_workspace_manifests.py
@@ -48,30 +26,19 @@ jobs:
       - name: Verify Bazel clippy flags match Cargo workspace lints
         run: python3 .github/scripts/verify_bazel_clippy_lints.py
 
-      - name: Verify native visual response production CodeQL contract
-        run: python3 .github/scripts/verify_native_visual_response_contract.py
-
-      - name: Test native visual response production CodeQL contract verifier
-        run: python3 .github/scripts/test_verify_native_visual_response_contract.py
-
-      - name: Check for a clean worktree
-        if: always() && !cancelled()
-        uses: ./.github/actions/check-clean-worktree
-
-  package:
-    if: ${{ inputs.run_package }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    env:
-      NODE_OPTIONS: --max-old-space-size=4096
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-          persist-credentials: false
+          version: "0.11.3"
 
-      - uses: ./.github/actions/setup-ci
+      - name: Test downstream Python release resolution
+        run: python3 -m unittest discover -s .github/scripts -p 'test_resolve_python_cli_release.py'
+
+      - name: Test release version comparison
+        run: python3 -m unittest discover -s .github/scripts -p 'test_releases.py'
+
+      - name: Test PyPI release verification
+        run: uv run --no-project --with packaging==26.2 python -m unittest discover -s .github/scripts -p 'test_verify_pypi_release.py'
 
       - name: Test Codex package builder
         run: python3 -m unittest discover -s scripts/codex_package -p 'test_*.py'
@@ -79,130 +46,60 @@ jobs:
       - name: Test standalone installer
         run: python3 -m unittest discover -s scripts/install -p 'test_*.py'
 
+      - name: Test macOS signing and notarization
+        run: python3 -m unittest discover -s .github/scripts/macos-signing -p 'test_*.py'
+
       - name: Setup pnpm
-        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v5
+        uses: pnpm/action-setup@a8198c4bff370c8506180b035930dea56dbd5288 # v5
         with:
           run_install: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
           node-version: 22
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-
-      - name: Check for a clean worktree
-        if: always() && !cancelled()
-        uses: ./.github/actions/check-clean-worktree
-
-  readme:
-    if: ${{ inputs.run_readme }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 3
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-          persist-credentials: false
 
       - name: Ensure root README.md contains only ASCII and certain Unicode code points
         run: ./scripts/asciicheck.py README.md
-
       - name: Check root README ToC
         run: python3 scripts/readme_toc.py README.md
 
-      - name: Check for a clean worktree
-        if: always() && !cancelled()
-        uses: ./.github/actions/check-clean-worktree
-
-  format:
-    if: ${{ inputs.run_format }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    env:
-      NODE_OPTIONS: --max-old-space-size=4096
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-          persist-credentials: false
-
-      - uses: ./.github/actions/setup-ci
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v5
-        with:
-          run_install: false
-
-      - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 22
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
-        with:
-          version: "0.11.3"
-
       - name: Check formatting (run `just fmt` to fix)
+        id: fmt_check
         run: just fmt-check
 
       - name: Prettier (run `pnpm run format:fix` to fix)
-        run: pnpm run format
+        if: ${{ !cancelled() && (success() || steps.fmt_check.outcome == 'failure') }}
+        run: |
+          if [[ "${{ steps.fmt_check.outcome }}" == "failure" ]]; then
+            dotslash tools/buildifier -mode=diff -lint=off BUILD.bazel || true
+            uv run --frozen --project scripts ruff format --diff \
+              .github/scripts/run_bazel_with_buildbuddy.py \
+              scripts/install/test_branch_artifact_installer.py || true
+            uv run --frozen --project sdk/python --only-group format ruff format --diff \
+              sdk/python/tests/app_server_harness.py \
+              sdk/python/tests/test_app_server_harness_request_routing.py || true
+          fi
+          if pnpm run format; then
+            exit 0
+          else
+            format_status=$?
+          fi
+          for format_file in \
+            docs/downstream-regression-matrix.md \
+            docs/downstream-tool-surface-matrix.md; do
+            formatted_file=$(mktemp)
+            if pnpm exec prettier "$format_file" > "$formatted_file"; then
+              diff --unified --label "$format_file" --label "$format_file (formatted)" \
+                "$format_file" "$formatted_file" || true
+            fi
+            rm -- "$formatted_file"
+          done
+          exit "$format_status"
 
       - name: Check for a clean worktree
         if: always() && !cancelled()
         uses: ./.github/actions/check-clean-worktree
-
-  required:
-    name: repo-checks required gate
-    if: ${{ always() }}
-    needs:
-      - policy
-      - package
-      - readme
-      - format
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Require selected repository checks
-        shell: bash
-        env:
-          RUN_POLICY: ${{ inputs.run_policy }}
-          POLICY_RESULT: ${{ needs.policy.result }}
-          RUN_PACKAGE: ${{ inputs.run_package }}
-          PACKAGE_RESULT: ${{ needs.package.result }}
-          RUN_README: ${{ inputs.run_readme }}
-          README_RESULT: ${{ needs.readme.result }}
-          RUN_FORMAT: ${{ inputs.run_format }}
-          FORMAT_RESULT: ${{ needs.format.result }}
-        run: |
-          set -euo pipefail
-
-          require_result() {
-            local selected="$1"
-            local result="$2"
-            local name="$3"
-            if [[ "${selected}" == "true" ]]; then
-              [[ "${result}" == "success" ]] || {
-                echo "${name} was required but concluded: ${result}" >&2
-                exit 1
-              }
-            else
-              [[ "${result}" == "skipped" ]] || {
-                echo "${name} was not selected but concluded unexpectedly: ${result}" >&2
-                exit 1
-              }
-              echo "${name} not applicable to this change."
-            fi
-          }
-
-          require_result "${RUN_POLICY}" "${POLICY_RESULT}" policy
-          require_result "${RUN_PACKAGE}" "${PACKAGE_RESULT}" package
-          require_result "${RUN_README}" "${README_RESULT}" readme
-          require_result "${RUN_FORMAT}" "${FORMAT_RESULT}" format

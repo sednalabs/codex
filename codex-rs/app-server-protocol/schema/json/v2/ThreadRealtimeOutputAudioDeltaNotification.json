@@ -1,5 +1,6 @@
 {
-  "$defs": {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
     "ThreadRealtimeAudioChunk": {
       "description": "EXPERIMENTAL - thread realtime audio chunk.",
       "properties": {
@@ -14,18 +15,17 @@
         },
         "numChannels": {
           "format": "uint16",
-          "maximum": 65535,
-          "minimum": 0,
+          "minimum": 0.0,
           "type": "integer"
         },
         "sampleRate": {
           "format": "uint32",
-          "minimum": 0,
+          "minimum": 0.0,
           "type": "integer"
         },
         "samplesPerChannel": {
           "format": "uint32",
-          "minimum": 0,
+          "minimum": 0.0,
           "type": [
             "integer",
             "null"
@@ -34,25 +34,24 @@
       },
       "required": [
         "data",
-        "sampleRate",
-        "numChannels"
+        "numChannels",
+        "sampleRate"
       ],
       "type": "object"
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "EXPERIMENTAL - streamed output audio emitted by thread realtime.",
   "properties": {
     "audio": {
-      "$ref": "#/$defs/ThreadRealtimeAudioChunk"
+      "$ref": "#/definitions/ThreadRealtimeAudioChunk"
     },
     "threadId": {
       "type": "string"
     }
   },
   "required": [
-    "threadId",
-    "audio"
+    "audio",
+    "threadId"
   ],
   "title": "ThreadRealtimeOutputAudioDeltaNotification",
   "type": "object"

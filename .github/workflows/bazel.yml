@@ -7,170 +7,21 @@ on:
   workflow_call:
   workflow_dispatch:
 
-permissions:
-  contents: read
+env:
+  CODEX_BAZEL_LOCAL_ONLY: "1"
+  BUILDBUDDY_API_KEY: ""
+
+concurrency:
+  # Cancel previous actions from the same PR or branch except 'main' branch.
+  # See https://docs.github.com/en/actions/using-jobs/using-concurrency and https://docs.github.com/en/actions/learn-github-actions/contexts for more info.
+  group: concurrency-group::${{ github.workflow }}::${{ github.event.pull_request.number > 0 && format('pr-{0}', github.event.pull_request.number) || github.ref_name }}${{ github.ref_name == 'main' && format('::{0}', github.run_id) || ''}}
+  cancel-in-progress: ${{ github.ref_name != 'main' }}
 
 jobs:
-  plan:
-    name: Plan Bazel CI mode
-    runs-on: ubuntu-24.04
-    outputs:
-      mode: ${{ steps.resolve.outputs.mode }}
-      run_bazel: ${{ steps.resolve.outputs.run_bazel }}
-      run_observer: ${{ steps.resolve.outputs.run_observer }}
-    steps:
-      # Use GitHub's exact comparison API rather than a checkout-based diff.
-      # The response supplies at most 300 files, so any result that might be
-      # truncated is deliberately treated as incomplete and runs full CI.
-      - name: Compare exact changed files
-        id: compare
-        if: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
-        uses: actions/github-script@v9.0.0
-        with:
-          script: |
-            const full = (reason) => {
-              core.warning(`Bazel CI will run in full mode: ${reason}`);
-              core.setOutput("comparison_complete", "false");
-              core.setOutput("files_json", "[]");
-              core.setOutput("statuses_json", "[]");
-            };
-
-            const isPullRequest = context.eventName === "pull_request";
-            const base = isPullRequest
-              ? context.payload.pull_request?.base?.sha
-              : context.payload.merge_group?.base_sha;
-            const expectedHead = isPullRequest
-              ? context.payload.pull_request?.head?.sha
-              : context.sha;
-            if (!base || !expectedHead) {
-              full("the event did not provide exact base and head SHAs");
-              return;
-            }
-
-            try {
-              const { data } = await github.rest.repos.compareCommitsWithBasehead({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                basehead: `${base}...${expectedHead}`,
-                per_page: 100,
-              });
-              const commits = Array.isArray(data.commits) ? data.commits : [];
-              const completeCommitList =
-                Number(data.ahead_by) === commits.length &&
-                Number(data.total_commits) === commits.length;
-              const returnedHead = commits.at(-1)?.sha;
-              if (
-                !completeCommitList ||
-                !returnedHead ||
-                returnedHead.toLowerCase() !== expectedHead.toLowerCase()
-              ) {
-                full("the comparison response did not prove the expected complete head");
-                return;
-              }
-
-              const files = data.files;
-              if (!Array.isArray(files) || files.length === 0 || files.length >= 300) {
-                full("the changed-file response was empty or may have been truncated");
-                return;
-              }
-
-              const names = [];
-              const statuses = [];
-              for (const file of files) {
-                if (!file || typeof file.filename !== "string") {
-                  full("the changed-file response contained a malformed filename");
-                  return;
-                }
-                names.push(file.filename);
-                statuses.push(file.status);
-                if (file.previous_filename !== undefined) {
-                  if (typeof file.previous_filename !== "string") {
-                    full("the changed-file response contained a malformed previous filename");
-                    return;
-                  }
-                  names.push(file.previous_filename);
-                  statuses.push(file.status);
-                }
-              }
-
-              core.setOutput("comparison_complete", "true");
-              core.setOutput("files_json", JSON.stringify(names));
-              core.setOutput("statuses_json", JSON.stringify(statuses));
-            } catch (error) {
-              full(`the compare API failed: ${error.message}`);
-            }
-
-      - name: Default non-comparison events to full Bazel CI
-        id: default_to_full
-        if: ${{ github.event_name != 'pull_request' && github.event_name != 'merge_group' }}
-        shell: bash
-        run: |
-          echo "comparison_complete=false" >> "${GITHUB_OUTPUT}"
-          echo "files_json=[]" >> "${GITHUB_OUTPUT}"
-          echo "statuses_json=[]" >> "${GITHUB_OUTPUT}"
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-          persist-credentials: false
-
-      - name: Resolve Bazel CI mode
-        id: resolve
-        shell: bash
-        env:
-          COMPARISON_COMPLETE: ${{ steps.compare.outputs.comparison_complete || steps.default_to_full.outputs.comparison_complete }}
-          FILES_JSON: ${{ steps.compare.outputs.files_json || steps.default_to_full.outputs.files_json }}
-          STATUSES_JSON: ${{ steps.compare.outputs.statuses_json || steps.default_to_full.outputs.statuses_json }}
-        run: |
-          python3 .github/scripts/resolve_bazel_ci_mode.py \
-            --comparison-complete "${COMPARISON_COMPLETE}" \
-            --files-json "${FILES_JSON}" \
-            --statuses-json "${STATUSES_JSON}" \
-            --github-output "${GITHUB_OUTPUT}"
-
-  docs-only:
-    name: Check docs-only changes
-    needs: plan
-    if: ${{ needs.plan.outputs.mode == 'docs_only' }}
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-          persist-credentials: false
-
-      - name: Check markdown links
-        shell: bash
-        run: python3 .github/scripts/check_markdown_links.py
-
-  observer-only:
-    name: Observer-only CI
-    needs: plan
-    if: ${{ needs.plan.outputs.run_observer == 'true' }}
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-          persist-credentials: false
-
-      - name: Run observer validation lanes
-        shell: bash
-        run: |
-          .github/scripts/validation-lanes/agent-workflow-sanity.sh
-          .github/scripts/validation-lanes/workflow-security-targeted.sh
-
   test:
-    # PRs use the sharded Windows cross-compiled test jobs below. Post-merge
-    # pushes to main also run the native Windows test job for broader Windows
-    # signal without putting PR latency back on the critical path. When
-    # Code-mode unit tests run on every Bazel target. When authenticated RBE
-    # is available, the Windows-cross shards exercise the source-built V8 path.
-    # macOS runners keep test actions local; full-tree PR validation can exceed
-    # the default window while build actions execute remotely.
-    needs: plan
-    if: ${{ needs.plan.outputs.run_bazel == 'true' }}
-    timeout-minutes: 120
+    # GNU retains the complete target set. Musl excludes only the unsupported
+    # native voice aliases and their query-derived dependents, listed below.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -202,9 +53,8 @@ jobs:
       deployment: false
 
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
       - name: Prepare Bazel CI
@@ -213,6 +63,7 @@ jobs:
         with:
           target: ${{ matrix.target }}
           cache-scope: bazel-${{ github.job }}
+          windows-voice-tools: ${{ runner.os == 'Windows' }}
 
       - name: Check rusty_v8 MODULE.bazel checksums
         if: matrix.os == 'ubuntu-24.04' && matrix.target == 'x86_64-unknown-linux-gnu'
@@ -228,9 +79,10 @@ jobs:
 
       - name: bazel test //...
         env:
-          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+          TARGET: ${{ matrix.target }}
         shell: bash
         run: |
+          set -euo pipefail
           bazel_targets=(
             //...
             # Keep standalone V8 library targets out of the ordinary Bazel CI
@@ -240,22 +92,73 @@ jobs:
             -//codex-rs/v8-poc:v8-poc-unit-tests
           )
 
+          if [[ "${TARGET}" == "x86_64-unknown-linux-musl" ]]; then
+            # These aliases have GNU/macOS/MSVC branches, but no musl branch.
+            # Unconfigured reverse dependencies name every necessary exclusion;
+            # all of them remain in the complete GNU lane above.
+            target_query='//... except attr(tags, "manual", //...) except //third_party/v8:all except //codex-rs/v8-poc:v8-poc-unit-tests'
+            voice_query='rdeps(//..., set(//third_party/voice:native_prefix //third_party/voice:native_runtime //third_party/voice:native_link //third_party/voice:native_sdk))'
+            coverage_dir="${RUNNER_TEMP}/musl-coverage"
+            mkdir -p "${coverage_dir}"
+            ./.github/scripts/run-bazel-query-ci.sh \
+              --repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1 \
+              --output=label -- "${target_query}" \
+              | LC_ALL=C sort -u > "${coverage_dir}/all-targets.txt"
+            ./.github/scripts/run-bazel-query-ci.sh \
+              --repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1 \
+              --output=label -- "(${target_query}) intersect ${voice_query}" \
+              | LC_ALL=C sort -u > "${coverage_dir}/voice-exclusions.txt"
+            LC_ALL=C comm -23 "${coverage_dir}/all-targets.txt" "${coverage_dir}/voice-exclusions.txt" \
+              > "${coverage_dir}/musl-targets.txt"
+            mapfile -t bazel_targets < "${coverage_dir}/musl-targets.txt"
+            if [[ ${#bazel_targets[@]} -eq 0 ]]; then
+              echo "Musl target selection is empty; refusing an empty proof." >&2
+              exit 1
+            fi
+            {
+              echo '### Genuine musl coverage'
+              echo 'Native voice aliases lack musl configuration. Their exact reverse dependencies remain covered by GNU.'
+              printf 'Target query: `%s`\n\nExclusion query: `%s`\n' "${target_query}" "${voice_query}"
+              echo '```text'
+              cat "${coverage_dir}/voice-exclusions.txt"
+              echo '```'
+              printf 'Selected labels: %s; excluded labels: %s\n' \
+                "${#bazel_targets[@]}" "$(wc -l < "${coverage_dir}/voice-exclusions.txt")"
+            } | tee -a "${GITHUB_STEP_SUMMARY}"
+          fi
+
           bazel_wrapper_args=(
             --print-failed-action-summary
             --print-failed-test-logs
           )
           bazel_test_args=(
             test
+            --platforms=@rules_rs//rs/platforms:${TARGET}
             --test_tag_filters=-argument-comment-lint
             --test_verbose_timeout_warnings
             --build_metadata=COMMIT_SHA=${GITHUB_SHA}
           )
+          if [[ "${RUNNER_OS:-}" == "Linux" ]]; then
+            bazel_test_args+=(--repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1)
+          fi
+          if [[ "${TARGET}" == "x86_64-unknown-linux-musl" ]]; then
+            # Explicit query labels retain the wildcard's platform filtering.
+            bazel_test_args+=(--skip_incompatible_explicit_targets)
+          fi
           ./.github/scripts/run-bazel-ci.sh \
             "${bazel_wrapper_args[@]}" \
             -- \
             "${bazel_test_args[@]}" \
             -- \
             "${bazel_targets[@]}"
+
+      - name: Upload exact musl coverage selection
+        if: always() && !cancelled() && matrix.target == 'x86_64-unknown-linux-musl'
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: musl-coverage-${{ github.sha }}
+          path: ${{ runner.temp }}/musl-coverage
+          if-no-files-found: error
 
       - name: Upload Bazel execution logs
         if: always() && !cancelled()
@@ -269,9 +172,9 @@ jobs:
       # Save the job-scoped Bazel repository cache after cache misses. Keep the
       # upload non-fatal so cache service issues never fail the job itself.
       - name: Save bazel repository cache
-        if: always() && !cancelled() && steps.prepare_bazel.outputs.repository-cache-hit != 'true' && steps.prepare_bazel.outputs.repository-cache-write-enabled == 'true'
+        if: always() && !cancelled() && steps.prepare_bazel.outputs.repository-cache-hit != 'true'
         continue-on-error: true
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: ${{ steps.prepare_bazel.outputs.repository-cache-path }}
           key: ${{ steps.prepare_bazel.outputs.repository-cache-key }}
@@ -281,12 +184,9 @@ jobs:
         uses: ./.github/actions/check-clean-worktree
 
   test-windows-shard:
-    # Split the Windows Bazel test leg across separate Windows hosts. Jobs with
-    # BuildBuddy credentials use Linux RBE for build actions; test execution
-    # remains on a Windows runner.
-    needs: plan
-    if: ${{ needs.plan.outputs.run_bazel == 'true' }}
-    timeout-minutes: 60
+    # Split native Windows/MSVC tests across standard Windows hosts. Build actions and
+    # test execution both remain on the assigned GitHub-hosted runner.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -295,16 +195,15 @@ jobs:
           - 2
           - 3
           - 4
-    runs-on: windows-2022
-    name: Bazel test on windows-latest for x86_64-pc-windows-gnullvm shard ${{ matrix.shard }}/4
+    runs-on: windows-2025
+    name: Bazel test on windows-latest for x86_64-pc-windows-msvc shard ${{ matrix.shard }}/4
     environment:
       name: bazel
       deployment: false
 
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
       - name: Test BuildBuddy Bazel wrapper
@@ -312,11 +211,17 @@ jobs:
         shell: pwsh
         run: python .github/scripts/test_run_bazel_with_buildbuddy.py
 
+      - name: Test Windows Bazel target selector
+        if: matrix.shard == 1
+        shell: pwsh
+        run: python -m unittest discover -s .github/scripts -p test_select_windows_bazel_targets.py
+
       - name: Prepare Bazel CI
         id: prepare_bazel
         uses: ./.github/actions/prepare-bazel-ci
         with:
-          target: x86_64-pc-windows-gnullvm
+          target: x86_64-pc-windows-msvc
+          windows-voice-tools: "true"
           # Reuse the former monolithic Windows test cache for restores. Do
           # not save it from every shard below; duplicate uploads would sit on
           # the PR-blocking critical path after the useful test work is done.
@@ -326,43 +231,31 @@ jobs:
         env:
           BAZEL_TEST_SHARD: ${{ matrix.shard }}
           BAZEL_TEST_SHARD_COUNT: 4
-          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         shell: bash
         run: |
           set -euo pipefail
 
           bazel_test_query='tests(//...) except tests(//third_party/v8:all) except attr(tags, "manual", tests(//...))'
-          mapfile -t bazel_targets < <(
-            ./.github/scripts/run-bazel-query-ci.sh --output=label -- "${bazel_test_query}" \
-              | LC_ALL=C sort
-          )
+          bazel_targets_file="$(mktemp)"
+          selected_targets_file="$(mktemp)"
+          trap 'rm -f "${bazel_targets_file}" "${selected_targets_file}"' EXIT
 
-          selected_targets=()
-          for bazel_target in "${bazel_targets[@]}"; do
-            target_bucket="$(
-              printf '%s\n' "${bazel_target}" \
-                | cksum \
-                | awk -v shard_count="${BAZEL_TEST_SHARD_COUNT}" '{ print ($1 % shard_count) + 1 }'
-            )"
-            if [[ "${target_bucket}" == "${BAZEL_TEST_SHARD}" ]]; then
-              selected_targets+=("${bazel_target}")
-            fi
-          done
-
-          if [[ ${#selected_targets[@]} -eq 0 ]]; then
-            echo "No Bazel test targets selected for Windows shard ${BAZEL_TEST_SHARD}/${BAZEL_TEST_SHARD_COUNT}." >&2
-            exit 1
-          fi
-
-          echo "Selected ${#selected_targets[@]} of ${#bazel_targets[@]} Bazel test targets for Windows shard ${BAZEL_TEST_SHARD}/${BAZEL_TEST_SHARD_COUNT}."
+          # Keep query and selection in the foreground so failures cannot leave
+          # different jobs assigning different partial target lists.
+          ./.github/scripts/run-bazel-query-ci.sh \
+            --repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1 \
+            --output=label -- "${bazel_test_query}" \
+            | LC_ALL=C sort > "${bazel_targets_file}"
+          python .github/scripts/select_windows_bazel_targets.py \
+            --shard "${BAZEL_TEST_SHARD}" \
+            --shard-count "${BAZEL_TEST_SHARD_COUNT}" \
+            < "${bazel_targets_file}" > "${selected_targets_file}"
+          mapfile -t selected_targets < "${selected_targets_file}"
 
           bazel_test_args=(
             test
+            --repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1
             --skip_incompatible_explicit_targets
-            # Windows sandbox identities, ACLs, and firewall rules are
-            # host-global; overlapping local test actions can invalidate one
-            # another's policy assertions.
-            --local_test_jobs=1
             --test_tag_filters=-argument-comment-lint
             --test_verbose_timeout_warnings
             --build_metadata=COMMIT_SHA=${GITHUB_SHA}
@@ -372,7 +265,7 @@ jobs:
           ./.github/scripts/run-bazel-ci.sh \
             --print-failed-action-summary \
             --print-failed-test-logs \
-            --windows-cross-compile \
+            --windows-msvc-host-platform \
             --remote-download-toplevel \
             -- \
             "${bazel_test_args[@]}" \
@@ -384,7 +277,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: bazel-execution-logs-test-x86_64-pc-windows-gnullvm-shard-${{ matrix.shard }}
+          name: bazel-execution-logs-test-x86_64-pc-windows-msvc-shard-${{ matrix.shard }}
           path: ${{ runner.temp }}/bazel-execution-logs
           if-no-files-found: ignore
 
@@ -393,12 +286,11 @@ jobs:
         uses: ./.github/actions/check-clean-worktree
 
   test-windows:
-    # Preserve the existing required-check surface while the real work happens
-    # in the sharded Windows jobs above.
-    if: ${{ always() && needs.plan.outputs.run_bazel == 'true' }}
-    needs: [plan, test-windows-shard]
+    # Preserve the required aggregation while naming the real native ABI.
+    if: always()
+    needs: test-windows-shard
     runs-on: ubuntu-24.04
-    name: Bazel test on windows-latest for x86_64-pc-windows-gnullvm
+    name: Bazel test on windows-latest for x86_64-pc-windows-msvc
 
     steps:
       - name: Confirm Windows Bazel test shards passed
@@ -409,35 +301,109 @@ jobs:
             exit 1
           fi
 
+  test-windows-native-main:
+    # Native Windows Bazel tests are slower and frequently approach the
+    # 30-minute PR budget. Run this only for post-merge commits to main and give
+    # it a larger timeout.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    timeout-minutes: 40
+    runs-on: windows-2025
+    name: Bazel test on windows-latest for x86_64-pc-windows-msvc (native main)
+    environment:
+      name: bazel
+      deployment: false
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Prepare Bazel CI
+        id: prepare_bazel
+        uses: ./.github/actions/prepare-bazel-ci
+        with:
+          target: x86_64-pc-windows-msvc
+          windows-voice-tools: "true"
+          cache-scope: bazel-${{ github.job }}
+
+      - name: bazel test //...
+        shell: bash
+        run: |
+          bazel_targets=(
+            //...
+            # Keep standalone V8 library targets out of the ordinary Bazel CI
+            # path. V8 consumers under `//codex-rs/...` still participate
+            # transitively through `//...`.
+            -//third_party/v8:all
+            -//codex-rs/v8-poc:v8-poc-unit-tests
+          )
+
+          bazel_test_args=(
+            test
+            --platforms=//:windows_x86_64_msvc
+            --test_tag_filters=-argument-comment-lint
+            --test_verbose_timeout_warnings
+            --build_metadata=COMMIT_SHA=${GITHUB_SHA}
+            --build_metadata=TAG_windows_native_main=true
+          )
+
+          ./.github/scripts/run-bazel-ci.sh \
+            --print-failed-action-summary \
+            --print-failed-test-logs \
+            --windows-msvc-host-platform \
+            -- \
+            "${bazel_test_args[@]}" \
+            -- \
+            "${bazel_targets[@]}"
+
+      - name: Upload Bazel execution logs
+        if: always() && !cancelled()
+        continue-on-error: true
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: bazel-execution-logs-test-windows-native-x86_64-pc-windows-msvc
+          path: ${{ runner.temp }}/bazel-execution-logs
+          if-no-files-found: ignore
+
+      # Save the job-scoped Bazel repository cache after cache misses. Keep the
+      # upload non-fatal so cache service issues never fail the job itself.
+      - name: Save bazel repository cache
+        if: always() && !cancelled() && steps.prepare_bazel.outputs.repository-cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ${{ steps.prepare_bazel.outputs.repository-cache-path }}
+          key: ${{ steps.prepare_bazel.outputs.repository-cache-key }}
+
+      - name: Check for a clean worktree
+        if: always() && !cancelled()
+        uses: ./.github/actions/check-clean-worktree
+
   clippy:
-    needs: plan
-    if: ${{ needs.plan.outputs.run_bazel == 'true' }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         include:
           # Keep Linux lint coverage on x64 and add the arm64 macOS path that
-          # the Bazel test job already exercises. Add Windows gnullvm as well
+          # the Bazel test job already exercises. Add native Windows/MSVC as well
           # so PRs get Bazel-native lint signal on the same Windows toolchain
           # that the Bazel test job uses.
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
           - os: macos-15
             target: aarch64-apple-darwin
-          - os: windows-latest
-            target: x86_64-pc-windows-gnullvm
-            runs_on: windows-2022
-    runs-on: ${{ matrix.runs_on || matrix.os }}
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
     name: Bazel clippy on ${{ matrix.os }} for ${{ matrix.target }}
     environment:
       name: bazel
       deployment: false
 
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
       - name: Prepare Bazel CI
@@ -446,10 +412,9 @@ jobs:
         with:
           target: ${{ matrix.target }}
           cache-scope: bazel-${{ github.job }}
+          windows-voice-tools: ${{ runner.os == 'Windows' }}
 
       - name: bazel build --config=clippy lint targets
-        env:
-          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         shell: bash
         run: |
           bazel_clippy_args=(
@@ -457,27 +422,13 @@ jobs:
             --build_metadata=COMMIT_SHA=${GITHUB_SHA}
             --build_metadata=TAG_job=clippy
           )
-          if [[ "${RUNNER_OS}" == "macOS" ]]; then
-            # Hosted macOS runners can exhaust the Bazel client thread/process
-            # ceiling when inheriting the high remote-execution job count.
-            bazel_clippy_args+=(--jobs=96 --loading_phase_threads=8)
-          fi
           bazel_wrapper_args=()
           bazel_target_list_args=()
           if [[ "${RUNNER_OS}" == "Windows" ]]; then
-            # Keep this aligned with the fast Windows Bazel test job: use
-            # Linux RBE for clippy build actions while targeting Windows
-            # gnullvm. Fork/community PRs without the BuildBuddy secret fall
-            # back inside `run-bazel-ci.sh` to the previous local Windows MSVC
-            # host-platform shape.
-            bazel_wrapper_args+=(--windows-cross-compile)
-            bazel_target_list_args+=(--windows-cross-compile)
-            if [[ -z "${BUILDBUDDY_API_KEY:-}" ]]; then
-              # The fork fallback can see incompatible explicit Windows-cross
-              # internal test binaries in the generated target list. Preserve
-              # the old local-fallback behavior there.
-              bazel_clippy_args+=(--skip_incompatible_explicit_targets)
-            fi
+            bazel_wrapper_args+=(--windows-msvc-host-platform)
+            bazel_clippy_args+=(--platforms=//:windows_x86_64_msvc --skip_incompatible_explicit_targets)
+          else
+            bazel_clippy_args+=(--platforms=@rules_rs//rs/platforms:${{ matrix.target }})
           fi
 
           bazel_target_lines="$(./scripts/list-bazel-clippy-targets.sh "${bazel_target_list_args[@]}")"
@@ -507,9 +458,9 @@ jobs:
       # Save the job-scoped Bazel repository cache after cache misses. Keep the
       # upload non-fatal so cache service issues never fail the job itself.
       - name: Save bazel repository cache
-        if: always() && !cancelled() && steps.prepare_bazel.outputs.repository-cache-hit != 'true' && steps.prepare_bazel.outputs.repository-cache-write-enabled == 'true'
+        if: always() && !cancelled() && steps.prepare_bazel.outputs.repository-cache-hit != 'true'
         continue-on-error: true
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: ${{ steps.prepare_bazel.outputs.repository-cache-path }}
           key: ${{ steps.prepare_bazel.outputs.repository-cache-key }}
@@ -519,9 +470,7 @@ jobs:
         uses: ./.github/actions/check-clean-worktree
 
   verify-release-build:
-    needs: plan
-    if: ${{ needs.plan.outputs.run_bazel == 'true' }}
-    timeout-minutes: 60
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -530,19 +479,17 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - os: macos-15
             target: aarch64-apple-darwin
-          - os: windows-latest
-            target: x86_64-pc-windows-gnullvm
-            runs_on: windows-2022
-    runs-on: ${{ matrix.runs_on || matrix.os }}
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
     name: Verify release build on ${{ matrix.os }} for ${{ matrix.target }}
     environment:
       name: bazel
       deployment: false
 
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
       - name: Prepare Bazel CI
@@ -551,10 +498,9 @@ jobs:
         with:
           target: ${{ matrix.target }}
           cache-scope: bazel-${{ github.job }}
+          windows-voice-tools: ${{ runner.os == 'Windows' }}
 
       - name: bazel build verify-release-build targets
-        env:
-          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         shell: bash
         run: |
           # This job exists to compile Rust code behind
@@ -565,12 +511,9 @@ jobs:
           # Rust debug assertions explicitly.
           bazel_wrapper_args=()
           if [[ "${RUNNER_OS}" == "Windows" ]]; then
-            # This is build-only signal, so use the same Linux-RBE
-            # cross-compile path as the fast Windows test and clippy jobs.
-            # Fork/community PRs without the BuildBuddy secret fall back
-            # inside `run-bazel-ci.sh` to the previous local Windows MSVC
-            # host-platform shape.
-            bazel_wrapper_args+=(--windows-cross-compile)
+            # Compile assertions-off source on the same native MSVC path.
+            # This job does not produce a Windows release package.
+            bazel_wrapper_args+=(--windows-msvc-host-platform)
           fi
 
           bazel_build_args=(
@@ -581,10 +524,8 @@ jobs:
             --build_metadata=TAG_job=verify-release-build
             --build_metadata=TAG_rust_debug_assertions=off
           )
-          if [[ "${RUNNER_OS}" == "macOS" ]]; then
-            # Hosted macOS runners can exhaust the Bazel client thread/process
-            # ceiling when inheriting the high remote-execution job count.
-            bazel_build_args+=(--jobs=96 --loading_phase_threads=8)
+          if [[ "${RUNNER_OS}" != "Windows" ]]; then
+            bazel_build_args+=(--platforms=@rules_rs//rs/platforms:${{ matrix.target }})
           fi
 
           bazel_target_lines="$(bash ./scripts/list-bazel-release-targets.sh)"
@@ -603,8 +544,6 @@ jobs:
 
       - name: Verify Bazel builds bwrap
         if: runner.os == 'Linux'
-        env:
-          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         shell: bash
         run: |
           ./.github/scripts/run-bazel-ci.sh \
@@ -629,9 +568,9 @@ jobs:
       # Save the job-scoped Bazel repository cache after cache misses. Keep the
       # upload non-fatal so cache service issues never fail the job itself.
       - name: Save bazel repository cache
-        if: always() && !cancelled() && steps.prepare_bazel.outputs.repository-cache-hit != 'true' && steps.prepare_bazel.outputs.repository-cache-write-enabled == 'true'
+        if: always() && !cancelled() && steps.prepare_bazel.outputs.repository-cache-hit != 'true'
         continue-on-error: true
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: ${{ steps.prepare_bazel.outputs.repository-cache-path }}
           key: ${{ steps.prepare_bazel.outputs.repository-cache-key }}
@@ -639,70 +578,3 @@ jobs:
       - name: Check for a clean worktree
         if: always() && !cancelled()
         uses: ./.github/actions/check-clean-worktree
-
-  results:
-    name: Bazel required gate
-    needs:
-      - plan
-      - docs-only
-      - observer-only
-      - test
-      - test-windows-shard
-      - test-windows
-      - clippy
-      - verify-release-build
-    if: ${{ always() }}
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Require the selected Bazel CI mode
-        shell: bash
-        env:
-          NEEDS_JSON: ${{ toJSON(needs) }}
-        run: |
-          python3 - <<'PY'
-          import json
-          import os
-          import sys
-
-          needs = json.loads(os.environ["NEEDS_JSON"])
-
-          def require(name, expected):
-              actual = (needs.get(name) or {}).get("result")
-              if actual != expected:
-                  print(f"{name} finished as {actual!r}; expected {expected!r}", file=sys.stderr)
-                  raise SystemExit(1)
-
-          require("plan", "success")
-          mode = (needs.get("plan") or {}).get("outputs", {}).get("mode")
-          normal_jobs = [
-              "test",
-              "test-windows-shard",
-              "test-windows",
-              "clippy",
-              "verify-release-build",
-          ]
-          if mode == "docs_only":
-              require("docs-only", "success")
-              require("observer-only", "skipped")
-              for job in normal_jobs:
-                  require(job, "skipped")
-          elif mode == "observer_only":
-              require("docs-only", "skipped")
-              require("observer-only", "success")
-              for job in normal_jobs:
-                  require(job, "skipped")
-          elif mode == "full":
-              require("docs-only", "skipped")
-              require("observer-only", "skipped")
-              for job in [
-                  "test",
-                  "test-windows-shard",
-                  "test-windows",
-                  "clippy",
-                  "verify-release-build",
-              ]:
-                  require(job, "success")
-          else:
-              print(f"unsupported Bazel CI mode: {mode!r}", file=sys.stderr)
-              raise SystemExit(1)
-          PY

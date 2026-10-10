@@ -17,11 +17,12 @@ use super::DEFAULT_LISTEN_URL;
 use super::ExecServerListenTransport;
 use super::parse_listen_url;
 use super::run_stdio_connection_with_io;
-use crate::ExecServerRuntimePaths;
+use crate::ExecServerRuntimeOptions;
 use crate::protocol::INITIALIZE_METHOD;
 use crate::protocol::INITIALIZED_METHOD;
 use crate::protocol::InitializeParams;
 use crate::protocol::InitializeResponse;
+use crate::server::RequestDispatchMode;
 
 #[test]
 fn parse_listen_url_accepts_default_websocket_url() {
@@ -65,6 +66,7 @@ async fn stdio_listen_transport_serves_initialize() {
         codex_http_client::HttpClientFactory::new(
             codex_http_client::OutboundProxyPolicy::ReqwestDefault,
         ),
+        RequestDispatchMode::Inline,
     ));
     let mut client_lines = BufReader::new(client_reader).lines();
 
@@ -161,8 +163,8 @@ async fn write_jsonrpc_line(writer: &mut tokio::io::DuplexStream, message: &JSON
         .expect("JSON-RPC newline should write");
 }
 
-fn test_runtime_paths() -> ExecServerRuntimePaths {
-    ExecServerRuntimePaths::new(
+fn test_runtime_paths() -> ExecServerRuntimeOptions {
+    ExecServerRuntimeOptions::new(
         std::env::current_exe().expect("current exe"),
         /*codex_linux_sandbox_exe*/ None,
     )

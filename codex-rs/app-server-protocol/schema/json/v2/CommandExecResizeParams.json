@@ -1,39 +1,41 @@
 {
-  "$defs": {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
     "CommandExecTerminalSize": {
       "description": "PTY size in character cells for `command/exec` PTY sessions.",
       "properties": {
         "cols": {
           "description": "Terminal width in character cells.",
           "format": "uint16",
-          "maximum": 65535,
-          "minimum": 0,
+          "minimum": 0.0,
           "type": "integer"
         },
         "rows": {
           "description": "Terminal height in character cells.",
           "format": "uint16",
-          "maximum": 65535,
-          "minimum": 0,
+          "minimum": 0.0,
           "type": "integer"
         }
       },
       "required": [
-        "rows",
-        "cols"
+        "cols",
+        "rows"
       ],
       "type": "object"
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "Resize a running PTY-backed `command/exec` session.",
   "properties": {
     "processId": {
-      "description": "Client-supplied, connection-scoped `processId` from the original\n`command/exec` request.",
+      "description": "Client-supplied, connection-scoped `processId` from the original `command/exec` request.",
       "type": "string"
     },
     "size": {
-      "$ref": "#/$defs/CommandExecTerminalSize",
+      "allOf": [
+        {
+          "$ref": "#/definitions/CommandExecTerminalSize"
+        }
+      ],
       "description": "New PTY size in character cells."
     }
   },

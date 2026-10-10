@@ -1,54 +1,112 @@
-use codex_app_server_protocol::ComputerUseCallOutputContentItem;
-use codex_app_server_protocol::ComputerUseCallParams;
-use codex_app_server_protocol::ComputerUseCallResponse;
+use codex_app_server_protocol::DynamicToolCallOutputContentItem;
+use codex_app_server_protocol::DynamicToolCallParams;
+use codex_app_server_protocol::DynamicToolCallResponse;
+use codex_app_server_protocol::DynamicToolNamespaceSpec;
+use codex_app_server_protocol::DynamicToolNamespaceTool;
 use codex_app_server_protocol::DynamicToolSpec;
-use codex_protocol::dynamic_tools::DynamicToolCapability;
-use codex_tools::COMPUTER_USE_ADAPTER_DESKTOP;
-use codex_tools::DESKTOP_OBSERVE_TOOL_NAME;
-use codex_tools::DESKTOP_STEP_TOOL_NAME;
-use codex_tools::native_computer_use_provider_for_call;
+use codex_app_server_protocol::RequestId;
+use codex_app_server_protocol::ThreadStartParams;
+use codex_protocol::dynamic_tools::DynamicToolFunctionSpec;
 use serde::Deserialize;
+use serde::Serialize;
+use serde_json::Value;
 use serde_json::json;
+use std::io;
+use std::io::Write;
+use std::path::Path;
+use std::process::ExitStatus;
 use std::process::Stdio;
 use std::time::Duration;
-use tokio::io::AsyncWriteExt as _;
+use tokio::io::AsyncRead;
+use tokio::io::AsyncReadExt;
+use tokio::io::AsyncWriteExt;
+use tokio::process::ChildStdin;
+use tokio::process::ChildStdout;
 use tokio::process::Command;
 use tokio::time::timeout;
 
+pub(crate) const NAMESPACE: &str = "codex_desktop";
+const OBSERVE_TOOL_NAME: &str = "desktop_observe";
+const STEP_TOOL_NAME: &str = "desktop_step";
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+const MAX_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
+const MAX_REQUEST_BYTES: usize = 65_536;
+const MAX_STDOUT_BYTES: usize = 50_331_648;
+const MAX_STDERR_CAPTURE_BYTES: usize = 16_384;
+const IO_CHUNK_BYTES: usize = 8_192;
 const ENV_COMMAND: &str = "CODEX_DESKTOP_COMPUTER_USE_COMMAND";
 const ENV_PROVIDER: &str = "CODEX_DESKTOP_COMPUTER_USE_PROVIDER";
 const ENV_TIMEOUT_SECS: &str = "CODEX_DESKTOP_COMPUTER_USE_TIMEOUT_SECS";
 const PROVIDER_COMMAND: &str = "command";
-const PROVIDER_NONE: &str = "none";
 
-pub(crate) enum DesktopComputerUseOutcome {
-    Handled(ComputerUseCallResponse),
-    Unavailable,
+pub(crate) fn is_desktop_call(params: &DynamicToolCallParams) -> bool {
+    params.namespace.as_deref() == Some(NAMESPACE)
 }
 
-pub(crate) fn configured_desktop_dynamic_tools() -> Vec<DynamicToolSpec> {
-    if DesktopRuntimeConfig::load().is_none() {
-        return Vec::new();
+pub(crate) fn completed_event(
+    request_id: RequestId,
+    response: DynamicToolCallResponse,
+) -> crate::app_event::AppEvent {
+    crate::app_event::AppEvent::DynamicToolCallCompleted {
+        request_id,
+        response,
     }
-
-    vec![
-        desktop_dynamic_tool(
-            DESKTOP_OBSERVE_TOOL_NAME,
-            "Capture the current desktop app state as a model-visible screenshot.",
-            "non_mutating",
-        ),
-        desktop_dynamic_tool(
-            DESKTOP_STEP_TOOL_NAME,
-            "Perform bounded desktop UI actions, then return a fresh desktop screenshot.",
-            "mutating",
-        ),
-    ]
 }
 
-fn desktop_dynamic_tool(name: &str, description: &str, mutation_class: &str) -> DynamicToolSpec {
-    DynamicToolSpec {
-        namespace: None,
+pub(crate) fn validate_no_reserved_name_conflict(params: &ThreadStartParams) -> Result<(), String> {
+    if let Some(specs) = &params.dynamic_tools {
+        for spec in specs {
+            match spec {
+                DynamicToolSpec::Namespace(namespace) if namespace.name == NAMESPACE => {
+                    return Err(format!(
+                        "Desktop dynamic namespace `{NAMESPACE}` is reserved; remove the configured namespace before starting this thread."
+                    ));
+                }
+                DynamicToolSpec::Function(function) if function.name == NAMESPACE => {
+                    return Err(format!(
+                        "Desktop dynamic function `{NAMESPACE}` is reserved; remove the configured function before starting this thread."
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
+    if let Some(config) = &params.config
+        && (config.contains_key(&format!("mcp_servers.{NAMESPACE}"))
+            || config
+                .get("mcp_servers")
+                .and_then(Value::as_object)
+                .is_some_and(|servers| servers.contains_key(NAMESPACE)))
+    {
+        return Err(format!(
+            "MCP server key `{NAMESPACE}` is reserved by Desktop dynamic tools; rename that server before starting this thread."
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn specs_for_codex_home(codex_home: &Path) -> Vec<DynamicToolSpec> {
+    match DesktopRuntimeConfig::load(codex_home) {
+        Ok(Some(_)) => vec![DynamicToolSpec::Namespace(DynamicToolNamespaceSpec {
+            name: NAMESPACE.to_string(),
+            description: "Opt-in desktop computer-use command provider".to_string(),
+            tools: vec![
+                desktop_dynamic_tool(
+                    OBSERVE_TOOL_NAME,
+                    "Capture the current desktop app state as a model-visible screenshot.",
+                ),
+                desktop_dynamic_tool(
+                    STEP_TOOL_NAME,
+                    "Perform configured desktop UI actions, then return a fresh screenshot.",
+                ),
+            ],
+        })],
+        Ok(None) | Err(_) => Vec::new(),
+    }
+}
+
+fn desktop_dynamic_tool(name: &str, description: &str) -> DynamicToolNamespaceTool {
+    DynamicToolNamespaceTool::Function(DynamicToolFunctionSpec {
         name: name.to_string(),
         description: description.to_string(),
         input_schema: json!({
@@ -56,74 +114,135 @@ fn desktop_dynamic_tool(name: &str, description: &str, mutation_class: &str) -> 
             "additionalProperties": true
         }),
         defer_loading: false,
-        persist_on_resume: false,
-        capability: Some(DynamicToolCapability {
-            family: Some(COMPUTER_USE_ADAPTER_DESKTOP.to_string()),
-            capability_scope: Some("session".to_string()),
-            mutation_class: Some(mutation_class.to_string()),
-            lease_mode: None,
-        }),
-    }
+    })
 }
 
-pub(crate) async fn handle_desktop_computer_use(
-    params: &ComputerUseCallParams,
-) -> DesktopComputerUseOutcome {
-    if params.adapter != COMPUTER_USE_ADAPTER_DESKTOP
-        || native_computer_use_provider_for_call(COMPUTER_USE_ADAPTER_DESKTOP, &params.tool)
-            .is_none()
+pub(crate) async fn handle_for_codex_home(
+    params: &DynamicToolCallParams,
+    codex_home: &Path,
+) -> Option<DynamicToolCallResponse> {
+    if !is_desktop_call(params)
+        || !matches!(params.tool.as_str(), OBSERVE_TOOL_NAME | STEP_TOOL_NAME)
     {
-        return DesktopComputerUseOutcome::Unavailable;
+        return None;
     }
 
-    let Some(config) = DesktopRuntimeConfig::load() else {
-        return DesktopComputerUseOutcome::Unavailable;
+    let config = match DesktopRuntimeConfig::load(codex_home) {
+        Ok(Some(config)) => config,
+        Ok(None) => return None,
+        Err(error) => return Some(failed_response(error)),
     };
 
-    let Some(provider) = config.default_provider().cloned() else {
-        return DesktopComputerUseOutcome::Unavailable;
+    let response = match run_provider(params, config).await {
+        Ok(mut response) => {
+            require_native_image_for_visual_response(
+                &mut response,
+                "Desktop visual result is missing native image output.",
+            );
+            response
+        }
+        Err(error) => failed_response(error),
     };
-
-    let request_timeout = provider.timeout;
-    let response = match timeout(request_timeout, handle_with_provider(params, provider)).await {
-        Ok(Ok(response)) => response,
-        Ok(Err(err)) => failed_response(err),
-        Err(_) => failed_response(format!(
-            "Desktop computer-use provider timed out after {} seconds.",
-            request_timeout.as_secs()
-        )),
-    };
-    DesktopComputerUseOutcome::Handled(response)
+    Some(response)
 }
 
-async fn handle_with_provider(
-    params: &ComputerUseCallParams,
-    provider: ConfiguredDesktopProvider,
-) -> Result<ComputerUseCallResponse, String> {
-    let mut response = match provider.provider {
-        DesktopProvider::Command(command) => run_command_provider(params, &command).await,
-    }?;
-    require_native_image_for_visual_response(
-        &mut response,
-        "Desktop observation missing native image output.",
-    );
+async fn run_provider(
+    params: &DynamicToolCallParams,
+    config: DesktopRuntimeConfig,
+) -> Result<DynamicToolCallResponse, String> {
+    let request = serialize_request_bounded(params)?;
+
+    let (stdout, stderr, status) = run_provider_process(
+        &config.argv,
+        &request,
+        config.timeout,
+        MAX_STDOUT_BYTES,
+        MAX_STDERR_CAPTURE_BYTES,
+    )
+    .await?;
+    let stderr_was_truncated = stderr.truncated;
+    let stderr_text = String::from_utf8_lossy(&stderr.bytes);
+    if !status.success() {
+        let truncation = if stderr_was_truncated {
+            format!("; stderr capture truncated after {MAX_STDERR_CAPTURE_BYTES} bytes")
+        } else {
+            String::new()
+        };
+        return Err(format!(
+            "Desktop provider exited with status {status}: {}{}. Its step result may be uncertain; do not replay automatically. Recover with desktop_observe.",
+            compact_process_output(&stderr_text),
+            truncation
+        ));
+    }
+
+    let mut response = parse_provider_response(&stdout)?;
+    if stderr_was_truncated {
+        append_text(
+            &mut response.content_items,
+            &format!(
+                "\n\nDesktop provider stderr was truncated after {MAX_STDERR_CAPTURE_BYTES} bytes; excess output was drained and discarded."
+            ),
+        );
+    }
     Ok(response)
 }
 
-async fn run_command_provider(
-    params: &ComputerUseCallParams,
-    command: &CommandProviderConfig,
-) -> Result<ComputerUseCallResponse, String> {
-    let output = run_provider_process(&command.argv, params).await?;
-    parse_provider_response(&output)
+struct BoundedRequestWriter {
+    bytes: Vec<u8>,
+    limit: usize,
+    exceeded: bool,
+}
+
+impl Write for BoundedRequestWriter {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        if self.bytes.len().saturating_add(buffer.len()) > self.limit {
+            self.exceeded = true;
+            return Err(io::Error::other("serialized request limit exceeded"));
+        }
+        self.bytes.extend_from_slice(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn serialize_request_bounded<T: Serialize>(value: &T) -> Result<Vec<u8>, String> {
+    let mut writer = BoundedRequestWriter {
+        bytes: Vec::with_capacity(MAX_REQUEST_BYTES),
+        limit: MAX_REQUEST_BYTES,
+        exceeded: false,
+    };
+    if let Err(error) = serde_json::to_writer(&mut writer, value) {
+        if writer.exceeded {
+            return Err(format!(
+                "Desktop provider request exceeds the {MAX_REQUEST_BYTES}-byte JSON limit. The command was not started."
+            ));
+        }
+        return Err(format!(
+            "failed to serialize desktop provider request: {error}"
+        ));
+    }
+    Ok(writer.bytes)
+}
+
+#[derive(Debug)]
+struct CapturedStderr {
+    bytes: Vec<u8>,
+    truncated: bool,
 }
 
 async fn run_provider_process(
     argv: &[String],
-    params: &ComputerUseCallParams,
-) -> Result<Vec<u8>, String> {
+    request: &[u8],
+    deadline: Duration,
+    stdout_limit: usize,
+    stderr_limit: usize,
+) -> Result<(Vec<u8>, CapturedStderr, ExitStatus), String> {
     let (program, args) = argv
         .split_first()
+        .filter(|(program, _)| !program.trim().is_empty())
         .ok_or_else(|| "Desktop provider command is empty.".to_string())?;
     let mut child = Command::new(program)
         .args(args)
@@ -132,125 +251,219 @@ async fn run_provider_process(
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
-        .map_err(|err| format!("failed to start desktop provider `{program}`: {err}"))?;
+        .map_err(|error| format!("failed to start desktop provider `{program}`: {error}"))?;
 
-    let mut stdin = child
+    let stdin = child
         .stdin
         .take()
         .ok_or_else(|| "failed to open desktop provider stdin".to_string())?;
-    let body = serde_json::to_vec(params)
-        .map_err(|err| format!("failed to serialize desktop provider request: {err}"))?;
-    stdin
-        .write_all(&body)
-        .await
-        .map_err(|err| format!("failed to write desktop provider request: {err}"))?;
-    drop(stdin);
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "failed to open desktop provider stdout".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "failed to open desktop provider stderr".to_string())?;
 
-    let output = child
-        .wait_with_output()
-        .await
-        .map_err(|err| format!("failed to wait for desktop provider: {err}"))?;
-    if output.status.success() {
-        Ok(output.stdout)
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(format!(
-            "Desktop provider exited with status {}: {}",
-            output.status,
-            compact_process_output(&stderr)
-        ))
+    let process_io = async {
+        let write = write_request(stdin, request);
+        let read_stdout = read_stdout_bounded(stdout, stdout_limit);
+        let read_stderr = read_stderr_bounded(stderr, stderr_limit);
+        let wait = async {
+            child
+                .wait()
+                .await
+                .map_err(|error| {
+                    format!(
+                        "failed to wait for desktop provider: {error}. The command may have executed; do not replay a step automatically. Recover with desktop_observe."
+                    )
+                })
+        };
+        tokio::try_join!(write, read_stdout, read_stderr, wait)
+    };
+
+    match timeout(deadline, process_io).await {
+        Ok(Ok(((), stdout, stderr, status))) => Ok((stdout, stderr, status)),
+        Ok(Err(error)) => {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            Err(error)
+        }
+        Err(_) => {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            Err(format!(
+                "Desktop provider timed out after {} seconds. The command may have executed; do not replay a step automatically. Recover with desktop_observe.",
+                deadline.as_secs()
+            ))
+        }
     }
 }
 
-fn parse_provider_response(bytes: &[u8]) -> Result<ComputerUseCallResponse, String> {
-    serde_json::from_slice(bytes).map_err(|err| {
+async fn write_request(mut stdin: ChildStdin, request: &[u8]) -> Result<(), String> {
+    stdin
+        .write_all(request)
+        .await
+        .map_err(|error| {
+            format!(
+                "failed to write desktop provider request: {error}. The command may have received a partial request; do not replay a step automatically. Recover with desktop_observe."
+            )
+        })?;
+    stdin
+        .shutdown()
+        .await
+        .map_err(|error| {
+            format!(
+                "failed to close desktop provider stdin: {error}. The command may have executed; do not replay a step automatically. Recover with desktop_observe."
+            )
+        })
+}
+
+async fn read_stdout_bounded(stdout: ChildStdout, limit: usize) -> Result<Vec<u8>, String> {
+    match read_to_end_bounded(stdout, limit).await {
+        Ok(output) => Ok(output),
+        Err(BoundedReadError::Limit) => Err(format!(
+            "Desktop provider stdout exceeded the {limit}-byte JSON limit. Its action result is unknown; output was not truncated into success. Recover with desktop_observe before deciding whether to retry."
+        )),
+        Err(BoundedReadError::Io(error)) => Err(format!(
+            "Failed while reading desktop provider stdout: {error}. The command may have executed; do not replay a step automatically. Recover with desktop_observe."
+        )),
+    }
+}
+
+async fn read_stderr_bounded<R: AsyncRead + Unpin>(
+    stderr: R,
+    limit: usize,
+) -> Result<CapturedStderr, String> {
+    let mut reader = stderr;
+    let mut captured = Vec::with_capacity(limit.min(IO_CHUNK_BYTES));
+    let mut truncated = false;
+    let mut buffer = [0_u8; IO_CHUNK_BYTES];
+    loop {
+        let count = reader
+            .read(&mut buffer)
+            .await
+            .map_err(|error| {
+                format!(
+                    "failed to drain desktop provider stderr: {error}. The command may have executed; do not replay a step automatically. Recover with desktop_observe."
+                )
+            })?;
+        if count == 0 {
+            break;
+        }
+        let remaining = limit.saturating_sub(captured.len());
+        let keep = remaining.min(count);
+        captured.extend_from_slice(&buffer[..keep]);
+        truncated |= keep < count;
+    }
+    Ok(CapturedStderr {
+        bytes: captured,
+        truncated,
+    })
+}
+
+async fn read_to_end_bounded<R: AsyncRead + Unpin>(
+    mut reader: R,
+    limit: usize,
+) -> Result<Vec<u8>, BoundedReadError> {
+    let mut output = Vec::with_capacity(limit.min(IO_CHUNK_BYTES));
+    let mut buffer = [0_u8; IO_CHUNK_BYTES];
+    loop {
+        let count = reader
+            .read(&mut buffer)
+            .await
+            .map_err(|error| BoundedReadError::Io(error.to_string()))?;
+        if count == 0 {
+            return Ok(output);
+        }
+        let remaining = limit.saturating_sub(output.len());
+        if count > remaining {
+            return Err(BoundedReadError::Limit);
+        }
+        output.extend_from_slice(&buffer[..count]);
+    }
+}
+
+#[derive(Debug)]
+enum BoundedReadError {
+    Limit,
+    Io(String),
+}
+
+fn parse_provider_response(bytes: &[u8]) -> Result<DynamicToolCallResponse, String> {
+    serde_json::from_slice(bytes).map_err(|error| {
         let snippet = compact_process_output(&String::from_utf8_lossy(bytes));
-        format!("failed to parse desktop provider response: {err}; stdout: {snippet}")
+        format!(
+            "failed to parse desktop provider response: {error}; stdout: {snippet}. The command may have executed; do not replay a step automatically. Recover with desktop_observe."
+        )
     })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DesktopRuntimeConfig {
-    providers: Vec<ConfiguredDesktopProvider>,
+    argv: Vec<String>,
+    timeout: Duration,
 }
 
 impl DesktopRuntimeConfig {
-    fn load() -> Option<Self> {
-        Self::from_sources(DesktopRuntimeConfigFile::load(), DesktopRuntimeEnv::read())
+    fn load(codex_home: &Path) -> Result<Option<Self>, String> {
+        Self::from_sources(
+            DesktopRuntimeConfigFile::load(codex_home),
+            DesktopRuntimeEnv::read(),
+        )
     }
 
     fn from_sources(
         file: Option<DesktopRuntimeConfigFile>,
         env: DesktopRuntimeEnv,
-    ) -> Option<Self> {
+    ) -> Result<Option<Self>, String> {
         if let Some(provider) = env.provider.as_deref()
-            && (provider_is_disabled(provider) || !provider_is_command(provider))
+            && !provider_is_command(provider)
         {
-            return None;
+            return Ok(None);
+        }
+        if let Some(error) = env.timeout_error {
+            return Err(error);
         }
 
-        let timeout = env
+        let timeout_secs = env
             .timeout_secs
-            .or_else(|| file.as_ref().and_then(|config| config.timeout_secs))
+            .or_else(|| file.as_ref().and_then(|config| config.timeout_secs));
+        let timeout = timeout_secs
             .map(Duration::from_secs)
             .unwrap_or(DEFAULT_REQUEST_TIMEOUT);
-
-        let env_command = env
-            .command
-            .and_then(|command| command_spec_to_argv(CommandSpec::String(command)));
-        if let Some(command) = env_command {
-            return Some(Self {
-                providers: vec![ConfiguredDesktopProvider::command(
-                    "env-command",
-                    command,
-                    timeout,
-                )],
-            });
+        if timeout > MAX_REQUEST_TIMEOUT {
+            return Err(format!(
+                "Configured desktop provider timeout of {} seconds exceeds the {}-second maximum; the command was not started.",
+                timeout.as_secs(),
+                MAX_REQUEST_TIMEOUT.as_secs()
+            ));
         }
 
-        let file = file?;
-        let mut providers = file.configured_providers(timeout);
-        if let Some(order) = file
-            .routing
-            .as_ref()
-            .and_then(|routing| routing.fallback_order.as_ref())
+        if let Some(command) = env.command {
+            let Some(argv) = command_spec_to_argv(CommandSpec::String(command)) else {
+                return Ok(None);
+            };
+            return Ok(Some(Self { argv, timeout }));
+        }
+
+        let Some(file) = file else {
+            return Ok(None);
+        };
+        if file
+            .provider
+            .as_deref()
+            .is_some_and(|provider| !provider_is_command(provider))
         {
-            providers = order_providers(providers, order);
+            return Ok(None);
         }
-
-        (!providers.is_empty()).then_some(Self { providers })
+        let command = file.command;
+        let Some(argv) = command.and_then(command_spec_to_argv) else {
+            return Ok(None);
+        };
+        Ok(Some(Self { argv, timeout }))
     }
-
-    fn default_provider(&self) -> Option<&ConfiguredDesktopProvider> {
-        self.providers.first()
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ConfiguredDesktopProvider {
-    id: String,
-    provider: DesktopProvider,
-    timeout: Duration,
-}
-
-impl ConfiguredDesktopProvider {
-    fn command(id: impl Into<String>, argv: Vec<String>, timeout: Duration) -> Self {
-        Self {
-            id: id.into(),
-            provider: DesktopProvider::Command(CommandProviderConfig { argv }),
-            timeout,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum DesktopProvider {
-    Command(CommandProviderConfig),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct CommandProviderConfig {
-    argv: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -258,97 +471,20 @@ struct DesktopRuntimeConfigFile {
     provider: Option<String>,
     command: Option<CommandSpec>,
     timeout_secs: Option<u64>,
-    platforms: Option<Vec<String>>,
-    providers: Option<Vec<DesktopProviderConfigFile>>,
-    routing: Option<DesktopRoutingConfigFile>,
 }
 
 impl DesktopRuntimeConfigFile {
-    fn load() -> Option<Self> {
-        let home = dirs::home_dir()?;
-        for path in [
-            home.join(".codex/desktop-computer-use.json"),
-            home.join(".codex/desktop-dynamic-tools.json"),
-        ] {
-            if let Ok(contents) = std::fs::read_to_string(path)
-                && let Ok(config) = serde_json::from_str(&contents)
-            {
-                return Some(config);
-            }
-        }
-        None
-    }
-
-    fn configured_providers(&self, default_timeout: Duration) -> Vec<ConfiguredDesktopProvider> {
-        let mut providers = Vec::new();
-        if self.command.is_some() || self.provider.is_some() {
-            let legacy_provider = DesktopProviderConfigFile {
-                id: Some("legacy".to_string()),
-                provider: self.provider.clone(),
-                command: self.command.clone(),
-                timeout_secs: self.timeout_secs,
-                platforms: self.platforms.clone(),
-            };
-            if let Some(provider) = legacy_provider.to_configured(default_timeout) {
-                providers.push(provider);
-            }
-        }
-
-        if let Some(configured) = &self.providers {
-            providers.extend(
-                configured
-                    .iter()
-                    .filter(|provider| provider.matches_current_platform())
-                    .filter_map(|provider| provider.to_configured(default_timeout)),
-            );
-        }
-        providers
-    }
-}
-
-#[derive(Deserialize)]
-struct DesktopRoutingConfigFile {
-    fallback_order: Option<Vec<String>>,
-}
-
-#[derive(Deserialize)]
-struct DesktopProviderConfigFile {
-    id: Option<String>,
-    provider: Option<String>,
-    command: Option<CommandSpec>,
-    timeout_secs: Option<u64>,
-    platforms: Option<Vec<String>>,
-}
-
-impl DesktopProviderConfigFile {
-    fn matches_current_platform(&self) -> bool {
-        let Some(platforms) = &self.platforms else {
-            return true;
-        };
-        platforms
-            .iter()
-            .any(|platform| platform_matches_current(platform))
-    }
-
-    fn to_configured(&self, default_timeout: Duration) -> Option<ConfiguredDesktopProvider> {
-        if !self.matches_current_platform() {
-            return None;
-        }
-
-        let provider_name = self.provider.as_deref().unwrap_or(PROVIDER_COMMAND);
-        if provider_is_disabled(provider_name) || !provider_is_command(provider_name) {
-            return None;
-        }
-
-        let timeout = self
-            .timeout_secs
-            .map(Duration::from_secs)
-            .unwrap_or(default_timeout);
-        let id = self.id.clone().unwrap_or_else(|| provider_name.to_string());
-        self.command
-            .clone()
-            .and_then(command_spec_to_argv)
-            .map(|argv| ConfiguredDesktopProvider::command(id, argv, timeout))
+    fn load(codex_home: &Path) -> Option<Self> {
+        [
+            codex_home.join("desktop-computer-use.json"),
+            codex_home.join("desktop-dynamic-tools.json"),
+        ]
+        .into_iter()
+        .find_map(|path| {
+            std::fs::read_to_string(path)
+                .ok()
+                .and_then(|contents| serde_json::from_str(&contents).ok())
+        })
     }
 }
 
@@ -357,14 +493,29 @@ struct DesktopRuntimeEnv {
     provider: Option<String>,
     command: Option<String>,
     timeout_secs: Option<u64>,
+    timeout_error: Option<String>,
 }
 
 impl DesktopRuntimeEnv {
     fn read() -> Self {
+        let timeout_setting = read_env(ENV_TIMEOUT_SECS);
+        let (timeout_secs, timeout_error) = match timeout_setting {
+            Some(value) => match value.parse() {
+                Ok(timeout) => (Some(timeout), None),
+                Err(_) => (
+                    None,
+                    Some(format!(
+                        "Invalid {ENV_TIMEOUT_SECS}; provide a whole number of seconds. The command was not started."
+                    )),
+                ),
+            },
+            None => (None, None),
+        };
         Self {
-            provider: first_env(&[ENV_PROVIDER]),
-            command: first_env(&[ENV_COMMAND]),
-            timeout_secs: first_env(&[ENV_TIMEOUT_SECS]).and_then(|value| value.parse().ok()),
+            provider: read_env(ENV_PROVIDER),
+            command: read_env(ENV_COMMAND),
+            timeout_secs,
+            timeout_error,
         }
     }
 }
@@ -386,96 +537,54 @@ fn command_spec_to_argv(command: CommandSpec) -> Option<Vec<String>> {
         .then_some(argv)
 }
 
-fn order_providers(
-    providers: Vec<ConfiguredDesktopProvider>,
-    order: &[String],
-) -> Vec<ConfiguredDesktopProvider> {
-    let mut remaining = providers;
-    let mut ordered = Vec::new();
-    for id in order {
-        if let Some(index) = remaining.iter().position(|provider| provider.id == *id) {
-            ordered.push(remaining.remove(index));
-        }
-    }
-    ordered.extend(remaining);
-    ordered
-}
-
-fn first_env(keys: &[&str]) -> Option<String> {
-    keys.iter()
-        .filter_map(|key| std::env::var(key).ok())
-        .find(|value| !value.trim().is_empty())
-}
-
-fn platform_matches_current(platform: &str) -> bool {
-    match platform.to_ascii_lowercase().as_str() {
-        "all" | "*" => true,
-        "linux" => cfg!(target_os = "linux"),
-        "mac" | "macos" | "darwin" => cfg!(target_os = "macos"),
-        "windows" | "win32" => cfg!(target_os = "windows"),
-        "unix" => cfg!(unix),
-        other => other == std::env::consts::OS,
-    }
-}
-
-fn provider_is_disabled(provider: &str) -> bool {
-    provider.trim().eq_ignore_ascii_case(PROVIDER_NONE)
+fn read_env(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
 }
 
 fn provider_is_command(provider: &str) -> bool {
     provider.trim().eq_ignore_ascii_case(PROVIDER_COMMAND)
 }
 
-fn response_includes_native_image(response: &ComputerUseCallResponse) -> bool {
-    response
-        .content_items
-        .iter()
-        .any(|item| matches!(item, ComputerUseCallOutputContentItem::InputImage { .. }))
-}
-
-fn require_native_image_for_visual_response(
-    response: &mut ComputerUseCallResponse,
-    missing_image_message: &str,
-) {
-    if !response.success || response_includes_native_image(response) {
-        return;
-    }
-
-    append_text(
-        &mut response.content_items,
-        &format!(
-            "\n\n{missing_image_message} The desktop provider must return screenshots as native image content items rather than text-only summaries or artifact paths."
-        ),
-    );
-    response.success = false;
-    response.error = Some(match response.error.take() {
-        Some(existing_error) if !existing_error.trim().is_empty() => {
-            format!("{missing_image_message} Previous provider error: {existing_error}")
-        }
-        _ => missing_image_message.to_string(),
-    });
-}
-
-fn append_text(items: &mut Vec<ComputerUseCallOutputContentItem>, extra: &str) {
-    if let Some(ComputerUseCallOutputContentItem::InputText { text }) = items.first_mut() {
+fn append_text(items: &mut Vec<DynamicToolCallOutputContentItem>, extra: &str) {
+    if let Some(DynamicToolCallOutputContentItem::InputText { text }) = items.first_mut() {
         text.push_str(extra);
     } else {
         items.insert(
             0,
-            ComputerUseCallOutputContentItem::InputText {
+            DynamicToolCallOutputContentItem::InputText {
                 text: extra.trim().to_string(),
             },
         );
     }
 }
 
-fn failed_response(error: String) -> ComputerUseCallResponse {
-    ComputerUseCallResponse {
-        content_items: vec![ComputerUseCallOutputContentItem::InputText {
-            text: error.clone(),
-        }],
+fn require_native_image_for_visual_response(
+    response: &mut DynamicToolCallResponse,
+    missing_image_message: &str,
+) {
+    if !response.success
+        || response
+            .content_items
+            .iter()
+            .any(|item| matches!(item, DynamicToolCallOutputContentItem::InputImage { .. }))
+    {
+        return;
+    }
+    append_text(
+        &mut response.content_items,
+        &format!(
+            "\n\n{missing_image_message} The desktop provider must return screenshots as native image content items, not text-only summaries or artifact paths."
+        ),
+    );
+    response.success = false;
+}
+
+fn failed_response(error: String) -> DynamicToolCallResponse {
+    DynamicToolCallResponse {
+        content_items: vec![DynamicToolCallOutputContentItem::InputText { text: error }],
         success: false,
-        error: Some(error),
     }
 }
 
@@ -493,18 +602,10 @@ fn compact_process_output(output: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pretty_assertions::assert_eq;
-    use serde_json::json;
-    use std::io::Write as _;
-
-    fn command_config(provider: &ConfiguredDesktopProvider) -> &CommandProviderConfig {
-        match &provider.provider {
-            DesktopProvider::Command(command) => command,
-        }
-    }
+    use codex_app_server_protocol::DynamicToolCallOutputContentItem;
 
     #[test]
-    fn command_spec_accepts_shell_like_string_and_array() {
+    fn configured_command_requires_explicit_command_provider_and_valid_argv() {
         assert_eq!(
             command_spec_to_argv(CommandSpec::String("desktop-provider --stdio".to_string())),
             Some(vec!["desktop-provider".to_string(), "--stdio".to_string()])
@@ -516,223 +617,371 @@ mod tests {
             ])),
             Some(vec!["desktop-provider".to_string(), "--stdio".to_string()])
         );
+        assert!(command_spec_to_argv(CommandSpec::String("   ".to_string())).is_none());
+        assert!(shlex::split("unterminated '").is_none());
     }
 
     #[test]
-    fn configured_desktop_tools_are_session_scoped_native_tools() {
-        let tools = [
-            desktop_dynamic_tool(DESKTOP_OBSERVE_TOOL_NAME, "observe", "non_mutating"),
-            desktop_dynamic_tool(DESKTOP_STEP_TOOL_NAME, "step", "mutating"),
-        ];
-
-        assert_eq!(tools[0].name, DESKTOP_OBSERVE_TOOL_NAME);
-        assert_eq!(tools[1].name, DESKTOP_STEP_TOOL_NAME);
-        assert!(tools.iter().all(|tool| tool.namespace.is_none()));
-        assert!(tools.iter().all(|tool| !tool.defer_loading));
-        assert!(tools.iter().all(|tool| !tool.persist_on_resume));
-        assert!(tools.iter().all(|tool| {
-            tool.capability
-                .as_ref()
-                .and_then(|capability| capability.family.as_deref())
-                == Some(COMPUTER_USE_ADAPTER_DESKTOP)
-        }));
-    }
-
-    #[test]
-    fn desktop_config_respects_platform_filters() {
-        let config = DesktopRuntimeConfig::from_sources(
-            Some(DesktopRuntimeConfigFile {
-                provider: Some(PROVIDER_COMMAND.to_string()),
-                command: Some(CommandSpec::Array(vec!["desktop-provider".to_string()])),
-                timeout_secs: Some(7),
-                platforms: Some(vec!["all".to_string()]),
-                providers: None,
-                routing: None,
-            }),
-            DesktopRuntimeEnv::default(),
-        )
-        .expect("desktop provider config");
-
-        let provider = config.default_provider().expect("default provider");
-        assert_eq!(provider.id, "legacy");
-        assert_eq!(
-            command_config(provider).argv,
-            vec!["desktop-provider".to_string()]
-        );
-        assert_eq!(provider.timeout, Duration::from_secs(7));
-    }
-
-    #[test]
-    fn desktop_env_command_overrides_file_platform_filter() {
-        let config = DesktopRuntimeConfig::from_sources(
-            Some(DesktopRuntimeConfigFile {
-                provider: Some(PROVIDER_COMMAND.to_string()),
-                command: Some(CommandSpec::Array(vec!["file-provider".to_string()])),
-                timeout_secs: Some(7),
-                platforms: Some(vec!["not-this-platform".to_string()]),
-                providers: None,
-                routing: None,
-            }),
-            DesktopRuntimeEnv {
-                command: Some("env-provider --stdio".to_string()),
-                timeout_secs: Some(9),
-                ..Default::default()
-            },
-        )
-        .expect("desktop env provider config");
-
-        let provider = config.default_provider().expect("default provider");
-        assert_eq!(provider.id, "env-command");
-        assert_eq!(
-            command_config(provider).argv,
-            vec!["env-provider".to_string(), "--stdio".to_string()]
-        );
-        assert_eq!(provider.timeout, Duration::from_secs(9));
-    }
-
-    #[test]
-    fn desktop_invalid_env_provider_disables_file_fallback() {
-        let config = DesktopRuntimeConfig::from_sources(
-            Some(DesktopRuntimeConfigFile {
-                provider: Some(PROVIDER_COMMAND.to_string()),
-                command: Some(CommandSpec::Array(vec!["file-provider".to_string()])),
-                timeout_secs: None,
-                platforms: None,
-                providers: None,
-                routing: None,
-            }),
-            DesktopRuntimeEnv {
-                provider: Some("unsupported".to_string()),
-                ..Default::default()
-            },
-        );
-
-        assert!(config.is_none());
-    }
-
-    #[test]
-    fn desktop_providers_array_uses_fallback_order() {
-        let config = DesktopRuntimeConfig::from_sources(
-            Some(DesktopRuntimeConfigFile {
-                provider: None,
-                command: None,
-                timeout_secs: Some(5),
-                platforms: None,
-                providers: Some(vec![
-                    DesktopProviderConfigFile {
-                        id: Some("first".to_string()),
-                        provider: Some(PROVIDER_COMMAND.to_string()),
-                        command: Some(CommandSpec::Array(vec!["first-provider".to_string()])),
-                        timeout_secs: None,
-                        platforms: Some(vec!["all".to_string()]),
-                    },
-                    DesktopProviderConfigFile {
-                        id: Some("second".to_string()),
-                        provider: Some(PROVIDER_COMMAND.to_string()),
-                        command: Some(CommandSpec::Array(vec!["second-provider".to_string()])),
-                        timeout_secs: Some(8),
-                        platforms: Some(vec!["all".to_string()]),
-                    },
-                ]),
-                routing: Some(DesktopRoutingConfigFile {
-                    fallback_order: Some(vec!["second".to_string(), "first".to_string()]),
-                }),
-            }),
-            DesktopRuntimeEnv::default(),
-        )
-        .expect("desktop provider registry config");
-
-        let provider = config.default_provider().expect("default provider");
-        assert_eq!(provider.id, "second");
-        assert_eq!(
-            command_config(provider).argv,
-            vec!["second-provider".to_string()]
-        );
-        assert_eq!(provider.timeout, Duration::from_secs(8));
-    }
-
-    #[test]
-    fn desktop_unknown_provider_is_unavailable() {
-        let config = DesktopRuntimeConfig::from_sources(
-            Some(DesktopRuntimeConfigFile {
-                provider: Some("native-magic".to_string()),
-                command: Some(CommandSpec::Array(vec!["desktop-provider".to_string()])),
-                timeout_secs: None,
-                platforms: None,
-                providers: None,
-                routing: None,
-            }),
-            DesktopRuntimeEnv::default(),
-        );
-
-        assert_eq!(config, None);
-    }
-
-    #[test]
-    fn desktop_provider_response_without_native_image_fails_loudly() {
-        let mut response = ComputerUseCallResponse {
-            content_items: vec![ComputerUseCallOutputContentItem::InputText {
-                text: "Desktop observation\napp: Notes".to_string(),
-            }],
-            success: true,
-            error: None,
+    fn configured_timeout_above_policy_is_rejected_without_clamping() {
+        let config = DesktopRuntimeConfigFile {
+            provider: Some(PROVIDER_COMMAND.to_string()),
+            command: Some(CommandSpec::Array(vec!["fake".to_string()])),
+            timeout_secs: Some(301),
         };
+        let result = DesktopRuntimeConfig::from_sources(Some(config), DesktopRuntimeEnv::default());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("exceeds"));
+    }
 
-        require_native_image_for_visual_response(
-            &mut response,
-            "Desktop observation missing native image output.",
-        );
-
-        assert!(!response.success);
-        assert_eq!(
-            response.error.as_deref(),
-            Some("Desktop observation missing native image output.")
-        );
-        let ComputerUseCallOutputContentItem::InputText { text } = &response.content_items[0]
-        else {
-            panic!("expected text summary");
+    #[tokio::test]
+    async fn oversized_request_is_rejected_before_spawn() {
+        let params = DynamicToolCallParams {
+            thread_id: "thread".to_string(),
+            turn_id: "turn".to_string(),
+            call_id: "call".to_string(),
+            namespace: Some(NAMESPACE.to_string()),
+            tool: STEP_TOOL_NAME.to_string(),
+            arguments: json!({"payload": "x".repeat(MAX_REQUEST_BYTES)}),
         };
-        assert!(text.contains("app: Notes"));
-        assert!(text.contains("must return screenshots as native image content items"));
+        let config = DesktopRuntimeConfig {
+            argv: vec!["this-executable-must-not-be-started".to_string()],
+            timeout: DEFAULT_REQUEST_TIMEOUT,
+        };
+        let error = run_provider(&params, config).await.unwrap_err();
+        assert!(error.contains("The command was not started"));
     }
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn command_provider_bridge_returns_native_image_response() {
-        let mut provider = tempfile::NamedTempFile::new().expect("temp provider");
-        provider
-            .write_all(
-                br#"#!/bin/sh
-cat >/dev/null
-cat <<'JSON'
-{"contentItems":[{"type":"inputText","text":"Desktop observation from fake provider"},{"type":"inputImage","imageUrl":"data:image/png;base64,AAAA","detail":"high"}],"success":true}
-JSON
-"#,
-            )
-            .expect("write provider");
-        let params = ComputerUseCallParams {
-            thread_id: "thread-1".to_string(),
-            turn_id: "turn-1".to_string(),
-            call_id: "call-1".to_string(),
-            environment_id: Some("env-1".to_string()),
-            adapter: COMPUTER_USE_ADAPTER_DESKTOP.to_string(),
-            tool: DESKTOP_OBSERVE_TOOL_NAME.to_string(),
-            arguments: json!({}),
+    async fn exact_request_limit_is_accepted_and_sent_to_fake_provider() {
+        let mut params = DynamicToolCallParams {
+            thread_id: "thread".to_string(),
+            turn_id: "turn".to_string(),
+            call_id: "call".to_string(),
+            namespace: Some(NAMESPACE.to_string()),
+            tool: OBSERVE_TOOL_NAME.to_string(),
+            arguments: json!(""),
         };
+        let baseline = serialize_request_bounded(&params).unwrap().len();
+        params.arguments = json!("x".repeat(MAX_REQUEST_BYTES - baseline));
+        assert_eq!(
+            serialize_request_bounded(&params).unwrap().len(),
+            MAX_REQUEST_BYTES
+        );
 
-        let response = run_command_provider(
-            &params,
-            &CommandProviderConfig {
-                argv: vec![
-                    "sh".to_string(),
-                    provider.path().to_string_lossy().to_string(),
-                ],
-            },
+        let expected = DynamicToolCallResponse {
+            content_items: vec![DynamicToolCallOutputContentItem::InputText {
+                text: "ok".to_string(),
+            }],
+            success: true,
+        };
+        let response_json = serde_json::to_string(&expected).unwrap();
+        let config = DesktopRuntimeConfig {
+            argv: vec![
+                "python3".to_string(),
+                "-c".to_string(),
+                "import sys; data = sys.stdin.buffer.read(); sys.exit(7) if len(data) != 65536 else None; sys.stdout.write(sys.argv[1])"
+                    .to_string(),
+                response_json,
+            ],
+            timeout: Duration::from_secs(3),
+        };
+        let response = run_provider(&params, config).await.unwrap();
+        assert_eq!(response, expected);
+    }
+
+    #[test]
+    fn explicit_none_and_unsupported_provider_remain_unavailable() {
+        for provider in ["none", "unknown"] {
+            let env = DesktopRuntimeEnv {
+                provider: Some(provider.to_string()),
+                ..DesktopRuntimeEnv::default()
+            };
+            assert!(
+                DesktopRuntimeConfig::from_sources(/*file*/ None, env)
+                    .unwrap()
+                    .is_none()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn stdout_ceiling_rejects_instead_of_returning_truncated_json() {
+        let (mut writer, reader) = tokio::io::duplex(32);
+        let reader_task = tokio::spawn(read_to_end_bounded(reader, /*limit*/ 4));
+        writer.write_all(b"12345").await.unwrap();
+        drop(writer);
+        assert!(reader_task.await.unwrap().is_err());
+    }
+
+    #[tokio::test]
+    async fn stderr_is_drained_beyond_capture_limit_and_marks_truncation() {
+        let (mut writer, reader) = tokio::io::duplex(32);
+        let reader_task = tokio::spawn(read_stderr_bounded(reader, /*limit*/ 4));
+        writer.write_all(b"123456789").await.unwrap();
+        drop(writer);
+        let captured = reader_task.await.unwrap().unwrap();
+        assert_eq!(captured.bytes.as_slice(), b"1234");
+        assert!(captured.truncated);
+    }
+
+    #[tokio::test]
+    async fn exact_and_over_configured_stdout_limits_are_distinguished() {
+        fn json_response_with_text_len(text_len: usize) -> Vec<u8> {
+            serde_json::to_vec(&DynamicToolCallResponse {
+                content_items: vec![DynamicToolCallOutputContentItem::InputText {
+                    text: "x".repeat(text_len),
+                }],
+                success: true,
+            })
+            .unwrap()
+        }
+
+        async fn limited_output(bytes: Vec<u8>) -> Result<Vec<u8>, BoundedReadError> {
+            let (mut writer, reader) = tokio::io::duplex(IO_CHUNK_BYTES * 2);
+            let write_task = tokio::spawn(async move {
+                for chunk in bytes.chunks(IO_CHUNK_BYTES) {
+                    if writer.write_all(chunk).await.is_err() {
+                        break;
+                    }
+                }
+            });
+            let output = read_to_end_bounded(reader, MAX_STDOUT_BYTES).await;
+            write_task.await.unwrap();
+            output
+        }
+
+        let empty_response = json_response_with_text_len(/*text_len*/ 0);
+        let exact_text_len = MAX_STDOUT_BYTES - empty_response.len();
+        let exact_json = json_response_with_text_len(exact_text_len);
+        assert_eq!(exact_json.len(), MAX_STDOUT_BYTES);
+        let exact = limited_output(exact_json).await.unwrap();
+        let parsed = parse_provider_response(&exact).unwrap();
+        assert!(parsed.success);
+        assert!(matches!(
+            limited_output(json_response_with_text_len(exact_text_len + 1)).await,
+            Err(BoundedReadError::Limit)
+        ));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn fake_provider_drains_large_output_before_reading_full_request() {
+        let argv = vec![
+            "python3".to_string(),
+            "-c".to_string(),
+            "import sys; sys.stdout.buffer.write(b'o' * 1048576); sys.stdout.flush(); sys.stderr.buffer.write(b'e' * 1048576); sys.stderr.flush(); data = sys.stdin.buffer.read(); sys.exit(0 if len(data) == 65536 else 7)"
+                .to_string(),
+        ];
+        let request = vec![b'r'; MAX_REQUEST_BYTES];
+        let (stdout, stderr, status) = run_provider_process(
+            &argv,
+            &request,
+            Duration::from_secs(5),
+            MAX_STDOUT_BYTES,
+            MAX_STDERR_CAPTURE_BYTES,
         )
         .await
-        .expect("provider response");
+        .unwrap();
+        assert!(status.success());
+        assert_eq!(stdout.len(), 1_048_576);
+        assert_eq!(stderr.bytes.len(), MAX_STDERR_CAPTURE_BYTES);
+        assert!(stderr.truncated);
+    }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn fake_provider_full_duplex_preserves_typed_image_and_marks_stderr_truncation() {
+        let expected = DynamicToolCallResponse {
+            content_items: vec![DynamicToolCallOutputContentItem::InputImage {
+                image_url: "data:image/png;base64,AAAA".to_string(),
+            }],
+            success: true,
+        };
+        let response_json = serde_json::to_string(&expected).unwrap();
+        let request = vec![b'r'; 32_768];
+        let argv = vec![
+            "python3".to_string(),
+            "-c".to_string(),
+            "import sys; sys.stdin.buffer.read(); sys.stderr.buffer.write(b'x' * 40000); sys.stdout.write(sys.argv[1])"
+                .to_string(),
+            response_json,
+        ];
+        let (stdout, stderr, status) = run_provider_process(
+            &argv,
+            &request,
+            Duration::from_secs(3),
+            MAX_STDOUT_BYTES,
+            MAX_STDERR_CAPTURE_BYTES,
+        )
+        .await
+        .unwrap();
+        assert!(status.success());
+        assert_eq!(stderr.bytes.len(), MAX_STDERR_CAPTURE_BYTES);
+        assert!(stderr.truncated);
+
+        let mut response = parse_provider_response(&stdout).unwrap();
+        require_native_image_for_visual_response(&mut response, "Missing native image.");
         assert!(response.success);
-        assert!(response_includes_native_image(&response));
+        append_text(
+            &mut response.content_items,
+            "\nDesktop provider stderr was truncated.",
+        );
+        assert!(matches!(
+            response.content_items.as_slice(),
+            [DynamicToolCallOutputContentItem::InputText { text },
+             DynamicToolCallOutputContentItem::InputImage { image_url }]
+                if text.contains("stderr was truncated")
+                    && image_url == "data:image/png;base64,AAAA"
+        ));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stdout_over_limit_terminates_fake_provider_without_truncated_success() {
+        let argv = vec![
+            "python3".to_string(),
+            "-c".to_string(),
+            "import sys,time; sys.stdout.buffer.write(b'12345'); sys.stdout.flush(); time.sleep(5)"
+                .to_string(),
+        ];
+        let started = std::time::Instant::now();
+        let result = run_provider_process(
+            &argv,
+            b"{}",
+            Duration::from_secs(3),
+            /*stdout_limit*/ 4,
+            /*stderr_limit*/ 32,
+        )
+        .await;
+        assert!(
+            result
+                .unwrap_err()
+                .contains("stdout exceeded the 4-byte JSON limit")
+        );
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn successful_visual_result_requires_native_inline_image() {
+        let mut response = DynamicToolCallResponse {
+            content_items: vec![DynamicToolCallOutputContentItem::InputText {
+                text: "desktop state".to_string(),
+            }],
+            success: true,
+        };
+        require_native_image_for_visual_response(&mut response, "Missing native image.");
+        assert!(!response.success);
+        assert!(matches!(
+            response.content_items.first(),
+            Some(DynamicToolCallOutputContentItem::InputText { text }) if text.contains("Missing native image")
+        ));
+
+        let with_image = DynamicToolCallResponse {
+            content_items: vec![DynamicToolCallOutputContentItem::InputImage {
+                image_url: "data:image/png;base64,AAAA".to_string(),
+            }],
+            success: true,
+        };
+        let json = serde_json::to_vec(&with_image).unwrap();
+        let parsed = parse_provider_response(&json).unwrap();
+        assert!(parsed.success);
+        assert!(matches!(
+            parsed.content_items.as_slice(),
+            [DynamicToolCallOutputContentItem::InputImage { image_url }]
+                if image_url == "data:image/png;base64,AAAA"
+        ));
+
+        let event = completed_event(RequestId::String("desktop-turn-call".to_string()), parsed);
+        let crate::app_event::AppEvent::DynamicToolCallCompleted {
+            request_id: RequestId::String(request_id),
+            response,
+        } = event
+        else {
+            panic!("expected correlated Desktop dynamic-tool completion");
+        };
+        assert_eq!(request_id, "desktop-turn-call");
+        assert!(response.success);
+        assert!(matches!(
+            response.content_items.as_slice(),
+            [DynamicToolCallOutputContentItem::InputImage { image_url }]
+                if image_url == "data:image/png;base64,AAAA"
+        ));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn timeout_kills_owned_fake_child_and_returns_unknown_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("started");
+        let finished = dir.path().join("finished");
+        let argv = vec![
+            "python3".to_string(),
+            "-c".to_string(),
+            format!(
+                "from pathlib import Path; import time; Path({:?}).write_text('started'); time.sleep(1.5); Path({:?}).write_text('finished')",
+                marker.display().to_string(),
+                finished.display().to_string()
+            ),
+        ];
+
+        let result = run_provider_process(
+            &argv,
+            b"{{}}",
+            Duration::from_millis(500),
+            /*stdout_limit*/ 1024,
+            /*stderr_limit*/ 32,
+        )
+        .await;
+        assert!(
+            result
+                .unwrap_err()
+                .contains("The command may have executed; do not replay")
+        );
+        assert!(marker.exists());
+        tokio::time::sleep(Duration::from_millis(1_600)).await;
+        assert!(
+            !finished.exists(),
+            "timed-out child continued after cleanup"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancelling_provider_future_drops_and_kills_owned_child() {
+        let dir = tempfile::tempdir().unwrap();
+        let started = dir.path().join("started");
+        let finished = dir.path().join("finished");
+        let argv = vec![
+            "python3".to_string(),
+            "-c".to_string(),
+            format!(
+                "from pathlib import Path; import time; Path({:?}).write_text('started'); time.sleep(1); Path({:?}).write_text('finished')",
+                started.display().to_string(),
+                finished.display().to_string()
+            ),
+        ];
+        let task_argv = argv.clone();
+        let task = tokio::spawn(async move {
+            run_provider_process(
+                &task_argv,
+                b"{}",
+                Duration::from_secs(5),
+                /*stdout_limit*/ 1024,
+                /*stderr_limit*/ 32,
+            )
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !started.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        task.abort();
+        let _ = task.await;
+        tokio::time::sleep(Duration::from_millis(1_100)).await;
+        assert!(!finished.exists());
     }
 }

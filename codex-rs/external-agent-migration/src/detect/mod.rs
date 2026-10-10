@@ -25,11 +25,12 @@ use crate::utils::invalid_data_error;
 use crate::utils::is_missing_or_empty_text_file;
 use codex_config::types::PluginConfig;
 use codex_core::config::ConfigBuilder;
-use codex_core_plugins::PluginsManager;
+use codex_core::plugins_manager_for_config;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs;
 use std::io;
+use std::sync::Arc;
 use toml::Value as TomlValue;
 
 const EXTERNAL_AGENT_CONFIG_DETECT_METRIC: &str = "codex.external_agent_config.detect";
@@ -84,7 +85,6 @@ impl ExternalAgentConfigService {
             || self.codex_home.join("config.toml"),
             |repo_root| repo_root.join(".codex").join("config.toml"),
         );
-        self.ensure_scope_migration_path(scope, &target_config)?;
         if let Some(settings) = settings.as_ref() {
             let migrated = self.source.build_config(settings)?;
             if !is_empty_toml_table(&migrated) {
@@ -166,8 +166,6 @@ impl ExternalAgentConfigService {
             || self.codex_home.join("hooks.json"),
             |repo_root| repo_root.join(".codex").join("hooks.json"),
         );
-        self.ensure_repo_hook_sources(scope)?;
-        self.ensure_scope_migration_path(scope, &target_hooks)?;
         let hook_event_names = self
             .source
             .hook_event_names(source_external_agent_dir.as_path(), &target_hooks)?;
@@ -192,24 +190,33 @@ impl ExternalAgentConfigService {
             );
         }
 
-        let source_skills = repo_root.map_or_else(
-            || self.external_agent_home.join("skills"),
-            |repo_root| repo_root.join(self.source.config_dir()).join("skills"),
-        );
+        let source_skills = self
+            .source
+            .skills_dir_names(scope)
+            .iter()
+            .map(|directory| source_external_agent_dir.join(*directory))
+            .filter(|path| path.is_dir())
+            .collect::<Vec<_>>();
         let target_skills = repo_root.map_or_else(
             || self.home_target_skills_dir(),
             |repo_root| repo_root.join(".agents").join("skills"),
         );
-        self.ensure_scope_migration_path(scope, &source_skills)?;
-        self.ensure_scope_migration_path(scope, &target_skills)?;
-        let skill_names = missing_subdirectory_names(&source_skills, &target_skills)?;
+        let mut skill_names = Vec::new();
+        for source_skills_dir in &source_skills {
+            skill_names.extend(missing_subdirectory_names(
+                source_skills_dir,
+                &target_skills,
+            )?);
+        }
+        skill_names.sort();
+        skill_names.dedup();
         let skills_count = skill_names.len();
         if skills_count > 0 {
             items.push(ExternalAgentConfigMigrationItem {
                 item_type: ExternalAgentConfigMigrationItemType::Skills,
                 description: format!(
                     "Migrate skills from {} to {}",
-                    source_skills.display(),
+                    display_source_paths(&source_skills),
                     target_skills.display()
                 ),
                 cwd: cwd.clone(),
@@ -230,8 +237,6 @@ impl ExternalAgentConfigService {
             || self.home_target_skills_dir(),
             |repo_root| repo_root.join(".agents").join("skills"),
         );
-        self.ensure_scope_migration_path(scope, &source_commands)?;
-        self.ensure_scope_migration_path(scope, &target_command_skills)?;
         let commands_count = self
             .source
             .count_missing_commands(&source_commands, &target_command_skills)?;
@@ -264,8 +269,6 @@ impl ExternalAgentConfigService {
             || self.codex_home.join("agents"),
             |repo_root| repo_root.join(".codex").join("agents"),
         );
-        self.ensure_scope_migration_path(scope, &source_subagents)?;
-        self.ensure_scope_migration_path(scope, &target_subagents)?;
         let subagents_count = count_missing_subagents(&source_subagents, &target_subagents)?;
         if subagents_count > 0 {
             let subagent_names = missing_subagent_names(&source_subagents, &target_subagents)?;
@@ -303,7 +306,6 @@ impl ExternalAgentConfigService {
         };
         for group in instruction_source_groups {
             let target_agents_md = group.scope.join("AGENTS.md");
-            self.ensure_scope_migration_path(scope, &target_agents_md)?;
             if !is_missing_or_empty_text_file(&target_agents_md)? {
                 continue;
             }
@@ -325,7 +327,9 @@ impl ExternalAgentConfigService {
             );
         }
 
-        if self.source.supports_plugin_migration(settings.as_ref()) {
+        // Plugin import persists user-global enabled state, so repository-controlled
+        // settings must never be treated as plugin installation authority.
+        if scope.is_home() && self.source.supports_plugin_migration(settings.as_ref()) {
             match ConfigBuilder::default()
                 .codex_home(self.codex_home.clone())
                 .fallback_cwd(Some(self.codex_home.clone()))
@@ -350,7 +354,7 @@ impl ExternalAgentConfigService {
                         .unwrap_or_default();
                     let configured_marketplace_plugins = configured_marketplace_plugins(
                         &config,
-                        &PluginsManager::new(self.codex_home.clone()),
+                        &plugins_manager_for_config(&config, Arc::clone(&self.auth_manager)),
                     )?;
                     let source_root = repo_root.unwrap_or(self.external_agent_home.as_path());
                     if let Some(detected) =

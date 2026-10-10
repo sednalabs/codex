@@ -1,5 +1,6 @@
 {
-  "$defs": {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
     "CreditsSnapshot": {
       "properties": {
         "balance": {
@@ -28,13 +29,18 @@
         "plus",
         "pro",
         "prolite",
+        "promax",
         "team",
+        "self_serve_business_prolite",
         "self_serve_business_usage_based",
         "business",
         "ent26",
+        "enterprise_cbp_automation",
         "enterprise_cbp_usage_based",
         "enterprise",
         "edu",
+        "edu_plus",
+        "edu_pro",
         "unknown"
       ],
       "type": "string"
@@ -76,10 +82,10 @@
           "type": "string"
         },
         "resetType": {
-          "$ref": "#/$defs/RateLimitResetType"
+          "$ref": "#/definitions/RateLimitResetType"
         },
         "status": {
-          "$ref": "#/$defs/RateLimitResetCreditStatus"
+          "$ref": "#/definitions/RateLimitResetCreditStatus"
         },
         "title": {
           "description": "Backend-provided display title for this credit, or `null` when unavailable.",
@@ -90,10 +96,10 @@
         }
       },
       "required": [
+        "grantedAt",
         "id",
         "resetType",
-        "status",
-        "grantedAt"
+        "status"
       ],
       "type": "object"
     },
@@ -113,9 +119,9 @@
           "type": "integer"
         },
         "credits": {
-          "description": "Detail rows for available reset credits, when the backend provides them.\n\n`null` means only `availableCount` is known, while an empty array means details were fetched\nand no available credits were returned. The backend may cap this list, so its length can be\nless than `availableCount`.",
+          "description": "Detail rows for available reset credits, when the backend provides them.\n\n`null` means only `availableCount` is known, while an empty array means details were fetched and no available credits were returned. The backend may cap this list, so its length can be less than `availableCount`.",
           "items": {
-            "$ref": "#/$defs/RateLimitResetCredit"
+            "$ref": "#/definitions/RateLimitResetCredit"
           },
           "type": [
             "array",
@@ -140,7 +146,7 @@
         "credits": {
           "anyOf": [
             {
-              "$ref": "#/$defs/CreditsSnapshot"
+              "$ref": "#/definitions/CreditsSnapshot"
             },
             {
               "type": "null"
@@ -150,7 +156,7 @@
         "individualLimit": {
           "anyOf": [
             {
-              "$ref": "#/$defs/SpendControlLimitSnapshot"
+              "$ref": "#/definitions/SpendControlLimitSnapshot"
             },
             {
               "type": "null"
@@ -169,10 +175,17 @@
             "null"
           ]
         },
+        "normalModelSlug": {
+          "description": "Normal model whose display name and reasoning options describe this quota alias.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "planType": {
           "anyOf": [
             {
-              "$ref": "#/$defs/PlanType"
+              "$ref": "#/definitions/PlanType"
             },
             {
               "type": "null"
@@ -182,7 +195,7 @@
         "primary": {
           "anyOf": [
             {
-              "$ref": "#/$defs/RateLimitWindow"
+              "$ref": "#/definitions/RateLimitWindow"
             },
             {
               "type": "null"
@@ -192,7 +205,7 @@
         "rateLimitReachedType": {
           "anyOf": [
             {
-              "$ref": "#/$defs/RateLimitReachedType"
+              "$ref": "#/definitions/RateLimitReachedType"
             },
             {
               "type": "null"
@@ -202,7 +215,7 @@
         "secondary": {
           "anyOf": [
             {
-              "$ref": "#/$defs/RateLimitWindow"
+              "$ref": "#/definitions/RateLimitWindow"
             },
             {
               "type": "null"
@@ -264,32 +277,52 @@
       },
       "required": [
         "limit",
-        "used",
         "remainingPercent",
-        "resetsAt"
+        "resetsAt",
+        "used"
       ],
       "type": "object"
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
+    "accountId": {
+      "description": "Account associated with this usage snapshot, when supplied by the backend.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "ordinaryUsageAllowed": {
+      "description": "Backend permission for ordinary included usage, validated against the active account. Null means unavailable; clients must not infer recovery from percentages or reset times.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
     "rateLimitResetCredits": {
       "anyOf": [
         {
-          "$ref": "#/$defs/RateLimitResetCreditsSummary"
+          "$ref": "#/definitions/RateLimitResetCreditsSummary"
         },
         {
           "type": "null"
         }
       ]
     },
+    "rateLimitUpsell": {
+      "description": "Optional backend-owned banner from the same usage read. Its nested keys retain the backend's snake_case contract; an absent banner leaves the client's existing UI unchanged."
+    },
     "rateLimits": {
-      "$ref": "#/$defs/RateLimitSnapshot",
+      "allOf": [
+        {
+          "$ref": "#/definitions/RateLimitSnapshot"
+        }
+      ],
       "description": "Backward-compatible single-bucket view; mirrors the historical payload."
     },
     "rateLimitsByLimitId": {
       "additionalProperties": {
-        "$ref": "#/$defs/RateLimitSnapshot"
+        "$ref": "#/definitions/RateLimitSnapshot"
       },
       "description": "Multi-bucket view keyed by metered `limit_id` (for example, `codex`).",
       "type": [

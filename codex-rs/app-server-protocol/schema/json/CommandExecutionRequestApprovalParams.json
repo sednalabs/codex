@@ -1,14 +1,11 @@
 {
-  "$defs": {
-    "AbsolutePathBuf": {
-      "description": "A path that is guaranteed to be absolute and normalized (though it is not\nguaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set\nusing [AbsolutePathBufGuard::new]. If no base path is set, the\ndeserialization will fail unless the path being deserialized is already\nabsolute.",
-      "type": "string"
-    },
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
     "AdditionalFileSystemPermissions": {
       "properties": {
         "entries": {
           "items": {
-            "$ref": "#/$defs/FileSystemSandboxEntry"
+            "$ref": "#/definitions/FileSystemSandboxEntry"
           },
           "type": [
             "array",
@@ -17,7 +14,7 @@
         },
         "globScanMaxDepth": {
           "format": "uint",
-          "minimum": 1,
+          "minimum": 1.0,
           "type": [
             "integer",
             "null"
@@ -26,7 +23,7 @@
         "read": {
           "description": "This will be removed in favor of `entries`.",
           "items": {
-            "$ref": "#/$defs/LegacyAppPathString"
+            "$ref": "#/definitions/LegacyAppPathString"
           },
           "type": [
             "array",
@@ -36,7 +33,7 @@
         "write": {
           "description": "This will be removed in favor of `entries`.",
           "items": {
-            "$ref": "#/$defs/LegacyAppPathString"
+            "$ref": "#/definitions/LegacyAppPathString"
           },
           "type": [
             "array",
@@ -62,7 +59,7 @@
         "fileSystem": {
           "anyOf": [
             {
-              "$ref": "#/$defs/AdditionalFileSystemPermissions"
+              "$ref": "#/definitions/AdditionalFileSystemPermissions"
             },
             {
               "type": "null"
@@ -72,7 +69,7 @@
         "network": {
           "anyOf": [
             {
-              "$ref": "#/$defs/AdditionalNetworkPermissions"
+              "$ref": "#/definitions/AdditionalNetworkPermissions"
             },
             {
               "type": "null"
@@ -94,19 +91,21 @@
               "type": "string"
             },
             "path": {
-              "$ref": "#/$defs/AbsolutePathBuf"
+              "$ref": "#/definitions/LegacyAppPathString"
             },
             "type": {
-              "const": "read",
+              "enum": [
+                "read"
+              ],
               "title": "ReadCommandActionType",
               "type": "string"
             }
           },
           "required": [
-            "type",
             "command",
             "name",
-            "path"
+            "path",
+            "type"
           ],
           "title": "ReadCommandAction",
           "type": "object"
@@ -123,14 +122,16 @@
               ]
             },
             "type": {
-              "const": "listFiles",
+              "enum": [
+                "listFiles"
+              ],
               "title": "ListFilesCommandActionType",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "command"
+            "command",
+            "type"
           ],
           "title": "ListFilesCommandAction",
           "type": "object"
@@ -153,14 +154,16 @@
               ]
             },
             "type": {
-              "const": "search",
+              "enum": [
+                "search"
+              ],
               "title": "SearchCommandActionType",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "command"
+            "command",
+            "type"
           ],
           "title": "SearchCommandAction",
           "type": "object"
@@ -171,14 +174,16 @@
               "type": "string"
             },
             "type": {
-              "const": "unknown",
+              "enum": [
+                "unknown"
+              ],
               "title": "UnknownCommandActionType",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "command"
+            "command",
+            "type"
           ],
           "title": "UnknownCommandAction",
           "type": "object"
@@ -188,18 +193,22 @@
     "CommandExecutionApprovalDecision": {
       "oneOf": [
         {
-          "const": "accept",
           "description": "User approved the command.",
+          "enum": [
+            "accept"
+          ],
           "type": "string"
         },
         {
-          "const": "acceptForSession",
-          "description": "User approved the command and future prompts in the same session-scoped\napproval cache should run without prompting.",
+          "description": "User approved the command and future prompts in the same session-scoped approval cache should run without prompting.",
+          "enum": [
+            "acceptForSession"
+          ],
           "type": "string"
         },
         {
           "additionalProperties": false,
-          "description": "User approved the command, and wants to apply the proposed execpolicy amendment so future\nmatching commands can run without prompting.",
+          "description": "User approved the command, and wants to apply the proposed execpolicy amendment so future matching commands can run without prompting.",
           "properties": {
             "acceptWithExecpolicyAmendment": {
               "properties": {
@@ -229,7 +238,7 @@
             "applyNetworkPolicyAmendment": {
               "properties": {
                 "network_policy_amendment": {
-                  "$ref": "#/$defs/NetworkPolicyAmendment"
+                  "$ref": "#/definitions/NetworkPolicyAmendment"
                 }
               },
               "required": [
@@ -245,16 +254,28 @@
           "type": "object"
         },
         {
-          "const": "decline",
           "description": "User denied the command. The agent will continue the turn.",
+          "enum": [
+            "decline"
+          ],
           "type": "string"
         },
         {
-          "const": "cancel",
           "description": "User denied the command. The turn will also be immediately interrupted.",
+          "enum": [
+            "cancel"
+          ],
           "type": "string"
         }
       ]
+    },
+    "CommandExecutionApprovalKind": {
+      "description": "Distinguishes a command approval from input sent to an existing terminal.",
+      "enum": [
+        "command",
+        "writeStdin"
+      ],
+      "type": "string"
     },
     "FileSystemAccessMode": {
       "enum": [
@@ -269,17 +290,19 @@
         {
           "properties": {
             "path": {
-              "$ref": "#/$defs/LegacyAppPathString"
+              "$ref": "#/definitions/LegacyAppPathString"
             },
             "type": {
-              "const": "path",
+              "enum": [
+                "path"
+              ],
               "title": "PathFileSystemPathType",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "path"
+            "path",
+            "type"
           ],
           "title": "PathFileSystemPath",
           "type": "object"
@@ -290,14 +313,16 @@
               "type": "string"
             },
             "type": {
-              "const": "glob_pattern",
+              "enum": [
+                "glob_pattern"
+              ],
               "title": "GlobPatternFileSystemPathType",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "pattern"
+            "pattern",
+            "type"
           ],
           "title": "GlobPatternFileSystemPath",
           "type": "object"
@@ -305,12 +330,14 @@
         {
           "properties": {
             "type": {
-              "const": "special",
+              "enum": [
+                "special"
+              ],
               "title": "SpecialFileSystemPathType",
               "type": "string"
             },
             "value": {
-              "$ref": "#/$defs/FileSystemSpecialPath"
+              "$ref": "#/definitions/FileSystemSpecialPath"
             }
           },
           "required": [
@@ -325,15 +352,15 @@
     "FileSystemSandboxEntry": {
       "properties": {
         "access": {
-          "$ref": "#/$defs/FileSystemAccessMode"
+          "$ref": "#/definitions/FileSystemAccessMode"
         },
         "path": {
-          "$ref": "#/$defs/FileSystemPath"
+          "$ref": "#/definitions/FileSystemPath"
         }
       },
       "required": [
-        "path",
-        "access"
+        "access",
+        "path"
       ],
       "type": "object"
     },
@@ -342,7 +369,9 @@
         {
           "properties": {
             "kind": {
-              "const": "root",
+              "enum": [
+                "root"
+              ],
               "type": "string"
             }
           },
@@ -355,7 +384,9 @@
         {
           "properties": {
             "kind": {
-              "const": "minimal",
+              "enum": [
+                "minimal"
+              ],
               "type": "string"
             }
           },
@@ -368,13 +399,15 @@
         {
           "properties": {
             "kind": {
-              "const": "project_roots",
+              "enum": [
+                "project_roots"
+              ],
               "type": "string"
             },
             "subpath": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/LegacyAppPathString"
+                  "$ref": "#/definitions/LegacyAppPathString"
                 },
                 {
                   "type": "null"
@@ -391,7 +424,9 @@
         {
           "properties": {
             "kind": {
-              "const": "tmpdir",
+              "enum": [
+                "tmpdir"
+              ],
               "type": "string"
             }
           },
@@ -404,7 +439,9 @@
         {
           "properties": {
             "kind": {
-              "const": "slash_tmp",
+              "enum": [
+                "slash_tmp"
+              ],
               "type": "string"
             }
           },
@@ -417,7 +454,9 @@
         {
           "properties": {
             "kind": {
-              "const": "unknown",
+              "enum": [
+                "unknown"
+              ],
               "type": "string"
             },
             "path": {
@@ -426,7 +465,7 @@
             "subpath": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/LegacyAppPathString"
+                  "$ref": "#/definitions/LegacyAppPathString"
                 },
                 {
                   "type": "null"
@@ -451,7 +490,7 @@
           "type": "string"
         },
         "protocol": {
-          "$ref": "#/$defs/NetworkApprovalProtocol"
+          "$ref": "#/definitions/NetworkApprovalProtocol"
         }
       },
       "required": [
@@ -472,15 +511,15 @@
     "NetworkPolicyAmendment": {
       "properties": {
         "action": {
-          "$ref": "#/$defs/NetworkPolicyRuleAction"
+          "$ref": "#/definitions/NetworkPolicyRuleAction"
         },
         "host": {
           "type": "string"
         }
       },
       "required": [
-        "host",
-        "action"
+        "action",
+        "host"
       ],
       "type": "object"
     },
@@ -492,10 +531,9 @@
       "type": "string"
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "approvalId": {
-      "description": "Unique identifier for this specific approval callback.\n\nFor regular shell/unified_exec approvals, this is null.\n\nFor zsh-exec-bridge subcommand approvals, multiple callbacks can belong to\none parent `itemId`, so `approvalId` is a distinct opaque callback id\n(a UUID) used to disambiguate routing.",
+      "description": "Unique identifier for this specific approval callback.\n\nFor regular shell/unified_exec approvals, this is null.\n\nFor zsh-exec-bridge subcommand approvals, multiple callbacks can belong to one parent `itemId`, so `approvalId` is a distinct opaque callback id (a UUID) used to disambiguate routing. Stdin approvals also use a distinct callback id; inspect `kind` to distinguish them.",
       "type": [
         "string",
         "null"
@@ -511,7 +549,7 @@
     "commandActions": {
       "description": "Best-effort parsed command actions for friendly display.",
       "items": {
-        "$ref": "#/$defs/CommandAction"
+        "$ref": "#/definitions/CommandAction"
       },
       "type": [
         "array",
@@ -521,7 +559,7 @@
     "cwd": {
       "anyOf": [
         {
-          "$ref": "#/$defs/LegacyAppPathString"
+          "$ref": "#/definitions/LegacyAppPathString"
         },
         {
           "type": "null"
@@ -540,10 +578,19 @@
     "itemId": {
       "type": "string"
     },
+    "kind": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/CommandExecutionApprovalKind"
+        }
+      ],
+      "default": "command",
+      "description": "Kind of action under review. Defaults to `command` for older servers."
+    },
     "networkApprovalContext": {
       "anyOf": [
         {
-          "$ref": "#/$defs/NetworkApprovalContext"
+          "$ref": "#/definitions/NetworkApprovalContext"
         },
         {
           "type": "null"
@@ -564,7 +611,7 @@
     "proposedNetworkPolicyAmendments": {
       "description": "Optional proposed network policy amendments (allow/deny host) for future requests.",
       "items": {
-        "$ref": "#/$defs/NetworkPolicyAmendment"
+        "$ref": "#/definitions/NetworkPolicyAmendment"
       },
       "type": [
         "array",
@@ -591,10 +638,10 @@
     }
   },
   "required": [
-    "threadId",
-    "turnId",
     "itemId",
-    "startedAtMs"
+    "startedAtMs",
+    "threadId",
+    "turnId"
   ],
   "title": "CommandExecutionRequestApprovalParams",
   "type": "object"

@@ -1,5 +1,6 @@
 {
-  "$defs": {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
     "ParsedCommand": {
       "oneOf": [
         {
@@ -11,20 +12,22 @@
               "type": "string"
             },
             "path": {
-              "description": "(Best effort) Path to the file being read by the command. When\npossible, this is an absolute path, though when relative, it should\nbe resolved against the `cwd`` that will be used to run the command\nto derive the absolute path.",
+              "description": "(Best effort) Path to the file being read by the command. When possible, this is an absolute path, though when relative, it should be resolved against the `cwd`` that will be used to run the command to derive the absolute path.",
               "type": "string"
             },
             "type": {
-              "const": "read",
+              "enum": [
+                "read"
+              ],
               "title": "ReadParsedCommandType",
               "type": "string"
             }
           },
           "required": [
-            "type",
             "cmd",
             "name",
-            "path"
+            "path",
+            "type"
           ],
           "title": "ReadParsedCommand",
           "type": "object"
@@ -41,14 +44,16 @@
               ]
             },
             "type": {
-              "const": "list_files",
+              "enum": [
+                "list_files"
+              ],
               "title": "ListFilesParsedCommandType",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "cmd"
+            "cmd",
+            "type"
           ],
           "title": "ListFilesParsedCommand",
           "type": "object"
@@ -71,14 +76,16 @@
               ]
             },
             "type": {
-              "const": "search",
+              "enum": [
+                "search"
+              ],
               "title": "SearchParsedCommandType",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "cmd"
+            "cmd",
+            "type"
           ],
           "title": "SearchParsedCommand",
           "type": "object"
@@ -89,14 +96,16 @@
               "type": "string"
             },
             "type": {
-              "const": "unknown",
+              "enum": [
+                "unknown"
+              ],
               "title": "UnknownParsedCommandType",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "cmd"
+            "cmd",
+            "type"
           ],
           "title": "UnknownParsedCommand",
           "type": "object"
@@ -107,7 +116,6 @@
       "type": "string"
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "approvalId": {
       "description": "Identifier for this specific approval callback.",
@@ -117,7 +125,7 @@
       ]
     },
     "callId": {
-      "description": "Use to correlate this with [codex_protocol::protocol::ExecCommandBeginEvent]\nand [codex_protocol::protocol::ExecCommandEndEvent].",
+      "description": "Use to correlate this with [codex_protocol::protocol::ExecCommandBeginEvent] and [codex_protocol::protocol::ExecCommandEndEvent].",
       "type": "string"
     },
     "command": {
@@ -127,14 +135,14 @@
       "type": "array"
     },
     "conversationId": {
-      "$ref": "#/$defs/ThreadId"
+      "$ref": "#/definitions/ThreadId"
     },
     "cwd": {
       "type": "string"
     },
     "parsedCmd": {
       "items": {
-        "$ref": "#/$defs/ParsedCommand"
+        "$ref": "#/definitions/ParsedCommand"
       },
       "type": "array"
     },
@@ -146,9 +154,9 @@
     }
   },
   "required": [
-    "conversationId",
     "callId",
     "command",
+    "conversationId",
     "cwd",
     "parsedCmd"
   ],

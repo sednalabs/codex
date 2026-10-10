@@ -3,6 +3,7 @@
 //! The guard is intentionally acquired before the authoritative credential reread and retained
 //! through provider refresh and persistence. This prevents two processes from replaying the same
 //! rotating refresh token or observing a partially persisted transaction.
+//! EMA uses the same lock only for short credential reads and generation checks.
 
 use anyhow::Context;
 use anyhow::Result;
@@ -25,12 +26,12 @@ const REFRESH_LOCK_RETRY_SLEEP: Duration = Duration::from_millis(/*millis*/ 50);
 // WouldBlock contention from a contender that merely started late and observed persisted tokens.
 const LOCK_CONTENTION_EVENT_TARGET: &str = "codex_rmcp_client::oauth::refresh_lock::contention";
 
-pub(super) struct RefreshCredentialLock {
+pub(crate) struct RefreshCredentialLock {
     _file: File,
 }
 
 impl RefreshCredentialLock {
-    pub(super) async fn acquire_for_server(server_name: &str, url: &str) -> Result<Self> {
+    pub(crate) async fn acquire_for_server(server_name: &str, url: &str) -> Result<Self> {
         let store_key = super::compute_store_key(server_name, url)?;
         let codex_home = find_codex_home()?;
         Self::acquire_in(&codex_home, &store_key, REFRESH_LOCK_ACQUIRE_TIMEOUT)
@@ -48,10 +49,9 @@ impl RefreshCredentialLock {
         // TODO(stevenlee): define that rendezvous before expanding this lock's scope.
         let mut hasher = Sha256::new();
         hasher.update(store_key.as_bytes());
-        let digest = hasher.finalize();
         let path = codex_home
             .join(REFRESH_LOCK_DIR)
-            .join(format!("{}.lock", super::sha256_lower_hex(digest)));
+            .join(format!("{:x}.lock", hasher.finalize()));
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }

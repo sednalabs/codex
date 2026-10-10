@@ -1,20 +1,25 @@
 {
-  "$defs": {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
     "CommandExecutionApprovalDecision": {
       "oneOf": [
         {
-          "const": "accept",
           "description": "User approved the command.",
+          "enum": [
+            "accept"
+          ],
           "type": "string"
         },
         {
-          "const": "acceptForSession",
-          "description": "User approved the command and future prompts in the same session-scoped\napproval cache should run without prompting.",
+          "description": "User approved the command and future prompts in the same session-scoped approval cache should run without prompting.",
+          "enum": [
+            "acceptForSession"
+          ],
           "type": "string"
         },
         {
           "additionalProperties": false,
-          "description": "User approved the command, and wants to apply the proposed execpolicy amendment so future\nmatching commands can run without prompting.",
+          "description": "User approved the command, and wants to apply the proposed execpolicy amendment so future matching commands can run without prompting.",
           "properties": {
             "acceptWithExecpolicyAmendment": {
               "properties": {
@@ -44,7 +49,7 @@
             "applyNetworkPolicyAmendment": {
               "properties": {
                 "network_policy_amendment": {
-                  "$ref": "#/$defs/NetworkPolicyAmendment"
+                  "$ref": "#/definitions/NetworkPolicyAmendment"
                 }
               },
               "required": [
@@ -60,13 +65,17 @@
           "type": "object"
         },
         {
-          "const": "decline",
           "description": "User denied the command. The agent will continue the turn.",
+          "enum": [
+            "decline"
+          ],
           "type": "string"
         },
         {
-          "const": "cancel",
           "description": "User denied the command. The turn will also be immediately interrupted.",
+          "enum": [
+            "cancel"
+          ],
           "type": "string"
         }
       ]
@@ -74,15 +83,15 @@
     "NetworkPolicyAmendment": {
       "properties": {
         "action": {
-          "$ref": "#/$defs/NetworkPolicyRuleAction"
+          "$ref": "#/definitions/NetworkPolicyRuleAction"
         },
         "host": {
           "type": "string"
         }
       },
       "required": [
-        "host",
-        "action"
+        "action",
+        "host"
       ],
       "type": "object"
     },
@@ -94,10 +103,9 @@
       "type": "string"
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "decision": {
-      "$ref": "#/$defs/CommandExecutionApprovalDecision"
+      "$ref": "#/definitions/CommandExecutionApprovalDecision"
     }
   },
   "required": [

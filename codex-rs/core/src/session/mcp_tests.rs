@@ -1,8 +1,8 @@
 use super::*;
+use pretty_assertions::assert_eq;
 use rmcp::model::BooleanSchema;
 use rmcp::model::ElicitationSchema;
 use rmcp::model::PrimitiveSchemaDefinition;
-use rmcp::model::RequestMetaObject;
 use serde_json::json;
 
 fn meta(value: Value) -> Option<RequestMetaObject> {
@@ -41,53 +41,45 @@ fn form_request(meta: Option<RequestMetaObject>) -> ElicitationReviewRequest {
     }
 }
 
-#[test]
-fn guardian_elicitation_review_request_builds_mcp_tool_call() {
+#[test_case::test_case(None, "mcp_elicitation:browser-use:7"; "unlinked elicitation")]
+#[test_case::test_case(Some("browser-call"), "browser-call"; "linked elicitation")]
+fn guardian_elicitation_review_request_builds_mcp_tool_call(
+    originating_call_id: Option<&str>,
+    expected_request_id: &str,
+) {
     let request = form_request(guardian_meta(Some(json!({
         "origin": "https://example.com",
     }))));
 
-    let GuardianElicitationReview::ApprovalRequest(guardian_request) =
-        guardian_elicitation_review_request(&request)
-    else {
-        panic!("expected Guardian MCP tool call request");
-    };
-    let crate::guardian::GuardianApprovalRequest::McpToolCall {
-        id,
-        server,
-        tool_name,
-        arguments,
-        connector_id,
-        connector_name,
-        connector_description,
-        connected_account_email,
-        tool_title,
-        tool_description,
-        annotations,
-    } = *guardian_request
-    else {
-        panic!("expected Guardian MCP tool call request");
-    };
-
-    assert_eq!(id, "mcp_elicitation:browser-use:7");
-    assert_eq!(server, "browser-use");
-    assert_eq!(tool_name, "access_browser_origin");
-    assert_eq!(arguments, Some(json!({ "origin": "https://example.com" })));
-    assert_eq!(connector_id.as_deref(), Some("browser-use"));
-    assert_eq!(connector_name.as_deref(), Some("Browser Use"));
-    assert_eq!(connector_description, None);
-    assert_eq!(connected_account_email, None);
-    assert_eq!(tool_title.as_deref(), Some("Access browser origin"));
-    assert_eq!(tool_description, None);
-    assert_eq!(annotations, None);
+    assert_eq!(
+        guardian_elicitation_review_request(&request, originating_call_id),
+        GuardianElicitationReview::ApprovalRequest {
+            tool_call_id: originating_call_id.map(str::to_owned),
+            request: Box::new(crate::guardian::GuardianApprovalRequest::McpToolCall {
+                id: expected_request_id.to_owned(),
+                server: "browser-use".to_owned(),
+                tool_name: "access_browser_origin".to_owned(),
+                arguments: Some(json!({ "origin": "https://example.com" })),
+                connector_id: Some("browser-use".to_owned()),
+                connector_name: Some("Browser Use".to_owned()),
+                connector_description: None,
+                connected_account_email: None,
+                tool_title: Some("Access browser origin".to_owned()),
+                tool_description: None,
+                annotations: None,
+            }),
+        }
+    );
 }
 
 #[test]
 fn guardian_elicitation_review_request_defaults_missing_tool_params() {
     let request = form_request(guardian_meta(/*tool_params*/ None));
 
-    let GuardianElicitationReview::ApprovalRequest(guardian_request) =
-        guardian_elicitation_review_request(&request)
+    let GuardianElicitationReview::ApprovalRequest {
+        request: guardian_request,
+        ..
+    } = guardian_elicitation_review_request(&request, /*originating_call_id*/ None)
     else {
         panic!("expected Guardian MCP tool call request");
     };
@@ -164,7 +156,7 @@ fn guardian_elicitation_review_request_requires_opt_in() {
     })));
 
     assert_eq!(
-        guardian_elicitation_review_request(&request),
+        guardian_elicitation_review_request(&request, /*originating_call_id*/ None),
         GuardianElicitationReview::NotRequested
     );
 }
@@ -182,7 +174,7 @@ fn guardian_elicitation_review_request_declines_unsupported_opt_in_shapes() {
         }),
     };
     assert!(matches!(
-        guardian_elicitation_review_request(&url_request),
+        guardian_elicitation_review_request(&url_request, /*originating_call_id*/ None),
         GuardianElicitationReview::Decline(_)
     ));
 
@@ -202,7 +194,10 @@ fn guardian_elicitation_review_request_declines_unsupported_opt_in_shapes() {
         }),
     };
     assert!(matches!(
-        guardian_elicitation_review_request(&non_empty_schema_request),
+        guardian_elicitation_review_request(
+            &non_empty_schema_request,
+            /*originating_call_id*/ None
+        ),
         GuardianElicitationReview::Decline(_)
     ));
 
@@ -211,15 +206,19 @@ fn guardian_elicitation_review_request_declines_unsupported_opt_in_shapes() {
         "codex_request_type": "approval_request",
     })));
     assert!(matches!(
-        guardian_elicitation_review_request(&missing_tool_name_request),
+        guardian_elicitation_review_request(
+            &missing_tool_name_request,
+            /*originating_call_id*/ None
+        ),
         GuardianElicitationReview::Decline(_)
     ));
 }
 
 #[test]
 fn guardian_decisions_map_to_elicitation_responses_without_session_state() {
+    let model = codex_models_manager::model_info::model_info_from_slug("acting-model");
     assert_eq!(
-        mcp_elicitation_response_from_guardian_decision(ReviewDecision::Approved),
+        mcp_elicitation_response_from_guardian_decision(ReviewDecision::Approved, &model),
         ElicitationResponse {
             action: ElicitationAction::Accept,
             content: Some(json!({})),
@@ -229,9 +228,10 @@ fn guardian_decisions_map_to_elicitation_responses_without_session_state() {
         }
     );
     assert_eq!(
-        mcp_elicitation_response_from_guardian_decision(ReviewDecision::denied(
-            "Denied by Guardian",
-        )),
+        mcp_elicitation_response_from_guardian_decision(
+            ReviewDecision::denied("Denied by Guardian"),
+            &model,
+        ),
         ElicitationResponse {
             action: ElicitationAction::Decline,
             content: None,
@@ -242,18 +242,18 @@ fn guardian_decisions_map_to_elicitation_responses_without_session_state() {
         }
     );
     assert_eq!(
-        mcp_elicitation_response_from_guardian_decision(ReviewDecision::TimedOut),
+        mcp_elicitation_response_from_guardian_decision(ReviewDecision::TimedOut, &model),
         ElicitationResponse {
             action: ElicitationAction::Decline,
             content: None,
             meta: Some(json!({
                 "approvals_reviewer": ApprovalsReviewer::AutoReview,
-                "message": crate::guardian::guardian_timeout_message(),
+                "message": codex_prompts::ResolvedModelMessages::from_model(&model).auto_review().timeout_instructions,
             })),
         }
     );
     assert_eq!(
-        mcp_elicitation_response_from_guardian_decision(ReviewDecision::Abort),
+        mcp_elicitation_response_from_guardian_decision(ReviewDecision::Abort, &model),
         ElicitationResponse {
             action: ElicitationAction::Cancel,
             content: None,
@@ -262,4 +262,30 @@ fn guardian_decisions_map_to_elicitation_responses_without_session_state() {
             })),
         }
     );
+}
+
+#[test]
+fn guardian_elicitation_timeout_uses_acting_model_instructions() {
+    let mut model = codex_models_manager::model_info::model_info_from_slug("acting-model");
+    for timeout_instructions in ["Catalog timeout instructions.", ""] {
+        model.model_messages = Some(
+            serde_json::from_value(json!({
+                "auto_review": {
+                    "timeout_instructions": timeout_instructions,
+                },
+            }))
+            .expect("model messages should deserialize"),
+        );
+        assert_eq!(
+            mcp_elicitation_response_from_guardian_decision(ReviewDecision::TimedOut, &model),
+            ElicitationResponse {
+                action: ElicitationAction::Decline,
+                content: None,
+                meta: Some(json!({
+                    "approvals_reviewer": ApprovalsReviewer::AutoReview,
+                    "message": timeout_instructions,
+                })),
+            }
+        );
+    }
 }

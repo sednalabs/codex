@@ -15,6 +15,7 @@ on:
       - "MODULE.bazel.lock"
       - "codex-rs/**"
       - "justfile"
+      - "scripts/build_codex_package.py"
       - "scripts/codex_package/**"
       - "sdk/python/**"
       - ".github/actions/**"
@@ -141,12 +142,16 @@ jobs:
             "scripts/codex_package/smoke_tests/pyproject.toml"
             "scripts/codex_package/smoke_tests/uv.lock"
             "scripts/codex_package/smoke_tests/test_codex_package.py"
-            "scripts/codex_package/smoke_tests/first_binary/artifact.py"
-            "scripts/codex_package/smoke_tests/first_binary/conftest.py"
-            "scripts/codex_package/smoke_tests/first_binary/package_acceptance.py"
+            "scripts/codex_package/smoke_tests/fixtures.py"
+            "scripts/codex_package/smoke_tests/conftest.py"
             "scripts/codex_package/smoke_tests/first_binary/test_tui_package_version.py"
             "scripts/codex_package/smoke_tests/first_binary/test_tui_agents_acceptance.py"
+            "scripts/codex_package/smoke_tests/first_binary/test_agent_control_model_acceptance.py"
+            "scripts/codex_package/smoke_tests/first_binary/test_agent_control_tui_acceptance.py"
             "scripts/codex_package/smoke_tests/first_binary/tui_pty.py"
+            "sdk/python/tests/app_server_harness.py"
+            "sdk/python/tests/test_app_server_harness_request_routing.py"
+            "sdk/python/src/openai_codex/__init__.py"
           )
           missing_package_paths=()
           for path in "${required_package_paths[@]}"; do
@@ -258,7 +263,17 @@ jobs:
 
           (cd codex-rs && cargo update --workspace)
           just write-config-schema
-          (cd codex-rs && INSTA_UPDATE=always cargo test -p codex-tui --lib status::tests)
+          (
+            cd codex-rs
+            CODEX_TEST_STATUS_START_DIAGNOSTIC=1 INSTA_UPDATE=always cargo test -p codex-tui --lib \
+              status::tests::status_snapshot_shows_chatgpt_plan_without_email \
+              -- --exact --nocapture
+          )
+          (
+            cd codex-rs
+            INSTA_UPDATE=always cargo test -p codex-tui --lib status::tests \
+              -- --test-threads=1 --skip status::tests::status_snapshot_shows_chatgpt_plan_without_email
+          )
           just write-app-server-schema
           just bazel-lock-update
 
@@ -361,7 +376,6 @@ jobs:
       WORKFLOW_HOST_SHA: ${{ needs.identity.outputs.workflow_host_sha }}
       WORKFLOW_HOST_TREE: ${{ needs.identity.outputs.workflow_host_tree }}
       TARGET: ${{ matrix.target }}
-      DIST_DIR: ${{ runner.temp }}/sedna-first-dist
       BINARY_KIND: ${{ matrix.binary_kind }}
       LOADER: ${{ matrix.loader }}
     steps:
@@ -421,6 +435,8 @@ jobs:
       - name: Build canonical packages and shipped proxy
         working-directory: codex-rs
         shell: bash
+        env:
+          DIST_DIR: ${{ runner.temp }}/sedna-first-dist
         run: |
           set -euo pipefail
           if [[ "$(git rev-parse HEAD)" != "${SOURCE_SHA}" || "$(git rev-parse HEAD^{tree})" != "${SOURCE_TREE}" ]]; then
@@ -660,6 +676,9 @@ jobs:
             scripts/codex_package/smoke_tests/test_codex_package.py \
             scripts/codex_package/smoke_tests/first_binary/test_tui_package_version.py \
             scripts/codex_package/smoke_tests/first_binary/test_tui_agents_acceptance.py \
+            scripts/codex_package/smoke_tests/first_binary/test_agent_control_model_acceptance.py \
+            scripts/codex_package/smoke_tests/first_binary/test_agent_control_tui_acceptance.py \
+            sdk/python/tests/test_app_server_harness_request_routing.py \
             --compression gzip \
             --package-target "${TARGET}" \
             --cli-archive "dist/codex-cli-${TARGET}.tar.gz" \

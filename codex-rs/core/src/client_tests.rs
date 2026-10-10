@@ -1,6 +1,6 @@
 use super::AuthRequestTelemetryContext;
-use super::CompactConversationRequestSettings;
 use super::ModelClient;
+use super::NonIncrementalReason;
 use super::PendingUnauthorizedRetry;
 use super::Prompt;
 use super::UnauthorizedRecoveryExecution;
@@ -13,48 +13,60 @@ use crate::AttestationContext;
 use crate::AttestationProvider;
 use crate::GenerateAttestationFuture;
 use crate::responses_metadata::CodexResponsesMetadata;
+use crate::responses_metadata::MAX_MCP_ATTRIBUTION_BYTES;
+use crate::responses_metadata::MCP_ATTRIBUTION_CLIENT_METADATA_KEY;
 use crate::test_support::TestCodexResponsesRequestKind;
 use crate::test_support::responses_metadata as test_responses_metadata;
+use base64::Engine;
 use codex_api::AgentIdentityTelemetry;
 use codex_api::ApiError;
-use codex_api::RealtimeEventParser;
-use codex_api::RealtimeOutputModality;
-use codex_api::RealtimeSessionConfig;
-use codex_api::RealtimeSessionMode;
 use codex_api::ResponseEvent;
 use codex_api::TransportError;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::OutboundProxyPolicy;
-use codex_login::AuthCredentialsStoreMode;
-use codex_login::AuthKeyringBackendKind;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
-use codex_login::ExternalAuth;
-use codex_login::ExternalAuthFuture;
-use codex_login::ExternalAuthRefreshContext;
-use codex_login::REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR;
 use codex_login::auth::AgentIdentityAuthPolicy;
 use codex_model_provider::BearerAuthProvider;
+use codex_model_provider::ModelProvider;
+use codex_model_provider::ModelProviderFuture;
+use codex_model_provider::ProviderAccountResult;
+use codex_model_provider::ProviderAuthRecoveryMessages;
+use codex_model_provider::ProviderUnauthorizedRecovery;
 use codex_model_provider::SharedModelProvider;
 use codex_model_provider::create_model_provider;
 use codex_model_provider_info::CHATGPT_CODEX_BASE_URL;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::WireApi;
 use codex_model_provider_info::create_oss_provider_with_base_url;
+use codex_models_manager::ModelsManagerConfig;
+use codex_models_manager::manager::ModelsManager;
+use codex_models_manager::manager::SharedModelsManager;
+use codex_models_manager::manager::StaticModelsManager;
 use codex_otel::SessionTelemetry;
-use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
 use codex_protocol::auth::AuthMode;
+use codex_protocol::error::CodexErr;
+use codex_protocol::error::CodexErrorDetails;
+use codex_protocol::mcp::McpAttribution;
+use codex_protocol::mcp::McpAttributionSource;
+use codex_protocol::mcp::McpAttributionStatus;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::ExecutedToolCall;
+use codex_protocol::models::FunctionCallOutputPayload;
+use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::models::ToolResultMetadata;
+use codex_protocol::models::ToolResultSource;
+use codex_protocol::models::ToolResultSources;
 use codex_protocol::openai_models::ModelInfo;
+use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::protocol::InternalSessionSource;
-use codex_protocol::protocol::RealtimeVoice;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
-use codex_rollout_trace::CompactionTraceContext;
 use codex_rollout_trace::ExecutionStatus;
 use codex_rollout_trace::InferenceTraceAttempt;
 use codex_rollout_trace::InferenceTraceContext;
@@ -62,17 +74,15 @@ use codex_rollout_trace::RawTraceEventPayload;
 use codex_rollout_trace::RolloutTrace;
 use codex_rollout_trace::TraceWriter;
 use codex_rollout_trace::replay_bundle;
-use core_test_support::responses::ev_completed;
-use core_test_support::responses::ev_response_created;
-use core_test_support::responses::sse;
-use core_test_support::responses::start_websocket_server;
+use codex_tools::JsonSchema;
+use codex_tools::ResponsesApiTool;
+use codex_tools::ToolSpec;
 use futures::StreamExt;
 use pretty_assertions::assert_eq;
 use serde_json::json;
-use serial_test::serial;
 use std::collections::BTreeMap;
-use std::collections::HashMap;
 use std::collections::VecDeque;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -93,12 +103,12 @@ use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::util::SubscriberInitExt;
 use wiremock::Mock;
 use wiremock::MockServer;
+use wiremock::Request;
 use wiremock::Respond;
 use wiremock::ResponseTemplate;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
 
-const TEST_CHATGPT_ID_TOKEN: &str = "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJlbWFpbCI6InVzZXJAZXhhbXBsZS5jb20iLCJlbWFpbF92ZXJpZmllZCI6dHJ1ZSwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImNoYXRncHRfdXNlcl9pZCI6InVzZXItMTIzNDUiLCJ1c2VyX2lkIjoidXNlci0xMjM0NSIsImNoYXRncHRfcGxhbl90eXBlIjoicHJvIiwiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjb3VudC0xMjMifX0.c2ln";
 const TEST_INSTALLATION_ID: &str = "11111111-1111-4111-8111-111111111111";
 
 fn test_model_client(session_source: SessionSource) -> ModelClient {
@@ -113,1085 +123,312 @@ fn test_model_client_with_thread_id(
     ModelClient::new(
         /*auth_manager*/ None,
         AgentIdentityAuthPolicy::JwtOnly,
-        thread_id.into(),
         thread_id,
-        TEST_INSTALLATION_ID.to_string(),
         provider,
         session_source,
         "test_originator".to_string(),
         /*model_verbosity*/ None,
+        /*content_item_kinds_enabled*/ true,
+        /*reasoning_effort_override_enabled*/ false,
         /*enable_request_compression*/ false,
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,
         /*concurrent_reasoning_summaries_enabled*/ false,
         /*attestation_provider*/ None,
         HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+        codex_model_provider::WorkspaceRoutingContext::new(
+            "https://chatgpt.com/backend-api".into(),
+        ),
+        Vec::new(),
     )
-}
-
-#[tokio::test]
-async fn automatic_turn_setup_rejects_stale_auth_revision_before_provider_capture() {
-    let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("test-key"));
-    let client = ModelClient::new(
-        Some(Arc::clone(&auth_manager)),
-        AgentIdentityAuthPolicy::JwtOnly,
-        SessionId::new(),
-        ThreadId::new(),
-        TEST_INSTALLATION_ID.to_string(),
-        ModelProviderInfo::create_openai_provider(/*base_url*/ None),
-        SessionSource::Exec,
-        "test_originator".to_string(),
-        /*model_verbosity*/ None,
-        /*enable_request_compression*/ false,
-        /*include_timing_metrics*/ false,
-        /*beta_features_header*/ None,
-        /*concurrent_reasoning_summaries_enabled*/ false,
-        /*attestation_provider*/ None,
-        HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
-    );
-
-    let admitted_authority = client
-        .current_provider_authority()
-        .await
-        .expect("initial provider authority");
-    auth_manager
-        .set_external_auth(Arc::new(StaticExternalAuth(CodexAuth::from_api_key(
-            "replacement-key",
-        ))))
-        .await
-        .expect("credential transition");
-    let error = match client.current_client_setup(Some(admitted_authority)).await {
-        Ok(_) => panic!("stale automatic-turn auth must fail before provider setup"),
-        Err(error) => error,
-    };
-    assert!(matches!(
-        error.details(),
-        codex_protocol::error::CodexErrorDetails::AutomaticTurnContextChanged
-    ));
-    assert_eq!(
-        error.to_string(),
-        "automatic turn context changed before provider request"
-    );
-}
-
-#[derive(Clone)]
-struct StaticExternalAuth(CodexAuth);
-
-impl ExternalAuth for StaticExternalAuth {
-    fn resolve(&self) -> ExternalAuthFuture<'_, CodexAuth> {
-        Box::pin(async { Ok(self.0.clone()) })
-    }
-
-    fn refresh(&self, _context: ExternalAuthRefreshContext) -> ExternalAuthFuture<'_, CodexAuth> {
-        Box::pin(async { Ok(self.0.clone()) })
-    }
-}
-
-struct RetryOnceResponder {
-    calls: AtomicUsize,
-    first_attempt: Arc<Notify>,
-}
-
-struct RealtimeRetryOnceResponder {
-    calls: AtomicUsize,
-    first_attempt: Arc<Notify>,
-}
-
-impl Respond for RealtimeRetryOnceResponder {
-    fn respond(&self, _request: &wiremock::Request) -> ResponseTemplate {
-        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
-            self.first_attempt.notify_one();
-            ResponseTemplate::new(/*status*/ 500)
-        } else {
-            ResponseTemplate::new(/*status*/ 200)
-                .insert_header("location", "/v1/realtime/calls/rtc_auth_b")
-                .set_body_string("v=answer-b\r\n")
-        }
-    }
-}
-
-impl Respond for RetryOnceResponder {
-    fn respond(&self, _request: &wiremock::Request) -> ResponseTemplate {
-        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
-            self.first_attempt.notify_one();
-            ResponseTemplate::new(/*status*/ 500)
-        } else {
-            ResponseTemplate::new(/*status*/ 200)
-                .insert_header("content-type", "text/event-stream")
-                .set_body_raw(
-                    sse(vec![
-                        ev_response_created("retry-success"),
-                        ev_completed("retry-success"),
-                    ]),
-                    "text/event-stream",
-                )
-        }
-    }
-}
-
-fn automatic_retry_prompt() -> Prompt {
-    Prompt {
-        input: vec![ResponseItem::Message {
-            id: None,
-            role: "user".to_string(),
-            content: vec![ContentItem::InputText {
-                text: "continue".to_string(),
-            }],
-            phase: None,
-            internal_chat_message_metadata_passthrough: None,
-        }],
-        base_instructions: BaseInstructions {
-            text: "base instructions".to_string(),
-        },
-        ..Default::default()
-    }
-}
-
-fn automatic_retry_client(server: &MockServer, auth_manager: Arc<AuthManager>) -> ModelClient {
-    let mut provider = ModelProviderInfo::create_openai_provider(/*base_url*/ None);
-    provider.base_url = Some(format!("{}/v1", server.uri()));
-    provider.supports_websockets = false;
-    provider.request_max_retries = Some(1);
-    ModelClient::new(
-        Some(auth_manager),
-        AgentIdentityAuthPolicy::JwtOnly,
-        SessionId::new(),
-        ThreadId::new(),
-        TEST_INSTALLATION_ID.to_string(),
-        provider,
-        SessionSource::Exec,
-        "test_originator".to_string(),
-        /*model_verbosity*/ None,
-        /*enable_request_compression*/ false,
-        /*include_timing_metrics*/ false,
-        /*beta_features_header*/ None,
-        /*concurrent_reasoning_summaries_enabled*/ false,
-        /*attestation_provider*/ None,
-        HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
-    )
-}
-
-#[tokio::test]
-async fn automatic_http_retry_revalidates_same_authority_and_succeeds() {
-    let server = MockServer::start().await;
-    let first_attempt = Arc::new(Notify::new());
-    Mock::given(method("POST"))
-        .and(path("/v1/responses"))
-        .respond_with(RetryOnceResponder {
-            calls: AtomicUsize::new(0),
-            first_attempt,
-        })
-        .expect(/*requests*/ 2)
-        .mount(&server)
-        .await;
-    let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("key-a"));
-    let client = automatic_retry_client(&server, auth_manager);
-    let admitted_authority = client
-        .current_provider_authority()
-        .await
-        .expect("initial provider authority");
-    let mut session = client.new_session_with_authority(Some(admitted_authority));
-    let responses_metadata = test_responses_metadata_for_client(
-        &client,
-        Some("automatic-retry"),
-        format!("{}:0", client.state.thread_id),
-        /*parent_thread_id*/ None,
-        TestCodexResponsesRequestKind::Turn,
-    );
-
-    let mut stream = session
-        .stream(
-            &automatic_retry_prompt(),
-            &test_model_info(),
-            &test_session_telemetry(),
-            /*effort*/ None,
-            codex_protocol::config_types::ReasoningSummary::None,
-            /*service_tier*/ None,
-            &responses_metadata,
-            &InferenceTraceContext::disabled(),
-        )
-        .await
-        .expect("same-authority retry should start a response stream");
-    while let Some(event) = stream.next().await {
-        if matches!(
-            event.expect("retry response event"),
-            ResponseEvent::Completed { .. }
-        ) {
-            break;
-        }
-    }
-    assert_eq!(
-        server.received_requests().await.expect("request log").len(),
-        2
-    );
-}
-
-#[tokio::test]
-async fn realtime_override_retry_keeps_target_and_joins_with_successful_auth() {
-    let override_server = MockServer::start().await;
-    let ordinary_provider_server = MockServer::start().await;
-    let first_attempt = Arc::new(Notify::new());
-    Mock::given(method("POST"))
-        .and(path("/v1/realtime/calls"))
-        .respond_with(RealtimeRetryOnceResponder {
-            calls: AtomicUsize::new(0),
-            first_attempt: Arc::clone(&first_attempt),
-        })
-        .expect(/*requests*/ 2)
-        .mount(&override_server)
-        .await;
-    let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("key-a"));
-    let mut provider = ModelProviderInfo::create_openai_provider(Some(format!(
-        "{}/v1",
-        ordinary_provider_server.uri()
-    )));
-    provider.request_max_retries = Some(1);
-    let client = ModelClient::new(
-        Some(Arc::clone(&auth_manager)),
-        AgentIdentityAuthPolicy::JwtOnly,
-        SessionId::new(),
-        ThreadId::new(),
-        TEST_INSTALLATION_ID.to_string(),
-        provider,
-        SessionSource::Exec,
-        "test_originator".to_string(),
-        /*model_verbosity*/ None,
-        /*enable_request_compression*/ false,
-        /*include_timing_metrics*/ false,
-        /*beta_features_header*/ None,
-        /*concurrent_reasoning_summaries_enabled*/ false,
-        /*attestation_provider*/ None,
-        HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
-    );
-    let override_provider =
-        ModelProviderInfo::create_openai_provider(Some(format!("{}/v1", override_server.uri())))
-            .to_api_provider(Some(AuthMode::ApiKey))
-            .expect("override provider should resolve");
-    let session_config = RealtimeSessionConfig {
-        instructions: "test realtime retry".to_string(),
-        initial_items: Vec::new(),
-        model: Some("gpt-realtime".to_string()),
-        session_id: Some("sess-retry".to_string()),
-        event_parser: RealtimeEventParser::V1,
-        session_mode: RealtimeSessionMode::Conversational,
-        output_modality: RealtimeOutputModality::Audio,
-        voice: RealtimeVoice::Cove,
-    };
-    let mut extra_headers = http::HeaderMap::new();
-    extra_headers.insert(
-        "x-sideband-shared",
-        http::HeaderValue::from_static("preserved"),
-    );
-    let call = client.create_realtime_call_with_headers(
-        "v=offer\r\n".to_string(),
-        session_config,
-        extra_headers,
-        Some(override_provider),
-    );
-    let transition = async {
-        first_attempt.notified().await;
-        auth_manager
-            .set_external_auth(Arc::new(StaticExternalAuth(CodexAuth::from_api_key(
-                "key-b",
-            ))))
-            .await
-    };
-    let (call_result, transition_result) = tokio::join!(call, transition);
-    transition_result.expect("credential transition should complete during retry backoff");
-    let call = call_result.expect("the override retry should succeed");
-
-    assert_eq!(call.call_id, "rtc_auth_b");
-    assert_eq!(call.sdp, "v=answer-b\r\n");
-    assert_eq!(
-        call.sideband_headers
-            .get_all(http::header::AUTHORIZATION)
-            .iter()
-            .collect::<Vec<_>>(),
-        vec![&http::HeaderValue::from_static("Bearer key-b")]
-    );
-    assert_eq!(
-        call.sideband_headers.get("x-sideband-shared"),
-        Some(&http::HeaderValue::from_static("preserved"))
-    );
-    let override_requests = override_server
-        .received_requests()
-        .await
-        .expect("override request log");
-    assert_eq!(override_requests.len(), 2);
-    assert_eq!(override_requests[0].url, override_requests[1].url);
-    assert_eq!(override_requests[0].body, override_requests[1].body);
-    assert_eq!(
-        override_requests
-            .iter()
-            .map(|request| request.headers.get(http::header::AUTHORIZATION))
-            .collect::<Vec<_>>(),
-        vec![
-            Some(&http::HeaderValue::from_static("Bearer key-a")),
-            Some(&http::HeaderValue::from_static("Bearer key-b")),
-        ]
-    );
-    assert!(
-        ordinary_provider_server
-            .received_requests()
-            .await
-            .expect("ordinary provider request log")
-            .is_empty()
-    );
-}
-
-#[tokio::test]
-async fn automatic_http_retry_rejects_changed_authority_before_second_wire_attempt() {
-    let server = MockServer::start().await;
-    let first_attempt = Arc::new(Notify::new());
-    Mock::given(method("POST"))
-        .and(path("/v1/responses"))
-        .respond_with(RetryOnceResponder {
-            calls: AtomicUsize::new(0),
-            first_attempt: Arc::clone(&first_attempt),
-        })
-        .mount(&server)
-        .await;
-    let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("key-a"));
-    let client = automatic_retry_client(&server, Arc::clone(&auth_manager));
-    let admitted_authority = client
-        .current_provider_authority()
-        .await
-        .expect("initial provider authority");
-    let mut session = client.new_session_with_authority(Some(admitted_authority));
-    let responses_metadata = test_responses_metadata_for_client(
-        &client,
-        Some("automatic-retry"),
-        format!("{}:0", client.state.thread_id),
-        /*parent_thread_id*/ None,
-        TestCodexResponsesRequestKind::Turn,
-    );
-    let prompt = automatic_retry_prompt();
-    let model_info = test_model_info();
-    let session_telemetry = test_session_telemetry();
-    let inference_trace = InferenceTraceContext::disabled();
-    let retry = session.stream(
-        &prompt,
-        &model_info,
-        &session_telemetry,
-        /*effort*/ None,
-        codex_protocol::config_types::ReasoningSummary::None,
-        /*service_tier*/ None,
-        &responses_metadata,
-        &inference_trace,
-    );
-    let transition = async {
-        first_attempt.notified().await;
-        auth_manager
-            .set_external_auth(Arc::new(StaticExternalAuth(CodexAuth::from_api_key(
-                "key-b",
-            ))))
-            .await
-    };
-    let (retry_result, transition_result) = tokio::join!(retry, transition);
-    transition_result.expect("credential transition should complete during retry backoff");
-
-    let error = match retry_result {
-        Ok(_) => panic!("changed authority must stop the retry"),
-        Err(error) => error,
-    };
-    assert!(matches!(
-        error.details(),
-        codex_protocol::error::CodexErrorDetails::AutomaticTurnContextChanged
-    ));
-    assert_eq!(
-        server.received_requests().await.expect("request log").len(),
-        1
-    );
-}
-
-#[tokio::test]
-async fn automatic_turn_transition_at_provider_gate_sends_no_request() {
-    let server = MockServer::start().await;
-    let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("key-a"));
-    let client = ModelClient::new(
-        Some(Arc::clone(&auth_manager)),
-        AgentIdentityAuthPolicy::JwtOnly,
-        SessionId::new(),
-        ThreadId::new(),
-        TEST_INSTALLATION_ID.to_string(),
-        ModelProviderInfo::create_openai_provider(Some(server.uri())),
-        SessionSource::Exec,
-        "test_originator".to_string(),
-        /*model_verbosity*/ None,
-        /*enable_request_compression*/ false,
-        /*include_timing_metrics*/ false,
-        /*beta_features_header*/ None,
-        /*concurrent_reasoning_summaries_enabled*/ false,
-        /*attestation_provider*/ None,
-        HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
-    );
-    let admitted_authority = client
-        .current_provider_authority()
-        .await
-        .expect("initial provider authority");
-    let admitted_revision = admitted_authority.revision.expect("managed auth revision");
-    let boundary_barrier = auth_manager
-        .provider_request_guard(admitted_revision)
-        .await
-        .expect("initial credential revision should be current");
-
-    let transition = auth_manager.set_external_auth(Arc::new(StaticExternalAuth(
-        CodexAuth::from_api_key("key-b"),
-    )));
-    tokio::pin!(transition);
-    assert!(matches!(futures::poll!(transition.as_mut()), Poll::Pending));
-
-    let mut session = client.new_session_with_authority(Some(admitted_authority));
-    let prompt = Prompt {
-        input: vec![ResponseItem::Message {
-            id: None,
-            role: "user".to_string(),
-            content: vec![ContentItem::InputText {
-                text: "continue".to_string(),
-            }],
-            phase: None,
-            internal_chat_message_metadata_passthrough: None,
-        }],
-        base_instructions: BaseInstructions {
-            text: "base instructions".to_string(),
-        },
-        ..Default::default()
-    };
-    let responses_metadata = test_responses_metadata_for_client(
-        &client,
-        Some("automatic-turn"),
-        format!("{}:0", client.state.thread_id),
-        /*parent_thread_id*/ None,
-        TestCodexResponsesRequestKind::Turn,
-    );
-    let model_info = test_model_info();
-    let session_telemetry = test_session_telemetry();
-    let inference_trace = InferenceTraceContext::disabled();
-    let stream = session.stream(
-        &prompt,
-        &model_info,
-        &session_telemetry,
-        /*effort*/ None,
-        codex_protocol::config_types::ReasoningSummary::None,
-        /*service_tier*/ None,
-        &responses_metadata,
-        &inference_trace,
-    );
-    tokio::pin!(stream);
-    assert!(matches!(futures::poll!(stream.as_mut()), Poll::Pending));
-
-    drop(boundary_barrier);
-    let (transition_result, stream_result) = tokio::join!(&mut transition, &mut stream);
-    transition_result.expect("credential transition should complete");
-    let error = match stream_result {
-        Ok(_) => panic!("automatic request must be denied after transition"),
-        Err(error) => error,
-    };
-    assert!(matches!(
-        error.details(),
-        codex_protocol::error::CodexErrorDetails::AutomaticTurnContextChanged
-    ));
-    assert!(
-        server
-            .received_requests()
-            .await
-            .expect("request log")
-            .is_empty()
-    );
-}
-
-#[tokio::test]
-async fn external_auth_resolution_succeeds_without_provider_gate_deadlock() {
-    let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("initial-key"));
-    auth_manager
-        .set_external_auth(Arc::new(StaticExternalAuth(CodexAuth::from_api_key(
-            "external-key",
-        ))))
-        .await
-        .expect("install external auth");
-    let client = ModelClient::new(
-        Some(auth_manager),
-        AgentIdentityAuthPolicy::JwtOnly,
-        SessionId::new(),
-        ThreadId::new(),
-        TEST_INSTALLATION_ID.to_string(),
-        ModelProviderInfo::create_openai_provider(/*base_url*/ None),
-        SessionSource::Exec,
-        "test_originator".to_string(),
-        /*model_verbosity*/ None,
-        /*enable_request_compression*/ false,
-        /*include_timing_metrics*/ false,
-        /*beta_features_header*/ None,
-        /*concurrent_reasoning_summaries_enabled*/ false,
-        /*attestation_provider*/ None,
-        HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
-    );
-
-    tokio::time::timeout(Duration::from_secs(1), client.current_provider_authority())
-        .await
-        .expect("external auth resolution must not deadlock")
-        .expect("external auth authority should resolve");
-}
-
-#[tokio::test]
-#[serial(provider_authority_refresh_env)]
-async fn proactive_refresh_succeeds_without_provider_gate_deadlock() {
-    let refresh_server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "access_token": "refreshed-access-token",
-            "refresh_token": "refreshed-refresh-token"
-        })))
-        .mount(&refresh_server)
-        .await;
-    let old_refresh_endpoint = std::env::var_os(REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR);
-    // SAFETY: this uniquely serialized test restores the process environment before returning.
-    unsafe { std::env::set_var(REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR, refresh_server.uri()) };
-
-    let codex_home = TempDir::new().expect("temporary codex home");
-    let auth_json = json!({
-        "tokens": {
-            "id_token": TEST_CHATGPT_ID_TOKEN,
-            "access_token": "stale-access-token",
-            "refresh_token": "stale-refresh-token",
-            "account_id": "account-123"
-        },
-        "last_refresh": "2000-01-01T00:00:00Z"
-    });
-    std::fs::write(
-        codex_home.path().join("auth.json"),
-        serde_json::to_vec(&auth_json).expect("serialize auth"),
-    )
-    .expect("write auth");
-    let auth_manager = AuthManager::shared(
-        codex_home.path().to_path_buf(),
-        /*enable_codex_api_key_env*/ false,
-        AuthCredentialsStoreMode::File,
-        /*forced_chatgpt_workspace_id*/ None,
-        /*chatgpt_base_url*/ None,
-        AuthKeyringBackendKind::default(),
-        codex_login::test_support::transport_default_auth_route_config(),
-    )
-    .await;
-    let client = ModelClient::new(
-        Some(Arc::clone(&auth_manager)),
-        AgentIdentityAuthPolicy::JwtOnly,
-        SessionId::new(),
-        ThreadId::new(),
-        TEST_INSTALLATION_ID.to_string(),
-        ModelProviderInfo::create_openai_provider(/*base_url*/ None),
-        SessionSource::Exec,
-        "test_originator".to_string(),
-        /*model_verbosity*/ None,
-        /*enable_request_compression*/ false,
-        /*include_timing_metrics*/ false,
-        /*beta_features_header*/ None,
-        /*concurrent_reasoning_summaries_enabled*/ false,
-        /*attestation_provider*/ None,
-        HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
-    );
-
-    tokio::time::timeout(Duration::from_secs(1), client.current_provider_authority())
-        .await
-        .expect("proactive refresh must not deadlock")
-        .expect("refreshed provider authority");
-    assert_eq!(auth_manager.auth_revision(), 1);
-
-    match old_refresh_endpoint {
-        Some(value) => {
-            // SAFETY: restoration is covered by the same serialized test boundary.
-            unsafe { std::env::set_var(REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR, value) };
-        }
-        None => {
-            // SAFETY: restoration is covered by the same serialized test boundary.
-            unsafe { std::env::remove_var(REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR) };
-        }
-    }
-}
-
-#[tokio::test]
-async fn legacy_remote_compaction_uses_automatic_turn_authority() {
-    let server = MockServer::start().await;
-    let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("key-a"));
-    let client = ModelClient::new(
-        Some(Arc::clone(&auth_manager)),
-        AgentIdentityAuthPolicy::JwtOnly,
-        SessionId::new(),
-        ThreadId::new(),
-        TEST_INSTALLATION_ID.to_string(),
-        ModelProviderInfo::create_openai_provider(Some(server.uri())),
-        SessionSource::Exec,
-        "test_originator".to_string(),
-        /*model_verbosity*/ None,
-        /*enable_request_compression*/ false,
-        /*include_timing_metrics*/ false,
-        /*beta_features_header*/ None,
-        /*concurrent_reasoning_summaries_enabled*/ false,
-        /*attestation_provider*/ None,
-        HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
-    );
-    let admitted_authority = client
-        .current_provider_authority()
-        .await
-        .expect("initial provider authority");
-    auth_manager
-        .set_external_auth(Arc::new(StaticExternalAuth(CodexAuth::from_api_key(
-            "key-b",
-        ))))
-        .await
-        .expect("credential transition should complete");
-    let prompt = Prompt {
-        input: vec![ResponseItem::Message {
-            id: None,
-            role: "user".to_string(),
-            content: vec![ContentItem::InputText {
-                text: "compact".to_string(),
-            }],
-            phase: None,
-            internal_chat_message_metadata_passthrough: None,
-        }],
-        base_instructions: BaseInstructions {
-            text: "base instructions".to_string(),
-        },
-        ..Default::default()
-    };
-    let responses_metadata = test_responses_metadata_for_client(
-        &client,
-        Some("automatic-turn"),
-        format!("{}:0", client.state.thread_id),
-        /*parent_thread_id*/ None,
-        TestCodexResponsesRequestKind::Turn,
-    );
-    let result = client
-        .compact_conversation_history(
-            &prompt,
-            &test_model_info(),
-            /*turn_state*/ None,
-            Some(admitted_authority),
-            CompactConversationRequestSettings {
-                effort: None,
-                summary: codex_protocol::config_types::ReasoningSummary::None,
-                service_tier: None,
-            },
-            &test_session_telemetry(),
-            &CompactionTraceContext::disabled(),
-            &responses_metadata,
-        )
-        .await;
-    let error = match result {
-        Ok(_) => panic!("stale automatic compaction must be denied"),
-        Err(error) => error,
-    };
-    assert!(matches!(
-        error.details(),
-        codex_protocol::error::CodexErrorDetails::AutomaticTurnContextChanged
-    ));
-    assert!(
-        server
-            .received_requests()
-            .await
-            .expect("request log")
-            .is_empty()
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cached_websocket_reuse_is_bound_to_credential_revision() {
-    let server = start_websocket_server(vec![
-        vec![
-            vec![ev_response_created("resp-a1"), ev_completed("resp-a1")],
-            vec![ev_response_created("resp-a2"), ev_completed("resp-a2")],
-        ],
-        vec![vec![ev_response_created("resp-b"), ev_completed("resp-b")]],
-    ])
-    .await;
-    let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("key-a"));
-    let client = ModelClient::new(
-        Some(Arc::clone(&auth_manager)),
-        AgentIdentityAuthPolicy::JwtOnly,
-        SessionId::new(),
-        ThreadId::new(),
-        TEST_INSTALLATION_ID.to_string(),
-        ModelProviderInfo::create_openai_provider(Some(server.uri().to_string())),
-        SessionSource::Exec,
-        "test_originator".to_string(),
-        /*model_verbosity*/ None,
-        /*enable_request_compression*/ false,
-        /*include_timing_metrics*/ false,
-        /*beta_features_header*/ None,
-        /*concurrent_reasoning_summaries_enabled*/ false,
-        /*attestation_provider*/ None,
-        HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
-    );
-    let prompt = Prompt {
-        input: vec![ResponseItem::Message {
-            id: None,
-            role: "user".to_string(),
-            content: vec![ContentItem::InputText {
-                text: "continue".to_string(),
-            }],
-            phase: None,
-            internal_chat_message_metadata_passthrough: None,
-        }],
-        base_instructions: BaseInstructions {
-            text: "base instructions".to_string(),
-        },
-        ..Default::default()
-    };
-    let responses_metadata = test_responses_metadata_for_client(
-        &client,
-        Some("automatic-turn"),
-        format!("{}:0", client.state.thread_id),
-        /*parent_thread_id*/ None,
-        TestCodexResponsesRequestKind::Turn,
-    );
-    let authority_a = client
-        .current_provider_authority()
-        .await
-        .expect("provider authority A");
-
-    for _ in 0..2 {
-        let mut session = client.new_session_with_authority(Some(authority_a));
-        let mut stream = session
-            .stream(
-                &prompt,
-                &test_model_info(),
-                &test_session_telemetry(),
-                /*effort*/ None,
-                codex_protocol::config_types::ReasoningSummary::None,
-                /*service_tier*/ None,
-                &responses_metadata,
-                &InferenceTraceContext::disabled(),
-            )
-            .await
-            .expect("same-revision websocket request should start");
-        while let Some(event) = stream.next().await {
-            if matches!(
-                event.expect("websocket event"),
-                ResponseEvent::Completed { .. }
-            ) {
-                break;
-            }
-        }
-        drop(stream);
-        drop(session);
-    }
-    assert_eq!(
-        server.connections().len(),
-        1,
-        "revision A should reuse its socket"
-    );
-
-    auth_manager
-        .set_external_auth(Arc::new(StaticExternalAuth(CodexAuth::from_api_key(
-            "key-b",
-        ))))
-        .await
-        .expect("credential transition should complete");
-    let authority_b = client
-        .current_provider_authority()
-        .await
-        .expect("provider authority B");
-    let mut session = client.new_session_with_authority(Some(authority_b));
-    let mut stream = session
-        .stream(
-            &prompt,
-            &test_model_info(),
-            &test_session_telemetry(),
-            /*effort*/ None,
-            codex_protocol::config_types::ReasoningSummary::None,
-            /*service_tier*/ None,
-            &responses_metadata,
-            &InferenceTraceContext::disabled(),
-        )
-        .await
-        .expect("revision B websocket request should start");
-    while let Some(event) = stream.next().await {
-        if matches!(
-            event.expect("websocket event"),
-            ResponseEvent::Completed { .. }
-        ) {
-            break;
-        }
-    }
-    drop(stream);
-    assert_eq!(
-        server.connections().len(),
-        2,
-        "revision B must open a new socket"
-    );
-    server.shutdown().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn env_authority_change_rejects_automatic_and_never_reuses_stale_socket() {
-    const TOKEN_ENV: &str = "CODEX_TEST_PROVIDER_AUTHORITY_TOKEN_691";
-    const HEADER_ENV: &str = "CODEX_TEST_PROVIDER_AUTHORITY_HEADER_691";
-    // SAFETY: these test-only names are unique to this test and are removed before return.
-    unsafe {
-        std::env::set_var(TOKEN_ENV, "token-a-secret");
-        std::env::set_var(HEADER_ENV, "header-a-secret");
-    }
-    let server = start_websocket_server(vec![
-        vec![
-            vec![ev_response_created("resp-a1"), ev_completed("resp-a1")],
-            vec![ev_response_created("resp-a2"), ev_completed("resp-a2")],
-        ],
-        vec![vec![ev_response_created("resp-b"), ev_completed("resp-b")]],
-    ])
-    .await;
-    let mut provider = ModelProviderInfo::create_openai_provider(Some(server.uri().to_string()));
-    provider.requires_openai_auth = false;
-    provider.env_key = Some(TOKEN_ENV.to_string());
-    provider.env_http_headers = Some(HashMap::from([(
-        "x-provider-authority".to_string(),
-        HEADER_ENV.to_string(),
-    )]));
-    let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("unused"));
-    let client = ModelClient::new(
-        Some(auth_manager),
-        AgentIdentityAuthPolicy::JwtOnly,
-        SessionId::new(),
-        ThreadId::new(),
-        TEST_INSTALLATION_ID.to_string(),
-        provider,
-        SessionSource::Exec,
-        "test_originator".to_string(),
-        /*model_verbosity*/ None,
-        /*enable_request_compression*/ false,
-        /*include_timing_metrics*/ false,
-        /*beta_features_header*/ None,
-        /*concurrent_reasoning_summaries_enabled*/ false,
-        /*attestation_provider*/ None,
-        HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
-    );
-    let prompt = Prompt {
-        input: vec![ResponseItem::Message {
-            id: None,
-            role: "user".to_string(),
-            content: vec![ContentItem::InputText {
-                text: "continue".to_string(),
-            }],
-            phase: None,
-            internal_chat_message_metadata_passthrough: None,
-        }],
-        base_instructions: BaseInstructions {
-            text: "base instructions".to_string(),
-        },
-        ..Default::default()
-    };
-    let responses_metadata = test_responses_metadata_for_client(
-        &client,
-        Some("automatic-turn"),
-        format!("{}:0", client.state.thread_id),
-        /*parent_thread_id*/ None,
-        TestCodexResponsesRequestKind::Turn,
-    );
-    let authority_a = client
-        .current_provider_authority()
-        .await
-        .expect("authority A");
-    assert!(!format!("{authority_a:?}").contains("token-a-secret"));
-    assert!(!format!("{authority_a:?}").contains("header-a-secret"));
-
-    for _ in 0..2 {
-        let mut session = client.new_session_with_authority(Some(authority_a));
-        let mut stream = session
-            .stream(
-                &prompt,
-                &test_model_info(),
-                &test_session_telemetry(),
-                /*effort*/ None,
-                codex_protocol::config_types::ReasoningSummary::None,
-                /*service_tier*/ None,
-                &responses_metadata,
-                &InferenceTraceContext::disabled(),
-            )
-            .await
-            .expect("authority A request");
-        while let Some(event) = stream.next().await {
-            if matches!(
-                event.expect("websocket event"),
-                ResponseEvent::Completed { .. }
-            ) {
-                break;
-            }
-        }
-        drop(stream);
-        drop(session);
-    }
-    assert_eq!(
-        server.connections().len(),
-        1,
-        "same complete identity reuses"
-    );
-
-    // SAFETY: these test-only names are unique to this test.
-    unsafe {
-        std::env::set_var(TOKEN_ENV, "token-b-secret");
-        std::env::set_var(HEADER_ENV, "header-b-secret");
-    }
-    let stale_error = match client.current_client_setup(Some(authority_a)).await {
-        Ok(_) => panic!("changed env authority must reject stale automatic work"),
-        Err(error) => error,
-    };
-    assert!(matches!(
-        stale_error.details(),
-        codex_protocol::error::CodexErrorDetails::AutomaticTurnContextChanged
-    ));
-    assert!(!stale_error.to_string().contains("token-b-secret"));
-    assert!(!stale_error.to_string().contains("header-b-secret"));
-
-    let authority_b = client
-        .current_provider_authority()
-        .await
-        .expect("authority B");
-    assert_ne!(authority_a, authority_b);
-    let mut session = client.new_session_with_authority(Some(authority_b));
-    let mut stream = session
-        .stream(
-            &prompt,
-            &test_model_info(),
-            &test_session_telemetry(),
-            /*effort*/ None,
-            codex_protocol::config_types::ReasoningSummary::None,
-            /*service_tier*/ None,
-            &responses_metadata,
-            &InferenceTraceContext::disabled(),
-        )
-        .await
-        .expect("authority B request");
-    while let Some(event) = stream.next().await {
-        if matches!(
-            event.expect("websocket event"),
-            ResponseEvent::Completed { .. }
-        ) {
-            break;
-        }
-    }
-    assert_eq!(server.connections().len(), 2, "socket A must not be reused");
-    // SAFETY: restore the unique test-only process environment.
-    unsafe {
-        std::env::remove_var(TOKEN_ENV);
-        std::env::remove_var(HEADER_ENV);
-    }
-}
-
-#[tokio::test]
-async fn compact_uses_bearer_after_agent_identity_session_fallback() -> anyhow::Result<()> {
-    let server = MockServer::start().await;
-    let registration_count = Arc::new(AtomicUsize::new(0));
-    let response_count = Arc::clone(&registration_count);
-    Mock::given(method("POST"))
-        .and(path("/v1/agent/register"))
-        .respond_with(move |_request: &wiremock::Request| {
-            response_count.fetch_add(1, Ordering::SeqCst);
-            ResponseTemplate::new(/*status*/ 503)
-        })
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/v1/responses/compact"))
-        .respond_with(ResponseTemplate::new(/*status*/ 200).set_body_json(json!({
-            "output": []
-        })))
-        .expect(/*requests*/ 1)
-        .mount(&server)
-        .await;
-
-    let codex_home = TempDir::new()?;
-    let auth_manager = chatgpt_auth_manager(&codex_home, server.uri()).await;
-    let mut provider = ModelProviderInfo::create_openai_provider(/*base_url*/ None);
-    provider.base_url = Some(format!("{}/v1", server.uri()));
-    provider.supports_websockets = false;
-    let thread_id = ThreadId::new();
-    let client = ModelClient::new(
-        Some(auth_manager),
-        AgentIdentityAuthPolicy::ChatGptAuth,
-        SessionId::from(thread_id),
-        thread_id,
-        "test_installation_id".to_string(),
-        provider,
-        SessionSource::Cli,
-        "test_originator".to_string(),
-        /*model_verbosity*/ None,
-        /*enable_request_compression*/ false,
-        /*include_timing_metrics*/ false,
-        /*beta_features_header*/ None,
-        /*concurrent_reasoning_summaries_enabled*/ false,
-        /*attestation_provider*/ None,
-        HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
-    );
-    let prompt = Prompt {
-        input: vec![ResponseItem::Message {
-            id: None,
-            role: "user".to_string(),
-            content: vec![ContentItem::InputText {
-                text: "please compact".to_string(),
-            }],
-            phase: None,
-            internal_chat_message_metadata_passthrough: None,
-        }],
-        base_instructions: BaseInstructions {
-            text: "base instructions".to_string(),
-        },
-        ..Default::default()
-    };
-    let responses_metadata = test_responses_metadata_for_client(
-        &client,
-        /*turn_id*/ None,
-        format!("{}:0", client.state.thread_id),
-        /*parent_thread_id*/ None,
-        TestCodexResponsesRequestKind::Turn,
-    );
-
-    let output = client
-        .compact_conversation_history(
-            &prompt,
-            &test_model_info(),
-            /*turn_state*/ None,
-            /*expected_authority*/ None,
-            CompactConversationRequestSettings {
-                effort: None,
-                summary: codex_protocol::config_types::ReasoningSummary::None,
-                service_tier: None,
-            },
-            &test_session_telemetry(),
-            &CompactionTraceContext::disabled(),
-            &responses_metadata,
-        )
-        .await?;
-
-    assert!(output.is_empty());
-    assert_eq!(registration_count.load(Ordering::SeqCst), 3);
-    let requests = server
-        .received_requests()
-        .await
-        .expect("server should record requests");
-    let compact_request = requests
-        .iter()
-        .find(|request| request.url.path() == "/v1/responses/compact")
-        .expect("compact request should be captured");
-    assert_eq!(
-        compact_request
-            .headers
-            .get(http::header::AUTHORIZATION)
-            .and_then(|value| value.to_str().ok()),
-        Some("Bearer test-access-token")
-    );
-    assert_eq!(
-        compact_request
-            .headers
-            .get("ChatGPT-Account-ID")
-            .and_then(|value| value.to_str().ok()),
-        Some("account-123")
-    );
-
-    Ok(())
 }
 
 fn test_model_provider() -> SharedModelProvider {
     test_model_client(SessionSource::Cli).state.provider.clone()
+}
+
+#[tokio::test]
+async fn workspace_routed_http_rejects_redirects_without_a_routing_header() {
+    use codex_client::HttpTransport;
+    use codex_login::WorkspaceRouting;
+    use codex_login::WorkspaceRoutingRequest;
+    use codex_login::WorkspaceRoutingResolver;
+
+    struct Routing(Option<&'static str>);
+    impl WorkspaceRoutingResolver for Routing {
+        fn resolve(
+            &self,
+            _request: WorkspaceRoutingRequest,
+        ) -> Pin<
+            Box<
+                dyn std::future::Future<Output = std::io::Result<Option<WorkspaceRouting>>>
+                    + Send
+                    + '_,
+            >,
+        > {
+            Box::pin(async move {
+                Ok(self.0.map(|override_value| WorkspaceRouting {
+                    chatgpt_account_id: "account_id".into(),
+                    backend_origin: "https://gov.chatgpt.com".into(),
+                    account_routing_override: override_value.into(),
+                }))
+            })
+        }
+    }
+
+    for routing_override in [Some("NO_CONSTRAINT"), Some("us_cr"), None] {
+        let origin = MockServer::start().await;
+        let destination = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(/*status*/ 307)
+                    .insert_header("location", format!("{}/responses", destination.uri())),
+            )
+            .mount(&origin)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(/*status*/ 200))
+            .mount(&destination)
+            .await;
+        let manager =
+            AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
+        let resolver: Arc<dyn WorkspaceRoutingResolver> = Arc::new(Routing(routing_override));
+        manager.set_workspace_routing_resolver(Arc::downgrade(&resolver));
+        let mut client = test_model_client(SessionSource::Exec);
+        Arc::get_mut(&mut client.state).unwrap().provider = create_model_provider(
+            ModelProviderInfo::create_openai_provider(/*base_url*/ None),
+            Some(manager),
+        );
+        let mut setup = client
+            .current_client_setup(super::ClientRouting::Workspace)
+            .await
+            .unwrap();
+        if routing_override.is_some() {
+            assert_eq!(
+                setup.api_provider.base_url,
+                "https://gov.chatgpt.com/backend-api/codex"
+            );
+        }
+        // Exercise the resolved route's redirect policy against loopback HTTP servers.
+        setup.api_provider.base_url = origin.uri();
+        let transport = client
+            .build_api_transport(&setup.api_provider, "/responses", setup.redirect_policy)
+            .unwrap();
+        let request = setup
+            .api_provider
+            .build_request(http::Method::POST, "/responses")
+            .with_json(&json!({"input": "workspace content"}));
+        let result = transport.execute(request).await;
+        if routing_override.is_some() {
+            assert!(
+                matches!(
+                    result,
+                    Err(TransportError::Http {
+                        retry_after: None,
+                        status: http::StatusCode::TEMPORARY_REDIRECT,
+                        ..
+                    })
+                ),
+                "workspace redirect must be rejected: {routing_override:?}"
+            );
+        } else {
+            assert_eq!(result.unwrap().status, http::StatusCode::OK);
+        }
+        assert_eq!(
+            destination.received_requests().await.unwrap().len(),
+            usize::from(routing_override.is_none())
+        );
+    }
+}
+
+#[derive(Debug)]
+enum SetupRefresh {
+    Command(PathBuf),
+    ChatGpt {
+        home: PathBuf,
+        token: String,
+        workspace: String,
+    },
+}
+
+#[derive(Debug)]
+struct SetupRefreshProvider {
+    inner: SharedModelProvider,
+    refresh: SetupRefresh,
+    setup_calls: AtomicUsize,
+}
+
+impl ModelProvider for SetupRefreshProvider {
+    fn info(&self) -> &ModelProviderInfo {
+        self.inner.info()
+    }
+
+    fn auth_manager(&self) -> Option<Arc<AuthManager>> {
+        self.inner.auth_manager()
+    }
+
+    fn auth(&self) -> ModelProviderFuture<'_, Option<CodexAuth>> {
+        self.inner.auth()
+    }
+
+    fn account_state(&self) -> ProviderAccountResult {
+        self.inner.account_state()
+    }
+
+    fn api_provider(
+        &self,
+    ) -> ModelProviderFuture<'_, codex_protocol::error::Result<codex_api::Provider>> {
+        Box::pin(async move {
+            self.setup_calls.fetch_add(1, Ordering::SeqCst);
+            let manager = self.inner.auth_manager().expect("auth manager");
+            match &self.refresh {
+                SetupRefresh::Command(token_path) => {
+                    std::fs::write(token_path, "refreshed-token")?;
+                    manager
+                        .refresh_token_from_authority()
+                        .await
+                        .expect("refresh command token");
+                }
+                SetupRefresh::ChatGpt {
+                    home,
+                    token,
+                    workspace,
+                } => {
+                    codex_login::auth::login_with_chatgpt_auth_tokens(
+                        home, token, workspace, /*chatgpt_plan_type*/ None,
+                    )?;
+                    manager.reload().await;
+                }
+            }
+            self.inner.api_provider().await
+        })
+    }
+
+    fn models_manager(
+        &self,
+        codex_home: PathBuf,
+        config_model_catalog: Option<ModelsResponse>,
+    ) -> SharedModelsManager {
+        self.inner.models_manager(codex_home, config_model_catalog)
+    }
+}
+
+#[tokio::test]
+async fn client_setup_accepts_command_credential_refresh() {
+    for routing in [
+        super::ClientRouting::Workspace,
+        super::ClientRouting::ConfiguredProvider,
+    ] {
+        let tempdir = TempDir::new().unwrap();
+        let token_path = tempdir.path().join("token.txt");
+        std::fs::write(&token_path, "initial-token").unwrap();
+        let mut info = test_model_provider().info().clone();
+        info.auth = Some(codex_protocol::config_types::ModelProviderAuthInfo {
+            command: if cfg!(windows) { "cmd.exe" } else { "cat" }.into(),
+            args: if cfg!(windows) {
+                vec!["/D", "/C", "type", "token.txt"]
+            } else {
+                vec!["token.txt"]
+            }
+            .into_iter()
+            .map(Into::into)
+            .collect(),
+            timeout_ms: std::num::NonZeroU64::new(/*n*/ 5_000).unwrap(),
+            refresh_interval_ms: 60_000,
+            cwd: tempdir.path().try_into().unwrap(),
+        });
+        let provider = Arc::new(SetupRefreshProvider {
+            inner: create_model_provider(info, /*auth_manager*/ None),
+            refresh: SetupRefresh::Command(token_path),
+            setup_calls: AtomicUsize::new(/*v*/ 0),
+        });
+        let manager = provider.auth_manager().unwrap();
+        let mut client = test_model_client(SessionSource::Exec);
+        Arc::get_mut(&mut client.state).unwrap().provider = provider;
+
+        let setup = client.current_client_setup(routing).await.unwrap();
+        let mut headers = http::HeaderMap::new();
+        setup.api_auth.add_auth_headers(&mut headers);
+        assert_eq!(
+            headers.get(http::header::AUTHORIZATION).unwrap(),
+            "Bearer refreshed-token"
+        );
+        let refreshed_revision = Some(*manager.auth_change_receiver().borrow());
+        assert_ne!(
+            codex_model_provider::ResponsesConnectionKey::new(
+                &setup.api_provider,
+                setup.auth_revision
+            ),
+            codex_model_provider::ResponsesConnectionKey::new(
+                &setup.api_provider,
+                refreshed_revision
+            ),
+        );
+        assert_ne!(setup.auth_owner_generation, client.auth_owner_generation());
+    }
+}
+
+#[tokio::test]
+async fn client_setup_rebuilds_chatgpt_refresh_but_rejects_account_switches() {
+    for (user, workspace, expected_calls) in [
+        ("user-a", "workspace-a", 2),
+        ("user-b", "workspace-a", 1),
+        ("user-a", "workspace-b", 1),
+    ] {
+        let token = |user: &str, revision: &str| {
+            let claims =
+                json!({"jti": revision, "https://api.openai.com/auth": {"chatgpt_user_id": user}});
+            let payload =
+                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(claims.to_string());
+            format!("header.{payload}.signature")
+        };
+        let home = TempDir::new().unwrap();
+        let initial = CodexAuth::from_external_chatgpt_tokens(
+            &token("user-a", "initial"),
+            "workspace-a",
+            /*chatgpt_plan_type*/ None,
+        )
+        .unwrap();
+        let manager =
+            AuthManager::from_auth_for_testing_with_home(initial, home.path().to_path_buf());
+        let refreshed_token = token(user, "refreshed");
+        let mut info = test_model_provider().info().clone();
+        info.requires_openai_auth = true;
+        let provider = Arc::new(SetupRefreshProvider {
+            inner: create_model_provider(info, Some(manager.clone())),
+            refresh: SetupRefresh::ChatGpt {
+                home: home.path().to_path_buf(),
+                token: refreshed_token.clone(),
+                workspace: workspace.into(),
+            },
+            setup_calls: AtomicUsize::new(/*v*/ 0),
+        });
+        let mut client = test_model_client(SessionSource::Exec);
+        Arc::get_mut(&mut client.state).unwrap().provider = provider.clone();
+        let result = client
+            .current_client_setup(super::ClientRouting::ConfiguredProvider)
+            .await;
+        if expected_calls == 2 {
+            let setup = result.unwrap();
+            let mut headers = http::HeaderMap::new();
+            setup.api_auth.add_auth_headers(&mut headers);
+            assert_eq!(
+                headers.get(http::header::AUTHORIZATION).unwrap(),
+                &format!("Bearer {refreshed_token}")
+            );
+            assert_eq!(setup.auth.unwrap().get_token().unwrap(), refreshed_token);
+            assert_eq!(
+                (setup.auth_revision, setup.auth_owner_generation),
+                (Some(*manager.auth_change_receiver().borrow()), Some(0))
+            );
+        } else {
+            assert_eq!(
+                result.err().expect("account switch must fail").to_string(),
+                "account changed while preparing model request"
+            );
+        }
+        assert_eq!(provider.setup_calls.load(Ordering::SeqCst), expected_calls);
+    }
 }
 
 fn test_responses_metadata_for_client(
@@ -1228,13 +465,11 @@ fn test_model_info() -> ModelInfo {
         "supported_in_api": true,
         "priority": 1,
         "upgrade": null,
-        "base_instructions": "base instructions",
         "model_messages": null,
         "support_verbosity": false,
         "default_verbosity": null,
         "apply_patch_tool_type": null,
         "truncation_policy": {"mode": "bytes", "limit": 10000},
-        "supports_parallel_tool_calls": false,
         "supports_image_detail_original": false,
         "context_window": 272000,
         "auto_compact_token_limit": null,
@@ -1243,12 +478,316 @@ fn test_model_info() -> ModelInfo {
     .expect("deserialize test model info")
 }
 
+fn output_with_tool_result_metadata(metadata: ToolResultMetadata) -> ResponseItem {
+    let mut call = ExecutedToolCall::new("test_tool".to_string(), json!({ "query": "keep" }));
+    call.set_tool_result_sources(ToolResultSources::new(vec![ToolResultSource {
+        r#type: "test_resource".to_string(),
+        id: "R1".to_string(),
+    }]));
+    call.set_tool_result_metadata(metadata);
+    let mut output = ResponseItem::from(ResponseInputItem::FunctionCallOutput {
+        call_id: "tool-call".to_string(),
+        output: FunctionCallOutputPayload::from_text("unchanged tool result".to_string()),
+    });
+    output.append_executed_tool_calls(vec![call]);
+    output.mark_tool_calls_complete();
+    output
+}
+
+#[tokio::test]
+async fn responses_request_includes_internal_metadata_for_provider_grant_or_first_party_destination()
+-> anyhow::Result<()> {
+    use crate::session::step_context::StepContext;
+    use crate::tools::ExecutedToolCalls;
+    use crate::tools::context::ToolCallSource;
+    use crate::tools::context::ToolPayload;
+    use crate::tools::router::ToolCall;
+    use codex_features::Feature;
+    use codex_features::Features;
+
+    let (_, turn) = crate::session::tests::make_session_and_context().await;
+    let step = StepContext::for_test(Arc::new(turn));
+    let mut features = Features::default();
+    features.enable(Feature::ExecutedToolCallMetadata);
+    let recorder = ExecutedToolCalls::new(&features, &codex_history::InitialHistory::New);
+    let resource_metadata = json!({"openai/resource_access": {"payload": "x".repeat(600 * 1024)}});
+    let mut outputs = Vec::new();
+    for id in ["first", "second"] {
+        let call = ToolCall {
+            tool_name: codex_tools::ToolName::plain("mcp__apps__read"),
+            call_id: id.to_string(),
+            payload: ToolPayload::Function {
+                arguments: json!({"query": id}).to_string(),
+            },
+            encrypted_function_args: None,
+        };
+        let (mut recorded, permit) = recorder
+            .prepare_direct_call(&call, &ToolCallSource::Direct, &step)
+            .expect("direct observation slot");
+        recorded.set_tool_result_metadata(ToolResultMetadata::new(&resource_metadata));
+        let mut item = ResponseItem::from(ResponseInputItem::FunctionCallOutput {
+            call_id: id.to_string(),
+            output: FunctionCallOutputPayload::from_text(format!("result for {id}")),
+        });
+        recorder.attach_direct_call_to_output(&mut item, Some((recorded, permit)));
+        outputs.push(item);
+    }
+    let persisted_outputs = outputs.clone();
+    recorder.attach_to_prompt(&mut outputs, &mut Default::default());
+    let restored = serde_json::to_value(&outputs)?;
+    assert_eq!(
+        restored[1]["internal_chat_message_metadata_passthrough"]["executed_tool_calls"][0]["tool_result_metadata"],
+        resource_metadata,
+    );
+    let recorded = serde_json::to_value(&persisted_outputs)?;
+    assert_eq!(
+        recorded[0]["internal_chat_message_metadata_passthrough"]["executed_tool_calls"][0]["tool_result_metadata"],
+        resource_metadata,
+    );
+    assert!(
+        recorded[1]["internal_chat_message_metadata_passthrough"]["executed_tool_calls"][0]
+            ["tool_result_metadata"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("omitted_due_to_size_limit (overage_bytes="))
+    );
+    let omitted_output = persisted_outputs[1].clone();
+    let mut without_omitted_metadata = ResponseItem::from(ResponseInputItem::FunctionCallOutput {
+        call_id: "second".to_string(),
+        output: FunctionCallOutputPayload::from_text("result for second".to_string()),
+    });
+    without_omitted_metadata.set_id(omitted_output.id().cloned());
+    without_omitted_metadata.append_executed_tool_calls(vec![ExecutedToolCall::new(
+        "mcp__apps__read".to_string(),
+        json!({"query": "second"}),
+    )]);
+    without_omitted_metadata.mark_tool_calls_complete();
+
+    let mut provider =
+        ModelProviderInfo::create_openai_provider(Some("https://api.openai.com/v1".to_string()));
+    let mut api_provider = provider.to_api_provider(/*auth_mode*/ None)?;
+    let mut client = test_model_client(SessionSource::Cli);
+    Arc::get_mut(&mut client.state)
+        .expect("test client should have unique session state")
+        .provider = create_model_provider(provider.clone(), /*auth_manager*/ None);
+    let output = output_with_tool_result_metadata(ToolResultMetadata::new(&json!({
+        "private": { "resource": "raw-result-metadata" },
+    })));
+    let without_raw_metadata = output_with_tool_result_metadata(ToolResultMetadata::default());
+    let attribution = McpAttribution {
+        status: McpAttributionStatus::Complete,
+        error_reason: None,
+        sources: vec![McpAttributionSource {
+            connector_id: Some("connector_example".to_string()),
+            plugin_id: Some("example@openai-bundled".to_string()),
+            server_name: "codex_apps".to_string(),
+            tool_name: "search".to_string(),
+            first_turn_id: "turn_123".to_string(),
+        }],
+    };
+    let prompt = Prompt {
+        input: vec![output.clone(), omitted_output.clone()],
+        ..Default::default()
+    };
+    let mut responses_metadata = test_responses_metadata_for_client(
+        &client,
+        /*turn_id*/ None,
+        format!("{}:0", client.state.thread_id),
+        /*parent_thread_id*/ None,
+        TestCodexResponsesRequestKind::Turn,
+    );
+    responses_metadata.mcp_attribution = Some(attribution.clone());
+    for (provider_grant, base_url, allowed) in [
+        (false, "https://api.openai.com/v1", true),
+        (false, "https://chatgpt.com/backend-api/codex", true),
+        (false, "https://api.chatgpt-staging.com/v1", true),
+        (false, "https://proxy.example.com/v1", false),
+        (false, "http://api.openai.com/v1", false),
+        (false, "https://api.openai.com.evil.example/v1", false),
+        (false, "https://chatgpt.com.evil.example/v1", false),
+        (false, "https://api.openai.com@proxy.example.com/v1", false),
+        (false, "not a URL", false),
+        (true, "http://provider.example/v1", true),
+    ] {
+        provider.include_internal_metadata = provider_grant;
+        Arc::get_mut(&mut client.state)
+            .expect("test client should have unique session state")
+            .provider = create_model_provider(provider.clone(), /*auth_manager*/ None);
+        api_provider.base_url = base_url.to_string();
+        let include_internal = client
+            .state
+            .provider
+            .include_internal_metadata(&api_provider);
+        for responses_lite in [false, true] {
+            let mut model = test_model_info();
+            model.use_responses_lite = responses_lite;
+            let request = client.build_responses_request(
+                &prompt,
+                &model,
+                /*effort*/ None,
+                codex_protocol::config_types::ReasoningSummary::None,
+                /*service_tier*/ None,
+                &responses_metadata,
+                include_internal,
+            )?;
+            let expected_input = if allowed {
+                vec![output.clone(), omitted_output.clone()]
+            } else {
+                vec![
+                    without_raw_metadata.clone(),
+                    without_omitted_metadata.clone(),
+                ]
+            };
+            assert!(
+                request.input.ends_with(&expected_input),
+                "resolved endpoint: {base_url}, responses_lite: {responses_lite}",
+            );
+            let expected_wire_input = serde_json::to_value(&request.input)?;
+            assert_eq!(
+                serde_json::to_value(&request)?["input"],
+                expected_wire_input
+            );
+            let expected_json = allowed
+                .then(|| serde_json::to_string(&attribution).map(serde_json::Value::String))
+                .transpose()?;
+            assert_eq!(
+                serde_json::to_value(&request)?
+                    .get("client_metadata")
+                    .and_then(|metadata| metadata.get(MCP_ATTRIBUTION_CLIENT_METADATA_KEY)),
+                expected_json.as_ref(),
+            );
+            let ws_client_metadata = client.build_ws_client_metadata(
+                &responses_metadata,
+                include_internal,
+                responses_lite,
+            );
+            let ws_request = codex_api::ResponseCreateWsRequest {
+                client_metadata: Some(ws_client_metadata),
+                ..codex_api::ResponseCreateWsRequest::from(&request)
+            };
+            let ws_request = serde_json::to_value(ws_request)?;
+            assert_eq!(ws_request["input"], expected_wire_input);
+            assert_eq!(
+                ws_request
+                    .get("client_metadata")
+                    .and_then(|metadata| metadata.get(MCP_ATTRIBUTION_CLIENT_METADATA_KEY)),
+                expected_json.as_ref(),
+            );
+            assert!(
+                serde_json::to_value(&request)?
+                    .get("mcp_attribution")
+                    .is_none()
+            );
+            assert_eq!(prompt.input, vec![output.clone(), omitted_output.clone()]);
+        }
+    }
+    responses_metadata.mcp_attribution = Some(McpAttribution {
+        status: McpAttributionStatus::AttributionError,
+        error_reason: Some(
+            codex_protocol::mcp::McpAttributionErrorReason::HistoryMissingCheckpoint,
+        ),
+        sources: attribution.sources.clone(),
+    });
+    let request = client.build_responses_request(
+        &prompt,
+        &test_model_info(),
+        /*effort*/ None,
+        codex_protocol::config_types::ReasoningSummary::None,
+        /*service_tier*/ None,
+        &responses_metadata,
+        /*include_internal*/ true,
+    )?;
+    assert_eq!(
+        request
+            .client_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get(MCP_ATTRIBUTION_CLIENT_METADATA_KEY))
+            .map(|value| serde_json::from_str::<serde_json::Value>(value))
+            .transpose()?,
+        Some(json!({
+            "status": "attribution_error",
+            "sources": attribution.sources,
+            "error_reason": "history_missing_checkpoint",
+        })),
+    );
+
+    let mut oversized_attribution = attribution;
+    oversized_attribution.sources[0].tool_name = "a".repeat(MAX_MCP_ATTRIBUTION_BYTES);
+    responses_metadata.mcp_attribution = Some(oversized_attribution);
+    let request = client.build_responses_request(
+        &prompt,
+        &test_model_info(),
+        /*effort*/ None,
+        codex_protocol::config_types::ReasoningSummary::None,
+        /*service_tier*/ None,
+        &responses_metadata,
+        /*include_internal*/ true,
+    )?;
+    assert_eq!(
+        request.client_metadata.as_ref().and_then(|metadata| {
+            metadata
+                .get(MCP_ATTRIBUTION_CLIENT_METADATA_KEY)
+                .map(String::as_str)
+        }),
+        Some(r#"{"status":"attribution_error","error_reason":"payload_too_large"}"#),
+    );
+    Ok(())
+}
+
 #[test]
-fn bundled_gpt6_models_build_responses_lite_requests() {
-    let client = test_model_client(SessionSource::Cli);
-    let provider = ModelProviderInfo::create_openai_provider(/*base_url*/ None)
-        .to_api_provider(/*auth_mode*/ None)
-        .expect("test provider should resolve");
+fn responses_request_preserves_result_metadata_above_previous_aggregate_budget()
+-> anyhow::Result<()> {
+    let result_metadata = [
+        json!({ "payload": "l".repeat(31 * 1024) }),
+        json!({ "payload": "m".repeat(20 * 1024) }),
+        json!({ "payload": "m".repeat(20 * 1024) }),
+        json!({ "payload": "m".repeat(20 * 1024) }),
+        json!({ "payload": "m".repeat(20 * 1024) }),
+        json!({ "payload": "m".repeat(20 * 1024) }),
+        json!({ "status": "ok" }),
+    ];
+    let sizes = result_metadata
+        .iter()
+        .map(|metadata| serde_json::to_vec(metadata).unwrap().len())
+        .collect::<Vec<_>>();
+    assert!(sizes.iter().all(|bytes| *bytes < 32 * 1024));
+    assert!(sizes.iter().sum::<usize>() > 128 * 1024);
+    let mut history = Vec::new();
+    for (index, metadata) in result_metadata.iter().enumerate() {
+        let id = format!("tool-call-{index}");
+        history.push(serde_json::from_value(json!({
+            "type": "function_call", "call_id": id, "name": "test_tool",
+            "arguments": json!({ "query": "keep" }).to_string(),
+        }))?);
+        let mut output = output_with_tool_result_metadata(ToolResultMetadata::new(metadata));
+        let ResponseItem::FunctionCallOutput { call_id, .. } = &mut output else {
+            unreachable!("helper returns a function call output");
+        };
+        *call_id = Some(id);
+        history.push(output);
+    }
+    let original_history = serde_json::to_value(&history)?;
+
+    let mut features = codex_features::Features::default();
+    features.enable(codex_features::Feature::ExecutedToolCallMetadata);
+    let recorder =
+        crate::tools::ExecutedToolCalls::new(&features, &codex_history::InitialHistory::New);
+    let mut prompt = Prompt {
+        input: history.clone(),
+        base_instructions: BaseInstructions {
+            text: String::new(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    // Follow the sampling path: budget the request copy before client serialization.
+    recorder.attach_to_prompt(&mut prompt.input, &mut Default::default());
+    let provider =
+        ModelProviderInfo::create_openai_provider(Some("https://api.openai.com/v1".to_string()));
+    let api_provider = provider.to_api_provider(/*auth_mode*/ None)?;
+    let mut client = test_model_client(SessionSource::Cli);
+    Arc::get_mut(&mut client.state)
+        .expect("test client should have unique session state")
+        .provider = create_model_provider(provider, /*auth_manager*/ None);
     let responses_metadata = test_responses_metadata_for_client(
         &client,
         /*turn_id*/ None,
@@ -1256,64 +795,603 @@ fn bundled_gpt6_models_build_responses_lite_requests() {
         /*parent_thread_id*/ None,
         TestCodexResponsesRequestKind::Turn,
     );
+    let request = client.build_responses_request(
+        &prompt,
+        &test_model_info(),
+        /*effort*/ None,
+        codex_protocol::config_types::ReasoningSummary::None,
+        /*service_tier*/ None,
+        &responses_metadata,
+        client
+            .state
+            .provider
+            .include_internal_metadata(&api_provider),
+    )?;
+    let body = serde_json::to_value(&request)?;
+    // Whole-input equality covers bindings, arguments, results, sources and completion too.
+    assert_eq!(body["input"], original_history);
+    let mut without_metadata = body.clone();
+    for item in without_metadata["input"].as_array_mut().unwrap() {
+        item.as_object_mut()
+            .unwrap()
+            .remove("internal_chat_message_metadata_passthrough");
+    }
+    let metadata_bytes =
+        serde_json::to_vec(&body)?.len() - serde_json::to_vec(&without_metadata)?.len();
+    assert!(metadata_bytes > 128 * 1024);
+    assert_eq!(serde_json::to_value(&history)?, original_history);
+    Ok(())
+}
+
+#[test]
+fn websocket_incremental_reuse_tracks_raw_result_metadata() -> anyhow::Result<()> {
+    let provider = ModelProviderInfo {
+        include_internal_metadata: false,
+        ..ModelProviderInfo::create_openai_provider(Some("https://api.openai.com/v1".to_string()))
+    };
+    let mut api_provider = provider.to_api_provider(/*auth_mode*/ None)?;
+    let mut client = test_model_client(SessionSource::Cli);
+    Arc::get_mut(&mut client.state)
+        .expect("test client should have unique session state")
+        .provider = create_model_provider(provider, /*auth_manager*/ None);
+    let responses_metadata = test_responses_metadata_for_client(
+        &client,
+        /*turn_id*/ None,
+        format!("{}:0", client.state.thread_id),
+        /*parent_thread_id*/ None,
+        TestCodexResponsesRequestKind::Turn,
+    );
+    for (scenario, base_url, previous_metadata, current_metadata, expect_incremental) in [
+        (
+            "late_result",
+            "https://api.openai.com/v1",
+            None,
+            Some("first"),
+            false,
+        ),
+        (
+            "unchanged_result",
+            "https://api.openai.com/v1",
+            Some("first"),
+            Some("first"),
+            true,
+        ),
+        (
+            "changed_result",
+            "https://api.openai.com/v1",
+            Some("first"),
+            Some("second"),
+            false,
+        ),
+        (
+            "ordinary_metadata_only",
+            "https://api.openai.com/v1",
+            None,
+            None,
+            true,
+        ),
+        (
+            "filtered_result",
+            "https://proxy.example.com/v1",
+            None,
+            Some("first"),
+            true,
+        ),
+    ] {
+        let [mut previous_output, mut current_output] =
+            [previous_metadata, current_metadata].map(|metadata| {
+                let mut call =
+                    ExecutedToolCall::new("apps_tool".to_string(), json!({ "query": "same" }));
+                if let Some(id) = metadata {
+                    call.set_tool_result_metadata(ToolResultMetadata::new(&json!({ "id": id })));
+                }
+                let mut output = ResponseItem::from(ResponseInputItem::CustomToolCallOutput {
+                    call_id: "exec-call".to_string(),
+                    name: None,
+                    output: FunctionCallOutputPayload::from_text(
+                        "Script running with cell ID cell".to_string(),
+                    ),
+                });
+                output.append_executed_tool_calls(vec![call]);
+                output.set_tool_call_cell_id("exec-call");
+                output
+            });
+        previous_output.set_turn_id_if_missing("previous-turn");
+        current_output.set_turn_id_if_missing("current-turn");
+        api_provider.base_url = base_url.to_string();
+        let include_internal = client
+            .state
+            .provider
+            .include_internal_metadata(&api_provider);
+        let previous = client.build_responses_request(
+            &Prompt {
+                input: vec![previous_output],
+                ..Default::default()
+            },
+            &test_model_info(),
+            /*effort*/ None,
+            codex_protocol::config_types::ReasoningSummary::None,
+            /*service_tier*/ None,
+            &responses_metadata,
+            include_internal,
+        )?;
+        let follow_up = ResponseItem::from(ResponseInputItem::FunctionCallOutput {
+            call_id: "wait-call".to_string(),
+            output: FunctionCallOutputPayload::from_text("done".to_string()),
+        });
+        let current = client.build_responses_request(
+            &Prompt {
+                input: vec![current_output, follow_up.clone()],
+                ..Default::default()
+            },
+            &test_model_info(),
+            /*effort*/ None,
+            codex_protocol::config_types::ReasoningSummary::None,
+            /*service_tier*/ None,
+            &responses_metadata,
+            include_internal,
+        )?;
+
+        let mut session = client.new_session();
+        session.websocket_session.last_request = Some(previous);
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        sender
+            .send(super::LastResponse {
+                response_id: "previous-response".to_string(),
+                items_added: Vec::new(),
+            })
+            .unwrap();
+        session.websocket_session.last_response_rx = Some(receiver);
+        let continuation = session.prepare_websocket_request(&current);
+        assert_eq!(
+            continuation.map(|continuation| (
+                continuation.response_id,
+                continuation.items,
+                continuation.from_untraced_warmup,
+            )),
+            if expect_incremental {
+                Ok(("previous-response".to_string(), vec![follow_up], false))
+            } else {
+                Err(NonIncrementalReason::InputMismatch {
+                    previous: "custom_tool_call_output",
+                    current: "custom_tool_call_output",
+                })
+            },
+            "{scenario}",
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn websocket_continuation_reports_unavailable_response_state() {
+    let client = test_model_client(SessionSource::Cli);
+    let request = client
+        .build_responses_request(
+            &Prompt::default(),
+            &test_model_info(),
+            /*effort*/ None,
+            codex_protocol::config_types::ReasoningSummary::None,
+            /*service_tier*/ None,
+            &test_responses_metadata_for_client(
+                &client,
+                /*turn_id*/ None,
+                format!("{}:0", client.state.thread_id),
+                /*parent_thread_id*/ None,
+                TestCodexResponsesRequestKind::Turn,
+            ),
+            /*include_internal*/ true,
+        )
+        .expect("build continuation request");
+    let mut session = client.new_session();
+    session.websocket_session.last_request = Some(request.clone());
+    assert_eq!(
+        session.prepare_websocket_request(&request).err(),
+        Some(NonIncrementalReason::NoPreviousResponse),
+    );
+
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    session.websocket_session.last_response_rx = Some(receiver);
+    assert_eq!(
+        session.prepare_websocket_request(&request).err(),
+        Some(NonIncrementalReason::NoPreviousResponse),
+    );
+    drop(sender);
+
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    drop(sender);
+    session.websocket_session.last_response_rx = Some(receiver);
+    assert_eq!(
+        session.prepare_websocket_request(&request).err(),
+        Some(NonIncrementalReason::NoPreviousResponse),
+    );
+
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    sender
+        .send(super::LastResponse {
+            response_id: String::new(),
+            items_added: Vec::new(),
+        })
+        .unwrap();
+    session.websocket_session.last_response_rx = Some(receiver);
+    assert_eq!(
+        session.prepare_websocket_request(&request).err(),
+        Some(NonIncrementalReason::NoPreviousResponseId),
+    );
+}
+
+#[tokio::test]
+async fn responses_http_preserves_raw_tool_metadata_for_openai_custom_endpoint()
+-> anyhow::Result<()> {
+    let server = MockServer::start().await;
+    #[derive(Clone)]
+    struct RetryClockScript {
+        attempts: Arc<AtomicUsize>,
+        observed_at: Arc<Mutex<Vec<chrono::DateTime<chrono::Utc>>>>,
+    }
+    impl Respond for RetryClockScript {
+        fn respond(&self, _request: &Request) -> ResponseTemplate {
+            self.observed_at
+                .lock()
+                .expect("retry timestamps lock")
+                .push(chrono::Utc::now());
+            if self.attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                ResponseTemplate::new(/*status*/ 503).insert_header("retry-after", "0")
+            } else {
+                ResponseTemplate::new(/*status*/ 200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(concat!(
+                        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-1\"}}\n\n",
+                        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\"}}\n\n",
+                    ))
+            }
+        }
+    }
+    let retry_script = RetryClockScript {
+        attempts: Arc::new(AtomicUsize::new(0)),
+        observed_at: Arc::new(Mutex::new(Vec::new())),
+    };
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(retry_script.clone())
+        .expect(/*requests*/ 2)
+        .mount(&server)
+        .await;
+    let mut provider =
+        ModelProviderInfo::create_openai_provider(Some(format!("{}/v1", server.uri())));
+    provider.requires_openai_auth = false;
+    provider.supports_websockets = false;
+    let mut client = test_model_client(SessionSource::Cli);
+    Arc::get_mut(&mut client.state)
+        .expect("test client should have unique session state")
+        .provider = create_model_provider(provider, /*auth_manager*/ None);
+    let output = output_with_tool_result_metadata(ToolResultMetadata::new(&json!({
+        "private": "raw-result-metadata",
+    })));
     let prompt = Prompt {
-        input: vec![ResponseItem::Message {
-            id: None,
+        input: vec![output.clone()],
+        base_instructions: BaseInstructions {
+            text: String::new(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let responses_metadata = test_responses_metadata_for_client(
+        &client,
+        /*turn_id*/ None,
+        format!("{}:0", client.state.thread_id),
+        /*parent_thread_id*/ None,
+        TestCodexResponsesRequestKind::Turn,
+    );
+    let mut session = client.new_session();
+    let mut stream = session
+        .stream(
+            &prompt,
+            &test_model_info(),
+            &test_session_telemetry(),
+            /*effort*/ None,
+            codex_protocol::config_types::ReasoningSummary::None,
+            /*service_tier*/ None,
+            &responses_metadata,
+            &InferenceTraceContext::disabled(),
+        )
+        .await?;
+    let mut completed = false;
+    let mut started_at = None;
+    while let Some(event) = stream.next().await {
+        if let ResponseEvent::Completed {
+            response_id,
+            started_at: response_started_at,
+            ..
+        } = event?
+        {
+            assert_eq!(response_id, "resp-1");
+            started_at = response_started_at;
+            completed = true;
+        }
+    }
+    assert!(completed);
+    let requests = server.received_requests().await.expect("received requests");
+    assert_eq!(requests.len(), 2);
+    let body: serde_json::Value = serde_json::from_slice(&requests[1].body)?;
+    assert_eq!(body["input"], serde_json::to_value(vec![output.clone()])?);
+    assert_eq!(prompt.input, vec![output]);
+    let observed_at = retry_script
+        .observed_at
+        .lock()
+        .expect("retry timestamps lock")
+        .clone();
+    assert_eq!(observed_at.len(), 2);
+    let started_at = chrono::DateTime::parse_from_rfc3339(
+        started_at
+            .as_deref()
+            .expect("completed response request start"),
+    )?
+    .timestamp_nanos_opt()
+    .expect("request start timestamp range");
+    assert!(
+        started_at
+            > observed_at[0]
+                .timestamp_nanos_opt()
+                .expect("503 timestamp range"),
+        "successful response start must follow the failed 503 attempt"
+    );
+    assert!(
+        started_at
+            <= observed_at[1]
+                .timestamp_nanos_opt()
+                .expect("200 timestamp range"),
+        "successful response start must precede its successful HTTP request"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn bundled_gpt6_models_build_and_send_expected_responses_requests() -> anyhow::Result<()> {
+    let slugs = [
+        ("gpt-6.1-sol", true),
+        ("gpt-6-sol", true),
+        ("gpt-6-luna", true),
+        ("test-only-unbundled-model-fallback", false),
+    ];
+    let manager = StaticModelsManager::new(
+        /*auth_manager*/ None,
+        codex_models_manager::bundled_models_response()?,
+    );
+    let mut model_infos = Vec::new();
+    for (slug, has_catalog_metadata) in slugs {
+        let model_info = manager
+            .get_model_info(slug, &ModelsManagerConfig::default())
+            .await;
+        assert_eq!(
+            model_info.used_fallback_model_metadata, !has_catalog_metadata,
+            "unexpected bundled metadata resolution for {slug}"
+        );
+        model_infos.push(model_info);
+    }
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(
+            ResponseTemplate::new(/*status*/ 200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(concat!(
+                    "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-1\"}}\n\n",
+                    "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\"}}\n\n",
+                )),
+        )
+        .expect(/*requests*/ 4)
+        .mount(&server)
+        .await;
+    let mut provider =
+        ModelProviderInfo::create_openai_provider(Some(format!("{}/v1", server.uri())));
+    provider.requires_openai_auth = false;
+    provider.supports_websockets = false;
+    let mut client = test_model_client(SessionSource::Cli);
+    Arc::get_mut(&mut client.state)
+        .expect("test client should have unique session state")
+        .provider = create_model_provider(provider, /*auth_manager*/ None);
+
+    let tool = codex_tools::FreeformTool {
+        name: "exec".to_string(),
+        description: "Synthetic request fixture.".to_string(),
+        defer_loading: None,
+        format: codex_tools::FreeformToolFormat {
+            r#type: "grammar".to_string(),
+            syntax: "lark".to_string(),
+            definition: "start: /.+/".to_string(),
+        },
+    };
+    let prompt = Prompt {
+        input: vec![ResponseItem::from(ResponseInputItem::Message {
             role: "user".to_string(),
             content: vec![ContentItem::InputText {
-                text: "synthetic request".to_string(),
+                text: "synthetic request only".to_string(),
             }],
             phase: None,
-            internal_chat_message_metadata_passthrough: None,
-        }],
-        base_instructions: BaseInstructions {
-            text: "synthetic instructions".to_string(),
-        },
+        })],
+        tools: vec![ToolSpec::Freeform(tool)].into(),
         parallel_tool_calls: true,
+        base_instructions: BaseInstructions {
+            text: "synthetic base instructions".to_string(),
+            ..Default::default()
+        },
         ..Default::default()
     };
 
-    for slug in ["gpt-6-sol", "gpt-6-luna"] {
-        let model_info = codex_models_manager::bundled_models_response()
-            .expect("bundled model catalog should parse")
-            .models
-            .into_iter()
-            .find(|model| model.slug == slug)
-            .expect("GPT-6 model should be present in the bundled catalog");
-        assert!(model_info.use_responses_lite);
-
-        let request = client
-            .build_responses_request(
-                &provider,
+    for (index, ((slug, has_catalog_metadata), model_info)) in
+        slugs.iter().zip(model_infos.iter()).enumerate()
+    {
+        let responses_metadata = test_responses_metadata_for_client(
+            &client,
+            /*turn_id*/ None,
+            format!("{}:{index}", client.state.thread_id),
+            /*parent_thread_id*/ None,
+            TestCodexResponsesRequestKind::Turn,
+        );
+        let mut session = client.new_session();
+        let mut stream = session
+            .stream(
                 &prompt,
-                &model_info,
+                model_info,
+                &test_session_telemetry(),
                 /*effort*/ None,
                 codex_protocol::config_types::ReasoningSummary::None,
                 /*service_tier*/ None,
                 &responses_metadata,
+                &InferenceTraceContext::disabled(),
             )
-            .expect("synthetic request should build");
-        let body = serde_json::to_value(&request).expect("request should serialize");
-
-        assert_eq!(body["model"], slug);
-        assert!(body.get("instructions").is_none());
-        assert!(body["tools"].is_null());
-        assert_eq!(body["parallel_tool_calls"], false);
-        assert_eq!(body["text"]["verbosity"], "low");
-        assert!(matches!(
-            request.input.first(),
-            Some(ResponseItem::AdditionalTools { .. })
-        ));
+            .await?;
+        let mut completed = false;
+        while let Some(event) = stream.next().await {
+            if let ResponseEvent::Completed { response_id, .. } = event? {
+                assert_eq!(response_id, "resp-1");
+                completed = true;
+            }
+        }
+        assert!(completed, "request for {slug} should complete");
+        assert_eq!(model_info.slug.as_str(), *slug);
+        assert_eq!(model_info.use_responses_lite, *has_catalog_metadata);
     }
 
-    let mut headers = http::HeaderMap::new();
-    super::add_responses_lite_header(&mut headers, /*use_responses_lite*/ true);
-    assert_eq!(
-        headers
-            .get(super::X_OPENAI_INTERNAL_CODEX_RESPONSES_LITE_HEADER)
-            .and_then(|value| value.to_str().ok()),
-        Some("true")
+    let requests = server.received_requests().await.expect("received requests");
+    assert_eq!(requests.len(), slugs.len());
+    for ((request, (slug, use_responses_lite)), model_info) in
+        requests.iter().zip(slugs).zip(model_infos.iter())
+    {
+        assert_eq!(request.url.path(), "/v1/responses");
+        assert_eq!(
+            request
+                .headers
+                .get("x-openai-internal-codex-responses-lite")
+                .and_then(|value| value.to_str().ok()),
+            use_responses_lite.then_some("true")
+        );
+
+        let body: serde_json::Value = serde_json::from_slice(&request.body)?;
+        assert_eq!(body["model"], slug);
+        assert_eq!(body["parallel_tool_calls"], !use_responses_lite);
+        if let Some(default_effort) = &model_info.default_reasoning_level {
+            assert_eq!(
+                body["reasoning"]["effort"],
+                serde_json::to_value(default_effort)?
+            );
+        }
+        let input = body["input"].as_array().expect("serialized input array");
+        assert_eq!(input.last().expect("user input")["role"], "user");
+        assert_eq!(
+            input.last().expect("user input")["content"][0]["text"],
+            "synthetic request only"
+        );
+        if use_responses_lite {
+            assert!(body.get("tools").is_none());
+            assert_eq!(input.len(), 3);
+            assert_eq!(input[0]["type"], "additional_tools");
+            assert_eq!(input[0]["role"], "developer");
+            assert_eq!(input[1]["type"], "message");
+            assert_eq!(input[1]["role"], "developer");
+            assert_eq!(
+                input[1]["content"][0]["text"],
+                "synthetic base instructions"
+            );
+            assert_eq!(body["text"]["verbosity"], "low");
+        } else {
+            assert!(body.get("tools").is_some());
+            assert_eq!(input.len(), 2);
+            assert_eq!(input[0]["type"], "message");
+            assert_eq!(input[0]["role"], "developer");
+            assert_eq!(
+                input[0]["content"][0]["text"],
+                "synthetic base instructions"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test_case::test_case(false; "standard")]
+#[test_case::test_case(true; "responses_lite")]
+fn prefix_ids_track_thread_and_payload(responses_lite: bool) -> anyhow::Result<()> {
+    let thread_id = ThreadId::new();
+    let client = test_model_client_with_thread_id(thread_id, SessionSource::Cli);
+    let mut model = test_model_info();
+    model.use_responses_lite = responses_lite;
+    let instructions_index = usize::from(responses_lite);
+    let mut tool = codex_tools::FreeformTool {
+        name: "exec".to_string(),
+        description: "Execute JavaScript.".to_string(),
+        defer_loading: None,
+        format: codex_tools::FreeformToolFormat {
+            r#type: "grammar".to_string(),
+            syntax: "lark".to_string(),
+            definition: "start: /.+/".to_string(),
+        },
+    };
+    let mut prompt = Prompt {
+        tools: vec![codex_tools::ToolSpec::Freeform(tool.clone())].into(),
+        base_instructions: BaseInstructions {
+            text: "base instructions".to_string(),
+            provenance: None,
+        },
+        ..Default::default()
+    };
+    let build = |client: &ModelClient, prompt: &Prompt| {
+        client.build_responses_request(
+            prompt,
+            &model,
+            /*effort*/ None,
+            codex_protocol::config_types::ReasoningSummary::None,
+            /*service_tier*/ None,
+            &test_responses_metadata_for_client(
+                client,
+                /*turn_id*/ None,
+                format!("{}:0", client.state.thread_id),
+                /*parent_thread_id*/ None,
+                TestCodexResponsesRequestKind::Turn,
+            ),
+            /*include_internal*/ true,
+        )
+    };
+
+    let original = build(&client, &prompt)?;
+    assert_eq!(build(&client, &prompt)?, original);
+
+    prompt.base_instructions.text.push_str(" with an update");
+    let changed_instructions = build(&client, &prompt)?;
+    assert_ne!(
+        changed_instructions.input[instructions_index].id(),
+        original.input[instructions_index].id()
     );
+
+    tool.description
+        .push_str(" Updated execution instructions.");
+    prompt.tools = vec![codex_tools::ToolSpec::Freeform(tool)].into();
+    let changed_tools = build(&client, &prompt)?;
+    assert_eq!(
+        changed_tools.input[instructions_index],
+        changed_instructions.input[instructions_index]
+    );
+    if responses_lite {
+        assert_eq!(changed_instructions.input[0], original.input[0]);
+        assert_ne!(
+            changed_tools.input[0].id(),
+            changed_instructions.input[0].id()
+        );
+    }
+
+    let independent = build(
+        &test_model_client_with_thread_id(ThreadId::new(), SessionSource::Cli),
+        &prompt,
+    )?;
+    assert_ne!(
+        independent.input[instructions_index].id(),
+        changed_tools.input[instructions_index].id()
+    );
+    if responses_lite {
+        assert_ne!(independent.input[0].id(), changed_tools.input[0].id());
+    }
+    Ok(())
 }
 
 fn test_session_telemetry() -> SessionTelemetry {
@@ -1332,53 +1410,176 @@ fn test_session_telemetry() -> SessionTelemetry {
 }
 
 #[test]
-fn ultra_reasoning_uses_max_for_requests() {
+fn websocket_continuation_reset_reason_survives_failed_reconnect_and_turn_boundary() {
+    for (reason, later_reason) in [
+        ("connection_closed", "other"),
+        ("other", "connection_closed"),
+    ] {
+        let client = test_model_client(SessionSource::Cli);
+        let request = client
+            .build_responses_request(
+                &Prompt::default(),
+                &test_model_info(),
+                /*effort*/ None,
+                codex_protocol::config_types::ReasoningSummary::None,
+                /*service_tier*/ None,
+                &test_responses_metadata_for_client(
+                    &client,
+                    /*turn_id*/ None,
+                    format!("{}:0", client.state.thread_id),
+                    /*parent_thread_id*/ None,
+                    TestCodexResponsesRequestKind::Turn,
+                ),
+                /*include_internal*/ true,
+            )
+            .expect("build continuation request");
+        let mut session = client.new_session();
+        session.websocket_session.last_request = Some(request);
+        session.websocket_session.reset(Some(reason));
+        session.websocket_session.reset(/*reason*/ None);
+        session.websocket_session.reset(Some(later_reason));
+        drop(session);
+        let session = client.new_session();
+        assert_eq!(
+            session.websocket_session.continuation_reset_reason,
+            Some(reason)
+        );
+    }
+}
+
+fn spawned_session_source() -> SessionSource {
+    SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id: ThreadId::new(),
+        depth: 1,
+        agent_path: None,
+        agent_nickname: None,
+        agent_role: None,
+    })
+}
+
+fn reasoning_effort_in_request(
+    model_info: &ModelInfo,
+    session_source: SessionSource,
+    effort: ReasoningEffort,
+) -> ReasoningEffort {
+    let client = test_model_client(session_source);
+    client
+        .build_responses_request(
+            &Prompt::default(),
+            model_info,
+            Some(effort),
+            codex_protocol::config_types::ReasoningSummary::None,
+            /*service_tier*/ None,
+            &test_responses_metadata_for_client(
+                &client,
+                /*turn_id*/ None,
+                format!("{}:0", client.state.thread_id),
+                /*parent_thread_id*/ None,
+                TestCodexResponsesRequestKind::Turn,
+            ),
+            /*include_internal*/ true,
+        )
+        .expect("build responses request")
+        .reasoning
+        .expect("request should include reasoning")
+        .effort
+        .expect("request should include reasoning effort")
+}
+
+#[test]
+fn reasoning_effort_for_requests_uses_multi_agent_override_for_ultra() {
+    let mut model_info = test_model_info();
+    model_info.multi_agent_reasoning_effort = Some(ReasoningEffort::High);
+    model_info
+        .supported_reasoning_levels
+        .push(ReasoningEffortPreset {
+            effort: ReasoningEffort::High,
+            description: "high".to_string(),
+        });
+
+    let actual = [SessionSource::Cli, spawned_session_source()].map(|session_source| {
+        reasoning_effort_in_request(&model_info, session_source, ReasoningEffort::Ultra)
+    });
+
+    assert_eq!(actual, [ReasoningEffort::High, ReasoningEffort::High]);
+}
+
+#[test]
+fn reasoning_effort_for_requests_falls_back_for_missing_or_invalid_override() {
+    let mut model_info = test_model_info();
+    model_info.supported_reasoning_levels = vec![
+        ReasoningEffortPreset {
+            effort: ReasoningEffort::Low,
+            description: "low".to_string(),
+        },
+        ReasoningEffortPreset {
+            effort: ReasoningEffort::XHigh,
+            description: "xhigh".to_string(),
+        },
+        ReasoningEffortPreset {
+            effort: ReasoningEffort::Ultra,
+            description: "ultra".to_string(),
+        },
+    ];
+
+    let actual = [
+        None,
+        Some(ReasoningEffort::Ultra),
+        Some(ReasoningEffort::High),
+    ]
+    .map(|multi_agent_reasoning_effort| {
+        model_info.multi_agent_reasoning_effort = multi_agent_reasoning_effort;
+        reasoning_effort_in_request(&model_info, SessionSource::Cli, ReasoningEffort::Ultra)
+    });
+
     assert_eq!(
-        (
-            super::reasoning_effort_for_request(ReasoningEffort::Ultra),
-            super::reasoning_effort_for_request(ReasoningEffort::High),
-        ),
-        (ReasoningEffort::Max, ReasoningEffort::High,)
+        actual,
+        [
+            ReasoningEffort::XHigh,
+            ReasoningEffort::XHigh,
+            ReasoningEffort::XHigh,
+        ]
+    );
+
+    model_info.multi_agent_reasoning_effort = None;
+    model_info.supported_reasoning_levels.insert(
+        1,
+        ReasoningEffortPreset {
+            effort: ReasoningEffort::Max,
+            description: "max".to_string(),
+        },
+    );
+    assert_eq!(
+        reasoning_effort_in_request(&model_info, SessionSource::Cli, ReasoningEffort::Ultra),
+        ReasoningEffort::Max
+    );
+
+    model_info.supported_reasoning_levels.clear();
+    assert_eq!(
+        reasoning_effort_in_request(&model_info, SessionSource::Cli, ReasoningEffort::Ultra),
+        ReasoningEffort::Medium
     );
 }
 
-fn write_chatgpt_auth_json(codex_home: &std::path::Path) {
-    let auth_json = json!({
-        "tokens": {
-            "id_token": TEST_CHATGPT_ID_TOKEN,
-            "access_token": "test-access-token",
-            "refresh_token": "test-refresh-token",
-            "account_id": "account-123"
-        },
-        "last_refresh": "2099-01-01T00:00:00Z"
-    });
-    std::fs::write(
-        codex_home.join("auth.json"),
-        serde_json::to_string_pretty(&auth_json).expect("serialize auth.json"),
-    )
-    .expect("write auth.json");
-}
+#[test]
+fn reasoning_effort_for_requests_preserves_non_ultra_and_persistent_behavior() {
+    let mut model_info = test_model_info();
+    model_info.multi_agent_reasoning_effort = Some(ReasoningEffort::Low);
 
-async fn chatgpt_auth_manager(
-    codex_home: &TempDir,
-    agent_identity_authapi_base_url: String,
-) -> Arc<AuthManager> {
-    write_chatgpt_auth_json(codex_home.path());
-    let auth_manager = AuthManager::shared(
-        codex_home.path().to_path_buf(),
-        /*enable_codex_api_key_env*/ false,
-        AuthCredentialsStoreMode::File,
-        /*forced_chatgpt_workspace_id*/ None,
-        /*chatgpt_base_url*/ None,
-        AuthKeyringBackendKind::default(),
-        codex_login::test_support::transport_default_auth_route_config(),
-    )
-    .await;
-    let auth = auth_manager.auth().await.expect("auth should load");
-    AuthManager::from_auth_for_testing_with_agent_identity_authapi_base_url(
-        auth,
-        agent_identity_authapi_base_url,
-    )
+    assert_eq!(
+        (
+            reasoning_effort_in_request(&model_info, SessionSource::Cli, ReasoningEffort::High,),
+            reasoning_effort_in_request(
+                &model_info,
+                SessionSource::Cli,
+                ReasoningEffort::Persistent,
+            ),
+        ),
+        (
+            ReasoningEffort::High,
+            ReasoningEffort::Custom("disabled".to_string()),
+        )
+    );
 }
 
 #[derive(Default)]
@@ -1517,6 +1718,24 @@ fn build_subagent_headers_sets_other_subagent_label() {
 }
 
 #[test]
+fn internal_session_prompt_cache_key_is_scoped_to_parent_thread() {
+    let parent_thread_id = ThreadId::new();
+    let client = test_model_client(SessionSource::Internal(InternalSessionSource::Guardian));
+    let metadata = test_responses_metadata_for_client(
+        &client,
+        Some("turn-123"),
+        "window-1".to_string(),
+        Some(parent_thread_id),
+        TestCodexResponsesRequestKind::Turn,
+    );
+
+    assert_eq!(
+        client.prompt_cache_key(&metadata),
+        format!("guardian:{parent_thread_id}")
+    );
+}
+
+#[test]
 fn build_subagent_headers_sets_internal_memory_consolidation_label() {
     let client = test_model_client(SessionSource::Internal(
         InternalSessionSource::MemoryConsolidation,
@@ -1552,8 +1771,11 @@ fn build_ws_client_metadata_includes_window_lineage_and_turn_metadata() {
         Some(parent_thread_id),
         TestCodexResponsesRequestKind::Turn,
     );
-    let client_metadata =
-        client.build_ws_client_metadata(&responses_metadata, /*use_responses_lite*/ false);
+    let client_metadata = client.build_ws_client_metadata(
+        &responses_metadata,
+        /*include_internal*/ true,
+        /*use_responses_lite*/ false,
+    );
     let parent_thread_id = parent_thread_id.to_string();
     let turn_metadata: serde_json::Value = serde_json::from_str(
         client_metadata
@@ -1668,11 +1890,15 @@ async fn response_stream_records_last_model_feedback_ids() {
         .set_default();
 
     let api_stream = futures::stream::iter([
-        Ok(ResponseEvent::Created),
+        Ok(ResponseEvent::Created { response_id: None }),
         Ok(ResponseEvent::Completed {
             response_id: "resp-123".to_string(),
             token_usage: None,
+            usage_metadata: None,
             end_turn: Some(true),
+            response_model: None,
+            service_tier: None,
+            started_at: None,
         }),
     ]);
     let (mut stream, _) = super::map_response_events(
@@ -1703,9 +1929,11 @@ async fn bedrock_unauthorized_error_uses_provider_mapping() {
         /*auth_manager*/ None,
     );
     let mut auth_recovery = None;
+    let mut provider_auth_recovery_attempted = false;
     let url = "https://bedrock-mantle.us-east-2.api.aws/openai/v1/responses";
     let error = super::handle_unauthorized(
         TransportError::Http {
+            retry_after: None,
             status: http::StatusCode::UNAUTHORIZED,
             url: Some(url.to_string()),
             headers: None,
@@ -1715,8 +1943,11 @@ async fn bedrock_unauthorized_error_uses_provider_mapping() {
             ),
         },
         &mut auth_recovery,
+        &mut provider_auth_recovery_attempted,
         &test_session_telemetry(),
         &provider,
+        /*event_sender*/ None,
+        /*turn_id*/ None,
     )
     .await
     .expect_err("expired Bedrock signature should fail");
@@ -1729,6 +1960,149 @@ async fn bedrock_unauthorized_error_uses_provider_mapping() {
     );
 }
 
+#[derive(Debug)]
+struct TestRecoveryProvider {
+    inner: SharedModelProvider,
+    should_fail: bool,
+    attempts: Arc<AtomicUsize>,
+}
+
+impl ModelProvider for TestRecoveryProvider {
+    fn info(&self) -> &ModelProviderInfo {
+        self.inner.info()
+    }
+
+    fn auth_manager(&self) -> Option<Arc<AuthManager>> {
+        None
+    }
+
+    fn auth(&self) -> ModelProviderFuture<'_, Option<CodexAuth>> {
+        self.inner.auth()
+    }
+
+    fn account_state(&self) -> ProviderAccountResult {
+        self.inner.account_state()
+    }
+
+    fn auth_recovery_messages(&self) -> Option<ProviderAuthRecoveryMessages> {
+        Some(ProviderAuthRecoveryMessages {
+            started: "Refreshing provider authentication.",
+            succeeded: "Provider authentication recovered.",
+        })
+    }
+
+    fn recover_from_unauthorized(
+        &self,
+    ) -> ModelProviderFuture<'_, codex_protocol::error::Result<ProviderUnauthorizedRecovery>> {
+        self.attempts.fetch_add(1, Ordering::Relaxed);
+        Box::pin(async move {
+            if self.should_fail {
+                Err(CodexErr::Io(std::io::Error::other(
+                    "provider recovery failed",
+                )))
+            } else {
+                Ok(ProviderUnauthorizedRecovery::Recovered)
+            }
+        })
+    }
+
+    fn models_manager(
+        &self,
+        codex_home: PathBuf,
+        config_model_catalog: Option<ModelsResponse>,
+    ) -> SharedModelsManager {
+        self.inner.models_manager(codex_home, config_model_catalog)
+    }
+}
+
+#[tokio::test]
+async fn provider_owned_auth_recovery_is_bounded_and_preserves_unauthorized_failures() {
+    for should_fail in [false, true] {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let provider: SharedModelProvider = Arc::new(TestRecoveryProvider {
+            inner: test_model_provider(),
+            should_fail,
+            attempts: Arc::clone(&attempts),
+        });
+        assert!(provider.auth_manager().is_none());
+
+        let unauthorized = || TransportError::Http {
+            retry_after: None,
+            status: http::StatusCode::UNAUTHORIZED,
+            url: Some("https://example.com/v1/responses".to_string()),
+            headers: None,
+            body: Some("unauthorized".to_string()),
+        };
+        let mut auth_recovery = None;
+        let mut provider_auth_recovery_attempted = false;
+        let telemetry = test_session_telemetry();
+        let (event_sender, event_receiver) = async_channel::unbounded();
+        let result = super::handle_unauthorized(
+            unauthorized(),
+            &mut auth_recovery,
+            &mut provider_auth_recovery_attempted,
+            &telemetry,
+            &provider,
+            Some(&event_sender),
+            Some("turn-1"),
+        )
+        .await;
+
+        let error = if should_fail {
+            result.expect_err("failed provider recovery should return the original error")
+        } else {
+            let recovered = result.expect("provider recovery should succeed without AuthManager");
+            assert_eq!(
+                (recovered.mode, recovered.phase),
+                ("provider", "provider_refresh")
+            );
+            super::handle_unauthorized(
+                unauthorized(),
+                &mut auth_recovery,
+                &mut provider_auth_recovery_attempted,
+                &telemetry,
+                &provider,
+                Some(&event_sender),
+                Some("turn-1"),
+            )
+            .await
+            .expect_err("provider recovery should not run more than once")
+        };
+
+        match error.details() {
+            CodexErrorDetails::UnexpectedStatus(response) => {
+                assert_eq!(response.status, http::StatusCode::UNAUTHORIZED);
+                assert_eq!(response.body, "unauthorized");
+            }
+            other => panic!("unexpected error after provider recovery: {other}"),
+        }
+        assert_eq!(attempts.load(Ordering::Relaxed), 1);
+
+        let events = std::iter::from_fn(|| event_receiver.try_recv().ok())
+            .map(|event| serde_json::to_value(event).expect("recovery event should serialize"))
+            .collect::<Vec<_>>();
+        let mut expected = vec![json!({
+            "id": "turn-1",
+            "msg": {
+                "type": "auth_recovery_started",
+                "provider": provider.info().name,
+                "message": "Refreshing provider authentication.",
+            }
+        })];
+        if !should_fail {
+            expected.push(json!({
+                "id": "turn-1",
+                "msg": {
+                    "type": "auth_recovery_completed",
+                    "provider": provider.info().name,
+                    "message": "Provider authentication recovered.",
+                }
+            }));
+        }
+        assert_eq!(events, expected);
+    }
+}
+
 #[tokio::test]
 async fn dropped_backpressured_response_stream_traces_cancelled_partial_output()
 -> anyhow::Result<()> {
@@ -1737,7 +2111,7 @@ async fn dropped_backpressured_response_stream_traces_cancelled_partial_output()
     let backpressured_item_yielded = Arc::new(Notify::new());
     let mut events = VecDeque::new();
     for _ in 0..super::RESPONSE_STREAM_CHANNEL_CAPACITY {
-        events.push_back(ResponseEvent::Created);
+        events.push_back(ResponseEvent::Created { response_id: None });
     }
     events.push_back(ResponseEvent::OutputItemDone(output_message(
         "1",
@@ -1855,17 +2229,16 @@ fn model_client_with_counting_attestation(
             create_oss_provider_with_base_url("https://example.com/v1", WireApi::Responses),
         )
     };
-    let thread_id = ThreadId::new();
     let model_client = ModelClient::new(
         auth_manager,
         AgentIdentityAuthPolicy::JwtOnly,
-        thread_id.into(),
-        thread_id,
-        TEST_INSTALLATION_ID.to_string(),
+        ThreadId::new(),
         provider,
         SessionSource::Exec,
         "test_originator".to_string(),
         /*model_verbosity*/ None,
+        /*content_item_kinds_enabled*/ true,
+        /*reasoning_effort_override_enabled*/ false,
         /*enable_request_compression*/ false,
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,
@@ -1874,13 +2247,60 @@ fn model_client_with_counting_attestation(
             calls: attestation_calls.clone(),
         })),
         HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+        codex_model_provider::WorkspaceRoutingContext::new(
+            "https://chatgpt.com/backend-api".into(),
+        ),
+        Vec::new(),
     );
     (model_client, attestation_calls)
 }
 
+#[test]
+fn thread_responses_headers_are_scoped_to_model_and_backend_auth() {
+    let (mut model_client, _) =
+        model_client_with_counting_attestation(/*include_attestation*/ true);
+    let headers = http::HeaderMap::from_iter([(
+        http::HeaderName::from_static("x-custom-request"),
+        http::HeaderValue::from_static("example"),
+    )]);
+    model_client.codex_responses_headers = Some(Arc::new(crate::CodexResponsesHeaders {
+        model: "selected-model".to_owned(),
+        headers: headers.clone(),
+    }));
+    let chatgpt_auth = CodexAuth::create_dummy_chatgpt_auth_for_testing();
+    let api_key_auth = CodexAuth::from_api_key("test-api-key");
+    for (auth, model, expected) in [
+        (Some(&chatgpt_auth), "selected-model", headers),
+        (Some(&chatgpt_auth), "other-model", http::HeaderMap::new()),
+        (
+            Some(&api_key_auth),
+            "selected-model",
+            http::HeaderMap::new(),
+        ),
+        (None, "selected-model", http::HeaderMap::new()),
+    ] {
+        assert_eq!(model_client.responses_headers(auth, model), expected);
+    }
+
+    Arc::get_mut(&mut model_client.state)
+        .expect("test client should have unique session state")
+        .provider = create_model_provider(
+        ModelProviderInfo::create_openai_provider(Some("https://proxy.example.com/v1".to_owned())),
+        Some(AuthManager::from_auth_for_testing(chatgpt_auth.clone())),
+    );
+    assert_eq!(
+        model_client.responses_headers(Some(&chatgpt_auth), "selected-model"),
+        http::HeaderMap::new(),
+    );
+}
+
+#[test_case::test_case(/*cache_key*/ None; "own_cache")]
+#[test_case::test_case(Some("parent-session"); "inherited_cache")]
 #[tokio::test]
-async fn websocket_handshake_includes_attestation_for_chatgpt_codex_responses() {
-    let (model_client, attestation_calls) =
+async fn websocket_handshake_includes_attestation_for_chatgpt_codex_responses(
+    cache_key: Option<&str>,
+) {
+    let (mut model_client, attestation_calls) =
         model_client_with_counting_attestation(/*include_attestation*/ true);
     let responses_metadata = test_responses_metadata_for_client(
         &model_client,
@@ -1890,9 +2310,34 @@ async fn websocket_handshake_includes_attestation_for_chatgpt_codex_responses() 
         TestCodexResponsesRequestKind::WebsocketConnection,
     );
 
+    model_client.prompt_cache_key_override = cache_key.map(str::to_string);
     let headers = model_client
         .build_websocket_headers(&responses_metadata)
         .await;
+
+    assert_eq!(
+        headers
+            .get(crate::attestation::X_OAI_ATTESTATION_HEADER)
+            .and_then(|value| value.to_str().ok()),
+        Some("v1.header-1"),
+    );
+    assert_eq!(attestation_calls.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        headers["session-id"],
+        cache_key.unwrap_or(&responses_metadata.session_id)
+    );
+    assert_eq!(headers["thread-id"], responses_metadata.thread_id);
+}
+
+#[tokio::test]
+async fn existing_call_sideband_headers_include_attestation() {
+    let (model_client, attestation_calls) =
+        model_client_with_counting_attestation(/*include_attestation*/ true);
+
+    let headers = model_client
+        .realtime_sideband_headers(http::HeaderMap::new())
+        .await
+        .expect("existing call sideband headers should build");
 
     assert_eq!(
         headers
@@ -1934,4 +2379,126 @@ async fn non_chatgpt_codex_endpoints_omit_attestation_generation() {
         None,
     );
     assert_eq!(attestation_calls.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn intercepted_output_reaches_trace_and_websocket_bookkeeping() -> anyhow::Result<()> {
+    struct ReplaceOutput;
+    impl codex_extension_api::ModelResponseInterceptor for ReplaceOutput {
+        fn intercept(
+            self: Box<Self>,
+            stream: codex_extension_api::ModelResponseStream,
+        ) -> codex_extension_api::ModelResponseStream {
+            Box::pin(stream.map(|event| {
+                event.map(|event| match event {
+                    ResponseEvent::OutputItemDone(_) => {
+                        ResponseEvent::OutputItemDone(output_message("1", "transformed"))
+                    }
+                    other => other,
+                })
+            }))
+        }
+    }
+
+    let temp = TempDir::new()?;
+    let attempt = started_inference_attempt(&temp)?;
+    let (tx_event, rx_event) = tokio::sync::mpsc::channel(2);
+    tx_event
+        .send(Ok(ResponseEvent::OutputItemDone(output_message(
+            "1", "original",
+        ))))
+        .await?;
+    tx_event
+        .send(Ok(ResponseEvent::Completed {
+            response_id: "response".into(),
+            token_usage: None,
+            usage_metadata: None,
+            end_turn: None,
+            response_model: None,
+            service_tier: None,
+            started_at: None,
+        }))
+        .await?;
+    drop(tx_event);
+    let (mut stream, last_response) = super::map_response_stream(
+        codex_api::ResponseStream {
+            rx_event,
+            upstream_request_id: None,
+            interrupt: None,
+        },
+        test_session_telemetry(),
+        attempt,
+        test_model_provider(),
+        vec![Box::new(ReplaceOutput)],
+    );
+    let mut delivered = Vec::new();
+    while let Some(event) = stream.next().await {
+        if let ResponseEvent::OutputItemDone(item) = event? {
+            delivered.push(item);
+        }
+    }
+    assert_eq!(delivered, vec![output_message("1", "transformed")]);
+    assert_eq!(last_response.await?.items_added, delivered);
+    let rollout = replay_bundle(temp.path())?;
+    let payload = rollout
+        .raw_payloads
+        .values()
+        .find(|payload| payload.kind == codex_rollout_trace::RawPayloadKind::InferenceResponse)
+        .expect("response trace payload");
+    let recorded: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(temp.path().join(&payload.path))?)?;
+    assert_eq!(recorded["output_items"], serde_json::to_value(&delivered)?);
+    Ok(())
+}
+
+#[tokio::test]
+async fn inference_tools_changes_follow_full_specs_across_turns() {
+    let client = test_model_client(SessionSource::Cli);
+    let telemetry = test_session_telemetry();
+    let model_info = test_model_info();
+    let alpha = ResponsesApiTool {
+        name: "alpha".into(),
+        description: "Original".into(),
+        strict: false,
+        defer_loading: None,
+        parameters: JsonSchema::default(),
+        output_schema: None,
+    };
+    let beta = ResponsesApiTool {
+        name: "beta".into(),
+        ..alpha.clone()
+    };
+    let mut output_changed = alpha.clone();
+    output_changed.output_schema = Some(json!({"type": "object"}).into());
+    let mut params_changed = beta.clone();
+    params_changed.parameters = JsonSchema::string(Some("Changed parameters".into()));
+    let mut session = client.new_session();
+    for (index, (tools, expected)) in [
+        (vec![alpha.clone()], false),
+        (vec![output_changed.clone()], true),
+        (vec![output_changed.clone(), beta.clone()], true),
+        (vec![output_changed, beta.clone()], false),
+        (vec![beta, alpha.clone()], true),
+        (vec![params_changed, alpha], true),
+        (vec![], true),
+        (vec![], false),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        if index == 4 {
+            session.try_switch_fallback_transport(&telemetry, &model_info);
+            drop(session);
+            session = client.new_session();
+        }
+        let specs = tools
+            .into_iter()
+            .map(ToolSpec::Function)
+            .collect::<Arc<[_]>>();
+        assert_eq!(
+            session.inference_tools_changed(&specs),
+            expected,
+            "step {index}"
+        );
+    }
 }

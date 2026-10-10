@@ -11,16 +11,10 @@
   },
   "properties": {
     "agent_id": {
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": "string"
     },
     "agent_type": {
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": "string"
     },
     "cwd": {
       "type": "string"

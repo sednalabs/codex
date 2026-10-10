@@ -7,6 +7,10 @@ inputs:
   cache-scope:
     description: Logical namespace used to keep concurrent Bazel jobs from reserving the same repository cache key.
     required: true
+  windows-voice-tools:
+    description: Provision pinned native x64 Windows voice inputs for CI analysis.
+    required: false
+    default: "false"
 outputs:
   repository-cache-path:
     description: Filesystem path used for the Bazel repository cache.
@@ -17,31 +21,16 @@ outputs:
   repository-cache-hit:
     description: Whether the Bazel repository cache restore found an exact key match.
     value: ${{ steps.cache_bazel_repository_restore.outputs.cache-hit }}
-  repository-cache-write-enabled:
-    description: Whether this event is trusted to publish a repository cache entry.
-    value: ${{ steps.repository_cache_write_policy.outputs.repository-cache-write-enabled }}
 
 runs:
   using: composite
   steps:
-    - name: Determine Bazel repository cache write eligibility
-      id: repository_cache_write_policy
-      shell: bash
-      env:
-        EVENT_NAME: ${{ github.event_name }}
-        REF: ${{ github.ref }}
-      run: |
-        enabled=false
-        if [[ "${EVENT_NAME}" == "push" && ("${REF}" == "refs/heads/main" || "${REF}" == "refs/heads/upstream-main") ]]; then
-          enabled=true
-        fi
-        echo "repository-cache-write-enabled=${enabled}" >> "${GITHUB_OUTPUT}"
-
     - name: Set up Bazel CI
       id: setup_bazel
       uses: ./.github/actions/setup-bazel-ci
       with:
         target: ${{ inputs.target }}
+        windows-voice-tools: ${{ inputs.windows-voice-tools }}
 
     - name: Compute bazel repository cache key
       id: cache_bazel_repository_key
@@ -67,28 +56,6 @@ runs:
         key: ${{ steps.cache_bazel_repository_key.outputs.repository-cache-key }}
         restore-keys: |
           ${{ steps.cache_bazel_repository_key.outputs.repository-cache-restore-key }}
-
-    - name: Summarize Bazel repository cache
-      shell: bash
-      env:
-        CACHE_SCOPE: ${{ inputs.cache-scope }}
-        TARGET: ${{ inputs.target }}
-        CACHE_KEY: ${{ steps.cache_bazel_repository_key.outputs.repository-cache-key }}
-        CACHE_HIT: ${{ steps.cache_bazel_repository_restore.outputs.cache-hit }}
-        WRITE_ENABLED: ${{ steps.repository_cache_write_policy.outputs.repository-cache-write-enabled }}
-        SETUP_BAZEL_DISK_CACHE_SCOPE: ${{ github.workflow }}
-      run: |
-        {
-          echo "### Bazel cache summary"
-          echo
-          echo "- setup-bazel Bazelisk download cache: \`enabled\`"
-          echo "- setup-bazel disk-cache scope: \`${SETUP_BAZEL_DISK_CACHE_SCOPE}\`"
-          echo "- Repository cache scope: \`${CACHE_SCOPE}\`"
-          echo "- Repository cache target: \`${TARGET}\`"
-          echo "- Repository cache primary key: \`${CACHE_KEY}\`"
-          echo "- Repository cache exact hit: \`${CACHE_HIT:-unknown}\`"
-          echo "- Repository cache trusted writer eligible: \`${WRITE_ENABLED}\`"
-        } >> "${GITHUB_STEP_SUMMARY}"
 
     - name: Set up Bazel execution logs
       shell: bash

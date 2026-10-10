@@ -1,6 +1,4 @@
 use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering;
 
 use rmcp::ClientHandler;
 use rmcp::RoleClient;
@@ -8,15 +6,9 @@ use rmcp::model::CancelledNotificationParam;
 use rmcp::model::ClientInfo;
 use rmcp::model::ElicitRequestParams;
 use rmcp::model::ElicitResult;
-#[expect(
-    deprecated,
-    reason = "The negotiated legacy MCP protocol still supports logging notifications"
-)]
+#[allow(deprecated)]
 use rmcp::model::LoggingLevel;
-#[expect(
-    deprecated,
-    reason = "The negotiated legacy MCP protocol still supports logging notifications"
-)]
+#[allow(deprecated)]
 use rmcp::model::LoggingMessageNotificationParam;
 use rmcp::model::ProgressNotificationParam;
 use rmcp::model::ResourceUpdatedNotificationParam;
@@ -34,24 +26,14 @@ use crate::rmcp_client::SendElicitation;
 pub(crate) struct LoggingClientHandler {
     client_info: ClientInfo,
     send_elicitation: Arc<SendElicitation>,
-    tool_list_generation: Arc<AtomicUsize>,
 }
 
 impl LoggingClientHandler {
-    pub(crate) fn new(
-        client_info: ClientInfo,
-        send_elicitation: SendElicitation,
-        tool_list_generation: Arc<AtomicUsize>,
-    ) -> Self {
+    pub(crate) fn new(client_info: ClientInfo, send_elicitation: SendElicitation) -> Self {
         Self {
             client_info,
             send_elicitation: Arc::new(send_elicitation),
-            tool_list_generation,
         }
-    }
-
-    fn record_tool_list_changed(&self) -> usize {
-        self.tool_list_generation.fetch_add(1, Ordering::AcqRel) + 1
     }
 }
 
@@ -102,8 +84,7 @@ impl ClientHandler for LoggingClientHandler {
     }
 
     async fn on_tool_list_changed(&self, _context: NotificationContext<RoleClient>) {
-        let generation = self.record_tool_list_changed();
-        info!(generation, "MCP server tool list changed");
+        info!("MCP server tool list changed");
     }
 
     async fn on_prompt_list_changed(&self, _context: NotificationContext<RoleClient>) {
@@ -114,10 +95,7 @@ impl ClientHandler for LoggingClientHandler {
         self.client_info.clone()
     }
 
-    #[expect(
-        deprecated,
-        reason = "The negotiated legacy MCP protocol still supports logging notifications"
-    )]
+    #[allow(deprecated)]
     async fn on_logging_message(
         &self,
         params: LoggingMessageNotificationParam,

@@ -7,7 +7,6 @@ use codex_protocol::protocol::SessionSource;
 use codex_rollout_trace::ExecutionStatus;
 use codex_rollout_trace::ThreadStartedTraceMetadata;
 use codex_rollout_trace::ToolCallRequester;
-use codex_tools::ToolExecutionStatus;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
@@ -17,6 +16,7 @@ use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use crate::session::tests::make_session_and_context;
 use crate::session::turn_context::TurnContext;
+use crate::tools::code_mode::CodeModeService;
 use crate::tools::code_mode::CodeModeWaitHandler;
 use crate::tools::code_mode::WAIT_TOOL_NAME;
 use crate::tools::context::FunctionToolOutput;
@@ -48,7 +48,10 @@ impl ToolExecutor<ToolInvocation> for TestHandler {
         })
     }
 
-    fn handle(&self, _invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+    fn handle<'a>(&'a self, _invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
+    where
+        ToolInvocation: 'a,
+    {
         Box::pin(async {
             Ok(
                 Box::new(FunctionToolOutput::from_text("ok".to_string(), Some(true)))
@@ -60,61 +63,56 @@ impl ToolExecutor<ToolInvocation> for TestHandler {
 
 impl CoreToolRuntime for TestHandler {}
 
-struct ModelBoundedCodeModeOutput;
+struct MissingCellCodeModeSessionProvider;
 
-impl crate::tools::context::ToolOutput for ModelBoundedCodeModeOutput {
-    fn log_preview(&self) -> String {
-        "bounded model projection".to_string()
-    }
-
-    fn success_for_logging(&self) -> bool {
-        false
-    }
-
-    fn code_mode_execution_status(&self) -> ToolExecutionStatus {
-        ToolExecutionStatus::Completed
-    }
-
-    fn to_response_item(
-        &self,
-        call_id: &str,
-        payload: &ToolPayload,
-    ) -> codex_protocol::models::ResponseInputItem {
-        FunctionToolOutput::from_text("{\"error\":\"bounded\"}".to_string(), Some(false))
-            .to_response_item(call_id, payload)
-    }
-
-    fn code_mode_result(&self, _payload: &ToolPayload) -> serde_json::Value {
-        serde_json::json!({ "complete": "resource value" })
-    }
-}
-
-struct ModelBoundedCodeModeHandler;
-
-impl ToolExecutor<ToolInvocation> for ModelBoundedCodeModeHandler {
-    fn tool_name(&self) -> codex_tools::ToolName {
-        codex_tools::ToolName::plain("model_bounded_resource")
-    }
-
-    fn spec(&self) -> codex_tools::ToolSpec {
-        codex_tools::ToolSpec::Function(codex_tools::ResponsesApiTool {
-            name: self.tool_name().name,
-            description: "Test model-bounded resource tool.".to_string(),
-            strict: false,
-            defer_loading: None,
-            parameters: codex_tools::JsonSchema::default(),
-            output_schema: None,
-        })
-    }
-
-    fn handle(&self, _invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+impl codex_code_mode::CodeModeSessionProvider for MissingCellCodeModeSessionProvider {
+    fn create_session(&self) -> codex_code_mode::CodeModeSessionProviderFuture<'_> {
         Box::pin(async {
-            Ok(Box::new(ModelBoundedCodeModeOutput) as Box<dyn crate::tools::context::ToolOutput>)
+            Ok(Arc::new(MissingCellCodeModeSession) as Arc<dyn codex_code_mode::CodeModeSession>)
         })
     }
 }
 
-impl CoreToolRuntime for ModelBoundedCodeModeHandler {}
+struct MissingCellCodeModeSession;
+
+impl codex_code_mode::CodeModeSession for MissingCellCodeModeSession {
+    fn execute<'a>(
+        &'a self,
+        _request: codex_code_mode::ExecuteRequest,
+        _delegate: Arc<dyn codex_code_mode::CodeModeSessionDelegate>,
+        _preempt: Option<CancellationToken>,
+    ) -> codex_code_mode::CodeModeSessionResultFuture<'a, codex_code_mode::StartedCell> {
+        Box::pin(async { Err("test session cannot execute cells".to_string()) })
+    }
+
+    fn wait<'a>(
+        &'a self,
+        request: codex_code_mode::WaitRequest,
+        _preempt: Option<CancellationToken>,
+    ) -> codex_code_mode::CodeModeSessionResultFuture<'a, codex_code_mode::WaitOutcome> {
+        self.terminate(request.cell_id)
+    }
+
+    fn terminate<'a>(
+        &'a self,
+        cell_id: codex_code_mode::CellId,
+    ) -> codex_code_mode::CodeModeSessionResultFuture<'a, codex_code_mode::WaitOutcome> {
+        Box::pin(async move {
+            Ok(codex_code_mode::WaitOutcome::MissingCell(
+                codex_code_mode::RuntimeResponse::Result {
+                    code_mode_host_duration: None,
+                    error_text: Some(format!("exec cell {cell_id} not found")),
+                    cell_id,
+                    content_items: Vec::new(),
+                },
+            ))
+        })
+    }
+
+    fn shutdown<'a>(&'a self) -> codex_code_mode::CodeModeSessionResultFuture<'a, ()> {
+        Box::pin(async { Ok(()) })
+    }
+}
 
 #[tokio::test]
 async fn dispatch_lifecycle_trace_records_direct_and_code_mode_requesters() -> anyhow::Result<()> {
@@ -135,7 +133,7 @@ async fn dispatch_lifecycle_trace_records_direct_and_code_mode_requesters() -> a
     let turn = Arc::new(turn);
 
     registry
-        .dispatch_any_with_terminal_outcome(
+        .dispatch_any_with_state(
             test_invocation(
                 Arc::clone(&session),
                 Arc::clone(&turn),
@@ -144,11 +142,11 @@ async fn dispatch_lifecycle_trace_records_direct_and_code_mode_requesters() -> a
                 ToolCallSource::Direct,
                 "{}",
             ),
-            /*terminal_outcome_reached*/ None,
+            /*call_state*/ None,
         )
         .await?;
     registry
-        .dispatch_any_with_terminal_outcome(
+        .dispatch_any_with_state(
             test_invocation(
                 session,
                 turn,
@@ -160,7 +158,7 @@ async fn dispatch_lifecycle_trace_records_direct_and_code_mode_requesters() -> a
                 },
                 "{}",
             ),
-            /*terminal_outcome_reached*/ None,
+            /*call_state*/ None,
         )
         .await?;
 
@@ -210,79 +208,6 @@ async fn dispatch_lifecycle_trace_records_direct_and_code_mode_requesters() -> a
 }
 
 #[tokio::test]
-async fn model_bounded_output_records_code_mode_execution_as_completed() -> anyhow::Result<()> {
-    let temp = TempDir::new()?;
-    let (mut session, turn) = make_session_and_context().await;
-    attach_test_trace(&mut session, &turn, temp.path())?;
-    session.services.rollout_thread_trace.start_code_cell_trace(
-        turn.sub_id.as_str(),
-        "cell-1",
-        "call-code",
-        "await tools.model_bounded_resource({})",
-    );
-
-    let registry = ToolRegistry::with_handler_for_test(Arc::new(ModelBoundedCodeModeHandler));
-    let session = Arc::new(session);
-    let turn = Arc::new(turn);
-    let direct = registry
-        .dispatch_any_with_terminal_outcome(
-            test_invocation(
-                Arc::clone(&session),
-                Arc::clone(&turn),
-                "direct-model-projection",
-                "model_bounded_resource",
-                ToolCallSource::Direct,
-                "{}",
-            ),
-            /*terminal_outcome_reached*/ None,
-        )
-        .await?;
-    let code_mode = registry
-        .dispatch_any_with_terminal_outcome(
-            test_invocation(
-                session,
-                turn,
-                "code-mode-resource-read",
-                "model_bounded_resource",
-                ToolCallSource::CodeMode {
-                    cell_id: "cell-1".to_string(),
-                    runtime_tool_call_id: "tool-1".to_string(),
-                },
-                "{}",
-            ),
-            /*terminal_outcome_reached*/ None,
-        )
-        .await?;
-
-    let codex_protocol::models::ResponseInputItem::FunctionCallOutput { output, .. } =
-        direct.into_response()
-    else {
-        panic!("direct invocation should retain a function response");
-    };
-    assert_eq!(output.success, Some(false));
-    assert_eq!(
-        code_mode.code_mode_result(),
-        serde_json::json!({ "complete": "resource value" })
-    );
-
-    let replayed = codex_rollout_trace::replay_bundle(single_bundle_dir(temp.path())?)?;
-    assert_eq!(
-        replayed.tool_calls["direct-model-projection"]
-            .execution
-            .status,
-        ExecutionStatus::Failed
-    );
-    assert_eq!(
-        replayed.tool_calls["code-mode-resource-read"]
-            .execution
-            .status,
-        ExecutionStatus::Completed
-    );
-
-    Ok(())
-}
-
-#[tokio::test]
 async fn dispatch_lifecycle_trace_records_unsupported_tool_failures() -> anyhow::Result<()> {
     let temp = TempDir::new()?;
     let (mut session, turn) = make_session_and_context().await;
@@ -293,7 +218,7 @@ async fn dispatch_lifecycle_trace_records_unsupported_tool_failures() -> anyhow:
     let turn = Arc::new(turn);
 
     let result = registry
-        .dispatch_any_with_terminal_outcome(
+        .dispatch_any_with_state(
             test_invocation(
                 session,
                 turn,
@@ -302,7 +227,7 @@ async fn dispatch_lifecycle_trace_records_unsupported_tool_failures() -> anyhow:
                 ToolCallSource::Direct,
                 "{}",
             ),
-            /*terminal_outcome_reached*/ None,
+            /*call_state*/ None,
         )
         .await;
 
@@ -328,7 +253,7 @@ async fn dispatch_lifecycle_trace_records_incompatible_payload_failures() -> any
     let turn = Arc::new(turn);
 
     let result = registry
-        .dispatch_any_with_terminal_outcome(
+        .dispatch_any_with_state(
             test_invocation_with_payload(
                 session,
                 turn,
@@ -339,7 +264,7 @@ async fn dispatch_lifecycle_trace_records_incompatible_payload_failures() -> any
                     input: "{}".to_string(),
                 },
             ),
-            /*terminal_outcome_reached*/ None,
+            /*call_state*/ None,
         )
         .await;
 
@@ -356,24 +281,38 @@ async fn dispatch_lifecycle_trace_records_incompatible_payload_failures() -> any
 async fn missing_code_mode_wait_traces_only_the_wait_tool_call() -> anyhow::Result<()> {
     let temp = TempDir::new()?;
     let (mut session, turn) = make_session_and_context().await;
+    session.services.code_mode_service = CodeModeService::new(
+        session.thread_id,
+        Arc::new(MissingCellCodeModeSessionProvider),
+        &turn.config.code_mode,
+        session.services.executed_tool_calls.clone(),
+    );
     attach_test_trace(&mut session, &turn, temp.path())?;
 
-    let registry = ToolRegistry::with_handler_for_test(Arc::new(CodeModeWaitHandler));
+    let registry = ToolRegistry::with_handler_for_test(Arc::new(CodeModeWaitHandler::new(
+        /*description_override*/ None, /*parameters_override*/ None,
+    )));
     let session = Arc::new(session);
     let turn = Arc::new(turn);
 
+    let mut invocation = test_invocation(
+        session,
+        turn,
+        "wait-call",
+        WAIT_TOOL_NAME,
+        ToolCallSource::Direct,
+        r#"{"cell_id":"noop","terminate":true}"#,
+    );
+    invocation.tool_name = invocation.tool_name.with_default_namespace();
+    assert!(
+        super::tool_dispatch_invocation(&invocation)
+            .expect("wait calls should produce a trace invocation")
+            .tool_namespace
+            .is_none()
+    );
+
     registry
-        .dispatch_any_with_terminal_outcome(
-            test_invocation(
-                session,
-                turn,
-                "wait-call",
-                WAIT_TOOL_NAME,
-                ToolCallSource::Direct,
-                r#"{"cell_id":"noop","terminate":true}"#,
-            ),
-            /*terminal_outcome_reached*/ None,
-        )
+        .dispatch_any_with_state(invocation, /*call_state*/ None)
         .await?;
 
     let replayed = codex_rollout_trace::replay_bundle(single_bundle_dir(temp.path())?)?;

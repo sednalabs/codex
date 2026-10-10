@@ -1,5 +1,6 @@
 use anyhow::Result;
 use codex_features::Feature;
+use codex_models_manager::bundled_models_response;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_response_created;
 use core_test_support::responses::sse;
@@ -105,6 +106,9 @@ async fn regular_responses_turn_honors_respect_system_proxy() -> Result<()> {
 
     let server = MockServer::start().await;
     let mut builder = test_codex().with_config(|config| {
+        // The proxy serves one inference response; model discovery must not consume it.
+        config.model_catalog =
+            Some(bundled_models_response().expect("bundled models.json should parse"));
         config.model_provider.base_url = Some("http://responses-proxy.invalid/v1".to_string());
         config
             .features
@@ -112,7 +116,7 @@ async fn regular_responses_turn_honors_respect_system_proxy() -> Result<()> {
             .expect("test config should allow feature update");
         config.respect_system_proxy = true;
     });
-    let test = builder.build(&server).await?;
+    let test = builder.build_with_auto_env(&server).await?;
 
     test.submit_turn("hello through the system proxy").await?;
 

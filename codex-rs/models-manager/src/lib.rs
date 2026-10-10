@@ -1,7 +1,6 @@
-pub(crate) mod cache;
+pub mod cache;
 pub mod collaboration_mode_presets;
 pub(crate) mod config;
-pub(crate) mod instruction_overlay;
 pub mod manager;
 pub mod model_info;
 pub mod model_presets;

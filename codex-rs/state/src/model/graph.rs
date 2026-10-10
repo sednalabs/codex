@@ -9,3 +9,12 @@ pub enum DirectionalThreadSpawnEdgeStatus {
     Open,
     Closed,
 }
+
+/// Persisted descendants returned by a bounded agent recovery query.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ThreadSpawnDescendants {
+    /// Descendant thread identifiers retained by the bounded query.
+    pub thread_ids: Vec<codex_protocol::ThreadId>,
+    /// Whether at least one additional descendant exists beyond the safety limit.
+    pub relation_limit_reached: bool,
+}

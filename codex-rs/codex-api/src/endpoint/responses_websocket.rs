@@ -1,28 +1,29 @@
 use crate::auth::SharedAuthProvider;
 use crate::common::ResponseEvent;
-use crate::common::ResponseModelIdentity;
 use crate::common::ResponseStream;
 use crate::common::ResponsesWsRequest;
 use crate::common::SafetyBufferingTreatment;
+use crate::common::ServerModelScope;
 use crate::common::WS_REQUEST_HEADER_TRACEPARENT_CLIENT_METADATA_KEY;
 use crate::error::ApiError;
 use crate::provider::Provider;
 use crate::rate_limits::parse_rate_limit_event;
+use crate::responses_headers::json_headers_to_http_headers;
 use crate::safety_buffering::treatment_from_headers;
 use crate::sse::ResponsesStreamEvent;
 use crate::sse::process_responses_event;
 use crate::telemetry::WebsocketTelemetry;
-use codex_client::ClaimedRequestInitiation;
-use codex_client::RequestInitiation;
+use chrono::SecondsFormat;
+use chrono::Utc;
 use codex_client::TransportError;
 use codex_http_client::HttpClientFactory;
+use codex_http_client::RetryAfter;
 use codex_websocket_client::WebSocketConnection;
 use codex_websocket_client::WebSocketConnector;
+use futures::FutureExt;
 use futures::SinkExt;
 use futures::StreamExt;
 use http::HeaderMap;
-use http::HeaderName;
-use http::HeaderValue;
 use http::StatusCode;
 use serde::Deserialize;
 use serde_json::Value;
@@ -59,7 +60,6 @@ enum WsCommand {
     Send {
         message: Message,
         tx_result: oneshot::Sender<Result<(), WsError>>,
-        initiation: Option<ClaimedRequestInitiation>,
     },
 }
 
@@ -77,12 +77,9 @@ impl WsStream {
                             break;
                         };
                         match command {
-                            WsCommand::Send { message, tx_result, initiation } => {
+                            WsCommand::Send { message, tx_result } => {
                                 let result = inner.send(message).await;
                                 let should_break = result.is_err();
-                                if let Some(initiation) = initiation {
-                                    initiation.acknowledge();
-                                }
                                 let _ = tx_result.send(result);
                                 if should_break {
                                     break;
@@ -132,31 +129,24 @@ impl WsStream {
     }
 
     async fn request(
-        &self,
+        &mut self,
         make_command: impl FnOnce(oneshot::Sender<Result<(), WsError>>) -> WsCommand,
     ) -> Result<(), WsError> {
         let (tx_result, rx_result) = oneshot::channel();
-        if self.tx_command.send(make_command(tx_result)).await.is_err() {
-            return Err(WsError::ConnectionClosed);
+        if self.tx_command.send(make_command(tx_result)).await.is_ok()
+            && let Ok(result) = rx_result.await
+        {
+            return result;
         }
-        rx_result.await.unwrap_or(Err(WsError::ConnectionClosed))
+        while let Some(message) = self.rx_message.recv().await {
+            message?;
+        }
+        Err(WsError::ConnectionClosed)
     }
 
-    async fn send(
-        &self,
-        message: Message,
-        initiation: Option<RequestInitiation>,
-    ) -> Result<(), WsError> {
-        let initiation = initiation
-            .map(|initiation| initiation.claim())
-            .transpose()
-            .map_err(|error| WsError::Io(std::io::Error::other(error)))?;
-        self.request(|tx_result| WsCommand::Send {
-            message,
-            tx_result,
-            initiation,
-        })
-        .await
+    async fn send(&mut self, message: Message) -> Result<(), WsError> {
+        self.request(|tx_result| WsCommand::Send { message, tx_result })
+            .await
     }
 
     async fn next(&mut self) -> Option<Result<Message, WsError>> {
@@ -203,7 +193,6 @@ pub struct ResponsesWebsocketConnection {
     // TODO (pakrym): is this the right place for timeout?
     idle_timeout: Duration,
     server_reasoning_included: bool,
-    models_etag: Option<String>,
     server_model: Option<String>,
     telemetry: Option<Arc<dyn WebsocketTelemetry>>,
 }
@@ -214,7 +203,6 @@ impl std::fmt::Debug for ResponsesWebsocketConnection {
             .field("stream", &"<ws-stream>")
             .field("idle_timeout", &self.idle_timeout)
             .field("server_reasoning_included", &self.server_reasoning_included)
-            .field("models_etag", &self.models_etag)
             .field("server_model", &self.server_model)
             .field("telemetry", &self.telemetry.as_ref().map(|_| "<telemetry>"))
             .finish()
@@ -226,7 +214,6 @@ impl ResponsesWebsocketConnection {
         stream: WsStream,
         idle_timeout: Duration,
         server_reasoning_included: bool,
-        models_etag: Option<String>,
         server_model: Option<String>,
         telemetry: Option<Arc<dyn WebsocketTelemetry>>,
     ) -> Self {
@@ -234,21 +221,24 @@ impl ResponsesWebsocketConnection {
             stream: Arc::new(Mutex::new(Some(stream))),
             idle_timeout,
             server_reasoning_included,
-            models_etag,
             server_model,
             telemetry,
         }
     }
 
     pub async fn is_closed(&self) -> bool {
-        self.stream.lock().await.is_none()
+        self.stream
+            .lock()
+            .await
+            .as_ref()
+            .is_none_or(|stream| stream.pump_task.is_finished())
     }
 
     #[instrument(
         name = "responses_websocket.stream_request",
         level = "info",
         skip_all,
-        fields(transport = "responses_websocket", api.path = "responses")
+        fields(transport = "responses_websocket", api.path = "/responses")
     )]
     pub async fn stream_request(
         &self,
@@ -256,28 +246,12 @@ impl ResponsesWebsocketConnection {
         connection_reused: bool,
         turn_state: Option<Arc<OnceLock<String>>>,
     ) -> Result<ResponseStream, ApiError> {
-        self.stream_request_with_initiation(
-            request,
-            connection_reused,
-            turn_state,
-            RequestInitiation::new(()),
-        )
-        .await
-    }
-
-    pub async fn stream_request_with_initiation(
-        &self,
-        request: ResponsesWsRequest<'_>,
-        connection_reused: bool,
-        turn_state: Option<Arc<OnceLock<String>>>,
-        initiation: RequestInitiation,
-    ) -> Result<ResponseStream, ApiError> {
         let (tx_event, rx_event) =
             mpsc::channel::<std::result::Result<ResponseEvent, ApiError>>(1600);
+        let (tx_interrupt, rx_interrupt) = oneshot::channel();
         let stream = Arc::clone(&self.stream);
         let idle_timeout = self.idle_timeout;
         let server_reasoning_included = self.server_reasoning_included;
-        let models_etag = self.models_etag.clone();
         let server_model = self.server_model.clone();
         let telemetry = self.telemetry.clone();
         let ResponsesWsRequest::ResponseCreate(ws_request) = &request;
@@ -314,24 +288,25 @@ impl ResponsesWebsocketConnection {
                 reason = "the guard serializes exclusive use of the websocket stream for the lifetime of the response stream"
             )]
             async move {
-                if tx_event.is_closed() {
-                    initiation.cancel();
-                    return;
-                }
                 if let Some(model) = server_model {
-                    let _ = tx_event.send(Ok(ResponseEvent::ServerModel(model))).await;
-                }
-                if let Some(etag) = models_etag {
-                    let _ = tx_event.send(Ok(ResponseEvent::ModelsEtag(etag))).await;
+                    let _ = tx_event
+                        .send(Ok(ResponseEvent::ServerModel {
+                            model,
+                            scope: ServerModelScope::WebSocketConnection,
+                        }))
+                        .await;
                 }
                 if server_reasoning_included {
                     let _ = tx_event
                         .send(Ok(ResponseEvent::ServerReasoningIncluded(true)))
                         .await;
                 }
-                let mut guard = stream.lock().await;
+                let mut guard = tokio::select! {
+                    biased;
+                    _ = tx_event.closed() => return,
+                    guard = stream.lock() => guard,
+                };
                 if tx_event.is_closed() {
-                    initiation.cancel();
                     return;
                 }
                 let result = {
@@ -344,17 +319,22 @@ impl ResponsesWebsocketConnection {
                         return;
                     };
 
-                    run_websocket_response_stream(
-                        ws_stream,
-                        tx_event.clone(),
-                        request_text,
-                        idle_timeout,
-                        telemetry,
-                        turn_state.as_deref(),
-                        &timing_log_context,
-                        initiation,
-                    )
-                    .await
+                    tokio::select! {
+                        biased;
+                        result = run_websocket_response_stream(
+                            ws_stream,
+                            tx_event.clone(),
+                            request_text,
+                            idle_timeout,
+                            telemetry,
+                            turn_state.as_deref(),
+                            &timing_log_context,
+                            rx_interrupt,
+                        ) => result,
+                        _ = tx_event.closed() => Err(ApiError::Stream(
+                            "response event consumer dropped".to_string(),
+                        )),
+                    }
                 };
 
                 if let Err(err) = result {
@@ -372,9 +352,12 @@ impl ResponsesWebsocketConnection {
         Ok(ResponseStream {
             rx_event,
             upstream_request_id: None,
+            interrupt: Some(tx_interrupt),
         })
     }
 }
+
+mod connector;
 
 /// Client for connecting to the Responses WebSocket endpoint for one provider.
 pub struct ResponsesWebsocketClient {
@@ -400,8 +383,6 @@ pub struct ResponsesWebsocketProbe {
     pub status: StatusCode,
     /// Whether the server reported reasoning support in the upgrade response.
     pub reasoning_included: bool,
-    /// Whether the server returned a model catalog ETag in the upgrade response.
-    pub models_etag_present: bool,
     /// Whether the server returned a server-selected model in the upgrade response.
     pub server_model_present: bool,
     /// Close frame received immediately after upgrade, when one arrives quickly.
@@ -414,12 +395,6 @@ impl ResponsesWebsocketClient {
         Self { provider, auth }
     }
 
-    #[instrument(
-        name = "responses_websocket.connect",
-        level = "info",
-        skip_all,
-        fields(transport = "responses_websocket", api.path = "responses")
-    )]
     pub async fn connect(
         &self,
         http_client_factory: &HttpClientFactory,
@@ -428,52 +403,16 @@ impl ResponsesWebsocketClient {
         turn_state: Option<Arc<OnceLock<String>>>,
         telemetry: Option<Arc<dyn WebsocketTelemetry>>,
     ) -> Result<ResponsesWebsocketConnection, ApiError> {
-        self.connect_with_initiation(
-            http_client_factory,
+        let connector = WebSocketConnector::new(http_client_factory)
+            .map_err(|err| ApiError::Stream(format!("failed to configure websocket TLS: {err}")))?;
+        self.connect_with_connector(
+            &connector,
             extra_headers,
             default_headers,
             turn_state,
             telemetry,
-            RequestInitiation::new(()),
         )
         .await
-    }
-
-    pub async fn connect_with_initiation(
-        &self,
-        http_client_factory: &HttpClientFactory,
-        extra_headers: HeaderMap,
-        default_headers: HeaderMap,
-        turn_state: Option<Arc<OnceLock<String>>>,
-        telemetry: Option<Arc<dyn WebsocketTelemetry>>,
-        initiation: RequestInitiation,
-    ) -> Result<ResponsesWebsocketConnection, ApiError> {
-        let ws_url = self
-            .provider
-            .websocket_url_for_path("responses")
-            .map_err(|err| ApiError::Stream(format!("failed to build websocket URL: {err}")))?;
-
-        let mut headers =
-            merge_request_headers(&self.provider.headers, extra_headers, default_headers);
-        self.auth.add_auth_headers(&mut headers);
-
-        let (stream, _status, server_reasoning_included, models_etag, server_model) =
-            connect_websocket(
-                ws_url,
-                headers,
-                http_client_factory,
-                turn_state.clone(),
-                Some(initiation),
-            )
-            .await?;
-        Ok(ResponsesWebsocketConnection::new(
-            stream,
-            self.provider.stream_idle_timeout,
-            server_reasoning_included,
-            models_etag,
-            server_model,
-            telemetry,
-        ))
     }
 
     /// Opens a WebSocket connection long enough to validate the upgrade response.
@@ -492,37 +431,34 @@ impl ResponsesWebsocketClient {
     ) -> Result<ResponsesWebsocketProbe, ApiError> {
         let ws_url = self
             .provider
-            .websocket_url_for_path("responses")
+            .websocket_url_for_path("/responses")
             .map_err(|err| ApiError::Stream(format!("failed to build websocket URL: {err}")))?;
 
         let mut headers =
             merge_request_headers(&self.provider.headers, extra_headers, default_headers);
         self.auth.add_auth_headers(&mut headers);
 
-        let (mut stream, status, reasoning_included, models_etag, server_model) =
-            connect_websocket(
-                ws_url.clone(),
-                headers,
-                http_client_factory,
-                /*turn_state*/ None,
-                /*initiation*/ None,
-            )
-            .await?;
+        let connector = WebSocketConnector::new(http_client_factory)
+            .map_err(|err| ApiError::Stream(format!("failed to configure websocket TLS: {err}")))?;
+        let (mut stream, status, reasoning_included, server_model) = connect_websocket(
+            ws_url.clone(),
+            headers,
+            &connector,
+            /*turn_state*/ None,
+        )
+        .await?;
         let immediate_close = tokio::time::timeout(immediate_close_timeout, stream.next())
             .await
             .ok()
             .flatten()
             .transpose()
-            .map_err(|err| {
-                ApiError::Stream(format!("failed to read websocket probe event: {err}"))
-            })?
+            .map_err(map_ws_stream_error)?
             .and_then(immediate_close_from_message);
 
         Ok(ResponsesWebsocketProbe {
             url: ws_url.to_string(),
             status,
             reasoning_included,
-            models_etag_present: models_etag.is_some(),
             server_model_present: server_model.is_some(),
             immediate_close,
         })
@@ -561,10 +497,9 @@ fn merge_request_headers(
 async fn connect_websocket(
     url: Url,
     headers: HeaderMap,
-    http_client_factory: &HttpClientFactory,
+    connector: &WebSocketConnector,
     turn_state: Option<Arc<OnceLock<String>>>,
-    initiation: Option<RequestInitiation>,
-) -> Result<(WsStream, StatusCode, bool, Option<String>, Option<String>), ApiError> {
+) -> Result<(WsStream, StatusCode, bool, Option<String>), ApiError> {
     info!("connecting to websocket: {url}");
 
     let mut request = url
@@ -573,18 +508,11 @@ async fn connect_websocket(
         .map_err(|err| ApiError::Stream(format!("failed to build websocket request: {err}")))?;
     request.headers_mut().extend(headers);
 
-    let connector = WebSocketConnector::new(http_client_factory)
-        .map_err(|err| ApiError::Stream(format!("failed to configure websocket TLS: {err}")))?;
-    let response = connector
-        .connect_with_initiation(request, websocket_config(), initiation)
-        .await;
+    let response = connector.connect(request, websocket_config()).await;
 
     let (stream, response) = match response {
         Ok((stream, response)) => {
-            info!(
-                "successfully connected to websocket: {url}, headers: {:?}",
-                response.headers()
-            );
+            info!("successfully connected to websocket: {url}");
             (stream, response)
         }
         Err(err) => {
@@ -594,11 +522,6 @@ async fn connect_websocket(
     };
 
     let reasoning_included = response.headers().contains_key(X_REASONING_INCLUDED_HEADER);
-    let models_etag = response
-        .headers()
-        .get(X_MODELS_ETAG_HEADER)
-        .and_then(|value| value.to_str().ok())
-        .map(ToString::to_string);
     let server_model = response
         .headers()
         .get(OPENAI_MODEL_HEADER)
@@ -616,7 +539,6 @@ async fn connect_websocket(
         WsStream::new(stream),
         response.status(),
         reasoning_included,
-        models_etag,
         server_model,
     ))
 }
@@ -630,11 +552,22 @@ fn websocket_config() -> WebSocketConfig {
     config
 }
 
+fn map_ws_stream_error(error: WsError) -> ApiError {
+    match codex_websocket_client::network_policy_denial(&error) {
+        Some(denied) => ApiError::Transport(TransportError::Policy(denied)),
+        None => ApiError::Stream(error.to_string()),
+    }
+}
+
 fn map_ws_error(err: WsError, url: &Url) -> ApiError {
+    if let Some(denied) = codex_websocket_client::network_policy_denial(&err) {
+        return ApiError::Transport(TransportError::Policy(denied));
+    }
     match err {
         WsError::Http(response) => {
             let status = response.status();
             let headers = response.headers().clone();
+            let retry_after = RetryAfter::from_headers(&headers);
             let body = response
                 .body()
                 .as_ref()
@@ -644,6 +577,7 @@ fn map_ws_error(err: WsError, url: &Url) -> ApiError {
                 url: Some(url.to_string()),
                 headers: Some(headers),
                 body,
+                retry_after,
             })
         }
         WsError::ConnectionClosed | WsError::AlreadyClosed => {
@@ -658,6 +592,8 @@ fn map_ws_error(err: WsError, url: &Url) -> ApiError {
 struct WrappedWebsocketError {
     code: Option<String>,
     message: Option<String>,
+    #[serde(default)]
+    headers: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -690,6 +626,16 @@ fn map_wrapped_websocket_error_event(
         headers,
         ..
     } = event;
+    let retry_after = [
+        error
+            .as_ref()
+            .and_then(|error| error.headers.as_ref())
+            .and_then(Value::as_object),
+        headers.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    .find_map(|headers| RetryAfter::from_headers(&json_headers_to_http_headers(headers)));
 
     if let Some(error) = error.as_ref()
         && let Some(code) = error.code.as_deref()
@@ -706,7 +652,7 @@ fn map_wrapped_websocket_error_event(
                 .message
                 .clone()
                 .unwrap_or_else(|| fallback_message.to_string()),
-            delay: None,
+            retry_after,
         });
     }
 
@@ -720,34 +666,10 @@ fn map_wrapped_websocket_error_event(
         url: None,
         headers: headers.as_ref().map(json_headers_to_http_headers),
         body: Some(original_payload),
+        retry_after,
     }))
 }
 
-fn json_headers_to_http_headers(headers: &JsonMap<String, Value>) -> HeaderMap {
-    let mut mapped = HeaderMap::new();
-    for (name, value) in headers {
-        let Ok(header_name) = HeaderName::from_bytes(name.as_bytes()) else {
-            continue;
-        };
-        let Some(header_value) = json_header_value(value) else {
-            continue;
-        };
-        mapped.insert(header_name, header_value);
-    }
-    mapped
-}
-
-fn json_header_value(value: &Value) -> Option<HeaderValue> {
-    let value = match value {
-        Value::String(value) => value.clone(),
-        Value::Number(value) => value.to_string(),
-        Value::Bool(value) => value.to_string(),
-        _ => return None,
-    };
-    HeaderValue::from_str(&value).ok()
-}
-
-// The stream helper keeps each websocket lifecycle input explicit at this boundary.
 #[allow(clippy::too_many_arguments)]
 async fn run_websocket_response_stream(
     ws_stream: &mut WsStream,
@@ -757,33 +679,51 @@ async fn run_websocket_response_stream(
     telemetry: Option<Arc<dyn WebsocketTelemetry>>,
     turn_state: Option<&OnceLock<String>>,
     timing_log_context: &ResponsesWebsocketTimingLogContext,
-    initiation: RequestInitiation,
+    interrupt: oneshot::Receiver<()>,
 ) -> Result<(), ApiError> {
     let mut last_server_model: Option<String> = None;
-    let mut last_server_model_identity: Option<ResponseModelIdentity> = None;
     let mut safety_buffering_treatment = SafetyBufferingTreatment::default();
-    send_websocket_request(
+    let started_at = send_websocket_request(
         ws_stream,
         request_text,
         idle_timeout,
         telemetry.as_ref(),
         timing_log_context.connection_reused,
-        initiation,
     )
     .await?;
 
+    // A response owns its interrupt, and create must be sent before interrupt.
+    let mut interrupt = interrupt.fuse();
+    let mut response_id = None;
     loop {
         let poll_start = Instant::now();
-        let response = tokio::time::timeout(idle_timeout, ws_stream.next())
-            .await
-            .map_err(|_| ApiError::Stream("idle timeout waiting for websocket".into()));
+        let response = tokio::select! {
+            response = tokio::time::timeout(idle_timeout, ws_stream.next()) => {
+                response.map_err(|_| ApiError::Stream("idle timeout waiting for websocket".into()))
+            }
+            Ok(()) = &mut interrupt, if response_id.is_some() => {
+                let _ = send_websocket_request(
+                    ws_stream,
+                    serde_json::json!({
+                        "type": "response.interrupt",
+                        "response_id": response_id,
+                        "mode": "discard_partial_items",
+                    }).to_string(),
+                    idle_timeout,
+                    /*telemetry*/ None,
+                    timing_log_context.connection_reused,
+                )
+                    .await?;
+                continue;
+            }
+        };
         if let Some(t) = telemetry.as_ref() {
             t.on_ws_event(&response, poll_start.elapsed());
         }
         let message = match response {
             Ok(Some(Ok(msg))) => msg,
             Ok(Some(Err(err))) => {
-                return Err(ApiError::Stream(err.to_string()));
+                return Err(map_ws_stream_error(err));
             }
             Ok(None) => {
                 return Err(ApiError::Stream(
@@ -816,6 +756,21 @@ async fn run_websocket_response_stream(
                     text.as_str(),
                     timing_log_context,
                 );
+                if event.kind() == "codex.response.metadata"
+                    && let Some(etag) =
+                        event
+                            .headers
+                            .as_ref()
+                            .and_then(Value::as_object)
+                            .and_then(|headers| {
+                                json_headers_to_http_headers(headers)
+                                    .get(X_MODELS_ETAG_HEADER)
+                                    .and_then(|value| value.to_str().ok())
+                                    .map(str::to_string)
+                            })
+                {
+                    let _ = tx_event.send(Ok(ResponseEvent::ModelsEtag(etag))).await;
+                }
                 if let Some(response_turn_state) = event.turn_state()
                     && let Some(turn_state) = turn_state
                 {
@@ -831,26 +786,16 @@ async fn run_websocket_response_stream(
                     }
                     continue;
                 }
-                let model_metadata = event.response_model_metadata();
-                if let Some(model) = model_metadata.warning_model
+                if let Some(model) = event.response_model()
                     && last_server_model.as_deref() != Some(model.as_str())
                 {
                     let _ = tx_event
-                        .send(Ok(ResponseEvent::ServerModel(model.clone())))
+                        .send(Ok(ResponseEvent::ServerModel {
+                            model: model.clone(),
+                            scope: ServerModelScope::CurrentResponse,
+                        }))
                         .await;
                     last_server_model = Some(model);
-                }
-                let server_model_identity = model_metadata.execution_identity;
-                if (server_model_identity.final_model.is_some()
-                    || server_model_identity.model_snapshot.is_some())
-                    && last_server_model_identity.as_ref() != Some(&server_model_identity)
-                {
-                    let _ = tx_event
-                        .send(Ok(ResponseEvent::ServerModelIdentity(
-                            server_model_identity.clone(),
-                        )))
-                        .await;
-                    last_server_model_identity = Some(server_model_identity);
                 }
                 if let Some(verifications) = model_verifications
                     && tx_event
@@ -883,7 +828,17 @@ async fn run_websocket_response_stream(
                     ));
                 }
                 match process_responses_event(event) {
-                    Ok(Some(event)) => {
+                    Ok(Some(mut event)) => {
+                        if let ResponseEvent::Completed {
+                            started_at: event_started_at,
+                            ..
+                        } = &mut event
+                        {
+                            *event_started_at = Some(started_at.clone());
+                        }
+                        if let ResponseEvent::Created { response_id: id } = &event {
+                            response_id.clone_from(id);
+                        }
                         let is_completed = matches!(event, ResponseEvent::Completed { .. });
                         let _ = tx_event.send(Ok(event)).await;
                         if is_completed {
@@ -955,23 +910,21 @@ fn safety_buffering_for_event(
 }
 
 async fn send_websocket_request(
-    ws_stream: &WsStream,
+    ws_stream: &mut WsStream,
     request_text: String,
     idle_timeout: Duration,
     telemetry: Option<&Arc<dyn WebsocketTelemetry>>,
     connection_reused: bool,
-    initiation: RequestInitiation,
-) -> Result<(), ApiError> {
+) -> Result<String, ApiError> {
+    let started_at = Utc::now().to_rfc3339_opts(SecondsFormat::Nanos, true);
     let request_start = Instant::now();
     let result = tokio::time::timeout(
         idle_timeout,
-        ws_stream.send(Message::Text(request_text.into()), Some(initiation)),
+        ws_stream.send(Message::Text(request_text.into())),
     )
     .await
     .map_err(|_| ApiError::Stream("idle timeout sending websocket request".into()))
-    .and_then(|result| {
-        result.map_err(|err| ApiError::Stream(format!("failed to send websocket request: {err}")))
-    });
+    .and_then(|result| result.map_err(map_ws_stream_error));
 
     if let Some(t) = telemetry.as_ref() {
         t.on_ws_request(
@@ -983,7 +936,7 @@ async fn send_websocket_request(
 
     result?;
 
-    Ok(())
+    Ok(started_at)
 }
 
 fn serialize_websocket_request(request: &ResponsesWsRequest<'_>) -> Result<String, ApiError> {
@@ -996,25 +949,21 @@ mod tests {
     use super::*;
     use crate::common::ResponseCreateWsRequest;
     use crate::common::ResponsesApiRequest;
-    use codex_http_client::OutboundProxyPolicy;
     use codex_protocol::ResponseItemId;
     use codex_protocol::models::ContentItem;
     use codex_protocol::models::ResponseItem;
+    use http::HeaderValue;
     use pretty_assertions::assert_eq;
     use serde_json::json;
     use serde_json::value::RawValue;
     use serde_json::value::to_raw_value;
     use std::collections::HashMap;
     use std::sync::Arc;
-    use tokio::net::TcpListener;
-    use tokio::sync::RwLock;
-    use tokio_tungstenite::accept_async_with_config;
 
     #[test]
     fn direct_serialization_preserves_websocket_request_payload() {
         let api_request = ResponsesApiRequest {
             model: "gpt-test".to_string(),
-            instructions: "Use the available tools.".to_string(),
             input: vec![ResponseItem::Message {
                 id: Some(ResponseItemId::with_suffix("msg", "1")),
                 role: "user".to_string(),
@@ -1045,6 +994,9 @@ mod tests {
             service_tier: Some("priority".to_string()),
             prompt_cache_key: Some("cache-key".to_string()),
             text: None,
+            access_programs: Some(
+                codex_protocol::turn_input::CyberAccessProgram::DaybreakBlue.into(),
+            ),
             client_metadata: Some(HashMap::from([(
                 "traceparent".to_string(),
                 "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01".to_string(),
@@ -1063,149 +1015,13 @@ mod tests {
         expected_payload["generate"] = json!(false);
         let request_text =
             serialize_websocket_request(&request).expect("serialize websocket request");
+        assert!(request_text.starts_with(
+            r#"{"type":"response.create","model":"gpt-test","stream":true,"service_tier":"priority","previous_response_id":"resp-1","input":"#
+        ));
         let wire_payload =
             serde_json::from_str::<Value>(&request_text).expect("parse websocket request");
 
         assert_eq!(wire_payload, expected_payload);
-    }
-
-    async fn local_ws_stream() -> (WsStream, mpsc::UnboundedReceiver<Message>) {
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind websocket test server");
-        let address = listener.local_addr().expect("test server address");
-        let (tx_message, rx_message) = mpsc::unbounded_channel();
-        tokio::spawn(async move {
-            let (socket, _) = listener.accept().await.expect("accept websocket client");
-            let mut websocket = accept_async_with_config(socket, Some(websocket_config()))
-                .await
-                .expect("accept websocket handshake");
-            while let Some(Ok(message)) = websocket.next().await {
-                if tx_message.send(message).is_err() {
-                    break;
-                }
-            }
-        });
-        let factory = HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault);
-        let url = Url::parse(&format!("ws://{address}/v1/responses")).expect("websocket test URL");
-        let (stream, ..) = connect_websocket(
-            url,
-            HeaderMap::new(),
-            &factory,
-            /*turn_state*/ None,
-            /*initiation*/ None,
-        )
-        .await
-        .expect("connect websocket test client");
-        (stream, rx_message)
-    }
-
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "the test deliberately holds the stream mutex to prove a queued sender cannot consume authority before the actual send"
-    )]
-    #[tokio::test]
-    async fn websocket_frame_holds_authority_until_actual_send_and_rejects_reuse() {
-        let (stream, mut received) = local_ws_stream().await;
-        let stream = Arc::new(Mutex::new(stream));
-        let stream_lock = stream.lock().await;
-        let gate = Arc::new(RwLock::new(()));
-        let authority = Arc::clone(&gate).read_owned().await;
-        let initiation = RequestInitiation::new(authority);
-        let stale_reuse = initiation.clone();
-        let send_stream = Arc::clone(&stream);
-        let send = tokio::spawn(async move {
-            let stream = send_stream.lock().await;
-            send_websocket_request(
-                &stream,
-                "{\"type\":\"response.create\"}".to_string(),
-                Duration::from_secs(2),
-                /*telemetry*/ None,
-                /*connection_reused*/ false,
-                initiation,
-            )
-            .await
-        });
-
-        tokio::task::yield_now().await;
-        assert!(
-            tokio::time::timeout(Duration::from_millis(50), gate.write())
-                .await
-                .is_err(),
-            "authority must remain held while the spawned sender waits for the websocket"
-        );
-        drop(stream_lock);
-        let transition = tokio::time::timeout(Duration::from_secs(1), gate.write())
-            .await
-            .expect("actual websocket send completion should release authority");
-        drop(transition);
-        send.await
-            .expect("send task should join")
-            .expect("first websocket send should succeed");
-        assert!(matches!(
-            tokio::time::timeout(Duration::from_secs(1), received.recv()).await,
-            Ok(Some(Message::Text(_)))
-        ));
-
-        let stream = stream.lock().await;
-        let error = send_websocket_request(
-            &stream,
-            "{\"type\":\"response.create\"}".to_string(),
-            Duration::from_secs(1),
-            /*telemetry*/ None,
-            /*connection_reused*/ true,
-            stale_reuse,
-        )
-        .await
-        .expect_err("the same authority must not admit a reconnect or retry send");
-        assert!(error.to_string().contains("already consumed"));
-        assert!(
-            tokio::time::timeout(Duration::from_millis(50), received.recv())
-                .await
-                .is_err(),
-            "stale authority must not put a second frame on the wire"
-        );
-    }
-
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "the test deliberately holds the stream mutex to prove cancellation before send releases authority without emitting a frame"
-    )]
-    #[tokio::test]
-    async fn cancelled_websocket_task_releases_authority_without_sending() {
-        let (stream, mut received) = local_ws_stream().await;
-        let stream = Arc::new(Mutex::new(stream));
-        let stream_lock = stream.lock().await;
-        let gate = Arc::new(RwLock::new(()));
-        let authority = Arc::clone(&gate).read_owned().await;
-        let initiation = RequestInitiation::new(authority);
-        let send_stream = Arc::clone(&stream);
-        let send = tokio::spawn(async move {
-            let stream = send_stream.lock().await;
-            send_websocket_request(
-                &stream,
-                "{\"type\":\"response.create\"}".to_string(),
-                Duration::from_secs(2),
-                /*telemetry*/ None,
-                /*connection_reused*/ false,
-                initiation,
-            )
-            .await
-        });
-        tokio::task::yield_now().await;
-        send.abort();
-        let _ = send.await;
-        let transition = tokio::time::timeout(Duration::from_secs(1), gate.write())
-            .await
-            .expect("cancelling before send should release authority");
-        drop(transition);
-        drop(stream_lock);
-        assert!(
-            tokio::time::timeout(Duration::from_millis(50), received.recv())
-                .await
-                .is_err(),
-            "cancellation before the stream lock must be a zero-send path"
-        );
     }
 
     #[test]
@@ -1266,6 +1082,62 @@ mod tests {
         assert!(body.contains("The usage limit has been reached"));
     }
 
+    /// Websocket error advice uses the shared HTTP value validation and duplicate handling.
+    #[tokio::test(start_paused = true)]
+    async fn wrapped_websocket_retry_after_uses_http_header_validation() {
+        for (error_headers, expected_seconds) in [
+            (json!("invalid"), 12),
+            (json!({"retry-after": "\n5\n"}), 12),
+            (json!({"retry-after": "\t5\t"}), 5),
+            (json!({"Retry-After": "5", "retry-after": "30"}), 30),
+        ] {
+            let payload = json!({
+                "type": "error",
+                "status": 429,
+                "error": {"code": "rate_limit_exceeded", "headers": error_headers},
+                "headers": {"retry-after": "12"}
+            })
+            .to_string();
+            let wrapped = parse_wrapped_websocket_error_event(&payload).unwrap();
+            let Some(ApiError::Transport(TransportError::Http { retry_after, .. })) =
+                map_wrapped_websocket_error_event(wrapped, payload)
+            else {
+                panic!("expected a websocket HTTP error");
+            };
+            assert_eq!(
+                retry_after,
+                RetryAfter::from_delay(Duration::from_secs(expected_seconds))
+            );
+        }
+    }
+
+    #[test]
+    fn wrapped_websocket_usage_limit_preserves_optional_window() {
+        for (window, expected) in [(Some(10080), Some(10080)), (None, None)] {
+            let mut payload = json!({
+                "type": "error",
+                "status": 429,
+                "error": {
+                    "type": "usage_limit_reached",
+                    "plan_type": "pro"
+                }
+            });
+            if let Some(window) = window {
+                payload["error"]["limit_window_minutes"] = json!(window);
+            }
+            let payload = payload.to_string();
+            let wrapped = parse_wrapped_websocket_error_event(&payload).expect("websocket error");
+            let api_error = map_wrapped_websocket_error_event(wrapped, payload).expect("API error");
+            let err = crate::api_bridge::map_api_error(api_error);
+            let codex_protocol::error::CodexErrorDetails::UsageLimitReached(usage_limit) =
+                err.details()
+            else {
+                panic!("expected usage-limit error, got {err:?}");
+            };
+            assert_eq!(usage_limit.limit_window_minutes, expected);
+        }
+    }
+
     #[test]
     fn parse_wrapped_websocket_error_event_ignores_non_error_payloads() {
         let payload = json!({
@@ -1322,11 +1194,15 @@ mod tests {
             .expect("expected websocket error payload to be parsed");
         let api_error = map_wrapped_websocket_error_event(wrapped_error, payload)
             .expect("expected websocket error payload to map to ApiError");
-        let ApiError::Retryable { message, delay } = api_error else {
+        let ApiError::Retryable {
+            message,
+            retry_after,
+        } = api_error
+        else {
             panic!("expected ApiError::Retryable");
         };
         assert_eq!(message, WEBSOCKET_CONNECTION_LIMIT_REACHED_MESSAGE);
-        assert_eq!(delay, None);
+        assert_eq!(retry_after, None);
     }
 
     #[test]

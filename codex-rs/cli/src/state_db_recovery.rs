@@ -7,10 +7,6 @@ use codex_state::RuntimeDbBackup;
 use codex_tui::LocalStateDbStartupError;
 use std::io::IsTerminal;
 use std::path::Path;
-use std::time::Duration;
-
-pub(crate) const STARTUP_LOCK_RETRY_TIMEOUT: Duration = Duration::from_secs(60);
-pub(crate) const STARTUP_LOCK_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 
 pub(crate) fn startup_error(err: &std::io::Error) -> Option<&LocalStateDbStartupError> {
     err.get_ref()
@@ -21,20 +17,8 @@ pub(crate) fn is_locked(detail: &str) -> bool {
     codex_state::sqlite_error_detail_is_lock(detail)
 }
 
-pub(crate) fn should_retry_lock(elapsed: Duration, timeout: Duration) -> bool {
-    elapsed < timeout
-}
-
-pub(crate) fn retry_delay(remaining: Duration, interval: Duration) -> Duration {
-    remaining.min(interval)
-}
-
-pub(crate) fn is_corruption(detail: &str) -> bool {
-    codex_state::sqlite_error_detail_is_corruption(detail)
-}
-
 pub(crate) fn is_auto_backup_recoverable(startup_error: &LocalStateDbStartupError) -> bool {
-    is_corruption(startup_error.detail()) || sqlite_home_is_blocking_file(startup_error)
+    startup_error.is_corruption() || sqlite_home_is_blocking_file(startup_error)
 }
 
 fn sqlite_home_is_blocking_file(startup_error: &LocalStateDbStartupError) -> bool {
@@ -89,40 +73,8 @@ pub(crate) fn print_diagnostic_guidance(startup_error: &LocalStateDbStartupError
     print_technical_details(startup_error);
 }
 
-pub(crate) fn print_lock_retry_wait(
-    startup_error: &LocalStateDbStartupError,
-    elapsed: Duration,
-    timeout: Duration,
-    delay: Duration,
-    first_notice: bool,
-) {
-    if first_notice {
-        eprintln!(
-            "Codex local data is temporarily busy; waiting up to {}s for the SQLite state lock to clear.",
-            timeout.as_secs()
-        );
-        print_technical_details(startup_error);
-    } else {
-        eprintln!(
-            "Codex local data is still busy after {}s; retrying in {}s.",
-            elapsed.as_secs(),
-            delay.as_secs()
-        );
-    }
-}
-
-pub(crate) fn print_locked_guidance(
-    startup_error: &LocalStateDbStartupError,
-    waited: Option<Duration>,
-) {
-    if let Some(waited) = waited {
-        eprintln!(
-            "Codex couldn't start because its local data stayed busy for {}s.",
-            waited.as_secs()
-        );
-    } else {
-        eprintln!("Codex couldn't start because another Codex process is using its local data.");
-    }
+pub(crate) fn print_locked_guidance(startup_error: &LocalStateDbStartupError) {
+    eprintln!("Codex couldn't start because another Codex process is using its local data.");
     eprintln!("Quit any other copies of Codex that may still be running, then try again.");
     print_technical_details(startup_error);
 }
@@ -155,7 +107,7 @@ mod tests {
         tokio::fs::write(failed_db_path.as_path(), b"logs").await?;
 
         let startup_error =
-            LocalStateDbStartupError::new(failed_db_path.clone(), "corrupt".to_string());
+            LocalStateDbStartupError::new(failed_db_path.clone(), anyhow::anyhow!("corrupt"));
         let backups = backup_files_for_fresh_start(&startup_error).await?;
 
         assert_eq!(
@@ -178,7 +130,7 @@ mod tests {
         tokio::fs::write(sqlite_home.as_path(), b"not-a-directory").await?;
         let sqlite = codex_state::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
         let startup_error =
-            LocalStateDbStartupError::new(sqlite.state_db_path(), "File exists".to_string());
+            LocalStateDbStartupError::new(sqlite.state_db_path(), anyhow::anyhow!("File exists"));
 
         assert!(is_auto_backup_recoverable(&startup_error));
         let backups = backup_files_for_fresh_start(&startup_error).await?;
@@ -199,30 +151,6 @@ mod tests {
         assert_eq!(
             backup_folder(&backups),
             Some(Path::new("/tmp/db-backups/sqlite-1-0"))
-        );
-    }
-
-    #[test]
-    fn lock_retry_policy_stops_at_timeout() {
-        let timeout = Duration::from_secs(60);
-
-        assert!(should_retry_lock(Duration::from_secs(0), timeout));
-        assert!(should_retry_lock(Duration::from_secs(59), timeout));
-        assert!(!should_retry_lock(timeout, timeout));
-        assert!(!should_retry_lock(Duration::from_secs(61), timeout));
-    }
-
-    #[test]
-    fn lock_retry_delay_is_capped_by_remaining_timeout() {
-        let interval = Duration::from_secs(2);
-
-        assert_eq!(
-            retry_delay(Duration::from_secs(10), interval),
-            Duration::from_secs(2)
-        );
-        assert_eq!(
-            retry_delay(Duration::from_millis(500), interval),
-            Duration::from_millis(500)
         );
     }
 }

@@ -83,25 +83,45 @@ case "${RUNNER_OS:-}" in
     ;;
 esac
 
+local_execution_only="${CODEX_BAZEL_LOCAL_ONLY:-0}"
+if [[ "$local_execution_only" == "1" ]]; then
+  # Local-only CI never derives its execution policy from credential presence.
+  unset BUILDBUDDY_API_KEY
+  ci_config=ci-bazel
+  if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
+    ci_config=ci-windows-local-msvc
+    windows_msvc_host_platform=1
+    if [[ $windows_cross_compile -eq 1 ]]; then
+      echo "Windows cross/RBE execution is not permitted in local-only CI; use the native MSVC lane." >&2
+      exit 1
+    fi
+  fi
+fi
+
 print_bazel_test_log_tails() {
   local console_log="$1"
   local testlogs_dir
 
   local -a bazel_info_args=(info)
-  if [[ -n "${BUILDBUDDY_API_KEY:-}" ]]; then
+  if [[ "$local_execution_only" == "1" || -n "${BUILDBUDDY_API_KEY:-}" ]]; then
     # `bazel info` needs the same CI config as the failed test invocation so
     # platform-specific output roots match. On Windows, omitting `ci-windows`
     # would point at `local_windows-fastbuild` even when the test ran with the
     # MSVC host platform under `local_windows_msvc-fastbuild`.
     bazel_info_args+=("--config=${ci_config}")
   fi
+  for arg in "${bazel_args[@]}"; do
+    case "$arg" in
+      --platforms=*) bazel_info_args+=("$arg") ;;
+    esac
+  done
 
   # Only pass flags that affect Bazel's output-root selection or repository
   # lookup. Test/build-only flags such as execution logs or remote download
   # mode can make `bazel info` fail, which would hide the real test log path.
   for arg in "${post_config_bazel_args[@]}"; do
     case "$arg" in
-      --host_platform=* | --repo_contents_cache=* | --repository_cache=*)
+      --host_platform=* | --repo_contents_cache=* | --repository_cache=* | --inject_repository=*)
         bazel_info_args+=("$arg")
         ;;
     esac
@@ -255,7 +275,7 @@ if [[ ${#bazel_args[@]} -eq 0 || ${#bazel_targets[@]} -eq 0 ]]; then
   exit 1
 fi
 
-if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && -z "${BUILDBUDDY_API_KEY:-}" ]]; then
+if [[ "$local_execution_only" != "1" && "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && -z "${BUILDBUDDY_API_KEY:-}" ]]; then
   # Windows cross-compilation depends on authenticated RBE. Preserve the local
   # Windows build shape when credentials are unavailable.
   ci_config=ci-windows
@@ -263,6 +283,18 @@ if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && -z "${BUI
 fi
 
 post_config_bazel_args=()
+if [[ "$local_execution_only" == "1" && "${RUNNER_OS:-}" == "Linux" ]]; then
+  has_target_platform=0
+  for arg in "${bazel_args[@]}"; do
+    if [[ "$arg" == --platforms=* ]]; then
+      has_target_platform=1
+      break
+    fi
+  done
+  if [[ $has_target_platform -eq 0 ]]; then
+    post_config_bazel_args+=("--platforms=//:local_linux")
+  fi
+fi
 if [[ "${RUNNER_OS:-}" == "Windows" && $windows_msvc_host_platform -eq 1 ]]; then
   has_host_platform_override=0
   for arg in "${bazel_args[@]}"; do
@@ -324,6 +356,25 @@ if [[ -n "${CODEX_BAZEL_EXECUTION_LOG_COMPACT_DIR:-}" ]]; then
 fi
 
 if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
+  if [[ "${CODEX_BAZEL_WINDOWS_VOICE_TOOLS:-0}" == "1" ]]; then
+    if [[ -z "${VOICE_WINDOWS_BAZEL_REPOSITORY:-}" || -z "${VOICE_WINDOWS_SYSTEM_ROOT:-}" || -z "${VOICE_WINDOWS_HOST_ARCH:-}" ]]; then
+      echo "Opted-in native Windows CI requires its verified tool repository and OS environment." >&2
+      exit 1
+    fi
+    voice_tools_root="$(cygpath -u "$VOICE_WINDOWS_BAZEL_REPOSITORY")"
+    if [[ ! -f "$voice_tools_root/voice-tools.json" ]]; then
+      echo "Verified Windows voice tool manifest is missing." >&2
+      exit 1
+    fi
+    post_config_bazel_args+=(
+      "--inject_repository=voice_windows_tools=${VOICE_WINDOWS_BAZEL_REPOSITORY}"
+      "--//third_party/voice:windows_installed_tools=@voice_windows_tools//:tools"
+      "--action_env=SystemRoot=${VOICE_WINDOWS_SYSTEM_ROOT}"
+      "--host_action_env=SystemRoot=${VOICE_WINDOWS_SYSTEM_ROOT}"
+      "--action_env=PROCESSOR_ARCHITECTURE=${VOICE_WINDOWS_HOST_ARCH}"
+      "--host_action_env=PROCESSOR_ARCHITECTURE=${VOICE_WINDOWS_HOST_ARCH}"
+    )
+  fi
   pass_windows_build_env=1
   if [[ $windows_cross_compile -eq 1 && -n "${BUILDBUDDY_API_KEY:-}" ]]; then
     # Remote build actions execute on Linux RBE workers. Passing the Windows
@@ -380,17 +431,17 @@ fi
 bazel_console_log="$(mktemp)"
 trap 'rm -f "$bazel_console_log"' EXIT
 
-bazel_run_args=("${bazel_args[0]}")
-if [[ -n "${BUILDBUDDY_API_KEY:-}" ]]; then
+bazel_run_args=(
+  "${bazel_args[@]}"
+)
+if [[ "$local_execution_only" == "1" ]]; then
+  echo "Runner-local Bazel execution is required."
+  bazel_run_args+=("--config=${ci_config}")
+elif [[ -n "${BUILDBUDDY_API_KEY:-}" ]]; then
   echo "BuildBuddy API key is available; using remote Bazel configuration."
   bazel_run_args+=("--config=${ci_config}")
 else
   echo "BuildBuddy API key is not available; using local Bazel configuration."
-fi
-if (( ${#bazel_args[@]} > 1 )); then
-  # Explicit caller flags must follow rc configs so workflow-level safety and
-  # resource limits cannot be silently overwritten by the selected CI config.
-  bazel_run_args+=("${bazel_args[@]:1}")
 fi
 if (( ${#post_config_bazel_args[@]} > 0 )); then
   bazel_run_args+=("${post_config_bazel_args[@]}")

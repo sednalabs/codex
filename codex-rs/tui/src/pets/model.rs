@@ -103,13 +103,8 @@ impl Pet {
         let bytes = fs::read(&self.spritesheet_path)
             .with_context(|| format!("read {}", self.spritesheet_path.display()))?;
         let digest = Sha256::digest(&bytes);
-        let mut digest_hex = String::with_capacity(digest.len() * 2);
-        for byte in digest {
-            use std::fmt::Write as _;
-            let _ = write!(&mut digest_hex, "{byte:02x}");
-        }
         Ok(format!(
-            "sha256-{digest_hex}-{}x{}-{}x{}",
+            "sha256-{digest:x}-{}x{}-{}x{}",
             self.frame_width, self.frame_height, self.columns, self.rows
         ))
     }

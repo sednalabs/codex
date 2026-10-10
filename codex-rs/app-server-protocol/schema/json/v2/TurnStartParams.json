@@ -1,21 +1,22 @@
 {
-  "$defs": {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
     "AbsolutePathBuf": {
-      "description": "A path that is guaranteed to be absolute and normalized (though it is not\nguaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set\nusing [AbsolutePathBufGuard::new]. If no base path is set, the\ndeserialization will fail unless the path being deserialized is already\nabsolute.",
+      "description": "A path that is guaranteed to be absolute and normalized (though it is not guaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set using [AbsolutePathBufGuard::new]. If no base path is set, the deserialization will fail unless the path being deserialized is already absolute.",
       "type": "string"
     },
     "AdditionalContextEntry": {
       "properties": {
         "kind": {
-          "$ref": "#/$defs/AdditionalContextKind"
+          "$ref": "#/definitions/AdditionalContextKind"
         },
         "value": {
           "type": "string"
         }
       },
       "required": [
-        "value",
-        "kind"
+        "kind",
+        "value"
       ],
       "type": "object"
     },
@@ -69,9 +70,9 @@
                 }
               },
               "required": [
-                "sandbox_approval",
+                "mcp_elicitations",
                 "rules",
-                "mcp_elicitations"
+                "sandbox_approval"
               ],
               "type": "object"
             }
@@ -88,18 +89,18 @@
       "properties": {
         "end": {
           "format": "uint",
-          "minimum": 0,
+          "minimum": 0.0,
           "type": "integer"
         },
         "start": {
           "format": "uint",
-          "minimum": 0,
+          "minimum": 0.0,
           "type": "integer"
         }
       },
       "required": [
-        "start",
-        "end"
+        "end",
+        "start"
       ],
       "type": "object"
     },
@@ -107,10 +108,10 @@
       "description": "Collaboration mode for a Codex session.",
       "properties": {
         "mode": {
-          "$ref": "#/$defs/ModeKind"
+          "$ref": "#/definitions/ModeKind"
         },
         "settings": {
-          "$ref": "#/$defs/Settings"
+          "$ref": "#/definitions/Settings"
         }
       },
       "required": [
@@ -118,6 +119,145 @@
         "settings"
       ],
       "type": "object"
+    },
+    "CyberAccessProgram": {
+      "description": "Requested cyber treatment for an OpenAI model turn. Authorization and model-tier restrictions remain server-owned.",
+      "enum": [
+        "standard",
+        "daybreakBlue",
+        "daybreakRed"
+      ],
+      "type": "string"
+    },
+    "FunctionCallOutputBody": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "items": {
+            "$ref": "#/definitions/FunctionCallOutputContentItem"
+          },
+          "type": "array"
+        }
+      ]
+    },
+    "FunctionCallOutputContentItem": {
+      "description": "Responses API compatible content items that can be returned by a tool call. This is a subset of ContentItem with the types we support as function call outputs.",
+      "oneOf": [
+        {
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "input_text"
+              ],
+              "title": "InputTextFunctionCallOutputContentItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "text",
+            "type"
+          ],
+          "title": "InputTextFunctionCallOutputContentItem",
+          "type": "object"
+        },
+        {
+          "anyOf": [
+            {
+              "properties": {
+                "image_url": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "image_url"
+              ],
+              "title": "ImageUrlFunctionCallOutputContentItem",
+              "type": "object"
+            },
+            {
+              "properties": {
+                "file_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "file_id"
+              ],
+              "title": "FileIdFunctionCallOutputContentItem",
+              "type": "object"
+            }
+          ],
+          "properties": {
+            "detail": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ImageDetail"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": {
+              "enum": [
+                "input_image"
+              ],
+              "title": "InputImageFunctionCallOutputContentItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "InputImageFunctionCallOutputContentItem",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "audio_url": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "input_audio"
+              ],
+              "title": "InputAudioFunctionCallOutputContentItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "audio_url",
+            "type"
+          ],
+          "title": "InputAudioFunctionCallOutputContentItem",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "encrypted_content": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "encrypted_content"
+              ],
+              "title": "EncryptedContentFunctionCallOutputContentItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "encrypted_content",
+            "type"
+          ],
+          "title": "EncryptedContentFunctionCallOutputContentItem",
+          "type": "object"
+        }
+      ]
     },
     "ImageDetail": {
       "enum": [
@@ -140,7 +280,7 @@
       "type": "string"
     },
     "MultiAgentMode": {
-      "description": "Controls the effective multi-agent delegation instructions for a turn. `custom` means the\nconfigured mode hint defines the policy instead of a built-in policy.",
+      "description": "Controls the effective multi-agent delegation instructions for a turn. `custom` means the configured mode hint defines the policy instead of a built-in policy.",
       "oneOf": [
         {
           "enum": [
@@ -172,6 +312,7 @@
       "type": "string"
     },
     "Personality": {
+      "description": "Deprecated: `friendly` and `pragmatic` no longer select a style.",
       "enum": [
         "none",
         "friendly",
@@ -185,7 +326,7 @@
       "type": "string"
     },
     "ReasoningSummary": {
-      "description": "A summary of the reasoning performed by the model. This can be useful for\ndebugging and understanding the model's reasoning process.\nSee https://platform.openai.com/docs/guides/reasoning?api-mode=responses#reasoning-summaries",
+      "description": "A summary of the reasoning performed by the model. This can be useful for debugging and understanding the model's reasoning process. See https://platform.openai.com/docs/guides/reasoning?api-mode=responses#reasoning-summaries",
       "oneOf": [
         {
           "enum": [
@@ -196,8 +337,10 @@
           "type": "string"
         },
         {
-          "const": "none",
           "description": "Option to disable reasoning summaries.",
+          "enum": [
+            "none"
+          ],
           "type": "string"
         }
       ]
@@ -207,7 +350,9 @@
         {
           "properties": {
             "type": {
-              "const": "dangerFullAccess",
+              "enum": [
+                "dangerFullAccess"
+              ],
               "title": "DangerFullAccessSandboxPolicyType",
               "type": "string"
             }
@@ -225,7 +370,9 @@
               "type": "boolean"
             },
             "type": {
-              "const": "readOnly",
+              "enum": [
+                "readOnly"
+              ],
               "title": "ReadOnlySandboxPolicyType",
               "type": "string"
             }
@@ -239,11 +386,17 @@
         {
           "properties": {
             "networkAccess": {
-              "$ref": "#/$defs/NetworkAccess",
+              "allOf": [
+                {
+                  "$ref": "#/definitions/NetworkAccess"
+                }
+              ],
               "default": "restricted"
             },
             "type": {
-              "const": "externalSandbox",
+              "enum": [
+                "externalSandbox"
+              ],
               "title": "ExternalSandboxSandboxPolicyType",
               "type": "string"
             }
@@ -269,14 +422,16 @@
               "type": "boolean"
             },
             "type": {
-              "const": "workspaceWrite",
+              "enum": [
+                "workspaceWrite"
+              ],
               "title": "WorkspaceWriteSandboxPolicyType",
               "type": "string"
             },
             "writableRoots": {
               "default": [],
               "items": {
-                "$ref": "#/$defs/AbsolutePathBuf"
+                "$ref": "#/definitions/AbsolutePathBuf"
               },
               "type": "array"
             }
@@ -304,7 +459,7 @@
         "reasoning_effort": {
           "anyOf": [
             {
-              "$ref": "#/$defs/ReasoningEffort"
+              "$ref": "#/definitions/ReasoningEffort"
             },
             {
               "type": "null"
@@ -320,7 +475,11 @@
     "TextElement": {
       "properties": {
         "byteRange": {
-          "$ref": "#/$defs/ByteRange",
+          "allOf": [
+            {
+              "$ref": "#/definitions/ByteRange"
+            }
+          ],
           "description": "Byte range in the parent `text` buffer that this element occupies."
         },
         "placeholder": {
@@ -339,7 +498,7 @@
     "TurnEnvironmentParams": {
       "properties": {
         "cwd": {
-          "$ref": "#/$defs/LegacyAppPathString"
+          "$ref": "#/definitions/LegacyAppPathString"
         },
         "environmentId": {
           "type": "string"
@@ -347,7 +506,7 @@
         "runtimeWorkspaceRoots": {
           "description": "Environment-native runtime workspace roots. Omitted defaults to `cwd`.",
           "items": {
-            "$ref": "#/$defs/LegacyAppPathString"
+            "$ref": "#/definitions/LegacyAppPathString"
           },
           "type": [
             "array",
@@ -356,8 +515,29 @@
         }
       },
       "required": [
-        "environmentId",
-        "cwd"
+        "cwd",
+        "environmentId"
+      ],
+      "type": "object"
+    },
+    "TurnToolOutput": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "output": {
+          "$ref": "#/definitions/FunctionCallOutputBody"
+        }
+      },
+      "required": [
+        "name",
+        "output"
       ],
       "type": "object"
     },
@@ -372,29 +552,57 @@
               "default": [],
               "description": "UI-defined spans within `text` used to render or persist special elements.",
               "items": {
-                "$ref": "#/$defs/TextElement"
+                "$ref": "#/definitions/TextElement"
               },
               "type": "array"
             },
             "type": {
-              "const": "text",
+              "enum": [
+                "text"
+              ],
               "title": "TextUserInputType",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "text"
+            "text",
+            "type"
           ],
           "title": "TextUserInput",
           "type": "object"
         },
         {
+          "anyOf": [
+            {
+              "properties": {
+                "url": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "url"
+              ],
+              "title": "UrlUserInput",
+              "type": "object"
+            },
+            {
+              "properties": {
+                "fileId": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "fileId"
+              ],
+              "title": "FileIdUserInput",
+              "type": "object"
+            }
+          ],
           "properties": {
             "detail": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/ImageDetail"
+                  "$ref": "#/definitions/ImageDetail"
                 },
                 {
                   "type": "null"
@@ -403,17 +611,15 @@
               "default": null
             },
             "type": {
-              "const": "image",
+              "enum": [
+                "image"
+              ],
               "title": "ImageUserInputType",
-              "type": "string"
-            },
-            "url": {
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "url"
+            "type"
           ],
           "title": "ImageUserInput",
           "type": "object"
@@ -423,7 +629,7 @@
             "detail": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/ImageDetail"
+                  "$ref": "#/definitions/ImageDetail"
                 },
                 {
                   "type": "null"
@@ -435,14 +641,16 @@
               "type": "string"
             },
             "type": {
-              "const": "localImage",
+              "enum": [
+                "localImage"
+              ],
               "title": "LocalImageUserInputType",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "path"
+            "path",
+            "type"
           ],
           "title": "LocalImageUserInput",
           "type": "object"
@@ -450,7 +658,9 @@
         {
           "properties": {
             "type": {
-              "const": "audio",
+              "enum": [
+                "audio"
+              ],
               "title": "AudioUserInputType",
               "type": "string"
             },
@@ -471,14 +681,16 @@
               "type": "string"
             },
             "type": {
-              "const": "localAudio",
+              "enum": [
+                "localAudio"
+              ],
               "title": "LocalAudioUserInputType",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "path"
+            "path",
+            "type"
           ],
           "title": "LocalAudioUserInput",
           "type": "object"
@@ -492,15 +704,17 @@
               "type": "string"
             },
             "type": {
-              "const": "skill",
+              "enum": [
+                "skill"
+              ],
               "title": "SkillUserInputType",
               "type": "string"
             }
           },
           "required": [
-            "type",
             "name",
-            "path"
+            "path",
+            "type"
           ],
           "title": "SkillUserInput",
           "type": "object"
@@ -514,15 +728,17 @@
               "type": "string"
             },
             "type": {
-              "const": "mention",
+              "enum": [
+                "mention"
+              ],
               "title": "MentionUserInputType",
               "type": "string"
             }
           },
           "required": [
-            "type",
             "name",
-            "path"
+            "path",
+            "type"
           ],
           "title": "MentionUserInput",
           "type": "object"
@@ -530,12 +746,11 @@
       ]
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "approvalPolicy": {
       "anyOf": [
         {
-          "$ref": "#/$defs/AskForApproval"
+          "$ref": "#/definitions/AskForApproval"
         },
         {
           "type": "null"
@@ -546,13 +761,13 @@
     "approvalsReviewer": {
       "anyOf": [
         {
-          "$ref": "#/$defs/ApprovalsReviewer"
+          "$ref": "#/definitions/ApprovalsReviewer"
         },
         {
           "type": "null"
         }
       ],
-      "description": "Override where approval requests are routed for review on this turn and\nsubsequent turns."
+      "description": "Override where approval requests are routed for review on this turn and subsequent turns."
     },
     "clientUserMessageId": {
       "type": [
@@ -567,10 +782,20 @@
         "null"
       ]
     },
+    "disabledPluginIds": {
+      "description": "Replace this thread's disabled plugin IDs. Omitted/null preserves the list; [] clears it.",
+      "items": {
+        "type": "string"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
     "effort": {
       "anyOf": [
         {
-          "$ref": "#/$defs/ReasoningEffort"
+          "$ref": "#/definitions/ReasoningEffort"
         },
         {
           "type": "null"
@@ -580,7 +805,7 @@
     },
     "input": {
       "items": {
-        "$ref": "#/$defs/UserInput"
+        "$ref": "#/definitions/UserInput"
       },
       "type": "array"
     },
@@ -592,23 +817,37 @@
       ]
     },
     "outputSchema": {
-      "description": "Optional JSON Schema used to constrain the final assistant message for\nthis turn."
+      "description": "Optional JSON Schema used to constrain the final assistant message for this turn."
+    },
+    "parentTurnId": {
+      "description": "ID of the turn that caused this new turn to start.\n\nSet this when starting work on behalf of another turn, such as delegated work in a different thread. Leave unset for work started directly by the user. Ignored when this request adds input to an active turn.",
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "personality": {
       "anyOf": [
         {
-          "$ref": "#/$defs/Personality"
+          "$ref": "#/definitions/Personality"
         },
         {
           "type": "null"
         }
       ],
-      "description": "Override the personality for this turn and subsequent turns."
+      "description": "@deprecated `friendly` and `pragmatic` no longer select a style. Changing this does not rewrite the thread's existing instructions."
+    },
+    "rootTurnId": {
+      "description": "ID of the first turn in the chain of work that led to this new turn.\n\nWhen setting `parentTurnId`, set this to the parent turn's `rootTurnId` when known. This keeps descendant work attributed to the original turn. If omitted, the new turn becomes its own root. Ignored when this request adds input to an active turn.",
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "sandboxPolicy": {
       "anyOf": [
         {
-          "$ref": "#/$defs/SandboxPolicy"
+          "$ref": "#/definitions/SandboxPolicy"
         },
         {
           "type": "null"
@@ -623,10 +862,17 @@
         "null"
       ]
     },
+    "serviceTierForTurn": {
+      "description": "Override the service tier only when this request starts a new turn. Use \"default\" for standard speed. Omitted or null inherits the thread's tier. Does not change the thread's tier or a turn being steered.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "summary": {
       "anyOf": [
         {
-          "$ref": "#/$defs/ReasoningSummary"
+          "$ref": "#/definitions/ReasoningSummary"
         },
         {
           "type": "null"
@@ -636,11 +882,28 @@
     },
     "threadId": {
       "type": "string"
+    },
+    "toolOutput": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TurnToolOutput"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "turnTrigger": {
+      "description": "Optional source classification for the caller that starts this turn. Ignored when this request steers an already-active turn.",
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
   "required": [
-    "threadId",
-    "input"
+    "input",
+    "threadId"
   ],
   "title": "TurnStartParams",
   "type": "object"

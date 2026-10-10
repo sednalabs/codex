@@ -362,4 +362,115 @@ mod tests {
             vec![closed_child_thread_id, closed_great_grandchild_thread_id]
         );
     }
+
+    #[tokio::test]
+    async fn local_store_bounded_descendants_are_cycle_safe_and_exclude_root() {
+        let fixture = state_runtime().await;
+        let store = LocalAgentGraphStore::new(fixture.state_db);
+        let root_thread_id = thread_id(/*suffix*/ 30);
+        let child_thread_id = thread_id(/*suffix*/ 31);
+        let grandchild_thread_id = thread_id(/*suffix*/ 32);
+        let closed_child_thread_id = thread_id(/*suffix*/ 33);
+        let open_grandchild_under_closed_child = thread_id(/*suffix*/ 34);
+        for (parent, child, status) in [
+            (root_thread_id, child_thread_id, ThreadSpawnEdgeStatus::Open),
+            (
+                child_thread_id,
+                grandchild_thread_id,
+                ThreadSpawnEdgeStatus::Open,
+            ),
+            (
+                grandchild_thread_id,
+                root_thread_id,
+                ThreadSpawnEdgeStatus::Open,
+            ),
+            (
+                root_thread_id,
+                closed_child_thread_id,
+                ThreadSpawnEdgeStatus::Closed,
+            ),
+            (
+                closed_child_thread_id,
+                open_grandchild_under_closed_child,
+                ThreadSpawnEdgeStatus::Open,
+            ),
+        ] {
+            store
+                .upsert_thread_spawn_edge(parent, child, status)
+                .await
+                .expect("cycle edge should insert");
+        }
+
+        let descendants = store
+            .list_thread_spawn_descendants_bounded(root_thread_id, /*status_filter*/ None)
+            .await
+            .expect("bounded cyclic traversal should terminate");
+        assert_eq!(
+            descendants.thread_ids,
+            vec![
+                child_thread_id,
+                closed_child_thread_id,
+                grandchild_thread_id,
+                open_grandchild_under_closed_child,
+            ]
+        );
+        assert!(!descendants.relation_limit_reached);
+
+        let open_descendants = store
+            .list_thread_spawn_descendants_bounded(
+                root_thread_id,
+                Some(ThreadSpawnEdgeStatus::Open),
+            )
+            .await
+            .expect("filtered bounded traversal should succeed");
+        assert_eq!(
+            open_descendants.thread_ids,
+            vec![child_thread_id, grandchild_thread_id]
+        );
+    }
+
+    #[tokio::test]
+    async fn local_store_bounded_descendants_distinguish_exact_limit_from_overflow() {
+        let fixture = state_runtime().await;
+        let store = LocalAgentGraphStore::new(fixture.state_db);
+        let root_thread_id = thread_id(/*suffix*/ 40);
+        for offset in 0..codex_state::MAX_THREAD_SPAWN_DESCENDANTS {
+            store
+                .upsert_thread_spawn_edge(
+                    root_thread_id,
+                    thread_id(1_000 + offset as u128),
+                    ThreadSpawnEdgeStatus::Open,
+                )
+                .await
+                .expect("descendant edge should insert");
+        }
+
+        let exact_limit = store
+            .list_thread_spawn_descendants_bounded(root_thread_id, /*status_filter*/ None)
+            .await
+            .expect("exact-limit traversal should succeed");
+        assert_eq!(
+            exact_limit.thread_ids.len(),
+            codex_state::MAX_THREAD_SPAWN_DESCENDANTS
+        );
+        assert!(!exact_limit.relation_limit_reached);
+
+        store
+            .upsert_thread_spawn_edge(
+                root_thread_id,
+                thread_id(1_000 + codex_state::MAX_THREAD_SPAWN_DESCENDANTS as u128),
+                ThreadSpawnEdgeStatus::Open,
+            )
+            .await
+            .expect("overflow descendant edge should insert");
+        let overflow = store
+            .list_thread_spawn_descendants_bounded(root_thread_id, /*status_filter*/ None)
+            .await
+            .expect("overflow traversal should succeed");
+        assert_eq!(
+            overflow.thread_ids.len(),
+            codex_state::MAX_THREAD_SPAWN_DESCENDANTS
+        );
+        assert!(overflow.relation_limit_reached);
+    }
 }

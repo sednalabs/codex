@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 
+import os
 from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -14,6 +16,40 @@ from codex_package.targets import TARGET_SPECS
 
 
 class SourceBinariesForTargetTest(unittest.TestCase):
+    def test_source_build_uses_locked_cargo_resolution(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            target_dir = root / "target"
+            output_dir = target_dir / "x86_64-unknown-linux-musl" / "release"
+
+            def fake_cargo_build(*_args: object, **_kwargs: object) -> None:
+                output_dir.mkdir(parents=True, exist_ok=True)
+                for binary in ("codex", "codex-code-mode-host", "bwrap"):
+                    (output_dir / binary).touch()
+
+            with (
+                patch.dict(os.environ, {"CARGO_TARGET_DIR": str(target_dir)}),
+                patch(
+                    "codex_package.cargo.resolve_codex_v8_cargo_env", return_value={}
+                ),
+                patch(
+                    "codex_package.cargo.subprocess.run", side_effect=fake_cargo_build
+                ) as run,
+            ):
+                build_source_binaries(
+                    TARGET_SPECS["x86_64-unknown-linux-musl"],
+                    PACKAGE_VARIANTS["codex"],
+                    cargo="cargo",
+                    profile="release",
+                    entrypoint_bin=None,
+                    code_mode_host_bin=None,
+                    bwrap_bin=None,
+                    codex_command_runner_bin=None,
+                    codex_windows_sandbox_setup_bin=None,
+                )
+
+            self.assertIn("--locked", run.call_args.args[0])
+
     def test_macos_package_with_prebuilt_entrypoint_builds_nothing(self) -> None:
         self.assertEqual(
             source_binaries_for_target(

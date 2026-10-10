@@ -1,5 +1,6 @@
 {
-  "$defs": {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
     "ToolRequestUserInputOption": {
       "description": "EXPERIMENTAL. Defines a single selectable option for request_user_input.",
       "properties": {
@@ -11,8 +12,8 @@
         }
       },
       "required": [
-        "label",
-        "description"
+        "description",
+        "label"
       ],
       "type": "object"
     },
@@ -35,7 +36,7 @@
         },
         "options": {
           "items": {
-            "$ref": "#/$defs/ToolRequestUserInputOption"
+            "$ref": "#/definitions/ToolRequestUserInputOption"
           },
           "type": [
             "array",
@@ -47,21 +48,20 @@
         }
       },
       "required": [
-        "id",
         "header",
+        "id",
         "question"
       ],
       "type": "object"
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "EXPERIMENTAL. Params sent with a request_user_input event.",
   "properties": {
     "autoResolutionMs": {
       "default": null,
       "description": "@deprecated Use `isBlocking` to decide whether the request should block.",
       "format": "uint64",
-      "minimum": 0,
+      "minimum": 0.0,
       "type": [
         "integer",
         "null"
@@ -75,7 +75,7 @@
     },
     "questions": {
       "items": {
-        "$ref": "#/$defs/ToolRequestUserInputQuestion"
+        "$ref": "#/definitions/ToolRequestUserInputQuestion"
       },
       "type": "array"
     },
@@ -87,11 +87,11 @@
     }
   },
   "required": [
-    "threadId",
-    "turnId",
+    "isBlocking",
     "itemId",
     "questions",
-    "isBlocking"
+    "threadId",
+    "turnId"
   ],
   "title": "ToolRequestUserInputParams",
   "type": "object"

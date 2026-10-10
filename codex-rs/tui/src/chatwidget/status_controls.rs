@@ -18,6 +18,19 @@ impl ChatWidget {
         details_capitalization: StatusDetailsCapitalization,
         details_max_lines: usize,
     ) -> bool {
+        // Follow-up input and background activity must not obscure compaction.
+        // Retry errors still get their own status until the next notification.
+        let (header, details, details_max_lines) = if self.status_state.compaction.is_some()
+            && self.status_state.retry_status_header.is_none()
+        {
+            (
+                compaction::COMPACTION_HEADER.to_string(),
+                Some(compaction::COMPACTION_DETAILS.to_string()),
+                STATUS_DETAILS_DEFAULT_MAX_LINES,
+            )
+        } else {
+            (header, details, details_max_lines)
+        };
         let details = details
             .filter(|details| !details.is_empty())
             .map(|details| {
@@ -40,15 +53,16 @@ impl ChatWidget {
             StatusDetailsCapitalization::Preserve,
             details_max_lines,
         );
-        let title_uses_status = self
-            .config
-            .tui_terminal_title
-            .as_ref()
-            .is_some_and(|items| {
-                items
-                    .iter()
-                    .any(|item| item == "run-state" || item == "status")
-            });
+        let title_uses_status =
+            self.local_settings
+                .tui
+                .terminal_title
+                .as_ref()
+                .is_some_and(|items| {
+                    items
+                        .iter()
+                        .any(|item| item == "run-state" || item == "status")
+                });
         if title_uses_status {
             self.refresh_status_surfaces();
         }
@@ -115,19 +129,20 @@ impl ChatWidget {
             "status line setup confirmed with items: {items:#?}, use_theme_colors: {use_theme_colors}"
         );
         let ids = items.iter().map(ToString::to_string).collect::<Vec<_>>();
-        self.config.tui_status_line = Some(ids);
-        self.config.tui_status_line_use_colors = use_theme_colors;
+        self.local_settings.tui.status_line = Some(ids);
+        self.local_settings.tui.status_line_use_colors = use_theme_colors;
         self.refresh_status_line();
     }
 
     /// Applies a temporary terminal-title selection while the setup UI is open.
     pub(crate) fn preview_terminal_title(&mut self, items: Vec<TerminalTitleItem>) {
         if self.terminal_title_setup_original_items.is_none() {
-            self.terminal_title_setup_original_items = Some(self.config.tui_terminal_title.clone());
+            self.terminal_title_setup_original_items =
+                Some(self.local_settings.tui.terminal_title.clone());
         }
 
         let ids = items.iter().map(ToString::to_string).collect::<Vec<_>>();
-        self.config.tui_terminal_title = Some(ids);
+        self.local_settings.tui.terminal_title = Some(ids);
         self.refresh_terminal_title();
     }
 
@@ -138,7 +153,7 @@ impl ChatWidget {
             return;
         };
 
-        self.config.tui_terminal_title = original_items;
+        self.local_settings.tui.terminal_title = original_items;
         self.refresh_terminal_title();
     }
 
@@ -156,7 +171,7 @@ impl ChatWidget {
         tracing::info!("terminal title setup confirmed with items: {items:#?}");
         let ids = items.iter().map(ToString::to_string).collect::<Vec<_>>();
         self.terminal_title_setup_original_items = None;
-        self.config.tui_terminal_title = Some(ids);
+        self.local_settings.tui.terminal_title = Some(ids);
         self.refresh_terminal_title();
     }
 
@@ -223,30 +238,59 @@ impl ChatWidget {
             .values()
             .cloned()
             .collect();
-        let (cell, handle) =
-            crate::status::new_status_output_with_rate_limits_handle_for_instruction_sources(
-                &self.config,
-                self.runtime_model_provider_base_url.as_deref(),
-                self.remote_connection.as_ref(),
-                self.status_account_display.as_ref(),
-                token_info,
-                total_usage,
-                &self.thread_id,
-                self.thread_name.clone(),
-                self.forked_from,
-                rate_limit_snapshots.as_slice(),
-                self.plan_type,
-                Local::now(),
-                self.model_display_name(),
-                collaboration_mode,
-                reasoning_effort_override,
-                refreshing_rate_limits,
-                &self.instruction_source_paths,
-            );
+        let agents_summary =
+            crate::status::compose_agents_summary(&self.config, &self.instruction_source_paths);
+        let (cell, handle) = crate::status::new_status_output_with_rate_limits_handle(
+            &self.config,
+            self.requires_openai_auth,
+            self.thread_id
+                .map(|_| self.config.model_provider_id.as_str()),
+            self.remote_connection.as_ref(),
+            self.status_account_display.as_ref(),
+            token_info,
+            total_usage,
+            &self.thread_id,
+            self.thread_name.clone(),
+            self.forked_from,
+            rate_limit_snapshots.as_slice(),
+            self.plan_type,
+            Local::now(),
+            self.model_display_name(),
+            collaboration_mode,
+            reasoning_effort_override,
+            agents_summary,
+            refreshing_rate_limits,
+        );
         if let Some(request_id) = request_id {
-            self.refreshing_status_outputs.push((request_id, handle));
+            self.refreshing_status_outputs
+                .push((request_id, handle.clone()));
         }
-        self.add_to_history(cell);
+        if self.thread_usage_is_available() {
+            handle.reserve_thread_usage_label_width();
+            handle.set_thread_usage(self.estimated_thread_usage().cloned());
+            self.add_to_history(cell);
+            self.request_thread_usage_for_status(handle.clone());
+        } else {
+            self.add_to_history(cell);
+        }
+        // Capture the displayed status inputs before later configuration or thread changes.
+        let mut copy_targets = vec![
+            ("Model".to_string(), Arc::<str>::from(model)),
+            (
+                "Directory".to_string(),
+                Arc::from(self.config.cwd.display().to_string()),
+            ),
+        ];
+        if let Some(name) = self.thread_name.as_deref().filter(|name| !name.is_empty()) {
+            copy_targets.push(("Thread name".to_string(), Arc::from(name)));
+        }
+        if let Some(thread_id) = self.thread_id {
+            copy_targets.push(("Session ID".to_string(), Arc::from(thread_id.to_string())));
+        }
+        self.transcript.last_status_copy_targets = Some(super::transcript::StatusCopySource {
+            handle,
+            fields: copy_targets,
+        });
     }
 
     pub(crate) fn finish_status_rate_limit_refresh(
@@ -292,7 +336,7 @@ impl ChatWidget {
         let configured_status_line_items = self.configured_status_line_items();
         let view = StatusLineSetupView::new(
             Some(configured_status_line_items.as_slice()),
-            self.config.tui_status_line_use_colors,
+            self.local_settings.tui.status_line_use_colors,
             self.status_surface_preview_data(),
             self.app_event_tx.clone(),
             self.bottom_pane.list_keymap(),
@@ -302,7 +346,8 @@ impl ChatWidget {
 
     pub(super) fn open_terminal_title_setup(&mut self) {
         let configured_terminal_title_items = self.configured_terminal_title_items();
-        self.terminal_title_setup_original_items = Some(self.config.tui_terminal_title.clone());
+        self.terminal_title_setup_original_items =
+            Some(self.local_settings.tui.terminal_title.clone());
         let view = TerminalTitleSetupView::new(
             Some(configured_terminal_title_items.as_slice()),
             self.terminal_title_preview_data(),
@@ -319,6 +364,7 @@ impl ChatWidget {
                     .map(|value| (item, value))
             }),
         );
+        preview_data.thread_id = self.thread_id;
 
         if self.rate_limit_snapshots_by_limit_id.contains_key("codex") {
             for item in [
@@ -329,6 +375,13 @@ impl ChatWidget {
                     preview_data.suppress_placeholder(item);
                 }
             }
+        }
+
+        if self
+            .estimated_thread_usage()
+            .is_some_and(|usage| usage.estimated_usage_usd_micros.is_none())
+        {
+            preview_data.suppress_placeholder(StatusSurfacePreviewItem::EstimatedThreadCost);
         }
 
         preview_data
@@ -357,6 +410,9 @@ impl ChatWidget {
     }
 
     pub(super) fn status_line_context_remaining_percent(&self) -> Option<i64> {
+        if self.token_usage_pending {
+            return None;
+        }
         let Some(context_window) = self.status_line_context_window_size() else {
             return Some(100);
         };
@@ -374,8 +430,8 @@ impl ChatWidget {
     }
 
     pub(super) fn status_line_context_used_percent(&self) -> Option<i64> {
-        let remaining = self.status_line_context_remaining_percent().unwrap_or(100);
-        Some((100 - remaining).clamp(0, 100))
+        self.status_line_context_remaining_percent()
+            .map(|remaining| (100 - remaining).clamp(0, 100))
     }
 
     pub(super) fn status_line_total_usage(&self) -> TokenUsage {
@@ -383,10 +439,6 @@ impl ChatWidget {
             .as_ref()
             .map(|info| info.total_token_usage.clone())
             .unwrap_or_default()
-    }
-
-    pub(super) fn status_line_session_total_usage(&self) -> TokenUsage {
-        self.status_line_total_usage()
     }
 
     pub(super) fn status_line_limit_display(
@@ -402,48 +454,53 @@ impl ChatWidget {
     pub(super) fn status_line_weekly_limit_display(
         &self,
         window: Option<&RateLimitWindowDisplay>,
-        captured_at: Option<chrono::DateTime<Local>>,
+        snapshot: &crate::status::RateLimitSnapshotDisplay,
+        now: chrono::DateTime<chrono::Local>,
         label: &str,
     ) -> Option<String> {
         let base = self.status_line_limit_display(window, label)?;
-        let Some(window) = window else {
-            return Some(base);
-        };
-        let Some(captured_at) = captured_at else {
-            return Some(base);
-        };
-
-        let now = Local::now();
-        if crate::status::is_snapshot_stale(captured_at, now) {
-            return Some(format!("{base} (stale)"));
-        }
-
-        let Some(resets_at) = window.resets_at_unix_seconds else {
-            return Some(base);
-        };
-        let Some(window_minutes) = window.window_minutes else {
-            return Some(base);
-        };
-        let window_seconds = window_minutes.saturating_mul(60);
-        if window_seconds <= 0 {
+        let window = window?;
+        if snapshot.is_stale_at(now) {
             return Some(base);
         }
-
-        let usage_remaining = (100.0f64 - window.used_percent).clamp(0.0, 100.0);
-        let seconds_remaining = resets_at.saturating_sub(captured_at.timestamp());
-        let time_remaining =
+        let Some(reset_seconds) = window.resets_at_unix_seconds else {
+            return Some(base);
+        };
+        let Some(window_seconds) = window
+            .window_minutes
+            .and_then(|minutes| minutes.checked_mul(60))
+        else {
+            return Some(base);
+        };
+        if window_seconds <= 0 || !window.used_percent.is_finite() {
+            return Some(base);
+        }
+        let Some(seconds_remaining) = reset_seconds.checked_sub(snapshot.captured_at.timestamp())
+        else {
+            return Some(base);
+        };
+        if seconds_remaining < 0 {
+            return Some(base);
+        }
+        let time_remaining_pct =
             ((seconds_remaining as f64 / window_seconds as f64) * 100.0).clamp(0.0, 100.0);
-        let delta = usage_remaining - time_remaining;
-        let suffix = if delta.abs() < 0.5 {
-            "on pace".to_string()
-        } else if delta > 0.0 {
-            format!("under {delta:.0}%")
-        } else {
-            let delta = delta.abs();
-            format!("over {delta:.0}%")
-        };
-
-        Some(format!("{base} ({suffix})"))
+        let usage_remaining_pct = (100.0 - window.used_percent).clamp(0.0, 100.0);
+        match self.local_settings.tui.weekly_limit_pacing_style {
+            codex_config::types::WeeklyLimitPacingStyle::Qualitative => {
+                let pace_delta = usage_remaining_pct - time_remaining_pct;
+                let signal = if pace_delta.abs() <= 3.0 {
+                    "on pace".to_string()
+                } else if pace_delta < 0.0 {
+                    format!("over {}%", pace_delta.abs().ceil() as i64)
+                } else {
+                    format!("under {}%", pace_delta.abs().ceil() as i64)
+                };
+                Some(format!("{base} ({signal})"))
+            }
+            codex_config::types::WeeklyLimitPacingStyle::Ratio => {
+                Some(format!("{base}/{}%", time_remaining_pct.round() as i64))
+            }
+        }
     }
 
     pub(super) fn status_line_reasoning_effort_label(

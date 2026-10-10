@@ -5,113 +5,39 @@ use std::time::Instant;
 use anyhow::Result;
 use anyhow::anyhow;
 use codex_exec_server::ExecServerError;
-use reqwest::StatusCode;
+use http::StatusCode;
 use rmcp::service::RoleClient;
 use rmcp::service::RunningService;
-use rmcp::transport::auth::AuthError;
 use rmcp::transport::streamable_http_client::StreamableHttpError;
 use tokio::time;
 use tracing::warn;
 
 use crate::elicitation_client_service::ElicitationClientService;
 use crate::http_client_adapter::StreamableHttpClientAdapterError;
-use crate::oauth::OAuthPersistor;
+use crate::oauth::OAuthRuntime;
 
-use super::ClientOperationError;
+use super::InitializeContext;
 use super::PendingTransport;
 use super::RmcpClient;
 
 const JSON_RPC_INTERNAL_ERROR_CODE: i64 = -32603;
 pub(super) const STREAMABLE_HTTP_RETRY_DELAYS_MS: [u64; 2] = [250, 1_000];
 
-#[derive(Default)]
-struct InitializeAttemptContext {
-    oauth_persistor: Option<OAuthPersistor>,
-    rejected_access_token: Option<String>,
-}
-
 impl RmcpClient {
-    pub(super) async fn connect_pending_transport_with_oauth_recovery(
+    pub(super) async fn connect_pending_transport_with_initialize_retries(
         &self,
         initial_transport: PendingTransport,
-        client_service: ElicitationClientService,
-        timeout: Option<Duration>,
+        initialize_context: &InitializeContext,
     ) -> Result<(
         Arc<RunningService<RoleClient, ElicitationClientService>>,
-        Option<OAuthPersistor>,
+        Option<OAuthRuntime>,
     )> {
-        let mut attempt_context = InitializeAttemptContext::default();
-        let mut deadline = timeout.map(|duration| Instant::now() + duration);
-        let mut excluded_oauth_time = Duration::ZERO;
-        let initial_result = self
-            .connect_pending_transport_with_initialize_retries(
-                initial_transport,
-                client_service.clone(),
-                timeout,
-                &mut attempt_context,
-                &mut excluded_oauth_time,
-            )
-            .await;
-        extend_initialize_deadline(&mut deadline, excluded_oauth_time);
-
-        match initial_result {
-            Ok(result) => Ok(result),
-            Err(error) if Self::is_unauthorized_initialize_error(&error) => {
-                let Some(oauth_persistor) = attempt_context.oauth_persistor else {
-                    return Err(error);
-                };
-                // OAuth refresh has independent lock and provider bounds, so exclude it from the
-                // MCP initialize budget just as we do for pre-initialize expiry refreshes.
-                let refresh_started_at = Instant::now();
-                let refresh_result = oauth_persistor
-                    .refresh_after_unauthorized(attempt_context.rejected_access_token.as_deref())
-                    .await;
-                extend_initialize_deadline(&mut deadline, refresh_started_at.elapsed());
-                if let Err(error) = refresh_result {
-                    remaining_initialize_timeout(timeout, deadline)?;
-                    return Err(error);
-                }
-                let remaining = remaining_initialize_timeout(timeout, deadline)?;
-                let transport = match remaining {
-                    Some(remaining) => time::timeout(
-                        remaining,
-                        Self::create_pending_transport(&self.transport_recipe),
-                    )
-                    .await
-                    .map_err(|_| initialize_timeout_error(timeout, remaining))??,
-                    None => Self::create_pending_transport(&self.transport_recipe).await?,
-                };
-                let remaining = remaining_initialize_timeout(timeout, deadline)?;
-                let mut retry_context = InitializeAttemptContext::default();
-                let mut retry_excluded_oauth_time = Duration::ZERO;
-                self.connect_pending_transport_with_initialize_retries(
-                    transport,
-                    client_service,
-                    remaining,
-                    &mut retry_context,
-                    &mut retry_excluded_oauth_time,
-                )
-                .await
-            }
-            Err(error) => Err(error),
-        }
-    }
-
-    async fn connect_pending_transport_with_initialize_retries(
-        &self,
-        initial_transport: PendingTransport,
-        client_service: ElicitationClientService,
-        timeout: Option<Duration>,
-        attempt_context: &mut InitializeAttemptContext,
-        excluded_oauth_time: &mut Duration,
-    ) -> Result<(
-        Arc<RunningService<RoleClient, ElicitationClientService>>,
-        Option<OAuthPersistor>,
-    )> {
+        let timeout = initialize_context.timeout;
         let should_retry = match &initial_transport {
             PendingTransport::InProcess { .. } | PendingTransport::Stdio { .. } => false,
             PendingTransport::StreamableHttp { .. }
-            | PendingTransport::StreamableHttpWithOAuth { .. } => true,
+            | PendingTransport::StreamableHttpWithOAuth { .. }
+            | PendingTransport::StreamableHttpWithAccessTokenOnly { .. } => true,
         };
         let mut retry_deadline = timeout.map(|duration| Instant::now() + duration);
         let mut pending_transport = Some(initial_transport);
@@ -138,51 +64,27 @@ impl RmcpClient {
                     }
                 }
             };
-            match &transport {
-                PendingTransport::StreamableHttpWithOAuth {
-                    oauth_persistor, ..
-                } => {
-                    attempt_context.oauth_persistor = Some(oauth_persistor.clone());
-                }
-                PendingTransport::InProcess { .. }
-                | PendingTransport::Stdio { .. }
-                | PendingTransport::StreamableHttp { .. } => {
-                    attempt_context.oauth_persistor = None;
-                    attempt_context.rejected_access_token = None;
-                }
-            }
-            if let PendingTransport::StreamableHttpWithOAuth {
-                oauth_persistor, ..
-            } = &transport
-            {
+            if let PendingTransport::StreamableHttpWithOAuth { oauth_runtime, .. } = &transport {
                 // OAuth refresh has its own lock and provider request bounds. Exclude it from the
                 // MCP handshake budget, and finish persistence before attempting initialize.
                 let refresh_started_at = Instant::now();
-                oauth_persistor.refresh_if_needed().await?;
-                let refresh_elapsed = refresh_started_at.elapsed();
-                *excluded_oauth_time += refresh_elapsed;
-                extend_initialize_deadline(&mut retry_deadline, refresh_elapsed);
-                attempt_context.rejected_access_token =
-                    oauth_persistor.access_token_snapshot().await;
+                oauth_runtime.refresh_if_needed().await?;
+                if let Some(deadline) = retry_deadline.as_mut() {
+                    *deadline += refresh_started_at.elapsed();
+                }
             }
             let attempt_timeout = remaining_initialize_timeout(timeout, retry_deadline)?;
 
-            match Self::connect_pending_transport(
-                transport,
-                client_service.clone(),
-                attempt_timeout,
-            )
-            .await
+            match self
+                .connect_pending_transport(transport, initialize_context, attempt_timeout)
+                .await
             {
                 Ok(result) => return Ok(result),
                 Err(error) if should_retry && Self::is_retryable_initialize_error(&error) => {
                     let Some(retry_delay_ms) = retry_delay_ms else {
                         return Err(error);
                     };
-                    let delay = Self::retry_delay_for_initialize_error(
-                        &error,
-                        Duration::from_millis(retry_delay_ms),
-                    );
+                    let delay = Duration::from_millis(retry_delay_ms);
                     warn!(
                         attempt = attempt + 1,
                         max_attempts = STREAMABLE_HTTP_RETRY_DELAYS_MS.len() + 1,
@@ -215,33 +117,16 @@ impl RmcpClient {
         })
     }
 
-    fn is_unauthorized_initialize_error(error: &anyhow::Error) -> bool {
-        error.chain().any(|source| {
-            source
-                .downcast_ref::<HandshakeError>()
-                .is_some_and(|error| Self::is_unauthorized_client_initialize_error(&error.source))
-                || source
-                    .downcast_ref::<rmcp::service::ClientInitializeError>()
-                    .is_some_and(Self::is_unauthorized_client_initialize_error)
-        })
-    }
-
-    fn is_unauthorized_client_initialize_error(
-        error: &rmcp::service::ClientInitializeError,
-    ) -> bool {
-        match error {
-            rmcp::service::ClientInitializeError::TransportError { error, .. } => error
-                .error
-                .downcast_ref::<StreamableHttpError<StreamableHttpClientAdapterError>>()
-                .is_some_and(Self::is_unauthorized_streamable_http_error),
-            _ => false,
-        }
-    }
-
     fn is_retryable_client_initialize_error(error: &rmcp::service::ClientInitializeError) -> bool {
         match error {
+            rmcp::service::ClientInitializeError::LegacyFallbackFailed { fallback, .. } => {
+                Self::is_retryable_client_initialize_error(fallback)
+            }
             rmcp::service::ClientInitializeError::TransportError { error, context }
-                if context.as_ref() == "send initialize request" =>
+                if matches!(
+                    context.as_ref(),
+                    "send initialize request" | "send discover request"
+                ) =>
             {
                 error
                     .error
@@ -267,10 +152,6 @@ impl RmcpClient {
         error: &StreamableHttpError<StreamableHttpClientAdapterError>,
     ) -> bool {
         match error {
-            StreamableHttpError::Client(StreamableHttpClientAdapterError::HttpStatus {
-                status,
-                ..
-            }) => StatusCode::from_u16(*status).is_ok_and(is_retryable_http_status),
             StreamableHttpError::Client(StreamableHttpClientAdapterError::HttpRequest(
                 ExecServerError::HttpRequest(_),
             )) => true,
@@ -293,84 +174,6 @@ impl RmcpClient {
             | StreamableHttpError::Deserialize(_)
             | StreamableHttpError::Client(StreamableHttpClientAdapterError::SessionExpired404)
             | StreamableHttpError::Client(StreamableHttpClientAdapterError::Header(_)) => false,
-            _ => false,
-        }
-    }
-
-    pub(super) fn retry_delay(error: &ClientOperationError, fallback: Duration) -> Duration {
-        let ClientOperationError::Service(rmcp::service::ServiceError::TransportSend(error)) =
-            error
-        else {
-            return fallback;
-        };
-        let Some(StreamableHttpError::Client(StreamableHttpClientAdapterError::HttpStatus {
-            status,
-            retry_after: Some(delay),
-            ..
-        })) = error
-            .error
-            .downcast_ref::<StreamableHttpError<StreamableHttpClientAdapterError>>()
-        else {
-            return fallback;
-        };
-        if StatusCode::from_u16(*status).is_ok_and(|status| {
-            matches!(
-                status,
-                StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE
-            )
-        }) {
-            *delay
-        } else {
-            fallback
-        }
-    }
-
-    fn retry_delay_for_initialize_error(error: &anyhow::Error, fallback: Duration) -> Duration {
-        for source in error.chain() {
-            let initialize_error = source
-                .downcast_ref::<HandshakeError>()
-                .map(|error| &error.source)
-                .or_else(|| source.downcast_ref::<rmcp::service::ClientInitializeError>());
-            let Some(rmcp::service::ClientInitializeError::TransportError { error, .. }) =
-                initialize_error
-            else {
-                continue;
-            };
-            let Some(StreamableHttpError::Client(StreamableHttpClientAdapterError::HttpStatus {
-                status,
-                retry_after: Some(delay),
-                ..
-            })) = error
-                .error
-                .downcast_ref::<StreamableHttpError<StreamableHttpClientAdapterError>>()
-            else {
-                continue;
-            };
-            if StatusCode::from_u16(*status).is_ok_and(|status| {
-                matches!(
-                    status,
-                    StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE
-                )
-            }) {
-                return *delay;
-            }
-        }
-        fallback
-    }
-
-    pub(super) fn is_unauthorized_streamable_http_error(
-        error: &StreamableHttpError<StreamableHttpClientAdapterError>,
-    ) -> bool {
-        match error {
-            StreamableHttpError::Client(StreamableHttpClientAdapterError::HttpStatus {
-                status: 401,
-                ..
-            }) => true,
-            StreamableHttpError::AuthRequired(_)
-            | StreamableHttpError::Auth(AuthError::AuthorizationRequired) => true,
-            StreamableHttpError::UnexpectedServerResponse(message) => {
-                message.starts_with("HTTP 401")
-            }
             _ => false,
         }
     }
@@ -405,13 +208,7 @@ fn is_retryable_http_status(status: StatusCode) -> bool {
     )
 }
 
-fn extend_initialize_deadline(deadline: &mut Option<Instant>, excluded_time: Duration) {
-    if let Some(deadline) = deadline.as_mut() {
-        *deadline += excluded_time;
-    }
-}
-
-pub(super) fn remaining_initialize_timeout(
+fn remaining_initialize_timeout(
     timeout: Option<Duration>,
     deadline: Option<Instant>,
 ) -> Result<Option<Duration>> {
@@ -426,10 +223,7 @@ pub(super) fn remaining_initialize_timeout(
     }
 }
 
-pub(super) fn initialize_timeout_error(
-    timeout: Option<Duration>,
-    fallback: Duration,
-) -> anyhow::Error {
+fn initialize_timeout_error(timeout: Option<Duration>, fallback: Duration) -> anyhow::Error {
     let duration = timeout.unwrap_or(fallback);
     anyhow!("timed out handshaking with MCP server after {duration:?}")
 }

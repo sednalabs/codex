@@ -1,20 +1,21 @@
 use base64::Engine;
 use base64::prelude::BASE64_STANDARD;
-use codex_app_server_protocol::ComputerUseCallOutputContentItem;
-use codex_app_server_protocol::ComputerUseCallParams;
-use codex_app_server_protocol::ComputerUseCallResponse;
+use codex_app_server_protocol::DynamicToolCallOutputContentItem;
+use codex_app_server_protocol::DynamicToolCallParams;
+use codex_app_server_protocol::DynamicToolCallResponse;
+use codex_app_server_protocol::DynamicToolNamespaceSpec;
+use codex_app_server_protocol::DynamicToolNamespaceTool;
 use codex_app_server_protocol::DynamicToolSpec;
-use codex_protocol::dynamic_tools::DynamicToolCapability;
-use codex_tools::ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME;
-use codex_tools::ANDROID_OBSERVE_TOOL_NAME;
-use codex_tools::ANDROID_STEP_TOOL_NAME;
-use codex_tools::COMPUTER_USE_ADAPTER_ANDROID;
-use codex_tools::native_computer_use_provider_for_call;
-use reqwest::StatusCode;
-use reqwest::header::ACCEPT;
-use reqwest::header::CONTENT_TYPE;
-use reqwest::header::HeaderMap;
-use reqwest::header::HeaderValue;
+use codex_http_client::ClientRouteClass;
+use codex_http_client::HttpClient;
+use codex_http_client::HttpClientFactory;
+use codex_http_client::OutboundProxyPolicy;
+use codex_protocol::dynamic_tools::DynamicToolFunctionSpec;
+use http::StatusCode;
+use http::header::ACCEPT;
+use http::header::CONTENT_TYPE;
+use http::header::HeaderMap;
+use http::header::HeaderValue;
 use serde_json::Value;
 use serde_json::json;
 use std::collections::BTreeSet;
@@ -23,6 +24,10 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tokio::time::timeout;
 
+const NAMESPACE: &str = "codex_android";
+const ANDROID_OBSERVE_TOOL_NAME: &str = "android_observe";
+const ANDROID_STEP_TOOL_NAME: &str = "android_step";
+const ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME: &str = "android_install_build_from_run";
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const DEFAULT_MCP_URL_PATH: &str = "/mcp";
 const INSPECT_UI_MAX_ATTEMPTS: usize = 3;
@@ -34,66 +39,168 @@ const MCP_TOOL_INTERACTIVE_SESSION_INSTALL_BUILD_FROM_RUN: &str =
     "interactive_session.install_build_from_run";
 
 pub enum AndroidComputerUseOutcome {
-    Handled(ComputerUseCallResponse),
+    Handled(DynamicToolCallResponse),
     Unavailable,
 }
 
-/// Return Android computer-use dynamic tools for the process default Codex home.
-pub fn configured_android_dynamic_tools() -> Vec<DynamicToolSpec> {
-    let Some(codex_home) = default_codex_home() else {
-        return Vec::new();
-    };
-
-    configured_android_dynamic_tools_for_codex_home(codex_home.as_path())
-}
-
-/// Return Android computer-use dynamic tools for a specific Codex home.
+/// Return the Android computer-use namespace only when its established MCP
+/// provider is configured for this Codex home.
 pub fn configured_android_dynamic_tools_for_codex_home(codex_home: &Path) -> Vec<DynamicToolSpec> {
     if AndroidRuntimeConfig::load(codex_home).is_none() {
         return Vec::new();
     }
 
-    vec![
-        android_dynamic_tool(
-            ANDROID_OBSERVE_TOOL_NAME,
-            "Capture the current Android screen as a model-visible screenshot.",
-            "non_mutating",
-        ),
-        android_dynamic_tool(
-            ANDROID_STEP_TOOL_NAME,
-            "Perform bounded Android actions, then return a fresh Android screenshot.",
-            "mutating",
-        ),
-        android_dynamic_tool(
-            ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME,
-            "Install a GitHub Actions Android build into the active Android session.",
-            "mutating",
-        ),
-    ]
+    vec![DynamicToolSpec::Namespace(DynamicToolNamespaceSpec {
+        name: NAMESPACE.to_string(),
+        description: "Native Android computer-use tools".to_string(),
+        tools: vec![
+            android_dynamic_tool(
+                ANDROID_OBSERVE_TOOL_NAME,
+                "Capture the current Android screen as a model-visible screenshot.",
+                android_observe_input_schema(),
+            ),
+            android_dynamic_tool(
+                ANDROID_STEP_TOOL_NAME,
+                "Perform one Android action or a non-empty ordered actions batch, then return a fresh screenshot. Each action needs type, action, or name. tap/click accepts x+y coordinates or selector/target; swipe/drag uses x1+y1+x2+y2; scroll uses scroll_y or those coordinates; type uses text; keypress uses key/keycode or keys; launch_app uses package_name/package; multi_touch uses 2-5 pointers with x1/y1/x2/y2; wait uses ms or wait_ms. An uncertain action must not be replayed; recover with android_observe.",
+                android_step_input_schema(),
+            ),
+            android_dynamic_tool(
+                ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME,
+                "Install a GitHub Actions Android build into the active Android session. Provide workflow_run_id, plus any provider-required repository or artifact selector; serial is optional and defaults to the configured device. If the result is uncertain, inspect with android_observe and do not replay the install automatically.",
+                android_install_build_from_run_input_schema(),
+            ),
+        ],
+    })]
 }
 
-fn android_dynamic_tool(name: &str, description: &str, mutation_class: &str) -> DynamicToolSpec {
-    DynamicToolSpec {
-        namespace: None,
+fn android_dynamic_tool(
+    name: &str,
+    description: &str,
+    input_schema: Value,
+) -> DynamicToolNamespaceTool {
+    DynamicToolNamespaceTool::Function(DynamicToolFunctionSpec {
         name: name.to_string(),
         description: description.to_string(),
-        input_schema: json!({
-            "type": "object",
-            "additionalProperties": true
-        }),
+        input_schema,
         defer_loading: false,
-        persist_on_resume: false,
-        capability: Some(DynamicToolCapability {
-            family: Some(COMPUTER_USE_ADAPTER_ANDROID.to_string()),
-            capability_scope: Some("session".to_string()),
-            mutation_class: Some(mutation_class.to_string()),
-            lease_mode: None,
-        }),
-    }
+    })
+}
+
+fn android_observe_input_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "serial": { "type": "string", "description": "Optional Android device serial; defaults to the configured device." },
+            "timeout_secs": { "type": "number", "minimum": 0, "description": "Optional timeout for the UI inspection." },
+            "stable": { "type": "boolean", "description": "Wait for stable UI before capturing (default true when supported)." },
+            "wait_for_stable_ui": { "type": "boolean", "description": "Alias for stable." },
+            "screenshot_filename": { "type": "string", "description": "Optional provider-side screenshot filename." },
+            "hierarchy_filename": { "type": "string", "description": "Optional provider-side hierarchy filename." },
+            "poll_interval_ms": { "type": "integer", "minimum": 0 },
+            "stable_polls": { "type": "integer", "minimum": 1 }
+        },
+        "additionalProperties": false
+    })
+}
+
+fn android_step_input_schema() -> Value {
+    let mut action_schema = json!({
+        "type": "object",
+        "properties": {
+            "type": { "type": "string", "enum": ["launch_app", "tap", "click", "double_click", "long_press", "swipe", "drag", "multi_touch", "scroll", "type", "type_text", "keypress", "key", "wait", "semantic_action"] },
+            "action": { "type": "string", "enum": ["launch_app", "tap", "click", "double_click", "long_press", "swipe", "drag", "multi_touch", "scroll", "type", "type_text", "keypress", "key", "wait", "semantic_action"] },
+            "name": { "type": "string", "enum": ["launch_app", "tap", "click", "double_click", "long_press", "swipe", "drag", "multi_touch", "scroll", "type", "type_text", "keypress", "key", "wait", "semantic_action"] },
+            "package_name": { "type": "string" },
+            "package": { "type": "string" },
+            "activity": { "type": "string" },
+            "selector": { "anyOf": [{ "type": "string" }, { "type": "object" }], "description": "Provider-specific UI element selector." },
+            "target": { "anyOf": [{ "type": "string" }, { "type": "object" }], "description": "Alias for selector." },
+            "x": { "type": "integer", "minimum": 0, "description": "Horizontal screen coordinate in pixels." },
+            "y": { "type": "integer", "minimum": 0, "description": "Vertical screen coordinate in pixels." },
+            "x1": { "type": "integer", "minimum": 0, "description": "Gesture start horizontal coordinate in pixels." },
+            "y1": { "type": "integer", "minimum": 0, "description": "Gesture start vertical coordinate in pixels." },
+            "x2": { "type": "integer", "minimum": 0, "description": "Gesture end horizontal coordinate in pixels." },
+            "y2": { "type": "integer", "minimum": 0, "description": "Gesture end vertical coordinate in pixels." },
+            "scroll_y": { "type": "integer" },
+            "duration_ms": { "type": "integer", "minimum": 0 },
+            "pointers": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 5,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "x1": { "type": "integer", "minimum": 0 },
+                        "y1": { "type": "integer", "minimum": 0 },
+                        "x2": { "type": "integer", "minimum": 0 },
+                        "y2": { "type": "integer", "minimum": 0 }
+                    },
+                    "required": ["x1", "y1", "x2", "y2"],
+                    "additionalProperties": false
+                }
+            },
+            "text": { "type": "string" },
+            "keys": { "type": "array", "items": { "type": "string" } },
+            "keycode": { "anyOf": [{ "type": "string" }, { "type": "integer" }] },
+            "key": { "anyOf": [{ "type": "string" }, { "type": "integer" }] },
+            "serial": { "type": "string" },
+            "timeout_secs": { "type": "number", "minimum": 0 },
+            "wait_for_activity": { "type": "string" },
+            "wait_for_package": { "type": "string" },
+            "wait_for_selector": { "anyOf": [{ "type": "string" }, { "type": "object" }] },
+            "wait_until_absent": { "anyOf": [{ "type": "string" }, { "type": "boolean" }, { "type": "object" }] },
+            "match_index": { "type": "integer", "minimum": 0 },
+            "expect_scroll_change": { "type": "boolean" },
+            "ms": { "type": "integer", "minimum": 0 },
+            "wait_ms": { "type": "integer", "minimum": 0 },
+            "stable": { "type": "boolean" },
+            "poll_interval_ms": { "type": "integer", "minimum": 0 },
+            "stable_polls": { "type": "integer", "minimum": 1 }
+        },
+        "anyOf": [
+            { "required": ["type"] },
+            { "required": ["action"] },
+            { "required": ["name"] }
+        ],
+        "additionalProperties": true
+    });
+    let action_item_schema = action_schema.clone();
+    action_schema["properties"]["actions"] = json!({
+        "type": "array",
+        "minItems": 1,
+        "items": action_item_schema
+    });
+    action_schema["anyOf"] = json!([
+        { "required": ["actions"] },
+        { "required": ["type"] },
+        { "required": ["action"] },
+        { "required": ["name"] }
+    ]);
+    action_schema["description"] = json!(
+        "Use either one action object or a non-empty actions array. Actions run in order and stop at the first failure. Supported types: launch_app, tap/click, double_click, long_press, swipe/drag, multi_touch, scroll, type/type_text, keypress/key, wait, and semantic_action. For visual actions, recover with android_observe after an uncertain failure instead of replaying the action."
+    );
+    action_schema
+}
+
+fn android_install_build_from_run_input_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "workflow_run_id": { "type": "integer", "minimum": 0, "description": "GitHub Actions workflow run to install." },
+            "artifact_name": { "type": "string", "description": "Required workflow artifact name to install." },
+            "repository": { "type": ["string", "null"], "default": null, "description": "Optional repository owning the workflow run; defaults to the configured repository." },
+            "launch_after_install": { "type": "boolean", "default": true, "description": "Whether to launch the installed app after installation." },
+            "serial": { "type": ["string", "null"], "default": null, "description": "Optional Android device serial; defaults to the configured device." },
+            "timeout_secs": { "type": ["integer", "null"], "minimum": 0, "default": null, "description": "Optional provider timeout in seconds." }
+        },
+        "required": ["workflow_run_id", "artifact_name"],
+        "additionalProperties": true,
+        "description": "Provide the workflow_run_id and required artifact_name. repository, launch_after_install, serial, and timeout_secs are optional provider arguments. On success this installs into the active Android session and captures a fresh screenshot. If the result is uncertain, inspect with android_observe before retrying; do not replay the install automatically."
+    })
 }
 
 pub async fn handle_android_computer_use(
-    params: &ComputerUseCallParams,
+    params: &DynamicToolCallParams,
 ) -> AndroidComputerUseOutcome {
     let Some(codex_home) = default_codex_home() else {
         return AndroidComputerUseOutcome::Unavailable;
@@ -103,10 +210,10 @@ pub async fn handle_android_computer_use(
 }
 
 pub async fn handle_android_computer_use_for_codex_home(
-    params: &ComputerUseCallParams,
+    params: &DynamicToolCallParams,
     codex_home: &Path,
 ) -> AndroidComputerUseOutcome {
-    if params.adapter != COMPUTER_USE_ADAPTER_ANDROID {
+    if params.namespace.as_deref() != Some(NAMESPACE) {
         return AndroidComputerUseOutcome::Unavailable;
     }
 
@@ -121,10 +228,13 @@ pub async fn handle_android_computer_use_for_codex_home(
     let request_timeout = request_timeout_for_tool(&params.tool);
     let response = match timeout(request_timeout, handle_with_config(params, config)).await {
         Ok(Ok(response)) => response,
-        Ok(Err(err)) => failed_response(err),
-        Err(_) => failed_response(format!(
-            "Android computer-use provider timed out after {} seconds.",
-            request_timeout.as_secs()
+        Ok(Err(err)) => failed_response(tool_failure_message(&params.tool, &err)),
+        Err(_) => failed_response(tool_failure_message(
+            &params.tool,
+            &format!(
+                "Android computer-use provider timed out after {} seconds.",
+                request_timeout.as_secs()
+            ),
         )),
     };
     AndroidComputerUseOutcome::Handled(response)
@@ -137,7 +247,12 @@ fn default_codex_home() -> Option<PathBuf> {
 }
 
 fn is_supported_android_tool(tool: &str) -> bool {
-    native_computer_use_provider_for_call(COMPUTER_USE_ADAPTER_ANDROID, tool).is_some()
+    matches!(
+        tool,
+        ANDROID_OBSERVE_TOOL_NAME
+            | ANDROID_STEP_TOOL_NAME
+            | ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME
+    )
 }
 
 fn request_timeout_for_tool(tool: &str) -> Duration {
@@ -148,9 +263,9 @@ fn request_timeout_for_tool(tool: &str) -> Duration {
 }
 
 async fn handle_with_config(
-    params: &ComputerUseCallParams,
+    params: &DynamicToolCallParams,
     config: AndroidRuntimeConfig,
-) -> Result<ComputerUseCallResponse, String> {
+) -> Result<DynamicToolCallResponse, String> {
     let defaults = config.defaults.clone();
     let mut client = AndroidRuntimeClient::connect(config).await?;
     let tools = client.list_tools().await?;
@@ -177,7 +292,7 @@ async fn observe(
     tools: &BTreeSet<String>,
     defaults: &AndroidProviderDefaults,
     arguments: &Value,
-) -> Result<ComputerUseCallResponse, String> {
+) -> Result<DynamicToolCallResponse, String> {
     let mut response = match observe_ui(client, tools, defaults, arguments).await {
         Ok(observation) => {
             observation_response(client, tools, observation, "Android observation").await
@@ -207,7 +322,7 @@ async fn step(
     tools: &BTreeSet<String>,
     defaults: &AndroidProviderDefaults,
     arguments: &Value,
-) -> Result<ComputerUseCallResponse, String> {
+) -> Result<DynamicToolCallResponse, String> {
     let actions = canonical_actions(arguments);
     if actions.is_empty() {
         return Err("android_step requires an action or non-empty actions array.".to_string());
@@ -249,7 +364,7 @@ async fn step(
             .await?
         }
     };
-    if let Some(ComputerUseCallOutputContentItem::InputText { text }) =
+    if let Some(DynamicToolCallOutputContentItem::InputText { text }) =
         response.content_items.first_mut()
     {
         let action_text = summaries
@@ -274,7 +389,7 @@ async fn action_failure_response(
     failed_action: &Value,
     action_error: String,
     completed_summaries: &[String],
-) -> ComputerUseCallResponse {
+) -> DynamicToolCallResponse {
     let failure_summary = action_failure_summary(
         action_kind(failed_action),
         &action_error,
@@ -327,11 +442,6 @@ async fn action_failure_response(
         "Android action failure observation missing native image output. The failed action may already have changed the device state; recover with a fresh android_observe before retrying mutating input.",
     );
     response.success = false;
-    response.error = Some(format!(
-        "Android action `{}` failed: {}",
-        action_kind(failed_action),
-        compact_summary_text(&action_error)
-    ));
     response
 }
 
@@ -340,7 +450,7 @@ async fn install_build_from_run(
     tools: &BTreeSet<String>,
     defaults: &AndroidProviderDefaults,
     arguments: &Value,
-) -> Result<ComputerUseCallResponse, String> {
+) -> Result<DynamicToolCallResponse, String> {
     if !tools.contains(MCP_TOOL_INTERACTIVE_SESSION_INSTALL_BUILD_FROM_RUN) {
         return Err(format!(
             "Android provider does not expose `{MCP_TOOL_INTERACTIVE_SESSION_INSTALL_BUILD_FROM_RUN}`."
@@ -385,7 +495,7 @@ async fn install_build_from_run(
         }
     };
 
-    if let Some(ComputerUseCallOutputContentItem::InputText { text }) =
+    if let Some(DynamicToolCallOutputContentItem::InputText { text }) =
         response.content_items.first_mut()
     {
         *text = format!("{install_summary}\n\n{text}");
@@ -457,12 +567,12 @@ async fn observation_response(
     tools: &BTreeSet<String>,
     observation: AndroidToolResult,
     title: &str,
-) -> Result<ComputerUseCallResponse, String> {
+) -> Result<DynamicToolCallResponse, String> {
     let AndroidToolResult {
         structured: structured_observation,
         content,
     } = observation;
-    let mut items = vec![ComputerUseCallOutputContentItem::InputText {
+    let mut items = vec![DynamicToolCallOutputContentItem::InputText {
         text: summarize_observation(title, &structured_observation),
     }];
 
@@ -479,9 +589,8 @@ async fn observation_response(
         {
             Ok(bytes) => {
                 append_text(&mut items, "\nscreenshot: included as native image output");
-                items.push(ComputerUseCallOutputContentItem::InputImage {
+                items.push(DynamicToolCallOutputContentItem::InputImage {
                     image_url: format!("data:image/png;base64,{}", BASE64_STANDARD.encode(bytes)),
-                    detail: Some("high".to_string()),
                 });
             }
             Err(err) => {
@@ -495,10 +604,9 @@ async fn observation_response(
         }
     }
 
-    Ok(ComputerUseCallResponse {
+    Ok(DynamicToolCallResponse {
         content_items: items,
         success: true,
-        error: None,
     })
 }
 
@@ -510,7 +618,7 @@ async fn screenshot_fallback_response(
     title: &str,
     observe_error: &str,
     action_already_executed: bool,
-) -> Result<ComputerUseCallResponse, String> {
+) -> Result<DynamicToolCallResponse, String> {
     let mut lines = vec![
         format!("{title} degraded"),
         format!("UI digest unavailable: {observe_error}"),
@@ -557,9 +665,6 @@ async fn screenshot_fallback_response(
     )
     .await?;
     response.success = action_already_executed || response_includes_native_image(&response);
-    if !response.success {
-        response.error = Some(observe_error.to_string());
-    }
     Ok(response)
 }
 
@@ -851,7 +956,7 @@ impl AndroidRuntimeConfigFile {
 }
 
 struct AndroidRuntimeClient {
-    http: reqwest::Client,
+    http: HttpClient,
     url: String,
     headers: HeaderMap,
     session_id: Option<String>,
@@ -907,8 +1012,11 @@ impl AndroidRuntimeClient {
             }
         }
 
+        let http = HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault)
+            .build_client_without_request_logging(&config.mcp_url, ClientRouteClass::Other)
+            .map_err(|err| format!("failed to build Android provider HTTP client: {err}"))?;
         let mut client = Self {
-            http: reqwest::Client::new(),
+            http,
             url: config.mcp_url,
             headers,
             session_id: None,
@@ -1135,19 +1243,19 @@ fn compact_summary_text(text: &str) -> String {
     compact
 }
 
-fn append_text(items: &mut [ComputerUseCallOutputContentItem], extra: &str) {
-    if let Some(ComputerUseCallOutputContentItem::InputText { text }) = items.first_mut() {
+fn append_text(items: &mut [DynamicToolCallOutputContentItem], extra: &str) {
+    if let Some(DynamicToolCallOutputContentItem::InputText { text }) = items.first_mut() {
         text.push_str(extra);
     }
 }
 
-fn prepend_text(items: &mut Vec<ComputerUseCallOutputContentItem>, prefix: &str) {
-    if let Some(ComputerUseCallOutputContentItem::InputText { text }) = items.first_mut() {
+fn prepend_text(items: &mut Vec<DynamicToolCallOutputContentItem>, prefix: &str) {
+    if let Some(DynamicToolCallOutputContentItem::InputText { text }) = items.first_mut() {
         *text = format!("{prefix}\n\n{text}");
     } else {
         items.insert(
             0,
-            ComputerUseCallOutputContentItem::InputText {
+            DynamicToolCallOutputContentItem::InputText {
                 text: prefix.to_string(),
             },
         );
@@ -1317,7 +1425,7 @@ fn tool_result(mut value: Value) -> AndroidToolResult {
 }
 
 fn append_mcp_image_content(
-    items: &mut Vec<ComputerUseCallOutputContentItem>,
+    items: &mut Vec<DynamicToolCallOutputContentItem>,
     content: Vec<Value>,
 ) {
     for item in content {
@@ -1327,11 +1435,10 @@ fn append_mcp_image_content(
     }
 }
 
-fn mcp_image_content_item(mut value: Value) -> Option<ComputerUseCallOutputContentItem> {
+fn mcp_image_content_item(mut value: Value) -> Option<DynamicToolCallOutputContentItem> {
     if value.get("type").and_then(Value::as_str)? != "image" {
         return None;
     }
-    let detail = mcp_image_detail(&value).or_else(|| Some("high".to_string()));
     let data = value.get_mut("data")?.take();
     let data = match data {
         Value::String(data) => data,
@@ -1350,25 +1457,13 @@ fn mcp_image_content_item(mut value: Value) -> Option<ComputerUseCallOutputConte
             .unwrap_or("application/octet-stream");
         format!("data:{mime_type};base64,{data}")
     };
-    Some(ComputerUseCallOutputContentItem::InputImage { image_url, detail })
+    Some(DynamicToolCallOutputContentItem::InputImage { image_url })
 }
 
-fn mcp_image_detail(value: &Value) -> Option<String> {
-    let detail = value
-        .get("_meta")
-        .and_then(Value::as_object)
-        .and_then(|meta| meta.get("codex/imageDetail"))
-        .and_then(Value::as_str)?;
-    match detail {
-        "auto" | "low" | "high" | "original" => Some(detail.to_string()),
-        _ => None,
-    }
-}
-
-fn items_include_native_image(items: &[ComputerUseCallOutputContentItem]) -> bool {
+fn items_include_native_image(items: &[DynamicToolCallOutputContentItem]) -> bool {
     items
         .iter()
-        .any(|item| matches!(item, ComputerUseCallOutputContentItem::InputImage { .. }))
+        .any(|item| matches!(item, DynamicToolCallOutputContentItem::InputImage { .. }))
 }
 
 fn tool_text(value: &Value) -> Option<String> {
@@ -1431,41 +1526,25 @@ fn parse_event_stream_json(text: &str) -> Result<Value, String> {
     Ok(value)
 }
 
-fn failed_response(error: String) -> ComputerUseCallResponse {
-    let retryability = provider_unavailable_retryability(&error);
-    let text = match retryability {
-        Some(retryability) => {
-            format!("Android provider unavailable\nretryability: {retryability}\nreason: {error}")
-        }
-        None => error.clone(),
-    };
-    let response_error = if retryability.is_some() {
-        format!("Android provider unavailable: {error}")
-    } else {
-        error
-    };
-    ComputerUseCallResponse {
-        content_items: vec![ComputerUseCallOutputContentItem::InputText { text }],
+fn failed_response(error: String) -> DynamicToolCallResponse {
+    DynamicToolCallResponse {
+        content_items: vec![DynamicToolCallOutputContentItem::InputText { text: error }],
         success: false,
-        error: Some(response_error),
     }
 }
 
-fn provider_unavailable_retryability(error: &str) -> Option<&'static str> {
-    let normalized = error.to_ascii_lowercase();
-    if normalized.contains("android provider http 530")
-        || normalized.contains("error code: 1033")
-        || normalized.contains("cloudflare tunnel")
-        || normalized.contains("tunnel error")
-        || normalized.contains("failed to reach android provider")
-        || normalized.contains("connection refused")
-        || normalized.contains("connection reset")
-        || normalized.contains("timed out")
-        || normalized.contains("temporary failure")
-    {
-        Some("retry_same_request")
-    } else {
-        None
+fn tool_failure_message(tool: &str, error: &str) -> String {
+    match tool {
+        ANDROID_OBSERVE_TOOL_NAME => format!(
+            "{error}\nThe failed operation was read-only; a fresh android_observe may be requested."
+        ),
+        ANDROID_STEP_TOOL_NAME => format!(
+            "{error}\nExecution state is uncertain. Do not replay android_step solely because of this failure; recover current state with android_observe before choosing a new action."
+        ),
+        ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME => format!(
+            "{error}\nInstall execution state is uncertain. Do not replay android_install_build_from_run solely because of this failure; recover current state with android_observe before choosing a new action."
+        ),
+        _ => error.to_string(),
     }
 }
 
@@ -1645,15 +1724,15 @@ fn copy_inspect_screenshot_filename_for_capture(source: &Value, target: &mut Val
     }
 }
 
-fn response_includes_native_image(response: &ComputerUseCallResponse) -> bool {
+fn response_includes_native_image(response: &DynamicToolCallResponse) -> bool {
     response
         .content_items
         .iter()
-        .any(|item| matches!(item, ComputerUseCallOutputContentItem::InputImage { .. }))
+        .any(|item| matches!(item, DynamicToolCallOutputContentItem::InputImage { .. }))
 }
 
 fn require_native_image_for_visual_response(
-    response: &mut ComputerUseCallResponse,
+    response: &mut DynamicToolCallResponse,
     missing_image_message: &str,
 ) {
     if response_includes_native_image(response) {
@@ -1667,12 +1746,6 @@ fn require_native_image_for_visual_response(
         ),
     );
     response.success = false;
-    response.error = Some(match response.error.take() {
-        Some(existing_error) if !existing_error.trim().is_empty() => {
-            format!("{missing_image_message} Previous provider error: {existing_error}")
-        }
-        _ => missing_image_message.to_string(),
-    });
 }
 
 fn has_xy(value: &Value) -> bool {
@@ -1876,14 +1949,66 @@ mod tests {
 
         let tools = configured_android_dynamic_tools_for_codex_home(codex_home.path());
 
+        assert_eq!(tools.len(), 1);
+        let DynamicToolSpec::Namespace(namespace) = &tools[0] else {
+            panic!("configured Android tools should use one namespace spec");
+        };
+        assert_eq!(namespace.name, NAMESPACE);
+        assert_eq!(namespace.tools.len(), 3);
+        let tool_names = namespace
+            .tools
+            .iter()
+            .map(|tool| match tool {
+                DynamicToolNamespaceTool::Function(function) => function.name.as_str(),
+            })
+            .collect::<Vec<_>>();
         assert_eq!(
-            tools.into_iter().map(|tool| tool.name).collect::<Vec<_>>(),
+            tool_names,
             vec![
-                ANDROID_OBSERVE_TOOL_NAME.to_string(),
-                ANDROID_STEP_TOOL_NAME.to_string(),
-                ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME.to_string(),
+                ANDROID_OBSERVE_TOOL_NAME,
+                ANDROID_STEP_TOOL_NAME,
+                ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME,
             ]
         );
+        let schemas = namespace
+            .tools
+            .iter()
+            .map(|tool| match tool {
+                DynamicToolNamespaceTool::Function(function) => &function.input_schema,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(schemas[0]["properties"]["serial"]["type"], "string");
+        assert_eq!(schemas[1]["properties"]["actions"]["minItems"], 1);
+        assert_eq!(
+            schemas[1]["properties"]["actions"]["items"]["properties"]["type"]["enum"][0],
+            "launch_app"
+        );
+        assert_eq!(schemas[1]["properties"]["x"]["type"], "integer");
+        assert_eq!(
+            schemas[1]["properties"]["selector"]["anyOf"][0]["type"],
+            "string"
+        );
+        assert_eq!(
+            schemas[1]["properties"]["selector"]["anyOf"][1]["type"],
+            "object"
+        );
+        assert_eq!(
+            schemas[2]["properties"]["workflow_run_id"]["type"],
+            "integer"
+        );
+        assert_eq!(schemas[2]["properties"]["workflow_run_id"]["minimum"], 0);
+        assert_eq!(schemas[2]["required"][0], "workflow_run_id");
+        assert_eq!(schemas[2]["required"][1], "artifact_name");
+        assert_eq!(schemas[2]["properties"]["artifact_name"]["type"], "string");
+        assert_eq!(
+            schemas[2]["properties"]["launch_after_install"]["type"],
+            "boolean"
+        );
+        assert_eq!(
+            schemas[2]["properties"]["timeout_secs"]["type"][0],
+            "integer"
+        );
+        assert_eq!(schemas[2]["properties"]["serial"]["type"][0], "string");
     }
 
     #[test]
@@ -2009,9 +2134,8 @@ mod tests {
         append_mcp_image_content(&mut items, result.content);
         assert_eq!(
             items,
-            vec![ComputerUseCallOutputContentItem::InputImage {
+            vec![DynamicToolCallOutputContentItem::InputImage {
                 image_url: "data:image/png;base64,UE5H".to_string(),
-                detail: Some("original".to_string()),
             }]
         );
     }
@@ -2030,27 +2154,24 @@ mod tests {
         append_mcp_image_content(&mut items, result.content);
         assert_eq!(
             items,
-            vec![ComputerUseCallOutputContentItem::InputImage {
+            vec![DynamicToolCallOutputContentItem::InputImage {
                 image_url: "data:image/png;base64,UE5H".to_string(),
-                detail: Some("high".to_string()),
             }]
         );
     }
 
     #[test]
     fn response_includes_native_image_detects_image_content() {
-        let response = ComputerUseCallResponse {
+        let response = DynamicToolCallResponse {
             content_items: vec![
-                ComputerUseCallOutputContentItem::InputText {
+                DynamicToolCallOutputContentItem::InputText {
                     text: "summary".to_string(),
                 },
-                ComputerUseCallOutputContentItem::InputImage {
+                DynamicToolCallOutputContentItem::InputImage {
                     image_url: "data:image/png;base64,AAAA".to_string(),
-                    detail: Some("high".to_string()),
                 },
             ],
             success: true,
-            error: None,
         };
 
         assert!(response_includes_native_image(&response));
@@ -2058,12 +2179,11 @@ mod tests {
 
     #[test]
     fn visual_response_without_native_image_is_failed_loudly() {
-        let mut response = ComputerUseCallResponse {
-            content_items: vec![ComputerUseCallOutputContentItem::InputText {
+        let mut response = DynamicToolCallResponse {
+            content_items: vec![DynamicToolCallOutputContentItem::InputText {
                 text: "Android observation\nvisible_ui: text only".to_string(),
             }],
             success: true,
-            error: Some("android.inspect_ui failed".to_string()),
         };
 
         require_native_image_for_visual_response(
@@ -2072,13 +2192,16 @@ mod tests {
         );
 
         assert!(!response.success);
-        assert_eq!(
-            response.error.as_deref(),
-            Some(
-                "Android observation missing native image output. Previous provider error: android.inspect_ui failed"
-            )
-        );
-        let ComputerUseCallOutputContentItem::InputText { text } = &response.content_items[0]
+        let failure_text = response
+            .content_items
+            .iter()
+            .find_map(|item| match item {
+                DynamicToolCallOutputContentItem::InputText { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .expect("failure text should be retained");
+        assert!(failure_text.contains("Android observation missing native image output."));
+        let DynamicToolCallOutputContentItem::InputText { text } = &response.content_items[0]
         else {
             panic!("expected text summary");
         };
@@ -2088,18 +2211,16 @@ mod tests {
 
     #[test]
     fn visual_response_with_native_image_remains_successful() {
-        let mut response = ComputerUseCallResponse {
+        let mut response = DynamicToolCallResponse {
             content_items: vec![
-                ComputerUseCallOutputContentItem::InputText {
+                DynamicToolCallOutputContentItem::InputText {
                     text: "Android observation".to_string(),
                 },
-                ComputerUseCallOutputContentItem::InputImage {
+                DynamicToolCallOutputContentItem::InputImage {
                     image_url: "data:image/png;base64,AAAA".to_string(),
-                    detail: Some("high".to_string()),
                 },
             ],
             success: true,
-            error: None,
         };
 
         require_native_image_for_visual_response(
@@ -2108,7 +2229,6 @@ mod tests {
         );
 
         assert!(response.success);
-        assert_eq!(response.error, None);
     }
 
     #[test]
@@ -2267,20 +2387,47 @@ mod tests {
     }
 
     #[test]
-    fn failed_response_classifies_transient_provider_unavailability() {
-        let response = failed_response("Android provider HTTP 530: error code: 1033".to_string());
+    fn mutation_transport_failures_never_recommend_replaying_uncertain_requests() {
+        for (tool, expected) in [
+            (ANDROID_STEP_TOOL_NAME, "Do not replay android_step"),
+            (
+                ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME,
+                "Do not replay android_install_build_from_run",
+            ),
+        ] {
+            let response = failed_response(tool_failure_message(
+                tool,
+                "Android provider connection reset",
+            ));
 
-        assert!(!response.success);
-        assert_eq!(
-            response.error.as_deref(),
-            Some("Android provider unavailable: Android provider HTTP 530: error code: 1033")
-        );
-        let ComputerUseCallOutputContentItem::InputText { text } = &response.content_items[0]
+            assert!(!response.success);
+            let DynamicToolCallOutputContentItem::InputText { text } = &response.content_items[0]
+            else {
+                panic!("expected text response");
+            };
+            assert!(
+                text.contains("Execution state is uncertain")
+                    || text.contains("Install execution state is uncertain")
+            );
+            assert!(text.contains(expected));
+            assert!(!text.contains("retry_same_request"));
+        }
+    }
+
+    #[test]
+    fn observation_transport_failure_is_explicitly_read_only() {
+        let response = failed_response(tool_failure_message(
+            ANDROID_OBSERVE_TOOL_NAME,
+            "Android provider connection reset",
+        ));
+
+        let DynamicToolCallOutputContentItem::InputText { text } = &response.content_items[0]
         else {
             panic!("expected text response");
         };
-        assert!(text.contains("Android provider unavailable"));
-        assert!(text.contains("retryability: retry_same_request"));
+        assert!(text.contains("read-only"));
+        assert!(text.contains("fresh android_observe"));
+        assert!(!text.contains("retry_same_request"));
     }
 
     #[test]

@@ -1,10 +1,14 @@
 //! Shared SQLite connection configuration.
+//! Writable pools preserve existing vacuum modes and report initialization errors to callers.
+
+#![expect(
+    clippy::disallowed_methods,
+    reason = "this is the centralized SQLite connection shim"
+)]
 
 use crate::DbTelemetry;
-use crate::migrations::runtime_usage_migrator_for_history;
-use crate::migrations::validate_usage_reporting_indexes;
-use crate::runtime::RuntimeDbInitError;
-use crate::runtime::migration_repair::repair_state_migrations;
+use crate::runtime::migration_repair::run_state_migrations;
+use crate::runtime::recovery::RuntimeDbInitError;
 use crate::telemetry;
 use crate::telemetry::DbKind;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -13,9 +17,7 @@ use sqlx::ConnectOptions;
 use sqlx::Error;
 use sqlx::SqlitePool;
 use sqlx::migrate::Migrator;
-use sqlx::sqlite::SqliteAutoVacuum;
 use sqlx::sqlite::SqliteConnectOptions;
-use sqlx::sqlite::SqliteJournalMode;
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::sqlite::SqliteSynchronous;
 use std::path::Path;
@@ -23,12 +25,37 @@ use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
 
+mod validation;
+
+use validation::SqliteQuickCheckManager;
+
+const DEFAULT_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+
 const LOGS_DB_FILENAME: &str = "logs_2.sqlite";
 const GOALS_DB_FILENAME: &str = "goals_1.sqlite";
 const MEMORIES_DB_FILENAME: &str = "memories_1.sqlite";
+const QUEUE_DB_FILENAME: &str = "queue_1.sqlite";
 const STATE_DB_FILENAME: &str = "state_5.sqlite";
 const THREAD_HISTORY_DB_FILENAME: &str = "thread_history_1.sqlite";
 const USAGE_DB_FILENAME: &str = "usage_1.sqlite";
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum RecoveryMode {
+    BackupAndRebuild,
+    Unavailable,
+    RejectCorruption,
+}
+
+#[derive(Debug)]
+struct RuntimeDbCorruptionDetected;
+
+impl std::fmt::Display for RuntimeDbCorruptionDetected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SQLite quick_check confirmed corruption; automatic ledger rebuild is disabled")
+    }
+}
+
+impl std::error::Error for RuntimeDbCorruptionDetected {}
 
 #[derive(Clone, Copy)]
 struct RuntimeDbSpec {
@@ -36,8 +63,11 @@ struct RuntimeDbSpec {
     filename: &'static str,
     kind: DbKind,
     open_phase: &'static str,
-    repair_phase: Option<&'static str>,
     migrate_phase: &'static str,
+    /// Opt in only after auditing writers for deferred read-to-write upgrades:
+    /// an intervening reclamation commit can make those fail with SQLITE_BUSY_SNAPSHOT.
+    background_reclamation: bool,
+    recovery: RecoveryMode,
 }
 
 impl RuntimeDbSpec {
@@ -51,8 +81,9 @@ const STATE_DB: RuntimeDbSpec = RuntimeDbSpec {
     filename: STATE_DB_FILENAME,
     kind: DbKind::State,
     open_phase: "open_state",
-    repair_phase: Some("repair_state_migrations"),
     migrate_phase: "migrate_state",
+    background_reclamation: false,
+    recovery: RecoveryMode::BackupAndRebuild,
 };
 
 const LOGS_DB: RuntimeDbSpec = RuntimeDbSpec {
@@ -60,8 +91,10 @@ const LOGS_DB: RuntimeDbSpec = RuntimeDbSpec {
     filename: LOGS_DB_FILENAME,
     kind: DbKind::Logs,
     open_phase: "open_logs",
-    repair_phase: None,
     migrate_phase: "migrate_logs",
+    // Log transactions write before reading, so they already hold the writer lock.
+    background_reclamation: true,
+    recovery: RecoveryMode::BackupAndRebuild,
 };
 
 const GOALS_DB: RuntimeDbSpec = RuntimeDbSpec {
@@ -69,8 +102,9 @@ const GOALS_DB: RuntimeDbSpec = RuntimeDbSpec {
     filename: GOALS_DB_FILENAME,
     kind: DbKind::Goals,
     open_phase: "open_goals",
-    repair_phase: None,
     migrate_phase: "migrate_goals",
+    background_reclamation: false,
+    recovery: RecoveryMode::BackupAndRebuild,
 };
 
 const MEMORIES_DB: RuntimeDbSpec = RuntimeDbSpec {
@@ -78,17 +112,26 @@ const MEMORIES_DB: RuntimeDbSpec = RuntimeDbSpec {
     filename: MEMORIES_DB_FILENAME,
     kind: DbKind::Memories,
     open_phase: "open_memories",
-    repair_phase: None,
     migrate_phase: "migrate_memories",
+    background_reclamation: false,
+    recovery: RecoveryMode::BackupAndRebuild,
 };
 
-const USAGE_DB: RuntimeDbSpec = RuntimeDbSpec {
-    label: "usage DB",
-    filename: USAGE_DB_FILENAME,
-    kind: DbKind::Usage,
-    open_phase: "open_usage",
-    repair_phase: None,
-    migrate_phase: "migrate_usage",
+const MEMORIES_V2_DB: RuntimeDbSpec = RuntimeDbSpec {
+    label: "memories v2 DB",
+    filename: "memories_v2_1.sqlite",
+    background_reclamation: false,
+    ..MEMORIES_DB
+};
+
+const QUEUE_DB: RuntimeDbSpec = RuntimeDbSpec {
+    label: "queue DB",
+    filename: QUEUE_DB_FILENAME,
+    kind: DbKind::Queue,
+    open_phase: "open_queue",
+    migrate_phase: "migrate_queue",
+    background_reclamation: false,
+    recovery: RecoveryMode::BackupAndRebuild,
 };
 
 const THREAD_HISTORY_DB: RuntimeDbSpec = RuntimeDbSpec {
@@ -96,34 +139,62 @@ const THREAD_HISTORY_DB: RuntimeDbSpec = RuntimeDbSpec {
     filename: THREAD_HISTORY_DB_FILENAME,
     kind: DbKind::ThreadHistory,
     open_phase: "open_thread_history",
-    repair_phase: None,
     migrate_phase: "migrate_thread_history",
+    background_reclamation: false,
+    recovery: RecoveryMode::Unavailable,
 };
 
-const RUNTIME_DBS: [RuntimeDbSpec; 6] = [
+const USAGE_DB: RuntimeDbSpec = RuntimeDbSpec {
+    label: "usage DB",
+    filename: USAGE_DB_FILENAME,
+    kind: DbKind::Usage,
+    open_phase: "open_usage",
+    migrate_phase: "migrate_usage",
+    background_reclamation: false,
+    recovery: RecoveryMode::RejectCorruption,
+};
+
+const RUNTIME_DBS: [RuntimeDbSpec; 8] = [
     STATE_DB,
     LOGS_DB,
     GOALS_DB,
     MEMORIES_DB,
-    USAGE_DB,
+    MEMORIES_V2_DB,
+    QUEUE_DB,
     THREAD_HISTORY_DB,
+    USAGE_DB,
 ];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeDbPath {
     pub label: &'static str,
     pub path: PathBuf,
+    pub(crate) background_reclamation: bool,
 }
 
 /// Resolved configuration shared by all Codex SQLite connections.
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// Clones share quick-check attempts; a newly constructed config checks independently.
+#[derive(Clone, Debug)]
 pub struct SqliteConfig {
     sqlite_home: AbsolutePathBuf,
+    quick_check_manager: SqliteQuickCheckManager,
 }
+
+// Validation history is operational state, not part of configuration equality.
+impl PartialEq for SqliteConfig {
+    fn eq(&self, other: &Self) -> bool {
+        self.sqlite_home == other.sqlite_home
+    }
+}
+
+impl Eq for SqliteConfig {}
 
 impl SqliteConfig {
     pub fn from_sqlite_home(sqlite_home: AbsolutePathBuf) -> Self {
-        Self { sqlite_home }
+        Self {
+            sqlite_home,
+            quick_check_manager: SqliteQuickCheckManager::new(),
+        }
     }
 
     pub fn new_for_testing(sqlite_home: AbsolutePathBuf) -> Self {
@@ -154,14 +225,32 @@ impl SqliteConfig {
         MEMORIES_DB.path(self.home())
     }
 
-    /// Return the path to the usage ledger database.
-    pub fn usage_db_path(&self) -> PathBuf {
-        USAGE_DB.path(self.home())
+    pub(crate) fn memories_v2_db_path(&self) -> PathBuf {
+        MEMORIES_V2_DB.path(self.home())
+    }
+
+    pub(crate) async fn open_memories_v2_db(&self) -> anyhow::Result<SqlitePool> {
+        self.open_runtime_db(
+            MEMORIES_V2_DB,
+            &crate::migrations::runtime_memories_migrator(),
+            /*telemetry_override*/ None,
+        )
+        .await
+    }
+
+    /// Return the path to the durable user-message queue database.
+    pub fn queue_db_path(&self) -> PathBuf {
+        QUEUE_DB.path(self.home())
     }
 
     /// Return the path to the paginated thread-history database.
     pub fn thread_history_db_path(&self) -> PathBuf {
         THREAD_HISTORY_DB.path(self.home())
+    }
+
+    /// Return the path to the durable usage ledger database.
+    pub fn usage_db_path(&self) -> PathBuf {
+        USAGE_DB.path(self.home())
     }
 
     /// Return the paths to every database managed by the state runtime.
@@ -171,6 +260,7 @@ impl SqliteConfig {
             .map(|spec| RuntimeDbPath {
                 label: spec.label,
                 path: spec.path(self.home()),
+                background_reclamation: spec.background_reclamation,
             })
             .collect()
     }
@@ -214,12 +304,12 @@ impl SqliteConfig {
             .await
     }
 
-    pub(super) async fn open_usage_db(
+    pub(super) async fn open_queue_db(
         &self,
         migrator: &Migrator,
         telemetry_override: Option<&dyn DbTelemetry>,
     ) -> anyhow::Result<SqlitePool> {
-        self.open_runtime_db(USAGE_DB, migrator, telemetry_override)
+        self.open_runtime_db(QUEUE_DB, migrator, telemetry_override)
             .await
     }
 
@@ -232,6 +322,15 @@ impl SqliteConfig {
             .await
     }
 
+    pub(super) async fn open_usage_db(
+        &self,
+        migrator: &Migrator,
+        telemetry_override: Option<&dyn DbTelemetry>,
+    ) -> anyhow::Result<SqlitePool> {
+        self.open_runtime_db(USAGE_DB, migrator, telemetry_override)
+            .await
+    }
+
     async fn open_runtime_db(
         &self,
         spec: RuntimeDbSpec,
@@ -241,9 +340,8 @@ impl SqliteConfig {
         let path = spec.path(self.home());
         let started = Instant::now();
         let pool_result = self
-            .open_read_write_pool(&path)
-            .await
-            .map_err(anyhow::Error::from);
+            .open_read_write_pool_with_spec(path.as_path(), Some(spec), telemetry_override)
+            .await;
         telemetry::record_init_result(
             telemetry_override,
             spec.kind,
@@ -254,34 +352,20 @@ impl SqliteConfig {
         let pool = pool_result.map_err(|source| {
             RuntimeDbInitError::new(spec.label, "open", path.as_path(), source)
         })?;
-        if let Some(repair_phase) = spec.repair_phase {
-            let started = Instant::now();
-            let repair_result = repair_state_migrations(&pool, migrator).await;
-            telemetry::record_init_result(
-                telemetry_override,
-                spec.kind,
-                repair_phase,
-                started.elapsed(),
-                &repair_result,
-            );
-            if let Err(source) = repair_result {
-                pool.close().await;
-                return Err(
-                    RuntimeDbInitError::new(spec.label, "repair", path.as_path(), source).into(),
-                );
-            }
-        }
         let started = Instant::now();
         let migrate_result = async {
-            if matches!(spec.kind, DbKind::Usage) {
-                let usage_migrator = runtime_usage_migrator_for_history(&pool, migrator).await?;
-                validate_usage_reporting_indexes(&pool, /*require_all*/ false).await?;
-                usage_migrator.run(&pool).await?;
-                validate_usage_reporting_indexes(&pool, /*require_all*/ true).await?;
-            } else {
-                migrator.run(&pool).await?;
+            if matches!(spec.kind, DbKind::State) {
+                return run_state_migrations(&pool, migrator).await;
             }
-            Ok::<(), anyhow::Error>(())
+            if matches!(spec.kind, DbKind::Usage) {
+                let usage_migrator =
+                    crate::runtime::usage_migration_compat::migrator_for_usage_database(
+                        &pool, migrator,
+                    )
+                    .await?;
+                return usage_migrator.run(&pool).await.map_err(anyhow::Error::from);
+            }
+            migrator.run(&pool).await.map_err(anyhow::Error::from)
         }
         .await;
         telemetry::record_init_result(
@@ -301,31 +385,139 @@ impl SqliteConfig {
     }
 
     /// Open a writable Codex SQLite database, creating it if necessary.
-    pub async fn open_read_write_pool(&self, path: &Path) -> Result<SqlitePool, Error> {
+    pub async fn open_read_write_pool(&self, path: &Path) -> anyhow::Result<SqlitePool> {
+        self.open_read_write_pool_with_spec(
+            path, /*recover_spec*/ None, /*telemetry_override*/ None,
+        )
+        .await
+    }
+
+    async fn open_read_write_pool_with_spec(
+        &self,
+        path: &Path,
+        recover_spec: Option<RuntimeDbSpec>,
+        telemetry_override: Option<&dyn DbTelemetry>,
+    ) -> anyhow::Result<SqlitePool> {
+        let recovery = recover_spec.map_or(RecoveryMode::Unavailable, |spec| spec.recovery);
         let options = SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(true)
-            .journal_mode(SqliteJournalMode::Wal)
             .synchronous(SqliteSynchronous::Normal)
-            .auto_vacuum(SqliteAutoVacuum::Incremental)
-            .busy_timeout(Duration::from_secs(5))
+            .busy_timeout(DEFAULT_BUSY_TIMEOUT)
             .log_statements(LevelFilter::Off);
-        SqlitePoolOptions::new()
-            .max_connections(5)
-            .connect_with(options)
-            .await
+        let connect = || async {
+            // SQLx retries after_connect errors, eventually replacing them with PoolTimedOut.
+            // Return the first initialization error directly while opening this pool.
+            let (init_error_tx, mut init_error_rx) = tokio::sync::mpsc::channel(/*buffer*/ 1);
+            let pool_options = SqlitePoolOptions::new().max_connections(5).after_connect(
+                move |connection, _metadata| {
+                    let init_error_tx = init_error_tx.clone();
+                    Box::pin(async move {
+                        let result = async {
+                            let mode: i64 = sqlx::query_scalar("PRAGMA auto_vacuum")
+                                .fetch_one(&mut *connection)
+                                .await?;
+                            // The setter takes the writer lock even when the mode is unchanged.
+                            // Initialize before WAL creates the first database page; preserve
+                            // existing modes, including FULL, without taking the writer lock.
+                            let empty = if mode == 0 {
+                                sqlx::query_scalar::<_, bool>(
+                                    "SELECT NOT EXISTS (SELECT 1 FROM sqlite_schema)",
+                                )
+                                .fetch_one(&mut *connection)
+                                .await?
+                            } else {
+                                false
+                            };
+                            if empty {
+                                sqlx::query("PRAGMA auto_vacuum = INCREMENTAL")
+                                    .execute(&mut *connection)
+                                    .await?;
+                            }
+                            sqlx::query("PRAGMA journal_mode = WAL")
+                                .execute(connection)
+                                .await?;
+                            Ok(())
+                        }
+                        .await;
+                        result.map_err(|error| match init_error_tx.try_send(error) {
+                            // The opener owns the original error and cancels connection retries.
+                            Ok(()) => Error::PoolClosed,
+                            // After opening, lazy connections retain SQLx's normal error handling.
+                            Err(error) => error.into_inner(),
+                        })
+                    })
+                },
+            );
+            tokio::select! {
+                biased;
+                Some(error) = init_error_rx.recv() => Err(error),
+                result = pool_options.connect_with(options.clone()) => result,
+            }
+        };
+        let pool = connect().await?;
+        let validation_budget = Duration::from_millis(/*millis*/ 100);
+        let validation_result = if recovery == RecoveryMode::RejectCorruption {
+            // Failed attempts are cached by the shared manager. Durable ledgers
+            // must not treat a later open of the same corrupt file as checked.
+            validation::quick_check(&pool, Instant::now() + validation_budget).await
+        } else {
+            self.quick_check_manager
+                .quick_check_once(&pool, path, validation_budget)
+                .await
+        };
+
+        let Ok(result) = validation_result else {
+            pool.close().await;
+            return validation_result.map(|_| pool);
+        };
+
+        if result == validation::QuickCheckOutcome::CorruptedNeedsFixed {
+            tracing::error!(database = %path.display(), "SQLite quick check detected corruption");
+            telemetry::record_corruption(telemetry_override, recover_spec.map(|spec| spec.kind));
+            if recovery == RecoveryMode::RejectCorruption {
+                pool.close().await;
+                return Err(RuntimeDbCorruptionDetected.into());
+            }
+            if recovery == RecoveryMode::BackupAndRebuild {
+                pool.close().await;
+                let backups = crate::backup_runtime_db_for_fresh_start(path).await?;
+                for backup in backups {
+                    tracing::warn!(
+                        database = %backup.original_path.display(),
+                        backup = %backup.backup_path.display(),
+                        "Preserved corrupt SQLite database before rebuilding"
+                    );
+                }
+
+                return connect().await.map_err(anyhow::Error::from);
+            }
+        }
+
+        Ok(pool)
     }
 
     /// Open an existing Codex SQLite database without creating or modifying it.
-    pub async fn open_read_only_pool(&self, path: &Path) -> Result<SqlitePool, Error> {
-        let options = SqliteConnectOptions::new()
+    pub async fn open_read_only_pool(
+        &self,
+        path: &Path,
+        busy_timeout: Option<Duration>,
+    ) -> Result<SqlitePool, Error> {
+        let mut options = SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(false)
             .read_only(true)
             .log_statements(LevelFilter::Off);
+        if let Some(busy_timeout) = busy_timeout {
+            options = options.busy_timeout(busy_timeout);
+        }
         SqlitePoolOptions::new()
             .max_connections(1)
             .connect_with(options)
             .await
     }
 }
+
+#[cfg(test)]
+#[path = "sqlite_tests.rs"]
+mod tests;

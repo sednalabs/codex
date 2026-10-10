@@ -1,13 +1,11 @@
 mod config;
+mod discovery;
 mod signing;
+mod transport;
 
-use std::collections::hash_map::RandomState;
-use std::hash::BuildHasher;
-use std::hash::Hasher;
-use std::sync::OnceLock;
+use std::sync::Arc;
 use std::time::SystemTime;
 
-use aws_credential_types::Credentials;
 use aws_credential_types::provider::ProvideCredentials;
 use aws_credential_types::provider::SharedCredentialsProvider;
 use bytes::Bytes;
@@ -15,12 +13,93 @@ use http::HeaderMap;
 use http::Method;
 use thiserror::Error;
 
+pub use discovery::AwsProfile;
+pub use discovery::discover_aws_profiles;
+pub use discovery::validate_aws_profile;
+
 /// AWS auth configuration used to resolve credentials and sign requests.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AwsAuthConfig {
     pub profile: Option<String>,
     pub region: Option<String>,
     pub service: String,
+}
+
+/// Static AWS access keys supplied by a caller instead of the default SDK chain.
+#[derive(Clone, PartialEq, Eq)]
+pub struct AwsAccessKeys {
+    pub access_key_id: String,
+    pub secret_access_key: String,
+    pub session_token: Option<String>,
+}
+
+impl std::fmt::Debug for AwsAccessKeys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AwsAccessKeys")
+            .field("access_key_id", &"<redacted>")
+            .field("secret_access_key", &"<redacted>")
+            .field(
+                "session_token",
+                &self.session_token.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
+}
+
+/// Supplies AWS access keys on demand without exposing AWS SDK credential types to callers.
+///
+/// Implementations should return current credentials for every call so request signing can
+/// observe credential refreshes. Errors must not contain credentials or command output.
+/// These caller-supplied providers require unrestricted network policy because their I/O
+/// runs outside the shared AWS HTTP transport.
+pub trait AwsCredentialsProvider: std::fmt::Debug + Send + Sync {
+    fn credentials(
+        &self,
+    ) -> impl std::future::Future<Output = std::io::Result<AwsAccessKeys>> + Send;
+}
+
+#[derive(Debug)]
+struct AwsCredentialsProviderAdapter<P>(Arc<P>, codex_http_client::NetworkPolicy);
+
+#[derive(Debug, Error)]
+#[error("{0}")]
+struct ProvidedCredentialsError(std::io::Error);
+
+impl<P: AwsCredentialsProvider> ProvideCredentials for AwsCredentialsProviderAdapter<P> {
+    fn provide_credentials<'a>(
+        &'a self,
+    ) -> aws_credential_types::provider::future::ProvideCredentials<'a>
+    where
+        Self: 'a,
+    {
+        aws_credential_types::provider::future::ProvideCredentials::new(async move {
+            let permit = self.1.acquire_for_unsupported_sdk().map_err(
+                aws_credential_types::provider::error::CredentialsError::invalid_configuration,
+            )?;
+            let access_keys = permit.run(self.0.credentials()).await
+                .map_err(aws_credential_types::provider::error::CredentialsError::invalid_configuration)?
+                .map_err(|error| {
+                let error = ProvidedCredentialsError(error);
+                match error.0.kind() {
+                    std::io::ErrorKind::InvalidData
+                    | std::io::ErrorKind::InvalidInput
+                    | std::io::ErrorKind::NotFound
+                    | std::io::ErrorKind::PermissionDenied => {
+                        aws_credential_types::provider::error::CredentialsError::invalid_configuration(error)
+                    }
+                    _ => aws_credential_types::provider::error::CredentialsError::provider_error(error),
+                }
+            })?;
+
+            Ok(aws_credential_types::Credentials::new(
+                access_keys.access_key_id,
+                access_keys.secret_access_key,
+                access_keys.session_token,
+                /*expires_after*/ None,
+                "codex-bedrock-credential-export",
+            ))
+        })
+    }
 }
 
 /// Generic HTTP request shape consumed by SigV4 signing.
@@ -42,14 +121,22 @@ pub struct AwsSignedRequest {
 /// Errors returned by credential loading or SigV4 signing.
 #[derive(Debug, Error)]
 pub enum AwsAuthError {
+    #[error(transparent)]
+    Policy(#[from] codex_http_client::NetworkPolicyDenied),
     #[error("AWS service name must not be empty")]
     EmptyService,
+    #[error("AWS profile must be configured")]
+    MissingProfile,
     #[error("AWS SDK config did not resolve a credentials provider")]
     MissingCredentialsProvider,
     #[error("AWS SDK config did not resolve a region")]
     MissingRegion,
+    #[error("failed to load AWS profiles: {0}")]
+    ProfileLoad(#[from] aws_config::profile::ProfileFileLoadError),
     #[error("failed to load AWS credentials: {0}")]
     Credentials(#[from] aws_credential_types::provider::error::CredentialsError),
+    #[error("request URL is not a valid URL: {0}")]
+    InvalidUrl(#[source] url::ParseError),
     #[error("request URL is not a valid URI: {0}")]
     InvalidUri(#[source] http::uri::InvalidUri),
     #[error("failed to construct HTTP request for signing: {0}")]
@@ -67,107 +154,10 @@ pub enum AwsAuthError {
 /// Loaded AWS auth context that can sign outbound HTTP requests.
 #[derive(Clone)]
 pub struct AwsAuthContext {
+    network_policy: codex_http_client::NetworkPolicy,
     credentials_provider: SharedCredentialsProvider,
-    profile: Option<String>,
     region: String,
     service: String,
-}
-
-/// A request-authority snapshot whose AWS credentials cannot change between admission and
-/// signing. Its debug representation deliberately excludes all credential material.
-#[derive(Clone)]
-pub struct FrozenAwsAuthContext {
-    credentials: Credentials,
-    region: String,
-    service: String,
-    identity: AwsCredentialIdentity,
-}
-
-/// Process-local, secret-safe identity for one frozen AWS signer.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct AwsCredentialIdentity([u64; 2]);
-
-impl std::fmt::Debug for AwsCredentialIdentity {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("AwsCredentialIdentity(<redacted>)")
-    }
-}
-
-impl AwsCredentialIdentity {
-    /// Adds this already-keyed opaque identity to a wider process-local authority fingerprint.
-    pub fn write_to(&self, state: &mut dyn Hasher) {
-        state.write_u64(self.0[0]);
-        state.write_u64(self.0[1]);
-    }
-}
-
-impl std::fmt::Debug for FrozenAwsAuthContext {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FrozenAwsAuthContext")
-            .field("region", &self.region)
-            .field("service", &self.service)
-            .field("identity", &self.identity)
-            .finish_non_exhaustive()
-    }
-}
-
-fn credential_identity(
-    credentials: &Credentials,
-    profile: Option<&str>,
-    region: &str,
-    service: &str,
-) -> AwsCredentialIdentity {
-    fn write_bytes(state: &mut dyn Hasher, value: &[u8]) {
-        state.write_usize(value.len());
-        state.write(value);
-    }
-
-    fn write_optional_bytes(state: &mut dyn Hasher, value: Option<&[u8]>) {
-        match value {
-            Some(value) => {
-                state.write_u8(1);
-                write_bytes(state, value);
-            }
-            None => state.write_u8(0),
-        }
-    }
-
-    static KEYS: OnceLock<[RandomState; 2]> = OnceLock::new();
-    let keys = KEYS.get_or_init(|| [RandomState::new(), RandomState::new()]);
-    let mut values = [0; 2];
-    for (index, key) in keys.iter().enumerate() {
-        let mut state = key.build_hasher();
-        state.write(b"aws-sigv4\0");
-        write_bytes(&mut state, credentials.access_key_id().as_bytes());
-        write_bytes(&mut state, credentials.secret_access_key().as_bytes());
-        write_optional_bytes(&mut state, credentials.session_token().map(str::as_bytes));
-        match credentials.expiry() {
-            None => state.write_u8(0),
-            Some(expiry) => match expiry.duration_since(std::time::UNIX_EPOCH) {
-                Ok(duration) => {
-                    state.write_u8(1);
-                    state.write_u64(duration.as_secs());
-                    state.write_u32(duration.subsec_nanos());
-                }
-                Err(error) => {
-                    state.write_u8(2);
-                    state.write_u64(error.duration().as_secs());
-                    state.write_u32(error.duration().subsec_nanos());
-                }
-            },
-        }
-        write_optional_bytes(
-            &mut state,
-            credentials
-                .account_id()
-                .map(|account_id| account_id.as_str().as_bytes()),
-        );
-        write_optional_bytes(&mut state, profile.map(str::as_bytes));
-        write_bytes(&mut state, region.as_bytes());
-        write_bytes(&mut state, service.as_bytes());
-        values[index] = state.finish();
-    }
-    AwsCredentialIdentity(values)
 }
 
 impl std::fmt::Debug for AwsAuthContext {
@@ -180,17 +170,69 @@ impl std::fmt::Debug for AwsAuthContext {
 }
 
 impl AwsAuthContext {
-    pub async fn load(config: AwsAuthConfig) -> Result<Self, AwsAuthError> {
-        let sdk_config = config::load_sdk_config(&config).await?;
-        let credentials_provider = config::credentials_provider(&sdk_config)?;
-        let region = config::resolved_region(&sdk_config)?;
-
+    pub async fn load(
+        config: AwsAuthConfig,
+        factory: codex_http_client::HttpClientFactory,
+    ) -> Result<Self, AwsAuthError> {
+        let sdk_config = config::load_sdk_config(&config, &factory).await?;
         Ok(Self {
-            credentials_provider,
-            profile: config.profile,
+            network_policy: factory.network_policy().clone(),
+            credentials_provider: config::credentials_provider(&sdk_config)?,
+            region: config::resolved_region(&sdk_config)?,
+            service: config.service.trim().to_string(),
+        })
+    }
+
+    pub async fn load_with_access_keys(
+        config: AwsAuthConfig,
+        access_keys: AwsAccessKeys,
+        factory: codex_http_client::HttpClientFactory,
+    ) -> Result<Self, AwsAuthError> {
+        if config.service.trim().is_empty() {
+            return Err(AwsAuthError::EmptyService);
+        }
+        let region = match config.region.as_ref() {
+            Some(region) => region.clone(),
+            None => config::resolved_region(&config::load_sdk_config(&config, &factory).await?)?,
+        };
+        Ok(Self {
+            network_policy: factory.network_policy().clone(),
+            credentials_provider: SharedCredentialsProvider::new(
+                aws_credential_types::Credentials::new(
+                    access_keys.access_key_id,
+                    access_keys.secret_access_key,
+                    access_keys.session_token,
+                    /*expires_after*/ None,
+                    "codex-managed-bedrock-access-keys",
+                ),
+            ),
             region,
             service: config.service.trim().to_string(),
         })
+    }
+
+    pub async fn load_with_credentials_provider(
+        config: AwsAuthConfig,
+        provider: Arc<impl AwsCredentialsProvider + 'static>,
+        factory: codex_http_client::HttpClientFactory,
+    ) -> Result<Self, AwsAuthError> {
+        let mut context = Self::load(config, factory).await?;
+        context.credentials_provider = SharedCredentialsProvider::new(
+            AwsCredentialsProviderAdapter(provider, context.network_policy.clone()),
+        );
+        Ok(context)
+    }
+
+    pub async fn load_profile(
+        config: AwsAuthConfig,
+        factory: codex_http_client::HttpClientFactory,
+    ) -> Result<Self, AwsAuthError> {
+        let profile = config.profile.clone().ok_or(AwsAuthError::MissingProfile)?;
+        let mut context = Self::load(config, factory.clone()).await?;
+        context.credentials_provider = SharedCredentialsProvider::new(
+            discovery::profile_credentials_provider(&profile, &context.region, factory),
+        );
+        Ok(context)
     }
 
     pub fn region(&self) -> &str {
@@ -205,92 +247,48 @@ impl AwsAuthContext {
         self.sign_at(request, SystemTime::now()).await
     }
 
-    /// Resolves the credential provider exactly once for a request-authority snapshot.
-    pub async fn freeze(&self) -> Result<FrozenAwsAuthContext, AwsAuthError> {
-        let credentials = self.credentials_provider.provide_credentials().await?;
-        Ok(FrozenAwsAuthContext::new(
-            credentials,
-            self.profile.clone(),
-            self.region.clone(),
-            self.service.clone(),
-        ))
-    }
-
     async fn sign_at(
         &self,
         request: AwsRequestToSign,
         time: SystemTime,
     ) -> Result<AwsSignedRequest, AwsAuthError> {
-        let credentials = self.credentials_provider.provide_credentials().await?;
+        let url = request
+            .url
+            .parse::<url::Url>()
+            .map_err(AwsAuthError::InvalidUrl)?;
+        let permit = self.network_policy.acquire(&url)?;
+        let credentials = permit
+            .run(self.credentials_provider.provide_credentials())
+            .await?
+            .map_err(|error| {
+                let mut source: &(dyn std::error::Error + 'static) = &error;
+                loop {
+                    if let Some(policy) =
+                        source.downcast_ref::<codex_http_client::NetworkPolicyDenied>()
+                    {
+                        return AwsAuthError::Policy(*policy);
+                    }
+                    match source.source() {
+                        Some(next) => source = next,
+                        None => return AwsAuthError::Credentials(error),
+                    }
+                }
+            })?;
         signing::sign_request(&credentials, &self.region, &self.service, request, time)
     }
 }
 
-impl FrozenAwsAuthContext {
-    fn new(
-        credentials: Credentials,
-        profile: Option<String>,
-        region: String,
-        service: String,
-    ) -> Self {
-        let identity = credential_identity(&credentials, profile.as_deref(), &region, &service);
-        Self {
-            credentials,
-            region,
-            service,
-            identity,
-        }
-    }
-
-    /// Creates a frozen context from caller-provided credentials.
-    ///
-    /// This is primarily useful to custom credential providers and deterministic tests; callers
-    /// should normally use [`AwsAuthContext::freeze`].
-    pub fn from_credentials(
-        credentials: Credentials,
-        region: impl Into<String>,
-        service: impl Into<String>,
-    ) -> Self {
-        Self::new(
-            credentials,
-            /*profile*/ None,
-            region.into(),
-            service.into(),
-        )
-    }
-
-    pub fn identity(&self) -> AwsCredentialIdentity {
-        self.identity
-    }
-
-    pub fn region(&self) -> &str {
-        &self.region
-    }
-
-    pub fn service(&self) -> &str {
-        &self.service
-    }
-
-    pub async fn sign(&self, request: AwsRequestToSign) -> Result<AwsSignedRequest, AwsAuthError> {
-        self.sign_at(request, SystemTime::now())
-    }
-
-    fn sign_at(
-        &self,
-        request: AwsRequestToSign,
-        time: SystemTime,
-    ) -> Result<AwsSignedRequest, AwsAuthError> {
-        signing::sign_request(
-            &self.credentials,
-            &self.region,
-            &self.service,
-            request,
-            time,
-        )
-    }
-}
-
 impl AwsAuthError {
+    /// Returns the caller-supplied credential error without exposing SDK error sources.
+    pub fn credentials_provider_error(&self) -> Option<&std::io::Error> {
+        let Self::Credentials(error) = self else {
+            return None;
+        };
+        std::error::Error::source(error)?
+            .downcast_ref::<ProvidedCredentialsError>()
+            .map(|error| &error.0)
+    }
+
     /// Returns whether retrying the outbound request can reasonably recover from this auth error.
     pub fn is_retryable(&self) -> bool {
         match self {
@@ -299,9 +297,13 @@ impl AwsAuthError {
                 aws_credential_types::provider::error::CredentialsError::ProviderTimedOut(_)
                     | aws_credential_types::provider::error::CredentialsError::ProviderError(_)
             ),
-            AwsAuthError::EmptyService
+            AwsAuthError::Policy(_)
+            | AwsAuthError::EmptyService
+            | AwsAuthError::MissingProfile
             | AwsAuthError::MissingCredentialsProvider
             | AwsAuthError::MissingRegion
+            | AwsAuthError::ProfileLoad(_)
+            | AwsAuthError::InvalidUrl(_)
             | AwsAuthError::InvalidUri(_)
             | AwsAuthError::BuildHttpRequest(_)
             | AwsAuthError::InvalidHeaderValue(_)
@@ -325,6 +327,7 @@ mod tests {
 
     fn test_context(session_token: Option<&str>) -> AwsAuthContext {
         AwsAuthContext {
+            network_policy: Default::default(),
             credentials_provider: SharedCredentialsProvider::new(Credentials::new(
                 "AKIDEXAMPLE",
                 "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
@@ -332,31 +335,12 @@ mod tests {
                 /*expires_after*/ None,
                 "unit-test",
             )),
-            profile: None,
             region: "us-east-1".to_string(),
             service: "bedrock".to_string(),
         }
     }
 
-    fn frozen_context(
-        access_key_id: &str,
-        secret_access_key: &str,
-        session_token: Option<&str>,
-    ) -> FrozenAwsAuthContext {
-        FrozenAwsAuthContext::from_credentials(
-            Credentials::new(
-                access_key_id,
-                secret_access_key,
-                session_token.map(str::to_string),
-                /*expires_after*/ None,
-                "unit-test",
-            ),
-            "us-east-1",
-            "bedrock-mantle",
-        )
-    }
-
-    fn test_request() -> AwsRequestToSign {
+    pub(super) fn test_request() -> AwsRequestToSign {
         let mut headers = HeaderMap::new();
         headers.insert(
             http::header::CONTENT_TYPE,
@@ -400,6 +384,73 @@ mod tests {
         assert!(signing::header_value(&signed.headers, "x-amz-date").is_some());
     }
 
+    #[tokio::test]
+    async fn credentials_provider_adapter_converts_keys_and_provider_failures() {
+        #[derive(Debug)]
+        struct TestCredentialsProvider(Result<AwsAccessKeys, std::io::ErrorKind>);
+
+        impl AwsCredentialsProvider for TestCredentialsProvider {
+            async fn credentials(&self) -> std::io::Result<AwsAccessKeys> {
+                self.0
+                    .clone()
+                    .map_err(|kind| std::io::Error::new(kind, "credential export failed"))
+            }
+        }
+
+        let credentials = AwsCredentialsProviderAdapter(
+            Arc::new(TestCredentialsProvider(Ok(AwsAccessKeys {
+                access_key_id: "access-key-id".to_string(),
+                secret_access_key: "secret-access-key".to_string(),
+                session_token: Some("session-token".to_string()),
+            }))),
+            Default::default(),
+        )
+        .provide_credentials()
+        .await
+        .expect("exported credentials should be available");
+
+        assert_eq!(
+            credentials,
+            Credentials::new(
+                "access-key-id",
+                "secret-access-key",
+                Some("session-token".to_string()),
+                /*expires_after*/ None,
+                "codex-bedrock-credential-export",
+            )
+        );
+
+        for (kind, retryable) in [
+            (std::io::ErrorKind::Other, true),
+            (std::io::ErrorKind::TimedOut, true),
+            (std::io::ErrorKind::InvalidData, false),
+            (std::io::ErrorKind::InvalidInput, false),
+            (std::io::ErrorKind::NotFound, false),
+            (std::io::ErrorKind::PermissionDenied, false),
+        ] {
+            let error = AwsCredentialsProviderAdapter(
+                Arc::new(TestCredentialsProvider(Err(kind))),
+                Default::default(),
+            )
+            .provide_credentials()
+            .await
+            .expect_err("credential export failure should be propagated");
+            let error = AwsAuthError::Credentials(error);
+            assert_eq!(
+                (
+                    error.is_retryable(),
+                    error
+                        .credentials_provider_error()
+                        .map(|error| (error.kind(), error.to_string())),
+                ),
+                (
+                    retryable,
+                    Some((kind, "credential export failed".to_string()))
+                ),
+            );
+        }
+    }
+
     #[test]
     fn credentials_provider_failures_are_retryable() {
         assert!(
@@ -415,6 +466,7 @@ mod tests {
     #[test]
     fn deterministic_aws_auth_errors_are_not_retryable() {
         assert!(!AwsAuthError::EmptyService.is_retryable());
+        assert!(!AwsAuthError::MissingProfile.is_retryable());
         assert!(
             !AwsAuthError::Credentials(CredentialsError::not_loaded_no_source()).is_retryable()
         );
@@ -444,89 +496,42 @@ mod tests {
         );
     }
 
-    #[test]
-    fn frozen_signer_identity_is_stable_distinct_and_secret_safe() {
-        let signer_a = frozen_context("AKID-A", "secret-a", Some("session-a"));
-        let signer_a_again = frozen_context("AKID-A", "secret-a", Some("session-a"));
-        let signer_b = frozen_context("AKID-A", "secret-b", Some("session-a"));
-
-        assert_eq!(signer_a.identity(), signer_a_again.identity());
-        assert_ne!(signer_a.identity(), signer_b.identity());
-        let credentials = Credentials::new(
-            "AKID-A",
-            "secret-a",
-            Some("session-a".to_string()),
-            /*expires_after*/ None,
-            "unit-test",
-        );
-        assert_ne!(
-            credential_identity(
-                &credentials,
-                Some("profile-a"),
-                "us-east-1",
-                "bedrock-mantle",
-            ),
-            credential_identity(
-                &credentials,
-                Some("profile-b"),
-                "us-east-1",
-                "bedrock-mantle",
-            )
-        );
-        assert_ne!(
-            credential_identity(
-                &credentials,
-                Some("profile-a"),
-                "us-east-1",
-                "bedrock-mantle",
-            ),
-            credential_identity(
-                &credentials,
-                Some("profile-a"),
-                "us-west-2",
-                "bedrock-mantle",
-            )
-        );
-        let debug = format!("{signer_a:?} {:?}", signer_a.identity());
-        for secret in ["AKID-A", "secret-a", "session-a"] {
-            assert!(!debug.contains(secret), "debug leaked credential material");
-        }
-    }
-
-    #[test]
-    fn frozen_signer_reuses_exact_credentials_for_multiple_requests() {
-        let signer = frozen_context("AKID-REUSED", "secret-reused", /*session_token*/ None);
-        let signed_a = signer
-            .sign_at(
-                test_request(),
-                UNIX_EPOCH + Duration::from_secs(1_700_000_000),
-            )
-            .expect("first request should sign");
-        let signed_b = signer
-            .sign_at(
-                test_request(),
-                UNIX_EPOCH + Duration::from_secs(1_700_000_001),
-            )
-            .expect("second request should sign");
-
-        for signed in [signed_a, signed_b] {
-            assert!(
-                signing::header_value(&signed.headers, http::header::AUTHORIZATION.as_str())
-                    .is_some_and(|value| value.contains("Credential=AKID-REUSED/"))
-            );
-        }
-    }
-
     #[tokio::test]
-    async fn load_rejects_empty_service_name() {
-        let err = AwsAuthContext::load(AwsAuthConfig {
+    async fn load_rejects_invalid_configuration() {
+        let config = AwsAuthConfig {
             profile: None,
             region: None,
             service: "   ".to_string(),
-        })
+        };
+        let err = AwsAuthContext::load(
+            config,
+            codex_http_client::HttpClientFactory::new(
+                codex_http_client::OutboundProxyPolicy::ReqwestDefault,
+            ),
+        )
         .await
         .expect_err("empty service should be rejected");
 
         assert_eq!(err.to_string(), "AWS service name must not be empty");
+
+        let config = AwsAuthConfig {
+            profile: None,
+            region: Some("us-east-1".to_string()),
+            service: "bedrock".to_string(),
+        };
+        let err = AwsAuthContext::load_profile(
+            config,
+            codex_http_client::HttpClientFactory::new(
+                codex_http_client::OutboundProxyPolicy::ReqwestDefault,
+            ),
+        )
+        .await
+        .expect_err("profile auth should require a configured profile");
+
+        assert_eq!(err.to_string(), "AWS profile must be configured");
     }
 }
+
+#[cfg(test)]
+#[path = "network_policy_tests.rs"]
+mod network_policy_tests;

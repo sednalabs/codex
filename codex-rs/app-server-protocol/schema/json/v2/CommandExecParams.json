@@ -1,7 +1,8 @@
 {
-  "$defs": {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
     "AbsolutePathBuf": {
-      "description": "A path that is guaranteed to be absolute and normalized (though it is not\nguaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set\nusing [AbsolutePathBufGuard::new]. If no base path is set, the\ndeserialization will fail unless the path being deserialized is already\nabsolute.",
+      "description": "A path that is guaranteed to be absolute and normalized (though it is not guaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set using [AbsolutePathBufGuard::new]. If no base path is set, the deserialization will fail unless the path being deserialized is already absolute.",
       "type": "string"
     },
     "CommandExecTerminalSize": {
@@ -10,21 +11,19 @@
         "cols": {
           "description": "Terminal width in character cells.",
           "format": "uint16",
-          "maximum": 65535,
-          "minimum": 0,
+          "minimum": 0.0,
           "type": "integer"
         },
         "rows": {
           "description": "Terminal height in character cells.",
           "format": "uint16",
-          "maximum": 65535,
-          "minimum": 0,
+          "minimum": 0.0,
           "type": "integer"
         }
       },
       "required": [
-        "rows",
-        "cols"
+        "cols",
+        "rows"
       ],
       "type": "object"
     },
@@ -40,7 +39,9 @@
         {
           "properties": {
             "type": {
-              "const": "dangerFullAccess",
+              "enum": [
+                "dangerFullAccess"
+              ],
               "title": "DangerFullAccessSandboxPolicyType",
               "type": "string"
             }
@@ -58,7 +59,9 @@
               "type": "boolean"
             },
             "type": {
-              "const": "readOnly",
+              "enum": [
+                "readOnly"
+              ],
               "title": "ReadOnlySandboxPolicyType",
               "type": "string"
             }
@@ -72,11 +75,17 @@
         {
           "properties": {
             "networkAccess": {
-              "$ref": "#/$defs/NetworkAccess",
+              "allOf": [
+                {
+                  "$ref": "#/definitions/NetworkAccess"
+                }
+              ],
               "default": "restricted"
             },
             "type": {
-              "const": "externalSandbox",
+              "enum": [
+                "externalSandbox"
+              ],
               "title": "ExternalSandboxSandboxPolicyType",
               "type": "string"
             }
@@ -102,14 +111,16 @@
               "type": "boolean"
             },
             "type": {
-              "const": "workspaceWrite",
+              "enum": [
+                "workspaceWrite"
+              ],
               "title": "WorkspaceWriteSandboxPolicyType",
               "type": "string"
             },
             "writableRoots": {
               "default": [],
               "items": {
-                "$ref": "#/$defs/AbsolutePathBuf"
+                "$ref": "#/definitions/AbsolutePathBuf"
               },
               "type": "array"
             }
@@ -123,8 +134,7 @@
       ]
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "Run a standalone command (argv vector) in the server sandbox without\ncreating a thread or turn.\n\nThe final `command/exec` response is deferred until the process exits and is\nsent only after all `command/exec/outputDelta` notifications for that\nconnection have been emitted.",
+  "description": "Run a standalone command (argv vector) in the server sandbox without creating a thread or turn.\n\nThe final `command/exec` response is deferred until the process exits and is sent only after all `command/exec/outputDelta` notifications for that connection have been emitted.",
   "properties": {
     "command": {
       "description": "Command argv vector. Empty arrays are rejected.",
@@ -155,23 +165,23 @@
           "null"
         ]
       },
-      "description": "Optional environment overrides merged into the server-computed\nenvironment.\n\nMatching names override inherited values. Set a key to `null` to unset\nan inherited variable.",
+      "description": "Optional environment overrides merged into the server-computed environment.\n\nMatching names override inherited values. Set a key to `null` to unset an inherited variable.",
       "type": [
         "object",
         "null"
       ]
     },
     "outputBytesCap": {
-      "description": "Optional per-stream stdout/stderr capture cap in bytes.\n\nWhen omitted, the server default applies. Cannot be combined with\n`disableOutputCap`.",
+      "description": "Optional per-stream stdout/stderr capture cap in bytes.\n\nWhen omitted, the server default applies. Cannot be combined with `disableOutputCap`.",
       "format": "uint",
-      "minimum": 0,
+      "minimum": 0.0,
       "type": [
         "integer",
         "null"
       ]
     },
     "processId": {
-      "description": "Optional client-supplied, connection-scoped process id.\n\nRequired for `tty`, `streamStdin`, `streamStdoutStderr`, and follow-up\n`command/exec/write`, `command/exec/resize`, and\n`command/exec/terminate` calls. When omitted, buffered execution gets an\ninternal id that is not exposed to the client.",
+      "description": "Optional client-supplied, connection-scoped process id.\n\nRequired for `tty`, `streamStdin`, `streamStdoutStderr`, and follow-up `command/exec/write`, `command/exec/resize`, and `command/exec/terminate` calls. When omitted, buffered execution gets an internal id that is not exposed to the client.",
       "type": [
         "string",
         "null"
@@ -180,35 +190,35 @@
     "sandboxPolicy": {
       "anyOf": [
         {
-          "$ref": "#/$defs/SandboxPolicy"
+          "$ref": "#/definitions/SandboxPolicy"
         },
         {
           "type": "null"
         }
       ],
-      "description": "Optional sandbox policy for this command.\n\nUses the same shape as thread/turn execution sandbox configuration and\ndefaults to the user's configured policy when omitted. Cannot be\ncombined with `permissionProfile`."
+      "description": "Optional sandbox policy for this command.\n\nUses the same shape as thread/turn execution sandbox configuration and defaults to the user's configured policy when omitted. Cannot be combined with `permissionProfile`."
     },
     "size": {
       "anyOf": [
         {
-          "$ref": "#/$defs/CommandExecTerminalSize"
+          "$ref": "#/definitions/CommandExecTerminalSize"
         },
         {
           "type": "null"
         }
       ],
-      "description": "Optional initial PTY size in character cells. Only valid when `tty` is\ntrue."
+      "description": "Optional initial PTY size in character cells. Only valid when `tty` is true."
     },
     "streamStdin": {
       "description": "Allow follow-up `command/exec/write` requests to write stdin bytes.\n\nRequires a client-supplied `processId`.",
       "type": "boolean"
     },
     "streamStdoutStderr": {
-      "description": "Stream stdout/stderr via `command/exec/outputDelta` notifications.\n\nStreamed bytes are not duplicated into the final response and require a\nclient-supplied `processId`.",
+      "description": "Stream stdout/stderr via `command/exec/outputDelta` notifications.\n\nStreamed bytes are not duplicated into the final response and require a client-supplied `processId`.",
       "type": "boolean"
     },
     "timeoutMs": {
-      "description": "Optional timeout in milliseconds.\n\nWhen omitted, the server default applies. Cannot be combined with\n`disableTimeout`.",
+      "description": "Optional timeout in milliseconds.\n\nWhen omitted, the server default applies. Cannot be combined with `disableTimeout`.",
       "format": "int64",
       "type": [
         "integer",

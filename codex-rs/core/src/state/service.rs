@@ -1,22 +1,22 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::Mutex as StdMutex;
 
-use crate::SkillsService;
-use crate::agent::AgentControl;
+use crate::agent::api::AgentControl;
+use crate::agent::control::LocalAgentRuntime;
 use crate::agents_md_manager::AgentsMdManager;
 use crate::attestation::AttestationProvider;
 use crate::client::ModelClient;
-use crate::client::ProviderAuthority;
 use crate::config::NetworkProxyAuditMetadata;
 use crate::config::StartedNetworkProxy;
 use crate::current_time::TimeProvider;
 use crate::elicitation::ElicitationService;
 use crate::environment_selection::ThreadEnvironments;
 use crate::exec_policy::ExecPolicyManager;
-use crate::guardian::GuardianRejectionCircuitBreaker;
 use crate::mcp::McpManager;
+use crate::mcp_tool_exposure::McpHandlerCache;
+use crate::tools::ExecutedToolCalls;
 use crate::tools::code_mode::CodeModeService;
 use crate::tools::handlers::ToolSearchHandlerCache;
 use crate::tools::network_approval::NetworkApprovalService;
@@ -25,29 +25,35 @@ use crate::unified_exec::UnifiedExecProcessManager;
 use arc_swap::ArcSwap;
 use arc_swap::ArcSwapOption;
 use codex_analytics::AnalyticsEventsClient;
+use codex_attachment_store::AttachmentStore;
 use codex_core_plugins::PluginsManager;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionDataInit;
 use codex_extension_api::ExtensionRegistry;
 use codex_hooks::Hooks;
+use codex_http_client::RouteAwareClientPool;
 use codex_login::AuthManager;
 use codex_mcp::McpRuntime;
 use codex_models_manager::manager::SharedModelsManager;
 use codex_otel::SessionTelemetry;
-use codex_protocol::ThreadId;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
-use codex_protocol::protocol::Event;
+use codex_protocol::mcp::ClientMcpExtensions;
+use codex_protocol::models::AdditionalPermissionProfile;
 use codex_rollout::state_db::StateDbHandle;
 use codex_rollout_trace::ThreadTraceContext;
-use codex_state::UsageLogger;
+use codex_sandboxing::policy_transforms::merge_permission_profiles;
+use codex_skills_extension::HostSkillsService;
 use codex_thread_store::LiveThread;
 use codex_thread_store::ThreadStore;
+use codex_utils_git_discovery::GitRootDiscovery;
 use tokio::runtime::Handle;
 use tokio::sync::Mutex;
 
 pub(crate) struct SessionServices {
     /// The single owner of live MCP connections for this thread.
     pub(crate) mcp_runtime: Arc<McpRuntime>,
+    /// Immutable MCP handlers scoped to this thread's current binding.
+    pub(crate) mcp_handler_cache: McpHandlerCache,
     pub(crate) unified_exec_manager: UnifiedExecProcessManager,
     pub(crate) elicitations: ElicitationService,
     #[cfg_attr(not(unix), allow(dead_code))]
@@ -61,174 +67,67 @@ pub(crate) struct SessionServices {
     pub(crate) show_raw_agent_reasoning: bool,
     pub(crate) exec_policy: Arc<ExecPolicyManager>,
     pub(crate) auth_manager: Arc<AuthManager>,
+    /// Upload-only clients shared across turns without logging signed blob URLs.
+    pub(crate) openai_file_upload_client_pool: RouteAwareClientPool,
     pub(crate) models_manager: SharedModelsManager,
+    pub(crate) git_root_discovery: Arc<GitRootDiscovery>,
     pub(crate) session_telemetry: SessionTelemetry,
     pub(crate) tool_approvals: Mutex<ApprovalStore>,
-    pub(crate) guardian_rejection_circuit_breaker: Mutex<GuardianRejectionCircuitBreaker>,
+    /// Shared with captured steps so later calls observe newly approved permissions.
+    pub(crate) granted_permissions_by_environment_id:
+        Arc<StdMutex<HashMap<String, AdditionalPermissionProfile>>>,
     pub(crate) runtime_handle: Handle,
-    pub(crate) skills_service: Arc<SkillsService>,
+    pub(crate) skills_service: Arc<HostSkillsService>,
     pub(crate) agents_md_manager: Arc<AgentsMdManager>,
     pub(crate) plugins_manager: Arc<PluginsManager>,
     pub(crate) mcp_manager: Arc<McpManager>,
     pub(crate) extensions: Arc<ExtensionRegistry<crate::config::Config>>,
     pub(crate) session_extension_data: ExtensionData,
     pub(crate) thread_extension_data: ExtensionData,
-    pub(crate) supports_openai_form_elicitation: AtomicBool,
-    /// Raw capability selections for this thread. Each model step resolves them against its
-    /// current executor environments before using them.
+    /// MCP extensions fixed when this session is created.
+    pub(crate) client_mcp_extensions: ClientMcpExtensions,
+    /// Roots supplied when the thread started or loaded from saved history.
+    /// Keep roots for unselected environments so selecting them again restores their capabilities.
     pub(crate) selected_capability_roots: Vec<SelectedCapabilityRoot>,
     pub(crate) mcp_thread_init: ExtensionDataInit,
-    pub(crate) agent_control: AgentControl,
+    pub(crate) agent_control: Arc<dyn AgentControl>,
+    pub(crate) local_agent_runtime: LocalAgentRuntime,
     pub(crate) network_proxy: ArcSwapOption<StartedNetworkProxy>,
     pub(crate) network_proxy_audit_metadata: NetworkProxyAuditMetadata,
     pub(crate) managed_network_requirements_configured: bool,
     pub(crate) network_approval: Arc<NetworkApprovalService>,
     pub(crate) state_db: Option<StateDbHandle>,
     pub(crate) live_thread: Option<LiveThread>,
+    pub(crate) image_store: Arc<dyn AttachmentStore>,
     pub(crate) thread_store: Arc<dyn ThreadStore>,
     pub(crate) attestation_provider: Option<Arc<dyn AttestationProvider>>,
     pub(crate) time_provider: Arc<dyn TimeProvider>,
     /// Session-scoped model client shared across turns.
     pub(crate) model_client: ModelClient,
+    pub(crate) executed_tool_calls: ExecutedToolCalls,
     pub(crate) code_mode_service: CodeModeService,
-    pub(crate) usage_logger: Option<Mutex<UsageLogger>>,
     pub(crate) tool_search_handler_cache: ToolSearchHandlerCache,
     pub(crate) turn_environments: Arc<ThreadEnvironments>,
-    /// Server-authenticated principals for submissions whose events are still in flight. The
-    /// app-server supplies these through the internal thread bridge; they are never client data.
-    pub(crate) automatic_turn_principals: Mutex<HashMap<String, AutomaticTurnPrincipal>>,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct AutomaticTurnPrincipal {
-    pub(crate) principal: String,
-    pub(crate) client_user_message_id: Option<String>,
-    pub(crate) provider_authority: Option<ProviderAuthority>,
 }
 
 impl SessionServices {
-    #[allow(
-        clippy::await_holding_invalid_type,
-        reason = "usage logger event handling mutates ordered in-memory snapshots around async ledger writes"
+    #[expect(
+        clippy::expect_used,
+        reason = "poisoned grant state must not authorize further operations"
     )]
-    pub(crate) async fn log_usage_event(&self, thread_id: ThreadId, event: &Event) {
-        let relevant_to_automatic_turns = matches!(
-            &event.msg,
-            codex_protocol::protocol::EventMsg::Error(_)
-                | codex_protocol::protocol::EventMsg::ItemCompleted(_)
-                | codex_protocol::protocol::EventMsg::TurnComplete(_)
-                | codex_protocol::protocol::EventMsg::TurnAborted(_)
-        );
-        if relevant_to_automatic_turns {
-            if let Some(state_db) = &self.state_db {
-                let operation = self
-                    .automatic_turn_principals
-                    .lock()
-                    .await
-                    .get(&event.id)
-                    .cloned();
-                state_db
-                    .record_automatic_turn_event_with_principal_and_client_user_message_id(
-                        thread_id,
-                        event,
-                        operation
-                            .as_ref()
-                            .map(|operation| operation.principal.as_str()),
-                        operation
-                            .as_ref()
-                            .and_then(|operation| operation.client_user_message_id.as_deref()),
-                    )
-                    .await;
-            }
-
-            if matches!(
-                &event.msg,
-                codex_protocol::protocol::EventMsg::TurnComplete(_)
-                    | codex_protocol::protocol::EventMsg::TurnAborted(_)
-            ) {
-                self.automatic_turn_principals
-                    .lock()
-                    .await
-                    .remove(&event.id);
-            }
-        }
-
-        let Some(usage_logger) = &self.usage_logger else {
-            return;
-        };
-
-        usage_logger.lock().await.record_event(event).await;
-    }
-
-    pub(crate) async fn register_automatic_turn_principal(
+    pub(crate) fn record_granted_permissions(
         &self,
-        event_occurrence_id: impl Into<String>,
-        principal: impl Into<String>,
-        client_user_message_id: Option<&str>,
+        environment_id: &str,
+        permissions: AdditionalPermissionProfile,
     ) {
-        let principal = principal.into();
-        let client_user_message_id = client_user_message_id.map(str::to_owned);
-        self.automatic_turn_principals
+        let mut grants = self
+            .granted_permissions_by_environment_id
             .lock()
-            .await
-            .entry(event_occurrence_id.into())
-            .and_modify(|operation| {
-                // A repeated same-turn steer is a new admitted attempt. Replace the complete
-                // identity whenever it carries a client message id; retaining the old id would
-                // let a later abort terminalize the wrong attempt.
-                if client_user_message_id.is_some() {
-                    operation.principal = principal.clone();
-                    operation.client_user_message_id = client_user_message_id.clone();
-                }
-            })
-            .or_insert_with(|| AutomaticTurnPrincipal {
-                principal,
-                client_user_message_id,
-                provider_authority: None,
-            });
-    }
-
-    pub(crate) async fn set_automatic_turn_provider_authority(
-        &self,
-        event_occurrence_id: &str,
-        provider_authority: ProviderAuthority,
-    ) {
-        if let Some(operation) = self
-            .automatic_turn_principals
-            .lock()
-            .await
-            .get_mut(event_occurrence_id)
-        {
-            operation.provider_authority = Some(provider_authority);
-        }
-    }
-
-    pub(crate) async fn automatic_turn_provider_authority(
-        &self,
-        event_occurrence_id: &str,
-    ) -> Option<ProviderAuthority> {
-        self.automatic_turn_principals
-            .lock()
-            .await
-            .get(event_occurrence_id)
-            .and_then(|operation| operation.provider_authority)
-    }
-
-    pub(crate) async fn remove_automatic_turn_principal_if_matches(
-        &self,
-        event_occurrence_id: &str,
-        principal: &str,
-        client_user_message_id: Option<&str>,
-    ) {
-        let mut principals = self.automatic_turn_principals.lock().await;
-        let matches = principals
-            .get(event_occurrence_id)
-            .is_some_and(|operation| {
-                operation.principal == principal
-                    && operation.client_user_message_id.as_deref() == client_user_message_id
-            });
-        if matches {
-            principals.remove(event_occurrence_id);
+            .expect("session permission grants lock poisoned");
+        let granted_permissions =
+            merge_permission_profiles(grants.get(environment_id), Some(&permissions));
+        if let Some(granted_permissions) = granted_permissions {
+            grants.insert(environment_id.to_string(), granted_permissions);
         }
     }
 }

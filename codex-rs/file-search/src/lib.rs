@@ -35,6 +35,11 @@ use nucleo::pattern::AtomKind;
 use nucleo::pattern::Pattern;
 
 mod cli;
+mod snapshot;
+
+#[cfg(test)]
+#[path = "matcher_tests.rs"]
+mod matcher_tests;
 
 pub use cli::Cli;
 
@@ -65,6 +70,12 @@ pub struct FileMatch {
 pub enum MatchType {
     File,
     Directory,
+}
+
+/// Carries the entry type observed by the walker so matched paths are not restatted.
+struct IndexedEntry {
+    full_path: Arc<str>,
+    match_type: MatchType,
 }
 
 impl FileMatch {
@@ -411,7 +422,7 @@ fn get_file_path<'a>(path: &'a Path, search_directories: &[PathBuf]) -> Option<(
 fn walker_worker(
     inner: Arc<SessionInner>,
     override_matcher: Option<ignore::overrides::Override>,
-    injector: Injector<Arc<str>>,
+    injector: Injector<IndexedEntry>,
 ) {
     let Some(first_root) = inner.search_directories.first() else {
         let _ = inner.work_tx.send(WorkSignal::WalkComplete);
@@ -463,9 +474,19 @@ fn walker_worker(
                 return ignore::WalkState::Continue;
             };
             if let Some((_, relative_path)) = get_file_path(path, &search_directories) {
-                injector.push(Arc::from(full_path), |_, cols| {
-                    cols[0] = Utf32String::from(relative_path);
-                });
+                let match_type = match entry.file_type() {
+                    Some(file_type) if file_type.is_dir() => MatchType::Directory,
+                    _ => MatchType::File,
+                };
+                injector.push(
+                    IndexedEntry {
+                        full_path: Arc::from(full_path),
+                        match_type,
+                    },
+                    |_, cols| {
+                        cols[0] = Utf32String::from(relative_path);
+                    },
+                );
             }
             n += 1;
             if n >= CHECK_INTERVAL {
@@ -483,7 +504,7 @@ fn walker_worker(
 fn matcher_worker(
     inner: Arc<SessionInner>,
     work_rx: Receiver<WorkSignal>,
-    mut nucleo: Nucleo<Arc<str>>,
+    mut nucleo: Nucleo<IndexedEntry>,
 ) -> anyhow::Result<()> {
     const TICK_TIMEOUT_MS: u64 = 10;
     let config = Config::DEFAULT.match_paths();
@@ -492,10 +513,6 @@ fn matcher_worker(
     let shutdown_requested = || inner.shutdown.load(Ordering::Relaxed);
 
     let mut last_query = String::new();
-    let mut pending_query = None;
-    let mut query_in_flight = false;
-    let mut matcher_idle = true;
-    let mut completion_pending = false;
     let mut next_notify = never();
     let mut will_notify = false;
     let mut walk_complete = false;
@@ -508,22 +525,15 @@ fn matcher_worker(
                 };
                 match signal {
                     WorkSignal::QueryUpdated(query) => {
-                        if query_in_flight || !matcher_idle {
-                            pending_query = Some(query);
-                        } else {
-                            let append = query.starts_with(&last_query);
-                            nucleo.pattern.reparse(
-                                0,
-                                &query,
-                                CaseMatching::Ignore,
-                                Normalization::Smart,
-                                append,
-                            );
-                            last_query = query;
-                            query_in_flight = true;
-                            completion_pending = true;
-                            matcher_idle = false;
-                        }
+                        let append = query.starts_with(&last_query);
+                        nucleo.pattern.reparse(
+                            0,
+                            &query,
+                            CaseMatching::Ignore,
+                            Normalization::Smart,
+                            append,
+                        );
+                        last_query = query;
                         will_notify = true;
                         next_notify = after(Duration::from_millis(0));
                     }
@@ -548,93 +558,19 @@ fn matcher_worker(
             recv(next_notify) -> _ => {
                 will_notify = false;
                 let status = nucleo.tick(TICK_TIMEOUT_MS);
-                if status.changed {
-                    let snapshot = nucleo.snapshot();
-                    let limit = inner.limit.min(snapshot.matched_item_count() as usize);
-                    let pattern = snapshot.pattern().column_pattern(0);
-                    let matches: Vec<_> = snapshot
-                        .matches()
-                        .iter()
-                        .take(limit)
-                        .filter_map(|match_| {
-                            let item = snapshot.get_item(match_.idx)?;
-                            let full_path = item.data.as_ref();
-                            let (root_idx, relative_path) = get_file_path(Path::new(full_path), &inner.search_directories)?;
-                            let indices = if let Some(indices_matcher) = indices_matcher.as_mut() {
-                                let mut idx_vec = Vec::<u32>::new();
-                                let haystack = item.matcher_columns[0].slice(..);
-                                let _ = pattern.indices(haystack, indices_matcher, &mut idx_vec);
-                                idx_vec.sort_unstable();
-                                idx_vec.dedup();
-                                Some(idx_vec)
-                            } else {
-                                None
-                            };
-                            let match_type = if Path::new(full_path).is_dir() {
-                                MatchType::Directory
-                            } else {
-                                MatchType::File
-                            };
-                            Some(FileMatch {
-                                score: match_.score,
-                                path: PathBuf::from(relative_path),
-                                match_type,
-                                root: inner.search_directories[root_idx].clone(),
-                                indices,
-                            })
-                        })
-                        .collect();
-
-                    let snapshot = FileSearchSnapshot {
-                        query: last_query.clone(),
-                        matches,
-                        total_match_count: snapshot.matched_item_count() as usize,
-                        scanned_file_count: snapshot.item_count() as usize,
+                if status.changed
+                    && let Some(snapshot) = snapshot::for_query(
+                        &inner,
+                        &nucleo,
+                        &last_query,
+                        &mut indices_matcher,
                         walk_complete,
-                    };
+                    )
+                {
                     inner.reporter.on_update(&snapshot);
                 }
-                if status.running {
-                    matcher_idle = false;
-                }
-                if status.changed {
-                    // `status.running` only describes newly injected items. A
-                    // queued worker may still need to publish the changed
-                    // snapshot after a canceled pass reports `running=false`.
-                    query_in_flight = false;
-                }
-                if !status.running {
-                    matcher_idle = true;
-                }
-                if !query_in_flight && !status.running && walk_complete && completion_pending {
+                if !status.running && walk_complete {
                     inner.reporter.on_complete();
-                    completion_pending = false;
-                }
-                if !query_in_flight
-                    && matcher_idle
-                    && let Some(query) = pending_query.take()
-                {
-                    let append = query.starts_with(&last_query);
-                    nucleo.pattern.reparse(
-                        0,
-                        &query,
-                        CaseMatching::Ignore,
-                        Normalization::Smart,
-                        append,
-                    );
-                    last_query = query;
-                    query_in_flight = true;
-                    completion_pending = true;
-                    matcher_idle = false;
-                    will_notify = true;
-                    next_notify = after(Duration::from_millis(0));
-                }
-                if query_in_flight || status.running {
-                    // Continue driving the matcher while a query is in flight.
-                    // The delay gives a queued Rayon worker an opportunity to
-                    // start; this avoids a hot loop when `running` is stale.
-                    will_notify = true;
-                    next_notify = after(Duration::from_millis(TICK_TIMEOUT_MS));
                 }
             }
             default(Duration::from_millis(100)) => {
@@ -749,7 +685,7 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct RecordingReporter {
+    pub(super) struct RecordingReporter {
         updates: Mutex<Vec<FileSearchSnapshot>>,
         complete_times: Mutex<Vec<Instant>>,
         complete_cv: Condvar,
@@ -1059,6 +995,29 @@ mod tests {
         assert!(results.matches.iter().any(|m| {
             m.path == std::path::Path::new("docs").join("guides")
                 && m.match_type == MatchType::Directory
+        }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_classifies_followed_directory_symlink_as_directory() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("guides")).unwrap();
+        symlink(dir.path().join("guides"), dir.path().join("guides-link")).unwrap();
+
+        let results = run(
+            "guides-link",
+            vec![dir.path().to_path_buf()],
+            FileSearchOptions::default(),
+            /*cancel_flag*/ None,
+        )
+        .expect("run ok");
+
+        assert!(results.matches.iter().any(|file_match| {
+            file_match.path == Path::new("guides-link")
+                && file_match.match_type == MatchType::Directory
         }));
     }
 

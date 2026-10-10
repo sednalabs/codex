@@ -1,5 +1,6 @@
 {
-  "$defs": {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
     "ClientInfo": {
       "properties": {
         "name": {
@@ -29,12 +30,24 @@
           "description": "Opt into receiving experimental API methods and fields.",
           "type": "boolean"
         },
+        "explicitGatewayOauth": {
+          "description": "Use explicit gateway OAuth login instead of automatic browser authorization. Applies to this app-server's gateway runtime; later connections cannot undo it.",
+          "type": "boolean"
+        },
+        "extensions": {
+          "additionalProperties": true,
+          "description": "MCP extension settings declared by the app-server client.",
+          "type": [
+            "object",
+            "null"
+          ]
+        },
         "mcpServerOpenaiFormElicitation": {
-          "description": "Allow downstream MCP servers to request OpenAI extended form elicitations.",
+          "description": "Legacy opt-in for the `openai/form` MCP extension.\n\nNew clients should declare `openai/form` in [`Self::extensions`].",
           "type": "boolean"
         },
         "optOutNotificationMethods": {
-          "description": "Exact notification method names that should be suppressed for this\nconnection (for example `thread/started`).",
+          "description": "Exact notification method names that should be suppressed for this connection (for example `thread/started`).",
           "items": {
             "type": "string"
           },
@@ -52,12 +65,11 @@
       "type": "object"
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "capabilities": {
       "anyOf": [
         {
-          "$ref": "#/$defs/InitializeCapabilities"
+          "$ref": "#/definitions/InitializeCapabilities"
         },
         {
           "type": "null"
@@ -65,7 +77,7 @@
       ]
     },
     "clientInfo": {
-      "$ref": "#/$defs/ClientInfo"
+      "$ref": "#/definitions/ClientInfo"
     }
   },
   "required": [

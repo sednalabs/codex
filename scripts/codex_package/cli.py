@@ -1,6 +1,7 @@
 """Command-line interface for building Codex package directories."""
 
 import argparse
+import re
 import tempfile
 from pathlib import Path
 
@@ -19,7 +20,35 @@ from .zsh import resolve_zsh_bin
 from .version import read_workspace_version
 
 
+# Release pipelines run this builder with system Python, so avoid new dependencies.
+SEMVER_PATTERN = re.compile(
+    r"(?P<major>0|[1-9][0-9]*)\."
+    r"(?P<minor>0|[1-9][0-9]*)\."
+    r"(?P<patch>0|[1-9][0-9]*)"
+    r"(?:-(?P<prerelease>[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
+    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+)
+
+
+def parse_package_version(value: str) -> str:
+    match = SEMVER_PATTERN.fullmatch(value)
+    if match is not None:
+        components = (match.group(name) for name in ("major", "minor", "patch"))
+        prerelease = match.group("prerelease") or ""
+        if all(int(component) <= 2**64 - 1 for component in components) and all(
+            not (part.isdigit() and len(part) > 1 and part.startswith("0"))
+            for part in prerelease.split(".")
+        ):
+            return value
+
+    raise argparse.ArgumentTypeError(f"invalid semantic version: {value!r}")
+
+
 def parse_args() -> argparse.Namespace:
+    return create_parser().parse_args()
+
+
+def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Build a canonical Codex package directory and optional archive.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -38,6 +67,12 @@ def parse_args() -> argparse.Namespace:
         choices=sorted(PACKAGE_VARIANTS),
         default="codex",
         help="Package variant to build.",
+    )
+    parser.add_argument(
+        "--package-version",
+        type=parse_package_version,
+        default=read_workspace_version(),
+        help="Semantic version to record in codex-package.json.",
     )
     parser.add_argument(
         "--package-dir",
@@ -138,11 +173,18 @@ def parse_args() -> argparse.Namespace:
             "scripts/codex_package/rg."
         ),
     )
-    return parser.parse_args()
+    return parser
 
 
 def main() -> int:
     args = parse_args()
+    package_dir = assemble_package(args)
+    archive_package(package_dir, args)
+    return 0
+
+
+def assemble_package(args: argparse.Namespace) -> Path:
+    """Build the directory before optional downstream additions and archiving."""
     spec = TARGET_SPECS[getattr(args, "target", None) or default_target()]
     variant = PACKAGE_VARIANTS[args.variant]
     package_dir_arg = getattr(args, "package_dir", None)
@@ -183,7 +225,6 @@ def main() -> int:
             "--codex-windows-sandbox-setup-bin",
         ),
     )
-    version = read_workspace_version()
     inputs = PackageInputs(
         entrypoint_bin=source_outputs.entrypoint_bin,
         code_mode_host_bin=source_outputs.code_mode_host_bin,
@@ -194,18 +235,20 @@ def main() -> int:
         codex_windows_sandbox_setup_bin=source_outputs.codex_windows_sandbox_setup_bin,
     )
     prepare_package_dir(package_dir, force=args.force)
-    build_package_dir(package_dir, version, variant, spec, inputs)
+    build_package_dir(package_dir, args.package_version, variant, spec, inputs)
     validate_package_dir(
         package_dir, variant, spec, include_zsh=inputs.zsh_bin is not None
     )
+    return package_dir
 
+
+def archive_package(package_dir: Path, args: argparse.Namespace) -> None:
     for archive_output in args.archive_output:
         archive_path = archive_output.resolve()
         write_archive(package_dir, archive_path, force=args.force)
         print(f"Built Codex package archive at {archive_path}")
 
     print(f"Built Codex package directory at {package_dir}")
-    return 0
 
 
 def resolve_optional_input_path(
