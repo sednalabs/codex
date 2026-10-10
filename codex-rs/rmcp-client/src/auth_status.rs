@@ -1243,7 +1243,7 @@ mod tests {
         let fallback_receipt_client = Arc::new(SyntheticDeviceAuthHttpClient::new(
             SyntheticDiscoveryScenario::OidcFallback,
         ));
-        let adapter = OAuthHttpClientAdapter::new_with_redirect_mode(
+        let mut adapter = OAuthHttpClientAdapter::new_with_redirect_mode(
             fallback_receipt_client.clone(),
             HeaderMap::new(),
             SyntheticDeviceAuthHttpClient::RESOURCE_URL,
