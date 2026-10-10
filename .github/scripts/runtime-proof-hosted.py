@@ -98,6 +98,11 @@ EXPECTED_MCP_TESTS = [
     "protected_http_client_tests::retained_protected_http_client_rejects_a_send_after_imported_auth_expiry"
 ]
 ROOT_FIXTURE_STAGE = re.compile(r"^runtime-proof-root-stage:([a-z_]+)$")
+ROOT_FIXTURE_SPAWN_ERROR = re.compile(
+    r"launch protected codex fixture failed: "
+    r"(not_found|permission_denied|invalid_input|other)"
+    r"(?: \(errno ([0-9]{1,5})\)| \(no errno\))"
+)
 ROOT_FIXTURE_STAGE_NAMES = {
     "started",
     "fixture_started",
@@ -2285,12 +2290,23 @@ def run_ignored_root_test(
         details = ""
         if test_name == EXPECTED_CLI_TESTS[0]:
             stages = []
+            spawn_errors = set()
             for line in result.stdout.splitlines():
                 match = ROOT_FIXTURE_STAGE.fullmatch(line.strip())
                 if match is not None and match.group(1) in ROOT_FIXTURE_STAGE_NAMES:
                     stages.append(match.group(1))
+                match = ROOT_FIXTURE_SPAWN_ERROR.search(line)
+                if match is not None:
+                    spawn_errors.add((match.group(1), match.group(2) or "none"))
             last_stage = stages[-1] if stages else "none"
             details = f"; exit_code={result.returncode}; last_stage={last_stage}"
+            if len(spawn_errors) == 1:
+                category, errno = next(iter(spawn_errors))
+                details += f"; spawn_error_category={category}; spawn_errno={errno}"
+            elif spawn_errors:
+                details += "; spawn_error_category=ambiguous"
+            else:
+                details += "; spawn_error_category=not_reported"
         refuse(
             "explicit synthetic root fixture was not exactly one successful executed test: "
             f"{test_name}{details}"
