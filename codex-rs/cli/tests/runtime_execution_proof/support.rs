@@ -17,6 +17,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
+use std::process::Child;
 use std::process::Command;
 use std::process::Output;
 use std::process::Stdio;
@@ -697,6 +698,10 @@ impl ProtectedRuntimeFixture {
         eprintln!("runtime-proof-root-stage:cli_channels_ready");
         let child_fd = child_socket.as_raw_fd();
         let auth_child_fd = auth_child_socket.as_raw_fd();
+        eprintln!(
+            "runtime-proof-root-fd-layout:{}",
+            child_fd_layout_category(child_fd, auth_child_fd)
+        );
         let mut command = Command::new(&self.executable_path);
         command
             .env_clear()
@@ -716,11 +721,12 @@ impl ProtectedRuntimeFixture {
         }
         unsafe {
             command.pre_exec(move || {
-                if libc::dup2(child_fd, BOOTSTRAP_FD) < 0
-                    || libc::fcntl(BOOTSTRAP_FD, libc::F_SETFD, 0) < 0
-                    || libc::dup2(auth_child_fd, AUTH_FD) < 0
-                    || libc::fcntl(AUTH_FD, libc::F_SETFD, 0) < 0
-                    || libc::setgroups(0, std::ptr::null()) != 0
+                if let Err(error) =
+                    remap_child_channel_fds(child_fd, auth_child_fd, BOOTSTRAP_FD, AUTH_FD)
+                {
+                    return Err(error);
+                }
+                if libc::setgroups(0, std::ptr::null()) != 0
                     || libc::setresgid(RUN_GID, RUN_GID, RUN_GID) != 0
                     || libc::setresuid(RUN_UID, RUN_UID, RUN_UID) != 0
                     || libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0
@@ -849,8 +855,10 @@ impl ProtectedRuntimeFixture {
         eprintln!("runtime-proof-root-stage:cli_waiting_for_ack");
         let mut ack = [0_u8; 4];
         if let Err(error) = launcher.read_exact(&mut ack) {
-            let _ = child.kill();
-            let _ = child.wait();
+            eprintln!(
+                "runtime-proof-root-child-state-before-kill:{}",
+                stop_child_after_ack_failure(&mut child)
+            );
             eprintln!(
                 "runtime-proof-root-ack-failure:{}",
                 ack_error_category(error.kind())
@@ -862,8 +870,10 @@ impl ProtectedRuntimeFixture {
             return Err(error).context("read protected CLI bootstrap acknowledgement");
         }
         if &ack != b"ACK1" {
-            let _ = child.kill();
-            let _ = child.wait();
+            eprintln!(
+                "runtime-proof-root-child-state-before-kill:{}",
+                stop_child_after_ack_failure(&mut child)
+            );
             eprintln!("runtime-proof-root-ack-failure:invalid_packet");
             eprintln!(
                 "runtime-proof-root-startup-failure:{}",
@@ -1074,6 +1084,77 @@ fn ack_error_category(kind: std::io::ErrorKind) -> &'static str {
     }
 }
 
+fn child_fd_layout_category(bootstrap_source: i32, auth_source: i32) -> &'static str {
+    match (bootstrap_source == AUTH_FD, auth_source == BOOTSTRAP_FD) {
+        (true, true) => "crossed_targets",
+        (false, true) => "auth_source_at_bootstrap_target",
+        (true, false) => "bootstrap_source_at_auth_target",
+        (false, false) => "no_cross_target_alias",
+    }
+}
+
+fn remap_child_channel_fds(
+    bootstrap_source: i32,
+    auth_source: i32,
+    bootstrap_target: i32,
+    auth_target: i32,
+) -> std::io::Result<()> {
+    if bootstrap_target == auth_target {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "child channel descriptors must have distinct targets",
+        ));
+    }
+
+    if bootstrap_source == auth_target && auth_source == bootstrap_target {
+        let preserved_bootstrap =
+            unsafe { libc::fcntl(bootstrap_source, libc::F_DUPFD_CLOEXEC, 3) };
+        if preserved_bootstrap < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let result = dup_to_child_target(auth_source, auth_target)
+            .and_then(|()| dup_to_child_target(preserved_bootstrap, bootstrap_target));
+        unsafe {
+            libc::close(preserved_bootstrap);
+        }
+        return result;
+    }
+
+    if auth_source == bootstrap_target {
+        dup_to_child_target(auth_source, auth_target)?;
+        dup_to_child_target(bootstrap_source, bootstrap_target)
+    } else {
+        dup_to_child_target(bootstrap_source, bootstrap_target)?;
+        dup_to_child_target(auth_source, auth_target)
+    }
+}
+
+fn dup_to_child_target(source: i32, target: i32) -> std::io::Result<()> {
+    if unsafe { libc::dup2(source, target) } < 0
+        || unsafe { libc::fcntl(target, libc::F_SETFD, 0) } < 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn stop_child_after_ack_failure(child: &mut Child) -> &'static str {
+    match child.try_wait() {
+        Ok(Some(status)) if status.success() => "exited_success",
+        Ok(Some(_)) => "exited_failure",
+        Ok(None) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            "running_before_kill"
+        }
+        Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            "status_unavailable"
+        }
+    }
+}
+
 fn startup_error_category(stderr: &mut File) -> &'static str {
     let mut captured_stderr = Vec::new();
     if stderr.seek(SeekFrom::Start(0)).is_err() {
@@ -1209,3 +1290,99 @@ fn chown_to_runner(path: &std::path::Path) -> Result<()> {
 }
 
 use std::os::fd::FromRawFd;
+
+#[cfg(test)]
+mod fd_remapping_tests {
+    use super::*;
+    use std::os::fd::IntoRawFd;
+    use std::os::unix::net::UnixStream;
+
+    fn assert_channel_identity(
+        bootstrap_source: i32,
+        auth_source: i32,
+        bootstrap_target: i32,
+        auth_target: i32,
+        bootstrap_sender: &UnixStream,
+        auth_sender: &UnixStream,
+    ) -> Result<()> {
+        remap_child_channel_fds(bootstrap_source, auth_source, bootstrap_target, auth_target)?;
+        for source in [bootstrap_source, auth_source] {
+            if source != bootstrap_target && source != auth_target {
+                unsafe {
+                    libc::close(source);
+                }
+            }
+        }
+        let mut bootstrap_receiver = unsafe { UnixStream::from_raw_fd(bootstrap_target) };
+        let mut auth_receiver = unsafe { UnixStream::from_raw_fd(auth_target) };
+        send_packet(bootstrap_sender, b"BOOT")?;
+        send_packet(auth_sender, b"AUTH")?;
+        let mut bootstrap_packet = [0; 4];
+        let mut auth_packet = [0; 4];
+        bootstrap_receiver.read_exact(&mut bootstrap_packet)?;
+        auth_receiver.read_exact(&mut auth_packet)?;
+        anyhow::ensure!(bootstrap_packet == *b"BOOT");
+        anyhow::ensure!(auth_packet == *b"AUTH");
+        Ok(())
+    }
+
+    #[test]
+    fn auth_source_at_bootstrap_target_is_preserved_before_replacement() {
+        let (bootstrap_sender, bootstrap_child) = seqpacket_pair().unwrap();
+        let (auth_sender, auth_child) = seqpacket_pair().unwrap();
+        let bootstrap_source = bootstrap_child.into_raw_fd();
+        let auth_source = auth_child.into_raw_fd();
+        let auth_target =
+            unsafe { libc::fcntl(bootstrap_sender.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
+        assert!(auth_target >= 0);
+
+        assert_channel_identity(
+            bootstrap_source,
+            auth_source,
+            auth_source,
+            auth_target,
+            &bootstrap_sender,
+            &auth_sender,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn crossed_source_targets_keep_both_channels_separate() {
+        let (bootstrap_sender, bootstrap_child) = seqpacket_pair().unwrap();
+        let (auth_sender, auth_child) = seqpacket_pair().unwrap();
+        let bootstrap_source = bootstrap_child.into_raw_fd();
+        let auth_source = auth_child.into_raw_fd();
+
+        assert_channel_identity(
+            bootstrap_source,
+            auth_source,
+            auth_source,
+            bootstrap_source,
+            &bootstrap_sender,
+            &auth_sender,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn bootstrap_source_at_auth_target_is_preserved_before_replacement() {
+        let (bootstrap_sender, bootstrap_child) = seqpacket_pair().unwrap();
+        let (auth_sender, auth_child) = seqpacket_pair().unwrap();
+        let bootstrap_source = bootstrap_child.into_raw_fd();
+        let auth_source = auth_child.into_raw_fd();
+        let bootstrap_target =
+            unsafe { libc::fcntl(bootstrap_sender.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 100) };
+        assert!(bootstrap_target >= 0);
+
+        assert_channel_identity(
+            bootstrap_source,
+            auth_source,
+            bootstrap_target,
+            bootstrap_source,
+            &bootstrap_sender,
+            &auth_sender,
+        )
+        .unwrap();
+    }
+}
