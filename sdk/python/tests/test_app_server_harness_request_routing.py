@@ -67,9 +67,7 @@ def test_request_routes_match_exact_requests_and_wait_outside_selector_lock() ->
 
         thread_b = threading.Thread(target=send, args=(server, "b", done_b))
         thread_b.start()
-        assert done_b.wait(5), (
-            "sibling request could not select while route A was gated"
-        )
+        assert done_b.wait(5), "sibling request could not select while route A was gated"
         assert responses.get("b") == response_b.encode("utf-8")
         assert not done_a.is_set(), "route A escaped its closed gate"
 
@@ -122,9 +120,7 @@ def test_unused_one_shot_routes_fail_at_teardown() -> None:
 
 
 def test_one_shot_route_cannot_be_reused() -> None:
-    with pytest.raises(
-        AssertionError, match="one-shot Responses route was matched more than once"
-    ):
+    with pytest.raises(AssertionError, match="one-shot Responses route was matched more than once"):
         with MockResponsesServer() as server:
             server.enqueue_sse_for_request(
                 lambda request: request.body_json().get("marker") == "repeat",
