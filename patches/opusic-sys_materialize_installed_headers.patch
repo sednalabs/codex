@@ -1,9 +1,9 @@
 diff --git a/build.rs b/build.rs
 --- a/build.rs
 +++ b/build.rs
-@@ -236,4 +236,38 @@
+@@ -236,1 +236,35 @@
      let mut out_dir = cmake.build();
- 
++
 +    // Bazel tree outputs must not retain links to source input headers.
 +    if std::env::var("CODEX_OPUS_MATERIALIZE_HEADERS").as_deref() == Ok("1") {
 +        let sources = path::PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap())
@@ -37,6 +37,3 @@ diff --git a/build.rs b/build.rs
 +            }
 +        }
 +    }
-+
-     println!("cargo:rustc-link-lib=static=opus");
- 
