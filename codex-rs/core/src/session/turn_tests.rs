@@ -7,6 +7,28 @@ use pretty_assertions::assert_eq;
 use std::sync::Arc;
 use tracing_subscriber::prelude::*;
 
+static POST_SAMPLING_TOKEN_ESTIMATE_METADATA: tracing::Metadata<'static> = tracing::metadata! {
+    name: "post_sampling_token_estimate",
+    target: POST_SAMPLING_TOKEN_ESTIMATE_TARGET,
+    level: tracing::Level::TRACE,
+    fields: &["turn_id", "estimated_token_count", "message"],
+    callsite: &POST_SAMPLING_TOKEN_ESTIMATE_CALLSITE,
+    kind: tracing::metadata::Kind::EVENT,
+};
+static POST_SAMPLING_TOKEN_ESTIMATE_CALLSITE: tracing::callsite::DefaultCallsite =
+    tracing::callsite::DefaultCallsite::new(&POST_SAMPLING_TOKEN_ESTIMATE_METADATA);
+
+static ORDINARY_TRACE_METADATA: tracing::Metadata<'static> = tracing::metadata! {
+    name: "ordinary_trace_control",
+    target: "codex_core::ordinary_trace_control",
+    level: tracing::Level::TRACE,
+    fields: &["message"],
+    callsite: &ORDINARY_TRACE_CALLSITE,
+    kind: tracing::metadata::Kind::EVENT,
+};
+static ORDINARY_TRACE_CALLSITE: tracing::callsite::DefaultCallsite =
+    tracing::callsite::DefaultCallsite::new(&ORDINARY_TRACE_METADATA);
+
 struct RewriteAgentMessageContributor;
 
 impl TurnItemContributor for RewriteAgentMessageContributor {
@@ -46,15 +68,16 @@ fn post_sampling_token_estimate_is_disabled_by_always_on_sinks() {
         .with(feedback.logger_layer())
         .with(tracing_subscriber::fmt::layer().with_filter(codex_state::log_db::default_filter()));
 
-    tracing::subscriber::with_default(subscriber, || {
-        assert!(!tracing::event_enabled!(
-            target: POST_SAMPLING_TOKEN_ESTIMATE_TARGET,
-            tracing::Level::TRACE,
-            turn_id,
-            estimated_token_count,
-            message
-        ));
-    });
+    assert!(
+        tracing::Subscriber::register_callsite(
+            &subscriber,
+            &POST_SAMPLING_TOKEN_ESTIMATE_METADATA,
+        )
+        .is_never()
+    );
+    assert!(
+        tracing::Subscriber::register_callsite(&subscriber, &ORDINARY_TRACE_METADATA).is_always()
+    );
 }
 
 #[tokio::test]

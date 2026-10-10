@@ -1527,6 +1527,54 @@ fn mcp_tool_call_thread_id_meta_is_added_to_request_meta() {
     );
 }
 
+#[tokio::test]
+async fn runtime_execution_nonce_is_per_session_even_with_a_shared_mcp_manager() {
+    let (root, _) = make_session_and_context().await;
+    let (mut delegate, _) = make_session_and_context().await;
+    delegate.services.mcp_manager = Arc::clone(&root.services.mcp_manager);
+    assert!(Arc::ptr_eq(
+        &root.services.mcp_manager,
+        &delegate.services.mcp_manager
+    ));
+    assert_ne!(root.execution_nonce, delegate.execution_nonce);
+}
+
+#[test]
+fn runtime_proof_metadata_preserves_trace_fields_and_rejects_collision() {
+    let proof = serde_json::json!({ "certificate": "opaque", "proof": "signed" });
+    let request = add_runtime_proof_meta(
+        Some(serde_json::json!({
+            "threadId": "native-thread",
+            "codex_bridge_mcp_call_id": "trace-call",
+        })),
+        Some(proof.clone()),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        request,
+        serde_json::json!({
+            "threadId": "native-thread",
+            "codex_bridge_mcp_call_id": "trace-call",
+            "runtime/execution-proof": proof,
+        })
+    );
+    assert!(
+        add_runtime_proof_meta(
+            Some(serde_json::json!({ "runtime/execution-proof": "caller" })),
+            Some(proof),
+        )
+        .is_err()
+    );
+    assert!(
+        add_runtime_proof_meta(
+            Some(serde_json::json!({ "runtime/execution-proof": "caller" })),
+            /*proof*/ None,
+        )
+        .is_err()
+    );
+}
+
 #[test]
 fn accepted_elicitation_content_converts_to_request_user_input_response() {
     let response = request_user_input_response_from_elicitation_content(Some(serde_json::json!(

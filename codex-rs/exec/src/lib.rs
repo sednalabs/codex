@@ -13,6 +13,7 @@ pub mod exec_events;
 #[cfg(test)]
 mod lib_tests;
 
+use anyhow::Context;
 pub use cli::Cli;
 pub use cli::Command;
 pub use cli::ReviewArgs;
@@ -60,10 +61,16 @@ use codex_arg0::Arg0DispatchPaths;
 use codex_browser_computer_use::BrowserComputerUseOutcome;
 use codex_cloud_config::cloud_config_bundle_loader_for_storage;
 use codex_config::CloudConfigBundleLoader;
+use codex_config::ConfigLayerSource;
+use codex_config::ConfigLayerStackOrdering;
 use codex_config::ConfigLoadError;
 use codex_config::ConfigLoadOptions;
 use codex_config::LoaderOverrides;
+use codex_config::McpServerAuth;
+use codex_config::McpServerConfig;
+use codex_config::McpServerTransportConfig;
 use codex_config::format_config_error_with_source;
+use codex_config::types::AuthCredentialsStoreMode;
 use codex_core::LMSTUDIO_OSS_PROVIDER_ID;
 use codex_core::OLLAMA_OSS_PROVIDER_ID;
 use codex_core::StateDbHandle;
@@ -89,6 +96,7 @@ use codex_otel::set_parent_from_context;
 use codex_otel::traceparent_context_from_env;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
+use codex_protocol::auth::AuthMode;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::SandboxMode;
 use codex_protocol::models::ActivePermissionProfile;
@@ -239,12 +247,95 @@ fn exec_root_span() -> tracing::Span {
     )
 }
 
-fn exec_stderr_env_filter() -> EnvFilter {
+fn exec_stderr_env_filter() -> anyhow::Result<EnvFilter> {
     // OTEL export is best-effort; keep exporter self-diagnostics out of
     // headless command output unless the caller opts in with RUST_LOG.
-    EnvFilter::try_from_default_env()
+    let mut filter = EnvFilter::try_from_default_env()
         .or_else(|_| EnvFilter::try_new(EXEC_DEFAULT_LOG_FILTER))
-        .unwrap_or_else(|_| EnvFilter::new("error"))
+        .unwrap_or_else(|_| EnvFilter::new("error"));
+    if codex_runtime_proof::protected_runtime_active_or_failed() {
+        filter = filter
+            .add_directive("rmcp=off".parse()?)
+            .add_directive("codex_rmcp_client=off".parse()?);
+    }
+    Ok(filter)
+}
+
+fn protected_runtime_target_enabled(metadata: &tracing::Metadata<'_>) -> bool {
+    !codex_runtime_proof::protected_runtime_active_or_failed()
+        || !(metadata.target().starts_with("rmcp")
+            || metadata.target().starts_with("codex_rmcp_client"))
+}
+
+fn validate_protected_runtime_config(
+    model_provider: &str,
+    auth_store: Option<AuthCredentialsStoreMode>,
+    mcp_servers: &HashMap<String, McpServerConfig>,
+    model_providers: &HashMap<String, codex_model_provider_info::ModelProviderInfo>,
+    layers: &codex_config::ConfigLayerStack,
+    effective_provider_recipient: Option<&str>,
+) -> anyhow::Result<()> {
+    let Some((server_name, recipient)) = codex_runtime_proof::protected_mcp_target()? else {
+        return Ok(());
+    };
+    let provider_recipient = codex_runtime_proof::protected_provider_recipient()?
+        .context("protected runtime provider recipient is unavailable")?;
+    if effective_provider_recipient.is_some_and(|actual| actual != provider_recipient) {
+        anyhow::bail!(
+            "protected runtime effective provider URL differs from its root-bound recipient"
+        );
+    }
+    if model_provider != "openai"
+        || auth_store != Some(AuthCredentialsStoreMode::Ephemeral)
+        || !model_providers.is_empty()
+    {
+        anyhow::bail!(
+            "protected runtime requires the built-in OpenAI provider and ephemeral credentials"
+        );
+    }
+    if layers
+        .get_layers(
+            ConfigLayerStackOrdering::LowestPrecedenceFirst,
+            /*include_disabled*/ false,
+        )
+        .iter()
+        .any(|layer| matches!(&layer.name, ConfigLayerSource::Project { .. }))
+    {
+        anyhow::bail!("protected runtime does not permit project configuration overrides");
+    }
+    if mcp_servers.len() != 1 {
+        anyhow::bail!("protected runtime config must contain only its selected MCP server");
+    }
+    let server = mcp_servers
+        .get(&server_name)
+        .context("protected runtime config lacks its selected MCP server")?;
+    if !server.enabled
+        || server.auth != McpServerAuth::OAuth
+        || server.oauth.is_some()
+        || server.scopes.is_some()
+    {
+        anyhow::bail!("protected MCP server config contains OAuth or disabled-server settings");
+    }
+    match &server.transport {
+        McpServerTransportConfig::StreamableHttp {
+            url,
+            http_headers,
+            env_http_headers,
+            bearer_token_env_var,
+        } if url == &recipient
+            && http_headers.is_none()
+            && env_http_headers.is_none()
+            && bearer_token_env_var.is_none() =>
+        {
+            Ok(())
+        }
+        McpServerTransportConfig::StreamableHttp { .. } => {
+            anyhow::bail!("protected MCP server config must contain only its pinned URL")
+        }
+        McpServerTransportConfig::Stdio { .. } => {
+            anyhow::bail!("protected MCP target must use Streamable HTTP")
+        }
+    }
 }
 
 pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
@@ -298,7 +389,10 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
     let fmt_layer = tracing_subscriber::fmt::layer()
         .with_ansi(stderr_with_ansi)
         .with_writer(std::io::stderr)
-        .with_filter(exec_stderr_env_filter());
+        .with_filter(exec_stderr_env_filter()?)
+        .with_filter(tracing_subscriber::filter::filter_fn(
+            protected_runtime_target_enabled,
+        ));
 
     let sandbox_mode = if removed_full_auto {
         Some(SandboxMode::WorkspaceWrite)
@@ -355,6 +449,25 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
     .await;
 
     let bootstrap_config_toml = &bootstrap_config.config_toml;
+    if codex_runtime_proof::protected_mcp_target()?.is_some() {
+        let bootstrap_provider = codex_model_provider_info::built_in_model_providers(
+            bootstrap_config_toml.openai_base_url.clone(),
+        )
+        .remove("openai")
+        .context("built-in OpenAI provider is unavailable")?
+        .to_api_provider(Some(AuthMode::ChatgptAuthTokens))?;
+        validate_protected_runtime_config(
+            bootstrap_config_toml
+                .model_provider
+                .as_deref()
+                .unwrap_or("openai"),
+            bootstrap_config_toml.cli_auth_credentials_store,
+            &bootstrap_config_toml.mcp_servers,
+            &bootstrap_config_toml.model_providers,
+            &bootstrap_config.config_layer_stack,
+            Some(&bootstrap_provider.base_url),
+        )?;
+    }
     let chatgpt_base_url = bootstrap_config_toml
         .chatgpt_base_url
         .clone()
@@ -472,6 +585,19 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         build_config,
     )
     .await?;
+    if codex_runtime_proof::protected_mcp_target()?.is_some() {
+        let effective_provider = config
+            .model_provider
+            .to_api_provider(Some(AuthMode::ChatgptAuthTokens))?;
+        validate_protected_runtime_config(
+            &config.model_provider_id,
+            Some(config.cli_auth_credentials_store_mode),
+            config.mcp_servers.get(),
+            &HashMap::new(),
+            &config.config_layer_stack,
+            Some(&effective_provider.base_url),
+        )?;
+    }
     let resume_approvals_reviewer_override = cli_kv_overrides
         .iter()
         .any(|(key, _)| key == "approvals_reviewer")
@@ -528,15 +654,29 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
     codex_core::otel_init::record_process_start(otel.as_ref(), "codex_exec");
     codex_core::otel_init::install_sqlite_telemetry(otel.as_ref(), "codex_exec");
 
-    let otel_logger_layer = otel.as_ref().and_then(|o| o.logger_layer());
+    let otel_logger_layer = otel.as_ref().and_then(|o| o.logger_layer()).map(|layer| {
+        layer.with_filter(tracing_subscriber::filter::filter_fn(
+            protected_runtime_target_enabled,
+        ))
+    });
 
-    let otel_tracing_layer = otel.as_ref().and_then(|o| o.tracing_layer());
+    let otel_tracing_layer = otel.as_ref().and_then(|o| o.tracing_layer()).map(|layer| {
+        layer.with_filter(tracing_subscriber::filter::filter_fn(
+            protected_runtime_target_enabled,
+        ))
+    });
 
-    let _ = tracing_subscriber::registry()
+    let subscriber = tracing_subscriber::registry()
         .with(fmt_layer)
         .with(otel_tracing_layer)
-        .with(otel_logger_layer)
-        .try_init();
+        .with(otel_logger_layer);
+    if codex_runtime_proof::protected_runtime_active_or_failed() {
+        subscriber
+            .try_init()
+            .context("could not install protected runtime telemetry filter")?;
+    } else {
+        let _ = subscriber.try_init();
+    }
 
     let exec_span = exec_root_span();
     if let Some(context) = traceparent_context_from_env() {

@@ -43,6 +43,7 @@ pub(crate) struct ElicitationClientService {
     supports_openai_form: bool,
     send_elicitation: Arc<SendElicitation>,
     pause_state: ElicitationPauseState,
+    protected_output: bool,
 }
 
 impl ElicitationClientService {
@@ -51,6 +52,7 @@ impl ElicitationClientService {
         send_elicitation: SendElicitation,
         pause_state: ElicitationPauseState,
         tool_list_generation: Arc<AtomicUsize>,
+        protected_output: bool,
     ) -> Self {
         let supports_openai_form = client_info
             .capabilities
@@ -63,10 +65,12 @@ impl ElicitationClientService {
                 client_info,
                 clone_send_elicitation(Arc::clone(&send_elicitation)),
                 tool_list_generation,
+                protected_output,
             ),
             supports_openai_form,
             send_elicitation,
             pause_state,
+            protected_output,
         }
     }
 
@@ -75,6 +79,12 @@ impl ElicitationClientService {
         request: Elicitation,
         context: RequestContext<RoleClient>,
     ) -> Result<ElicitationResponse, rmcp::ErrorData> {
+        if self.protected_output {
+            return Err(rmcp::ErrorData::invalid_request(
+                "server elicitation is disabled for this connection",
+                None,
+            ));
+        }
         let RequestContext { id, meta, .. } = context;
         let request = restore_context_meta(request, meta);
         let _pause = self.pause_state.enter();

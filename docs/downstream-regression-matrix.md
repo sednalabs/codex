@@ -344,9 +344,11 @@ exact-head hosted proof:
   downstream child model, provider, and reasoning precedence.
 - Upstream `66bd101fff` owns lazy post-sampling token estimates. The existing
   `core-runtime-surface-smoke` lane pins
-  `post_sampling_token_estimate_is_disabled_by_always_on_sinks`, while broader
-  core validation continues to cover downstream response-model identity and
-  plugin guidance around the same turn loop.
+  `post_sampling_token_estimate_is_disabled_by_always_on_sinks`. It checks the
+  excluded event's direct callsite interest against the actual feedback and
+  state sink stack, with an ordinary TRACE callsite as a positive control;
+  broader core validation continues to cover downstream response-model
+  identity and plugin guidance around the same turn loop.
 - Upstream `f343d1237d` owns the core-compatible skill omission-notice policy.
   `codex.skill-loader-fixture-hermeticity-targeted` follows
   `omission_notice_follows_render_policy_and_is_charged_to_catalog_budget` and
@@ -1098,3 +1100,65 @@ and untrusted/`NONE` authors when identity is blank. The observer remains
 read-only and does not mint, print, persist, or activate credentials. Its
 permission contract is documented in
 `.codex/skills/babysit-pr/references/github-app-installation-broker.md`.
+
+## Native per-execution MCP proof
+
+The exact external-unload residency case remains the core runtime control;
+these existing core shutdown-consumer tests are also controls:
+`external_v2_unload_defers_for_pending_finalizers_and_submissions`,
+`session_end_flushes_transcript_and_ignores_control_output`, and
+`session_end_skips_subagents`.
+Earlier SessionEnd allocation hypotheses were reverted after hosted core
+validation still failed; the available traces do not establish a hook-specific
+cause. The native Linux qualification uses the repository's existing
+`RUST_MIN_STACK` value. Do not record the affected test as passing until it
+runs successfully in the hosted validation surface.
+
+The focused native proof suite must cover a fixed JCS operation/digest vector,
+safe integer rejection, omitted-versus-null and changed-parameter binding,
+certificate/key/artifact and fixed lease validation, per-request signature
+verification, mismatched server/recipient rejection, distinct root/delegate
+session nonces with a shared MCP manager, protection-drift key erasure,
+bootstrap frame bounds and descriptor closure, and reserved metadata collision
+and result redaction. The CLI seam
+must show protected bootstrap initialization occurs before argument dispatch,
+environment handling, or asynchronous startup. Run the crate/core focused
+unit suites, CLI startup-order check, `codex.mcp-safety-targeted`,
+`core-runtime-surface-smoke`, and the downstream-doc integration guard on the
+hosted validation surface. The ignored Linux root fixture must be invoked
+explicitly and prove real ChatGPT ephemeral import, provider Authorization and
+account headers, selected MCP bearer, root/delegate signatures, and echo
+redaction. Its negative cases cover mismatched context/config, expired auth,
+wrong effective provider endpoint or credential class, a delegate role that
+changes the provider URL, and altered or over-segmented synthetic JWTs; every
+invalid bootstrap must have zero provider and MCP credential egress; the
+delegate override case must have zero off-path provider and child MCP egress
+while the valid root request still succeeds. A skip is not proof. A source-level
+test or successful build alone does not establish launcher FD provenance,
+protected Linux process
+state, issuer validation by the service, or an end-to-end lease; those require
+the separately authorized protected-host and service-consumer validation
+paths. Dependency and Bazel lock generation is hosted-only.
+
+Runtime-proof unit regressions also force an invalidation between the getter's
+fast precheck and its mutex acquisition, then exercise the same locked target
+getter used in production; the cleared state must still return a protected
+failure. Protected cloud-config eligibility matches the current service's
+business-like, enterprise and education plan rules and refuses eligible or
+unknown protected plans before credential import and loader startup, while
+keeping known ineligible plans and ordinary cloud behavior intact.
+
+The protected CLI fixture additionally consumes the exact delegated process's
+non-timeout wait result before root finalization: the positive case requires
+completion, and the provider-override case requires the expected provider-pin
+rejection. It checks redirected MCP requests have zero off-recipient egress,
+checks error echoes and TRACE output for public synthetic credential/proof
+remnants, and separates HTTP method from MCP lifecycle phase accounting. The
+delayed-response fixture proves redaction after auth expiry only. A separate
+ignored root fixture imports actual synthetic protected auth and calls the
+retained production HTTP client after expiry, asserting its underlying send
+delegate sees no second request. Invoke both ignored root fixtures explicitly
+on a disposable hosted Linux runner. Ordinary non-Linux compile coverage must
+include the new crate and all production consumers. These fixture and compile
+lanes supplement the exact protected contribution checks; source inspection
+does not replace them.

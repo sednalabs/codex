@@ -98,6 +98,66 @@ use wiremock::ResponseTemplate;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
 
+#[test]
+fn protected_api_provider_is_pinned_to_the_canonical_builtin_configuration() {
+    let recipient = "https://chatgpt.com/backend-api/codex";
+    let expected = codex_model_provider_info::built_in_model_providers(Some(recipient.to_string()))
+        .remove("openai")
+        .expect("built-in provider")
+        .to_api_provider(Some(AuthMode::ChatgptAuthTokens))
+        .expect("API provider");
+    assert!(super::validate_protected_api_provider(&expected, recipient).is_ok());
+
+    let mut changed_url = expected.clone();
+    changed_url.base_url = "https://attacker.invalid/codex".to_string();
+    assert!(super::validate_protected_api_provider(&changed_url, recipient).is_err());
+
+    let mut changed_query = expected.clone();
+    changed_query.query_params = Some(HashMap::from([("redirect".to_string(), "1".to_string())]));
+    assert!(super::validate_protected_api_provider(&changed_query, recipient).is_err());
+
+    let mut changed_headers = expected;
+    changed_headers.headers.insert(
+        http::header::HeaderName::from_static("x-runtime-proof-test"),
+        "unexpected".parse().expect("header value"),
+    );
+    assert!(super::validate_protected_api_provider(&changed_headers, recipient).is_err());
+}
+
+#[test]
+fn protected_model_provider_is_checked_before_auth_resolution() {
+    let recipient = "https://chatgpt.com/backend-api/codex";
+    let expected = codex_model_provider_info::built_in_model_providers(Some(recipient.to_string()))
+        .remove("openai")
+        .expect("built-in provider");
+    assert!(super::validate_protected_model_provider_info(&expected, recipient).is_ok());
+
+    let mut changed_url = expected.clone();
+    changed_url.base_url = Some("https://attacker.invalid/codex".to_string());
+    assert!(super::validate_protected_model_provider_info(&changed_url, recipient).is_err());
+
+    let mut injected_auth = expected;
+    injected_auth.experimental_bearer_token = Some("fixture-only-invalid-auth".to_string());
+    assert!(super::validate_protected_model_provider_info(&injected_auth, recipient).is_err());
+}
+
+#[test]
+fn protected_api_route_uses_only_the_pinned_recipient_and_endpoint() {
+    let recipient = "https://chatgpt.com/backend-api/codex";
+    let provider = codex_model_provider_info::built_in_model_providers(Some(recipient.to_string()))
+        .remove("openai")
+        .expect("built-in provider")
+        .to_api_provider(Some(AuthMode::ChatgptAuthTokens))
+        .expect("API provider");
+    assert_eq!(
+        super::validate_api_route(&provider, "/responses", Some(recipient)).expect("pinned route"),
+        "https://chatgpt.com/backend-api/codex/responses"
+    );
+    let mut query_provider = provider;
+    query_provider.query_params = Some(HashMap::from([("redirect".to_string(), "1".to_string())]));
+    assert!(super::validate_api_route(&query_provider, "/responses", Some(recipient)).is_err());
+}
+
 const TEST_CHATGPT_ID_TOKEN: &str = "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJlbWFpbCI6InVzZXJAZXhhbXBsZS5jb20iLCJlbWFpbF92ZXJpZmllZCI6dHJ1ZSwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImNoYXRncHRfdXNlcl9pZCI6InVzZXItMTIzNDUiLCJ1c2VyX2lkIjoidXNlci0xMjM0NSIsImNoYXRncHRfcGxhbl90eXBlIjoicHJvIiwiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjb3VudC0xMjMifX0.c2ln";
 const TEST_INSTALLATION_ID: &str = "11111111-1111-4111-8111-111111111111";
 

@@ -3740,3 +3740,84 @@ existing `setup-rusty-v8.sh` helper, which downloads the matching Codex release
 archive and binding and verifies them against the target's pinned checksum
 manifest. Use the host-only artifact only with companion binaries built from
 the same source commit.
+
+## Native per-execution proof for a protected MCP claim
+
+The Linux CLI accepts an optional protected bootstrap through one inherited
+anonymous descriptor before dispatching arguments or starting asynchronous
+work. The frame contains a bounded issuer certificate and ephemeral signing
+seed. Startup checks the inherited process identity and protection state,
+marks the process non-dumpable, closes the descriptor, and zeroizes temporary
+seed/frame storage. A missing descriptor keeps ordinary CLI use unconfigured;
+an invalid protected frame fails startup closed.
+
+Every native session, including a delegated session using the parent's shared
+MCP manager, has its own execution nonce. For one pinned claim tool and
+recipient, the final rewritten parameters and native execution evidence are
+signed into short-lived MCP request metadata. Complete claim preconditions are
+required. The proof does not come from model arguments or a bare thread ID,
+and the request path does not retry without proof after a protected-scope
+failure. Proof material is excluded from the rollout request trace and
+redacted from echoed result surfaces.
+
+The hosted external-unload residency case remains the exact core reproducer,
+with `session_end_flushes_transcript_and_ignores_control_output` and
+`session_end_skips_subagents` as existing shutdown-consumer controls. Earlier
+SessionEnd allocation hypotheses were reverted after hosted core validation
+still failed; the available traces do not establish a hook-specific cause or
+a passing execution. The ordinary Linux qualification restores the repository
+standard `RUST_MIN_STACK` value used by its existing Rust test workflows.
+
+The post-sampling token-estimate regression asks the constructed feedback and
+state sink stack for direct callsite interest on its excluded TRACE event, and
+uses an ordinary TRACE callsite as a positive control. This avoids relying on
+the process-wide cached `event_enabled!` result while preserving both sink
+filters and their production behavior.
+
+The runtime key is process-scoped and is erased if its protection checks drift.
+The issuer certificate binds the fixed execution-lease duration; an ordinary
+request or registration replay does not renew that lifetime. This client
+carry supplies proof production only. The independent service remains
+responsible for authenticating the issuer, validating the request signature,
+and enforcing the lease and claim invariants. Preserve this boundary during
+upstream sync unless upstream provides an equivalent host-held per-execution
+capability and exact-request binding.
+
+Protected startup also consumes a separate finite authentication frame from
+the root launcher. It imports ChatGPT credentials through the existing
+ephemeral auth path and keeps the selected MCP bearer in private runtime state.
+The endpoint check uses the effective built-in Responses provider URL, and
+every resolved model provider is checked against the canonical built-in
+configuration before auth resolution and again before HTTP or websocket
+transport construction. This rejects role-level provider or auth overrides,
+including transport overrides, before protected credentials can leave the
+process. The
+synthetic Linux fixture uses a fixed public fake JWT and a loopback URL through
+the same importer and transport path; invalid frame, recipient, or token
+variants must fail before provider credential egress.
+
+The existing cloud-config service fetches managed requirements for
+business-like, enterprise and education plans through a credential-bearing
+backend route that is outside the selected protected provider recipient. Until
+that consumer is admitted and guarded, protected startup refuses eligible or
+unclassified account plans before importing provider credentials or starting
+the loader. Ordinary cloud-config loading and managed policy handling remain
+unchanged. This protected eligibility limit is a source safety boundary, not
+live acceptance of a different cohort.
+
+Protected runtime failure is terminal within the process, including retained
+MCP credential caches. Every protected HTTP send and recovery rechecks the
+active recipient and prevents redirects before network access. Per-invocation
+redaction covers successful and failed results and JSON keys before output
+sinks; protected server notifications and elicitation payloads are suppressed.
+Formatter and OpenTelemetry layers exclude raw SDK transport targets even
+when TRACE is enabled. Linux custody is gated so ordinary Windows startup
+remains supported; protected non-Linux startup fails closed.
+
+The delayed MCP response fixture covers result redaction after the runtime
+credentials expire; it does not establish a cached-send rejection. A separate
+ignored Linux root fixture imports the real synthetic protected frame and
+uses the production protected HTTP client twice: the initial selected request
+reaches a recording delegate, while the retained client rejects a second send
+after expiry before that delegate is called. Both tests are source fixtures
+until explicitly run on a disposable hosted Linux runner.
