@@ -685,7 +685,12 @@ impl ProtectedRuntimeFixture {
         );
         eprintln!("runtime-proof-root-stage:cli_executable_ready");
         let stdout = File::create(&self.output_path)?;
-        let stderr = File::create(&self.errors_path)?;
+        let stderr = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&self.errors_path)?;
         let mut stderr_reader = stderr.try_clone()?;
         let (mut launcher, child_socket) = seqpacket_pair()?;
         let (auth_launcher, auth_child_socket) = seqpacket_pair()?;
