@@ -98,9 +98,12 @@ def main():
                 if str(exc) != "native build receipt is incomplete or mismatched":
                     raise
                 receipt = json.loads((root / config["receipt"]).read_text())
+                status_bytes = (root / config["status"]).read_bytes()
+                status_lines = (root / config["status"]).read_text().splitlines()
+                decoded_status = status_bytes.decode("utf-8-sig", errors="replace")
                 commits = [
                     line
-                    for line in (root / config["status"]).read_text().splitlines()
+                    for line in status_lines
                     if line.startswith("STABLE_GIT_COMMIT ")
                 ]
                 steps = receipt.get("steps", [])
@@ -123,6 +126,30 @@ def main():
                 print(
                     "Receipt checks failed: "
                     + ", ".join(name for name, valid in checks.items() if not valid),
+                    file=sys.stderr,
+                )
+                classification = {
+                    "byte_count": len(status_bytes),
+                    "empty": not status_bytes,
+                    "line_count": len(status_lines),
+                    "commit_count": len(commits),
+                    "normalized_commit_count": sum(
+                        line.lstrip().startswith("STABLE_GIT_COMMIT ")
+                        for line in decoded_status.splitlines()
+                    ),
+                    "has_build_embed_label": any(
+                        line.startswith("BUILD_EMBED_LABEL ") for line in status_lines
+                    ),
+                    "has_build_host": any(
+                        line.startswith("BUILD_HOST ") for line in status_lines
+                    ),
+                    "has_build_user": any(
+                        line.startswith("BUILD_USER ") for line in status_lines
+                    ),
+                }
+                print(
+                    "Workspace status classification: "
+                    + json.dumps(classification, sort_keys=True),
                     file=sys.stderr,
                 )
                 raise

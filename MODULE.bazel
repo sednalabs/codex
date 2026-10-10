@@ -642,6 +642,7 @@ crate.annotation(
         "CMAKE_GENERATOR": "Ninja",
         "CMAKE_TOOLCHAIN_FILE": "$(execpath @@//third_party/voice:opus-toolchain.cmake)",
         "CODEX_VOICE_NINJA": "$${pwd}/$(NINJA)",
+        "CODEX_OPUS_MATERIALIZE_HEADERS": "1",
     },
     build_script_toolchains = [
         "@rules_foreign_cc//toolchains:current_cmake_toolchain",
@@ -652,6 +653,8 @@ crate.annotation(
         "@rules_foreign_cc//toolchains:current_ninja_toolchain",
     ],
     crate = "opusic-sys",
+    patch_args = ["-p1"],
+    patches = ["//patches:opusic-sys_materialize_installed_headers.patch"],
 )
 
 # The musl CLI's allocator needs declared native tools and consistent header flags.
