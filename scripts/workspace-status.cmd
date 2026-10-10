@@ -1,6 +1,8 @@
 @echo off
 setlocal
 
+if "%CODEX_BAZEL_STATUS_DIAGNOSTIC%"=="1" echo STABLE_WINDOWS_STATUS_CMD_ENTERED 1
+
 if defined STABLE_GIT_COMMIT (
   echo STABLE_GIT_COMMIT %STABLE_GIT_COMMIT%
   exit /b 0

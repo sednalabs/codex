@@ -7,6 +7,7 @@ import sys
 from collections.abc import Mapping
 from collections.abc import Sequence
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 
 OPENAI_REPOSITORY = "openai/codex"
@@ -283,6 +284,136 @@ def bazel_command(*args: str, env: Mapping[str, str] | None = None) -> list[str]
     return [bazel, *startup_args(args, env), *bazel_args_with_remote_config(args, env)]
 
 
+def workspace_status_diagnostic(events_path: Path) -> dict[str, int | bool]:
+    """Classify private BEP records without publishing their values."""
+    summary: dict[str, int | bool] = {
+        "canonical_events": 0,
+        "canonical_build_sections": 0,
+        "command_option_sections": 0,
+        "status_option_count": 0,
+        "workspace_status_events": 0,
+        "producer_entry_count": 0,
+        "commit_key_count": 0,
+        "parse_failures": 0,
+        "read_failed": False,
+    }
+    status_options = []
+    try:
+        with events_path.open(encoding="utf-8") as events:
+            for line in events:
+                try:
+                    event = json.loads(line)
+                    if not isinstance(event, dict):
+                        raise ValueError
+                    canonical = event.get("structuredCommandLine", {})
+                    if canonical.get("commandLineLabel") == "canonical":
+                        summary["canonical_events"] += 1
+                        sections = canonical.get("sections", [])
+                        if not isinstance(sections, list):
+                            raise ValueError
+                        for section in sections:
+                            if section.get("sectionLabel") == "command":
+                                chunks = section["chunkList"].get("chunk", [])
+                                if chunks != ["build"]:
+                                    raise ValueError
+                                summary["canonical_build_sections"] += 1
+                            if section.get("sectionLabel") == "command options":
+                                options = section["optionList"].get("option", [])
+                                if not isinstance(options, list):
+                                    raise ValueError
+                                summary["command_option_sections"] += 1
+                                for option in options:
+                                    name = option["optionName"]
+                                    value = option.get("optionValue", "")
+                                    if not isinstance(name, str) or not isinstance(
+                                        value, str
+                                    ):
+                                        raise ValueError
+                                    if name == "workspace_status_command":
+                                        summary["status_option_count"] += 1
+                                        status_options.append(value)
+                    if "workspaceStatus" in event:
+                        items = event["workspaceStatus"].get("item", [])
+                        if not isinstance(items, list):
+                            raise ValueError
+                        summary["workspace_status_events"] += 1
+                        for item in items:
+                            key = item["key"]
+                            value = item.get("value", "")
+                            if not isinstance(key, str) or not isinstance(value, str):
+                                raise ValueError
+                            summary["commit_key_count"] += key == "STABLE_GIT_COMMIT"
+                            summary["producer_entry_count"] += (
+                                key == "STABLE_WINDOWS_STATUS_CMD_ENTERED"
+                                and value == "1"
+                            )
+                except (AttributeError, KeyError, TypeError, ValueError):
+                    summary["parse_failures"] += 1
+    except OSError:
+        summary["read_failed"] = True
+    evidence_valid = not summary["read_failed"] and summary["parse_failures"] == 0
+    option_known = evidence_valid and (
+        summary["canonical_events"] == 1
+        and summary["canonical_build_sections"] == 1
+        and summary["command_option_sections"] == 1
+        and summary["status_option_count"] <= 1
+    )
+    summary["effective_option_known"] = option_known
+    summary["effective_option_empty"] = option_known and status_options in ([], [""])
+    summary["effective_option_selects_cmd"] = (
+        option_known
+        and len(status_options) == 1
+        and status_options[0].replace("\\", "/").removeprefix("./")
+        == "scripts/workspace-status.cmd"
+    )
+    summary["workspace_status_known"] = (
+        evidence_valid and summary["workspace_status_events"] == 1
+    )
+    return summary
+
+
+def print_workspace_status_diagnostic(summary: dict[str, int | bool]) -> None:
+    try:
+        print("Workspace status diagnostic: " + json.dumps(summary, sort_keys=True))
+    except (OSError, TypeError, ValueError):
+        pass
+
+
+def run_with_workspace_status_diagnostic(command: list[str]) -> int:
+    """Use the same Windows build; preserve its exit status on diagnostic failure."""
+    separator = command.index("--") if "--" in command else len(command)
+    if any(arg.startswith("--build_event_json_file") for arg in command[:separator]):
+        print_workspace_status_diagnostic({"existing_bep": True})
+        return subprocess.run(command, check=False).returncode
+    try:
+        # Private, temporary, and outside every execution-log/artifact upload path.
+        temporary = TemporaryDirectory(
+            prefix="bazel-workspace-status-", dir=os.environ["RUNNER_TEMP"]
+        )
+    except (KeyError, OSError):
+        print_workspace_status_diagnostic({"setup_failed": True})
+        return subprocess.run(command, check=False).returncode
+    try:
+        events_path = Path(temporary.name) / "events.json"
+        diagnostic_command = [
+            *command[:separator],
+            f"--build_event_json_file={events_path}",
+            *command[separator:],
+        ]
+        child_env = dict(os.environ, CODEX_BAZEL_STATUS_DIAGNOSTIC="1")
+        result = subprocess.run(diagnostic_command, env=child_env, check=False)
+        try:
+            print_workspace_status_diagnostic(workspace_status_diagnostic(events_path))
+        except (OSError, TypeError, ValueError):
+            print_workspace_status_diagnostic({"summary_failed": True})
+        return result.returncode
+    finally:
+        try:
+            temporary.cleanup()
+        except OSError:
+            print_workspace_status_diagnostic({"cleanup_failed": True})
+
+
 def main() -> None:
     config = remote_config(sys.argv[1:], os.environ)
     if os.environ.get("CODEX_BAZEL_LOCAL_ONLY") == "1":
@@ -308,6 +439,17 @@ def main() -> None:
     if os.name == "nt":
         # Windows CRT exec can split arguments containing spaces and lose the
         # eventual child exit status. Wait for Bazel and propagate its status.
+        separator = command.index("--") if "--" in command else len(command)
+        build_command = next(
+            (arg for arg in command[1:separator] if not arg.startswith("-")), None
+        )
+        if (
+            os.environ.get("CODEX_BAZEL_LOCAL_ONLY") == "1"
+            and os.environ.get("CODEX_BAZEL_WINDOWS_VOICE_TOOLS") == "1"
+            and build_command == "build"
+            and "--config=argument-comment-lint" in command[1:separator]
+        ):
+            raise SystemExit(run_with_workspace_status_diagnostic(command))
         result = subprocess.run(command, check=False)
         raise SystemExit(result.returncode)
 
