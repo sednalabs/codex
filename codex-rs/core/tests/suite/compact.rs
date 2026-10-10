@@ -70,6 +70,7 @@ use serde_json::json;
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 use tempfile::TempDir;
 use wiremock::MockServer;
 // --- Test helpers -----------------------------------------------------------
@@ -1160,20 +1161,28 @@ async fn manual_compact_records_durable_and_local_token_usage() {
     // Compact run where the API reports zero tokens in usage. Our local
     // estimator should still compute a non-zero context size for the compacted
     // history.
+    let mut completion = ev_completed_with_tokens("r1", /*total_tokens*/ 0);
+    completion["response"]["model"] = json!("gpt-6.1-sol");
+    completion["response"]["service_tier"] = json!("provider-tier-unpriced");
     let sse_compact = sse(vec![
         ev_assistant_message("m1", SUMMARY_TEXT),
-        ev_completed_with_tokens("r1", /*total_tokens*/ 0),
+        completion,
     ]);
     mount_sse_once(&server, sse_compact).await;
 
     let model_provider = non_openai_model_provider(&server);
     let mut builder = test_codex().with_config(move |config| {
         config.model_provider = model_provider;
+        config.features.enable(Feature::Sqlite).unwrap();
         set_test_compact_prompt(config);
     });
     let test = builder.build(&server).await.unwrap();
     let rollout_path = test.codex.rollout_path().expect("rollout path");
-    let codex = test.codex;
+    let codex = test.codex.clone();
+    let thread_id = test.session_configured.thread_id.to_string();
+    let requested_model = test.session_configured.model.clone();
+    let sqlite = test.config.sqlite.clone();
+    let home = test.home.clone();
 
     // Trigger manual compact and collect TokenCount events for the compact turn.
     codex.submit(Op::Compact).await.unwrap();
@@ -1200,6 +1209,20 @@ async fn manual_compact_records_durable_and_local_token_usage() {
 
     // Ensure the compact task itself completes.
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+    let writer_state = test
+        .thread_store
+        .as_any()
+        .downcast_ref::<codex_thread_store::LocalThreadStore>()
+        .expect("local thread store")
+        .state_db()
+        .await
+        .expect("actual session writer state");
+    let shutdown = test
+        .thread_manager
+        .shutdown_all_threads_bounded(Duration::from_secs(10))
+        .await;
+    assert!(shutdown.submit_failed.is_empty());
+    assert!(shutdown.timed_out.is_empty());
 
     assert_eq!(
         first, 0,
@@ -1239,6 +1262,50 @@ async fn manual_compact_records_durable_and_local_token_usage() {
         ),
         (Some("r1"), records.first().copied())
     );
+
+    writer_state.close().await;
+    assert!(writer_state.usage_pool().is_closed());
+    drop(codex);
+    drop(test);
+    drop(writer_state);
+    let reopened = codex_state::StateRuntime::init(sqlite, "openai".to_string())
+        .await
+        .expect("reopen state after closing the actual writer");
+    let row = sqlx::query_as::<
+        _,
+        (
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+            String,
+            String,
+            String,
+        ),
+    >(
+        "SELECT requested_model, actual_model_used, actual_service_tier, actual_service_tier_source, total_tokens, status, started_at, completed_at FROM usage_provider_calls WHERE thread_id = ? AND request_id = ?",
+    )
+    .bind(thread_id)
+    .bind("r1")
+    .fetch_one(reopened.usage_pool().as_ref())
+    .await
+    .expect("local compaction completion persists to the usage ledger");
+    assert_eq!(row.0, requested_model);
+    assert_eq!(row.1.as_deref(), Some("gpt-6.1-sol"));
+    assert_eq!(row.2.as_deref(), Some("provider-tier-unpriced"));
+    assert_eq!(row.3.as_deref(), Some("provider_response"));
+    assert_eq!(
+        row.4,
+        Some(0),
+        "local estimates must not replace provider usage"
+    );
+    assert_eq!(row.5, "ok");
+    let started_at = chrono::DateTime::parse_from_rfc3339(&row.6).expect("request start timestamp");
+    let completed_at = chrono::DateTime::parse_from_rfc3339(&row.7).expect("completion timestamp");
+    assert!(completed_at >= started_at);
+    reopened.close().await;
+    drop(home);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

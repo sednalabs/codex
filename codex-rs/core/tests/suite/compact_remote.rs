@@ -445,11 +445,15 @@ async fn remote_compact_v2_records_usage_before_output_validation() -> Result<()
             .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
             .with_config(|config| {
                 config.model_auto_compact_token_limit = Some(200);
+                config.features.enable(Feature::Sqlite).unwrap();
             }),
     )
     .await?;
     let codex = &harness.test().codex;
     let rollout_path = codex.rollout_path().context("rollout path")?;
+    let thread_id = harness.test().session_configured.thread_id.to_string();
+    let sqlite = harness.test().config.sqlite.clone();
+    let home = harness.test().home.clone();
     let responses_mock = responses::mount_sse_sequence(
         harness.server(),
         vec![
@@ -515,7 +519,22 @@ async fn remote_compact_v2_records_usage_before_output_validation() -> Result<()
         1,
         "the accepted prompt should be saved exactly once after compaction fails"
     );
-    codex.shutdown_and_wait().await?;
+    let writer_state = harness
+        .test()
+        .thread_store
+        .as_any()
+        .downcast_ref::<codex_thread_store::LocalThreadStore>()
+        .context("local thread store")?
+        .state_db()
+        .await
+        .context("actual session writer state")?;
+    let shutdown = harness
+        .test()
+        .thread_manager
+        .shutdown_all_threads_bounded(Duration::from_secs(10))
+        .await;
+    assert!(shutdown.submit_failed.is_empty());
+    assert!(shutdown.timed_out.is_empty());
 
     let record = fs::read_to_string(&rollout_path)?
         .lines()
@@ -527,6 +546,25 @@ async fn remote_compact_v2_records_usage_before_output_validation() -> Result<()
         .find(|record| record.response_id == "invalid-compact")
         .context("remote compaction usage record")?;
     assert_eq!(record.usage.total_tokens, 8_200);
+
+    writer_state.close().await;
+    assert!(writer_state.usage_pool().is_closed());
+    drop(harness);
+    drop(writer_state);
+    let reopened = codex_state::StateRuntime::init(sqlite, "openai".to_string()).await?;
+    let row = sqlx::query_as::<_, (Option<i64>, String, String, String)>(
+        "SELECT total_tokens, status, started_at, completed_at FROM usage_provider_calls WHERE thread_id = ? AND request_id = ?",
+    )
+    .bind(thread_id)
+    .bind("invalid-compact")
+    .fetch_one(reopened.usage_pool().as_ref())
+    .await?;
+    assert_eq!((row.0, row.1.as_str()), (Some(8_200), "ok"));
+    let started_at = chrono::DateTime::parse_from_rfc3339(&row.2)?;
+    let completed_at = chrono::DateTime::parse_from_rfc3339(&row.3)?;
+    assert!(completed_at >= started_at);
+    reopened.close().await;
+    drop(home);
 
     Ok(())
 }
@@ -1527,10 +1565,18 @@ async fn remote_mid_turn_compact_v2_sends_turn_state_over_http() -> Result<()> {
             .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
             .with_config(|config| {
                 config.model_auto_compact_token_limit = Some(200);
+                config.features.enable(Feature::Sqlite).unwrap();
             }),
     )
     .await?;
     let codex = harness.test().codex.clone();
+    let thread_id = harness.test().session_configured.thread_id.to_string();
+    let requested_model = harness.test().session_configured.model.clone();
+    let sqlite = harness.test().config.sqlite.clone();
+    let home = harness.test().home.clone();
+    let mut compact_completion = responses::ev_completed_with_tokens("r-compact", /*total_tokens*/ 16);
+    compact_completion["response"]["model"] = json!("gpt-6.1-sol");
+    compact_completion["response"]["service_tier"] = json!("provider-tier-unpriced");
     let responses_mock = responses::mount_response_sequence(
         harness.server(),
         vec![
@@ -1547,7 +1593,7 @@ async fn remote_mid_turn_compact_v2_sends_turn_state_over_http() -> Result<()> {
                         "encrypted_content": "V2_COMPACT_SUMMARY",
                     }
                 }),
-                responses::ev_completed("r-compact"),
+                compact_completion,
             ]))
             .insert_header(TURN_STATE_HEADER, "compact-state"),
             responses::sse_response(responses::sse(vec![
@@ -1602,6 +1648,58 @@ async fn remote_mid_turn_compact_v2_sends_turn_state_over_http() -> Result<()> {
         requests[3].header(TURN_STATE_HEADER).as_deref(),
         Some("sampling-state")
     );
+
+    let writer_state = harness
+        .test()
+        .thread_store
+        .as_any()
+        .downcast_ref::<codex_thread_store::LocalThreadStore>()
+        .context("local thread store")?
+        .state_db()
+        .await
+        .context("actual session writer state")?;
+    let shutdown = harness
+        .test()
+        .thread_manager
+        .shutdown_all_threads_bounded(Duration::from_secs(10))
+        .await;
+    assert!(shutdown.submit_failed.is_empty());
+    assert!(shutdown.timed_out.is_empty());
+    writer_state.close().await;
+    assert!(writer_state.usage_pool().is_closed());
+    drop(codex);
+    drop(harness);
+    drop(writer_state);
+    let reopened = codex_state::StateRuntime::init(sqlite, "openai".to_string()).await?;
+    let row = sqlx::query_as::<
+        _,
+        (
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+            String,
+            String,
+            String,
+        ),
+    >(
+        "SELECT requested_model, actual_model_used, actual_service_tier, actual_service_tier_source, total_tokens, status, started_at, completed_at FROM usage_provider_calls WHERE thread_id = ? AND request_id = ?",
+    )
+    .bind(thread_id)
+    .bind("r-compact")
+    .fetch_one(reopened.usage_pool().as_ref())
+    .await?;
+    assert_eq!(row.0, requested_model);
+    assert_eq!(row.1.as_deref(), Some("gpt-6.1-sol"));
+    assert_eq!(row.2.as_deref(), Some("provider-tier-unpriced"));
+    assert_eq!(row.3.as_deref(), Some("provider_response"));
+    assert_eq!((row.4, row.5.as_str()), (Some(16), "ok"));
+    let started_at = chrono::DateTime::parse_from_rfc3339(&row.6)?;
+    let completed_at = chrono::DateTime::parse_from_rfc3339(&row.7)?;
+    assert!(completed_at >= started_at);
+    reopened.close().await;
+    drop(home);
 
     Ok(())
 }

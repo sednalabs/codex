@@ -14,6 +14,7 @@ use codex_rmcp_client::McpOAuthCallbackMode;
 use codex_rmcp_client::OAuthDiscoveryTimeout;
 use codex_rmcp_client::OAuthProviderError;
 use codex_rmcp_client::StreamableHttpRedirectMode;
+use codex_rmcp_client::VerifiedDeviceAuthorization;
 use codex_rmcp_client::determine_streamable_http_auth_status;
 use codex_rmcp_client::determine_streamable_http_auth_status_from_credentials;
 use codex_rmcp_client::discover_streamable_http_oauth;
@@ -33,6 +34,7 @@ pub struct McpOAuthLoginConfig {
     pub env_http_headers: Option<HashMap<String, String>>,
     pub discovered_scopes: Option<Vec<String>>,
     pub callback_mode: McpOAuthCallbackMode,
+    pub device_authorization: Option<VerifiedDeviceAuthorization>,
 }
 
 #[derive(Debug)]
@@ -113,6 +115,7 @@ pub async fn oauth_login_support(
         Ok(Some(discovery)) => {
             config.discovered_scopes = discovery.scopes_supported;
             config.callback_mode = discovery.callback_mode;
+            config.device_authorization = discovery.device_authorization;
             McpOAuthLoginSupport::Supported(config)
         }
         Ok(None) => McpOAuthLoginSupport::Unsupported,
@@ -140,6 +143,7 @@ fn oauth_login_candidate(transport: &McpServerTransportConfig) -> Option<McpOAut
         env_http_headers: env_http_headers.clone(),
         discovered_scopes: None,
         callback_mode: McpOAuthCallbackMode::CallbackSpecific,
+        device_authorization: None,
     })
 }
 

@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -36,6 +37,7 @@ use crate::utils::MCP_USER_AGENT;
 
 const MAX_OAUTH_HTTP_RESPONSE_BODY_BYTES: usize = 1024 * 1024;
 const MAX_OAUTH_HTTP_REDIRECTS: usize = 10;
+const MAX_DEVICE_METADATA_RECEIPTS: usize = 32;
 static NEXT_OAUTH_REQUEST_ID: AtomicU64 = AtomicU64::new(0);
 
 tokio::task_local! {
@@ -71,6 +73,135 @@ pub(crate) struct OAuthHttpClientAdapter {
     timeout: OAuthDiscoveryTimeout,
     has_configured_headers: bool,
     redirect_mode: StreamableHttpRedirectMode,
+    device_metadata_receipt: Option<DeviceMetadataReceiptCollector>,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct DeviceMetadataReceiptCollector {
+    state: Arc<Mutex<DeviceMetadataReceiptState>>,
+}
+
+#[derive(Default)]
+struct DeviceMetadataReceiptState {
+    usable: bool,
+    consumed: bool,
+    responses: Vec<DeviceMetadataResponseReceipt>,
+}
+
+#[derive(Clone)]
+pub(crate) struct DeviceMetadataResponseReceipt {
+    pub(crate) request_url: Url,
+    pub(crate) metadata: AuthorizationMetadata,
+}
+
+impl DeviceMetadataReceiptCollector {
+    #[cfg(test)]
+    pub(crate) fn new_for_test() -> Self {
+        Self {
+            state: Arc::new(Mutex::new(DeviceMetadataReceiptState {
+                usable: true,
+                ..DeviceMetadataReceiptState::default()
+            })),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn record_for_test(&self, request_url: &str, metadata: &AuthorizationMetadata) {
+        let Ok(request_url) = Url::parse(request_url) else {
+            self.invalidate();
+            return;
+        };
+        let Ok(body) = serde_json::to_vec(metadata) else {
+            self.invalidate();
+            return;
+        };
+        self.observe(
+            &Method::GET,
+            HttpRedirectPolicy::Stop,
+            &request_url,
+            StatusCode::OK.as_u16(),
+            &body,
+        );
+    }
+
+    fn observe(
+        &self,
+        method: &Method,
+        requested_policy: HttpRedirectPolicy,
+        request_url: &Url,
+        status: u16,
+        body: &[u8],
+    ) {
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        if !state.usable || state.consumed || method != Method::GET {
+            return;
+        }
+        let Some(status) = StatusCode::from_u16(status).ok() else {
+            state.usable = false;
+            state.responses.clear();
+            return;
+        };
+        if requested_policy != HttpRedirectPolicy::Stop || status.is_redirection() {
+            state.usable = false;
+            state.responses.clear();
+            return;
+        }
+        if status != StatusCode::OK {
+            return;
+        }
+        let Ok(metadata) = serde_json::from_slice::<AuthorizationMetadata>(body) else {
+            return;
+        };
+        if state.responses.len() >= MAX_DEVICE_METADATA_RECEIPTS {
+            state.usable = false;
+            state.responses.clear();
+            return;
+        }
+        state.responses.push(DeviceMetadataResponseReceipt {
+            request_url: request_url.clone(),
+            metadata,
+        });
+    }
+
+    fn invalidate(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.usable = false;
+            state.responses.clear();
+        }
+    }
+
+    pub(crate) fn take_matching(
+        &self,
+        metadata: &AuthorizationMetadata,
+        discovered: bool,
+    ) -> Option<DeviceMetadataResponseReceipt> {
+        let mut state = self.state.lock().ok()?;
+        if state.consumed {
+            return None;
+        }
+        state.consumed = true;
+        if !state.usable || !discovered {
+            return None;
+        }
+        let matches = state
+            .responses
+            .iter()
+            .filter(|response| metadata_matches(&response.metadata, metadata))
+            .collect::<Vec<_>>();
+        if matches.len() != 1 {
+            return None;
+        }
+        matches.first().map(|response| (**response).clone())
+    }
+}
+
+fn metadata_matches(left: &AuthorizationMetadata, right: &AuthorizationMetadata) -> bool {
+    match (serde_json::to_value(left), serde_json::to_value(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
 }
 
 impl OAuthHttpClientAdapter {
@@ -189,6 +320,7 @@ impl OAuthHttpClientAdapter {
             timeout: OAuthDiscoveryTimeout::Requested,
             has_configured_headers,
             redirect_mode,
+            device_metadata_receipt: None,
         })
     }
 
@@ -207,10 +339,41 @@ impl OAuthHttpClientAdapter {
             timeout: OAuthDiscoveryTimeout::Capped(max_timeout),
             has_configured_headers,
             redirect_mode,
+            device_metadata_receipt: None,
         })
     }
 
+    pub(crate) fn enable_device_metadata_receipt(
+        &mut self,
+    ) -> DeviceMetadataReceiptCollector {
+        let collector = DeviceMetadataReceiptCollector {
+            state: Arc::new(Mutex::new(DeviceMetadataReceiptState {
+                usable: true,
+                ..DeviceMetadataReceiptState::default()
+            })),
+        };
+        self.device_metadata_receipt = Some(collector.clone());
+        collector
+    }
+
     pub(crate) async fn execute_request(
+        &self,
+        request: HttpRequest,
+        redirect_policy: OAuthHttpRedirectPolicy,
+        timeout: Option<Duration>,
+    ) -> Result<HttpResponse, OAuthHttpClientError> {
+        let result = self
+            .execute_request_inner(request, redirect_policy, timeout)
+            .await;
+        if result.is_err()
+            && let Some(collector) = &self.device_metadata_receipt
+        {
+            collector.invalidate();
+        }
+        result
+    }
+
+    async fn execute_request_inner(
         &self,
         request: HttpRequest,
         redirect_policy: OAuthHttpRedirectPolicy,
@@ -226,6 +389,7 @@ impl OAuthHttpClientAdapter {
             }
         };
         let (parts, body) = request.into_parts();
+        let request_method = parts.method.clone();
         let mut request_url =
             Url::parse(&parts.uri.to_string()).map_err(oauth_http_client_error)?;
         let is_resource_origin = request_url.origin() == self.resource_origin;
@@ -311,6 +475,15 @@ impl OAuthHttpClientAdapter {
                     ));
                 }
                 body.extend_from_slice(&chunk);
+            }
+            if let Some(collector) = &self.device_metadata_receipt {
+                collector.observe(
+                    &request_method,
+                    params.redirect_policy,
+                    &request_url,
+                    response.status,
+                    &body,
+                );
             }
             let Ok(status) = StatusCode::from_u16(response.status) else {
                 break (response, body);
@@ -475,6 +648,119 @@ mod tests {
             ),
             HttpRedirectPolicy::Follow
         );
+    }
+
+    #[test]
+    fn device_receipt_matches_one_exact_response_from_this_discovery() {
+        let collector = DeviceMetadataReceiptCollector::new_for_test();
+        let url = Url::parse("https://issuer.example/.well-known/openid-configuration")
+            .expect("metadata URL should parse");
+        let metadata: AuthorizationMetadata = serde_json::from_value(serde_json::json!({
+            "issuer": "https://issuer.example",
+            "authorization_endpoint": "https://issuer.example/authorize",
+            "token_endpoint": "https://tokens.example/token",
+            "device_authorization_endpoint": "https://devices.example/device",
+            "grant_types_supported": ["urn:ietf:params:oauth:grant-type:device_code"],
+            "extra_metadata": {"audience": "mcp"}
+        }))
+        .expect("metadata should deserialize");
+        let body = serde_json::to_vec(&metadata).expect("metadata should serialize");
+
+        collector.observe(&Method::GET, HttpRedirectPolicy::Stop, &url, 503, b"");
+        collector.observe(
+            &Method::GET,
+            HttpRedirectPolicy::Stop,
+            &url,
+            StatusCode::OK.as_u16(),
+            &body,
+        );
+
+        let receipt = collector
+            .take_matching(&metadata, true)
+            .expect("one exact discovered response should produce a receipt");
+        assert_eq!(receipt.request_url, url);
+        assert!(collector.take_matching(&metadata, true).is_none());
+    }
+
+    #[test]
+    fn device_receipt_rejects_redirects_non_stop_and_postimage_mismatch() {
+        let url = Url::parse("https://issuer.example/.well-known/oauth-authorization-server")
+            .expect("metadata URL should parse");
+        let metadata: AuthorizationMetadata = serde_json::from_value(serde_json::json!({
+            "issuer": "https://issuer.example",
+            "authorization_endpoint": "https://issuer.example/authorize",
+            "token_endpoint": "https://issuer.example/token"
+        }))
+        .expect("metadata should deserialize");
+        let body = serde_json::to_vec(&metadata).expect("metadata should serialize");
+
+        for (policy, status) in [
+            (HttpRedirectPolicy::Stop, StatusCode::FOUND.as_u16()),
+            (HttpRedirectPolicy::Follow, StatusCode::OK.as_u16()),
+        ] {
+            let collector = DeviceMetadataReceiptCollector::new_for_test();
+            collector.observe(&Method::GET, policy, &url, status, &body);
+            assert!(collector.take_matching(&metadata, true).is_none());
+        }
+
+        let collector = DeviceMetadataReceiptCollector::new_for_test();
+        collector.observe(
+            &Method::GET,
+            HttpRedirectPolicy::Stop,
+            &url,
+            StatusCode::OK.as_u16(),
+            &body,
+        );
+        let mut changed = metadata.clone();
+        changed.token_endpoint = "https://other.example/token".to_string();
+        assert!(collector.take_matching(&changed, true).is_none());
+    }
+
+    #[test]
+    fn device_receipt_rejects_multiple_matches_fallback_and_overflow() {
+        let url = Url::parse("https://issuer.example/.well-known/oauth-authorization-server")
+            .expect("metadata URL should parse");
+        let metadata: AuthorizationMetadata = serde_json::from_value(serde_json::json!({
+            "issuer": "https://issuer.example",
+            "authorization_endpoint": "https://issuer.example/authorize",
+            "token_endpoint": "https://issuer.example/token"
+        }))
+        .expect("metadata should deserialize");
+        let body = serde_json::to_vec(&metadata).expect("metadata should serialize");
+
+        let collector = DeviceMetadataReceiptCollector::new_for_test();
+        for _ in 0..2 {
+            collector.observe(
+                &Method::GET,
+                HttpRedirectPolicy::Stop,
+                &url,
+                StatusCode::OK.as_u16(),
+                &body,
+            );
+        }
+        assert!(collector.take_matching(&metadata, true).is_none());
+
+        let collector = DeviceMetadataReceiptCollector::new_for_test();
+        collector.observe(
+            &Method::GET,
+            HttpRedirectPolicy::Stop,
+            &url,
+            StatusCode::OK.as_u16(),
+            &body,
+        );
+        assert!(collector.take_matching(&metadata, false).is_none());
+
+        let collector = DeviceMetadataReceiptCollector::new_for_test();
+        for _ in 0..=MAX_DEVICE_METADATA_RECEIPTS {
+            collector.observe(
+                &Method::GET,
+                HttpRedirectPolicy::Stop,
+                &url,
+                StatusCode::OK.as_u16(),
+                &body,
+            );
+        }
+        assert!(collector.take_matching(&metadata, true).is_none());
     }
 
     fn policy(
