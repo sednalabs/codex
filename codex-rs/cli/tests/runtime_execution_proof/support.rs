@@ -417,6 +417,7 @@ impl Respond for McpResponder {
 
 pub struct ProtectedRuntimeFixture {
     _temp: TempDir,
+    executable_path: PathBuf,
     home: PathBuf,
     state: PathBuf,
     work: PathBuf,
@@ -560,6 +561,16 @@ impl ProtectedRuntimeFixture {
 
         let executable = codex_utils_cargo_bin::cargo_bin("codex")?;
         let artifact_sha256 = hash_file(&executable)?;
+        // The protected child drops to RUN_UID, so its executable must live under the
+        // fixture root instead of behind the runner-owned Cargo target directories.
+        let executable_path = root.join("codex-fixture");
+        fs::copy(&executable, &executable_path)
+            .context("stage protected CLI fixture executable")?;
+        fs::set_permissions(&executable_path, fs::Permissions::from_mode(0o755))?;
+        anyhow::ensure!(
+            hash_file(&executable_path)? == artifact_sha256,
+            "staged protected CLI fixture executable changed during copy"
+        );
         let issuer_key = SigningKey::from_bytes(&[23_u8; 32]);
         let recipient = format!("{}/mcp", mcp.uri());
         let provider_recipient = format!("{}/v1", model.uri());
@@ -595,6 +606,7 @@ impl ProtectedRuntimeFixture {
 
         Ok(Self {
             _temp: temp,
+            executable_path,
             home,
             state,
             work,
@@ -665,7 +677,10 @@ impl ProtectedRuntimeFixture {
         log_filter: Option<&str>,
     ) -> Result<Output> {
         eprintln!("runtime-proof-root-stage:cli_launch_begin");
-        let executable = codex_utils_cargo_bin::cargo_bin("codex")?;
+        anyhow::ensure!(
+            hash_file(&self.executable_path)? == self.artifact_sha256,
+            "staged protected CLI fixture executable changed before invocation"
+        );
         eprintln!("runtime-proof-root-stage:cli_executable_ready");
         let stdout = File::create(&self.output_path)?;
         let stderr = File::create(&self.errors_path)?;
@@ -674,7 +689,7 @@ impl ProtectedRuntimeFixture {
         eprintln!("runtime-proof-root-stage:cli_channels_ready");
         let child_fd = child_socket.as_raw_fd();
         let auth_child_fd = auth_child_socket.as_raw_fd();
-        let mut command = Command::new(executable);
+        let mut command = Command::new(&self.executable_path);
         command
             .env_clear()
             .env("HOME", self.work.as_path())
