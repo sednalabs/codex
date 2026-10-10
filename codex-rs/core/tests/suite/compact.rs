@@ -1164,10 +1164,7 @@ async fn manual_compact_records_durable_and_local_token_usage() {
     let mut completion = ev_completed_with_tokens("r1", /*total_tokens*/ 0);
     completion["response"]["model"] = json!("gpt-6.1-sol");
     completion["response"]["service_tier"] = json!("provider-tier-unpriced");
-    let sse_compact = sse(vec![
-        ev_assistant_message("m1", SUMMARY_TEXT),
-        completion,
-    ]);
+    let sse_compact = sse(vec![ev_assistant_message("m1", SUMMARY_TEXT), completion]);
     mount_sse_once(&server, sse_compact).await;
 
     let model_provider = non_openai_model_provider(&server);

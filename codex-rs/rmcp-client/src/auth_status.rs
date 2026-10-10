@@ -81,8 +81,7 @@ impl VerifiedDeviceAuthorization {
             .and_then(serde_json::Value::as_array)
             .is_some_and(|grants| {
                 grants.iter().any(|grant| {
-                    grant.as_str()
-                        == Some("urn:ietf:params:oauth:grant-type:device_code")
+                    grant.as_str() == Some("urn:ietf:params:oauth:grant-type:device_code")
                 })
             })
     }
@@ -400,9 +399,9 @@ fn verified_device_authorization_from_metadata(
         .get("grant_types_supported")
         .and_then(serde_json::Value::as_array)
         .is_some_and(|grants| {
-            grants.iter().any(|grant| {
-                grant.as_str() == Some("urn:ietf:params:oauth:grant-type:device_code")
-            })
+            grants
+                .iter()
+                .any(|grant| grant.as_str() == Some("urn:ietf:params:oauth:grant-type:device_code"))
         });
     has_device_code_grant.then_some(VerifiedDeviceAuthorization { metadata })
 }
@@ -438,15 +437,15 @@ fn expected_issuer_for_metadata_url(metadata_url: &url::Url) -> Option<String> {
         if !is_canonical_nested_issuer_path(suffix) {
             return None;
         }
-        (
-            format!("/{suffix}"),
-            MetadataUrlStyle::OidcWellKnownPrefix,
-        )
+        (format!("/{suffix}"), MetadataUrlStyle::OidcWellKnownPrefix)
     } else if let Some(issuer_path) = path.strip_suffix(oidc_prefix) {
         if !is_canonical_nested_issuer_path(issuer_path.strip_prefix('/')?) {
             return None;
         }
-        (issuer_path.to_string(), MetadataUrlStyle::OidcWellKnownSuffix)
+        (
+            issuer_path.to_string(),
+            MetadataUrlStyle::OidcWellKnownSuffix,
+        )
     } else {
         return None;
     };
@@ -471,10 +470,7 @@ fn expected_issuer_for_metadata_url(metadata_url: &url::Url) -> Option<String> {
 }
 
 fn is_canonical_nested_issuer_path(path: &str) -> bool {
-    !path.is_empty()
-        && !path.starts_with('/')
-        && !path.ends_with('/')
-        && !path.contains("//")
+    !path.is_empty() && !path.starts_with('/') && !path.ends_with('/') && !path.contains("//")
 }
 
 fn issuer_identifiers_match(received_issuer: &str, expected_issuer: &str) -> bool {
@@ -494,16 +490,17 @@ fn trim_root_issuer_slash(issuer: &str) -> &str {
 
 fn is_https_url(value: &str) -> bool {
     url::Url::parse(value).is_ok_and(|url| {
-        url.scheme() == "https"
-            && !has_url_userinfo(&url)
-            && url.fragment().is_none()
+        url.scheme() == "https" && !has_url_userinfo(&url) && url.fragment().is_none()
     })
 }
 
 fn has_url_userinfo(url: &url::Url) -> bool {
     url.as_str()
         .split_once("://")
-        .and_then(|(_, rest)| rest.split(|character| matches!(character, '/' | '?' | '#')).next())
+        .and_then(|(_, rest)| {
+            rest.split(|character| matches!(character, '/' | '?' | '#'))
+                .next()
+        })
         .is_none_or(|authority| authority.contains('@'))
 }
 
@@ -680,7 +677,11 @@ mod tests {
                 .expect("synthetic request recorder lock should not be poisoned")
                 .push(params.url.clone());
             let json_response = |status, value: serde_json::Value| {
-                (status, Vec::new(), serde_json::to_vec(&value).expect("fixture JSON encodes"))
+                (
+                    status,
+                    Vec::new(),
+                    serde_json::to_vec(&value).expect("fixture JSON encodes"),
+                )
             };
             match params.url.as_str() {
                 Self::RESOURCE_URL => (
@@ -1191,12 +1192,18 @@ mod tests {
         let authorization = direct
             .device_authorization
             .expect("selected physical HTTPS metadata should mint a capability");
-        assert_eq!(authorization.issuer(), SyntheticDeviceAuthHttpClient::ISSUER);
+        assert_eq!(
+            authorization.issuer(),
+            SyntheticDeviceAuthHttpClient::ISSUER
+        );
         assert_eq!(
             authorization.device_authorization_endpoint(),
             Some(SyntheticDeviceAuthHttpClient::DEVICE_ENDPOINT)
         );
-        assert_eq!(authorization.token_endpoint(), SyntheticDeviceAuthHttpClient::TOKEN_ENDPOINT);
+        assert_eq!(
+            authorization.token_endpoint(),
+            SyntheticDeviceAuthHttpClient::TOKEN_ENDPOINT
+        );
         assert_eq!(direct.callback_mode, McpOAuthCallbackMode::CallbackSpecific);
 
         crate::perform_oauth_device_login::perform_oauth_device_login(
@@ -1233,10 +1240,12 @@ mod tests {
             "synthetic-refresh-token"
         );
         let direct_urls = direct_client.requested_urls();
-        assert!(direct_urls.contains(
-            &"https://issuer-a.example.test/.well-known/oauth-authorization-server/tenant"
-                .to_string()
-        ));
+        assert!(
+            direct_urls.contains(
+                &"https://issuer-a.example.test/.well-known/oauth-authorization-server/tenant"
+                    .to_string()
+            )
+        );
         assert!(direct_urls.contains(&SyntheticDeviceAuthHttpClient::DEVICE_ENDPOINT.to_string()));
         assert!(direct_urls.contains(&SyntheticDeviceAuthHttpClient::TOKEN_ENDPOINT.to_string()));
 
@@ -1294,10 +1303,12 @@ mod tests {
             Some(SyntheticDeviceAuthHttpClient::ISSUER)
         );
         let fallback_urls = fallback_client.requested_urls();
-        assert!(fallback_urls.contains(
-            &"https://issuer-a.example.test/.well-known/oauth-authorization-server/tenant"
-                .to_string()
-        ));
+        assert!(
+            fallback_urls.contains(
+                &"https://issuer-a.example.test/.well-known/oauth-authorization-server/tenant"
+                    .to_string()
+            )
+        );
         assert!(fallback_urls.contains(
             &"https://issuer-a.example.test/tenant/.well-known/openid-configuration".to_string()
         ));
@@ -1317,10 +1328,13 @@ mod tests {
         .expect("same-origin redirect should retain ordinary OAuth discovery")
         .expect("redirected metadata should retain browser login support");
         assert_eq!(redirected.device_authorization, None);
-        assert_eq!(redirected.callback_mode, McpOAuthCallbackMode::CallbackSpecific);
-        assert!(redirect_client
-            .requested_urls()
-            .contains(&"https://issuer-a.example.test/tenant/.well-known/openid-configuration".to_string()));
+        assert_eq!(
+            redirected.callback_mode,
+            McpOAuthCallbackMode::CallbackSpecific
+        );
+        assert!(redirect_client.requested_urls().contains(
+            &"https://issuer-a.example.test/tenant/.well-known/openid-configuration".to_string()
+        ));
     }
 
     #[test]
@@ -1332,8 +1346,8 @@ mod tests {
             "device_authorization_endpoint": "https://devices.example/device",
             "grant_types_supported": ["urn:ietf:params:oauth:grant-type:device_code"]
         });
-        let metadata: AuthorizationMetadata = serde_json::from_value(metadata_json.clone())
-            .expect("metadata should parse");
+        let metadata: AuthorizationMetadata =
+            serde_json::from_value(metadata_json.clone()).expect("metadata should parse");
         for (request_url, discovered) in [
             (
                 "https://issuer.example/.well-known/oauth-authorization-server",
@@ -1343,29 +1357,31 @@ mod tests {
                 "http://issuer.example/.well-known/oauth-authorization-server",
                 true,
             ),
-            ("https://issuer.example/.well-known/untrusted-provider", true),
+            (
+                "https://issuer.example/.well-known/untrusted-provider",
+                true,
+            ),
         ] {
             let receipt = DeviceMetadataReceiptCollector::new_for_test();
             receipt.record_for_test(request_url, &metadata);
-            assert!(verified_device_authorization_from_metadata(
-                &metadata,
-                discovered,
-                &receipt
-            )
-            .is_none());
+            assert!(
+                verified_device_authorization_from_metadata(&metadata, discovered, &receipt)
+                    .is_none()
+            );
         }
 
         let mut missing_issuer = metadata_json.clone();
         missing_issuer["issuer"] = serde_json::Value::Null;
-        let missing_issuer: AuthorizationMetadata = serde_json::from_value(missing_issuer)
-            .expect("missing issuer metadata should parse");
+        let missing_issuer: AuthorizationMetadata =
+            serde_json::from_value(missing_issuer).expect("missing issuer metadata should parse");
         let receipt = DeviceMetadataReceiptCollector::new_for_test();
         receipt.record_for_test(
             "https://issuer.example/.well-known/oauth-authorization-server",
             &missing_issuer,
         );
-        assert!(verified_device_authorization_from_metadata(&missing_issuer, true, &receipt)
-            .is_none());
+        assert!(
+            verified_device_authorization_from_metadata(&missing_issuer, true, &receipt).is_none()
+        );
 
         let mut mismatched_issuer = metadata_json.clone();
         mismatched_issuer["issuer"] = serde_json::json!("https://other.example");
@@ -1376,8 +1392,10 @@ mod tests {
             "https://issuer.example/.well-known/oauth-authorization-server",
             &mismatched_issuer,
         );
-        assert!(verified_device_authorization_from_metadata(&mismatched_issuer, true, &receipt)
-            .is_none());
+        assert!(
+            verified_device_authorization_from_metadata(&mismatched_issuer, true, &receipt)
+                .is_none()
+        );
 
         let receipt = DeviceMetadataReceiptCollector::new_for_test();
         receipt.record_for_test(
@@ -1386,12 +1404,10 @@ mod tests {
         );
         let mut changed_postimage = metadata.clone();
         changed_postimage.token_endpoint = "https://other.example/token".to_string();
-        assert!(verified_device_authorization_from_metadata(
-            &changed_postimage,
-            true,
-            &receipt
-        )
-        .is_none());
+        assert!(
+            verified_device_authorization_from_metadata(&changed_postimage, true, &receipt)
+                .is_none()
+        );
 
         let receipt = DeviceMetadataReceiptCollector::new_for_test();
         receipt.record_for_test(

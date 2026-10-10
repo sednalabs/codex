@@ -79,14 +79,9 @@ fn mcp_device_auth_flag_parses_and_conflicts_with_no_browser() {
     assert!(args.device_auth);
     assert!(!args.no_browser);
 
-    let error = McpCli::try_parse_from([
-        "mcp",
-        "login",
-        "synthetic",
-        "--device-auth",
-        "--no-browser",
-    ])
-    .expect_err("device auth and paste-callback modes are mutually exclusive");
+    let error =
+        McpCli::try_parse_from(["mcp", "login", "synthetic", "--device-auth", "--no-browser"])
+            .expect_err("device auth and paste-callback modes are mutually exclusive");
     assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
 }
 
@@ -97,8 +92,12 @@ fn mcp_device_auth_rejects_unsupported_client_credentials_and_registration() {
         McpOAuthClientRegistration::Dcr,
         McpOAuthClientRegistration::Cimd,
     ] {
-        let error = validate_device_auth_options(registration, true, true)
-            .expect_err("device flow must not silently discard a configured client secret");
+        let error = validate_device_auth_options(
+            registration,
+            /*has_registered_client_id*/ true,
+            /*has_client_secret*/ true,
+        )
+        .expect_err("device flow must not silently discard a configured client secret");
         assert!(
             error
                 .to_string()
@@ -106,16 +105,36 @@ fn mcp_device_auth_rejects_unsupported_client_credentials_and_registration() {
         );
     }
 
-    let error = validate_device_auth_options(McpOAuthClientRegistration::Cimd, false, false)
-        .expect_err("device flow must not silently turn CIMD into DCR");
-    assert!(error.to_string().contains("does not support CIMD registration"));
+    let error = validate_device_auth_options(
+        McpOAuthClientRegistration::Cimd,
+        /*has_registered_client_id*/ false,
+        /*has_client_secret*/ false,
+    )
+    .expect_err("device flow must not silently turn CIMD into DCR");
+    assert!(
+        error
+            .to_string()
+            .contains("does not support CIMD registration")
+    );
 
-    validate_device_auth_options(McpOAuthClientRegistration::Cimd, true, false)
-        .expect("an existing client ID makes registration strategy inapplicable");
-    validate_device_auth_options(McpOAuthClientRegistration::Auto, false, false)
-        .expect("auto may use advertised DCR for a device grant");
-    validate_device_auth_options(McpOAuthClientRegistration::Dcr, false, false)
-        .expect("explicit DCR is supported");
+    validate_device_auth_options(
+        McpOAuthClientRegistration::Cimd,
+        /*has_registered_client_id*/ true,
+        /*has_client_secret*/ false,
+    )
+    .expect("an existing client ID makes registration strategy inapplicable");
+    validate_device_auth_options(
+        McpOAuthClientRegistration::Auto,
+        /*has_registered_client_id*/ false,
+        /*has_client_secret*/ false,
+    )
+    .expect("auto may use advertised DCR for a device grant");
+    validate_device_auth_options(
+        McpOAuthClientRegistration::Dcr,
+        /*has_registered_client_id*/ false,
+        /*has_client_secret*/ false,
+    )
+    .expect("explicit DCR is supported");
 }
 
 #[test]

@@ -208,6 +208,8 @@ jobs:
       - name: Run argument comment lint on codex-rs via Bazel
         if: ${{ steps.argument_comment_lint_gate.outputs.run == 'true' }}
         uses: ./.github/actions/run-argument-comment-lint
+        env:
+          BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA: ${{ runner.os == 'Windows' && '1' || '' }}
         with:
           target: ${{ runner.os }}
 

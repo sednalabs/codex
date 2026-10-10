@@ -487,7 +487,10 @@ async fn completed_response_usage_reaches_sqlite_lineage_and_credit_views_after_
             "ok",
         )
     );
-    assert_eq!(replay.10.as_deref(), Some(ServiceTier::Fast.request_value()));
+    assert_eq!(
+        replay.10.as_deref(),
+        Some(ServiceTier::Fast.request_value())
+    );
     assert_eq!((replay.11.as_deref(), replay.12.as_deref()), (None, None));
     let final_row = rows
         .iter()
@@ -597,8 +600,9 @@ async fn completed_response_usage_reaches_sqlite_lineage_and_credit_views_after_
     let global_logs = String::from_utf8(global_logs).expect("tracing-test logs are UTF-8");
     logs_assert(|lines: &[&str]| {
         let has_expected_warning = |line: &&str| {
-            line.contains("failed to persist completed provider usage; continuing response handling")
-                && line.contains("response-root-replay")
+            line.contains(
+                "failed to persist completed provider usage; continuing response handling",
+            ) && line.contains("response-root-replay")
                 && line.contains("conflicting payload for an existing provider response identity")
         };
         let global_response_logs = global_logs

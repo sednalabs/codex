@@ -1574,7 +1574,8 @@ async fn remote_mid_turn_compact_v2_sends_turn_state_over_http() -> Result<()> {
     let requested_model = harness.test().session_configured.model.clone();
     let sqlite = harness.test().config.sqlite.clone();
     let home = harness.test().home.clone();
-    let mut compact_completion = responses::ev_completed_with_tokens("r-compact", /*total_tokens*/ 16);
+    let mut compact_completion =
+        responses::ev_completed_with_tokens("r-compact", /*total_tokens*/ 16);
     compact_completion["response"]["model"] = json!("gpt-6.1-sol");
     compact_completion["response"]["service_tier"] = json!("provider-tier-unpriced");
     let responses_mock = responses::mount_response_sequence(

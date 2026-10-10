@@ -343,9 +343,7 @@ impl OAuthHttpClientAdapter {
         })
     }
 
-    pub(crate) fn enable_device_metadata_receipt(
-        &mut self,
-    ) -> DeviceMetadataReceiptCollector {
+    pub(crate) fn enable_device_metadata_receipt(&mut self) -> DeviceMetadataReceiptCollector {
         let collector = DeviceMetadataReceiptCollector {
             state: Arc::new(Mutex::new(DeviceMetadataReceiptState {
                 usable: true,

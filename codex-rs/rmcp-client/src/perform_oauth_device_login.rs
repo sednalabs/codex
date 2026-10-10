@@ -19,9 +19,9 @@ use serde::Serialize;
 use tokio::time::sleep;
 use url::Url;
 
-use crate::auth_status::VerifiedDeviceAuthorization;
 use crate::StoredOAuthTokens;
 use crate::WrappedOAuthTokenResponse;
+use crate::auth_status::VerifiedDeviceAuthorization;
 use crate::http_client_adapter::StreamableHttpRedirectMode;
 use crate::oauth::compute_expires_at_millis;
 use crate::oauth::save_oauth_tokens;
@@ -152,9 +152,9 @@ pub async fn perform_oauth_device_login(
     .await?;
     let expires_at = compute_expires_at_millis(&token_response);
     let stored = StoredOAuthTokens {
-                server_name: server_name.to_string(),
-                url: server_url.to_string(),
-                issuer: Some(issuer.to_string()),
+        server_name: server_name.to_string(),
+        url: server_url.to_string(),
+        issuer: Some(issuer.to_string()),
         client_id,
         token_response: WrappedOAuthTokenResponse(token_response),
         expires_at,
