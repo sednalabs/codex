@@ -1110,9 +1110,10 @@ mod tests {
             &metadata,
         );
 
-        let trusted =
-            verified_device_authorization_from_metadata(&metadata, /*discovered*/ true, &receipt)
-                .expect("issuer-validated metadata should create a device capability");
+        let trusted = verified_device_authorization_from_metadata(
+            &metadata, /*discovered*/ true, &receipt,
+        )
+        .expect("issuer-validated metadata should create a device capability");
 
         assert_eq!(trusted.issuer(), "https://issuer.example/tenant");
         assert_eq!(
@@ -1434,9 +1435,7 @@ mod tests {
         );
         assert!(
             verified_device_authorization_from_metadata(
-                &metadata,
-                /*discovered*/ true,
-                &receipt,
+                &metadata, /*discovered*/ true, &receipt,
             )
             .is_none()
         );

@@ -218,11 +218,8 @@ async fn device_login_increases_poll_interval_after_slow_down() -> Result<()> {
     .await;
     let adapter = OAuthHttpClientAdapter::new_with_max_timeout_and_redirect_mode(
         http_client(),
-        build_default_headers(
-            /*http_headers*/ None,
-            /*env_http_headers*/ None,
-        )
-        .expect("empty headers"),
+        build_default_headers(/*http_headers*/ None, /*env_http_headers*/ None)
+            .expect("empty headers"),
         "https://resource.example.test/mcp",
         DEVICE_HTTP_REQUEST_TIMEOUT,
         /*has_configured_headers*/ false,
@@ -274,11 +271,8 @@ async fn device_login_fails_closed_on_denial_and_expiry() {
         .await;
         let adapter = OAuthHttpClientAdapter::new_with_max_timeout_and_redirect_mode(
             http_client(),
-            build_default_headers(
-                /*http_headers*/ None,
-                /*env_http_headers*/ None,
-            )
-            .expect("empty headers"),
+            build_default_headers(/*http_headers*/ None, /*env_http_headers*/ None)
+                .expect("empty headers"),
             "https://resource.example.test/mcp",
             DEVICE_HTTP_REQUEST_TIMEOUT,
             /*has_configured_headers*/ false,
@@ -319,11 +313,8 @@ async fn device_login_does_not_poll_before_an_extreme_provider_interval() {
     .await;
     let adapter = OAuthHttpClientAdapter::new_with_max_timeout_and_redirect_mode(
         http_client(),
-        build_default_headers(
-            /*http_headers*/ None,
-            /*env_http_headers*/ None,
-        )
-        .expect("empty headers"),
+        build_default_headers(/*http_headers*/ None, /*env_http_headers*/ None)
+            .expect("empty headers"),
         "https://resource.example.test/mcp",
         DEVICE_HTTP_REQUEST_TIMEOUT,
         /*has_configured_headers*/ false,
@@ -361,11 +352,8 @@ async fn unknown_provider_error_is_not_echoed_to_terminal() {
     .await;
     let adapter = OAuthHttpClientAdapter::new_with_max_timeout_and_redirect_mode(
         http_client(),
-        build_default_headers(
-            /*http_headers*/ None,
-            /*env_http_headers*/ None,
-        )
-        .expect("empty headers"),
+        build_default_headers(/*http_headers*/ None, /*env_http_headers*/ None)
+            .expect("empty headers"),
         "https://resource.example.test/mcp",
         DEVICE_HTTP_REQUEST_TIMEOUT,
         /*has_configured_headers*/ false,

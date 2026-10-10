@@ -683,9 +683,11 @@ mod tests {
             .take_matching(&metadata, /*discovered*/ true)
             .expect("one exact discovered response should produce a receipt");
         assert_eq!(receipt.request_url, url);
-        assert!(collector
-            .take_matching(&metadata, /*discovered*/ true)
-            .is_none());
+        assert!(
+            collector
+                .take_matching(&metadata, /*discovered*/ true)
+                .is_none()
+        );
     }
 
     #[test]
@@ -706,9 +708,11 @@ mod tests {
         ] {
             let collector = DeviceMetadataReceiptCollector::new_for_test();
             collector.observe(&Method::GET, policy, &url, status, &body);
-            assert!(collector
-                .take_matching(&metadata, /*discovered*/ true)
-                .is_none());
+            assert!(
+                collector
+                    .take_matching(&metadata, /*discovered*/ true)
+                    .is_none()
+            );
         }
 
         let collector = DeviceMetadataReceiptCollector::new_for_test();
@@ -721,9 +725,11 @@ mod tests {
         );
         let mut changed = metadata.clone();
         changed.token_endpoint = "https://other.example/token".to_string();
-        assert!(collector
-            .take_matching(&changed, /*discovered*/ true)
-            .is_none());
+        assert!(
+            collector
+                .take_matching(&changed, /*discovered*/ true)
+                .is_none()
+        );
     }
 
     #[test]
@@ -748,9 +754,11 @@ mod tests {
                 &body,
             );
         }
-        assert!(collector
-            .take_matching(&metadata, /*discovered*/ true)
-            .is_none());
+        assert!(
+            collector
+                .take_matching(&metadata, /*discovered*/ true)
+                .is_none()
+        );
 
         let collector = DeviceMetadataReceiptCollector::new_for_test();
         collector.observe(
@@ -760,9 +768,11 @@ mod tests {
             StatusCode::OK.as_u16(),
             &body,
         );
-        assert!(collector
-            .take_matching(&metadata, /*discovered*/ false)
-            .is_none());
+        assert!(
+            collector
+                .take_matching(&metadata, /*discovered*/ false)
+                .is_none()
+        );
 
         let collector = DeviceMetadataReceiptCollector::new_for_test();
         for _ in 0..=MAX_DEVICE_METADATA_RECEIPTS {
@@ -774,9 +784,11 @@ mod tests {
                 &body,
             );
         }
-        assert!(collector
-            .take_matching(&metadata, /*discovered*/ true)
-            .is_none());
+        assert!(
+            collector
+                .take_matching(&metadata, /*discovered*/ true)
+                .is_none()
+        );
     }
 
     fn policy(
