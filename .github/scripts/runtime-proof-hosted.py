@@ -111,6 +111,14 @@ ROOT_FIXTURE_STARTUP_FAILURE = re.compile(
     r"^runtime-proof-root-startup-failure:"
     r"(runtime_auth|runtime_proof|provider_auth|runtime_config|runtime_protection|empty|unclassified|unavailable)$"
 )
+ROOT_FIXTURE_FD_LAYOUT = re.compile(
+    r"^runtime-proof-root-fd-layout:"
+    r"(crossed_targets|auth_source_at_bootstrap_target|bootstrap_source_at_auth_target|no_cross_target_alias)$"
+)
+ROOT_FIXTURE_CHILD_STATE = re.compile(
+    r"^runtime-proof-root-child-state-before-kill:"
+    r"(running_before_kill|exited_success|exited_failure|status_unavailable)$"
+)
 ROOT_FIXTURE_STAGE_NAMES = {
     "started",
     "fixture_started",
@@ -2301,6 +2309,8 @@ def run_ignored_root_test(
             spawn_errors = set()
             ack_failures = set()
             startup_failures = set()
+            fd_layouts = set()
+            child_states = set()
             for line in result.stdout.splitlines():
                 match = ROOT_FIXTURE_STAGE.fullmatch(line.strip())
                 if match is not None and match.group(1) in ROOT_FIXTURE_STAGE_NAMES:
@@ -2314,6 +2324,12 @@ def run_ignored_root_test(
                 match = ROOT_FIXTURE_STARTUP_FAILURE.fullmatch(line.strip())
                 if match is not None:
                     startup_failures.add(match.group(1))
+                match = ROOT_FIXTURE_FD_LAYOUT.fullmatch(line.strip())
+                if match is not None:
+                    fd_layouts.add(match.group(1))
+                match = ROOT_FIXTURE_CHILD_STATE.fullmatch(line.strip())
+                if match is not None:
+                    child_states.add(match.group(1))
             last_stage = stages[-1] if stages else "none"
             details = f"; exit_code={result.returncode}; last_stage={last_stage}"
             if len(spawn_errors) == 1:
@@ -2335,6 +2351,18 @@ def run_ignored_root_test(
                 details += "; child_startup_category=ambiguous"
             else:
                 details += "; child_startup_category=not_reported"
+            if len(fd_layouts) == 1:
+                details += f"; fd_layout={next(iter(fd_layouts))}"
+            elif fd_layouts:
+                details += "; fd_layout=ambiguous"
+            else:
+                details += "; fd_layout=not_reported"
+            if len(child_states) == 1:
+                details += f"; child_state_before_kill={next(iter(child_states))}"
+            elif child_states:
+                details += "; child_state_before_kill=ambiguous"
+            else:
+                details += "; child_state_before_kill=not_reported"
         refuse(
             "explicit synthetic root fixture was not exactly one successful executed test: "
             f"{test_name}{details}"
