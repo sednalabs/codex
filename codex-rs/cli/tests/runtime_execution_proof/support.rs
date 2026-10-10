@@ -843,11 +843,24 @@ impl ProtectedRuntimeFixture {
         if let Err(error) = launcher.read_exact(&mut ack) {
             let _ = child.kill();
             let _ = child.wait();
+            eprintln!(
+                "runtime-proof-root-ack-failure:{}",
+                ack_error_category(error.kind())
+            );
+            eprintln!(
+                "runtime-proof-root-startup-failure:{}",
+                startup_error_category(&self.errors_path)
+            );
             return Err(error).context("read protected CLI bootstrap acknowledgement");
         }
         if &ack != b"ACK1" {
             let _ = child.kill();
             let _ = child.wait();
+            eprintln!("runtime-proof-root-ack-failure:invalid_packet");
+            eprintln!(
+                "runtime-proof-root-startup-failure:{}",
+                startup_error_category(&self.errors_path)
+            );
             anyhow::bail!("CLI bootstrap acknowledgement did not match");
         }
         eprintln!("runtime-proof-root-stage:cli_ack_validated");
@@ -1040,6 +1053,43 @@ fn hash_file(path: &std::path::Path) -> Result<String> {
     }
     let digest = hash.finalize();
     Ok(hex(&digest))
+}
+
+fn ack_error_category(kind: std::io::ErrorKind) -> &'static str {
+    match kind {
+        std::io::ErrorKind::TimedOut => "timeout",
+        std::io::ErrorKind::UnexpectedEof => "eof",
+        std::io::ErrorKind::WouldBlock => "would_block",
+        std::io::ErrorKind::ConnectionReset => "connection_reset",
+        std::io::ErrorKind::BrokenPipe => "broken_pipe",
+        _ => "other",
+    }
+}
+
+fn startup_error_category(path: &std::path::Path) -> &'static str {
+    let mut stderr = Vec::new();
+    let Ok(file) = File::open(path) else {
+        return "unavailable";
+    };
+    if file.take(64 * 1024).read_to_end(&mut stderr).is_err() {
+        return "unavailable";
+    }
+    let stderr = String::from_utf8_lossy(&stderr);
+    if stderr.trim().is_empty() {
+        "empty"
+    } else if stderr.contains("runtime auth") {
+        "runtime_auth"
+    } else if stderr.contains("runtime proof") {
+        "runtime_proof"
+    } else if stderr.contains("provider") {
+        "provider_auth"
+    } else if stderr.contains("config.toml") || stderr.contains("CODEX_HOME") {
+        "runtime_config"
+    } else if stderr.contains("runtime must") || stderr.contains("capability") {
+        "runtime_protection"
+    } else {
+        "unclassified"
+    }
 }
 
 fn hex(bytes: &[u8]) -> String {
