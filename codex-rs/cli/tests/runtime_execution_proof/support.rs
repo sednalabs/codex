@@ -707,7 +707,22 @@ impl ProtectedRuntimeFixture {
                 Ok(())
             });
         }
-        let mut child = command.spawn().context("launch protected codex fixture")?;
+        let mut child = command.spawn().map_err(|error| {
+            let category = match error.kind() {
+                std::io::ErrorKind::NotFound => "not_found",
+                std::io::ErrorKind::PermissionDenied => "permission_denied",
+                std::io::ErrorKind::InvalidInput => "invalid_input",
+                _ => "other",
+            };
+            match error.raw_os_error() {
+                Some(errno) => anyhow::anyhow!(
+                    "launch protected codex fixture failed: {category} (errno {errno})"
+                ),
+                None => {
+                    anyhow::anyhow!("launch protected codex fixture failed: {category} (no errno)")
+                }
+            }
+        })?;
         eprintln!("runtime-proof-root-stage:cli_child_spawned");
         drop(child_socket);
         drop(auth_child_socket);
