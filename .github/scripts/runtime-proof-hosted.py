@@ -128,6 +128,12 @@ ROOT_FIXTURE_CHILD_SYSCALL = re.compile(
     r"(not_running|running|blocked_outside_syscall|socket_receive_syscall|"
     r"futex_syscall|read_syscall|other_syscall|unavailable)$"
 )
+ROOT_FIXTURE_CLI_HASH = re.compile(
+    r"^runtime-proof-root-cli-hash:bytes=([0-9]{1,13});elapsed_ms=([0-9]{1,7})$"
+)
+MAX_ROOT_FIXTURE_CLI_HASH_SAMPLES = 16
+MAX_ROOT_FIXTURE_CLI_IMAGE_BYTES = 1 << 40
+MAX_ROOT_FIXTURE_CLI_HASH_ELAPSED_MS = 9_000_000
 ROOT_FIXTURE_STAGE_NAMES = {
     "started",
     "fixture_started",
@@ -511,6 +517,54 @@ def parse_test_summaries(output: str) -> list[dict[str, int | str]]:
             }
         )
     return summaries
+
+
+def parse_root_fixture_cli_hash_measurement(output: str) -> dict[str, int | str]:
+    samples = []
+    marker_seen = False
+    for line in output.splitlines():
+        if not line.startswith("runtime-proof-root-cli-hash:"):
+            continue
+        marker_seen = True
+        match = ROOT_FIXTURE_CLI_HASH.fullmatch(line.strip())
+        if match is None:
+            return {"status": "unsupported"}
+        image_bytes, elapsed_ms = (int(value) for value in match.groups())
+        if (
+            image_bytes > MAX_ROOT_FIXTURE_CLI_IMAGE_BYTES
+            or elapsed_ms > MAX_ROOT_FIXTURE_CLI_HASH_ELAPSED_MS
+        ):
+            return {"status": "out_of_range"}
+        samples.append((image_bytes, elapsed_ms))
+        if len(samples) > MAX_ROOT_FIXTURE_CLI_HASH_SAMPLES:
+            return {"status": "out_of_range"}
+    if not samples:
+        return {"status": "unsupported" if marker_seen else "not_reported"}
+    image_sizes = {image_bytes for image_bytes, _ in samples}
+    if len(image_sizes) != 1:
+        return {"status": "ambiguous"}
+    elapsed_values = [elapsed_ms for _, elapsed_ms in samples]
+    return {
+        "status": "measured",
+        "image_bytes": next(iter(image_sizes)),
+        "sample_count": len(samples),
+        "elapsed_ms_min": min(elapsed_values),
+        "elapsed_ms_max": max(elapsed_values),
+    }
+
+
+def format_root_fixture_cli_hash_measurement(
+    measurement: dict[str, int | str],
+) -> str:
+    if measurement.get("status") != "measured":
+        return f"; cli_hash_measurement={measurement.get('status', 'unsupported')}"
+    return (
+        "; cli_hash_measurement=measured"
+        f"; cli_image_bytes={measurement['image_bytes']}"
+        f"; cli_hash_samples={measurement['sample_count']}"
+        f"; cli_hash_elapsed_ms_min={measurement['elapsed_ms_min']}"
+        f"; cli_hash_elapsed_ms_max={measurement['elapsed_ms_max']}"
+    )
 
 
 def make_runner_binding(
@@ -1086,6 +1140,27 @@ def verify_test_summary_parser_contract(manifest: dict[str, Any]) -> None:
     child_and_outer = f"{single_summary}\n{single_summary}"
     if parse_test_summaries(child_and_outer) != expected_single * 2:
         refuse("test summary parser contract failed")
+
+    hash_measurement = (
+        "runtime-proof-root-cli-hash:bytes=123456;elapsed_ms=9\n"
+        "runtime-proof-root-cli-hash:bytes=123456;elapsed_ms=17"
+    )
+    if parse_root_fixture_cli_hash_measurement(hash_measurement) != {
+        "status": "measured",
+        "image_bytes": 123456,
+        "sample_count": 2,
+        "elapsed_ms_min": 9,
+        "elapsed_ms_max": 17,
+    }:
+        refuse("root fixture CLI hash measurement contract failed")
+    if parse_root_fixture_cli_hash_measurement(
+        "runtime-proof-root-cli-hash:bytes=1;elapsed_ms=bad"
+    ) != {"status": "unsupported"}:
+        refuse("root fixture CLI hash measurement contract failed")
+    if parse_root_fixture_cli_hash_measurement(
+        f"runtime-proof-root-cli-hash:bytes={MAX_ROOT_FIXTURE_CLI_IMAGE_BYTES + 1};elapsed_ms=1"
+    ) != {"status": "out_of_range"}:
+        refuse("root fixture CLI hash measurement contract failed")
 
     oversized_failed_then_success = (
         "test result: FAILED. 10000000000 passed; 1 failed; 0 ignored;\n"
@@ -2297,6 +2372,7 @@ def run_ignored_root_test(
         stderr=subprocess.STDOUT,
     )
     summaries = parse_test_summaries(result.stdout)
+    cli_hash_measurement = parse_root_fixture_cli_hash_measurement(result.stdout)
     success = {"status": "ok", "passed": 1, "failed": 0, "ignored": 0}
     if test_name == EXPECTED_MCP_TESTS[0]:
         nested_runs = sum(line.strip() == "running 1 test" for line in result.stdout.splitlines())
@@ -2395,13 +2471,14 @@ def run_ignored_root_test(
                 details += "; child_syscall_before_kill=ambiguous"
             else:
                 details += "; child_syscall_before_kill=not_reported"
+            details += format_root_fixture_cli_hash_measurement(cli_hash_measurement)
         refuse(
             "explicit synthetic root fixture was not exactly one successful executed test: "
             f"{test_name}{details}"
         )
     if sha256_file(binary) != expected_binary_sha256:
         refuse(f"root fixture binary changed during invocation: {test_name}")
-    return {
+    fixture_result = {
         "test": test_name,
         "status": "passed",
         "counts": summaries[-1],
@@ -2409,6 +2486,9 @@ def run_ignored_root_test(
         "binary_sha256": expected_binary_sha256,
         "output_sha256": sha256_bytes(result.stdout.encode()),
     }
+    if test_name == EXPECTED_CLI_TESTS[0]:
+        fixture_result["parent_cli_hash_measurement"] = cli_hash_measurement
+    return fixture_result
 
 
 def write_report(name: str, report: dict[str, Any]) -> None:
