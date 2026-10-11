@@ -258,10 +258,12 @@ impl Respond for ModelResponder {
 }
 
 fn decode_model_request_body(request: &wiremock::Request) -> Option<Value> {
-    let content_encoding = request
-        .headers
-        .get("content-encoding")
-        .and_then(|value| value.to_str().ok());
+    let mut content_encodings = request.headers.get_all("content-encoding").iter();
+    let content_encoding = match (content_encodings.next(), content_encodings.next()) {
+        (None, None) => None,
+        (Some(value), None) => Some(value.to_str().ok()?),
+        _ => return None,
+    };
     decode_model_request_body_bytes(content_encoding, &request.body)
 }
 
@@ -280,8 +282,19 @@ fn decode_model_request_body_bytes(content_encoding: Option<&str>, body: &[u8]) 
 
 #[cfg(test)]
 mod tests {
-    use super::decode_model_request_body_bytes;
+    use super::{decode_model_request_body, decode_model_request_body_bytes};
+    use http::{HeaderMap, HeaderName, HeaderValue, Method};
     use std::io::Cursor;
+    use wiremock::Request;
+
+    fn request_with_headers(headers: HeaderMap, body: Vec<u8>) -> Request {
+        Request {
+            url: "http://localhost".parse().expect("fixture URL"),
+            method: Method::POST,
+            headers,
+            body,
+        }
+    }
 
     #[test]
     fn decodes_zstd_model_requests_and_rejects_malformed_bodies() {
@@ -308,6 +321,46 @@ mod tests {
         );
         assert_eq!(decode_model_request_body_bytes(Some(""), &json), None);
         assert_eq!(decode_model_request_body_bytes(None, b"not-json"), None);
+
+        let mut zstd_encoding = HeaderMap::new();
+        zstd_encoding.append(
+            HeaderName::from_static("content-encoding"),
+            HeaderValue::from_static("zstd"),
+        );
+        assert_eq!(
+            decode_model_request_body(&request_with_headers(
+                zstd_encoding,
+                encoded.clone(),
+            )),
+            Some(expected)
+        );
+
+        let mut duplicate_encodings = HeaderMap::new();
+        duplicate_encodings.append(
+            HeaderName::from_static("content-encoding"),
+            HeaderValue::from_static("zstd"),
+        );
+        duplicate_encodings.append(
+            HeaderName::from_static("content-encoding"),
+            HeaderValue::from_static("br"),
+        );
+        assert_eq!(
+            decode_model_request_body(&request_with_headers(
+                duplicate_encodings,
+                encoded.clone(),
+            )),
+            None
+        );
+
+        let mut invalid_encoding = HeaderMap::new();
+        invalid_encoding.append(
+            HeaderName::from_static("content-encoding"),
+            HeaderValue::from_bytes(&[0xff]).expect("valid opaque header byte"),
+        );
+        assert_eq!(
+            decode_model_request_body(&request_with_headers(invalid_encoding, encoded)),
+            None
+        );
     }
 }
 
