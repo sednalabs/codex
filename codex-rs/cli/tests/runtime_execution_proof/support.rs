@@ -7,7 +7,6 @@ use ed25519_dalek::SigningKey;
 use serde_json::Value;
 use sha2::Digest;
 use sha2::Sha256;
-use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
 use std::io::Read;
@@ -68,18 +67,10 @@ struct ModelResponder {
     account_headers: Arc<Mutex<Vec<Option<String>>>>,
     root_calls: Arc<Mutex<usize>>,
     delegate_calls: Arc<Mutex<usize>>,
-    response_sessions: Arc<Mutex<HashMap<String, ModelSessionKind>>>,
     wait_targets: Arc<Mutex<Vec<String>>>,
     wait_call_ids: Arc<Mutex<Vec<String>>>,
     accepted_wait_results: Arc<Mutex<Vec<(bool, bool)>>>,
     spawn_child: bool,
-}
-
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum ModelSessionKind {
-    RootClaim,
-    RoleProviderControl,
-    Delegate,
 }
 
 impl Respond for ModelResponder {
@@ -109,92 +100,70 @@ impl Respond for ModelResponder {
                     .map(str::to_string),
             );
         }
-        let session_kind = match body.get("previous_response_id") {
-            Some(Value::String(response_id)) => self
-                .response_sessions
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get(response_id)
-                .copied(),
-            Some(_) => None,
-            None => {
-                if request_has_user_text(&body, "delegate-claim") {
-                    Some(ModelSessionKind::Delegate)
-                } else if request_has_user_text(&body, "role-provider-control") {
-                    Some(ModelSessionKind::RoleProviderControl)
-                } else if request_has_user_text(&body, "root-claim") {
-                    Some(ModelSessionKind::RootClaim)
-                } else {
-                    None
-                }
-            }
-        };
-        let (namespace, name, arguments, call_id): (&str, &str, String, String) = if session_kind
-            == Some(ModelSessionKind::Delegate)
-        {
-            let mut calls = self
-                .delegate_calls
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if *calls == 0 {
-                *calls += 1;
-                (
-                    "mcp__ops",
-                    "work_item_claim",
-                    ARGUMENTS.to_string(),
-                    "delegate-claim-call".to_string(),
-                )
-            } else {
-                ("", "", String::new(), "delegate-final".to_string())
-            }
-        } else if matches!(
-            session_kind,
-            Some(ModelSessionKind::RootClaim | ModelSessionKind::RoleProviderControl)
-        ) {
-            let mut calls = self
-                .root_calls
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if *calls == 0 {
-                *calls += 1;
-                (
-                    "mcp__ops",
-                    "work_item_claim",
-                    ARGUMENTS.to_string(),
-                    "root-claim-call".to_string(),
-                )
-            } else if *calls == 1 {
-                *calls += 1;
-                if self.spawn_child {
+        let (namespace, name, arguments, call_id): (&str, &str, String, String) =
+            if request_has_user_text(&body, "delegate-claim") {
+                let mut calls = self
+                    .delegate_calls
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if *calls == 0 {
+                    *calls += 1;
                     (
-                        "multi_agent_v1",
-                        "spawn_agent",
-                        if session_kind == Some(ModelSessionKind::RoleProviderControl) {
-                            r#"{"message":"delegate-claim","task_name":"proof-child","agent_type":"proof-child"}"#.to_string()
-                        } else {
-                            r#"{"message":"delegate-claim","task_name":"proof-child","agent_type":"worker"}"#.to_string()
-                        },
-                        "root-spawn-call".to_string(),
+                        "mcp__ops",
+                        "work_item_claim",
+                        ARGUMENTS.to_string(),
+                        "delegate-claim-call".to_string(),
                     )
                 } else {
-                    ("", "", String::new(), "root-final".to_string())
+                    ("", "", String::new(), "delegate-final".to_string())
                 }
-            } else {
-                let target = self
-                    .wait_targets
+            } else if request_has_user_text(&body, "root-claim")
+                || request_has_user_text(&body, "role-provider-control")
+            {
+                let mut calls = self
+                    .root_calls
                     .lock()
-                    .ok()
-                    .and_then(|targets| targets.first().cloned())
-                    .or_else(|| find_spawned_agent_id(&body))
-                    .unwrap_or_default();
-                let previous_wait = self
-                    .wait_call_ids
-                    .lock()
-                    .ok()
-                    .and_then(|calls| calls.last().cloned());
-                let expects_provider_rejection =
-                    session_kind == Some(ModelSessionKind::RoleProviderControl);
-                let accepted = previous_wait
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if *calls == 0 {
+                    *calls += 1;
+                    (
+                        "mcp__ops",
+                        "work_item_claim",
+                        ARGUMENTS.to_string(),
+                        "root-claim-call".to_string(),
+                    )
+                } else if *calls == 1 {
+                    *calls += 1;
+                    if self.spawn_child {
+                        (
+                            "multi_agent_v1",
+                            "spawn_agent",
+                            if request_has_user_text(&body, "role-provider-control") {
+                                r#"{"message":"delegate-claim","task_name":"proof-child","agent_type":"proof-child"}"#.to_string()
+                            } else {
+                                r#"{"message":"delegate-claim","task_name":"proof-child","agent_type":"worker"}"#.to_string()
+                            },
+                            "root-spawn-call".to_string(),
+                        )
+                    } else {
+                        ("", "", String::new(), "root-final".to_string())
+                    }
+                } else {
+                    let target = self
+                        .wait_targets
+                        .lock()
+                        .ok()
+                        .and_then(|targets| targets.first().cloned())
+                        .or_else(|| find_spawned_agent_id(&body))
+                        .unwrap_or_default();
+                    let previous_wait = self
+                        .wait_call_ids
+                        .lock()
+                        .ok()
+                        .and_then(|calls| calls.last().cloned());
+                    let expects_provider_rejection =
+                        request_has_user_text(&body, "role-provider-control");
+                    let accepted = previous_wait
                     .as_deref()
                     .and_then(|call_id| function_output(&body, call_id))
                     .and_then(|output| serde_json::from_str::<Value>(output).ok())
@@ -221,45 +190,39 @@ impl Respond for ModelResponder {
                         accepted
                     })
                     .unwrap_or(false);
-                if accepted {
-                    ("", "", String::new(), "root-final".to_string())
-                } else {
-                    let wait_number = self
-                        .wait_call_ids
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .len();
-                    let call_id = format!("root-wait-call-{wait_number}");
-                    self.wait_targets
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .push(target.clone());
-                    self.wait_call_ids
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .push(call_id.clone());
-                    (
-                        "multi_agent_v1",
-                        "wait_agent",
-                        serde_json::json!({
-                            "targets": [target],
-                            "timeout_ms": 80000
-                        })
-                        .to_string(),
-                        call_id,
-                    )
+                    if accepted {
+                        ("", "", String::new(), "root-final".to_string())
+                    } else {
+                        let wait_number = self
+                            .wait_call_ids
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .len();
+                        let call_id = format!("root-wait-call-{wait_number}");
+                        self.wait_targets
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(target.clone());
+                        self.wait_call_ids
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(call_id.clone());
+                        (
+                            "multi_agent_v1",
+                            "wait_agent",
+                            serde_json::json!({
+                                "targets": [target],
+                                "timeout_ms": 80000
+                            })
+                            .to_string(),
+                            call_id,
+                        )
+                    }
                 }
-            }
-        } else {
-            ("", "", String::new(), "final".to_string())
-        };
+            } else {
+                ("", "", String::new(), "final".to_string())
+            };
         let response_id = format!("response-{call_id}");
-        if let Some(session_kind) = session_kind {
-            self.response_sessions
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(response_id.clone(), session_kind);
-        }
         let mut events =
             vec![serde_json::json!({"type":"response.created","response":{"id":response_id}})];
         if namespace.is_empty() {
@@ -563,7 +526,6 @@ impl ProtectedRuntimeFixture {
             account_headers: model_account_headers.clone(),
             root_calls: Arc::new(Mutex::new(0)),
             delegate_calls: Arc::new(Mutex::new(0)),
-            response_sessions: Arc::new(Mutex::new(HashMap::new())),
             wait_targets: wait_targets.clone(),
             wait_call_ids: wait_call_ids.clone(),
             accepted_wait_results: accepted_wait_results.clone(),

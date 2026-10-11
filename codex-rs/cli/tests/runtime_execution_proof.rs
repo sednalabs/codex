@@ -258,10 +258,11 @@ async fn protected_cli_root_and_delegate_calls_are_signed_and_redacted() -> Resu
             "failed"
         }
     );
-    if !result.status.success() {
+    let calls = fixture.claim_calls();
+    if !result.status.success() || calls.len() != 2 {
         eprintln!(
             "runtime-proof-root-cli-activity:claims={};models={}",
-            fixture.claim_calls().len(),
+            calls.len(),
             fixture.model_requests().len()
         );
         let [initialize, initialized, tools_list, tools_call, other] = fixture.mcp_phase_counts();
@@ -274,7 +275,6 @@ async fn protected_cli_root_and_delegate_calls_are_signed_and_redacted() -> Resu
         );
     }
     anyhow::ensure!(result.status.success(), "codex exec exited unsuccessfully");
-    let calls = fixture.claim_calls();
     anyhow::ensure!(
         calls.len() == 2,
         "expected root and delegate claim requests, got {}",
