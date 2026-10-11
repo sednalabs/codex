@@ -139,10 +139,25 @@ ROOT_FIXTURE_CLI_FAILURE = re.compile(
 ROOT_FIXTURE_CLI_ACTIVITY = re.compile(
     r"^runtime-proof-root-cli-activity:claims=([0-9]{1,3});models=([0-9]{1,3})$"
 )
+ROOT_FIXTURE_CLI_MCP_PHASES = re.compile(
+    r"^runtime-proof-root-cli-mcp-phases:initialize=([0-9]{1,2});"
+    r"initialized=([0-9]{1,2});tools_list=([0-9]{1,2});"
+    r"tools_call=([0-9]{1,2});other=([0-9]{1,2})$"
+)
+ROOT_FIXTURE_CLI_ERROR_PATH = re.compile(
+    r"^runtime-proof-root-cli-error-path:first_event="
+    r"(none|thread_started|turn_started|turn_failed|turn_completed|"
+    r"item_started|item_updated|item_completed|error|other|non_json);"
+    r"last_event=(none|thread_started|turn_started|turn_failed|turn_completed|"
+    r"item_started|item_updated|item_completed|error|other|non_json);"
+    r"family=(auth|mcp|config|provider|sandbox|input|filesystem|transport|"
+    r"panic|other|ambiguous|unclassified)$"
+)
 MAX_ROOT_FIXTURE_CLI_HASH_SAMPLES = 16
 MAX_ROOT_FIXTURE_CLI_IMAGE_BYTES = 1 << 40
 MAX_ROOT_FIXTURE_CLI_HASH_ELAPSED_MS = 9_000_000
 MAX_ROOT_FIXTURE_CLI_ACTIVITY_COUNT = 64
+MAX_ROOT_FIXTURE_CLI_MCP_PHASE_COUNT = 64
 ROOT_FIXTURE_STAGE_NAMES = {
     "started",
     "fixture_started",
@@ -580,6 +595,23 @@ def parse_root_fixture_cli_activity(line: str) -> tuple[int, int] | None:
     if max(claims, models) > MAX_ROOT_FIXTURE_CLI_ACTIVITY_COUNT:
         return None
     return claims, models
+
+
+def parse_root_fixture_cli_mcp_phases(line: str) -> tuple[int, int, int, int, int] | None:
+    match = ROOT_FIXTURE_CLI_MCP_PHASES.fullmatch(line.strip())
+    if match is None:
+        return None
+    counts = tuple(int(value) for value in match.groups())
+    if max(counts) > MAX_ROOT_FIXTURE_CLI_MCP_PHASE_COUNT:
+        return None
+    return counts
+
+
+def parse_root_fixture_cli_error_path(line: str) -> tuple[str, str, str] | None:
+    match = ROOT_FIXTURE_CLI_ERROR_PATH.fullmatch(line.strip())
+    if match is None:
+        return None
+    return match.groups()
 
 
 def format_root_fixture_cli_hash_measurement(
@@ -1214,6 +1246,36 @@ def verify_test_summary_parser_contract(manifest: dict[str, Any]) -> None:
         "runtime-proof-root-cli-activity:claims=1;models=secret"
     ) is not None:
         refuse("root fixture CLI activity parser contract failed")
+    if parse_root_fixture_cli_mcp_phases(
+        "runtime-proof-root-cli-mcp-phases:initialize=1;initialized=1;"
+        "tools_list=1;tools_call=0;other=0"
+    ) != (1, 1, 1, 0, 0):
+        refuse("root fixture CLI MCP phase parser contract failed")
+    if parse_root_fixture_cli_mcp_phases(
+        "runtime-proof-root-cli-mcp-phases:initialize=65;initialized=0;"
+        "tools_list=0;tools_call=0;other=0"
+    ) is not None:
+        refuse("root fixture CLI MCP phase parser contract failed")
+    if parse_root_fixture_cli_mcp_phases(
+        "runtime-proof-root-cli-mcp-phases:initialize=0;initialized=0;"
+        "tools_list=0;tools_call=0;other=secret"
+    ) is not None:
+        refuse("root fixture CLI MCP phase parser contract failed")
+    if parse_root_fixture_cli_error_path(
+        "runtime-proof-root-cli-error-path:first_event=thread_started;"
+        "last_event=error;family=mcp"
+    ) != ("thread_started", "error", "mcp"):
+        refuse("root fixture CLI error-path parser contract failed")
+    if parse_root_fixture_cli_error_path(
+        "runtime-proof-root-cli-error-path:first_event=raw;last_event=error;"
+        "family=mcp"
+    ) is not None:
+        refuse("root fixture CLI error-path parser contract failed")
+    if parse_root_fixture_cli_error_path(
+        "runtime-proof-root-cli-error-path:first_event=none;last_event=none;"
+        "family=raw details"
+    ) is not None:
+        refuse("root fixture CLI error-path parser contract failed")
 
     oversized_failed_then_success = (
         "test result: FAILED. 10000000000 passed; 1 failed; 0 ignored;\n"
@@ -2453,6 +2515,8 @@ def run_ignored_root_test(
             child_syscalls = set()
             cli_failures = set()
             cli_activities = set()
+            cli_mcp_phases = set()
+            cli_error_paths = set()
             for line in result.stdout.splitlines():
                 match = ROOT_FIXTURE_STAGE.fullmatch(line.strip())
                 if match is not None and match.group(1) in ROOT_FIXTURE_STAGE_NAMES:
@@ -2484,6 +2548,12 @@ def run_ignored_root_test(
                 cli_activity = parse_root_fixture_cli_activity(line)
                 if cli_activity is not None:
                     cli_activities.add(cli_activity)
+                cli_mcp_phase_counts = parse_root_fixture_cli_mcp_phases(line)
+                if cli_mcp_phase_counts is not None:
+                    cli_mcp_phases.add(cli_mcp_phase_counts)
+                cli_error_path = parse_root_fixture_cli_error_path(line)
+                if cli_error_path is not None:
+                    cli_error_paths.add(cli_error_path)
             last_stage = stages[-1] if stages else "none"
             details = f"; exit_code={result.returncode}; last_stage={last_stage}"
             if len(spawn_errors) == 1:
@@ -2549,6 +2619,28 @@ def run_ignored_root_test(
                 details += "; cli_activity=ambiguous"
             else:
                 details += "; cli_activity=not_reported"
+            if len(cli_mcp_phases) == 1:
+                initialize, initialized, tools_list, tools_call, other = next(
+                    iter(cli_mcp_phases)
+                )
+                details += (
+                    f"; cli_mcp_phases=initialize:{initialize};initialized:{initialized}"
+                    f";tools_list:{tools_list};tools_call:{tools_call};other:{other}"
+                )
+            elif cli_mcp_phases:
+                details += "; cli_mcp_phases=ambiguous"
+            else:
+                details += "; cli_mcp_phases=not_reported"
+            if len(cli_error_paths) == 1:
+                first_event, last_event, family = next(iter(cli_error_paths))
+                details += (
+                    f"; cli_error_first_event={first_event};"
+                    f" cli_error_last_event={last_event}; cli_error_family={family}"
+                )
+            elif cli_error_paths:
+                details += "; cli_error_path=ambiguous"
+            else:
+                details += "; cli_error_path=not_reported"
             details += format_root_fixture_cli_hash_measurement(cli_hash_measurement)
         refuse(
             "explicit synthetic root fixture was not exactly one successful executed test: "

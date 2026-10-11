@@ -985,6 +985,25 @@ impl ProtectedRuntimeFixture {
             .clone()
     }
 
+    pub fn mcp_phase_counts(&self) -> [u8; 5] {
+        let records = self
+            .mcp_request_records
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut counts = [0_u8; 5];
+        for record in records.iter() {
+            let index = match record.phase.as_str() {
+                "initialize" => 0,
+                "notifications/initialized" => 1,
+                "tools/list" => 2,
+                "tools/call" => 3,
+                _ => 4,
+            };
+            counts[index] = counts[index].saturating_add(1).min(64);
+        }
+        counts
+    }
+
     pub fn followed_redirects(&self) -> usize {
         self.followed_redirects.load(Ordering::Acquire)
     }

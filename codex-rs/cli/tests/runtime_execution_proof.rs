@@ -20,6 +20,96 @@ use uuid::Uuid;
 
 use runtime_execution_proof_support::ProtectedRuntimeFixture;
 
+fn cli_event_category(value: &Value) -> &'static str {
+    match value.get("type").and_then(Value::as_str) {
+        Some("thread.started") => "thread_started",
+        Some("turn.started") => "turn_started",
+        Some("turn.failed") => "turn_failed",
+        Some("turn.completed") => "turn_completed",
+        Some("item.started") => "item_started",
+        Some("item.updated") => "item_updated",
+        Some("item.completed") => "item_completed",
+        Some("error") => "error",
+        Some(_) => "other",
+        None => "non_json",
+    }
+}
+
+fn cli_error_message_family(message: &str) -> &'static str {
+    let message = message.to_ascii_lowercase();
+    let categories: [(&str, &[&str]); 9] = [
+        (
+            "auth",
+            &["auth", "credential", "token", "api key", "unauthorized"],
+        ),
+        ("mcp", &["mcp", "tool server", "tools/list"]),
+        ("config", &["config", "toml", "profile"]),
+        (
+            "provider",
+            &["model", "provider", "responses api", "openai"],
+        ),
+        ("sandbox", &["sandbox", "approval", "permission denied"]),
+        ("input", &["stdin", "prompt", "input"]),
+        ("filesystem", &["file", "directory", "path", "no such file"]),
+        (
+            "transport",
+            &["connection", "connect", "socket", "timeout", "network"],
+        ),
+        ("panic", &["panicked", "panic"]),
+    ];
+    let mut matched = None;
+    for (category, needles) in categories {
+        if needles.iter().any(|needle| message.contains(*needle)) {
+            if matched.is_some() {
+                return "ambiguous";
+            }
+            matched = Some(category);
+        }
+    }
+    matched.unwrap_or("other")
+}
+
+fn cli_failure_path(stdout: &[u8]) -> (&'static str, &'static str, &'static str) {
+    let mut first_event = "none";
+    let mut last_event = "none";
+    let mut error_family = None;
+    for line in stdout
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+    {
+        let Ok(event) = serde_json::from_slice::<Value>(line) else {
+            last_event = "non_json";
+            if first_event == "none" {
+                first_event = "non_json";
+            }
+            continue;
+        };
+        let event_category = cli_event_category(&event);
+        if first_event == "none" {
+            first_event = event_category;
+        }
+        last_event = event_category;
+        let message = match event.get("type").and_then(Value::as_str) {
+            Some("error") => event.get("message").and_then(Value::as_str),
+            Some("turn.failed") => event.pointer("/error/message").and_then(Value::as_str),
+            _ => None,
+        };
+        if let Some(message) = message {
+            let family = cli_error_message_family(message);
+            if error_family.is_some_and(|previous| previous != family) {
+                error_family = Some("ambiguous");
+                break;
+            }
+            error_family = Some(family);
+        }
+    }
+    (
+        first_event,
+        last_event,
+        error_family.unwrap_or("unclassified"),
+    )
+}
+
 #[derive(Debug, Deserialize)]
 struct CertificateClaims {
     version: u8,
@@ -156,6 +246,14 @@ async fn protected_cli_root_and_delegate_calls_are_signed_and_redacted() -> Resu
             "runtime-proof-root-cli-activity:claims={};models={}",
             fixture.claim_calls().len(),
             fixture.model_requests().len()
+        );
+        let [initialize, initialized, tools_list, tools_call, other] = fixture.mcp_phase_counts();
+        eprintln!(
+            "runtime-proof-root-cli-mcp-phases:initialize={initialize};initialized={initialized};tools_list={tools_list};tools_call={tools_call};other={other}"
+        );
+        let (first_event, last_event, family) = cli_failure_path(&result.stdout);
+        eprintln!(
+            "runtime-proof-root-cli-error-path:first_event={first_event};last_event={last_event};family={family}"
         );
     }
     anyhow::ensure!(result.status.success(), "codex exec exited unsuccessfully");
