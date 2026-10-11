@@ -137,8 +137,10 @@ impl InputQueue {
             .map(|(_, _, updates)| updates.clone())
     }
 
-    pub(crate) fn notify_mailbox(&self) {
-        self.activity_tx.send_replace(InputQueueActivity::Mailbox);
+    pub(crate) async fn notify_mailbox(&self) {
+        if self.has_trigger_turn_mailbox_items().await {
+            self.activity_tx.send_replace(InputQueueActivity::Mailbox);
+        }
     }
 
     fn read_mailbox(&self, pending: &mut VecDeque<PendingMailboxCommunication>) {
@@ -172,7 +174,7 @@ impl InputQueue {
         };
         let pending_activity = if let Some(activity) = turn_activity {
             Some(activity)
-        } else if self.has_pending_mailbox_items().await {
+        } else if self.has_trigger_turn_mailbox_items().await {
             Some(InputQueueActivity::Mailbox)
         } else {
             None
@@ -204,11 +206,14 @@ impl InputQueue {
         if !turn_state.accepts_mailbox_delivery_for_current_turn() {
             return false;
         }
+        let trigger_turn = communication.trigger_turn;
         turn_state
             .pending_input
             .items
             .push(TurnInput::InterAgentCommunication(communication));
-        self.activity_tx.send_replace(InputQueueActivity::Mailbox);
+        if trigger_turn {
+            self.activity_tx.send_replace(InputQueueActivity::Mailbox);
+        }
         true
     }
 
@@ -230,7 +235,13 @@ impl InputQueue {
             local_enqueue_ordinal,
             _diagnostics_guard: PENDING_MAILBOX_MESSAGES.track(),
         });
-        self.activity_tx.send_replace(InputQueueActivity::Mailbox);
+        if state
+            .pending
+            .iter()
+            .any(|mail| mail.communication.trigger_turn)
+        {
+            self.activity_tx.send_replace(InputQueueActivity::Mailbox);
+        }
     }
 
     pub(crate) async fn has_pending_mailbox_items(&self) -> bool {
@@ -281,9 +292,11 @@ impl InputQueue {
     }
 
     pub(crate) async fn has_trigger_turn_mailbox_items(&self) -> bool {
-        self.mailbox_state
-            .lock()
-            .await
+        let mut state = self.mailbox_state.lock().await;
+        // The controller's pending bit includes queue-only mail. Transfer it to the
+        // existing queue before classifying wake intent, preserving delivery order.
+        self.read_mailbox(&mut state.pending);
+        state
             .pending
             .iter()
             .any(|mail| mail.communication.trigger_turn)
@@ -543,11 +556,12 @@ impl TurnInputQueue {
             )
         }) {
             Some(InputQueueActivity::Steer)
-        } else if self
-            .items
-            .iter()
-            .any(|input| matches!(input, TurnInput::InterAgentCommunication(_)))
-        {
+        } else if self.items.iter().any(|input| {
+            matches!(
+                input,
+                TurnInput::InterAgentCommunication(communication) if communication.trigger_turn
+            )
+        }) {
             Some(InputQueueActivity::Mailbox)
         } else {
             None
@@ -756,11 +770,17 @@ mod tests {
         input_queue
             .enqueue_mailbox_communication(mail_one, Default::default())
             .await;
+        assert!(!activity_rx.has_changed().expect("mailbox subscription"));
+        assert!(input_queue.has_pending_mailbox_items().await);
+        assert_eq!(
+            input_queue.subscribe_activity(/*turn_state*/ None).await.1,
+            None
+        );
         let mail_two = make_mail(
             AgentPath::root(),
             AgentPath::try_from("/root/worker").expect("agent path"),
             "two",
-            /*trigger_turn*/ false,
+            /*trigger_turn*/ true,
         );
         input_queue
             .enqueue_mailbox_communication(mail_two, Default::default())
@@ -828,7 +848,7 @@ mod tests {
             .await;
         assert_eq!(
             input_queue.subscribe_activity(Some(&turn_state)).await.1,
-            Some(InputQueueActivity::Mailbox)
+            None
         );
         input_queue
             .extend_pending_input_and_accept_mailbox_delivery_for_turn_state(

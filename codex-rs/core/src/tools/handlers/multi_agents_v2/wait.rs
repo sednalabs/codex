@@ -483,6 +483,212 @@ mod tests {
         );
     }
 
+    fn wait_mail(
+        content: &str,
+        trigger_turn: bool,
+    ) -> codex_protocol::protocol::InterAgentCommunication {
+        codex_protocol::protocol::InterAgentCommunication::new(
+            AgentPath::root(),
+            AgentPath::try_from("/root/worker").expect("agent path"),
+            Vec::new(),
+            content.to_string(),
+            trigger_turn,
+        )
+    }
+
+    #[tokio::test]
+    async fn queue_only_mail_waits_for_followup_and_is_delivered_once() {
+        let registry = Arc::new(Mutex::new(AgentWaitRegistry::default()));
+        let target = ThreadId::new();
+        let mut agent_wait = Some(register_agent_wait(
+            &registry,
+            vec![target],
+            AgentWaitReturnWhen::Any,
+        ));
+        let input_queue = InputQueue::new();
+        let watermark = input_queue.mailbox_enqueue_watermark().await;
+        let (mut activity_rx, pending) = input_queue.subscribe_activity(/*turn_state*/ None).await;
+        let mut wait = Box::pin(wait_for_activity(
+            &mut activity_rx,
+            pending,
+            Instant::now() + Duration::from_secs(60),
+            &mut agent_wait,
+        ));
+        assert!(futures::poll!(wait.as_mut()).is_pending());
+
+        let quiet = wait_mail("quiet update", /*trigger_turn*/ false);
+        input_queue
+            .enqueue_mailbox_communication(quiet.clone(), Default::default())
+            .await;
+        assert!(futures::poll!(wait.as_mut()).is_pending());
+        assert!(input_queue.has_pending_mailbox_items().await);
+        assert_eq!(
+            input_queue
+                .pending_mailbox_communication_count_since(watermark)
+                .await,
+            Some(1)
+        );
+
+        let followup = wait_mail("follow up", /*trigger_turn*/ true);
+        input_queue
+            .enqueue_mailbox_communication(followup.clone(), Default::default())
+            .await;
+        assert!(matches!(wait.await, WaitOutcome::MailboxActivity));
+        assert_eq!(
+            input_queue.drain_mailbox_input_items().await.0,
+            vec![
+                crate::session::TurnInput::InterAgentCommunication(quiet),
+                crate::session::TurnInput::InterAgentCommunication(followup),
+            ]
+        );
+        assert!(input_queue.drain_mailbox_input_items().await.0.is_empty());
+    }
+
+    #[tokio::test]
+    async fn already_pending_queue_only_mail_does_not_complete_wait() {
+        let input_queue = InputQueue::new();
+        input_queue
+            .enqueue_mailbox_communication(
+                wait_mail("already queued", /*trigger_turn*/ false),
+                Default::default(),
+            )
+            .await;
+        let (mut activity_rx, pending) = input_queue.subscribe_activity(/*turn_state*/ None).await;
+        assert_eq!(pending, None);
+        let mut agent_wait = None;
+        let mut wait = Box::pin(wait_for_activity(
+            &mut activity_rx,
+            pending,
+            Instant::now() + Duration::from_secs(60),
+            &mut agent_wait,
+        ));
+        assert!(futures::poll!(wait.as_mut()).is_pending());
+        input_queue
+            .enqueue_mailbox_communication(
+                wait_mail("follow up", /*trigger_turn*/ true),
+                Default::default(),
+            )
+            .await;
+        assert!(matches!(wait.await, WaitOutcome::MailboxActivity));
+        assert_eq!(input_queue.drain_mailbox().await.len(), 2);
+        assert!(input_queue.drain_mailbox().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn queue_only_mail_does_not_hide_operator_steer() {
+        let input_queue = InputQueue::new();
+        let turn_state = tokio::sync::Mutex::new(crate::state::TurnState::default());
+        let (mut activity_rx, pending) = input_queue.subscribe_activity(Some(&turn_state)).await;
+        let mut agent_wait = None;
+        let mut wait = Box::pin(wait_for_activity(
+            &mut activity_rx,
+            pending,
+            Instant::now() + Duration::from_secs(60),
+            &mut agent_wait,
+        ));
+        assert!(futures::poll!(wait.as_mut()).is_pending());
+        input_queue
+            .enqueue_mailbox_communication(
+                wait_mail("quiet update", /*trigger_turn*/ false),
+                Default::default(),
+            )
+            .await;
+        assert!(futures::poll!(wait.as_mut()).is_pending());
+        input_queue
+            .extend_pending_input_and_accept_mailbox_delivery_for_turn_state(
+                &turn_state,
+                vec![crate::session::TurnInput::UserInput {
+                    content: Vec::new(),
+                    client_id: None,
+                    metadata: Default::default(),
+                }],
+            )
+            .await;
+        assert!(matches!(wait.await, WaitOutcome::Steered));
+        assert_eq!(input_queue.drain_mailbox().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn queue_only_mail_does_not_hide_target_terminal() {
+        let registry = Arc::new(Mutex::new(AgentWaitRegistry::default()));
+        let target = ThreadId::new();
+        let publisher = AgentOutcomePublisher::new(target, registry.clone());
+        let mut agent_wait = Some(register_agent_wait(
+            &registry,
+            vec![target],
+            AgentWaitReturnWhen::Any,
+        ));
+        let input_queue = InputQueue::new();
+        let (mut activity_rx, pending) = input_queue.subscribe_activity(/*turn_state*/ None).await;
+        let mut wait = Box::pin(wait_for_activity(
+            &mut activity_rx,
+            pending,
+            Instant::now() + Duration::from_secs(60),
+            &mut agent_wait,
+        ));
+        assert!(futures::poll!(wait.as_mut()).is_pending());
+        input_queue
+            .enqueue_mailbox_communication(
+                wait_mail("quiet update", /*trigger_turn*/ false),
+                Default::default(),
+            )
+            .await;
+        assert!(futures::poll!(wait.as_mut()).is_pending());
+        publisher.publish(AgentOutcomeSnapshot {
+            turn_id: Some("turn-1".to_string()),
+            status: AgentStatus::Completed(Some("done".to_string())),
+            readiness: AgentReadiness::Terminal,
+        });
+        let WaitOutcome::TargetTerminal(result) = wait.await else {
+            panic!("target completion must still wake a wait with queued quiet mail");
+        };
+        assert_eq!(result.outcomes[0].0, target);
+        assert_eq!(input_queue.drain_mailbox().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn cancelling_wait_retains_queue_only_mail_for_later_followup() {
+        let input_queue = InputQueue::new();
+        let (mut activity_rx, pending) = input_queue.subscribe_activity(/*turn_state*/ None).await;
+        let mut agent_wait = None;
+        let mut wait = Box::pin(wait_for_activity(
+            &mut activity_rx,
+            pending,
+            Instant::now() + Duration::from_secs(60),
+            &mut agent_wait,
+        ));
+        assert!(futures::poll!(wait.as_mut()).is_pending());
+        input_queue
+            .enqueue_mailbox_communication(
+                wait_mail("quiet update", /*trigger_turn*/ false),
+                Default::default(),
+            )
+            .await;
+        assert!(futures::poll!(wait.as_mut()).is_pending());
+        // Tool cancellation drops this future; it must not consume retained input.
+        drop(wait);
+        let (mut activity_rx, pending) = input_queue.subscribe_activity(/*turn_state*/ None).await;
+        assert_eq!(pending, None);
+        input_queue
+            .enqueue_mailbox_communication(
+                wait_mail("follow up", /*trigger_turn*/ true),
+                Default::default(),
+            )
+            .await;
+        assert!(matches!(
+            wait_for_activity(
+                &mut activity_rx,
+                pending,
+                Instant::now() + Duration::from_secs(60),
+                &mut agent_wait,
+            )
+            .await,
+            WaitOutcome::MailboxActivity
+        ));
+        assert_eq!(input_queue.drain_mailbox().await.len(), 2);
+        assert!(input_queue.drain_mailbox().await.is_empty());
+    }
+
     #[tokio::test]
     async fn mailbox_wakeup_rechecks_concurrently_latched_target_outcome() {
         let registry = Arc::new(Mutex::new(AgentWaitRegistry::default()));
@@ -508,6 +714,12 @@ mod tests {
                     "quiet update".to_string(),
                     /*trigger_turn*/ false,
                 ),
+                Default::default(),
+            )
+            .await;
+        input_queue
+            .enqueue_mailbox_communication(
+                wait_mail("follow up", /*trigger_turn*/ true),
                 Default::default(),
             )
             .await;

@@ -575,6 +575,7 @@ async fn host_mailbox_notifies_waiting_agent_and_delivers_once() -> anyhow::Resu
         ]),
     )
     .await;
+    let mut mailbox_state = controller.mailbox_state.subscribe();
     controller.mail.lock().expect("mail lock").push(
         codex_protocol::protocol::InterAgentCommunication::new(
             AgentPath::root().join("worker").expect("valid worker path"),
@@ -582,6 +583,26 @@ async fn host_mailbox_notifies_waiting_agent_and_delivers_once() -> anyhow::Resu
             Vec::new(),
             "Note from the host mailbox".into(),
             /*trigger_turn*/ false,
+        ),
+    );
+    controller.mailbox_state.send_replace(true);
+    // The host pending bit is cleared only when the session transfers the mail.
+    // Queue-only ownership has moved, but no model request may follow the wait yet.
+    drop(
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            mailbox_state.wait_for(|pending| !*pending),
+        )
+        .await??,
+    );
+    assert!(next.requests().is_empty());
+    controller.mail.lock().expect("mail lock").push(
+        codex_protocol::protocol::InterAgentCommunication::new(
+            AgentPath::root().join("worker").expect("valid worker path"),
+            AgentPath::root(),
+            Vec::new(),
+            "Follow up from the host mailbox".into(),
+            /*trigger_turn*/ true,
         ),
     );
     controller.mailbox_state.send_replace(true);
@@ -606,6 +627,14 @@ async fn host_mailbox_notifies_waiting_agent_and_delivers_once() -> anyhow::Resu
             .inputs_of_type("agent_message")
             .iter()
             .filter(|item| item.to_string().contains("Note from the host mailbox"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        request
+            .inputs_of_type("agent_message")
+            .iter()
+            .filter(|item| item.to_string().contains("Follow up from the host mailbox"))
             .count(),
         1
     );

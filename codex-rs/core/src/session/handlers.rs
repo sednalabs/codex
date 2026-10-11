@@ -466,7 +466,7 @@ pub(super) async fn submission_loop(
             } => {
                 match update {
                     Ok(true) => {
-                        sess.input_queue.notify_mailbox();
+                        sess.input_queue.notify_mailbox().await;
                         if sess.has_outstanding_durable_sleep() {
                             sess.maybe_start_turn_for_pending_work().await;
                         }
