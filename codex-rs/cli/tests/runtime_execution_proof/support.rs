@@ -302,12 +302,12 @@ mod tests {
     fn decodes_zstd_model_requests_and_rejects_malformed_bodies() {
         let expected = serde_json::json!({"input": [{"role": "user", "content": "root-claim"}]});
         let json = serde_json::to_vec(&expected).expect("serialize synthetic request");
-        let encoded =
-            zstd::stream::encode_all(Cursor::new(json), 0).expect("encode synthetic request");
+        let encoded = zstd::stream::encode_all(Cursor::new(json.as_slice()), 0)
+            .expect("encode synthetic request");
 
         assert_eq!(
             decode_model_request_body_bytes(Some("zstd"), &encoded),
-            Some(expected)
+            Some(expected.clone())
         );
         assert_eq!(
             decode_model_request_body_bytes(Some("zstd"), b"invalid"),
