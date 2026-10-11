@@ -81,6 +81,19 @@ def _tool_output(server: MockResponsesServer, call_id: str) -> dict[str, Any]:
     return result
 
 
+def _collab_item(thread_read: Any, call_id: str) -> Any:
+    items = [
+        item.root
+        for turn in thread_read.thread.turns
+        for item in turn.items
+        if getattr(item.root, "id", None) == call_id
+    ]
+    assert len(items) == 1, (
+        f"missing unique collaboration item for {call_id}: {items!r}"
+    )
+    return items[0]
+
+
 def _tool_names(tools: list[dict[str, Any]]) -> set[str]:
     names: set[str] = set()
     for tool in tools:
@@ -180,8 +193,8 @@ def _goal_config(home: Path, server: MockResponsesServer) -> None:
     config_path = home / "config.toml"
     config = config_path.read_text(encoding="utf-8")
     config = config.replace(
-        "[features.multi_agent_v2]",
-        "[features]\ngoals = true\n\n[features.multi_agent_v2]",
+        "[features]\n",
+        "[features]\ngoals = true\n",
     )
     config_path.write_text(config, encoding="utf-8")
 
@@ -223,13 +236,16 @@ def test_packaged_model_wait_agent_times_out_without_activity(
             "Wait briefly for agent activity; continue if nothing arrives."
         )
         assert turn.final_response == "no actionable work"
+        thread_read = thread.read(include_turns=True)
 
     result = _tool_output(responses_server, "quiet-wait-call")
     assert result["timed_out"] is True, result
-    assert result["reason"] == "timed_out", result
-    assert result["wake_cause"] == "timeout", result
-    assert result["status"] == {}, result
-    assert result["queued_update_count"] == 0, result
+    assert result["outcome"] == "timeout", result
+    wait_item = _collab_item(thread_read, "quiet-wait-call")
+    assert wait_item.wait_outcome.value == "timeout", wait_item
+    assert wait_item.receiver_thread_ids == [], wait_item
+    assert wait_item.queued_update_count == 0, wait_item
+    assert wait_item.agents_states == {}, wait_item
     request = next(
         req for req in responses_server.requests() if req.path == "/v1/responses"
     )
@@ -265,6 +281,7 @@ def test_packaged_model_nested_spawn_recovery_and_list_after_resume(
                 lambda request: (
                     _thread_id(request) == root_id
                     and _has_user_marker(request, "ROOT_NESTED_SPAWN_MARKER")
+                    and not _has_call_output(request, "spawn-worker")
                 ),
                 _function_response(
                     "root-spawn-worker",
@@ -282,6 +299,8 @@ def test_packaged_model_nested_spawn_recovery_and_list_after_resume(
                 lambda request: (
                     _thread_id(request) == root_id
                     and _has_call_output(request, "spawn-worker")
+                    and not _has_user_marker(request, "ROOT_RECOVERY_LIST_MARKER")
+                    and not _has_call_output(request, "list-after-reload")
                 ),
                 sse(
                     [
@@ -298,6 +317,7 @@ def test_packaged_model_nested_spawn_recovery_and_list_after_resume(
                     _thread_id(request) != root_id
                     and request.header("x-codex-parent-thread-id") == root_id
                     and _has_user_marker(request, "WORKER_INITIAL_MARKER")
+                    and not _has_call_output(request, "spawn-grandchild")
                 ),
                 _function_response(
                     "worker-spawn-grandchild",
@@ -312,7 +332,11 @@ def test_packaged_model_nested_spawn_recovery_and_list_after_resume(
                 ),
             )
             server.enqueue_sse_for_request(
-                lambda request: _has_call_output(request, "spawn-grandchild"),
+                lambda request: (
+                    _has_call_output(request, "spawn-grandchild")
+                    and not _has_user_marker(request, "WORKER_AFTER_RELOAD_MARKER")
+                    and not _has_call_output(request, "followup-worker-after-reload")
+                ),
                 sse(
                     [
                         ev_response_created("worker-after-grandchild"),
@@ -324,7 +348,10 @@ def test_packaged_model_nested_spawn_recovery_and_list_after_resume(
                 ),
             )
             server.enqueue_sse_for_request(
-                lambda request: _has_user_marker(request, "GRANDCHILD_INITIAL_MARKER"),
+                lambda request: (
+                    _has_user_marker(request, "GRANDCHILD_INITIAL_MARKER")
+                    and not _has_user_marker(request, "GRANDCHILD_AFTER_RELOAD_MARKER")
+                ),
                 sse(
                     [
                         ev_response_created("grandchild-initial"),
@@ -364,6 +391,7 @@ def test_packaged_model_nested_spawn_recovery_and_list_after_resume(
                 lambda request: (
                     _thread_id(request) == root_id
                     and _has_user_marker(request, "ROOT_RECOVERY_LIST_MARKER")
+                    and not _has_call_output(request, "list-after-reload")
                 ),
                 sse(
                     [
@@ -482,6 +510,9 @@ def test_packaged_model_queue_only_message_does_not_wake_until_followup_and_exac
                 lambda request: (
                     _thread_id(request) == root_id
                     and _has_user_marker(request, "QUEUE_WAKE_ROOT_MARKER")
+                    and not _has_all_call_outputs(
+                        request, {"spawn-waiter", "spawn-sender"}
+                    )
                 ),
                 sse(
                     [
@@ -514,6 +545,7 @@ def test_packaged_model_queue_only_message_does_not_wake_until_followup_and_exac
                 lambda request: (
                     _thread_id(request) == root_id
                     and _has_all_call_outputs(request, {"spawn-waiter", "spawn-sender"})
+                    and not _has_call_output(request, "root-exact-wait-call")
                 ),
                 sse(
                     [
@@ -535,6 +567,7 @@ def test_packaged_model_queue_only_message_does_not_wake_until_followup_and_exac
                 lambda request: (
                     request.header("x-codex-parent-thread-id") == root_id
                     and _has_user_marker(request, "WAITER_INITIAL_MARKER")
+                    and not _has_call_output(request, "waiter-mailbox-wait-call")
                 ),
                 sse(
                     [
@@ -552,6 +585,7 @@ def test_packaged_model_queue_only_message_does_not_wake_until_followup_and_exac
                 lambda request: (
                     request.header("x-codex-parent-thread-id") == root_id
                     and _has_user_marker(request, "SENDER_INITIAL_MARKER")
+                    and not _has_call_output(request, "queue-only-call")
                 ),
                 _function_response(
                     "sender-queue-turn",
@@ -563,10 +597,11 @@ def test_packaged_model_queue_only_message_does_not_wake_until_followup_and_exac
                     },
                 ),
             )
-            server.enqueue_sse_for_request(
+            followup_route = server.enqueue_sse_for_request(
                 lambda request: (
                     request.header("x-codex-parent-thread-id") == root_id
                     and _has_call_output(request, "queue-only-call")
+                    and not _has_call_output(request, "actionable-followup-call")
                 ),
                 _function_response(
                     "sender-followup-turn",
@@ -621,18 +656,53 @@ def test_packaged_model_queue_only_message_does_not_wake_until_followup_and_exac
                 "QUEUE_WAKE_ROOT_MARKER: spawn, wait only for waiter, then finish."
             )
             assert turn.final_response == "selected target finished"
+            waiter_id = _tool_output(server, "spawn-waiter")["agent_id"]
+            waiter_read = client.thread_resume(waiter_id).read(include_turns=True)
+            root_read = root.read(include_turns=True)
 
         waiter_result = _tool_output(server, "waiter-mailbox-wait-call")
-        assert waiter_result["reason"] == "mailbox_activity", waiter_result
-        assert waiter_result["wake_cause"] == "mailbox_turn_requested", waiter_result
-        assert waiter_result["queued_update_count"] >= 1, waiter_result
+        assert waiter_result["outcome"] == "unattributed_mailbox_activity", (
+            waiter_result
+        )
+        waiter_item = _collab_item(waiter_read, "waiter-mailbox-wait-call")
+        assert waiter_item.wait_outcome.value == "unattributedMailboxActivity", (
+            waiter_item
+        )
+        assert waiter_item.receiver_thread_ids == [], waiter_item
+        assert waiter_item.queued_update_count >= 1, waiter_item
+        assert waiter_item.agents_states == {}, waiter_item
         assert _call_output_count(server, "queue-only-call") == 1
         assert _call_output_count(server, "actionable-followup-call") == 1
+        followup_route.wait_until_selected()
+        requests = [
+            request
+            for request in server.requests()
+            if request.path == "/v1/responses"
+        ]
+        followup_emission_index = next(
+            index
+            for index, request in enumerate(requests)
+            if request.header("x-codex-parent-thread-id") == root_id
+            and _has_call_output(request, "queue-only-call")
+            and not _has_call_output(request, "actionable-followup-call")
+        )
+        waiter_resumed_index = next(
+            index
+            for index, request in enumerate(requests)
+            if _thread_id(request) == waiter_id
+            and _has_call_output(request, "waiter-mailbox-wait-call")
+        )
+        assert followup_emission_index < waiter_resumed_index, requests
 
         root_result = _tool_output(server, "root-exact-wait-call")
-        assert root_result["reason"] == "target_terminal", root_result
-        assert root_result["wake_cause"] == "target_status", root_result
-        assert set(root_result["status"]) == {"/root/waiter"}, root_result
+        assert root_result["outcome"] == "target_terminal_all", root_result
+        root_wait_item = _collab_item(root_read, "root-exact-wait-call")
+        assert root_wait_item.wait_outcome.value == "targetTerminalAll", root_wait_item
+        assert root_wait_item.receiver_thread_ids == [waiter_id], root_wait_item
+        assert root_wait_item.receiver_agents[0].thread_id == waiter_id, root_wait_item
+        assert root_wait_item.agents_states[waiter_id].status.value == "completed", (
+            root_wait_item
+        )
 
 
 def test_packaged_model_goal_continuation_and_terminal_transition(
@@ -666,6 +736,7 @@ def test_packaged_model_goal_continuation_and_terminal_transition(
                 lambda request: (
                     _thread_id(request) == root_id
                     and _has_user_marker(request, "GOAL_ROOT_MARKER")
+                    and not _has_call_output(request, "goal-worker-spawn")
                 ),
                 _function_response(
                     "root-spawn-goal-worker",
@@ -683,6 +754,7 @@ def test_packaged_model_goal_continuation_and_terminal_transition(
                 lambda request: (
                     _thread_id(request) == root_id
                     and _has_call_output(request, "goal-worker-spawn")
+                    and not _has_call_output(request, "root-goal-wait-call")
                 ),
                 sse(
                     [
@@ -704,6 +776,7 @@ def test_packaged_model_goal_continuation_and_terminal_transition(
                 lambda request: (
                     request.header("x-codex-parent-thread-id") == root_id
                     and _has_user_marker(request, "GOAL_WORKER_INITIAL_MARKER")
+                    and not _has_call_output(request, "worker-create-goal-call")
                 ),
                 _function_response(
                     "worker-create-goal",
@@ -719,6 +792,7 @@ def test_packaged_model_goal_continuation_and_terminal_transition(
                 lambda request: (
                     request.header("x-codex-parent-thread-id") == root_id
                     and _has_call_output(request, "worker-create-goal-call")
+                    and not _is_goal_turn(request)
                 ),
                 sse(
                     [
@@ -807,6 +881,7 @@ def test_packaged_model_goal_continuation_and_terminal_transition(
             )
             turn = root.run("GOAL_ROOT_MARKER: start the worker and wait for its goal.")
             assert turn.final_response == "goal complete"
+            root_read = root.read(include_turns=True)
 
         goal_requests = [
             request for request in server.requests() if _is_goal_turn(request)
@@ -815,9 +890,17 @@ def test_packaged_model_goal_continuation_and_terminal_transition(
             request.body_json() for request in goal_requests
         ]
         result = _tool_output(server, "root-goal-wait-call")
-        assert result["reason"] == "target_terminal", result
-        assert result["wake_cause"] == "target_status", result
-        assert set(result["status"]) == {"/root/worker"}, result
-        assert result["queued_update_count"] >= 1, result
+        assert result["outcome"] == "target_terminal_all", result
+        goal_worker_id = _tool_output(server, "goal-worker-spawn")["agent_id"]
+        goal_wait_item = _collab_item(root_read, "root-goal-wait-call")
+        assert goal_wait_item.wait_outcome.value == "targetTerminalAll", goal_wait_item
+        assert goal_wait_item.receiver_thread_ids == [goal_worker_id], goal_wait_item
+        assert goal_wait_item.receiver_agents[0].thread_id == goal_worker_id, (
+            goal_wait_item
+        )
+        assert (
+            goal_wait_item.agents_states[goal_worker_id].status.value == "completed"
+        ), goal_wait_item
+        assert goal_wait_item.queued_update_count >= 1, goal_wait_item
         assert _call_output_count(server, "worker-create-goal-call") == 1
         assert _call_output_count(server, "goal-update-complete-call") == 1

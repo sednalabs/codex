@@ -18,7 +18,7 @@ from app_server_harness import (
 from openai_codex import ApprovalMode, Codex, CodexConfig, Sandbox
 
 from fixtures import SmokePackage
-from tui_pty import PackagedTui
+from tui_pty import PackagedTui, shared_agent_server
 
 
 def _mock_config(
@@ -137,68 +137,83 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
                 sandbox=Sandbox.workspace_write,
             )
             root_id = root.id
+        with shared_agent_server(isolated):
             with PackagedTui(isolated, "resume", root_id) as empty_tui:
-                empty_tui.send("/agents")
-                empty_tui.send("\r")
+                empty_tui.until("Ask Codex")
+                empty_tui.submit_line("/agents", pasted_marker="/agents")
                 empty_frame = empty_tui.until("Agent command center")
                 assert "All 0" in empty_frame, empty_frame
-            server.enqueue_sse_for_request(
-                lambda request: (
-                    _thread_id(request) == root_id
-                    and _latest_user_marker(request, "TUI_RICH_ROOT_MARKER")
-                ),
-                sse(
-                    [
-                        ev_response_created("tui-rich-spawn"),
-                        _function_call(
-                            "tui-rich-worker",
-                            "spawn_agent",
-                            {
-                                "task_name": "worker",
-                                "message": "PRIVATE_PROMPT_SENTINEL",
-                                "model": "package-smoke",
-                                "reasoning_effort": "medium",
-                            },
-                        ),
-                        ev_completed("tui-rich-spawn"),
-                    ]
-                ),
+
+        server.enqueue_sse_for_request(
+            lambda request: (
+                _thread_id(request) == root_id
+                and _latest_user_marker(request, "TUI_RICH_ROOT_MARKER")
+                and not any(
+                    item.get("type") == "function_call_output"
+                    and item.get("call_id") == "tui-rich-worker"
+                    for item in request.input()
+                )
+            ),
+            sse(
+                [
+                    ev_response_created("tui-rich-spawn"),
+                    _function_call(
+                        "tui-rich-worker",
+                        "spawn_agent",
+                        {
+                            "task_name": "worker",
+                            "message": "PRIVATE_PROMPT_SENTINEL",
+                            "model": "package-smoke",
+                            "reasoning_effort": "medium",
+                        },
+                    ),
+                    ev_completed("tui-rich-spawn"),
+                ]
+            ),
+        )
+        server.enqueue_sse_for_request(
+            lambda request: (
+                _thread_id(request) == root_id
+                and any(
+                    item.get("type") == "function_call_output"
+                    and item.get("call_id") == "tui-rich-worker"
+                    for item in request.input()
+                )
+            ),
+            sse(
+                [
+                    ev_response_created("tui-rich-root-final"),
+                    ev_assistant_message(
+                        "tui-rich-root-message", "synthetic completion"
+                    ),
+                    ev_completed("tui-rich-root-final"),
+                ]
+            ),
+        )
+        server.enqueue_sse_for_request(
+            lambda request: (
+                _thread_id(request) != root_id
+                and request.header("x-codex-parent-thread-id") == root_id
+                and _latest_user_marker(request, "PRIVATE_PROMPT_SENTINEL")
+            ),
+            sse(
+                [
+                    ev_response_created("tui-rich-child-final"),
+                    ev_assistant_message(
+                        "tui-rich-child-message", "synthetic completion"
+                    ),
+                    ev_completed("tui-rich-child-final"),
+                ]
+            ),
+        )
+        with Codex(
+            config=CodexConfig(
+                codex_bin=str(package.cli),
+                cwd=str(package.directory),
+                env=isolated.environment,
             )
-            server.enqueue_sse_for_request(
-                lambda request: (
-                    _thread_id(request) == root_id
-                    and any(
-                        item.get("type") == "function_call_output"
-                        and item.get("call_id") == "tui-rich-worker"
-                        for item in request.input()
-                    )
-                ),
-                sse(
-                    [
-                        ev_response_created("tui-rich-root-final"),
-                        ev_assistant_message(
-                            "tui-rich-root-message", "synthetic completion"
-                        ),
-                        ev_completed("tui-rich-root-final"),
-                    ]
-                ),
-            )
-            server.enqueue_sse_for_request(
-                lambda request: (
-                    _thread_id(request) != root_id
-                    and request.header("x-codex-parent-thread-id") == root_id
-                    and _latest_user_marker(request, "PRIVATE_PROMPT_SENTINEL")
-                ),
-                sse(
-                    [
-                        ev_response_created("tui-rich-child-final"),
-                        ev_assistant_message(
-                            "tui-rich-child-message", "synthetic completion"
-                        ),
-                        ev_completed("tui-rich-child-final"),
-                    ]
-                ),
-            )
+        ) as client:
+            root = client.thread_resume(root_id)
             assert (
                 root.run(
                     "TUI_RICH_ROOT_MARKER: start one synthetic worker."
@@ -215,43 +230,45 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
 
     # Reopen the exact persisted tree in a second packaged process. The view is
     # driven by the binary's /agents implementation, not an in-process renderer.
-    with PackagedTui(isolated, "resume", root.id) as tui:
-        tui.send("/agents")
-        tui.send("\r")
-        tui.until("Agent command center")
-        tui.send("f")
-        tui.until("Search ›")
-        tui.send("worker")
-        details = tui.until(child_id)
-        _assert_thread_identity_rendered(details, child_id)
-        assert "Configured/resolved model: package-smoke" in details, details
-        assert "Configured/resolved effort: medium" in details, details
-        assert "Provider-effective identity: Unknown" in details, details
-        parent_id_lines = details.split("Parent thread ID:", maxsplit=1)[1].splitlines()
-        assert (
-            next(line.strip() for line in parent_id_lines if line.strip()) == root.id
-        ), details
-        assert "Thread path:" in details and "/root/worker" in details, details
-        assert any(
-            state in details
-            for state in ("Working", "Needs input", "Ready", "Inactive")
-        ), details
-        assert "PRIVATE_PROMPT_SENTINEL" not in details, details
-        assert (
-            "instructions" not in details.lower()
-            and "credentials" not in details.lower()
-        )
+    with shared_agent_server(isolated):
+        with PackagedTui(isolated, "resume", root.id) as tui:
+            tui.until("Ask Codex")
+            tui.submit_line("/agents", pasted_marker="/agents")
+            tui.until("Agent command center")
+            tui.send("f")
+            tui.until("Search ›")
+            tui.send("worker")
+            details = tui.until(child_id)
+            _assert_thread_identity_rendered(details, child_id)
+            assert "Configured/resolved model: package-smoke" in details, details
+            assert "Configured/resolved effort: medium" in details, details
+            assert "Provider-effective identity: Unknown" in details, details
+            parent_id_lines = details.split("Parent thread ID:", maxsplit=1)[1].splitlines()
+            assert (
+                next(line.strip() for line in parent_id_lines if line.strip()) == root.id
+            ), details
+            assert "Thread path:" in details and "/root/worker" in details, details
+            assert any(
+                state in details
+                for state in ("Working", "Needs input", "Ready", "Inactive")
+            ), details
+            assert "PRIVATE_PROMPT_SENTINEL" not in details, details
+            assert (
+                "instructions" not in details.lower()
+                and "credentials" not in details.lower()
+            )
 
-    with PackagedTui(isolated, "resume", root.id) as tui:
-        tui.send("/agents")
-        tui.send("\r")
-        replay = tui.until("worker")
-        # Select the same task after replay so the second frame contains its
-        # detail view and the same exact label/ID adjacency.
-        tui.send("f")
-        tui.until("Search ›")
-        tui.send("worker")
-        replay_details = tui.until(child_id)
-        _assert_thread_identity_rendered(replay_details, child_id)
-        assert "Provider-effective identity: Unknown" in replay_details
-        assert "PRIVATE_PROMPT_SENTINEL" not in replay_details
+    with shared_agent_server(isolated):
+        with PackagedTui(isolated, "resume", root.id) as tui:
+            tui.until("Ask Codex")
+            tui.submit_line("/agents", pasted_marker="/agents")
+            replay = tui.until("worker")
+            # Select the same task after replay so the second frame contains its
+            # detail view and the same exact label/ID adjacency.
+            tui.send("f")
+            tui.until("Search ›")
+            tui.send("worker")
+            replay_details = tui.until(child_id)
+            _assert_thread_identity_rendered(replay_details, child_id)
+            assert "Provider-effective identity: Unknown" in replay_details
+            assert "PRIVATE_PROMPT_SENTINEL" not in replay_details

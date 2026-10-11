@@ -19,7 +19,7 @@ import pytest
 from openai_codex import ApprovalMode, Codex, CodexConfig, Sandbox
 
 from fixtures import SmokePackage
-from tui_pty import PackagedTui
+from tui_pty import PackagedTui, shared_agent_server
 
 
 def _mock_config(
@@ -340,13 +340,15 @@ def test_actual_tui_agents_entry_has_initial_empty_search(
     isolated, home = _isolated(package, "tui-empty-search")
     with MockResponsesServer() as server:
         _mock_config(home, server, agent_tools=True)
-        with PackagedTui(isolated) as tui:
-            tui.send("/agents\n")
-            opened = tui.until("Agent command center")
-            assert "Group:" in opened
-            tui.send("f")
-            search = tui.until("Search ›")
-            assert "Search ›" in search and "Agent command center" in search
+        with shared_agent_server(isolated):
+            with PackagedTui(isolated) as tui:
+                tui.until("Ask Codex")
+                tui.submit_line("/agents", pasted_marker="/agents")
+                opened = tui.until("Agent command center")
+                assert "Group:" in opened
+                tui.send("f")
+                search = tui.until("Search ›")
+                assert "Search ›" in search and "Agent command center" in search
 
 
 def test_actual_tui_nested_filter_clear_live_rename_and_replay(
@@ -378,41 +380,48 @@ def test_actual_tui_nested_filter_clear_live_rename_and_replay(
             assert client.thread_resume(child_id).id == child_id
             assert client.thread_resume(root_id).id == root_id
 
-        with PackagedTui(isolated, "resume", root_id) as tui:
-            tui.send("/agents\n")
-            tree = tui.until("nested-package-task")
-            assert "Agent command center" in tree
-            assert "root-package-task" in tree and "child-package-task" in tree
-            tui.send("f")
-            assert "Search ›" in tui.until("Search ›")
-            tui.send("child-package-task")
-            child_detail = tui.until(f"Thread ID: {child_id}")
-            assert f"Parent thread ID: {root_id}" in child_detail
-            tui.send("\x03")
-            assert "nested-package-task" in tui.until("nested-package-task")
-            tui.send("f")
-            assert "Search ›" in tui.until("Search ›")
-            tui.send("nested-package-task")
-            nested_detail = tui.until(f"Thread ID: {nested_id}")
-            assert f"Parent thread ID: {child_id}" in nested_detail
-            tui.send("\x03")
-            assert "root-package-task" in tui.until("root-package-task")
-            tui.send("f")
-            assert "Search ›" in tui.until("Search ›")
-            tui.send("no-such-synthetic-task")
-            assert "No matching tasks" in tui.until("No matching tasks")
-            tui.send("\x03")
-            assert "nested-package-task" in tui.until("nested-package-task")
-            tui.send("r")
-            assert "Rename ›" in tui.until("Rename ›")
-            tui.send("\x7f" * 80 + "live-renamed-package-task\n")
-            assert "live-renamed-package-task" in tui.until("live-renamed-package-task")
+        with shared_agent_server(isolated):
+            with PackagedTui(isolated, "resume", root_id) as tui:
+                tui.until("Ask Codex")
+                tui.submit_line("/agents", pasted_marker="/agents")
+                tree = tui.until("nested-package-task")
+                assert "Agent command center" in tree
+                assert "root-package-task" in tree and "child-package-task" in tree
+                tui.send("f")
+                assert "Search ›" in tui.until("Search ›")
+                tui.send("child-package-task")
+                child_detail = tui.until(f"Thread ID: {child_id}")
+                assert f"Parent thread ID: {root_id}" in child_detail
+                tui.send("\x03")
+                assert "nested-package-task" in tui.until("nested-package-task")
+                tui.send("f")
+                assert "Search ›" in tui.until("Search ›")
+                tui.send("nested-package-task")
+                nested_detail = tui.until(f"Thread ID: {nested_id}")
+                assert f"Parent thread ID: {child_id}" in nested_detail
+                tui.send("\x03")
+                assert "root-package-task" in tui.until("root-package-task")
+                tui.send("f")
+                assert "Search ›" in tui.until("Search ›")
+                tui.send("no-such-synthetic-task")
+                assert "No matching tasks" in tui.until("No matching tasks")
+                tui.send("\x03")
+                assert "nested-package-task" in tui.until("nested-package-task")
+                tui.send("r")
+                assert "Rename ›" in tui.until("Rename ›")
+                tui.send("\x7f" * 80)
+                tui.send_paste("live-renamed-package-task")
+                tui.until("live-renamed-package-task")
+                tui.send("\r")
+                assert "live-renamed-package-task" in tui.until("live-renamed-package-task")
 
-        with PackagedTui(isolated, "resume", root_id) as tui:
-            tui.send("/agents\n")
-            replay = tui.until("live-renamed-package-task")
-            assert "Agent command center" in replay
-            assert "root-package-task" in replay and "child-package-task" in replay
+        with shared_agent_server(isolated):
+            with PackagedTui(isolated, "resume", root_id) as tui:
+                tui.until("Ask Codex")
+                tui.submit_line("/agents", pasted_marker="/agents")
+                replay = tui.until("live-renamed-package-task")
+                assert "Agent command center" in replay
+                assert "root-package-task" in replay and "child-package-task" in replay
 
 
 def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate(
