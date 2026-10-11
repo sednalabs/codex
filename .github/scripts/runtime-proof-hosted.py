@@ -131,6 +131,11 @@ ROOT_FIXTURE_CHILD_SYSCALL = re.compile(
 ROOT_FIXTURE_CLI_HASH = re.compile(
     r"^runtime-proof-root-cli-hash:bytes=([0-9]{1,13});elapsed_ms=([0-9]{1,7})$"
 )
+ROOT_FIXTURE_CLI_FAILURE = re.compile(
+    r"^runtime-proof-root-cli-failure:exit=([1-9][0-9]{0,2}|signal);stderr="
+    r"(runtime_auth|runtime_proof|provider_auth|runtime_config|"
+    r"runtime_protection|empty|unclassified|unavailable)$"
+)
 MAX_ROOT_FIXTURE_CLI_HASH_SAMPLES = 16
 MAX_ROOT_FIXTURE_CLI_IMAGE_BYTES = 1 << 40
 MAX_ROOT_FIXTURE_CLI_HASH_ELAPSED_MS = 9_000_000
@@ -551,6 +556,16 @@ def parse_root_fixture_cli_hash_measurement(output: str) -> dict[str, int | str]
         "elapsed_ms_min": min(elapsed_values),
         "elapsed_ms_max": max(elapsed_values),
     }
+
+
+def parse_root_fixture_cli_failure(line: str) -> tuple[str, str] | None:
+    match = ROOT_FIXTURE_CLI_FAILURE.fullmatch(line.strip())
+    if match is None:
+        return None
+    exit_code, stderr_category = match.groups()
+    if exit_code != "signal" and int(exit_code) > 255:
+        return None
+    return exit_code, stderr_category
 
 
 def format_root_fixture_cli_hash_measurement(
@@ -1161,6 +1176,18 @@ def verify_test_summary_parser_contract(manifest: dict[str, Any]) -> None:
         f"runtime-proof-root-cli-hash:bytes={MAX_ROOT_FIXTURE_CLI_IMAGE_BYTES + 1};elapsed_ms=1"
     ) != {"status": "out_of_range"}:
         refuse("root fixture CLI hash measurement contract failed")
+    if parse_root_fixture_cli_failure(
+        "runtime-proof-root-cli-failure:exit=1;stderr=provider_auth"
+    ) != ("1", "provider_auth"):
+        refuse("root fixture CLI failure parser contract failed")
+    if parse_root_fixture_cli_failure(
+        "runtime-proof-root-cli-failure:exit=999;stderr=provider_auth"
+    ) is not None:
+        refuse("root fixture CLI failure parser contract failed")
+    if parse_root_fixture_cli_failure(
+        "runtime-proof-root-cli-failure:exit=1;stderr=raw details"
+    ) is not None:
+        refuse("root fixture CLI failure parser contract failed")
 
     oversized_failed_then_success = (
         "test result: FAILED. 10000000000 passed; 1 failed; 0 ignored;\n"
@@ -2398,6 +2425,7 @@ def run_ignored_root_test(
             channel_pending = set()
             child_states = set()
             child_syscalls = set()
+            cli_failures = set()
             for line in result.stdout.splitlines():
                 match = ROOT_FIXTURE_STAGE.fullmatch(line.strip())
                 if match is not None and match.group(1) in ROOT_FIXTURE_STAGE_NAMES:
@@ -2423,6 +2451,9 @@ def run_ignored_root_test(
                 match = ROOT_FIXTURE_CHILD_SYSCALL.fullmatch(line.strip())
                 if match is not None:
                     child_syscalls.add(match.group(1))
+                cli_failure = parse_root_fixture_cli_failure(line)
+                if cli_failure is not None:
+                    cli_failures.add(cli_failure)
             last_stage = stages[-1] if stages else "none"
             details = f"; exit_code={result.returncode}; last_stage={last_stage}"
             if len(spawn_errors) == 1:
@@ -2471,6 +2502,16 @@ def run_ignored_root_test(
                 details += "; child_syscall_before_kill=ambiguous"
             else:
                 details += "; child_syscall_before_kill=not_reported"
+            if len(cli_failures) == 1:
+                exit_code, stderr_category = next(iter(cli_failures))
+                details += (
+                    f"; cli_failure_exit={exit_code};"
+                    f" cli_failure_stderr={stderr_category}"
+                )
+            elif cli_failures:
+                details += "; cli_failure=ambiguous"
+            else:
+                details += "; cli_failure=not_reported"
             details += format_root_fixture_cli_hash_measurement(cli_hash_measurement)
         refuse(
             "explicit synthetic root fixture was not exactly one successful executed test: "

@@ -902,6 +902,17 @@ impl ProtectedRuntimeFixture {
         loop {
             if let Some(status) = child.try_wait()? {
                 eprintln!("runtime-proof-root-stage:cli_process_exited");
+                if !status.success() {
+                    let exit = status
+                        .code()
+                        .filter(|code| (1..=255).contains(code))
+                        .map(|code| code.to_string())
+                        .unwrap_or_else(|| "signal".to_owned());
+                    eprintln!(
+                        "runtime-proof-root-cli-failure:exit={exit};stderr={}",
+                        startup_error_category(&mut stderr_reader)
+                    );
+                }
                 let stdout = fs::read(&self.output_path)?;
                 let stderr = fs::read(&self.errors_path)?;
                 eprintln!("runtime-proof-root-stage:cli_output_captured");
