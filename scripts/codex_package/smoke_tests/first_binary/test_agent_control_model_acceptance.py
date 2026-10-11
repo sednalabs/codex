@@ -23,6 +23,8 @@ from openai_codex import ApprovalMode, Codex, CodexConfig, Sandbox
 
 from fixtures import SmokePackage
 
+_SPAWN_MODEL = "gpt-6-luna"
+
 
 def _mock_config(
     home: Path, server: MockResponsesServer, *, agent_tools: bool = False
@@ -343,7 +345,7 @@ def test_packaged_model_nested_spawn_recovery_and_list_after_resume(
                     {
                         "task_name": "worker",
                         "message": "WORKER_INITIAL_MARKER",
-                        "model": "package-smoke",
+                        "model": _SPAWN_MODEL,
                         "reasoning_effort": "medium",
                     },
                 ),
@@ -413,7 +415,7 @@ def test_packaged_model_nested_spawn_recovery_and_list_after_resume(
                     {
                         "task_name": "grandchild",
                         "message": "GRANDCHILD_INITIAL_MARKER",
-                        "model": "package-smoke",
+                        "model": _SPAWN_MODEL,
                         "reasoning_effort": "medium",
                     },
                 ),
@@ -459,7 +461,7 @@ def test_packaged_model_nested_spawn_recovery_and_list_after_resume(
             worker_id = worker_spawn.agent_thread_id
             assert worker_spawn.agent_path == "/root/worker", worker_spawn
             assert worker_spawn.kind.value == "started", worker_spawn
-            assert worker_spawn.model == "package-smoke", worker_spawn
+            assert worker_spawn.model == _SPAWN_MODEL, worker_spawn
             assert worker_spawn.reasoning_effort.value == "medium", worker_spawn
             uuid.UUID(worker_id)
             worker_read = client._client.thread_read(worker_id, include_turns=True)
@@ -475,7 +477,7 @@ def test_packaged_model_nested_spawn_recovery_and_list_after_resume(
                 grandchild_spawn
             )
             assert grandchild_spawn.kind.value == "started", grandchild_spawn
-            assert grandchild_spawn.model == "package-smoke", grandchild_spawn
+            assert grandchild_spawn.model == _SPAWN_MODEL, grandchild_spawn
             assert grandchild_spawn.reasoning_effort.value == "medium", (
                 grandchild_spawn
             )
@@ -654,7 +656,7 @@ def test_packaged_model_queue_only_message_does_not_wake_until_followup_and_exac
                             {
                                 "task_name": "waiter",
                                 "message": "WAITER_INITIAL_MARKER",
-                                "model": "package-smoke",
+                                "model": _SPAWN_MODEL,
                                 "reasoning_effort": "medium",
                             },
                         ),
@@ -664,7 +666,7 @@ def test_packaged_model_queue_only_message_does_not_wake_until_followup_and_exac
                             {
                                 "task_name": "sender",
                                 "message": "SENDER_INITIAL_MARKER",
-                                "model": "package-smoke",
+                                "model": _SPAWN_MODEL,
                                 "reasoning_effort": "medium",
                             },
                         ),
@@ -982,7 +984,7 @@ def test_packaged_model_goal_continuation_and_terminal_transition(
                     {
                         "task_name": "worker",
                         "message": "GOAL_WORKER_INITIAL_MARKER",
-                        "model": "package-smoke",
+                        "model": _SPAWN_MODEL,
                         "reasoning_effort": "medium",
                     },
                 ),

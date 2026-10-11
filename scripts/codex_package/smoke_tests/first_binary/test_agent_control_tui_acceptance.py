@@ -19,6 +19,8 @@ from openai_codex import ApprovalMode, Codex, CodexConfig, Sandbox
 from fixtures import SmokePackage
 from tui_pty import PackagedTui, shared_agent_server
 
+_SPAWN_MODEL = "gpt-6-luna"
+
 
 def _mock_config(
     home: Path, server: MockResponsesServer, *, agent_tools: bool = False
@@ -204,7 +206,7 @@ def _selected_subagent_details(
         assert detail.index(parent_id) == detail.index(parent_marker) + len(
             "Parent: "
         ), detail
-        assert "configured model: package-smoke" in detail, detail
+        assert f"configured model: {_SPAWN_MODEL}" in detail, detail
         assert "configured effort: medium" in detail, detail
         assert "provider-effective identity: unverified" in detail, detail
         assert "PRIVATE_PROMPT_SENTINEL" not in frame, frame
@@ -261,6 +263,22 @@ def test_packaged_tui_subagents_picker_renders_spawned_descendant_identity_and_r
                 sandbox=Sandbox.workspace_write,
             )
             root_id = root.id
+            server.enqueue_sse_for_request(
+                lambda request: (
+                    _thread_id(request) == root_id
+                    and request.message_input_texts("user")[-1:]
+                    == ["TUI_RICH_SEED_MARKER"]
+                ),
+                sse(
+                    [
+                        ev_response_created("tui-rich-seed"),
+                        ev_assistant_message("tui-rich-seed-message", "root seeded"),
+                        ev_completed("tui-rich-seed"),
+                    ]
+                ),
+            )
+            # An empty thread has no rollout to cold-resume after SDK shutdown.
+            assert root.run("TUI_RICH_SEED_MARKER").final_response == "root seeded"
         server.enqueue_sse_for_request(
             lambda request: (
                 _thread_id(request) == root_id
@@ -280,7 +298,7 @@ def test_packaged_tui_subagents_picker_renders_spawned_descendant_identity_and_r
                         {
                             "task_name": "worker",
                             "message": "PRIVATE_PROMPT_SENTINEL",
-                            "model": "package-smoke",
+                            "model": _SPAWN_MODEL,
                             "reasoning_effort": "medium",
                         },
                     ),
@@ -353,7 +371,7 @@ def test_packaged_tui_subagents_picker_renders_spawned_descendant_identity_and_r
                         {
                             "task_name": "nested",
                             "message": "PRIVATE_NESTED_PROMPT_SENTINEL",
-                            "model": "package-smoke",
+                            "model": _SPAWN_MODEL,
                             "reasoning_effort": "medium",
                         },
                     ),
@@ -438,13 +456,13 @@ def test_packaged_tui_subagents_picker_renders_spawned_descendant_identity_and_r
                 ).final_response
                 == "synthetic completion"
             )
-            server.wait_for_requests(7, timeout_s=30)
+            server.wait_for_requests(8, timeout_s=30)
             root_history = root.read(include_turns=True).thread
             worker_activity = _subagent_activity(root_history, "tui-rich-worker")
             child_id = worker_activity.agent_thread_id
             assert worker_activity.agent_path == "/root/worker", worker_activity
             assert worker_activity.model is not None, worker_activity
-            assert worker_activity.model == "package-smoke", worker_activity
+            assert worker_activity.model == _SPAWN_MODEL, worker_activity
             assert worker_activity.reasoning_effort is not None, worker_activity
             assert worker_activity.reasoning_effort.value == "medium", worker_activity
 
@@ -454,7 +472,7 @@ def test_packaged_tui_subagents_picker_renders_spawned_descendant_identity_and_r
             nested_id = nested_activity.agent_thread_id
             assert nested_activity.agent_path == "/root/worker/nested", nested_activity
             assert nested_activity.model is not None, nested_activity
-            assert nested_activity.model == "package-smoke", nested_activity
+            assert nested_activity.model == _SPAWN_MODEL, nested_activity
             assert nested_activity.reasoning_effort is not None, nested_activity
             assert nested_activity.reasoning_effort.value == "medium", nested_activity
 

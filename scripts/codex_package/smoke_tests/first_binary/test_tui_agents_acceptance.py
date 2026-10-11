@@ -346,7 +346,7 @@ def test_actual_tui_agents_entry_has_initial_empty_search(
                 tui.submit_line("/agents", pasted_marker="/agents")
                 opened = tui.until("Agent command center")
                 assert "Group:" in opened
-                tui.send("f")
+                tui.send("/")
                 search = tui.until("Search ›")
                 assert "Search ›" in search and "Agent command center" in search
 
@@ -387,21 +387,21 @@ def test_actual_tui_nested_filter_clear_live_rename_and_replay(
                 tree = tui.until("nested-package-task")
                 assert "Agent command center" in tree
                 assert "root-package-task" in tree and "child-package-task" in tree
-                tui.send("f")
+                tui.send("/")
                 assert "Search ›" in tui.until("Search ›")
                 tui.send("child-package-task")
                 child_row = tui.until("child-package-task")
                 assert "child-package-task" in child_row
                 tui.send("\x03")
                 assert "nested-package-task" in tui.until("nested-package-task")
-                tui.send("f")
+                tui.send("/")
                 assert "Search ›" in tui.until("Search ›")
                 tui.send("nested-package-task")
                 nested_row = tui.until("nested-package-task")
                 assert "nested-package-task" in nested_row
                 tui.send("\x03")
                 assert "root-package-task" in tui.until("root-package-task")
-                tui.send("f")
+                tui.send("/")
                 assert "Search ›" in tui.until("Search ›")
                 tui.send("no-such-synthetic-task")
                 assert "No matching tasks" in tui.until("No matching tasks")
@@ -509,6 +509,8 @@ def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate
     with MockResponsesServer() as server:
         browser_output_diagnostic["responses_server"] = server
         _mock_config(home, server, agent_tools=True)
+        with (home / "config.toml").open("a", encoding="utf-8") as config:
+            config.write('\n[tui]\nstatus_line = ["thread-name"]\n')
         server.enqueue_sse(
             sse(
                 [
@@ -553,11 +555,19 @@ def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate
         )
         with PackagedTui(isolated) as tui:
             tui.until("Ask Codex to do anything")
+            # Name this thread before its first turn so automatic title requests
+            # cannot consume the Browser fixture's two Responses routes.
+            tui.submit_line(
+                "/rename browser-roundtrip-fixture",
+                pasted_marker="/rename browser-roundtrip-fixture",
+            )
+            tui.until("browser-roundtrip-fixture")
             prompt = "Inspect the configured synthetic Browser page and report its capture labels."
             tui.send(prompt)
             tui.until(prompt)
             tui.send("\r")
             server.wait_for_requests(2, timeout_s=30)
+            tui.until("browser synthetic consumer complete")
 
         requests = [
             request for request in server.requests() if request.path == "/v1/responses"
