@@ -94,7 +94,7 @@
     "codex-rs/cli/Cargo.toml": "d9ab2cb774f23e689a8159bcd29e5eb655445258c93b3233b38511538818e307",
     "codex-rs/cli/src/main.rs": "4ba4b566f49c32fe92a071d506cce394ab2ea49055717b3bfbcb14181bbcd881",
     "codex-rs/cli/tests/runtime_execution_proof.rs": "a269961a31a676bfedf212f2a7bcb3a7e5a4a28d95962c37d547e20e2d594f90",
-    "codex-rs/cli/tests/runtime_execution_proof/support.rs": "0a257f179f2417d253b7d7995f862bface9e0eabda14c6bef7983cb4afbe594f",
+    "codex-rs/cli/tests/runtime_execution_proof/support.rs": "be14f6bee6c8cb9004f69b4b09023f14dc738c8191d0ac95552aec7c0e4ac0e1",
     "codex-rs/codex-mcp/Cargo.toml": "0d4abb5107785b4a6f824b2a26fdcc17d25f61058b5f35c741c3d0608fd0ef2e",
     "codex-rs/codex-mcp/src/lib.rs": "2f4f1fb78be1f117d43b63cc194de2417ab604d9b4ec85baea1ef03e83142538",
     "codex-rs/codex-mcp/src/protected_http_client.rs": "987e22530f799fcc9c0758352bbe248b189802216b69aa1a5bd03ba82ec362be",
@@ -116,8 +116,8 @@
     "codex-rs/rmcp-client/src/rmcp_client.rs": "f3afd3eeb45ef7e6d2f4fe687075e1c607e083d20e7397689392b006476a3c8d",
     "codex-rs/runtime-proof/BUILD.bazel": "a8aa3021d543117a8e3a27cfac1f5d6cfdddcca6c286a6dc94eb38b8ca12ab2e",
     "codex-rs/runtime-proof/Cargo.toml": "8f574c25b9da4c128ebc51b57e14ed69b4c857fb294fc5d6dc88e8b85dffec61",
-    "codex-rs/runtime-proof/src/auth.rs": "0edab2232d88b162d881c86b29ddd9ae65e8f0518ceb3c0b801815c8c5184af5",
-    "codex-rs/runtime-proof/src/auth_tests.rs": "e6f331c5638e40c072e36e2606038540fea354dcf6943aaf6873b493f9949524",
+    "codex-rs/runtime-proof/src/auth.rs": "76df90639307b7857633f4e1a02eb036f39290809c0c0de4abb2346e517b9b80",
+    "codex-rs/runtime-proof/src/auth_tests.rs": "94e19345f01cdf5116f4a66e94f2b76d85770b5a22a0b3d2717764cf830a731f",
     "codex-rs/runtime-proof/src/lib.rs": "c2dac0631fba505730e7c43e100c8892e08ce1ce7f18b5d72e2d07b25ae76c0e",
     "codex-rs/runtime-proof/src/provider_auth.rs": "2ca858819252fc8e62b71178e18ee00cb3418a07630b892f2c01648906a22bd4",
     "codex-rs/runtime-proof/src/signer.rs": "90662971cedd6f8463e0e0d5caccc278b4c093858c3697263d2f8b99c075a594",
@@ -130,7 +130,7 @@
     "docs/divergences/index.yaml": "cc00454e2d9da5d284e873636d6a1aed92b1f60bbae7b5f24fb8988cfb3371f7",
     "docs/downstream-regression-matrix.md": "bc2b98f7a9655eed452e54e79871df9acb1be463d2ba1d1354d86450edd05bb2"
   },
-  "product_source_commit": "56f0b485b3964176d923b505b3165b6657380787",
+  "product_source_commit": "8e0ec7cf9542b4bf372f47d1046d4a5337f6f859",
   "repository": "sednalabs/codex",
   "schema_version": 1,
   "toolchains": {
