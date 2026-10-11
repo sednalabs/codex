@@ -35,7 +35,8 @@ def _mock_config(
         "multi_agent_v2 = true\nmemories = false\napps = false\nplugins = false\n"
         '[model_providers.package_smoke]\nname = "package smoke"\n'
         f'base_url = "{server.url}/v1"\nwire_api = "responses"\n'
-        "request_max_retries = 0\nstream_max_retries = 0\n",
+        "request_max_retries = 0\nstream_max_retries = 0\n"
+        '[tui]\nstatus_line = ["model-name", "thread-id", "thread-name"]\n',
         encoding="utf-8",
     )
 
@@ -342,7 +343,9 @@ def test_actual_tui_agents_entry_has_initial_empty_search(
         _mock_config(home, server, agent_tools=True)
         with shared_agent_server(isolated):
             with PackagedTui(isolated) as tui:
-                tui.until("Ask Codex")
+                # The provisional startup composer has the same placeholder;
+                # the configured footer is only present on the session widget.
+                tui.until_all(("OpenAI Codex", "package-smoke", "Ask Codex"))
                 tui.submit_line("/agents", pasted_marker="/agents")
                 opened = tui.until("Agent command center")
                 assert "Group:" in opened
@@ -382,7 +385,7 @@ def test_actual_tui_nested_filter_clear_live_rename_and_replay(
 
         with shared_agent_server(isolated):
             with PackagedTui(isolated, "resume", root_id) as tui:
-                tui.until("Ask Codex")
+                tui.until_all(("OpenAI Codex", root_id, "Ask Codex"))
                 tui.submit_line("/agents", pasted_marker="/agents")
                 tree = tui.until("nested-package-task")
                 assert "Agent command center" in tree
@@ -413,13 +416,15 @@ def test_actual_tui_nested_filter_clear_live_rename_and_replay(
                 tui.send_paste("live-renamed-package-task")
                 tui.until("live-renamed-package-task")
                 tui.send("\r")
+                # A full fresh viewport avoids matching fragmented cell updates.
+                tui.resize(109)
                 assert "live-renamed-package-task" in tui.until(
                     "live-renamed-package-task"
                 )
 
         with shared_agent_server(isolated):
             with PackagedTui(isolated, "resume", root_id) as tui:
-                tui.until("Ask Codex")
+                tui.until_all(("OpenAI Codex", root_id, "Ask Codex"))
                 tui.submit_line("/agents", pasted_marker="/agents")
                 replay = tui.until("live-renamed-package-task")
                 assert "Agent command center" in replay
@@ -511,8 +516,16 @@ def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate
     with MockResponsesServer() as server:
         browser_output_diagnostic["responses_server"] = server
         _mock_config(home, server, agent_tools=True)
-        with (home / "config.toml").open("a", encoding="utf-8") as config:
-            config.write('\n[tui]\nstatus_line = ["thread-name"]\n')
+        # Persist the exact named identity before launching the TUI. A pasted
+        # /rename echo is not evidence that startup has committed the command.
+        with _sdk(isolated) as client:
+            browser_thread = client.thread_start(
+                ephemeral=False,
+                approval_mode=ApprovalMode.deny_all,
+                sandbox=Sandbox.workspace_write,
+            )
+            browser_thread.set_name("browser-roundtrip-fixture")
+            browser_thread_id = browser_thread.id
         server.enqueue_sse(
             sse(
                 [
@@ -555,19 +568,12 @@ def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate
             "browser synthetic consumer complete",
             response_id="browser-visual-fixture-followup",
         )
-        with PackagedTui(isolated) as tui:
-            tui.until("Ask Codex to do anything")
-            # Name this thread before its first turn so automatic title requests
-            # cannot consume the Browser fixture's two Responses routes.
-            tui.submit_line(
-                "/rename browser-roundtrip-fixture",
-                pasted_marker="/rename browser-roundtrip-fixture",
+        with PackagedTui(isolated, "resume", browser_thread_id) as tui:
+            tui.until_all(
+                ("OpenAI Codex", browser_thread_id, "Ask Codex to do anything")
             )
-            tui.until("browser-roundtrip-fixture")
             prompt = "Inspect the configured synthetic Browser page and report its capture labels."
-            tui.send(prompt)
-            tui.until(prompt)
-            tui.send("\r")
+            tui.submit_line(prompt, pasted_marker=prompt)
             server.wait_for_requests(2, timeout_s=30)
             tui.until("browser synthetic consumer complete")
 

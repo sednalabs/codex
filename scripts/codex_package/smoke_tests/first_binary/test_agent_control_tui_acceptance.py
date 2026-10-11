@@ -1,6 +1,7 @@
 """Actual packaged /agents rendering and replay for rich agent metadata."""
 
 import json
+import re
 import uuid
 from dataclasses import replace
 from pathlib import Path
@@ -185,14 +186,11 @@ def _selected_subagent_details(
         path_start = frame.index(path_marker, detail_start)
         parent_start = frame.index(parent_marker, path_start)
         status_start = frame.index("Status: ", parent_start)
-        status_marker = next(
-            (
-                f"Status: {status}"
-                for status in ("running", "not running", "not loaded")
-                if frame.startswith(f"Status: {status}", status_start)
-            ),
-            None,
+        status_match = re.match(
+            r"Status:\s+(running|not running|not loaded)(?=\s|$)",
+            frame[status_start:],
         )
+        status_marker = status_match.group(0) if status_match is not None else None
         assert detail_start < path_start < parent_start < status_start, frame
         assert status_marker is not None, frame
         detail_end = status_start + len(status_marker)

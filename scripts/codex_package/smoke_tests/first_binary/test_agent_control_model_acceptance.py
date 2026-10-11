@@ -330,10 +330,32 @@ def test_packaged_model_nested_spawn_recovery_and_list_after_resume(
                 sandbox=Sandbox.workspace_write,
             )
             root_id = root.id
+            initial_descendant_ids: dict[str, str] = {}
+
+            def initial_descendant(
+                request: CapturedResponsesRequest,
+                role: str,
+                parent_id: str | None,
+                marker: str,
+            ) -> bool:
+                thread_id = _thread_id(request)
+                if (
+                    not isinstance(thread_id, str)
+                    or parent_id is None
+                    or thread_id == parent_id
+                    or request.header("x-codex-parent-thread-id") != parent_id
+                    or not _has_user_marker(request, marker)
+                ):
+                    return False
+                # Bind only the first exact lineage/phase request. The actual
+                # persisted spawn records below must attest these same UUIDs.
+                return thread_id == initial_descendant_ids.setdefault(role, thread_id)
+
             server.enqueue_sse_for_request(
                 lambda request: (
                     _thread_id(request) == root_id
                     and _has_user_marker(request, "ROOT_NESTED_SPAWN_MARKER")
+                    and not _contains_input_text(request, "ROOT_RECOVERY_LIST_MARKER")
                     and not _has_call_output(request, "spawn-worker")
                 ),
                 _function_response(
@@ -352,7 +374,7 @@ def test_packaged_model_nested_spawn_recovery_and_list_after_resume(
                 lambda request: (
                     _thread_id(request) == root_id
                     and _has_call_output(request, "spawn-worker")
-                    and not _has_user_marker(request, "ROOT_RECOVERY_LIST_MARKER")
+                    and not _contains_input_text(request, "ROOT_RECOVERY_LIST_MARKER")
                     and not _has_call_output(request, "root-wait-worker")
                 ),
                 _function_response(
@@ -370,6 +392,7 @@ def test_packaged_model_nested_spawn_recovery_and_list_after_resume(
                 lambda request: (
                     _thread_id(request) == root_id
                     and _has_call_output(request, "root-wait-worker")
+                    and not _contains_input_text(request, "ROOT_RECOVERY_LIST_MARKER")
                     and not _has_call_output(request, "root-wait-grandchild")
                 ),
                 _function_response(
@@ -387,7 +410,7 @@ def test_packaged_model_nested_spawn_recovery_and_list_after_resume(
                 lambda request: (
                     _thread_id(request) == root_id
                     and _has_call_output(request, "root-wait-grandchild")
-                    and not _has_user_marker(request, "ROOT_RECOVERY_LIST_MARKER")
+                    and not _contains_input_text(request, "ROOT_RECOVERY_LIST_MARKER")
                 ),
                 sse(
                     [
@@ -401,9 +424,10 @@ def test_packaged_model_nested_spawn_recovery_and_list_after_resume(
             )
             server.enqueue_sse_for_request(
                 lambda request: (
-                    _thread_id(request) != root_id
-                    and request.header("x-codex-parent-thread-id") == root_id
-                    and _has_user_marker(request, "WORKER_INITIAL_MARKER")
+                    not _contains_input_text(request, "WORKER_AFTER_RELOAD_MARKER")
+                    and initial_descendant(
+                        request, "worker", root_id, "WORKER_INITIAL_MARKER"
+                    )
                     and not _has_call_output(request, "spawn-grandchild")
                 ),
                 _function_response(
@@ -420,8 +444,10 @@ def test_packaged_model_nested_spawn_recovery_and_list_after_resume(
             )
             server.enqueue_sse_for_request(
                 lambda request: (
-                    _has_call_output(request, "spawn-grandchild")
-                    and not _has_user_marker(request, "WORKER_AFTER_RELOAD_MARKER")
+                    _thread_id(request) == initial_descendant_ids.get("worker")
+                    and request.header("x-codex-parent-thread-id") == root_id
+                    and _has_call_output(request, "spawn-grandchild")
+                    and not _contains_input_text(request, "WORKER_AFTER_RELOAD_MARKER")
                     and not _has_call_output(request, "followup-worker-after-reload")
                 ),
                 sse(
@@ -436,8 +462,13 @@ def test_packaged_model_nested_spawn_recovery_and_list_after_resume(
             )
             server.enqueue_sse_for_request(
                 lambda request: (
-                    _has_user_marker(request, "GRANDCHILD_INITIAL_MARKER")
-                    and not _has_user_marker(request, "GRANDCHILD_AFTER_RELOAD_MARKER")
+                    not _contains_input_text(request, "GRANDCHILD_AFTER_RELOAD_MARKER")
+                    and initial_descendant(
+                        request,
+                        "grandchild",
+                        initial_descendant_ids.get("worker"),
+                        "GRANDCHILD_INITIAL_MARKER",
+                    )
                 ),
                 sse(
                     [
@@ -457,6 +488,7 @@ def test_packaged_model_nested_spawn_recovery_and_list_after_resume(
             root_read = root.read(include_turns=True)
             worker_spawn = _sub_agent_activity(root_read, "spawn-worker")
             worker_id = worker_spawn.agent_thread_id
+            assert worker_id == initial_descendant_ids["worker"], worker_spawn
             assert worker_spawn.agent_path == "/root/worker", worker_spawn
             assert worker_spawn.kind.value == "started", worker_spawn
             assert worker_spawn.model == _SPAWN_MODEL, worker_spawn
@@ -469,6 +501,9 @@ def test_packaged_model_nested_spawn_recovery_and_list_after_resume(
             )
             grandchild_spawn = _sub_agent_activity(worker_read, "spawn-grandchild")
             grandchild_id = grandchild_spawn.agent_thread_id
+            assert grandchild_id == initial_descendant_ids["grandchild"], (
+                grandchild_spawn
+            )
             assert grandchild_spawn.agent_path == "/root/worker/grandchild", (
                 grandchild_spawn
             )
@@ -500,7 +535,7 @@ def test_packaged_model_nested_spawn_recovery_and_list_after_resume(
             server.enqueue_sse_for_request(
                 lambda request: (
                     _thread_id(request) == root_id
-                    and _has_user_marker(request, "ROOT_RECOVERY_LIST_MARKER")
+                    and _contains_input_text(request, "ROOT_RECOVERY_LIST_MARKER")
                     and not _has_call_output(request, "list-after-reload")
                 ),
                 sse(
@@ -530,6 +565,7 @@ def test_packaged_model_nested_spawn_recovery_and_list_after_resume(
             server.enqueue_sse_for_request(
                 lambda request: (
                     _thread_id(request) == root_id
+                    and _contains_input_text(request, "ROOT_RECOVERY_LIST_MARKER")
                     and _has_call_output(request, "list-after-reload")
                 ),
                 sse(
@@ -545,7 +581,7 @@ def test_packaged_model_nested_spawn_recovery_and_list_after_resume(
             server.enqueue_sse_for_request(
                 lambda request: (
                     _thread_id(request) == worker_id
-                    and _has_user_marker(request, "WORKER_AFTER_RELOAD_MARKER")
+                    and _contains_input_text(request, "WORKER_AFTER_RELOAD_MARKER")
                 ),
                 sse(
                     [
@@ -560,7 +596,7 @@ def test_packaged_model_nested_spawn_recovery_and_list_after_resume(
             server.enqueue_sse_for_request(
                 lambda request: (
                     _thread_id(request) == grandchild_id
-                    and _has_user_marker(request, "GRANDCHILD_AFTER_RELOAD_MARKER")
+                    and _contains_input_text(request, "GRANDCHILD_AFTER_RELOAD_MARKER")
                 ),
                 sse(
                     [
