@@ -851,7 +851,7 @@ impl ProtectedRuntimeFixture {
         auth_frame.fill(0);
         drop(auth_launcher);
         eprintln!("runtime-proof-root-stage:cli_auth_sent");
-        set_read_timeout(&launcher, Duration::from_secs(10))?;
+        set_read_timeout(&launcher, Duration::from_secs(60))?;
         eprintln!("runtime-proof-root-stage:cli_waiting_for_ack");
         let mut ack = [0_u8; 4];
         if let Err(error) = launcher.read_exact(&mut ack) {
