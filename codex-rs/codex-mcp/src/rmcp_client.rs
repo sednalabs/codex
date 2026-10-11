@@ -1399,8 +1399,7 @@ mod tests {
 
         assert!(!local.is_remote());
         assert!(protected_http_transport_is_process_local(
-            &config,
-            /*resolved_environment*/ None
+            &config, /*resolved_environment*/ None
         ));
         assert!(protected_http_transport_is_process_local(
             &config,
