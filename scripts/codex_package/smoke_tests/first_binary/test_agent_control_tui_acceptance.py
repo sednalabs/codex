@@ -1,7 +1,6 @@
 """Actual packaged /agents rendering and replay for rich agent metadata."""
 
 import json
-import re
 import uuid
 from dataclasses import replace
 from pathlib import Path
@@ -83,6 +82,46 @@ def _tool_output(server: MockResponsesServer, call_id: str) -> dict[str, Any]:
     return result
 
 
+def _selected_subagent_details(
+    tui: PackagedTui, expected: dict[str, tuple[str, str]]
+) -> dict[str, str]:
+    """Visit descendant rows and bind each selected detail to UUID/path/parent."""
+    selected: dict[str, str] = {}
+    for index in range(len(expected)):
+        tui.send("\x1b[B")
+        tui.until_output()
+        tui.resize(111 + index)
+        frame = tui.until("Status: ")
+        matches = [
+            thread_id
+            for thread_id, (path, parent_id) in expected.items()
+            if thread_id in frame
+            and f"Path: {path}" in frame
+            and f"Parent: {parent_id}" in frame
+        ]
+        assert len(matches) == 1, frame
+        assert "Status: " in frame, frame
+        thread_id = matches[0]
+        path, parent_id = expected[thread_id]
+        assert f"Path: {path}" in frame, frame
+        assert f"Parent: {parent_id}" in frame, frame
+        assert "configured model: package-smoke" in frame, frame
+        assert "configured effort: medium" in frame, frame
+        assert "provider-effective identity: unverified" in frame, frame
+        assert any(
+            f"Status: {status}" in frame
+            for status in ("running", "not running", "not loaded")
+        ), frame
+        assert "PRIVATE_PROMPT_SENTINEL" not in frame, frame
+        assert "PRIVATE_NESTED_PROMPT_SENTINEL" not in frame, frame
+        assert "instructions" not in frame.lower(), frame
+        assert "credentials" not in frame.lower(), frame
+        selected[thread_id] = frame
+
+    assert set(selected) == set(expected), selected
+    return selected
+
+
 def _isolated(package: SmokePackage, suffix: str) -> tuple[SmokePackage, Path]:
     home = package.directory / suffix
     home.mkdir()
@@ -107,20 +146,10 @@ def _rich_config(home: Path, server: MockResponsesServer) -> None:
     )
 
 
-def _assert_thread_identity_rendered(frame: str, thread_id: str) -> None:
-    """The packaged renderer presents the label and immutable ID on adjacent lines."""
-    lines = [
-        line.strip() for line in frame.replace("\r", "").splitlines() if line.strip()
-    ]
-    label_index = lines.index("Thread ID:")
-    assert lines[label_index + 1] == thread_id, lines
-    assert re.fullmatch(r"[0-9a-f-]{36}", lines[label_index + 1])
-
-
-def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effective_identity(
+def test_packaged_tui_subagents_picker_renders_spawned_descendant_identity_and_replay(
     package: SmokePackage,
 ) -> None:
-    """Render model/effort truthfully and keep private tool payloads out of /agents."""
+    """Render real spawned descendants with configured identity and privacy truth."""
     isolated, home = _isolated(package, "tui-rich-agent-metadata")
     with MockResponsesServer() as server:
         _rich_config(home, server)
@@ -137,13 +166,6 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
                 sandbox=Sandbox.workspace_write,
             )
             root_id = root.id
-        with shared_agent_server(isolated):
-            with PackagedTui(isolated, "resume", root_id) as empty_tui:
-                empty_tui.until("Ask Codex")
-                empty_tui.submit_line("/agents", pasted_marker="/agents")
-                empty_frame = empty_tui.until("Agent command center")
-                assert "All 0" in empty_frame, empty_frame
-
         server.enqueue_sse_for_request(
             lambda request: (
                 _thread_id(request) == root_id
@@ -179,6 +201,32 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
                     and item.get("call_id") == "tui-rich-worker"
                     for item in request.input()
                 )
+                and not any(
+                    item.get("type") == "function_call_output"
+                    and item.get("call_id") == "tui-rich-root-wait"
+                    for item in request.input()
+                )
+            ),
+            sse(
+                [
+                    ev_response_created("tui-rich-root-wait"),
+                    _function_call(
+                        "tui-rich-root-wait",
+                        "wait_agent",
+                        {"targets": ["/root/worker"]},
+                    ),
+                    ev_completed("tui-rich-root-wait"),
+                ]
+            ),
+        )
+        server.enqueue_sse_for_request(
+            lambda request: (
+                _thread_id(request) == root_id
+                and any(
+                    item.get("type") == "function_call_output"
+                    and item.get("call_id") == "tui-rich-root-wait"
+                    for item in request.input()
+                )
             ),
             sse(
                 [
@@ -195,14 +243,89 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
                 _thread_id(request) != root_id
                 and request.header("x-codex-parent-thread-id") == root_id
                 and _latest_user_marker(request, "PRIVATE_PROMPT_SENTINEL")
+                and not any(
+                    item.get("type") == "function_call_output"
+                    and item.get("call_id") == "tui-rich-nested"
+                    for item in request.input()
+                )
             ),
             sse(
                 [
-                    ev_response_created("tui-rich-child-final"),
-                    ev_assistant_message(
-                        "tui-rich-child-message", "synthetic completion"
+                    ev_response_created("tui-rich-nested-spawn"),
+                    _function_call(
+                        "tui-rich-nested",
+                        "spawn_agent",
+                        {
+                            "task_name": "nested",
+                            "message": "PRIVATE_NESTED_PROMPT_SENTINEL",
+                            "model": "package-smoke",
+                            "reasoning_effort": "medium",
+                        },
                     ),
-                    ev_completed("tui-rich-child-final"),
+                    ev_completed("tui-rich-nested-spawn"),
+                ]
+            ),
+        )
+        server.enqueue_sse_for_request(
+            lambda request: (
+                _thread_id(request) != root_id
+                and request.header("x-codex-parent-thread-id") == root_id
+                and any(
+                    item.get("type") == "function_call_output"
+                    and item.get("call_id") == "tui-rich-nested"
+                    for item in request.input()
+                )
+                and not any(
+                    item.get("type") == "function_call_output"
+                    and item.get("call_id") == "tui-rich-worker-wait"
+                    for item in request.input()
+                )
+            ),
+            sse(
+                [
+                    ev_response_created("tui-rich-worker-wait"),
+                    _function_call(
+                        "tui-rich-worker-wait",
+                        "wait_agent",
+                        {"targets": ["/root/worker/nested"]},
+                    ),
+                    ev_completed("tui-rich-worker-wait"),
+                ]
+            ),
+        )
+        server.enqueue_sse_for_request(
+            lambda request: (
+                _thread_id(request) != root_id
+                and request.header("x-codex-parent-thread-id") == root_id
+                and any(
+                    item.get("type") == "function_call_output"
+                    and item.get("call_id") == "tui-rich-worker-wait"
+                    for item in request.input()
+                )
+            ),
+            sse(
+                [
+                    ev_response_created("tui-rich-worker-final"),
+                    ev_assistant_message(
+                        "tui-rich-worker-message", "synthetic worker completion"
+                    ),
+                    ev_completed("tui-rich-worker-final"),
+                ]
+            ),
+        )
+        server.enqueue_sse_for_request(
+            lambda request: (
+                _thread_id(request) != root_id
+                and request.header("x-codex-parent-thread-id") not in (None, root_id)
+                and _latest_user_marker(request, "PRIVATE_NESTED_PROMPT_SENTINEL")
+            ),
+            sse(
+                [
+                    ev_response_created("tui-rich-nested-final"),
+                    ev_assistant_message(
+                        "tui-rich-nested-message", "synthetic nested completion"
+                    ),
+                    ev_completed("tui-rich-nested-final"),
                 ]
             ),
         )
@@ -220,6 +343,7 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
                 ).final_response
                 == "synthetic completion"
             )
+            server.wait_for_requests(7, timeout_s=30)
         metadata = _tool_output(server, "tui-rich-worker")
 
         child_id = metadata["agent_id"]
@@ -227,48 +351,34 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
         assert metadata["configured_model"] == "package-smoke", metadata
         assert metadata["configured_reasoning_effort"] == "medium", metadata
         assert "PRIVATE_PROMPT_SENTINEL" not in json.dumps(metadata)
+        nested_metadata = _tool_output(server, "tui-rich-nested")
+        nested_id = nested_metadata["agent_id"]
+        uuid.UUID(nested_id)
+        assert nested_metadata["configured_model"] == "package-smoke", nested_metadata
+        assert (
+            nested_metadata["configured_reasoning_effort"] == "medium"
+        ), nested_metadata
+        assert "PRIVATE_NESTED_PROMPT_SENTINEL" not in json.dumps(nested_metadata)
 
-    # Reopen the exact persisted tree in a second packaged process. The view is
-    # driven by the binary's /agents implementation, not an in-process renderer.
+    expected_descendants = {
+        child_id: ("/root/worker", root_id),
+        nested_id: ("/root/worker/nested", child_id),
+    }
+
+    # Reopen the exact persisted tree in a second packaged process. The native
+    # picker is driven by actual spawned-agent activity, not forked thread rows.
     with shared_agent_server(isolated):
         with PackagedTui(isolated, "resume", root.id) as tui:
             tui.until("Ask Codex")
-            tui.submit_line("/agents", pasted_marker="/agents")
-            tui.until("Agent command center")
-            tui.send("f")
-            tui.until("Search ›")
-            tui.send("worker")
-            details = tui.until(child_id)
-            _assert_thread_identity_rendered(details, child_id)
-            assert "Configured/resolved model: package-smoke" in details, details
-            assert "Configured/resolved effort: medium" in details, details
-            assert "Provider-effective identity: Unknown" in details, details
-            parent_id_lines = details.split("Parent thread ID:", maxsplit=1)[1].splitlines()
-            assert (
-                next(line.strip() for line in parent_id_lines if line.strip()) == root.id
-            ), details
-            assert "Thread path:" in details and "/root/worker" in details, details
-            assert any(
-                state in details
-                for state in ("Working", "Needs input", "Ready", "Inactive")
-            ), details
-            assert "PRIVATE_PROMPT_SENTINEL" not in details, details
-            assert (
-                "instructions" not in details.lower()
-                and "credentials" not in details.lower()
-            )
+            tui.submit_line("/subagents", pasted_marker="/subagents")
+            tui.until("Subagents")
+            selected = _selected_subagent_details(tui, expected_descendants)
+            assert set(selected) == {child_id, nested_id}
 
     with shared_agent_server(isolated):
         with PackagedTui(isolated, "resume", root.id) as tui:
             tui.until("Ask Codex")
-            tui.submit_line("/agents", pasted_marker="/agents")
-            replay = tui.until("worker")
-            # Select the same task after replay so the second frame contains its
-            # detail view and the same exact label/ID adjacency.
-            tui.send("f")
-            tui.until("Search ›")
-            tui.send("worker")
-            replay_details = tui.until(child_id)
-            _assert_thread_identity_rendered(replay_details, child_id)
-            assert "Provider-effective identity: Unknown" in replay_details
-            assert "PRIVATE_PROMPT_SENTINEL" not in replay_details
+            tui.submit_line("/subagents", pasted_marker="/subagents")
+            tui.until("Subagents")
+            selected = _selected_subagent_details(tui, expected_descendants)
+            assert set(selected) == {child_id, nested_id}

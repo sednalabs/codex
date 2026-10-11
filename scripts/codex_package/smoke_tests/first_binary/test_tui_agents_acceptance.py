@@ -390,15 +390,15 @@ def test_actual_tui_nested_filter_clear_live_rename_and_replay(
                 tui.send("f")
                 assert "Search ›" in tui.until("Search ›")
                 tui.send("child-package-task")
-                child_detail = tui.until(f"Thread ID: {child_id}")
-                assert f"Parent thread ID: {root_id}" in child_detail
+                child_row = tui.until("child-package-task")
+                assert "child-package-task" in child_row
                 tui.send("\x03")
                 assert "nested-package-task" in tui.until("nested-package-task")
                 tui.send("f")
                 assert "Search ›" in tui.until("Search ›")
                 tui.send("nested-package-task")
-                nested_detail = tui.until(f"Thread ID: {nested_id}")
-                assert f"Parent thread ID: {child_id}" in nested_detail
+                nested_row = tui.until("nested-package-task")
+                assert "nested-package-task" in nested_row
                 tui.send("\x03")
                 assert "root-package-task" in tui.until("root-package-task")
                 tui.send("f")

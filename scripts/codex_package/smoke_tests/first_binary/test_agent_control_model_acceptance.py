@@ -5,7 +5,9 @@ the provider-effective model: the local server is a synthetic transport.
 """
 
 import json
+import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -506,6 +508,9 @@ def test_packaged_model_queue_only_message_does_not_wake_until_followup_and_exac
                 sandbox=Sandbox.workspace_write,
             )
             root_id = root.id
+            waiter_response_gate = threading.Event()
+            queue_only_response_gate = threading.Event()
+            followup_response_gate = threading.Event()
             server.enqueue_sse_for_request(
                 lambda request: (
                     _thread_id(request) == root_id
@@ -563,7 +568,7 @@ def test_packaged_model_queue_only_message_does_not_wake_until_followup_and_exac
                     ]
                 ),
             )
-            server.enqueue_sse_for_request(
+            waiter_wait_route = server.enqueue_sse_for_request(
                 lambda request: (
                     request.header("x-codex-parent-thread-id") == root_id
                     and _has_user_marker(request, "WAITER_INITIAL_MARKER")
@@ -580,6 +585,7 @@ def test_packaged_model_queue_only_message_does_not_wake_until_followup_and_exac
                         ev_completed("waiter-pending"),
                     ]
                 ),
+                gate=waiter_response_gate,
             )
             server.enqueue_sse_for_request(
                 lambda request: (
@@ -596,6 +602,7 @@ def test_packaged_model_queue_only_message_does_not_wake_until_followup_and_exac
                         "message": "QUEUE_ONLY_SENTINEL",
                     },
                 ),
+                gate=queue_only_response_gate,
             )
             followup_route = server.enqueue_sse_for_request(
                 lambda request: (
@@ -612,6 +619,7 @@ def test_packaged_model_queue_only_message_does_not_wake_until_followup_and_exac
                         "message": "FOLLOWUP_TURN_SENTINEL",
                     },
                 ),
+                gate=followup_response_gate,
             )
             server.enqueue_sse_for_request(
                 lambda request: (
@@ -626,7 +634,7 @@ def test_packaged_model_queue_only_message_does_not_wake_until_followup_and_exac
                     ]
                 ),
             )
-            server.enqueue_sse_for_request(
+            waiter_resumed_route = server.enqueue_sse_for_request(
                 lambda request: (
                     request.header("x-codex-parent-thread-id") == root_id
                     and _has_call_output(request, "waiter-mailbox-wait-call")
@@ -652,12 +660,107 @@ def test_packaged_model_queue_only_message_does_not_wake_until_followup_and_exac
                     ]
                 ),
             )
-            turn = root.run(
-                "QUEUE_WAKE_ROOT_MARKER: spawn, wait only for waiter, then finish."
-            )
+
+            def run_root() -> Any:
+                return root.run(
+                    "QUEUE_WAKE_ROOT_MARKER: spawn, wait only for waiter, then finish."
+                )
+
+            def wait_for_wait_item_start(
+                waiter_thread_id: str, waiter_turn_id: str
+            ) -> Any:
+                try:
+                    while True:
+                        notification = waiter_client.next_turn_notification(
+                            waiter_turn_id
+                        )
+                        payload = notification.payload
+                        item = getattr(getattr(payload, "item", None), "root", None)
+                        if (
+                            notification.method == "item/started"
+                            and getattr(payload, "thread_id", None)
+                            == waiter_thread_id
+                            and getattr(payload, "turn_id", None) == waiter_turn_id
+                            and getattr(item, "id", None)
+                            == "waiter-mailbox-wait-call"
+                            and getattr(getattr(item, "tool", None), "value", None)
+                            == "wait"
+                            and getattr(getattr(item, "status", None), "value", None)
+                            == "inProgress"
+                        ):
+                            return payload
+                finally:
+                    waiter_client.unregister_turn_notifications(waiter_turn_id)
+
+            waiter_client: Any = None
+            waiter_turn_id: str | None = None
+            executor = ThreadPoolExecutor(max_workers=2)
+            try:
+                root_future = executor.submit(run_root)
+                waiter_wait_route.wait_until_selected(timeout_s=10)
+                waiter_id = _tool_output(server, "spawn-waiter")["agent_id"]
+                waiter_snapshot = client._client.thread_read(
+                    waiter_id, include_turns=True
+                )
+                active_turns = [
+                    turn
+                    for turn in waiter_snapshot.thread.turns
+                    if getattr(getattr(turn, "status", None), "value", None)
+                    == "inProgress"
+                ]
+                assert len(active_turns) == 1, active_turns
+                waiter_turn_id = active_turns[0].id
+                waiter_client = client._client
+                waiter_client.register_turn_notifications(waiter_turn_id)
+                wait_started_future = executor.submit(
+                    wait_for_wait_item_start, waiter_id, waiter_turn_id
+                )
+                waiter_response_gate.set()
+                wait_started = wait_started_future.result(timeout=10)
+                assert wait_started.item.root.id == "waiter-mailbox-wait-call", (
+                    wait_started
+                )
+                assert wait_started.item.root.status.value == "inProgress", (
+                    wait_started
+                )
+
+                # Only release queue-only delivery after the real wait item has
+                # started; the actionable response remains held for the quiet phase.
+                queue_only_response_gate.set()
+                followup_route.wait_until_selected(timeout_s=10)
+                sender_id = _tool_output(server, "spawn-sender")["agent_id"]
+                sender_read = client._client.thread_read(sender_id, include_turns=True)
+                send_item = _collab_item(sender_read, "queue-only-call")
+                assert send_item.tool.value == "sendMessage", send_item
+                assert send_item.receiver_thread_ids == [waiter_id], send_item
+                assert send_item.status.value == "completed", send_item
+
+                assert not waiter_resumed_route.selected.wait(0.5), (
+                    "queue-only delivery woke the registered waiter"
+                )
+                quiet_read = client._client.thread_read(
+                    waiter_id, include_turns=True
+                )
+                quiet_item = _collab_item(quiet_read, "waiter-mailbox-wait-call")
+                assert quiet_item.status.value == "inProgress", quiet_item
+                followup_response_gate.set()
+                waiter_resumed_route.wait_until_selected()
+                turn = root_future.result(timeout=30)
+            except BaseException:
+                waiter_response_gate.set()
+                queue_only_response_gate.set()
+                followup_response_gate.set()
+                if waiter_client is not None and waiter_turn_id is not None:
+                    waiter_client.unregister_turn_notifications(waiter_turn_id)
+                client.close()
+                raise
+            finally:
+                waiter_response_gate.set()
+                queue_only_response_gate.set()
+                followup_response_gate.set()
+                executor.shutdown(wait=True, cancel_futures=True)
             assert turn.final_response == "selected target finished"
-            waiter_id = _tool_output(server, "spawn-waiter")["agent_id"]
-            waiter_read = client.thread_resume(waiter_id).read(include_turns=True)
+            waiter_read = client._client.thread_read(waiter_id, include_turns=True)
             root_read = root.read(include_turns=True)
 
         waiter_result = _tool_output(server, "waiter-mailbox-wait-call")
@@ -673,26 +776,7 @@ def test_packaged_model_queue_only_message_does_not_wake_until_followup_and_exac
         assert waiter_item.agents_states == {}, waiter_item
         assert _call_output_count(server, "queue-only-call") == 1
         assert _call_output_count(server, "actionable-followup-call") == 1
-        followup_route.wait_until_selected()
-        requests = [
-            request
-            for request in server.requests()
-            if request.path == "/v1/responses"
-        ]
-        followup_emission_index = next(
-            index
-            for index, request in enumerate(requests)
-            if request.header("x-codex-parent-thread-id") == root_id
-            and _has_call_output(request, "queue-only-call")
-            and not _has_call_output(request, "actionable-followup-call")
-        )
-        waiter_resumed_index = next(
-            index
-            for index, request in enumerate(requests)
-            if _thread_id(request) == waiter_id
-            and _has_call_output(request, "waiter-mailbox-wait-call")
-        )
-        assert followup_emission_index < waiter_resumed_index, requests
+        followup_route.wait_until_selected(timeout_s=10)
 
         root_result = _tool_output(server, "root-exact-wait-call")
         assert root_result["outcome"] == "target_terminal_all", root_result

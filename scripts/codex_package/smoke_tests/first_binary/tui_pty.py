@@ -5,6 +5,7 @@ import os
 import pty
 import re
 import select
+import signal
 import struct
 import subprocess
 import termios
@@ -123,6 +124,61 @@ class PackagedTui:
             except OSError:
                 break
         os.write(self.master, value.encode("utf-8"))
+
+    def resize(self, columns: int) -> None:
+        """Resize the owned PTY to force a fresh TUI viewport render."""
+        assert self.master is not None and self.process is not None
+        self.send("")
+        fcntl.ioctl(
+            self.master,
+            termios.TIOCSWINSZ,
+            struct.pack("HHHH", 34, columns, 0, 0),
+        )
+        self.process.send_signal(signal.SIGWINCH)
+
+    def until_output(self, *, timeout: float = 30) -> bytes:
+        """Wait for a fresh PTY redraw after input that has no stable text marker."""
+        assert self.master is not None and self.process is not None
+        deadline = time.monotonic() + timeout
+        received = bytearray()
+        while time.monotonic() < deadline:
+            if self.process.poll() is not None:
+                for _ in range(64):
+                    if not select.select([self.master], [], [], 0)[0]:
+                        break
+                    try:
+                        chunk = os.read(self.master, 65536)
+                    except OSError:
+                        break
+                    if not chunk:
+                        break
+                    received.extend(chunk)
+                raise AssertionError(
+                    "packaged TUI exited "
+                    f"{self.process.returncode} before a fresh PTY redraw: "
+                    f"{plain(received)!r}"
+                )
+            ready, _, _ = select.select(
+                [self.master], [], [], max(0, deadline - time.monotonic())
+            )
+            if not ready:
+                break
+            try:
+                chunk = os.read(self.master, 65536)
+            except OSError as error:
+                returncode = self.process.poll()
+                raise AssertionError(
+                    "packaged TUI PTY closed before a fresh redraw; "
+                    f"exit status: {returncode}; output: {plain(received)!r}"
+                ) from error
+            if not chunk:
+                break
+            received.extend(chunk)
+            return bytes(received)
+        raise AssertionError(
+            "packaged TUI produced no fresh PTY redraw; "
+            f"output: {plain(received)!r}"
+        )
 
     def send_paste(self, value: str) -> None:
         """Send one explicit bracketed-paste event to the TUI."""
