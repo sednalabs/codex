@@ -130,7 +130,7 @@
     "docs/divergences/index.yaml": "6fc086c9b46faf71a1e840328c293a54eea92ebabe0e064879be7d33516680de",
     "docs/downstream-regression-matrix.md": "008c0e8804f62b965d96bbacc24957ecac446992eee80085a666dc7c26c968c4"
   },
-  "product_source_commit": "87323c14d75d90bf18ac8ed5a34be66992333ee4",
+  "product_source_commit": "a4a1fee6db7d77dab9ccf492b551ab254fb0c5cd",
   "repository": "sednalabs/codex",
   "schema_version": 1,
   "toolchains": {
