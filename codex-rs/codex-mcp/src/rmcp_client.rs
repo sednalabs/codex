@@ -1381,8 +1381,8 @@ mod tests {
         assert!(error.is_authentication_required());
     }
 
-    #[test]
-    fn protected_http_transport_rejects_remote_descriptor_for_local_environment_id() {
+    #[tokio::test]
+    async fn protected_http_transport_rejects_remote_descriptor_for_local_environment_id() {
         let config = serde_json::from_value::<McpServerConfig>(serde_json::json!({
             "url": "https://ops.example/mcp",
             "environment_id": "local"
