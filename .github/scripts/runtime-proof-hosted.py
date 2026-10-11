@@ -115,6 +115,10 @@ ROOT_FIXTURE_FD_LAYOUT = re.compile(
     r"^runtime-proof-root-fd-layout:"
     r"(crossed_targets|auth_source_at_bootstrap_target|bootstrap_source_at_auth_target|no_cross_target_alias)$"
 )
+ROOT_FIXTURE_CHANNEL_PENDING = re.compile(
+    r"^runtime-proof-root-channel-pending:"
+    r"bootstrap=(pending|empty|unavailable);auth=(pending|empty|unavailable)$"
+)
 ROOT_FIXTURE_CHILD_STATE = re.compile(
     r"^runtime-proof-root-child-state-before-kill:"
     r"(running_before_kill|exited_success|exited_failure|status_unavailable)$"
@@ -2310,6 +2314,7 @@ def run_ignored_root_test(
             ack_failures = set()
             startup_failures = set()
             fd_layouts = set()
+            channel_pending = set()
             child_states = set()
             for line in result.stdout.splitlines():
                 match = ROOT_FIXTURE_STAGE.fullmatch(line.strip())
@@ -2327,6 +2332,9 @@ def run_ignored_root_test(
                 match = ROOT_FIXTURE_FD_LAYOUT.fullmatch(line.strip())
                 if match is not None:
                     fd_layouts.add(match.group(1))
+                match = ROOT_FIXTURE_CHANNEL_PENDING.fullmatch(line.strip())
+                if match is not None:
+                    channel_pending.add((match.group(1), match.group(2)))
                 match = ROOT_FIXTURE_CHILD_STATE.fullmatch(line.strip())
                 if match is not None:
                     child_states.add(match.group(1))
@@ -2357,6 +2365,15 @@ def run_ignored_root_test(
                 details += "; fd_layout=ambiguous"
             else:
                 details += "; fd_layout=not_reported"
+            if len(channel_pending) == 1:
+                bootstrap_pending, auth_pending = next(iter(channel_pending))
+                details += (
+                    f"; bootstrap_packet={bootstrap_pending}; auth_packet={auth_pending}"
+                )
+            elif channel_pending:
+                details += "; channel_packet_state=ambiguous"
+            else:
+                details += "; channel_packet_state=not_reported"
             if len(child_states) == 1:
                 details += f"; child_state_before_kill={next(iter(child_states))}"
             elif child_states:
