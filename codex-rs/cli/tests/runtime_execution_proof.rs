@@ -69,7 +69,7 @@ fn cli_error_message_family(message: &str) -> &'static str {
     matched.unwrap_or("other")
 }
 
-fn cli_failure_path(stdout: &[u8]) -> (&'static str, &'static str, &'static str) {
+fn cli_failure_path(stdout: &[u8], stderr: &[u8]) -> (&'static str, &'static str, &'static str) {
     let mut first_event = "none";
     let mut last_event = "none";
     let mut error_family = None;
@@ -103,10 +103,27 @@ fn cli_failure_path(stdout: &[u8]) -> (&'static str, &'static str, &'static str)
             }
         }
     }
+    let stderr_family = if error_family.is_none() {
+        let bounded_stderr = &stderr[..stderr.len().min(64 * 1024)];
+        String::from_utf8_lossy(bounded_stderr)
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .map(|line| {
+                let message = line
+                    .strip_prefix("Error: ")
+                    .or_else(|| line.strip_prefix("ERROR: "))
+                    .or_else(|| line.strip_prefix("error: "))
+                    .unwrap_or(line);
+                cli_error_message_family(message)
+            })
+    } else {
+        None
+    };
     (
         first_event,
         last_event,
-        error_family.unwrap_or("unclassified"),
+        error_family.or(stderr_family).unwrap_or("unclassified"),
     )
 }
 
@@ -251,7 +268,7 @@ async fn protected_cli_root_and_delegate_calls_are_signed_and_redacted() -> Resu
         eprintln!(
             "runtime-proof-root-cli-mcp-phases:initialize={initialize};initialized={initialized};tools_list={tools_list};tools_call={tools_call};other={other}"
         );
-        let (first_event, last_event, family) = cli_failure_path(&result.stdout);
+        let (first_event, last_event, family) = cli_failure_path(&result.stdout, &result.stderr);
         eprintln!(
             "runtime-proof-root-cli-error-path:first_event={first_event};last_event={last_event};family={family}"
         );

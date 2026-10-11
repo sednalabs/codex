@@ -93,7 +93,7 @@
     "codex-rs/Cargo.toml": "ef1e511660f82040b0d7b5b7883b932074b57f46a6506490351f64c7c0ee915d",
     "codex-rs/cli/Cargo.toml": "d9ab2cb774f23e689a8159bcd29e5eb655445258c93b3233b38511538818e307",
     "codex-rs/cli/src/main.rs": "4ba4b566f49c32fe92a071d506cce394ab2ea49055717b3bfbcb14181bbcd881",
-    "codex-rs/cli/tests/runtime_execution_proof.rs": "024a7eb56cbb87c2f4a3f434e2d02953a17ab656bcaa7ca0aa2b094d70524743",
+    "codex-rs/cli/tests/runtime_execution_proof.rs": "468a31e9a8d2b5fc4c2fa740d5064ee68b4c7a30a05f35c17d01043a8ae8295e",
     "codex-rs/cli/tests/runtime_execution_proof/support.rs": "e2d6a4fe3976211eef82b3bc7918365aa683553230c421de5415436d3e2c16a2",
     "codex-rs/codex-mcp/Cargo.toml": "0d4abb5107785b4a6f824b2a26fdcc17d25f61058b5f35c741c3d0608fd0ef2e",
     "codex-rs/codex-mcp/src/lib.rs": "2f4f1fb78be1f117d43b63cc194de2417ab604d9b4ec85baea1ef03e83142538",
