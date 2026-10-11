@@ -26,6 +26,7 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+use std::time::Instant;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 use tempfile::TempDir;
@@ -563,7 +564,7 @@ impl ProtectedRuntimeFixture {
             .await;
 
         let executable = codex_utils_cargo_bin::cargo_bin("codex")?;
-        let artifact_sha256 = hash_file(&executable)?;
+        let artifact_sha256 = hash_file(&executable)?.sha256;
         // The protected child drops to RUN_UID, so its executable must live under the
         // fixture root instead of behind the runner-owned Cargo target directories.
         let executable_path = root.join("codex-fixture");
@@ -571,7 +572,7 @@ impl ProtectedRuntimeFixture {
             .context("stage protected CLI fixture executable")?;
         fs::set_permissions(&executable_path, fs::Permissions::from_mode(0o755))?;
         anyhow::ensure!(
-            hash_file(&executable_path)? == artifact_sha256,
+            hash_file(&executable_path)?.sha256 == artifact_sha256,
             "staged protected CLI fixture executable changed during copy"
         );
         let issuer_key = SigningKey::from_bytes(&[23_u8; 32]);
@@ -680,8 +681,13 @@ impl ProtectedRuntimeFixture {
         log_filter: Option<&str>,
     ) -> Result<Output> {
         eprintln!("runtime-proof-root-stage:cli_launch_begin");
+        let image_hash = hash_file(&self.executable_path)?;
+        eprintln!(
+            "runtime-proof-root-cli-hash:bytes={};elapsed_ms={}",
+            image_hash.bytes_read, image_hash.elapsed_ms
+        );
         anyhow::ensure!(
-            hash_file(&self.executable_path)? == self.artifact_sha256,
+            image_hash.sha256 == self.artifact_sha256,
             "staged protected CLI fixture executable changed before invocation"
         );
         eprintln!("runtime-proof-root-stage:cli_executable_ready");
@@ -1066,19 +1072,34 @@ fn synthetic_access_token(expires_at: i64) -> Result<String> {
     ))
 }
 
-fn hash_file(path: &std::path::Path) -> Result<String> {
+struct FileHash {
+    sha256: String,
+    bytes_read: u64,
+    elapsed_ms: u64,
+}
+
+fn hash_file(path: &std::path::Path) -> Result<FileHash> {
+    let started = Instant::now();
     let mut file = File::open(path)?;
     let mut hash = Sha256::new();
     let mut buffer = [0_u8; 16 * 1024];
+    let mut bytes_read = 0_u64;
     loop {
         let count = file.read(&mut buffer)?;
         if count == 0 {
             break;
         }
+        bytes_read = bytes_read.saturating_add(
+            u64::try_from(count).context("runtime fixture hash byte count overflow")?,
+        );
         hash.update(&buffer[..count]);
     }
     let digest = hash.finalize();
-    Ok(hex(&digest))
+    Ok(FileHash {
+        sha256: hex(&digest),
+        bytes_read,
+        elapsed_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+    })
 }
 
 fn ack_error_category(kind: std::io::ErrorKind) -> &'static str {
