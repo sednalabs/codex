@@ -267,13 +267,13 @@ fn decode_model_request_body(request: &wiremock::Request) -> Option<Value> {
 
 fn decode_model_request_body_bytes(content_encoding: Option<&str>, body: &[u8]) -> Option<Value> {
     let body = if content_encoding.is_some_and(|value| {
-        value
-            .split(',')
-            .any(|encoding| encoding.trim().eq_ignore_ascii_case("zstd"))
+        value.trim().eq_ignore_ascii_case("zstd")
     }) {
         zstd::stream::decode_all(Cursor::new(body)).ok()?
-    } else {
+    } else if content_encoding.is_none() {
         body.to_vec()
+    } else {
+        return None;
     };
     serde_json::from_slice(&body).ok()
 }
@@ -298,6 +298,15 @@ mod tests {
             decode_model_request_body_bytes(Some("zstd"), b"invalid"),
             None
         );
+        assert_eq!(
+            decode_model_request_body_bytes(Some("br"), &json),
+            None
+        );
+        assert_eq!(
+            decode_model_request_body_bytes(Some("zstd, br"), &encoded),
+            None
+        );
+        assert_eq!(decode_model_request_body_bytes(Some(""), &json), None);
         assert_eq!(decode_model_request_body_bytes(None, b"not-json"), None);
     }
 }
