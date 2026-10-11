@@ -594,8 +594,9 @@ mod tests {
             )
             .await;
         assert!(futures::poll!(wait.as_mut()).is_pending());
+        drop(wait);
         input_queue
-            .extend_pending_input_and_accept_mailbox_delivery_for_turn_state(
+            .extend_pending_input_for_turn_state(
                 &turn_state,
                 vec![crate::session::TurnInput::UserInput {
                     content: Vec::new(),
@@ -604,7 +605,18 @@ mod tests {
                 }],
             )
             .await;
-        assert!(matches!(wait.await, WaitOutcome::Steered));
+        let (mut activity_rx, pending) = input_queue.subscribe_activity(Some(&turn_state)).await;
+        assert_eq!(pending, Some(InputQueueActivity::Steer));
+        assert!(matches!(
+            wait_for_activity(
+                &mut activity_rx,
+                pending,
+                Instant::now() + Duration::from_secs(60),
+                &mut agent_wait,
+            )
+            .await,
+            WaitOutcome::Steered
+        ));
         assert_eq!(input_queue.drain_mailbox().await.len(), 1);
     }
 

@@ -800,6 +800,18 @@ mod tests {
         let (mut activity_rx, pending_activity) =
             input_queue.subscribe_activity(Some(&turn_state)).await;
         assert_eq!(pending_activity, None);
+        input_queue
+            .enqueue_mailbox_communication(
+                make_mail(
+                    AgentPath::root(),
+                    AgentPath::try_from("/root/worker").expect("agent path"),
+                    "quiet update",
+                    /*trigger_turn*/ false,
+                ),
+                Default::default(),
+            )
+            .await;
+        assert!(!activity_rx.has_changed().expect("quiet mail stays pending"));
 
         input_queue
             .extend_pending_input_and_accept_mailbox_delivery_for_turn_state(
@@ -817,6 +829,7 @@ mod tests {
 
         activity_rx.changed().await.expect("steer update");
         assert_eq!(*activity_rx.borrow_and_update(), InputQueueActivity::Steer);
+        assert_eq!(input_queue.drain_mailbox().await.len(), 1);
     }
 
     #[tokio::test]
