@@ -136,9 +136,13 @@ ROOT_FIXTURE_CLI_FAILURE = re.compile(
     r"(runtime_auth|runtime_proof|provider_auth|runtime_config|"
     r"runtime_protection|empty|unclassified|unavailable)$"
 )
+ROOT_FIXTURE_CLI_ACTIVITY = re.compile(
+    r"^runtime-proof-root-cli-activity:claims=([0-9]{1,3});models=([0-9]{1,3})$"
+)
 MAX_ROOT_FIXTURE_CLI_HASH_SAMPLES = 16
 MAX_ROOT_FIXTURE_CLI_IMAGE_BYTES = 1 << 40
 MAX_ROOT_FIXTURE_CLI_HASH_ELAPSED_MS = 9_000_000
+MAX_ROOT_FIXTURE_CLI_ACTIVITY_COUNT = 64
 ROOT_FIXTURE_STAGE_NAMES = {
     "started",
     "fixture_started",
@@ -566,6 +570,16 @@ def parse_root_fixture_cli_failure(line: str) -> tuple[str, str] | None:
     if exit_code != "signal" and int(exit_code) > 255:
         return None
     return exit_code, stderr_category
+
+
+def parse_root_fixture_cli_activity(line: str) -> tuple[int, int] | None:
+    match = ROOT_FIXTURE_CLI_ACTIVITY.fullmatch(line.strip())
+    if match is None:
+        return None
+    claims, models = (int(value) for value in match.groups())
+    if max(claims, models) > MAX_ROOT_FIXTURE_CLI_ACTIVITY_COUNT:
+        return None
+    return claims, models
 
 
 def format_root_fixture_cli_hash_measurement(
@@ -1188,6 +1202,18 @@ def verify_test_summary_parser_contract(manifest: dict[str, Any]) -> None:
         "runtime-proof-root-cli-failure:exit=1;stderr=raw details"
     ) is not None:
         refuse("root fixture CLI failure parser contract failed")
+    if parse_root_fixture_cli_activity(
+        "runtime-proof-root-cli-activity:claims=2;models=1"
+    ) != (2, 1):
+        refuse("root fixture CLI activity parser contract failed")
+    if parse_root_fixture_cli_activity(
+        "runtime-proof-root-cli-activity:claims=65;models=1"
+    ) is not None:
+        refuse("root fixture CLI activity parser contract failed")
+    if parse_root_fixture_cli_activity(
+        "runtime-proof-root-cli-activity:claims=1;models=secret"
+    ) is not None:
+        refuse("root fixture CLI activity parser contract failed")
 
     oversized_failed_then_success = (
         "test result: FAILED. 10000000000 passed; 1 failed; 0 ignored;\n"
@@ -2426,6 +2452,7 @@ def run_ignored_root_test(
             child_states = set()
             child_syscalls = set()
             cli_failures = set()
+            cli_activities = set()
             for line in result.stdout.splitlines():
                 match = ROOT_FIXTURE_STAGE.fullmatch(line.strip())
                 if match is not None and match.group(1) in ROOT_FIXTURE_STAGE_NAMES:
@@ -2454,6 +2481,9 @@ def run_ignored_root_test(
                 cli_failure = parse_root_fixture_cli_failure(line)
                 if cli_failure is not None:
                     cli_failures.add(cli_failure)
+                cli_activity = parse_root_fixture_cli_activity(line)
+                if cli_activity is not None:
+                    cli_activities.add(cli_activity)
             last_stage = stages[-1] if stages else "none"
             details = f"; exit_code={result.returncode}; last_stage={last_stage}"
             if len(spawn_errors) == 1:
@@ -2512,6 +2542,13 @@ def run_ignored_root_test(
                 details += "; cli_failure=ambiguous"
             else:
                 details += "; cli_failure=not_reported"
+            if len(cli_activities) == 1:
+                claims, models = next(iter(cli_activities))
+                details += f"; cli_activity_claims={claims}; cli_activity_models={models}"
+            elif cli_activities:
+                details += "; cli_activity=ambiguous"
+            else:
+                details += "; cli_activity=not_reported"
             details += format_root_fixture_cli_hash_measurement(cli_hash_measurement)
         refuse(
             "explicit synthetic root fixture was not exactly one successful executed test: "
