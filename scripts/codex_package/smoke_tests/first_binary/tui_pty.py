@@ -176,8 +176,7 @@ class PackagedTui:
             received.extend(chunk)
             return bytes(received)
         raise AssertionError(
-            "packaged TUI produced no fresh PTY redraw; "
-            f"output: {plain(received)!r}"
+            f"packaged TUI produced no fresh PTY redraw; output: {plain(received)!r}"
         )
 
     def until_all(

@@ -133,9 +133,7 @@ def _sub_agent_activity(thread_read: Any, call_id: str) -> Any:
         for item in turn.items
         if getattr(item.root, "id", None) == call_id
     ]
-    assert len(items) == 1, (
-        f"missing unique native activity for {call_id}: {items!r}"
-    )
+    assert len(items) == 1, f"missing unique native activity for {call_id}: {items!r}"
     item = items[0]
     assert item.type == "subAgentActivity", item
     return item
@@ -469,18 +467,14 @@ def test_packaged_model_nested_spawn_recovery_and_list_after_resume(
             assert grandchild_body["task_name"] == "/root/worker/grandchild", (
                 grandchild_body
             )
-            grandchild_spawn = _sub_agent_activity(
-                worker_read, "spawn-grandchild"
-            )
+            grandchild_spawn = _sub_agent_activity(worker_read, "spawn-grandchild")
             grandchild_id = grandchild_spawn.agent_thread_id
             assert grandchild_spawn.agent_path == "/root/worker/grandchild", (
                 grandchild_spawn
             )
             assert grandchild_spawn.kind.value == "started", grandchild_spawn
             assert grandchild_spawn.model == _SPAWN_MODEL, grandchild_spawn
-            assert grandchild_spawn.reasoning_effort.value == "medium", (
-                grandchild_spawn
-            )
+            assert grandchild_spawn.reasoning_effort.value == "medium", grandchild_spawn
             uuid.UUID(grandchild_id)
             worker_wait = _collab_item(root_read, "root-wait-worker")
             assert worker_wait.receiver_thread_ids == [worker_id], worker_wait
@@ -806,11 +800,9 @@ def test_packaged_model_queue_only_message_does_not_wake_until_followup_and_exac
                         item = getattr(getattr(payload, "item", None), "root", None)
                         if (
                             notification.method == "item/started"
-                            and getattr(payload, "thread_id", None)
-                            == waiter_thread_id
+                            and getattr(payload, "thread_id", None) == waiter_thread_id
                             and getattr(payload, "turn_id", None) == waiter_turn_id
-                            and getattr(item, "id", None)
-                            == "waiter-mailbox-wait-call"
+                            and getattr(item, "id", None) == "waiter-mailbox-wait-call"
                             and getattr(getattr(item, "tool", None), "value", None)
                             == "wait"
                             and getattr(getattr(item, "status", None), "value", None)
@@ -874,9 +866,7 @@ def test_packaged_model_queue_only_message_does_not_wake_until_followup_and_exac
                 assert wait_started.item.root.id == "waiter-mailbox-wait-call", (
                     wait_started
                 )
-                assert wait_started.item.root.status.value == "inProgress", (
-                    wait_started
-                )
+                assert wait_started.item.root.status.value == "inProgress", wait_started
 
                 # Only release queue-only delivery after the real wait item has
                 # started; the actionable response remains held for the quiet phase.
@@ -892,9 +882,7 @@ def test_packaged_model_queue_only_message_does_not_wake_until_followup_and_exac
                 assert not waiter_resumed_route.selected.wait(0.5), (
                     "queue-only delivery woke the registered waiter"
                 )
-                quiet_read = client._client.thread_read(
-                    waiter_id, include_turns=True
-                )
+                quiet_read = client._client.thread_read(waiter_id, include_turns=True)
                 # Started items are live notifications, not durable history.
                 # The bound start above and unchanged active turn witness the
                 # quiet phase while the actionable response remains held.
@@ -1178,17 +1166,17 @@ def test_packaged_model_goal_continuation_and_terminal_transition(
         assert goal_wait_item.queued_update_count >= 1, goal_wait_item
         created = _tool_output(server, goal_worker_id, "worker-create-goal-call")
         assert created["goal"]["threadId"] == goal_worker_id, created
-        assert created["goal"]["objective"] == "Complete the synthetic goal lifecycle", (
-            created
-        )
+        assert (
+            created["goal"]["objective"] == "Complete the synthetic goal lifecycle"
+        ), created
         assert created["goal"]["status"] == "active", created
         assert created["remainingTokens"] is None, created
         assert created["completionBudgetReport"] is None, created
         completed = _tool_output(server, goal_worker_id, "goal-update-complete-call")
         assert completed["goal"]["threadId"] == goal_worker_id, completed
-        assert completed["goal"]["objective"] == "Complete the synthetic goal lifecycle", (
-            completed
-        )
+        assert (
+            completed["goal"]["objective"] == "Complete the synthetic goal lifecycle"
+        ), completed
         assert completed["goal"]["status"] == "complete", completed
         assert completed["remainingTokens"] is None, completed
         assert (completed["completionBudgetReport"] is not None) == (

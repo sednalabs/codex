@@ -413,7 +413,9 @@ def test_actual_tui_nested_filter_clear_live_rename_and_replay(
                 tui.send_paste("live-renamed-package-task")
                 tui.until("live-renamed-package-task")
                 tui.send("\r")
-                assert "live-renamed-package-task" in tui.until("live-renamed-package-task")
+                assert "live-renamed-package-task" in tui.until(
+                    "live-renamed-package-task"
+                )
 
         with shared_agent_server(isolated):
             with PackagedTui(isolated, "resume", root_id) as tui:
