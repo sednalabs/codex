@@ -1204,15 +1204,14 @@ fn child_syscall_category(child: &Child) -> &'static str {
     if syscall_number == "-1" {
         return "blocked_outside_syscall";
     }
-    let Ok(syscall_number) = syscall_number.parse::<i64>() else {
+    let Ok(syscall_number) = syscall_number.parse::<libc::c_long>() else {
         return "unavailable";
     };
-    if syscall_number == libc::SYS_recvmsg as i64 || syscall_number == libc::SYS_recvfrom as i64 {
+    if syscall_number == libc::SYS_recvmsg || syscall_number == libc::SYS_recvfrom {
         "socket_receive_syscall"
-    } else if syscall_number == libc::SYS_futex as i64 {
+    } else if syscall_number == libc::SYS_futex {
         "futex_syscall"
-    } else if syscall_number == libc::SYS_read as i64 || syscall_number == libc::SYS_pread64 as i64
-    {
+    } else if syscall_number == libc::SYS_read || syscall_number == libc::SYS_pread64 {
         "read_syscall"
     } else if syscall_number < 0 {
         "unavailable"
