@@ -103,11 +103,9 @@ pub(super) async fn configure(
     config: &mut Arc<Config>,
     enable_codex_api_key_env: bool,
 ) -> IoResult<Arc<AuthManager>> {
-    super::status_start_diagnostic("configure initial startup config before");
     let bootstrap_config_result = config_manager
         .load_startup_config(Some(config.cwd.to_path_buf()))
         .await;
-    super::status_start_diagnostic("configure initial startup config after");
     let bootstrap_config = bootstrap_config_result?;
     let caller_auth = config.auth_config();
     let bootstrap_auth = codex_login::AuthConfig {
@@ -122,24 +120,20 @@ pub(super) async fn configure(
         ..caller_auth.clone()
     };
     bootstrap_auth.validate()?;
-    super::status_start_diagnostic("configure bootstrap AuthManager before");
     let bootstrap_auth_manager_result = AuthManager::shared_from_auth_config(
         bootstrap_auth,
         /*enable_codex_api_key_env*/ false,
     )
     .await;
-    super::status_start_diagnostic("configure bootstrap AuthManager after");
     let bootstrap_auth_manager = bootstrap_auth_manager_result.map_err(IoError::other)?;
     config_manager.replace_cloud_config_bundle_loader(
         bootstrap_auth_manager,
         bootstrap_config.chatgpt_base_url.clone(),
         bootstrap_config.http_client_factory(),
     );
-    super::status_start_diagnostic("configure policy startup config before");
     let policy_config_result = config_manager
         .load_startup_config(Some(config.cwd.to_path_buf()))
         .await;
-    super::status_start_diagnostic("configure policy startup config after");
     let policy_config = policy_config_result?;
     let auth_config = codex_login::AuthConfig {
         chatgpt_base_url: Some(policy_config.chatgpt_base_url.clone()),
@@ -153,22 +147,18 @@ pub(super) async fn configure(
         ..caller_auth
     };
     auth_config.validate()?;
-    super::status_start_diagnostic("configure policy AuthManager before");
     let policy_auth_manager_result = AuthManager::shared_from_auth_config(
         auth_config.clone(),
         /*enable_codex_api_key_env*/ false,
     )
     .await;
-    super::status_start_diagnostic("configure policy AuthManager after");
     let policy_auth_manager = policy_auth_manager_result.map_err(IoError::other)?;
     let auth_manager = if enable_codex_api_key_env {
-        super::status_start_diagnostic("configure API-key AuthManager before");
         let auth_manager_result = AuthManager::shared_from_auth_config(
             auth_config,
             /*enable_codex_api_key_env*/ true,
         )
         .await;
-        super::status_start_diagnostic("configure API-key AuthManager after");
         auth_manager_result.map_err(IoError::other)?
     } else {
         policy_auth_manager.clone()

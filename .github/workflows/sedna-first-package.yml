@@ -265,7 +265,7 @@ jobs:
           just write-config-schema
           (
             cd codex-rs
-            CODEX_TEST_STATUS_START_DIAGNOSTIC=1 INSTA_UPDATE=always cargo test -p codex-tui --lib \
+            RUST_MIN_STACK=16777216 INSTA_UPDATE=always cargo test -p codex-tui --lib \
               status::tests::status_snapshot_shows_chatgpt_plan_without_email \
               -- --exact --nocapture
           )
