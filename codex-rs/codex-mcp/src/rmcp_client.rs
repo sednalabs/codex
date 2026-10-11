@@ -1388,14 +1388,20 @@ mod tests {
             "environment_id": "local"
         }))
         .expect("protected HTTP server config");
-        let local = Arc::new(Environment::create_for_tests(None).expect("test local environment"));
+        let local = Arc::new(
+            Environment::create_for_tests(/*exec_server_url*/ None)
+                .expect("test local environment"),
+        );
         let remote = Arc::new(
             Environment::create_for_tests(Some("ws://127.0.0.1:8765".to_string()))
                 .expect("test remote environment"),
         );
 
         assert!(!local.is_remote());
-        assert!(protected_http_transport_is_process_local(&config, None));
+        assert!(protected_http_transport_is_process_local(
+            &config,
+            /*resolved_environment*/ None
+        ));
         assert!(protected_http_transport_is_process_local(
             &config,
             Some(&local)
