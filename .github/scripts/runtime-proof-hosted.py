@@ -123,6 +123,10 @@ ROOT_FIXTURE_CHILD_STATE = re.compile(
     r"^runtime-proof-root-child-state-before-kill:"
     r"(running_before_kill|exited_success|exited_failure|status_unavailable)$"
 )
+ROOT_FIXTURE_CHILD_SYSCALL = re.compile(
+    r"^runtime-proof-root-child-syscall-before-kill:"
+    r"(not_running|running_or_unavailable|socket_receive|futex_wait|read_wait|other_syscall|unavailable)$"
+)
 ROOT_FIXTURE_STAGE_NAMES = {
     "started",
     "fixture_started",
@@ -2316,6 +2320,7 @@ def run_ignored_root_test(
             fd_layouts = set()
             channel_pending = set()
             child_states = set()
+            child_syscalls = set()
             for line in result.stdout.splitlines():
                 match = ROOT_FIXTURE_STAGE.fullmatch(line.strip())
                 if match is not None and match.group(1) in ROOT_FIXTURE_STAGE_NAMES:
@@ -2338,6 +2343,9 @@ def run_ignored_root_test(
                 match = ROOT_FIXTURE_CHILD_STATE.fullmatch(line.strip())
                 if match is not None:
                     child_states.add(match.group(1))
+                match = ROOT_FIXTURE_CHILD_SYSCALL.fullmatch(line.strip())
+                if match is not None:
+                    child_syscalls.add(match.group(1))
             last_stage = stages[-1] if stages else "none"
             details = f"; exit_code={result.returncode}; last_stage={last_stage}"
             if len(spawn_errors) == 1:
@@ -2380,6 +2388,12 @@ def run_ignored_root_test(
                 details += "; child_state_before_kill=ambiguous"
             else:
                 details += "; child_state_before_kill=not_reported"
+            if len(child_syscalls) == 1:
+                details += f"; child_syscall_before_kill={next(iter(child_syscalls))}"
+            elif child_syscalls:
+                details += "; child_syscall_before_kill=ambiguous"
+            else:
+                details += "; child_syscall_before_kill=not_reported"
         refuse(
             "explicit synthetic root fixture was not exactly one successful executed test: "
             f"{test_name}{details}"
