@@ -698,6 +698,16 @@ def test_packaged_model_queue_only_message_does_not_wake_until_followup_and_exac
             try:
                 root_future = executor.submit(run_root)
                 waiter_wait_route.wait_until_selected(timeout_s=10)
+                server.wait_for_request(
+                    lambda request: (
+                        request.path == "/v1/responses"
+                        and _thread_id(request) == root_id
+                        and _has_all_call_outputs(
+                            request, {"spawn-waiter", "spawn-sender"}
+                        )
+                    ),
+                    timeout_s=10,
+                )
                 waiter_id = _tool_output(server, "spawn-waiter")["agent_id"]
                 waiter_snapshot = client._client.thread_read(
                     waiter_id, include_turns=True

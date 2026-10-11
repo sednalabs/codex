@@ -83,9 +83,16 @@ def _tool_output(server: MockResponsesServer, call_id: str) -> dict[str, Any]:
 
 
 def _selected_subagent_details(
-    tui: PackagedTui, expected: dict[str, tuple[str, str]]
+    tui: PackagedTui,
+    expected: dict[str, tuple[str, str]],
+    initial_frame: str,
 ) -> dict[str, str]:
-    """Visit descendant rows and bind each selected detail to UUID/path/parent."""
+    """Wait for both rows, then bind each selected description to its identity."""
+    # UUIDs appear in each populated row; path/parent/status are selected-only
+    # fields and are validated inside that row's detail block below.
+    population = tui.until_all(tuple(expected), initial=initial_frame)
+    assert all(thread_id in population for thread_id in expected), population
+
     selected: dict[str, str] = {}
     for index in range(len(expected)):
         tui.send("\x1b[B")
@@ -103,20 +110,43 @@ def _selected_subagent_details(
         assert "Status: " in frame, frame
         thread_id = matches[0]
         path, parent_id = expected[thread_id]
-        assert f"Path: {path}" in frame, frame
-        assert f"Parent: {parent_id}" in frame, frame
-        assert "configured model: package-smoke" in frame, frame
-        assert "configured effort: medium" in frame, frame
-        assert "provider-effective identity: unverified" in frame, frame
-        assert any(
-            f"Status: {status}" in frame
-            for status in ("running", "not running", "not loaded")
-        ), frame
+
+        assert frame.count(thread_id) == 1, frame
+        detail_start = frame.index(thread_id)
+        path_marker = f"Path: {path}"
+        parent_marker = f"Parent: {parent_id}"
+        path_start = frame.index(path_marker, detail_start)
+        parent_start = frame.index(parent_marker, path_start)
+        status_start = frame.index("Status: ", parent_start)
+        status_marker = next(
+            (
+                f"Status: {status}"
+                for status in ("running", "not running", "not loaded")
+                if frame.startswith(f"Status: {status}", status_start)
+            ),
+            None,
+        )
+        assert detail_start < path_start < parent_start < status_start, frame
+        assert status_marker is not None, frame
+        detail_end = status_start + len(status_marker)
+        detail = frame[detail_start:detail_end]
+        assert all(
+            other_id not in detail
+            for other_id in set(expected) - {thread_id, parent_id}
+        ), detail
+        assert path_marker in detail and parent_marker in detail, detail
+        assert detail.count(parent_id) == 1, detail
+        assert detail.index(parent_id) == detail.index(parent_marker) + len(
+            "Parent: "
+        ), detail
+        assert "configured model: package-smoke" in detail, detail
+        assert "configured effort: medium" in detail, detail
+        assert "provider-effective identity: unverified" in detail, detail
         assert "PRIVATE_PROMPT_SENTINEL" not in frame, frame
         assert "PRIVATE_NESTED_PROMPT_SENTINEL" not in frame, frame
         assert "instructions" not in frame.lower(), frame
         assert "credentials" not in frame.lower(), frame
-        selected[thread_id] = frame
+        selected[thread_id] = detail
 
     assert set(selected) == set(expected), selected
     return selected
@@ -371,14 +401,18 @@ def test_packaged_tui_subagents_picker_renders_spawned_descendant_identity_and_r
         with PackagedTui(isolated, "resume", root.id) as tui:
             tui.until("Ask Codex")
             tui.submit_line("/subagents", pasted_marker="/subagents")
-            tui.until("Subagents")
-            selected = _selected_subagent_details(tui, expected_descendants)
+            picker_frame = tui.until("Subagents")
+            selected = _selected_subagent_details(
+                tui, expected_descendants, picker_frame
+            )
             assert set(selected) == {child_id, nested_id}
 
     with shared_agent_server(isolated):
         with PackagedTui(isolated, "resume", root.id) as tui:
             tui.until("Ask Codex")
             tui.submit_line("/subagents", pasted_marker="/subagents")
-            tui.until("Subagents")
-            selected = _selected_subagent_details(tui, expected_descendants)
+            picker_frame = tui.until("Subagents")
+            selected = _selected_subagent_details(
+                tui, expected_descendants, picker_frame
+            )
             assert set(selected) == {child_id, nested_id}

@@ -180,6 +180,32 @@ class PackagedTui:
             f"output: {plain(received)!r}"
         )
 
+    def until_all(
+        self,
+        markers: tuple[str, ...],
+        *,
+        initial: str = "",
+        timeout: float = 30,
+    ) -> str:
+        """Wait for all rendered markers, retaining an already captured first frame."""
+        received = bytearray(initial.encode("utf-8"))
+        deadline = time.monotonic() + timeout
+        while not all(marker in plain(received) for marker in markers):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise AssertionError(
+                    f"packaged TUI did not render {markers!r}; "
+                    f"output: {plain(received)!r}"
+                )
+            try:
+                received.extend(self.until_output(timeout=remaining))
+            except AssertionError as error:
+                raise AssertionError(
+                    f"packaged TUI did not render {markers!r}; "
+                    f"output: {plain(received)!r}"
+                ) from error
+        return plain(received)
+
     def send_paste(self, value: str) -> None:
         """Send one explicit bracketed-paste event to the TUI."""
         self.send(f"\x1b[200~{value}\x1b[201~")
