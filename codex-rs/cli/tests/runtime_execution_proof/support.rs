@@ -268,9 +268,7 @@ fn decode_model_request_body(request: &wiremock::Request) -> Option<Value> {
 }
 
 fn decode_model_request_body_bytes(content_encoding: Option<&str>, body: &[u8]) -> Option<Value> {
-    let body = if content_encoding.is_some_and(|value| {
-        value.trim().eq_ignore_ascii_case("zstd")
-    }) {
+    let body = if content_encoding.is_some_and(|value| value.trim().eq_ignore_ascii_case("zstd")) {
         zstd::stream::decode_all(Cursor::new(body)).ok()?
     } else if content_encoding.is_none() {
         body.to_vec()
@@ -282,8 +280,12 @@ fn decode_model_request_body_bytes(content_encoding: Option<&str>, body: &[u8]) 
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_model_request_body, decode_model_request_body_bytes};
-    use http::{HeaderMap, HeaderName, HeaderValue, Method};
+    use super::decode_model_request_body;
+    use super::decode_model_request_body_bytes;
+    use http::HeaderMap;
+    use http::HeaderName;
+    use http::HeaderValue;
+    use http::Method;
     use std::io::Cursor;
     use wiremock::Request;
 
@@ -311,10 +313,7 @@ mod tests {
             decode_model_request_body_bytes(Some("zstd"), b"invalid"),
             None
         );
-        assert_eq!(
-            decode_model_request_body_bytes(Some("br"), &json),
-            None
-        );
+        assert_eq!(decode_model_request_body_bytes(Some("br"), &json), None);
         assert_eq!(
             decode_model_request_body_bytes(Some("zstd, br"), &encoded),
             None
@@ -328,10 +327,7 @@ mod tests {
             HeaderValue::from_static("zstd"),
         );
         assert_eq!(
-            decode_model_request_body(&request_with_headers(
-                zstd_encoding,
-                encoded.clone(),
-            )),
+            decode_model_request_body(&request_with_headers(zstd_encoding, encoded.clone(),)),
             Some(expected)
         );
 
@@ -345,10 +341,7 @@ mod tests {
             HeaderValue::from_static("br"),
         );
         assert_eq!(
-            decode_model_request_body(&request_with_headers(
-                duplicate_encodings,
-                encoded.clone(),
-            )),
+            decode_model_request_body(&request_with_headers(duplicate_encodings, encoded.clone(),)),
             None
         );
 
