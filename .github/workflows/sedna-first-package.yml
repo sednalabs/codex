@@ -282,17 +282,22 @@ jobs:
           git diff --check
 
           untracked="$(git ls-files --others --exclude-standard)"
-          case "${untracked}" in
-            "") ;;
-            "codex-rs/app-server-protocol/schema/typescript/v2/WaitAgentOutcome.ts")
-              git add -- "${untracked}"
-              ;;
-            *)
-              echo "Unexpected untracked output from the fixed generators." >&2
-              printf '%s\n' "${untracked}" >&2
-              exit 1
-              ;;
-          esac
+          if [[ -n "${untracked}" ]]; then
+            while IFS= read -r path; do
+              case "${path}" in
+                "codex-rs/app-server-protocol/schema/typescript/v2/CollabAgentRef.ts"|"codex-rs/app-server-protocol/schema/typescript/v2/WaitAgentOutcome.ts") ;;
+                *)
+                  echo "Unexpected untracked output from the fixed generators." >&2
+                  printf '%s\n' "${path}" >&2
+                  exit 1
+                  ;;
+              esac
+            done <<< "${untracked}"
+
+            while IFS= read -r path; do
+              git add -- "${path}"
+            done <<< "${untracked}"
+          fi
           git diff --check HEAD
 
           output_dir="${RUNNER_TEMP}/sedna-first-generated"
