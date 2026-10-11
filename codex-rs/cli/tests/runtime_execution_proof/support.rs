@@ -1162,7 +1162,7 @@ fn stop_child_after_ack_failure(child: &mut Child) -> (&'static str, &'static st
         Ok(Some(status)) if status.success() => ("exited_success", "not_running"),
         Ok(Some(_)) => ("exited_failure", "not_running"),
         Ok(None) => {
-            let syscall_category = child_wait_syscall_category(child);
+            let syscall_category = child_syscall_category(child);
             let _ = child.kill();
             let _ = child.wait();
             ("running_before_kill", syscall_category)
@@ -1175,7 +1175,7 @@ fn stop_child_after_ack_failure(child: &mut Child) -> (&'static str, &'static st
     }
 }
 
-fn child_wait_syscall_category(child: &Child) -> &'static str {
+fn child_syscall_category(child: &Child) -> &'static str {
     let path = format!("/proc/{}/syscall", child.id());
     let Ok(mut syscall_file) = File::open(path) else {
         return "unavailable";
@@ -1198,18 +1198,24 @@ fn child_wait_syscall_category(child: &Child) -> &'static str {
     let Ok(syscall_number) = std::str::from_utf8(&syscall_number[..length]) else {
         return "unavailable";
     };
+    if syscall_number == "running" {
+        return "running";
+    }
+    if syscall_number == "-1" {
+        return "blocked_outside_syscall";
+    }
     let Ok(syscall_number) = syscall_number.parse::<i64>() else {
-        return "running_or_unavailable";
+        return "unavailable";
     };
     if syscall_number == libc::SYS_recvmsg as i64 || syscall_number == libc::SYS_recvfrom as i64 {
-        "socket_receive"
+        "socket_receive_syscall"
     } else if syscall_number == libc::SYS_futex as i64 {
-        "futex_wait"
+        "futex_syscall"
     } else if syscall_number == libc::SYS_read as i64 || syscall_number == libc::SYS_pread64 as i64
     {
-        "read_wait"
+        "read_syscall"
     } else if syscall_number < 0 {
-        "running_or_unavailable"
+        "unavailable"
     } else {
         "other_syscall"
     }
