@@ -62,16 +62,49 @@ def _latest_user_marker(request: CapturedResponsesRequest, marker: str) -> bool:
     return any(marker in json.dumps(item) for item in recent_input)
 
 
-def _tool_output(server: MockResponsesServer, call_id: str) -> dict[str, Any]:
-    outputs = [
-        item.get("output")
+def _tool_output(
+    server: MockResponsesServer,
+    call_id: str,
+    *,
+    thread_id: str,
+    phase_call_id: str,
+) -> dict[str, Any]:
+    requests = [
+        request
         for request in server.requests()
-        if request.path == "/v1/responses"
+        if request.path == "/v1/responses" and _thread_id(request) == thread_id
+    ]
+    occurrences = [
+        item.get("output")
+        for request in requests
         for item in request.input()
         if item.get("type") == "function_call_output" and item.get("call_id") == call_id
     ]
-    assert len(outputs) == 1, f"missing executed output for {call_id}: {outputs!r}"
-    payload = outputs[0]
+    phase_requests = [
+        request
+        for request in requests
+        if any(
+            item.get("type") == "function_call_output"
+            and item.get("call_id") == phase_call_id
+            for item in request.input()
+        )
+    ]
+    assert occurrences, f"missing executed output for {call_id} in {thread_id}"
+    assert len(phase_requests) == 1, (
+        f"missing or ambiguous {phase_call_id} phase for {thread_id}"
+    )
+    phase_outputs = [
+        item.get("output")
+        for item in phase_requests[0].input()
+        if item.get("type") == "function_call_output" and item.get("call_id") == call_id
+    ]
+    assert len(phase_outputs) == 1, (
+        f"missing or ambiguous {call_id} in {phase_call_id} phase: {phase_outputs!r}"
+    )
+    assert all(output == occurrences[0] for output in occurrences), (
+        f"conflicting repeated history for {call_id}: {occurrences!r}"
+    )
+    payload = phase_outputs[0]
     if isinstance(payload, list):
         payload = next(
             part["text"] for part in payload if part.get("type") == "output_text"
@@ -80,6 +113,27 @@ def _tool_output(server: MockResponsesServer, call_id: str) -> dict[str, Any]:
     result = json.loads(payload)
     assert isinstance(result, dict), result
     return result
+
+
+def _subagent_activity(thread: Any, call_id: str) -> Any:
+    matches = [
+        item
+        for turn in thread.turns
+        for item in turn.items
+        if getattr(item, "type", None) == "subAgentActivity" and item.id == call_id
+    ]
+    assert len(matches) == 1, (
+        f"expected one SDK sub-agent activity for {call_id}: {matches!r}"
+    )
+    activity = matches[0]
+    assert activity.kind.value == "started", activity
+    assert activity.id == call_id
+    assert isinstance(activity.agent_thread_id, str)
+    uuid.UUID(activity.agent_thread_id)
+    assert isinstance(activity.agent_path, str) and activity.agent_path.startswith(
+        "/root/"
+    )
+    return activity
 
 
 def _selected_subagent_details(
@@ -374,21 +428,50 @@ def test_packaged_tui_subagents_picker_renders_spawned_descendant_identity_and_r
                 == "synthetic completion"
             )
             server.wait_for_requests(7, timeout_s=30)
-        metadata = _tool_output(server, "tui-rich-worker")
+            root_history = root.read(include_turns=True).thread
+            worker_activity = _subagent_activity(root_history, "tui-rich-worker")
+            child_id = worker_activity.agent_thread_id
+            assert worker_activity.agent_path == "/root/worker", worker_activity
+            assert worker_activity.model is not None, worker_activity
+            assert worker_activity.model == "package-smoke", worker_activity
+            assert worker_activity.reasoning_effort is not None, worker_activity
+            assert worker_activity.reasoning_effort.value == "medium", worker_activity
 
-        child_id = metadata["agent_id"]
-        uuid.UUID(child_id)
-        assert metadata["configured_model"] == "package-smoke", metadata
-        assert metadata["configured_reasoning_effort"] == "medium", metadata
-        assert "PRIVATE_PROMPT_SENTINEL" not in json.dumps(metadata)
-        nested_metadata = _tool_output(server, "tui-rich-nested")
-        nested_id = nested_metadata["agent_id"]
-        uuid.UUID(nested_id)
-        assert nested_metadata["configured_model"] == "package-smoke", nested_metadata
-        assert (
-            nested_metadata["configured_reasoning_effort"] == "medium"
-        ), nested_metadata
-        assert "PRIVATE_NESTED_PROMPT_SENTINEL" not in json.dumps(nested_metadata)
+            worker = client.thread_resume(child_id)
+            worker_history = worker.read(include_turns=True).thread
+            nested_activity = _subagent_activity(worker_history, "tui-rich-nested")
+            nested_id = nested_activity.agent_thread_id
+            assert nested_activity.agent_path == "/root/worker/nested", nested_activity
+            assert nested_activity.model is not None, nested_activity
+            assert nested_activity.model == "package-smoke", nested_activity
+            assert nested_activity.reasoning_effort is not None, nested_activity
+            assert nested_activity.reasoning_effort.value == "medium", nested_activity
+
+        worker_tool_body = _tool_output(
+            server,
+            "tui-rich-worker",
+            thread_id=root_id,
+            phase_call_id="tui-rich-root-wait",
+        )
+        assert set(worker_tool_body) == {"task_name", "nickname"}, worker_tool_body
+        assert worker_tool_body["task_name"] == worker_activity.agent_path
+        assert worker_tool_body["nickname"] is None or isinstance(
+            worker_tool_body["nickname"], str
+        ), worker_tool_body
+        assert "PRIVATE_PROMPT_SENTINEL" not in json.dumps(worker_tool_body)
+
+        nested_tool_body = _tool_output(
+            server,
+            "tui-rich-nested",
+            thread_id=child_id,
+            phase_call_id="tui-rich-worker-wait",
+        )
+        assert set(nested_tool_body) == {"task_name", "nickname"}, nested_tool_body
+        assert nested_tool_body["task_name"] == nested_activity.agent_path
+        assert nested_tool_body["nickname"] is None or isinstance(
+            nested_tool_body["nickname"], str
+        ), nested_tool_body
+        assert "PRIVATE_NESTED_PROMPT_SENTINEL" not in json.dumps(nested_tool_body)
 
     expected_descendants = {
         child_id: ("/root/worker", root_id),
