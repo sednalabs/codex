@@ -93,8 +93,8 @@
     "codex-rs/Cargo.toml": "ef1e511660f82040b0d7b5b7883b932074b57f46a6506490351f64c7c0ee915d",
     "codex-rs/cli/Cargo.toml": "d9ab2cb774f23e689a8159bcd29e5eb655445258c93b3233b38511538818e307",
     "codex-rs/cli/src/main.rs": "4ba4b566f49c32fe92a071d506cce394ab2ea49055717b3bfbcb14181bbcd881",
-    "codex-rs/cli/tests/runtime_execution_proof.rs": "468a31e9a8d2b5fc4c2fa740d5064ee68b4c7a30a05f35c17d01043a8ae8295e",
-    "codex-rs/cli/tests/runtime_execution_proof/support.rs": "226c6cee3b0610d8aafea2c8f30a42ae10bed66314f8547a860f6513aafe46ff",
+    "codex-rs/cli/tests/runtime_execution_proof.rs": "a269961a31a676bfedf212f2a7bcb3a7e5a4a28d95962c37d547e20e2d594f90",
+    "codex-rs/cli/tests/runtime_execution_proof/support.rs": "e2e81a54627a14c908f7edfa90e4a920d7d64998473d5c423130515db3d9f8a4",
     "codex-rs/codex-mcp/Cargo.toml": "0d4abb5107785b4a6f824b2a26fdcc17d25f61058b5f35c741c3d0608fd0ef2e",
     "codex-rs/codex-mcp/src/lib.rs": "2f4f1fb78be1f117d43b63cc194de2417ab604d9b4ec85baea1ef03e83142538",
     "codex-rs/codex-mcp/src/protected_http_client.rs": "987e22530f799fcc9c0758352bbe248b189802216b69aa1a5bd03ba82ec362be",
@@ -130,7 +130,7 @@
     "docs/divergences/index.yaml": "6fc086c9b46faf71a1e840328c293a54eea92ebabe0e064879be7d33516680de",
     "docs/downstream-regression-matrix.md": "008c0e8804f62b965d96bbacc24957ecac446992eee80085a666dc7c26c968c4"
   },
-  "product_source_commit": "0d6b9dcfead5cd90f72c9f1c12abb22fb419f113",
+  "product_source_commit": "5f1d8de4d5dcab050abebb3849e305a3affe6bec",
   "repository": "sednalabs/codex",
   "schema_version": 1,
   "toolchains": {
