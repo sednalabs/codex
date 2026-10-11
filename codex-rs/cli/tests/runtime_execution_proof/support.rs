@@ -109,17 +109,15 @@ impl Respond for ModelResponder {
                     .map(str::to_string),
             );
         }
-        let session_kind = body
-            .get("previous_response_id")
-            .and_then(Value::as_str)
-            .and_then(|response_id| {
-                self.response_sessions
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .get(response_id)
-                    .copied()
-            })
-            .or_else(|| {
+        let session_kind = match body.get("previous_response_id") {
+            Some(Value::String(response_id)) => self
+                .response_sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(response_id)
+                .copied(),
+            Some(_) => None,
+            None => {
                 if request_has_user_text(&body, "delegate-claim") {
                     Some(ModelSessionKind::Delegate)
                 } else if request_has_user_text(&body, "role-provider-control") {
@@ -129,7 +127,8 @@ impl Respond for ModelResponder {
                 } else {
                     None
                 }
-            });
+            }
+        };
         let (namespace, name, arguments, call_id): (&str, &str, String, String) =
             if session_kind == Some(ModelSessionKind::Delegate) {
                 let mut calls = self
