@@ -721,11 +721,7 @@ impl ProtectedRuntimeFixture {
         }
         unsafe {
             command.pre_exec(move || {
-                if let Err(error) =
-                    remap_child_channel_fds(child_fd, auth_child_fd, BOOTSTRAP_FD, AUTH_FD)
-                {
-                    return Err(error);
-                }
+                remap_child_channel_fds(child_fd, auth_child_fd, BOOTSTRAP_FD, AUTH_FD)?;
                 if libc::setgroups(0, std::ptr::null()) != 0
                     || libc::setresgid(RUN_GID, RUN_GID, RUN_GID) != 0
                     || libc::setresuid(RUN_UID, RUN_UID, RUN_UID) != 0
@@ -753,8 +749,6 @@ impl ProtectedRuntimeFixture {
             }
         })?;
         eprintln!("runtime-proof-root-stage:cli_child_spawned");
-        drop(child_socket);
-        drop(auth_child_socket);
         child
             .stdin
             .take()
@@ -856,6 +850,13 @@ impl ProtectedRuntimeFixture {
         let mut ack = [0_u8; 4];
         if let Err(error) = launcher.read_exact(&mut ack) {
             eprintln!(
+                "runtime-proof-root-channel-pending:bootstrap={};auth={}",
+                pending_packet_category(&child_socket),
+                pending_packet_category(&auth_child_socket)
+            );
+            drop(child_socket);
+            drop(auth_child_socket);
+            eprintln!(
                 "runtime-proof-root-child-state-before-kill:{}",
                 stop_child_after_ack_failure(&mut child)
             );
@@ -871,6 +872,13 @@ impl ProtectedRuntimeFixture {
         }
         if &ack != b"ACK1" {
             eprintln!(
+                "runtime-proof-root-channel-pending:bootstrap={};auth={}",
+                pending_packet_category(&child_socket),
+                pending_packet_category(&auth_child_socket)
+            );
+            drop(child_socket);
+            drop(auth_child_socket);
+            eprintln!(
                 "runtime-proof-root-child-state-before-kill:{}",
                 stop_child_after_ack_failure(&mut child)
             );
@@ -882,6 +890,8 @@ impl ProtectedRuntimeFixture {
             anyhow::bail!("CLI bootstrap acknowledgement did not match");
         }
         eprintln!("runtime-proof-root-stage:cli_ack_validated");
+        drop(child_socket);
+        drop(auth_child_socket);
         drop(launcher);
 
         let deadline = std::time::Instant::now() + Duration::from_secs(100);
@@ -1081,6 +1091,17 @@ fn ack_error_category(kind: std::io::ErrorKind) -> &'static str {
         std::io::ErrorKind::ConnectionReset => "connection_reset",
         std::io::ErrorKind::BrokenPipe => "broken_pipe",
         _ => "other",
+    }
+}
+
+fn pending_packet_category(socket: &std::os::unix::net::UnixStream) -> &'static str {
+    let mut pending_bytes: libc::c_int = 0;
+    if unsafe { libc::ioctl(socket.as_raw_fd(), libc::FIONREAD, &mut pending_bytes) } != 0 {
+        "unavailable"
+    } else if pending_bytes > 0 {
+        "pending"
+    } else {
+        "empty"
     }
 }
 
