@@ -98,9 +98,9 @@ fn cli_failure_path(stdout: &[u8]) -> (&'static str, &'static str, &'static str)
             let family = cli_error_message_family(message);
             if error_family.is_some_and(|previous| previous != family) {
                 error_family = Some("ambiguous");
-                break;
+            } else if error_family != Some("ambiguous") {
+                error_family = Some(family);
             }
-            error_family = Some(family);
         }
     }
     (
