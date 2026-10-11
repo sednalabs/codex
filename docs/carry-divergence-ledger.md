@@ -3795,6 +3795,10 @@ process. The
 synthetic Linux fixture uses a fixed public fake JWT and a loopback URL through
 the same importer and transport path; invalid frame, recipient, or token
 variants must fail before provider credential egress.
+Protected MCP startup accepts only the reserved local environment and always
+uses the process-local HTTP client, even when the environment manager has
+registered its local environment; a remote descriptor is rejected even if a
+caller pairs it with the local environment ID.
 
 The existing cloud-config service fetches managed requirements for
 business-like, enterprise and education plans through a credential-bearing

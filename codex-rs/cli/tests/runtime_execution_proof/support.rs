@@ -9,6 +9,7 @@ use sha2::Digest;
 use sha2::Sha256;
 use std::fs;
 use std::fs::File;
+use std::io::Cursor;
 use std::io::Read;
 use std::io::Seek;
 use std::io::SeekFrom;
@@ -75,7 +76,9 @@ struct ModelResponder {
 
 impl Respond for ModelResponder {
     fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
-        let body = serde_json::from_slice::<Value>(&request.body).unwrap_or(Value::Null);
+        let Some(body) = decode_model_request_body(request) else {
+            return ResponseTemplate::new(400);
+        };
         if let Ok(mut requests) = self.requests.lock() {
             requests.push(body.clone());
         }
@@ -251,6 +254,51 @@ impl Respond for ModelResponder {
                     })
                     .collect::<String>(),
             )
+    }
+}
+
+fn decode_model_request_body(request: &wiremock::Request) -> Option<Value> {
+    let content_encoding = request
+        .headers
+        .get("content-encoding")
+        .and_then(|value| value.to_str().ok());
+    decode_model_request_body_bytes(content_encoding, &request.body)
+}
+
+fn decode_model_request_body_bytes(content_encoding: Option<&str>, body: &[u8]) -> Option<Value> {
+    let body = if content_encoding.is_some_and(|value| {
+        value
+            .split(',')
+            .any(|encoding| encoding.trim().eq_ignore_ascii_case("zstd"))
+    }) {
+        zstd::stream::decode_all(Cursor::new(body)).ok()?
+    } else {
+        body.to_vec()
+    };
+    serde_json::from_slice(&body).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decode_model_request_body_bytes;
+    use std::io::Cursor;
+
+    #[test]
+    fn decodes_zstd_model_requests_and_rejects_malformed_bodies() {
+        let expected = serde_json::json!({"input": [{"role": "user", "content": "root-claim"}]});
+        let json = serde_json::to_vec(&expected).expect("serialize synthetic request");
+        let encoded =
+            zstd::stream::encode_all(Cursor::new(json), 0).expect("encode synthetic request");
+
+        assert_eq!(
+            decode_model_request_body_bytes(Some("zstd"), &encoded),
+            Some(expected)
+        );
+        assert_eq!(
+            decode_model_request_body_bytes(Some("zstd"), b"invalid"),
+            None
+        );
+        assert_eq!(decode_model_request_body_bytes(None, b"not-json"), None);
     }
 }
 

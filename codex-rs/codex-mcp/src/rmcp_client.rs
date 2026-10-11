@@ -1295,17 +1295,24 @@ async fn make_rmcp_client(
                     )
                     .into());
                 }
-                if !is_local_environment || resolved_environment.is_some() {
+                if !protected_http_transport_is_process_local(
+                    server.config(),
+                    resolved_environment.as_ref(),
+                ) {
                     return Err(anyhow!(
                         "protected MCP target requires the process-local HTTP transport"
                     )
                     .into());
                 }
             }
-            let http_client = resolved_environment.as_ref().map_or_else(
-                || runtime_context.local_http_client(),
-                |environment| environment.get_http_client(),
-            );
+            let http_client = if protected_target {
+                runtime_context.local_http_client()
+            } else {
+                resolved_environment.as_ref().map_or_else(
+                    || runtime_context.local_http_client(),
+                    |environment| environment.get_http_client(),
+                )
+            };
             let http_client = maybe_with_openai_docs_source_attribution(&url, http_client);
             let http_client = if protected_target {
                 Arc::new(crate::protected_http_client::ProtectedMcpHttpClient::new(
@@ -1348,6 +1355,14 @@ async fn make_rmcp_client(
     }
 }
 
+fn protected_http_transport_is_process_local(
+    config: &McpServerConfig,
+    resolved_environment: Option<&Arc<Environment>>,
+) -> bool {
+    config.is_local_environment()
+        && resolved_environment.is_none_or(|environment| !environment.is_remote())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1364,6 +1379,32 @@ mod tests {
         let error = StartupOutcomeError::from(error);
 
         assert!(error.is_authentication_required());
+    }
+
+    #[test]
+    fn protected_http_transport_rejects_remote_descriptor_for_local_environment_id() {
+        let config = serde_json::from_value::<McpServerConfig>(serde_json::json!({
+            "url": "https://ops.example/mcp",
+            "environment_id": "local"
+        }))
+        .expect("protected HTTP server config");
+        let local = Arc::new(Environment::create_for_tests(None).expect("test local environment"));
+        let remote = Arc::new(
+            Environment::create_for_tests(Some("ws://127.0.0.1:8765".to_string()))
+                .expect("test remote environment"),
+        );
+
+        assert!(!local.is_remote());
+        assert!(protected_http_transport_is_process_local(&config, None));
+        assert!(protected_http_transport_is_process_local(
+            &config,
+            Some(&local)
+        ));
+        assert!(remote.is_remote());
+        assert!(!protected_http_transport_is_process_local(
+            &config,
+            Some(&remote)
+        ));
     }
 
     #[test]

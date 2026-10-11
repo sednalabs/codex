@@ -1140,6 +1140,12 @@ state, issuer validation by the service, or an end-to-end lease; those require
 the separately authorized protected-host and service-consumer validation
 paths. Dependency and Bazel lock generation is hosted-only.
 
+Protected MCP initialization also exercises the reserved local environment
+through the process-local HTTP client and rejects a remote environment
+descriptor even when paired with the local ID. The loopback model responder
+decodes zstd-encoded requests before matching prompts and rejects malformed
+bodies instead of returning a normal completion.
+
 Runtime-proof unit regressions also force an invalidation between the getter's
 fast precheck and its mutex acquisition, then exercise the same locked target
 getter used in production; the cleared state must still return a protected
