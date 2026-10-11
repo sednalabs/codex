@@ -596,6 +596,14 @@ impl ProtectedRuntimeFixture {
                 recipient,
             ),
         )?;
+        // The child app server updates this state while the configuration home stays immutable.
+        let installation_id_path = home.join("installation_id");
+        fs::write(
+            &installation_id_path,
+            "11111111-1111-4111-8111-111111111111",
+        )?;
+        chown_to_runner(&installation_id_path)?;
+        fs::set_permissions(&installation_id_path, fs::Permissions::from_mode(0o644))?;
         fs::set_permissions(home.join("config.toml"), fs::Permissions::from_mode(0o444))?;
         fs::set_permissions(home.join("agents"), fs::Permissions::from_mode(0o555))?;
         fs::set_permissions(&home, fs::Permissions::from_mode(0o555))?;
