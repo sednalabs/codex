@@ -125,7 +125,8 @@ ROOT_FIXTURE_CHILD_STATE = re.compile(
 )
 ROOT_FIXTURE_CHILD_SYSCALL = re.compile(
     r"^runtime-proof-root-child-syscall-before-kill:"
-    r"(not_running|running_or_unavailable|socket_receive|futex_wait|read_wait|other_syscall|unavailable)$"
+    r"(not_running|running|blocked_outside_syscall|socket_receive_syscall|"
+    r"futex_syscall|read_syscall|other_syscall|unavailable)$"
 )
 ROOT_FIXTURE_STAGE_NAMES = {
     "started",
