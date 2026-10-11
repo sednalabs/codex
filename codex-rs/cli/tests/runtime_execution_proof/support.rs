@@ -319,7 +319,10 @@ mod tests {
             None
         );
         assert_eq!(decode_model_request_body_bytes(Some(""), &json), None);
-        assert_eq!(decode_model_request_body_bytes(None, b"not-json"), None);
+        assert_eq!(
+            decode_model_request_body_bytes(/*content_encoding*/ None, b"not-json"),
+            None
+        );
 
         let mut zstd_encoding = HeaderMap::new();
         zstd_encoding.append(

@@ -1,5 +1,6 @@
 #[cfg(target_os = "linux")]
 use crate::provider_auth::ProviderAuth;
+use crate::provider_auth::ProviderCredentialClass;
 #[cfg(target_os = "linux")]
 use crate::provider_auth::SecretString;
 #[cfg(target_os = "linux")]
@@ -190,7 +191,12 @@ fn validate_and_import(
     if sha256_hex(&config_bytes) != frame.config_sha256 {
         bail!("runtime auth frame config digest does not match CODEX_HOME/config.toml");
     }
-    validate_raw_config(&config_bytes, &frame.mcp_server, &frame.recipient)?;
+    validate_raw_config(
+        &config_bytes,
+        &frame.mcp_server,
+        &frame.recipient,
+        &frame.provider.credential_class,
+    )?;
 
     codex_login::auth::login_with_chatgpt_auth_tokens(
         &home,
@@ -220,7 +226,12 @@ fn validate_and_import(
     Ok(())
 }
 
-fn validate_raw_config(config: &[u8], server: &str, recipient: &str) -> Result<()> {
+fn validate_raw_config(
+    config: &[u8],
+    server: &str,
+    recipient: &str,
+    credential_class: &ProviderCredentialClass,
+) -> Result<()> {
     let config: toml::Value =
         toml::from_str(std::str::from_utf8(config)?).context("parse immutable runtime config")?;
     let table = config
@@ -249,8 +260,26 @@ fn validate_raw_config(config: &[u8], server: &str, recipient: &str) -> Result<(
         .get(server)
         .and_then(toml::Value::as_table)
         .context("protected runtime config does not contain the selected MCP server")?;
-    if selected.len() != 1 || selected.get("url").and_then(toml::Value::as_str) != Some(recipient) {
-        bail!("protected runtime MCP config must contain only its pinned URL");
+    let selected_url_matches = selected.get("url").and_then(toml::Value::as_str) == Some(recipient);
+    let fixture_claim_approval = credential_class == &ProviderCredentialClass::SyntheticFixture
+        && server == "ops"
+        && selected.len() == 2
+        && selected
+            .get("tools")
+            .and_then(toml::Value::as_table)
+            .is_some_and(|tools| {
+                tools.len() == 1
+                    && tools
+                        .get("work_item_claim")
+                        .and_then(toml::Value::as_table)
+                        .is_some_and(|claim| {
+                            claim.len() == 1
+                                && claim.get("approval_mode").and_then(toml::Value::as_str)
+                                    == Some("approve")
+                        })
+            });
+    if !selected_url_matches || (selected.len() != 1 && !fixture_claim_approval) {
+        bail!("protected runtime MCP config contains unadmitted settings");
     }
     if table.contains_key("env") || table.contains_key("dotenv") {
         bail!("protected runtime config may not select environment or dotenv credential sources");
