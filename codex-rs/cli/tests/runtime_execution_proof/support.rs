@@ -129,71 +129,72 @@ impl Respond for ModelResponder {
                 }
             }
         };
-        let (namespace, name, arguments, call_id): (&str, &str, String, String) =
-            if session_kind == Some(ModelSessionKind::Delegate) {
-                let mut calls = self
-                    .delegate_calls
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if *calls == 0 {
-                    *calls += 1;
+        let (namespace, name, arguments, call_id): (&str, &str, String, String) = if session_kind
+            == Some(ModelSessionKind::Delegate)
+        {
+            let mut calls = self
+                .delegate_calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if *calls == 0 {
+                *calls += 1;
+                (
+                    "mcp__ops",
+                    "work_item_claim",
+                    ARGUMENTS.to_string(),
+                    "delegate-claim-call".to_string(),
+                )
+            } else {
+                ("", "", String::new(), "delegate-final".to_string())
+            }
+        } else if matches!(
+            session_kind,
+            Some(ModelSessionKind::RootClaim | ModelSessionKind::RoleProviderControl)
+        ) {
+            let mut calls = self
+                .root_calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if *calls == 0 {
+                *calls += 1;
+                (
+                    "mcp__ops",
+                    "work_item_claim",
+                    ARGUMENTS.to_string(),
+                    "root-claim-call".to_string(),
+                )
+            } else if *calls == 1 {
+                *calls += 1;
+                if self.spawn_child {
                     (
-                        "mcp__ops",
-                        "work_item_claim",
-                        ARGUMENTS.to_string(),
-                        "delegate-claim-call".to_string(),
+                        "multi_agent_v1",
+                        "spawn_agent",
+                        if session_kind == Some(ModelSessionKind::RoleProviderControl) {
+                            r#"{"message":"delegate-claim","task_name":"proof-child","agent_type":"proof-child"}"#.to_string()
+                        } else {
+                            r#"{"message":"delegate-claim","task_name":"proof-child","agent_type":"worker"}"#.to_string()
+                        },
+                        "root-spawn-call".to_string(),
                     )
                 } else {
-                    ("", "", String::new(), "delegate-final".to_string())
+                    ("", "", String::new(), "root-final".to_string())
                 }
-            } else if matches!(
-                session_kind,
-                Some(ModelSessionKind::RootClaim | ModelSessionKind::RoleProviderControl)
-            ) {
-                let mut calls = self
-                    .root_calls
+            } else {
+                let target = self
+                    .wait_targets
                     .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if *calls == 0 {
-                    *calls += 1;
-                    (
-                        "mcp__ops",
-                        "work_item_claim",
-                        ARGUMENTS.to_string(),
-                        "root-claim-call".to_string(),
-                    )
-                } else if *calls == 1 {
-                    *calls += 1;
-                    if self.spawn_child {
-                        (
-                            "multi_agent_v1",
-                            "spawn_agent",
-                            if session_kind == Some(ModelSessionKind::RoleProviderControl) {
-                                r#"{"message":"delegate-claim","task_name":"proof-child","agent_type":"proof-child"}"#.to_string()
-                            } else {
-                                r#"{"message":"delegate-claim","task_name":"proof-child","agent_type":"worker"}"#.to_string()
-                            },
-                            "root-spawn-call".to_string(),
-                        )
-                    } else {
-                        ("", "", String::new(), "root-final".to_string())
-                    }
-                } else {
-                    let target = self
-                        .wait_targets
-                        .lock()
-                        .ok()
-                        .and_then(|targets| targets.first().cloned())
-                        .or_else(|| find_spawned_agent_id(&body))
-                        .unwrap_or_default();
-                    let previous_wait = self
-                        .wait_call_ids
-                        .lock()
-                        .ok()
-                        .and_then(|calls| calls.last().cloned());
-                    let expects_provider_rejection =
-                        session_kind == Some(ModelSessionKind::RoleProviderControl);
-                    let accepted = previous_wait
+                    .ok()
+                    .and_then(|targets| targets.first().cloned())
+                    .or_else(|| find_spawned_agent_id(&body))
+                    .unwrap_or_default();
+                let previous_wait = self
+                    .wait_call_ids
+                    .lock()
+                    .ok()
+                    .and_then(|calls| calls.last().cloned());
+                let expects_provider_rejection =
+                    session_kind == Some(ModelSessionKind::RoleProviderControl);
+                let accepted = previous_wait
                     .as_deref()
                     .and_then(|call_id| function_output(&body, call_id))
                     .and_then(|output| serde_json::from_str::<Value>(output).ok())
@@ -220,37 +221,37 @@ impl Respond for ModelResponder {
                         accepted
                     })
                     .unwrap_or(false);
-                    if accepted {
-                        ("", "", String::new(), "root-final".to_string())
-                    } else {
-                        let wait_number = self
-                            .wait_call_ids
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .len();
-                        let call_id = format!("root-wait-call-{wait_number}");
-                        self.wait_targets
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .push(target.clone());
-                        self.wait_call_ids
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .push(call_id.clone());
-                        (
-                            "multi_agent_v1",
-                            "wait_agent",
-                            serde_json::json!({
-                                "targets": [target],
-                                "timeout_ms": 80000
-                            })
-                            .to_string(),
-                            call_id,
-                        )
-                    }
+                if accepted {
+                    ("", "", String::new(), "root-final".to_string())
+                } else {
+                    let wait_number = self
+                        .wait_call_ids
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .len();
+                    let call_id = format!("root-wait-call-{wait_number}");
+                    self.wait_targets
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push(target.clone());
+                    self.wait_call_ids
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push(call_id.clone());
+                    (
+                        "multi_agent_v1",
+                        "wait_agent",
+                        serde_json::json!({
+                            "targets": [target],
+                            "timeout_ms": 80000
+                        })
+                        .to_string(),
+                        call_id,
+                    )
                 }
-            } else {
-                ("", "", String::new(), "final".to_string())
+            }
+        } else {
+            ("", "", String::new(), "final".to_string())
         };
         let response_id = format!("response-{call_id}");
         if let Some(session_kind) = session_kind {
