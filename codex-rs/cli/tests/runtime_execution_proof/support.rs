@@ -856,10 +856,9 @@ impl ProtectedRuntimeFixture {
             );
             drop(child_socket);
             drop(auth_child_socket);
-            eprintln!(
-                "runtime-proof-root-child-state-before-kill:{}",
-                stop_child_after_ack_failure(&mut child)
-            );
+            let (child_state, child_syscall) = stop_child_after_ack_failure(&mut child);
+            eprintln!("runtime-proof-root-child-state-before-kill:{child_state}");
+            eprintln!("runtime-proof-root-child-syscall-before-kill:{child_syscall}");
             eprintln!(
                 "runtime-proof-root-ack-failure:{}",
                 ack_error_category(error.kind())
@@ -878,10 +877,9 @@ impl ProtectedRuntimeFixture {
             );
             drop(child_socket);
             drop(auth_child_socket);
-            eprintln!(
-                "runtime-proof-root-child-state-before-kill:{}",
-                stop_child_after_ack_failure(&mut child)
-            );
+            let (child_state, child_syscall) = stop_child_after_ack_failure(&mut child);
+            eprintln!("runtime-proof-root-child-state-before-kill:{child_state}");
+            eprintln!("runtime-proof-root-child-syscall-before-kill:{child_syscall}");
             eprintln!("runtime-proof-root-ack-failure:invalid_packet");
             eprintln!(
                 "runtime-proof-root-startup-failure:{}",
@@ -1159,20 +1157,61 @@ fn dup_to_child_target(source: i32, target: i32) -> std::io::Result<()> {
     Ok(())
 }
 
-fn stop_child_after_ack_failure(child: &mut Child) -> &'static str {
+fn stop_child_after_ack_failure(child: &mut Child) -> (&'static str, &'static str) {
     match child.try_wait() {
-        Ok(Some(status)) if status.success() => "exited_success",
-        Ok(Some(_)) => "exited_failure",
+        Ok(Some(status)) if status.success() => ("exited_success", "not_running"),
+        Ok(Some(_)) => ("exited_failure", "not_running"),
         Ok(None) => {
+            let syscall_category = child_wait_syscall_category(child);
             let _ = child.kill();
             let _ = child.wait();
-            "running_before_kill"
+            ("running_before_kill", syscall_category)
         }
         Err(_) => {
             let _ = child.kill();
             let _ = child.wait();
-            "status_unavailable"
+            ("status_unavailable", "unavailable")
         }
+    }
+}
+
+fn child_wait_syscall_category(child: &Child) -> &'static str {
+    let path = format!("/proc/{}/syscall", child.id());
+    let Ok(mut syscall_file) = File::open(path) else {
+        return "unavailable";
+    };
+    let mut syscall_number = [0_u8; 20];
+    let mut length = 0;
+    loop {
+        let mut byte = [0_u8; 1];
+        match syscall_file.read(&mut byte) {
+            Ok(1) if byte[0].is_ascii_whitespace() => break,
+            Ok(1) if length < syscall_number.len() => {
+                syscall_number[length] = byte[0];
+                length += 1;
+            }
+            Ok(1) => return "unavailable",
+            Ok(0) => break,
+            _ => return "unavailable",
+        }
+    }
+    let Ok(syscall_number) = std::str::from_utf8(&syscall_number[..length]) else {
+        return "unavailable";
+    };
+    let Ok(syscall_number) = syscall_number.parse::<i64>() else {
+        return "running_or_unavailable";
+    };
+    if syscall_number == libc::SYS_recvmsg as i64 || syscall_number == libc::SYS_recvfrom as i64 {
+        "socket_receive"
+    } else if syscall_number == libc::SYS_futex as i64 {
+        "futex_wait"
+    } else if syscall_number == libc::SYS_read as i64 || syscall_number == libc::SYS_pread64 as i64
+    {
+        "read_wait"
+    } else if syscall_number < 0 {
+        "running_or_unavailable"
+    } else {
+        "other_syscall"
     }
 }
 
