@@ -869,6 +869,8 @@ def test_packaged_model_queue_only_message_does_not_wake_until_followup_and_exac
                 )
                 waiter_response_gate.set()
                 wait_started = wait_started_future.result(timeout=10)
+                assert wait_started.thread_id == waiter_id, wait_started
+                assert wait_started.turn_id == waiter_turn_id, wait_started
                 assert wait_started.item.root.id == "waiter-mailbox-wait-call", (
                     wait_started
                 )
@@ -893,8 +895,17 @@ def test_packaged_model_queue_only_message_does_not_wake_until_followup_and_exac
                 quiet_read = client._client.thread_read(
                     waiter_id, include_turns=True
                 )
-                quiet_item = _collab_item(quiet_read, "waiter-mailbox-wait-call")
-                assert quiet_item.status.value == "inProgress", quiet_item
+                # Started items are live notifications, not durable history.
+                # The bound start above and unchanged active turn witness the
+                # quiet phase while the actionable response remains held.
+                quiet_turns = [
+                    turn
+                    for turn in quiet_read.thread.turns
+                    if turn.id == waiter_turn_id
+                ]
+                assert len(quiet_turns) == 1, quiet_read
+                assert quiet_turns[0].status.value == "inProgress", quiet_turns
+                assert not followup_response_gate.is_set()
                 followup_response_gate.set()
                 waiter_resumed_route.wait_until_selected()
                 sender_finished_route.wait_until_selected(timeout_s=10)
@@ -1182,7 +1193,7 @@ def test_packaged_model_goal_continuation_and_terminal_transition(
         assert completed["remainingTokens"] is None, completed
         assert (completed["completionBudgetReport"] is not None) == (
             completed["goal"]["timeUsedSeconds"] > 0
-            or completed["goal"]["tokenBudget"] is not None
+            or completed["goal"].get("tokenBudget") is not None
         ), completed
         queued_message = _sub_agent_activity(worker_read, "goal-queue-only-call")
         assert queued_message.kind.value == "interacted", queued_message
