@@ -74,6 +74,16 @@ def _tool_output(
         for request in server.requests()
         if request.path == "/v1/responses" and _thread_id(request) == thread_id
     ]
+    for request in requests:
+        request_outputs = [
+            item.get("output")
+            for item in request.input()
+            if item.get("type") == "function_call_output"
+            and item.get("call_id") == call_id
+        ]
+        assert len(request_outputs) <= 1, (
+            f"duplicate output items for {call_id}: {request_outputs!r}"
+        )
     occurrences = [
         item.get("output")
         for request in requests
@@ -117,10 +127,11 @@ def _tool_output(
 
 def _subagent_activity(thread: Any, call_id: str) -> Any:
     matches = [
-        item
+        item.root
         for turn in thread.turns
         for item in turn.items
-        if getattr(item, "type", None) == "subAgentActivity" and item.id == call_id
+        if getattr(item.root, "type", None) == "subAgentActivity"
+        and item.root.id == call_id
     ]
     assert len(matches) == 1, (
         f"expected one SDK sub-agent activity for {call_id}: {matches!r}"

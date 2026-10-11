@@ -161,6 +161,12 @@ def _is_goal_turn(request: CapturedResponsesRequest) -> bool:
     turn_metadata = (
         metadata.get("x-codex-turn-metadata") if isinstance(metadata, dict) else None
     )
+    if not isinstance(turn_metadata, str):
+        return False
+    try:
+        turn_metadata = json.loads(turn_metadata)
+    except json.JSONDecodeError:
+        return False
     return (
         isinstance(turn_metadata, dict) and turn_metadata.get("turn_trigger") == "goal"
     )
@@ -381,6 +387,7 @@ def test_packaged_model_nested_spawn_recovery_and_list_after_resume(
                 lambda request: (
                     _thread_id(request) == root_id
                     and _has_call_output(request, "root-wait-grandchild")
+                    and not _has_user_marker(request, "ROOT_RECOVERY_LIST_MARKER")
                 ),
                 sse(
                     [
