@@ -36,7 +36,8 @@ def _mock_config(
         "multi_agent_v2 = true\nmemories = false\napps = false\nplugins = false\n"
         '[model_providers.package_smoke]\nname = "package smoke"\n'
         f'base_url = "{server.url}/v1"\nwire_api = "responses"\n'
-        "request_max_retries = 0\nstream_max_retries = 0\n",
+        "request_max_retries = 0\nstream_max_retries = 0\n"
+        '[tui]\nstatus_line = ["thread-id"]\n',
         encoding="utf-8",
     )
 
@@ -162,11 +163,24 @@ def _selected_subagent_details(
     assert all(thread_id in population for thread_id in expected), population
 
     selected: dict[str, str] = {}
-    for index in range(len(expected)):
+    # The real picker includes the primary row first. Reset to that row, then
+    # require each descendant's selected-only identity fields after moving.
+    # Any redraw alone is not evidence that the preceding Down was applied.
+    tui.send("\x1b[H")
+    for index, (expected_id, (expected_path, expected_parent)) in enumerate(
+        expected.items()
+    ):
         tui.send("\x1b[B")
         tui.until_output()
         tui.resize(111 + index)
-        frame = tui.until("Status: ")
+        frame = tui.until_all(
+            (
+                expected_id,
+                f"Path: {expected_path}",
+                f"Parent: {expected_parent}",
+                "Status: ",
+            )
+        )
         matches = [
             thread_id
             for thread_id, (path, parent_id) in expected.items()
@@ -509,7 +523,13 @@ def test_packaged_tui_subagents_picker_renders_spawned_descendant_identity_and_r
     # picker is driven by actual spawned-agent activity, not forked thread rows.
     with shared_agent_server(isolated):
         with PackagedTui(isolated, "resume", root.id) as tui:
-            tui.until("Ask Codex")
+            tui.until_all(
+                (
+                    "/review - review any changes and find issues",
+                    root_id,
+                    "Ask Codex",
+                )
+            )
             tui.submit_line("/subagents", pasted_marker="/subagents")
             picker_frame = tui.until("Subagents")
             selected = _selected_subagent_details(
@@ -519,7 +539,13 @@ def test_packaged_tui_subagents_picker_renders_spawned_descendant_identity_and_r
 
     with shared_agent_server(isolated):
         with PackagedTui(isolated, "resume", root.id) as tui:
-            tui.until("Ask Codex")
+            tui.until_all(
+                (
+                    "/review - review any changes and find issues",
+                    root_id,
+                    "Ask Codex",
+                )
+            )
             tui.submit_line("/subagents", pasted_marker="/subagents")
             picker_frame = tui.until("Subagents")
             selected = _selected_subagent_details(

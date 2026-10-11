@@ -343,9 +343,15 @@ def test_actual_tui_agents_entry_has_initial_empty_search(
         _mock_config(home, server, agent_tools=True)
         with shared_agent_server(isolated):
             with PackagedTui(isolated) as tui:
-                # The provisional startup composer has the same placeholder;
-                # the configured footer is only present on the session widget.
-                tui.until_all(("OpenAI Codex", "package-smoke", "Ask Codex"))
+                # StartupDraft already renders the banner and composer. The
+                # welcome tail is inserted by the actual SessionInfoCell.
+                tui.until_all(
+                    (
+                        "/review - review any changes and find issues",
+                        "package-smoke",
+                        "Ask Codex",
+                    )
+                )
                 tui.submit_line("/agents", pasted_marker="/agents")
                 opened = tui.until("Agent command center")
                 assert "Group:" in opened
@@ -385,7 +391,13 @@ def test_actual_tui_nested_filter_clear_live_rename_and_replay(
 
         with shared_agent_server(isolated):
             with PackagedTui(isolated, "resume", root_id) as tui:
-                tui.until_all(("OpenAI Codex", root_id, "Ask Codex"))
+                tui.until_all(
+                    (
+                        "/review - review any changes and find issues",
+                        root_id,
+                        "Ask Codex",
+                    )
+                )
                 tui.submit_line("/agents", pasted_marker="/agents")
                 tree = tui.until("nested-package-task")
                 assert "Agent command center" in tree
@@ -414,6 +426,10 @@ def test_actual_tui_nested_filter_clear_live_rename_and_replay(
                 assert "Rename ›" in tui.until("Rename ›")
                 tui.send("\x7f" * 80)
                 tui.send_paste("live-renamed-package-task")
+                # The PTY helper strips cursor moves rather than applying them;
+                # require the whole edited value in a fresh viewport, not diffs.
+                tui.until("renamed")
+                tui.resize(111)
                 tui.until("live-renamed-package-task")
                 tui.send("\r")
                 # A full fresh viewport avoids matching fragmented cell updates.
@@ -424,7 +440,13 @@ def test_actual_tui_nested_filter_clear_live_rename_and_replay(
 
         with shared_agent_server(isolated):
             with PackagedTui(isolated, "resume", root_id) as tui:
-                tui.until_all(("OpenAI Codex", root_id, "Ask Codex"))
+                tui.until_all(
+                    (
+                        "/review - review any changes and find issues",
+                        root_id,
+                        "Ask Codex",
+                    )
+                )
                 tui.submit_line("/agents", pasted_marker="/agents")
                 replay = tui.until("live-renamed-package-task")
                 assert "Agent command center" in replay
@@ -570,10 +592,17 @@ def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate
         )
         with PackagedTui(isolated, "resume", browser_thread_id) as tui:
             tui.until_all(
-                ("OpenAI Codex", browser_thread_id, "Ask Codex to do anything")
+                (
+                    "/review - review any changes and find issues",
+                    browser_thread_id,
+                    "Ask Codex to do anything",
+                )
             )
             prompt = "Inspect the configured synthetic Browser page and report its capture labels."
-            tui.submit_line(prompt, pasted_marker=prompt)
+            # Cursor-diff rendering can omit unchanged spaces from the raw PTY
+            # stream. Witness the paste suffix; attest the complete delivered
+            # prompt in the captured request below, before Browser assertions.
+            tui.submit_line(prompt, pasted_marker="labels.")
             server.wait_for_requests(2, timeout_s=30)
             tui.until("browser synthetic consumer complete")
 
@@ -581,6 +610,7 @@ def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate
             request for request in server.requests() if request.path == "/v1/responses"
         ]
         assert len(requests) == 2, {"response_request_count": len(requests)}
+        assert requests[0].message_input_texts("user")[-1:] == [prompt]
         request_body = requests[0].body_json()
         advertised = request_body.get("tools")
         if not isinstance(advertised, list):
