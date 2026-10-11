@@ -741,9 +741,10 @@ def test_packaged_model_queue_only_message_does_not_wake_until_followup_and_exac
                 sender_id = _tool_output(server, "spawn-sender")["agent_id"]
                 sender_read = client._client.thread_read(sender_id, include_turns=True)
                 send_item = _collab_item(sender_read, "queue-only-call")
-                assert send_item.tool.value == "sendMessage", send_item
-                assert send_item.receiver_thread_ids == [waiter_id], send_item
-                assert send_item.status.value == "completed", send_item
+                assert send_item.type == "subAgentActivity", send_item
+                assert send_item.kind.value == "interacted", send_item
+                assert send_item.agent_thread_id == waiter_id, send_item
+                assert send_item.agent_path == "/root/waiter", send_item
 
                 assert not waiter_resumed_route.selected.wait(0.5), (
                     "queue-only delivery woke the registered waiter"
