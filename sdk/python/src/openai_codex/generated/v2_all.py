@@ -621,6 +621,15 @@ class CodexResponseHandoffMode(Enum):
     bem_tags = "bemTags"
 
 
+class CollabAgentRef(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    agent_nickname: Annotated[str | None, Field(alias="agentNickname")] = None
+    agent_role: Annotated[str | None, Field(alias="agentRole")] = None
+    thread_id: Annotated[str, Field(alias="threadId")]
+
+
 class CollabAgentStatus(Enum):
     pending_init = "pendingInit"
     running = "running"
@@ -6539,6 +6548,19 @@ class Verbosity(Enum):
     high = "high"
 
 
+class WaitAgentOutcome(Enum):
+    target_terminal_any = "targetTerminalAny"
+    target_terminal_all = "targetTerminalAll"
+    exact_target_actionable_message = "exactTargetActionableMessage"
+    targetless_actionable_message = "targetlessActionableMessage"
+    unattributed_mailbox_activity = "unattributedMailboxActivity"
+    ambiguous_mailbox_activity = "ambiguousMailboxActivity"
+    terminal_completion = "terminalCompletion"
+    operator_steer = "operatorSteer"
+    timeout = "timeout"
+    subscription_loss = "subscriptionLoss"
+
+
 class WarningNotification(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -10073,11 +10095,26 @@ class CollabAgentToolCallThreadItem(BaseModel):
         str | None,
         Field(description="Prompt text sent as part of the collab tool call, when available."),
     ] = None
+    queued_update_count: Annotated[
+        int | None,
+        Field(
+            alias="queuedUpdateCount",
+            description="Newly published quiet mailbox updates still queued at completion.",
+            ge=0,
+        ),
+    ] = None
     reasoning_effort: Annotated[
         ReasoningEffort | None,
         Field(
             alias="reasoningEffort",
             description="Reasoning effort requested for the spawned agent, when applicable.",
+        ),
+    ] = None
+    receiver_agents: Annotated[
+        list[CollabAgentRef] | None,
+        Field(
+            alias="receiverAgents",
+            description="Receiver identity metadata captured when the wait began.",
         ),
     ] = None
     receiver_thread_ids: Annotated[
@@ -10100,6 +10137,13 @@ class CollabAgentToolCallThreadItem(BaseModel):
     type: Annotated[
         Literal["collabAgentToolCall"], Field(title="CollabAgentToolCallThreadItemType")
     ]
+    wait_outcome: Annotated[
+        WaitAgentOutcome | None,
+        Field(
+            alias="waitOutcome",
+            description="Actual reason a V2 wait call returned, when available.",
+        ),
+    ] = None
 
 
 class WebSearchThreadItem(BaseModel):
