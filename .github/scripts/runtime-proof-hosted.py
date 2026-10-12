@@ -2522,6 +2522,40 @@ def run_ignored_root_test(
             refuse("retained-client fixture did not produce one successful child and terminal outer test")
     elif result.returncode != 0 or summaries != [success]:
         details = ""
+        if test_name == EXPECTED_CLI_TESTS[1]:
+            trace_failure_markers = {
+                "TRACE protected CLI failed:": "cli_failure",
+                "protected TRACE output exposed a credential": "output_credential",
+                "TRACE control did not exercise root and delegate MCP calls": "claim_count",
+                "protected TRACE output exposed proof": "output_proof",
+                "protected TRACE proof reached a later model request": "model_proof",
+                "protected TRACE credential reached a later model request": "model_credential",
+                "TRACE control did not consume the delegate's successful terminal result": "wait_result",
+                "synthetic fixture secret scan failed": "persisted_secret",
+                "fixture created a credential file:": "auth_file",
+            }
+            trace_failures = set()
+            fixture_secret_matches = set()
+            for line in result.stdout.splitlines():
+                trace_failures.update(
+                    category
+                    for marker, category in trace_failure_markers.items()
+                    if marker in line
+                )
+                match = ROOT_FIXTURE_SECRET_MATCH.fullmatch(line.strip())
+                if (
+                    match is not None
+                    and match.group(1) in ROOT_FIXTURE_SECRET_KINDS
+                    and match.group(2) in ROOT_FIXTURE_SECRET_AREAS
+                ):
+                    fixture_secret_matches.add((match.group(1), match.group(2)))
+            if trace_failures:
+                details += "; trace_failure_categories=" + ",".join(sorted(trace_failures))
+            if fixture_secret_matches:
+                matches = ",".join(
+                    f"{kind}:{area}" for kind, area in sorted(fixture_secret_matches)
+                )
+                details += f"; fixture_secret_matches={matches}"
         if test_name == EXPECTED_CLI_TESTS[0]:
             stages = []
             spawn_errors = set()
