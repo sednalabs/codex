@@ -47,6 +47,9 @@ pub const OPS_BEARER_TOKEN: &str = "runtime-proof-fixture-mcp-token-v1";
 pub const CHATGPT_ACCOUNT_ID: &str = "00000000-0000-4000-8000-000000000001";
 pub const CHATGPT_PLAN_TYPE: &str = "free";
 const ARGUMENTS: &str = r#"{"work_item_ref":"w900001","note":"protected fixture claim","claim_precondition":{"expected_generation":3,"expected_updated_at":"2026-10-04T05:00:00Z","request_id":"8f14e45f-ea42-4d73-9ca9-9a8b35d1c05a"}}"#;
+// Protected startup hashes the staged CLI before auth handoff; the delayed claim must cross expiry afterward.
+const DELAYED_CLAIM_RESPONSE_DELAY: Duration = Duration::from_secs(35);
+const EXPIRE_AFTER_CLAIM_AUTH_TTL_SECS: i64 = 45;
 
 #[derive(Clone, Copy)]
 pub enum AuthFault {
@@ -490,7 +493,7 @@ impl Respond for McpResponder {
                     calls.push(body.clone());
                 }
                 if self.delay_first_claim && first_claim {
-                    std::thread::sleep(Duration::from_secs(22));
+                    std::thread::sleep(DELAYED_CLAIM_RESPONSE_DELAY);
                 }
                 if self.redirect_claims {
                     return ResponseTemplate::new(307)
@@ -926,8 +929,8 @@ impl ProtectedRuntimeFixture {
                     self.delay_first_claim,
                     "expiring auth control requires the delayed MCP fixture"
                 );
-                let expires_at =
-                    SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64 + 15;
+                let expires_at = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64
+                    + EXPIRE_AFTER_CLAIM_AUTH_TTL_SECS;
                 auth_packet["expires_at"] = serde_json::json!(expires_at);
                 let access_token = synthetic_access_token(expires_at)?;
                 *self
