@@ -2,6 +2,7 @@
 
 import json
 import re
+import time
 import uuid
 from dataclasses import replace
 from pathlib import Path
@@ -18,7 +19,7 @@ from app_server_harness import (
 from openai_codex import ApprovalMode, Codex, CodexConfig, Sandbox
 
 from fixtures import SmokePackage
-from tui_pty import PackagedTui, shared_agent_server
+from tui_pty import PackagedTui, plain, shared_agent_server
 
 _SPAWN_MODEL = "gpt-6-luna"
 
@@ -157,10 +158,50 @@ def _selected_subagent_details(
     initial_frame: str,
 ) -> dict[str, str]:
     """Wait for rows, then bind the latest selected detail to its identity."""
-    # UUIDs appear in each populated row; path/parent/status are selected-only
-    # fields and are validated inside that row's detail block below.
-    population = tui.until_all(tuple(expected), initial=initial_frame)
-    assert all(thread_id in population for thread_id in expected), population
+    # UUIDs and configured identity metadata are rendered in the compact list
+    # rows. Path/parent/status are selected-only fields validated in the detail
+    # block below.
+    population_bytes = bytearray(initial_frame.encode("utf-8"))
+    deadline = time.monotonic() + 30
+    while True:
+        population = plain(population_bytes)
+        row_starts = sorted(
+            (population.rfind(thread_id), thread_id) for thread_id in expected
+        )
+        rows_ready = all(position >= 0 for position, _ in row_starts)
+        if rows_ready:
+            for index, (row_start, thread_id) in enumerate(row_starts):
+                row_end = (
+                    row_starts[index + 1][0]
+                    if index + 1 < len(row_starts)
+                    else len(population)
+                )
+                row = population[row_start:row_end]
+                if not all(
+                    marker in row
+                    for marker in (
+                        f"configured model: {_SPAWN_MODEL}",
+                        "configured effort: medium",
+                        "provider-effective identity: unverified",
+                    )
+                ):
+                    rows_ready = False
+                    break
+        if rows_ready:
+            break
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise AssertionError(
+                "packaged TUI did not render configured identity for each "
+                f"subagent row: {population!r}"
+            )
+        try:
+            population_bytes.extend(tui.until_output(timeout=remaining))
+        except AssertionError as error:
+            raise AssertionError(
+                "packaged TUI did not render configured identity for each "
+                f"subagent row: {population!r}"
+            ) from error
 
     selected: dict[str, str] = {}
     # The real picker includes the primary row first. Reset to that row, then
@@ -196,15 +237,13 @@ def _selected_subagent_details(
         path_marker = f"Path: {path}"
         parent_marker = f"Parent: {parent_id}"
         path_start = latest_path_start
-        preceding_ids = [
-            (position, candidate_id)
-            for candidate_id in expected
-            if (position := frame.rfind(candidate_id, 0, path_start)) >= 0
-        ]
-        assert preceding_ids and max(preceding_ids)[1] == expected_id, frame
         parent_start = frame.find(parent_marker, path_start)
         assert parent_start > path_start, frame
         status_start = frame.find("Status: ", parent_start)
+        # The selected row's own UUID anchors this detail. The parent UUID is
+        # repeated later in the `Parent:` field, so choosing the last of all
+        # known IDs before Path would incorrectly treat that valid relation as
+        # the selected row identity.
         detail_start = frame.rfind(thread_id, 0, path_start)
         assert detail_start >= 0, frame
         assert status_start > parent_start, frame
@@ -216,9 +255,9 @@ def _selected_subagent_details(
         assert detail_start < path_start < parent_start < status_start, frame
         assert status_marker is not None, frame
         detail_end = status_start + len(status_marker)
-        # Configured model/effort and provider identity precede Path in the same
-        # rendered row description. Include the row's UUID prefix so the checks
-        # below inspect that metadata without loosening any expected values.
+        # The compact row's configured model/effort and provider identity were
+        # checked above. Keep this slice focused on the selected-only detail;
+        # PTY resize output is an incremental delta, not a reconstructed frame.
         detail = frame[detail_start:detail_end]
         assert all(
             other_id not in detail
@@ -229,9 +268,6 @@ def _selected_subagent_details(
         assert detail.index(parent_id) == detail.index(parent_marker) + len(
             "Parent: "
         ), detail
-        assert f"configured model: {_SPAWN_MODEL}" in detail, detail
-        assert "configured effort: medium" in detail, detail
-        assert "provider-effective identity: unverified" in detail, detail
         assert "PRIVATE_PROMPT_SENTINEL" not in frame, frame
         assert "PRIVATE_NESTED_PROMPT_SENTINEL" not in frame, frame
         assert "instructions" not in frame.lower(), frame
