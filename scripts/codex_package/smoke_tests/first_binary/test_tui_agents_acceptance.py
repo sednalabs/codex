@@ -460,7 +460,8 @@ def test_actual_tui_nested_filter_clear_live_rename_and_replay(
                     )
                 )
                 assert "Agent command center" in replay
-                assert "child-package-task" in replay and "nested-package-task" in replay
+                assert "child-package-task" in replay
+                assert "nested-package-task" in replay
                 assert "live-renamed-package-task" in replay
 
 
