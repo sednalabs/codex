@@ -992,7 +992,7 @@ async fn delayed_mcp_response_is_redacted_after_protected_auth_expiry() -> Resul
         runtime_execution_proof_support::OPS_BEARER_TOKEN,
     )];
     if let Some(token) = expiring_provider_token.as_deref() {
-        secrets.push(("expiring_provider_token", token));
+        secrets.push(("provider_token", token));
     }
     assert_no_fixture_secrets_without_staged_cli(&fixture.fixture_root(), &secrets)?;
     assert_no_auth_files(&fixture.fixture_root())?;
