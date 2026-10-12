@@ -262,6 +262,12 @@ fn exec_stderr_env_filter() -> anyhow::Result<EnvFilter> {
 }
 
 fn protected_runtime_target_enabled(metadata: &tracing::Metadata<'_>) -> bool {
+    // tungstenite logs the serialized client handshake request at TRACE, including
+    // Authorization headers. Never route that third-party event to an exec sink.
+    if metadata.target() == "tungstenite::handshake::client" {
+        return false;
+    }
+
     !codex_runtime_proof::protected_runtime_active_or_failed()
         || !(metadata.target().starts_with("rmcp")
             || metadata.target().starts_with("codex_rmcp_client"))
