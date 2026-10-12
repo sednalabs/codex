@@ -659,9 +659,12 @@ async fn protected_trace_logging_does_not_echo_proof_or_bearer() -> Result<()> {
         String::from_utf8_lossy(&result.stderr)
     );
     anyhow::ensure!(
-        !emitted.contains(fixture.provider_token())
-            && !emitted.contains(runtime_execution_proof_support::OPS_BEARER_TOKEN),
-        "protected TRACE output exposed a credential"
+        !emitted.contains(fixture.provider_token()),
+        "protected TRACE output exposed provider token"
+    );
+    anyhow::ensure!(
+        !emitted.contains(runtime_execution_proof_support::OPS_BEARER_TOKEN),
+        "protected TRACE output exposed MCP bearer"
     );
     let calls = fixture.claim_calls();
     anyhow::ensure!(
