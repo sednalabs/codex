@@ -2604,7 +2604,39 @@ def run_ignored_root_test(
             or named_runs != 2
             or terminal_summary != [success]
         ):
-            refuse("retained-client fixture did not produce one successful child and terminal outer test")
+            failure_markers = {
+                "launch protected direct-send child": "child_launch_or_setup",
+                "protected direct-send child": "child_initialization_or_send",
+                "recording transport should return its fixture error": "recording_transport_contract",
+                "first protected send did not reach transport": "first_send_not_forwarded",
+                "first protected send did not use the imported selected credential": "first_send_credential_mismatch",
+                "expired protected client send must fail closed": "expired_send_not_rejected",
+                "expired retained client reached its underlying network delegate": "expired_send_reached_delegate",
+                "protected direct-send fixture child failed:": "child_nonzero_exit",
+                "protected direct-send fixture child timed out": "child_timeout",
+            }
+            failure_categories = sorted(
+                category
+                for marker, category in failure_markers.items()
+                if marker in result.stdout
+            )
+            summary_sequence = ",".join(
+                f"{summary['status']}:{summary['passed']}/{summary['failed']}/{summary['ignored']}"
+                for summary in summaries
+            ) or "none"
+            terminal_sequence = ",".join(
+                f"{summary['status']}:{summary['passed']}/{summary['failed']}/{summary['ignored']}"
+                for summary in terminal_summary
+            ) or "none"
+            refuse(
+                "retained-client fixture failed its bounded child/outer checks"
+                f"; outer_exit={result.returncode}"
+                f"; summaries={summary_sequence}"
+                f"; nested_runs={nested_runs}"
+                f"; named_runs={named_runs}"
+                f"; terminal_summary={terminal_sequence}"
+                f"; failure_categories={','.join(failure_categories) if failure_categories else 'none'}"
+            )
     elif result.returncode != 0 or summaries != [success]:
         details = ""
         if test_name == EXPECTED_CLI_TESTS[1]:
