@@ -357,7 +357,9 @@ def test_actual_tui_agents_entry_has_initial_empty_search(
                 assert "Group:" in opened
                 tui.send("/")
                 tui.resize(111)
-                search = tui.until_all(("Search ›", "Agent command center"))
+                search = tui.until_all(
+                    ("Search ›", "Agent command center"), initial=opened
+                )
                 assert "Search ›" in search and "Agent command center" in search
 
 
