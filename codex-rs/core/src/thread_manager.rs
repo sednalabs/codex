@@ -1287,7 +1287,7 @@ impl ThreadManager {
             auth_manager,
             parent_trace,
             client_mcp_extensions,
-            None,
+            /*dynamic_tools_override*/ None,
         )
         .await
     }

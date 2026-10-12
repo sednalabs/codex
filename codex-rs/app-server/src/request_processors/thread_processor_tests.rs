@@ -667,6 +667,7 @@ mod thread_processor_behavior_tests {
             thread_id: "thread-1".to_string(),
             history: None,
             path: None,
+            dynamic_tools: None,
             model: None,
             model_provider: None,
             service_tier: Some(Some("priority".to_string())),
