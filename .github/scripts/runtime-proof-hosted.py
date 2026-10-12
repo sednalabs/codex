@@ -2525,7 +2525,8 @@ def run_ignored_root_test(
         if test_name == EXPECTED_CLI_TESTS[1]:
             trace_failure_markers = {
                 "TRACE protected CLI failed:": "cli_failure",
-                "protected TRACE output exposed a credential": "output_credential",
+                "protected TRACE output exposed provider token": "output_provider_token",
+                "protected TRACE output exposed MCP bearer": "output_mcp_bearer",
                 "TRACE control did not exercise root and delegate MCP calls": "claim_count",
                 "protected TRACE output exposed proof": "output_proof",
                 "protected TRACE proof reached a later model request": "model_proof",
