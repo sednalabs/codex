@@ -976,9 +976,10 @@ async fn delayed_mcp_response_is_redacted_after_protected_auth_expiry() -> Resul
         "delayed claim did not use the selected MCP bearer"
     );
     let output = fixture.captured_output()?;
-    if let Some(token) = fixture.expiring_provider_token() {
+    let expiring_provider_token = fixture.expiring_provider_token();
+    if let Some(token) = expiring_provider_token.as_deref() {
         anyhow::ensure!(
-            !output.contains(&token),
+            !output.contains(token),
             "expired provider token leaked to output"
         );
     }
@@ -986,6 +987,14 @@ async fn delayed_mcp_response_is_redacted_after_protected_auth_expiry() -> Resul
         !output.contains(runtime_execution_proof_support::OPS_BEARER_TOKEN),
         "protected MCP bearer leaked to output"
     );
+    let mut secrets = vec![(
+        "mcp_bearer",
+        runtime_execution_proof_support::OPS_BEARER_TOKEN,
+    )];
+    if let Some(token) = expiring_provider_token.as_deref() {
+        secrets.push(("expiring_provider_token", token));
+    }
+    assert_no_fixture_secrets_without_staged_cli(&fixture.fixture_root(), &secrets)?;
     assert_no_auth_files(&fixture.fixture_root())?;
     Ok(())
 }
