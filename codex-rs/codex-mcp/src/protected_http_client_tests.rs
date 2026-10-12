@@ -157,10 +157,11 @@ fn launch_protected_child() -> anyhow::Result<()> {
     std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o555))?;
 
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-    let expires_at = now + 15;
     let executable = std::env::current_exe()?;
     let artifact_sha256 = sha256_file(&executable)?;
     let config_sha256 = sha256_file(&config_path)?;
+    // Start the short-lived auth window after the required full-image digest.
+    let expires_at = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() + 15;
     let mut seed = decode_hex("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60");
     let public_key = decode_hex("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a");
     let claims = json!({
