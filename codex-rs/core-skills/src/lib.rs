@@ -1,3 +1,5 @@
+extern crate yaml_serde as serde_yaml;
+
 pub mod config_rules;
 pub mod injection;
 pub(crate) mod invocation_utils;

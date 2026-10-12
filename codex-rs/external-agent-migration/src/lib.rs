@@ -1,5 +1,7 @@
 //! Migration helpers for importing external-agent configuration into Codex.
 
+extern crate yaml_serde as serde_yaml;
+
 mod config_values;
 mod detect;
 mod hooks_cla;
