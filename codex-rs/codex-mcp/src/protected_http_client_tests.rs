@@ -31,6 +31,9 @@ const SERVER: &str = "ops";
 const RECIPIENT: &str = "https://ops.example/mcp";
 const PROVIDER_RECIPIENT: &str = "http://127.0.0.1:45678/v1";
 const MCP_BEARER: &str = "runtime-proof-fixture-mcp-token-v1";
+const PROTECTED_AUTH_TTL_SECS: u64 = 90;
+const PROTECTED_CHILD_ACK_TIMEOUT: Duration = Duration::from_secs(60);
+const PROTECTED_CHILD_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Default)]
 struct RecordingClient {
@@ -161,7 +164,10 @@ fn launch_protected_child() -> anyhow::Result<()> {
     let artifact_sha256 = sha256_file(&executable)?;
     let config_sha256 = sha256_file(&config_path)?;
     // Start the short-lived auth window after the required full-image digest.
-    let expires_at = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() + 15;
+    // Protected startup hashes the child executable before ACK and its first send.
+    // Keep room for that check, then wait long enough to exercise expiry.
+    let expires_at =
+        SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() + PROTECTED_AUTH_TTL_SECS;
     let mut seed = decode_hex("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60");
     let public_key = decode_hex("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a");
     let claims = json!({
@@ -268,7 +274,7 @@ fn launch_protected_child() -> anyhow::Result<()> {
     send_packet(&auth_parent, &serde_json::to_vec(&auth)?)?;
     let mut ack = [0_u8; 4];
     let mut bootstrap_parent = bootstrap_parent;
-    bootstrap_parent.set_read_timeout(Some(Duration::from_secs(10)))?;
+    bootstrap_parent.set_read_timeout(Some(PROTECTED_CHILD_ACK_TIMEOUT))?;
     if let Err(error) = bootstrap_parent.read_exact(&mut ack) {
         let _ = child.kill();
         let _ = child.wait();
@@ -279,7 +285,7 @@ fn launch_protected_child() -> anyhow::Result<()> {
         let _ = child.wait();
         anyhow::bail!("protected direct-send child did not ACK bootstrap");
     }
-    let deadline = std::time::Instant::now() + Duration::from_secs(40);
+    let deadline = std::time::Instant::now() + PROTECTED_CHILD_TIMEOUT;
     loop {
         if let Some(status) = child.try_wait()? {
             anyhow::ensure!(
