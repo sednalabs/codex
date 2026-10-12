@@ -580,6 +580,7 @@ async fn protected_cli_root_and_delegate_calls_are_signed_and_redacted() -> Resu
     }
     eprintln!("runtime-proof-root-stage:cli_output_redacted");
     assert_no_secret(&fixture.fixture_root(), &secrets)?;
+    eprintln!("runtime-proof-root-stage:fixture_secrets_absent");
     assert_no_auth_files(&fixture.fixture_root())?;
     eprintln!("runtime-proof-root-stage:fixture_storage_clean");
     write_interoperability_vector_if_requested(&calls, &fixture.fixture_root())?;

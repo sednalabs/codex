@@ -182,6 +182,7 @@ ROOT_FIXTURE_STAGE_NAMES = {
     "model_redaction_validated",
     "auth_headers_validated",
     "cli_output_redacted",
+    "fixture_secrets_absent",
     "fixture_storage_clean",
     "complete",
 }
