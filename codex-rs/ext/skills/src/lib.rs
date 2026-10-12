@@ -1,3 +1,5 @@
+extern crate yaml_serde as serde_yaml;
+
 mod aliases;
 pub mod catalog;
 mod catalog_prompt;
