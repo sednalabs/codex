@@ -945,7 +945,7 @@ async fn protected_mcp_redirect_is_stopped_before_recipient_change() -> Result<(
 async fn delayed_mcp_response_is_redacted_after_protected_auth_expiry() -> Result<()> {
     anyhow::ensure!(unsafe { libc::geteuid() } == 0, "fixture must run as root");
     let fixture = ProtectedRuntimeFixture::start_delayed_response_expiry().await?;
-    let _ = fixture
+    let cli_output = fixture
         .run_cli_with_auth_fault(Some(
             runtime_execution_proof_support::AuthFault::ExpireAfterFirstClaim,
         ))
@@ -955,41 +955,47 @@ async fn delayed_mcp_response_is_redacted_after_protected_auth_expiry() -> Resul
         .iter()
         .filter(|request| request.http_method == "POST" && request.phase == "tools/call")
         .collect::<Vec<_>>();
-    anyhow::ensure!(
-        claims.len() == 1,
-        "fixture did not issue exactly one claim call"
-    );
-    anyhow::ensure!(
-        mcp_requests
-            .iter()
-            .any(|request| request.phase == "initialize")
-            && mcp_requests
-                .iter()
-                .any(|request| request.phase == "tools/list"),
-        "fixture did not record lifecycle request phases separately from the claim"
-    );
     let expected_authorization = format!(
         "Bearer {}",
         runtime_execution_proof_support::OPS_BEARER_TOKEN
     );
-    anyhow::ensure!(
-        claims.iter().all(
-            |request| request.authorization.as_deref() == Some(expected_authorization.as_str())
-        ),
-        "delayed claim did not use the selected MCP bearer"
-    );
+    let claim_authorization = if claims.is_empty() {
+        "none"
+    } else if claims.iter().all(
+        |request| request.authorization.as_deref() == Some(expected_authorization.as_str())
+    ) {
+        "match"
+    } else {
+        "mismatch"
+    };
+    let initialize_count = mcp_requests
+        .iter()
+        .filter(|request| request.phase == "initialize")
+        .count();
+    let tools_list_count = mcp_requests
+        .iter()
+        .filter(|request| request.phase == "tools/list")
+        .count();
+    let cli_status = if cli_output.status.success() {
+        "success"
+    } else if cli_output.status.code().is_some() {
+        "nonzero"
+    } else {
+        "signal"
+    };
     let output = fixture.captured_output()?;
     let expiring_provider_token = fixture.expiring_provider_token();
-    if let Some(token) = expiring_provider_token.as_deref() {
-        anyhow::ensure!(
-            !output.contains(token),
-            "expired provider token leaked to output"
-        );
-    }
-    anyhow::ensure!(
-        !output.contains(runtime_execution_proof_support::OPS_BEARER_TOKEN),
-        "protected MCP bearer leaked to output"
-    );
+    let provider_token_output = match expiring_provider_token.as_deref() {
+        None => "absent",
+        Some(token) if output.contains(token) => "present",
+        Some(_) => "redacted",
+    };
+    let mcp_bearer_output = if output.contains(runtime_execution_proof_support::OPS_BEARER_TOKEN)
+    {
+        "present"
+    } else {
+        "redacted"
+    };
     let mut secrets = vec![(
         "mcp_bearer",
         runtime_execution_proof_support::OPS_BEARER_TOKEN,
@@ -997,8 +1003,54 @@ async fn delayed_mcp_response_is_redacted_after_protected_auth_expiry() -> Resul
     if let Some(token) = expiring_provider_token.as_deref() {
         secrets.push(("provider_token", token));
     }
-    assert_no_fixture_secrets_without_staged_cli(&fixture.fixture_root(), &secrets)?;
-    assert_no_auth_files(&fixture.fixture_root())?;
+    let fixture_secret_scan =
+        assert_no_fixture_secrets_without_staged_cli(&fixture.fixture_root(), &secrets);
+    let auth_file_scan = assert_no_auth_files(&fixture.fixture_root());
+    let claim_count_ok = claims.len() == 1;
+    let lifecycle_recorded = initialize_count > 0 && tools_list_count > 0;
+    let claim_authorized = claim_authorization == "match";
+    let provider_token_redacted = provider_token_output == "redacted";
+    let mcp_bearer_redacted = mcp_bearer_output == "redacted";
+    if !cli_output.status.success()
+        || !claim_count_ok
+        || !lifecycle_recorded
+        || (expiring_provider_token.is_some() && !provider_token_redacted)
+        || !mcp_bearer_redacted
+        || !claim_authorized
+        || fixture_secret_scan.is_err()
+        || auth_file_scan.is_err()
+    {
+        eprintln!(
+            "runtime-proof-expiry-summary:cli={cli_status};claims={};initialize={initialize_count};tools_list={tools_list_count};claim_auth={claim_authorization};provider_token_output={provider_token_output};mcp_bearer_output={mcp_bearer_output};secrets_storage={};auth_files={}",
+            claims.len(),
+            if fixture_secret_scan.is_ok() { "clean" } else { "failed" },
+            if auth_file_scan.is_ok() { "clean" } else { "failed" },
+        );
+    }
+    anyhow::ensure!(
+        claim_count_ok,
+        "fixture did not issue exactly one claim call"
+    );
+    anyhow::ensure!(
+        lifecycle_recorded,
+        "fixture did not record lifecycle request phases separately from the claim"
+    );
+    if let Some(token) = expiring_provider_token.as_deref() {
+        anyhow::ensure!(
+            provider_token_redacted,
+            "expired provider token leaked to output"
+        );
+    }
+    anyhow::ensure!(
+        mcp_bearer_redacted,
+        "protected MCP bearer leaked to output"
+    );
+    anyhow::ensure!(
+        claim_authorized,
+        "delayed claim did not use the selected MCP bearer"
+    );
+    fixture_secret_scan?;
+    auth_file_scan?;
     Ok(())
 }
 
