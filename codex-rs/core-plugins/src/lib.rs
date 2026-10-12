@@ -1,3 +1,5 @@
+extern crate yaml_serde as serde_yaml;
+
 mod app_mcp_routing;
 mod artifact_operation;
 mod catalog;
