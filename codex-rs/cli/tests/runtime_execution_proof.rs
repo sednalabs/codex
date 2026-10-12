@@ -1011,6 +1011,8 @@ async fn delayed_mcp_response_is_redacted_after_protected_auth_expiry() -> Resul
     let claim_count_ok = claims.len() == 1;
     let lifecycle_recorded = initialize_count > 0 && tools_list_count > 0;
     let claim_authorized = claim_authorization == "match";
+    let claim_received_before_expiry = fixture.first_claim_received_before_expiry();
+    let response_after_expiry = fixture.first_claim_response_after_expiry();
     let provider_token_redacted = provider_token_output == "redacted";
     let mcp_bearer_redacted = mcp_bearer_output == "redacted";
     if !cli_output.status.success()
@@ -1019,6 +1021,8 @@ async fn delayed_mcp_response_is_redacted_after_protected_auth_expiry() -> Resul
         || (expiring_provider_token.is_some() && !provider_token_redacted)
         || !mcp_bearer_redacted
         || !claim_authorized
+        || !claim_received_before_expiry
+        || !response_after_expiry
         || fixture_secret_scan.is_err()
         || auth_file_scan.is_err()
     {
@@ -1055,6 +1059,14 @@ async fn delayed_mcp_response_is_redacted_after_protected_auth_expiry() -> Resul
     anyhow::ensure!(
         claim_authorized,
         "delayed claim did not use the selected MCP bearer"
+    );
+    anyhow::ensure!(
+        claim_received_before_expiry,
+        "delayed claim did not reach the fixture before protected auth expiry"
+    );
+    anyhow::ensure!(
+        response_after_expiry,
+        "delayed claim response was not released after protected auth expiry"
     );
     fixture_secret_scan?;
     auth_file_scan?;

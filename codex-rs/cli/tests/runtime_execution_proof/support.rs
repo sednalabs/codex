@@ -47,10 +47,26 @@ pub const OPS_BEARER_TOKEN: &str = "runtime-proof-fixture-mcp-token-v1";
 pub const CHATGPT_ACCOUNT_ID: &str = "00000000-0000-4000-8000-000000000001";
 pub const CHATGPT_PLAN_TYPE: &str = "free";
 const ARGUMENTS: &str = r#"{"work_item_ref":"w900001","note":"protected fixture claim","claim_precondition":{"expected_generation":3,"expected_updated_at":"2026-10-04T05:00:00Z","request_id":"8f14e45f-ea42-4d73-9ca9-9a8b35d1c05a"}}"#;
-// Protected startup hashes the staged CLI before auth handoff. Keep enough lifetime for that work while
-// ensuring the first delayed claim response finishes after expiry.
-const DELAYED_CLAIM_RESPONSE_DELAY: Duration = Duration::from_secs(75);
+// Protected startup hashes the staged CLI before auth handoff. Keep enough lifetime for that work;
+// the delayed fixture responder releases its first claim only after this auth deadline.
 const EXPIRE_AFTER_CLAIM_AUTH_TTL_SECS: i64 = 90;
+
+fn auth_expiry_deadline(expires_at: Option<i64>) -> Option<SystemTime> {
+    let expires_at = u64::try_from(expires_at?).ok()?;
+    UNIX_EPOCH.checked_add(Duration::from_secs(expires_at))
+}
+
+fn wait_until_auth_expiry_boundary(expires_at: Option<i64>) -> bool {
+    let Some(deadline) = auth_expiry_deadline(expires_at)
+        .and_then(|deadline| deadline.checked_add(Duration::from_secs(1)))
+    else {
+        return false;
+    };
+    if let Ok(delay) = deadline.duration_since(SystemTime::now()) {
+        std::thread::sleep(delay);
+    }
+    SystemTime::now() >= deadline
+}
 
 #[derive(Clone, Copy)]
 pub enum AuthFault {
@@ -426,6 +442,9 @@ struct McpResponder {
     calls: Arc<Mutex<Vec<Value>>>,
     authorization_headers: Arc<Mutex<Vec<Option<String>>>>,
     request_records: Arc<Mutex<Vec<McpRequestRecord>>>,
+    expiring_auth_expires_at: Arc<Mutex<Option<i64>>>,
+    first_claim_received_before_expiry: Arc<AtomicBool>,
+    first_claim_response_released_after_expiry: Arc<AtomicBool>,
     redirect_claims: bool,
     delay_first_claim: bool,
     error_claims: bool,
@@ -494,7 +513,20 @@ impl Respond for McpResponder {
                     calls.push(body.clone());
                 }
                 if self.delay_first_claim && first_claim {
-                    std::thread::sleep(DELAYED_CLAIM_RESPONSE_DELAY);
+                    let expires_at = self
+                        .expiring_auth_expires_at
+                        .lock()
+                        .map(|expires_at| *expires_at)
+                        .unwrap_or(None);
+                    self.first_claim_received_before_expiry.store(
+                        auth_expiry_deadline(expires_at)
+                            .is_some_and(|deadline| SystemTime::now() < deadline),
+                        Ordering::Release,
+                    );
+                    self.first_claim_response_released_after_expiry.store(
+                        wait_until_auth_expiry_boundary(expires_at),
+                        Ordering::Release,
+                    );
                 }
                 if self.redirect_claims {
                     return ResponseTemplate::new(307)
@@ -556,6 +588,9 @@ pub struct ProtectedRuntimeFixture {
     accepted_wait_results: Arc<Mutex<Vec<(bool, bool)>>>,
     delay_first_claim: bool,
     expiring_provider_token: Arc<Mutex<Option<String>>>,
+    expiring_auth_expires_at: Arc<Mutex<Option<i64>>>,
+    first_claim_received_before_expiry: Arc<AtomicBool>,
+    first_claim_response_released_after_expiry: Arc<AtomicBool>,
 }
 
 impl ProtectedRuntimeFixture {
@@ -629,6 +664,9 @@ impl ProtectedRuntimeFixture {
         let wait_call_ids = Arc::new(Mutex::new(Vec::new()));
         let accepted_wait_results = Arc::new(Mutex::new(Vec::new()));
         let expiring_provider_token = Arc::new(Mutex::new(None));
+        let expiring_auth_expires_at = Arc::new(Mutex::new(None));
+        let first_claim_received_before_expiry = Arc::new(AtomicBool::new(false));
+        let first_claim_response_released_after_expiry = Arc::new(AtomicBool::new(false));
         let model_responder = ModelResponder {
             requests: model_requests.clone(),
             request_paths: model_request_paths.clone(),
@@ -657,6 +695,10 @@ impl ProtectedRuntimeFixture {
                 calls: claim_calls.clone(),
                 authorization_headers: mcp_authorization_headers.clone(),
                 request_records: mcp_request_records.clone(),
+                expiring_auth_expires_at: expiring_auth_expires_at.clone(),
+                first_claim_received_before_expiry: first_claim_received_before_expiry.clone(),
+                first_claim_response_released_after_expiry:
+                    first_claim_response_released_after_expiry.clone(),
                 redirect_claims,
                 delay_first_claim,
                 error_claims,
@@ -753,6 +795,9 @@ impl ProtectedRuntimeFixture {
             accepted_wait_results,
             delay_first_claim,
             expiring_provider_token,
+            expiring_auth_expires_at,
+            first_claim_received_before_expiry,
+            first_claim_response_released_after_expiry,
         })
     }
 
@@ -933,6 +978,10 @@ impl ProtectedRuntimeFixture {
                 let expires_at = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64
                     + EXPIRE_AFTER_CLAIM_AUTH_TTL_SECS;
                 auth_packet["expires_at"] = serde_json::json!(expires_at);
+                *self
+                    .expiring_auth_expires_at
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(expires_at);
                 let access_token = synthetic_access_token(expires_at)?;
                 *self
                     .expiring_provider_token
@@ -1092,6 +1141,16 @@ impl ProtectedRuntimeFixture {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
+    }
+
+    pub fn first_claim_response_after_expiry(&self) -> bool {
+        self.first_claim_response_released_after_expiry
+            .load(Ordering::Acquire)
+    }
+
+    pub fn first_claim_received_before_expiry(&self) -> bool {
+        self.first_claim_received_before_expiry
+            .load(Ordering::Acquire)
     }
 
     pub fn mcp_authorization_headers(&self) -> Vec<Option<String>> {
