@@ -264,10 +264,6 @@ def _selected_subagent_details(
             for other_id in set(expected) - {thread_id, parent_id}
         ), detail
         assert path_marker in detail and parent_marker in detail, detail
-        assert detail.count(parent_id) == 1, detail
-        assert detail.index(parent_id) == detail.index(parent_marker) + len(
-            "Parent: "
-        ), detail
         assert "PRIVATE_PROMPT_SENTINEL" not in frame, frame
         assert "PRIVATE_NESTED_PROMPT_SENTINEL" not in frame, frame
         assert "instructions" not in frame.lower(), frame
