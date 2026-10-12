@@ -98,6 +98,9 @@ EXPECTED_MCP_TESTS = [
     "protected_http_client_tests::retained_protected_http_client_rejects_a_send_after_imported_auth_expiry"
 ]
 ROOT_FIXTURE_STAGE = re.compile(r"^runtime-proof-root-stage:([a-z_]+)$")
+ROOT_FIXTURE_SECRET_MATCH = re.compile(
+    r"^runtime-proof-root-secret-match:([a-z_]+):([a-z_]+)$"
+)
 ROOT_FIXTURE_SPAWN_ERROR = re.compile(
     r"launch protected codex fixture failed: "
     r"(not_found|permission_denied|invalid_input|other)"
@@ -185,6 +188,20 @@ ROOT_FIXTURE_STAGE_NAMES = {
     "fixture_secrets_absent",
     "fixture_storage_clean",
     "complete",
+}
+ROOT_FIXTURE_SECRET_KINDS = {
+    "certificate",
+    "invocation_proof",
+    "provider_token",
+    "mcp_bearer",
+}
+ROOT_FIXTURE_SECRET_AREAS = {
+    "home",
+    "state",
+    "work",
+    "io_capture",
+    "other_fixture",
+    "outside_fixture",
 }
 EXPECTED_HARNESS_PATHS = [
     ".github/workflows/runtime-proof-source-preparation.yml",
@@ -2518,10 +2535,18 @@ def run_ignored_root_test(
             cli_activities = set()
             cli_mcp_phases = set()
             cli_error_paths = set()
+            fixture_secret_matches = set()
             for line in result.stdout.splitlines():
                 match = ROOT_FIXTURE_STAGE.fullmatch(line.strip())
                 if match is not None and match.group(1) in ROOT_FIXTURE_STAGE_NAMES:
                     stages.append(match.group(1))
+                match = ROOT_FIXTURE_SECRET_MATCH.fullmatch(line.strip())
+                if (
+                    match is not None
+                    and match.group(1) in ROOT_FIXTURE_SECRET_KINDS
+                    and match.group(2) in ROOT_FIXTURE_SECRET_AREAS
+                ):
+                    fixture_secret_matches.add((match.group(1), match.group(2)))
                 match = ROOT_FIXTURE_SPAWN_ERROR.search(line)
                 if match is not None:
                     spawn_errors.add((match.group(1), match.group(2) or "none"))
@@ -2642,6 +2667,11 @@ def run_ignored_root_test(
                 details += "; cli_error_path=ambiguous"
             else:
                 details += "; cli_error_path=not_reported"
+            if fixture_secret_matches:
+                matches = ",".join(
+                    f"{kind}:{area}" for kind, area in sorted(fixture_secret_matches)
+                )
+                details += f"; fixture_secret_matches={matches}"
             details += format_root_fixture_cli_hash_measurement(cli_hash_measurement)
         refuse(
             "explicit synthetic root fixture was not exactly one successful executed test: "

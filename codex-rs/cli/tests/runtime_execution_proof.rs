@@ -12,6 +12,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use sha2::Digest;
 use sha2::Sha256;
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 use std::time::SystemTime;
@@ -215,6 +216,60 @@ fn assert_no_secret(path: &Path, secrets: &[&str]) -> Result<()> {
             assert_no_secret(&entry?.path(), secrets)?;
         }
     }
+    Ok(())
+}
+
+fn assert_no_fixture_secrets(
+    root: &Path,
+    secrets: &[(&'static str, &str)],
+    excluded_file: &Path,
+) -> Result<()> {
+    fn collect_matches(
+        root: &Path,
+        path: &Path,
+        secrets: &[(&'static str, &str)],
+        excluded_file: &Path,
+        matches: &mut BTreeSet<(&'static str, &'static str)>,
+    ) -> Result<()> {
+        if path == excluded_file {
+            return Ok(());
+        }
+        let file_type = fs::symlink_metadata(path)?.file_type();
+        if file_type.is_file() {
+            let bytes = fs::read(path)?;
+            let text = String::from_utf8_lossy(&bytes);
+            let area = match path
+                .strip_prefix(root)
+                .ok()
+                .and_then(|relative| relative.components().next())
+                .and_then(|component| component.as_os_str().to_str())
+            {
+                Some("immutable-home") => "home",
+                Some("state") => "state",
+                Some("work") => "work",
+                Some("stdout.jsonl" | "stderr.log") => "io_capture",
+                Some(_) => "other_fixture",
+                None => "outside_fixture",
+            };
+            for &(kind, secret) in secrets {
+                if text.contains(secret) {
+                    matches.insert((kind, area));
+                }
+            }
+        } else if file_type.is_dir() {
+            for entry in fs::read_dir(path)? {
+                collect_matches(root, &entry?.path(), secrets, excluded_file, matches)?;
+            }
+        }
+        Ok(())
+    }
+
+    let mut matches = BTreeSet::new();
+    collect_matches(root, root, secrets, excluded_file, &mut matches)?;
+    for (kind, area) in &matches {
+        eprintln!("runtime-proof-root-secret-match:{kind}:{area}");
+    }
+    anyhow::ensure!(matches.is_empty(), "synthetic fixture secret scan failed");
     Ok(())
 }
 
@@ -500,11 +555,19 @@ async fn protected_cli_root_and_delegate_calls_are_signed_and_redacted() -> Resu
 
     let mut secrets = proofs
         .iter()
-        .flat_map(|(certificate, proof)| [certificate.as_str(), proof.as_str()])
+        .flat_map(|(certificate, proof)| {
+            [
+                ("certificate", certificate.as_str()),
+                ("invocation_proof", proof.as_str()),
+            ]
+        })
         .collect::<Vec<_>>();
     secrets.extend([
-        fixture.provider_token(),
-        runtime_execution_proof_support::OPS_BEARER_TOKEN,
+        ("provider_token", fixture.provider_token()),
+        (
+            "mcp_bearer",
+            runtime_execution_proof_support::OPS_BEARER_TOKEN,
+        ),
     ]);
     let model_requests = fixture.model_requests();
     anyhow::ensure!(
@@ -531,7 +594,7 @@ async fn protected_cli_root_and_delegate_calls_are_signed_and_redacted() -> Resu
     );
     for request in model_requests {
         let serialized = request.to_string();
-        for secret in &secrets {
+        for &(_, secret) in &secrets {
             anyhow::ensure!(
                 !serialized.contains(secret),
                 "proof echoed to a later model request"
@@ -572,14 +635,18 @@ async fn protected_cli_root_and_delegate_calls_are_signed_and_redacted() -> Resu
         String::from_utf8_lossy(&result.stdout),
         String::from_utf8_lossy(&result.stderr)
     );
-    for secret in &secrets {
+    for &(_, secret) in &secrets {
         anyhow::ensure!(
             !emitted.contains(secret),
             "proof echoed to CLI events or output"
         );
     }
     eprintln!("runtime-proof-root-stage:cli_output_redacted");
-    assert_no_secret(&fixture.fixture_root(), &secrets)?;
+    let fixture_root = fixture.fixture_root();
+    // The staged CLI is a hash-verified immutable test input, not runtime fixture state.
+    // Exclude it from the persistence scan to avoid materializing the large executable.
+    let staged_cli = fixture_root.join("codex-fixture");
+    assert_no_fixture_secrets(&fixture_root, &secrets, &staged_cli)?;
     eprintln!("runtime-proof-root-stage:fixture_secrets_absent");
     assert_no_auth_files(&fixture.fixture_root())?;
     eprintln!("runtime-proof-root-stage:fixture_storage_clean");
