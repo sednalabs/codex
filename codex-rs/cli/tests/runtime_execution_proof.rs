@@ -199,26 +199,6 @@ fn sha256_hex(bytes: impl AsRef<[u8]>) -> String {
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-fn assert_no_secret(path: &Path, secrets: &[&str]) -> Result<()> {
-    let file_type = fs::symlink_metadata(path)?.file_type();
-    if file_type.is_file() {
-        let bytes = fs::read(path)?;
-        let text = String::from_utf8_lossy(&bytes);
-        for secret in secrets {
-            anyhow::ensure!(
-                !text.contains(secret),
-                "proof material leaked into {}",
-                path.display()
-            );
-        }
-    } else if file_type.is_dir() {
-        for entry in fs::read_dir(path)? {
-            assert_no_secret(&entry?.path(), secrets)?;
-        }
-    }
-    Ok(())
-}
-
 fn assert_no_fixture_secrets(
     root: &Path,
     secrets: &[(&'static str, &str)],
@@ -271,6 +251,14 @@ fn assert_no_fixture_secrets(
     }
     anyhow::ensure!(matches.is_empty(), "synthetic fixture secret scan failed");
     Ok(())
+}
+
+fn assert_no_fixture_secrets_without_staged_cli(
+    root: &Path,
+    secrets: &[(&'static str, &str)],
+) -> Result<()> {
+    // The staged CLI is hash-verified immutable input, not persisted fixture state.
+    assert_no_fixture_secrets(root, secrets, &root.join("codex-fixture"))
 }
 
 fn assert_no_auth_files(path: &Path) -> Result<()> {
@@ -643,10 +631,7 @@ async fn protected_cli_root_and_delegate_calls_are_signed_and_redacted() -> Resu
     }
     eprintln!("runtime-proof-root-stage:cli_output_redacted");
     let fixture_root = fixture.fixture_root();
-    // The staged CLI is a hash-verified immutable test input, not runtime fixture state.
-    // Exclude it from the persistence scan to avoid materializing the large executable.
-    let staged_cli = fixture_root.join("codex-fixture");
-    assert_no_fixture_secrets(&fixture_root, &secrets, &staged_cli)?;
+    assert_no_fixture_secrets_without_staged_cli(&fixture_root, &secrets)?;
     eprintln!("runtime-proof-root-stage:fixture_secrets_absent");
     assert_no_auth_files(&fixture.fixture_root())?;
     eprintln!("runtime-proof-root-stage:fixture_storage_clean");
@@ -716,11 +701,14 @@ async fn protected_trace_logging_does_not_echo_proof_or_bearer() -> Result<()> {
         fixture.accepted_wait_results() == vec![(true, false)],
         "TRACE control did not consume the delegate's successful terminal result"
     );
-    assert_no_secret(
+    assert_no_fixture_secrets_without_staged_cli(
         &fixture.fixture_root(),
         &[
-            fixture.provider_token(),
-            runtime_execution_proof_support::OPS_BEARER_TOKEN,
+            ("provider_token", fixture.provider_token()),
+            (
+                "mcp_bearer",
+                runtime_execution_proof_support::OPS_BEARER_TOKEN,
+            ),
         ],
     )?;
     assert_no_auth_files(&fixture.fixture_root())?;
@@ -773,11 +761,14 @@ async fn protected_mcp_error_does_not_echo_proof_or_bearer() -> Result<()> {
             "protected MCP error credential reached a later model request"
         );
     }
-    assert_no_secret(
+    assert_no_fixture_secrets_without_staged_cli(
         &fixture.fixture_root(),
         &[
-            fixture.provider_token(),
-            runtime_execution_proof_support::OPS_BEARER_TOKEN,
+            ("provider_token", fixture.provider_token()),
+            (
+                "mcp_bearer",
+                runtime_execution_proof_support::OPS_BEARER_TOKEN,
+            ),
         ],
     )?;
     Ok(())
@@ -833,11 +824,14 @@ async fn invalid_auth_bootstraps_are_rejected_before_credential_egress() -> Resu
             fixture.mcp_authorization_headers().is_empty(),
             "invalid auth sent an MCP bearer"
         );
-        assert_no_secret(
+        assert_no_fixture_secrets_without_staged_cli(
             &fixture.fixture_root(),
             &[
-                fixture.provider_token(),
-                runtime_execution_proof_support::OPS_BEARER_TOKEN,
+                ("provider_token", fixture.provider_token()),
+                (
+                    "mcp_bearer",
+                    runtime_execution_proof_support::OPS_BEARER_TOKEN,
+                ),
             ],
         )?;
         assert_no_auth_files(&fixture.fixture_root())?;
@@ -886,11 +880,14 @@ async fn delegate_provider_override_is_rejected_before_credential_egress() -> Re
             .all(|header| header.as_deref() == Some(expected_authorization.as_str())),
         "root provider requests did not use the synthetic ephemeral credential"
     );
-    assert_no_secret(
+    assert_no_fixture_secrets_without_staged_cli(
         &fixture.fixture_root(),
         &[
-            fixture.provider_token(),
-            runtime_execution_proof_support::OPS_BEARER_TOKEN,
+            ("provider_token", fixture.provider_token()),
+            (
+                "mcp_bearer",
+                runtime_execution_proof_support::OPS_BEARER_TOKEN,
+            ),
         ],
     )?;
     assert_no_auth_files(&fixture.fixture_root())?;
@@ -926,11 +923,14 @@ async fn protected_mcp_redirect_is_stopped_before_recipient_change() -> Result<(
         fixture.followed_redirects() == 0,
         "protected HTTP transport followed a redirect to another recipient"
     );
-    assert_no_secret(
+    assert_no_fixture_secrets_without_staged_cli(
         &fixture.fixture_root(),
         &[
-            fixture.provider_token(),
-            runtime_execution_proof_support::OPS_BEARER_TOKEN,
+            ("provider_token", fixture.provider_token()),
+            (
+                "mcp_bearer",
+                runtime_execution_proof_support::OPS_BEARER_TOKEN,
+            ),
         ],
     )?;
     assert_no_auth_files(&fixture.fixture_root())?;
