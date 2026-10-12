@@ -156,6 +156,20 @@ ROOT_FIXTURE_CLI_ERROR_PATH = re.compile(
     r"family=(auth|mcp|config|provider|sandbox|input|filesystem|transport|"
     r"panic|other|ambiguous|unclassified)$"
 )
+ROOT_FIXTURE_EXPIRY_SUMMARY = re.compile(
+    r"^runtime-proof-expiry-summary:cli=(success|nonzero|signal);"
+    r"cli_first_event=(none|thread_started|turn_started|turn_failed|turn_completed|"
+    r"item_started|item_updated|item_completed|error|other|non_json);"
+    r"cli_last_event=(none|thread_started|turn_started|turn_failed|turn_completed|"
+    r"item_started|item_updated|item_completed|error|other|non_json);"
+    r"cli_error_family=(auth|mcp|config|provider|sandbox|input|filesystem|transport|"
+    r"panic|other|ambiguous|unclassified);"
+    r"claims=([0-9]{1,3});initialize=([0-9]{1,3});tools_list=([0-9]{1,3});"
+    r"claim_auth=(none|match|mismatch);"
+    r"provider_token_output=(absent|redacted|present);"
+    r"mcp_bearer_output=(redacted|present);"
+    r"secrets_storage=(clean|failed);auth_files=(clean|failed)$"
+)
 MAX_ROOT_FIXTURE_CLI_HASH_SAMPLES = 16
 MAX_ROOT_FIXTURE_CLI_IMAGE_BYTES = 1 << 40
 MAX_ROOT_FIXTURE_CLI_HASH_ELAPSED_MS = 9_000_000
@@ -630,6 +644,43 @@ def parse_root_fixture_cli_error_path(line: str) -> tuple[str, str, str] | None:
     if match is None:
         return None
     return match.groups()
+
+
+def parse_root_fixture_expiry_summary(
+    line: str,
+) -> tuple[str, str, str, str, int, int, int, str, str, str, str, str] | None:
+    match = ROOT_FIXTURE_EXPIRY_SUMMARY.fullmatch(line.strip())
+    if match is None:
+        return None
+    (
+        cli,
+        cli_first_event,
+        cli_last_event,
+        cli_error_family,
+        claims,
+        initialize,
+        tools_list,
+        claim_auth,
+        provider_output,
+        mcp_output,
+        storage,
+        auth_files,
+    ) = match.groups()
+    counts = tuple(int(value) for value in (claims, initialize, tools_list))
+    if max(counts) > MAX_ROOT_FIXTURE_CLI_MCP_PHASE_COUNT:
+        return None
+    return (
+        cli,
+        cli_first_event,
+        cli_last_event,
+        cli_error_family,
+        *counts,
+        claim_auth,
+        provider_output,
+        mcp_output,
+        storage,
+        auth_files,
+    )
 
 
 def format_root_fixture_cli_hash_measurement(
@@ -1294,6 +1345,40 @@ def verify_test_summary_parser_contract(manifest: dict[str, Any]) -> None:
         "family=raw details"
     ) is not None:
         refuse("root fixture CLI error-path parser contract failed")
+    if parse_root_fixture_expiry_summary(
+        "runtime-proof-expiry-summary:cli=nonzero;cli_first_event=turn_started;"
+        "cli_last_event=error;cli_error_family=mcp;claims=1;initialize=1;tools_list=1;"
+        "claim_auth=match;provider_token_output=redacted;mcp_bearer_output=redacted;"
+        "secrets_storage=clean;auth_files=clean"
+    ) != (
+        "nonzero",
+        "turn_started",
+        "error",
+        "mcp",
+        1,
+        1,
+        1,
+        "match",
+        "redacted",
+        "redacted",
+        "clean",
+        "clean",
+    ):
+        refuse("root fixture expiry summary parser contract failed")
+    if parse_root_fixture_expiry_summary(
+        "runtime-proof-expiry-summary:cli=success;cli_first_event=none;cli_last_event=none;"
+        "cli_error_family=unclassified;claims=65;initialize=1;tools_list=1;"
+        "claim_auth=match;provider_token_output=redacted;mcp_bearer_output=redacted;"
+        "secrets_storage=clean;auth_files=clean"
+    ) is not None:
+        refuse("root fixture expiry summary parser contract failed")
+    if parse_root_fixture_expiry_summary(
+        "runtime-proof-expiry-summary:cli=success;cli_first_event=none;cli_last_event=none;"
+        "cli_error_family=unclassified;claims=1;initialize=1;tools_list=1;"
+        "claim_auth=token-value;provider_token_output=redacted;mcp_bearer_output=redacted;"
+        "secrets_storage=clean;auth_files=clean"
+    ) is not None:
+        refuse("root fixture expiry summary parser contract failed")
 
     oversized_failed_then_success = (
         "test result: FAILED. 10000000000 passed; 1 failed; 0 ignored;\n"
@@ -2557,6 +2642,41 @@ def run_ignored_root_test(
                     f"{kind}:{area}" for kind, area in sorted(fixture_secret_matches)
                 )
                 details += f"; fixture_secret_matches={matches}"
+        if test_name == EXPECTED_CLI_TESTS[-1]:
+            expiry_summaries = {
+                summary
+                for line in result.stdout.splitlines()
+                if (summary := parse_root_fixture_expiry_summary(line)) is not None
+            }
+            if len(expiry_summaries) == 1:
+                (
+                    cli_status,
+                    cli_first_event,
+                    cli_last_event,
+                    cli_error_family,
+                    claims,
+                    initialize,
+                    tools_list,
+                    claim_auth,
+                    provider_token_output,
+                    mcp_bearer_output,
+                    storage,
+                    auth_files,
+                ) = next(iter(expiry_summaries))
+                details += (
+                    f"; expiry_cli={cli_status}; expiry_cli_first_event={cli_first_event}"
+                    f"; expiry_cli_last_event={cli_last_event}"
+                    f"; expiry_cli_error_family={cli_error_family}; expiry_claims={claims}"
+                    f"; expiry_initialize={initialize}; expiry_tools_list={tools_list}"
+                    f"; expiry_claim_auth={claim_auth}"
+                    f"; expiry_provider_token_output={provider_token_output}"
+                    f"; expiry_mcp_bearer_output={mcp_bearer_output}"
+                    f"; expiry_secrets_storage={storage}; expiry_auth_files={auth_files}"
+                )
+            elif expiry_summaries:
+                details += "; expiry_summary=ambiguous"
+            else:
+                details += "; expiry_summary=not_reported"
         if test_name == EXPECTED_CLI_TESTS[0]:
             stages = []
             spawn_errors = set()
