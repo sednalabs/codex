@@ -266,6 +266,8 @@ jobs:
           fi
 
           (cd codex-rs && cargo update --workspace)
+          (cd codex-rs && cargo update -p quinn-proto --precise 0.11.19)
+          (cd codex-rs && cargo update -p spin --precise 0.9.9)
           just write-config-schema
           (
             cd codex-rs
