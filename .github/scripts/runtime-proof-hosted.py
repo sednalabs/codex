@@ -2677,6 +2677,52 @@ def run_ignored_root_test(
                 details += "; expiry_summary=ambiguous"
             else:
                 details += "; expiry_summary=not_reported"
+                stages = []
+                spawn_errors = set()
+                ack_failures = set()
+                startup_failures = set()
+                for line in result.stdout.splitlines():
+                    stage = ROOT_FIXTURE_STAGE.fullmatch(line.strip())
+                    if stage is not None and stage.group(1) in ROOT_FIXTURE_STAGE_NAMES:
+                        stages.append(stage.group(1))
+                    spawn_error = ROOT_FIXTURE_SPAWN_ERROR.search(line)
+                    if spawn_error is not None:
+                        spawn_errors.add(
+                            (spawn_error.group(1), spawn_error.group(2) or "none")
+                        )
+                    ack_failure = ROOT_FIXTURE_ACK_FAILURE.fullmatch(line.strip())
+                    if ack_failure is not None:
+                        ack_failures.add(ack_failure.group(1))
+                    startup_failure = ROOT_FIXTURE_STARTUP_FAILURE.fullmatch(line.strip())
+                    if startup_failure is not None:
+                        startup_failures.add(startup_failure.group(1))
+                last_stage = stages[-1] if stages else "none"
+                details += f"; expiry_last_stage={last_stage}"
+                if len(spawn_errors) == 1:
+                    category, errno = next(iter(spawn_errors))
+                    details += (
+                        f"; expiry_spawn_error_category={category};"
+                        f" expiry_spawn_errno={errno}"
+                    )
+                elif spawn_errors:
+                    details += "; expiry_spawn_error_category=ambiguous"
+                else:
+                    details += "; expiry_spawn_error_category=not_reported"
+                if len(ack_failures) == 1:
+                    details += f"; expiry_ack_error_category={next(iter(ack_failures))}"
+                elif ack_failures:
+                    details += "; expiry_ack_error_category=ambiguous"
+                else:
+                    details += "; expiry_ack_error_category=not_reported"
+                if len(startup_failures) == 1:
+                    details += (
+                        "; expiry_startup_category="
+                        f"{next(iter(startup_failures))}"
+                    )
+                elif startup_failures:
+                    details += "; expiry_startup_category=ambiguous"
+                else:
+                    details += "; expiry_startup_category=not_reported"
         if test_name == EXPECTED_CLI_TESTS[0]:
             stages = []
             spawn_errors = set()
