@@ -73,6 +73,10 @@ on:
         required: false
         type: string
         default: ""
+      setup_rusty_v8:
+        required: false
+        type: boolean
+        default: false
       install_nextest:
         required: false
         type: boolean
@@ -216,6 +220,12 @@ jobs:
         if: ${{ inputs.setup_class != 'light' }}
         with:
           targets: ${{ inputs.target }}
+
+      - name: Configure source-matched rusty_v8 artifacts
+        if: ${{ inputs.setup_rusty_v8 }}
+        uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: ${{ inputs.target }}
 
       - name: Compute lockfile hash
         if: ${{ inputs.setup_class != 'light' }}

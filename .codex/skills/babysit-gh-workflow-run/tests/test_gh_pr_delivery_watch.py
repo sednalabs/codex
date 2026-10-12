@@ -162,6 +162,9 @@ def make_watcher_receipt(
 
 
 class PullRequestDeliveryWatchTests(unittest.TestCase):
+    def setUp(self):
+        MODULE.COMMIT_TREE_SHA_CACHE.clear()
+
     def test_success_receipt_proves_all_three_identities(self):
         args = make_args()
         candidate = make_candidate()
@@ -258,7 +261,8 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
         self.assertEqual(fetch_pr.call_count, 4)
         sleep.assert_called_once_with(args.poll_seconds)
         self.assertEqual(
-            watcher.call_args_list[0].args[1], f"run-id=901,head-sha={CANDIDATE_SHA}"
+            watcher.call_args_list[0].args[1],
+            f"run-id=901,validation-target-sha={CANDIDATE_SHA}",
         )
         self.assertEqual(
             watcher.call_args_list[1].args[1],
@@ -344,6 +348,14 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
                 "is_commit_ancestor",
                 side_effect=[False, True],
             ),
+            patch.object(
+                MODULE,
+                "gh_json",
+                side_effect=[
+                    {"tree": {"sha": "1" * 40}},
+                    {"tree": {"sha": "2" * 40}},
+                ],
+            ),
             patch.object(MODULE, "run_blocking_watcher") as watcher,
         ):
             receipt, status = MODULE.execute_delivery(args)
@@ -352,6 +364,134 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
         self.assertEqual(receipt["actions"], ["stop_merge_group_candidate_stale"])
         self.assertEqual(receipt["merge_group"]["candidate_sha"], STALE_CANDIDATE_SHA)
         watcher.assert_not_called()
+
+    def test_merge_group_candidate_accepts_identical_result_tree_on_current_base(self):
+        args = make_args()
+        with (
+            patch.object(MODULE, "is_commit_ancestor", side_effect=[False, True]),
+            patch.object(
+                MODULE,
+                "gh_json",
+                side_effect=[
+                    {"tree": {"sha": "1" * 40}},
+                    {"tree": {"sha": "1" * 40}},
+                ],
+            ),
+        ):
+            association = MODULE.verify_candidate_association(
+                "owner/repo", CANDIDATE_SHA, make_pr(), args
+            )
+
+        self.assertFalse(association["candidate_contains_expected_head"])
+        self.assertTrue(association["candidate_tree_matches_expected_head"])
+        self.assertTrue(association["candidate_contains_current_base"])
+
+    def test_merge_group_candidate_with_different_result_tree_is_rejected(self):
+        args = make_args()
+        with (
+            patch.object(MODULE, "is_commit_ancestor", side_effect=[False, True]),
+            patch.object(
+                MODULE,
+                "gh_json",
+                side_effect=[
+                    {"tree": {"sha": "1" * 40}},
+                    {"tree": {"sha": "2" * 40}},
+                ],
+            ),
+            self.assertRaises(MODULE.DeliveryStop) as raised,
+        ):
+            MODULE.verify_candidate_association(
+                "owner/repo", CANDIDATE_SHA, make_pr(), args
+            )
+
+        self.assertEqual(raised.exception.action, "stop_merge_group_candidate_stale")
+
+    def test_merge_group_candidate_with_equivalent_tree_but_wrong_base_is_rejected(self):
+        args = make_args()
+        with (
+            patch.object(MODULE, "is_commit_ancestor", side_effect=[False, False]),
+            patch.object(MODULE, "gh_json") as gh_json,
+            self.assertRaises(MODULE.DeliveryStop) as raised,
+        ):
+            MODULE.verify_candidate_association(
+                "owner/repo", CANDIDATE_SHA, make_pr(), args
+            )
+
+        self.assertEqual(raised.exception.action, "stop_merge_group_candidate_stale")
+        gh_json.assert_not_called()
+
+    def test_merge_group_candidate_with_missing_tree_identity_fails_closed(self):
+        args = make_args()
+        with (
+            patch.object(MODULE, "is_commit_ancestor", side_effect=[False, True]),
+            patch.object(MODULE, "gh_json", return_value={"tree": {}}),
+            self.assertRaises(MODULE.DeliveryStop) as raised,
+        ):
+            MODULE.verify_candidate_association(
+                "owner/repo", CANDIDATE_SHA, make_pr(), args
+            )
+
+        self.assertEqual(
+            raised.exception.action, "stop_merge_group_candidate_uncorrelatable"
+        )
+
+    def test_merge_group_candidate_with_malformed_tree_payload_fails_closed(self):
+        args = make_args()
+        with (
+            patch.object(MODULE, "is_commit_ancestor", side_effect=[False, True]),
+            patch.object(MODULE, "gh_json", return_value=[]),
+            self.assertRaises(MODULE.DeliveryStop) as raised,
+        ):
+            MODULE.verify_candidate_association(
+                "owner/repo", CANDIDATE_SHA, make_pr(), args
+            )
+
+        self.assertEqual(
+            raised.exception.action, "stop_merge_group_candidate_uncorrelatable"
+        )
+
+    def test_merge_group_candidate_with_non_string_tree_sha_fails_closed(self):
+        args = make_args()
+        with (
+            patch.object(MODULE, "is_commit_ancestor", side_effect=[False, True]),
+            patch.object(
+                MODULE,
+                "gh_json",
+                return_value={"tree": {"sha": int("1" * 40)}},
+            ) as gh_json,
+            self.assertRaises(MODULE.DeliveryStop) as raised,
+        ):
+            MODULE.verify_candidate_association(
+                "owner/repo", CANDIDATE_SHA, make_pr(), args
+            )
+
+        self.assertEqual(
+            raised.exception.action, "stop_merge_group_candidate_uncorrelatable"
+        )
+        gh_json.assert_called_once()
+        self.assertEqual(MODULE.COMMIT_TREE_SHA_CACHE, {})
+
+    def test_merge_group_candidate_tree_reads_are_cached_for_same_commit(self):
+        args = make_args()
+        with (
+            patch.object(MODULE, "is_commit_ancestor", side_effect=[False, True] * 2),
+            patch.object(
+                MODULE,
+                "gh_json",
+                side_effect=[
+                    {"tree": {"sha": "1" * 40}},
+                    {"tree": {"sha": "1" * 40}},
+                ],
+            ) as gh_json,
+        ):
+            MODULE.verify_candidate_association(
+                "owner/repo", CANDIDATE_SHA, make_pr(), args
+            )
+            MODULE.verify_candidate_association(
+                "owner/repo", CANDIDATE_SHA, make_pr(), args
+            )
+
+        self.assertEqual(gh_json.call_count, 2)
 
     def test_commit_ancestor_accepts_ahead_compare_status(self):
         with patch.object(MODULE, "gh_json", return_value={"status": "ahead"}):
@@ -1220,7 +1360,7 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
         with patch.object(MODULE.subprocess, "run", return_value=completed) as run:
             payload = MODULE.run_blocking_watcher(
                 "owner/repo",
-                f"run-id=901,head-sha={CANDIDATE_SHA}",
+                f"run-id=901,validation-target-sha={CANDIDATE_SHA}",
                 args,
             )
 
@@ -1228,7 +1368,7 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
         command = run.call_args.args[0]
         self.assertEqual(command[0], str(MODULE.WATCHER_LAUNCHER))
         self.assertIn("--watch-until-terminal", command)
-        self.assertIn(f"run-id=901,head-sha={CANDIDATE_SHA}", command)
+        self.assertIn(f"run-id=901,validation-target-sha={CANDIDATE_SHA}", command)
         self.assertNotIn("timeout", run.call_args.kwargs)
 
     def test_blocking_watcher_forwards_the_delivery_python_override(self):
@@ -1245,7 +1385,7 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
             patch.object(MODULE.subprocess, "run", return_value=completed) as run,
         ):
             MODULE.run_blocking_watcher(
-                "owner/repo", f"run-id=901,head-sha={CANDIDATE_SHA}", args
+                "owner/repo", f"run-id=901,validation-target-sha={CANDIDATE_SHA}", args
             )
 
         watcher_env = run.call_args.kwargs["env"]

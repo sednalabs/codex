@@ -58,6 +58,10 @@ pub(crate) mod test_support;
 mod threads;
 pub mod usage;
 
+#[cfg(test)]
+#[path = "runtime/usage_reporting_tests.rs"]
+mod usage_reporting_tests;
+
 pub use configured_identity_provenance::ConfiguredIdentityProvenance;
 pub use external_agent_config_imports::ExternalAgentConfigImportDetailsRecord;
 pub use external_agent_config_imports::ExternalAgentConfigImportFailureRecord;

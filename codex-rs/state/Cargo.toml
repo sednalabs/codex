@@ -26,6 +26,7 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 codex-git-utils = { workspace = true }
+codex-utils-cargo-bin = { workspace = true }
 pretty_assertions = { workspace = true }
 scopeguard = { workspace = true }
 tempfile = { workspace = true }
