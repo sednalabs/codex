@@ -47,9 +47,10 @@ pub const OPS_BEARER_TOKEN: &str = "runtime-proof-fixture-mcp-token-v1";
 pub const CHATGPT_ACCOUNT_ID: &str = "00000000-0000-4000-8000-000000000001";
 pub const CHATGPT_PLAN_TYPE: &str = "free";
 const ARGUMENTS: &str = r#"{"work_item_ref":"w900001","note":"protected fixture claim","claim_precondition":{"expected_generation":3,"expected_updated_at":"2026-10-04T05:00:00Z","request_id":"8f14e45f-ea42-4d73-9ca9-9a8b35d1c05a"}}"#;
-// Protected startup hashes the staged CLI before auth handoff; the delayed claim must cross expiry afterward.
-const DELAYED_CLAIM_RESPONSE_DELAY: Duration = Duration::from_secs(35);
-const EXPIRE_AFTER_CLAIM_AUTH_TTL_SECS: i64 = 45;
+// Protected startup hashes the staged CLI before auth handoff. Keep enough lifetime for that work while
+// ensuring the first delayed claim response finishes after expiry.
+const DELAYED_CLAIM_RESPONSE_DELAY: Duration = Duration::from_secs(75);
+const EXPIRE_AFTER_CLAIM_AUTH_TTL_SECS: i64 = 90;
 
 #[derive(Clone, Copy)]
 pub enum AuthFault {
@@ -1015,7 +1016,12 @@ impl ProtectedRuntimeFixture {
         drop(auth_child_socket);
         drop(launcher);
 
-        let deadline = std::time::Instant::now() + Duration::from_secs(100);
+        let child_timeout = if matches!(fault, Some(AuthFault::ExpireAfterFirstClaim)) {
+            Duration::from_secs(120)
+        } else {
+            Duration::from_secs(100)
+        };
+        let deadline = std::time::Instant::now() + child_timeout;
         loop {
             if let Some(status) = child.try_wait()? {
                 eprintln!("runtime-proof-root-stage:cli_process_exited");
