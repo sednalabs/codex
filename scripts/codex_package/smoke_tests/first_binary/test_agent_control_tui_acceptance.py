@@ -216,7 +216,10 @@ def _selected_subagent_details(
         assert detail_start < path_start < parent_start < status_start, frame
         assert status_marker is not None, frame
         detail_end = status_start + len(status_marker)
-        detail = frame[path_start:detail_end]
+        # Configured model/effort and provider identity precede Path in the same
+        # rendered row description. Include the row's UUID prefix so the checks
+        # below inspect that metadata without loosening any expected values.
+        detail = frame[detail_start:detail_end]
         assert all(
             other_id not in detail
             for other_id in set(expected) - {thread_id, parent_id}

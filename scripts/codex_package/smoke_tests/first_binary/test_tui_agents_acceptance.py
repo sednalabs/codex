@@ -454,13 +454,14 @@ def test_actual_tui_nested_filter_clear_live_rename_and_replay(
                 replay = tui.until_all(
                     (
                         "Agent command center",
-                        "root-package-task",
                         "child-package-task",
+                        "nested-package-task",
                         "live-renamed-package-task",
                     )
                 )
                 assert "Agent command center" in replay
-                assert "root-package-task" in replay and "child-package-task" in replay
+                assert "child-package-task" in replay and "nested-package-task" in replay
+                assert "live-renamed-package-task" in replay
 
 
 def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate(
