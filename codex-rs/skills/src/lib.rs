@@ -1,3 +1,5 @@
+extern crate yaml_serde as serde_yaml;
+
 mod interface;
 mod invocation;
 mod loading;
