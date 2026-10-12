@@ -983,6 +983,8 @@ async fn delayed_mcp_response_is_redacted_after_protected_auth_expiry() -> Resul
     } else {
         "signal"
     };
+    let (cli_first_event, cli_last_event, cli_error_family) =
+        cli_failure_path(&cli_output.stdout, &cli_output.stderr);
     let output = fixture.captured_output()?;
     let expiring_provider_token = fixture.expiring_provider_token();
     let provider_token_output = match expiring_provider_token.as_deref() {
@@ -1021,7 +1023,7 @@ async fn delayed_mcp_response_is_redacted_after_protected_auth_expiry() -> Resul
         || auth_file_scan.is_err()
     {
         eprintln!(
-            "runtime-proof-expiry-summary:cli={cli_status};claims={};initialize={initialize_count};tools_list={tools_list_count};claim_auth={claim_authorization};provider_token_output={provider_token_output};mcp_bearer_output={mcp_bearer_output};secrets_storage={};auth_files={}",
+            "runtime-proof-expiry-summary:cli={cli_status};cli_first_event={cli_first_event};cli_last_event={cli_last_event};cli_error_family={cli_error_family};claims={};initialize={initialize_count};tools_list={tools_list_count};claim_auth={claim_authorization};provider_token_output={provider_token_output};mcp_bearer_output={mcp_bearer_output};secrets_storage={};auth_files={}",
             claims.len(),
             if fixture_secret_scan.is_ok() { "clean" } else { "failed" },
             if auth_file_scan.is_ok() { "clean" } else { "failed" },
