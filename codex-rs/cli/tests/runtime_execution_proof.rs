@@ -961,9 +961,10 @@ async fn delayed_mcp_response_is_redacted_after_protected_auth_expiry() -> Resul
     );
     let claim_authorization = if claims.is_empty() {
         "none"
-    } else if claims.iter().all(
-        |request| request.authorization.as_deref() == Some(expected_authorization.as_str())
-    ) {
+    } else if claims
+        .iter()
+        .all(|request| request.authorization.as_deref() == Some(expected_authorization.as_str()))
+    {
         "match"
     } else {
         "mismatch"
@@ -992,8 +993,7 @@ async fn delayed_mcp_response_is_redacted_after_protected_auth_expiry() -> Resul
         Some(token) if output.contains(token) => "present",
         Some(_) => "redacted",
     };
-    let mcp_bearer_output = if output.contains(runtime_execution_proof_support::OPS_BEARER_TOKEN)
-    {
+    let mcp_bearer_output = if output.contains(runtime_execution_proof_support::OPS_BEARER_TOKEN) {
         "present"
     } else {
         "redacted"
@@ -1025,8 +1025,16 @@ async fn delayed_mcp_response_is_redacted_after_protected_auth_expiry() -> Resul
         eprintln!(
             "runtime-proof-expiry-summary:cli={cli_status};cli_first_event={cli_first_event};cli_last_event={cli_last_event};cli_error_family={cli_error_family};claims={};initialize={initialize_count};tools_list={tools_list_count};claim_auth={claim_authorization};provider_token_output={provider_token_output};mcp_bearer_output={mcp_bearer_output};secrets_storage={};auth_files={}",
             claims.len(),
-            if fixture_secret_scan.is_ok() { "clean" } else { "failed" },
-            if auth_file_scan.is_ok() { "clean" } else { "failed" },
+            if fixture_secret_scan.is_ok() {
+                "clean"
+            } else {
+                "failed"
+            },
+            if auth_file_scan.is_ok() {
+                "clean"
+            } else {
+                "failed"
+            },
         );
     }
     anyhow::ensure!(
@@ -1037,16 +1045,13 @@ async fn delayed_mcp_response_is_redacted_after_protected_auth_expiry() -> Resul
         lifecycle_recorded,
         "fixture did not record lifecycle request phases separately from the claim"
     );
-    if let Some(token) = expiring_provider_token.as_deref() {
+    if expiring_provider_token.is_some() {
         anyhow::ensure!(
             provider_token_redacted,
             "expired provider token leaked to output"
         );
     }
-    anyhow::ensure!(
-        mcp_bearer_redacted,
-        "protected MCP bearer leaked to output"
-    );
+    anyhow::ensure!(mcp_bearer_redacted, "protected MCP bearer leaked to output");
     anyhow::ensure!(
         claim_authorized,
         "delayed claim did not use the selected MCP bearer"
