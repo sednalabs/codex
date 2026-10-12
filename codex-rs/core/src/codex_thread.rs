@@ -28,6 +28,7 @@ use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::WindowsSandboxLevel;
+use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::mcp::CallToolResult;
@@ -949,6 +950,11 @@ impl CodexThread {
 
     pub async fn config_snapshot(&self) -> ThreadConfigSnapshot {
         self.session.thread_config_snapshot().await
+    }
+
+    /// Returns whether a loaded thread already has the requested dynamic tools.
+    pub async fn dynamic_tools_match(&self, requested: &[DynamicToolSpec]) -> bool {
+        self.session.dynamic_tools().await == requested
     }
 
     /// Returns the active turn's reviewer, including live updates, or the thread default.

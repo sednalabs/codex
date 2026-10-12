@@ -3664,6 +3664,9 @@ impl ThreadRequestProcessor {
         client_mcp_extensions: ClientMcpExtensions,
         prepared_config: &mut Option<PreparedResumeConfig>,
     ) -> Result<ControlFlow<()>, JSONRPCErrorError> {
+        if let Some(dynamic_tools) = &params.dynamic_tools {
+            validate_dynamic_tools(dynamic_tools).map_err(invalid_request)?;
+        }
         if let Ok(thread_id) = ThreadId::from_string(&params.thread_id)
             && self
                 .pending_thread_unloads
@@ -3733,6 +3736,7 @@ impl ThreadRequestProcessor {
             sandbox,
             permissions,
             config: mut request_overrides,
+            dynamic_tools: dynamic_tools_override,
             base_instructions,
             developer_instructions,
             personality,
@@ -3810,6 +3814,11 @@ impl ThreadRequestProcessor {
             && let Some((source, _)) = thread_history.get_resumed_session_sources()
             && !can_accept_direct_input(thread_history.get_multi_agent_version(), &source)
         {
+            if dynamic_tools_override.is_some() {
+                return Err(invalid_request(
+                    "dynamic tools for a Multi-Agent V2 child are controlled by its parent",
+                ));
+            }
             let ThreadResumeTarget::Client(request_id) = target else {
                 return Ok(ControlFlow::Break(()));
             };
@@ -4000,7 +4009,7 @@ impl ThreadRequestProcessor {
 
         match self
             .thread_manager
-            .resume_thread_with_history(
+            .resume_thread_with_history_and_dynamic_tools(
                 config,
                 thread_history,
                 self.auth_manager.clone(),
@@ -4011,6 +4020,7 @@ impl ThreadRequestProcessor {
                     ThreadResumeTarget::DaemonRecovery(_) => None,
                 },
                 client_mcp_extensions,
+                dynamic_tools_override,
             )
             .await
         {
@@ -4363,7 +4373,14 @@ impl ThreadRequestProcessor {
                 )));
             }
             let config_snapshot = existing_thread.config_snapshot().await;
-            let mismatch_details = collect_resume_override_mismatches(params, &config_snapshot);
+            let dynamic_tools_mismatch = match params.dynamic_tools.as_deref() {
+                Some(requested) => !existing_thread.dynamic_tools_match(requested).await,
+                None => false,
+            };
+            let mut mismatch_details = collect_resume_override_mismatches(params, &config_snapshot);
+            if dynamic_tools_mismatch {
+                mismatch_details.push("dynamic tools differ from the loaded thread".to_owned());
+            }
             if !mismatch_details.is_empty() {
                 let has_subscribers = !self
                     .thread_state_manager
@@ -4403,6 +4420,12 @@ impl ThreadRequestProcessor {
                             warn!("thread {existing_thread_id} shutdown timed out");
                         }
                     }
+                }
+
+                if dynamic_tools_mismatch {
+                    return Err(invalid_request(format!(
+                        "cannot replace dynamic tools on loaded thread {existing_thread_id}; retry after it is unloaded"
+                    )));
                 }
 
                 // Preserve rejoin semantics when another client can still observe

@@ -156,7 +156,7 @@ def _selected_subagent_details(
     expected: dict[str, tuple[str, str]],
     initial_frame: str,
 ) -> dict[str, str]:
-    """Wait for both rows, then bind each selected description to its identity."""
+    """Wait for rows, then bind the latest selected detail to its identity."""
     # UUIDs appear in each populated row; path/parent/status are selected-only
     # fields and are validated inside that row's detail block below.
     population = tui.until_all(tuple(expected), initial=initial_frame)
@@ -181,25 +181,33 @@ def _selected_subagent_details(
                 "Status: ",
             )
         )
-        matches = [
-            thread_id
+        # PTY reads are incremental terminal deltas, not reconstructed frames.
+        # A resize can therefore leave the previous selection's detail in this
+        # stream before the latest redraw. Bind to the final selected-only
+        # Path/Parent block and the row identity immediately preceding it.
+        latest_details = [
+            (frame.rfind(f"Path: {path}"), thread_id, path, parent_id)
             for thread_id, (path, parent_id) in expected.items()
-            if thread_id in frame
-            and f"Path: {path}" in frame
-            and f"Parent: {parent_id}" in frame
+            if f"Path: {path}" in frame
         ]
-        assert len(matches) == 1, frame
-        assert "Status: " in frame, frame
-        thread_id = matches[0]
-        path, parent_id = expected[thread_id]
-
-        assert frame.count(thread_id) == 1, frame
-        detail_start = frame.index(thread_id)
+        assert latest_details, frame
+        latest_path_start, thread_id, path, parent_id = max(latest_details)
+        assert thread_id == expected_id, frame
         path_marker = f"Path: {path}"
         parent_marker = f"Parent: {parent_id}"
-        path_start = frame.index(path_marker, detail_start)
-        parent_start = frame.index(parent_marker, path_start)
-        status_start = frame.index("Status: ", parent_start)
+        path_start = latest_path_start
+        preceding_ids = [
+            (position, candidate_id)
+            for candidate_id in expected
+            if (position := frame.rfind(candidate_id, 0, path_start)) >= 0
+        ]
+        assert preceding_ids and max(preceding_ids)[1] == expected_id, frame
+        parent_start = frame.find(parent_marker, path_start)
+        assert parent_start > path_start, frame
+        status_start = frame.find("Status: ", parent_start)
+        detail_start = frame.rfind(thread_id, 0, path_start)
+        assert detail_start >= 0, frame
+        assert status_start > parent_start, frame
         status_match = re.match(
             r"Status:\s+(running|not running|not loaded)(?=\s|$)",
             frame[status_start:],
@@ -208,7 +216,7 @@ def _selected_subagent_details(
         assert detail_start < path_start < parent_start < status_start, frame
         assert status_marker is not None, frame
         detail_end = status_start + len(status_marker)
-        detail = frame[detail_start:detail_end]
+        detail = frame[path_start:detail_end]
         assert all(
             other_id not in detail
             for other_id in set(expected) - {thread_id, parent_id}

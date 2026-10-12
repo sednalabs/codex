@@ -9,6 +9,7 @@ use super::bootstrap_request_error;
 use super::is_history_pagination_unsupported;
 use super::started_thread_from_resume_response;
 use super::thread_resume_params_from_config;
+use super::thread_start_params_from_config;
 use super::thread_session_state_from_thread_response;
 use crate::legacy_core::config::Config;
 use codex_app_server_client::TypedRequestError;
@@ -165,13 +166,25 @@ impl AppServerSession {
             self.session_config_with_effective_service_tier(&config)
         };
         let mut params = thread_resume_params_from_config(
-            session_config,
+            session_config.clone(),
             thread_id,
             self.thread_params_mode(),
             self.remote_cwd_override.as_deref(),
             model_settings,
             permission_overrides,
         );
+        if model_settings != ResumeModelSettings::PreserveExistingThread {
+            let mut thread_start_params = thread_start_params_from_config(
+                &session_config,
+                self.thread_params_mode(),
+                self.remote_cwd_override.as_deref(),
+                /*session_start_source*/ None,
+            );
+            self.thread_tool_transport()
+                .configure(&mut thread_start_params, config.codex_home.as_path())
+                .map_err(color_eyre::eyre::Report::msg)?;
+            params.dynamic_tools = Some(thread_start_params.dynamic_tools.unwrap_or_default());
+        }
         if model_settings == ResumeModelSettings::OverrideFromCurrentConfig {
             params.model_provider = self.explicit_model_provider(&config);
         }

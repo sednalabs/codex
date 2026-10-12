@@ -408,6 +408,16 @@ pub struct ThreadResumeParams {
     pub permissions: Option<String>,
     #[ts(optional = nullable)]
     pub config: Option<HashMap<String, serde_json::Value>>,
+    /// Override dynamic tools for this resumed session. Omission preserves the
+    /// saved tools; an empty list clears them for this session. Parent-owned
+    /// Multi-Agent V2 children continue to use capabilities controlled by their parent.
+    #[experimental("thread/resume.dynamicTools")]
+    #[serde(
+        default,
+        deserialize_with = "codex_protocol::dynamic_tools::deserialize_dynamic_tool_specs"
+    )]
+    #[ts(optional = nullable)]
+    pub dynamic_tools: Option<Vec<DynamicToolSpec>>,
     #[ts(optional = nullable)]
     pub base_instructions: Option<String>,
     #[ts(optional = nullable)]

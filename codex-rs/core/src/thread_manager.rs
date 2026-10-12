@@ -286,6 +286,9 @@ pub struct StartThreadOptions {
     pub session_source: Option<SessionSource>,
     pub thread_source: Option<ThreadSource>,
     pub dynamic_tools: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
+    /// Explicit dynamic-tool replacement for a resumed session. `Some(vec![])`
+    /// clears persisted tools; `None` keeps the existing history fallback.
+    pub dynamic_tools_override: Option<Vec<codex_protocol::dynamic_tools::DynamicToolSpec>>,
     pub metrics_service_name: Option<String>,
     pub parent_trace: Option<W3cTraceContext>,
     pub environments: Option<Vec<TurnEnvironmentRequest>>,
@@ -315,6 +318,7 @@ impl StartThreadOptions {
             session_source: None,
             thread_source: None,
             dynamic_tools: Vec::new(),
+            dynamic_tools_override: None,
             metrics_service_name: None,
             parent_trace: None,
             environments: None,
@@ -1277,6 +1281,27 @@ impl ThreadManager {
         parent_trace: Option<W3cTraceContext>,
         client_mcp_extensions: ClientMcpExtensions,
     ) -> CodexResult<NewThread> {
+        self.resume_thread_with_history_and_dynamic_tools(
+            config,
+            initial_history,
+            auth_manager,
+            parent_trace,
+            client_mcp_extensions,
+            None,
+        )
+        .await
+    }
+
+    #[instrument(level = "trace", skip_all)]
+    pub async fn resume_thread_with_history_and_dynamic_tools(
+        &self,
+        config: Config,
+        initial_history: InitialHistory,
+        auth_manager: Arc<AuthManager>,
+        parent_trace: Option<W3cTraceContext>,
+        client_mcp_extensions: ClientMcpExtensions,
+        dynamic_tools_override: Option<Vec<codex_protocol::dynamic_tools::DynamicToolSpec>>,
+    ) -> CodexResult<NewThread> {
         let agent_control = self.agent_control_for_config(&config);
         let (session_source, thread_source) = initial_history
             .get_resumed_session_sources()
@@ -1285,6 +1310,7 @@ impl ThreadManager {
             initial_history,
             session_source: Some(session_source),
             thread_source,
+            dynamic_tools_override,
             parent_trace,
             client_mcp_extensions,
             ..StartThreadOptions::new(config)
@@ -2136,6 +2162,7 @@ impl ThreadManagerState {
             session_source,
             thread_source,
             dynamic_tools,
+            dynamic_tools_override,
             metrics_service_name,
             parent_trace,
             environments: environment_requests,
@@ -2383,6 +2410,7 @@ impl ThreadManagerState {
             originator,
             agent_control,
             dynamic_tools,
+            dynamic_tools_override,
             metrics_service_name,
             inherited_environments,
             inherited_exec_policy,

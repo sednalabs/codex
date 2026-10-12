@@ -473,6 +473,7 @@ pub(crate) struct SessionSpawnArgs {
     pub(crate) originator: String,
     pub(crate) agent_control: AgentControlInit,
     pub(crate) dynamic_tools: Vec<DynamicToolSpec>,
+    pub(crate) dynamic_tools_override: Option<Vec<DynamicToolSpec>>,
     pub(crate) metrics_service_name: Option<String>,
     pub(crate) inherited_exec_policy: Option<Arc<ExecPolicyManager>>,
     pub(crate) inherited_environments: Option<TurnEnvironmentSnapshot>,
@@ -608,6 +609,7 @@ impl Session {
             originator,
             agent_control,
             dynamic_tools,
+            dynamic_tools_override,
             metrics_service_name,
             user_shell_override,
             inherited_exec_policy,
@@ -811,11 +813,13 @@ impl Session {
             .unwrap_or_else(|| render_model_instructions(&model_info));
 
         // Dynamic tools are defined at thread start and persisted in rollout session metadata.
-        let dynamic_tools = if dynamic_tools.is_empty() {
-            conversation_history.get_dynamic_tools().unwrap_or_default()
-        } else {
-            dynamic_tools
-        };
+        let dynamic_tools = dynamic_tools_override.unwrap_or_else(|| {
+            if dynamic_tools.is_empty() {
+                conversation_history.get_dynamic_tools().unwrap_or_default()
+            } else {
+                dynamic_tools
+            }
+        });
         let disabled_plugin_ids = disabled_plugin_ids.unwrap_or_else(|| {
             let settings_owner = match &conversation_history {
                 InitialHistory::Resumed(resumed) => Some(resumed.conversation_id),

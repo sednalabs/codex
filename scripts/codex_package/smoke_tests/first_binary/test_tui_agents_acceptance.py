@@ -356,7 +356,8 @@ def test_actual_tui_agents_entry_has_initial_empty_search(
                 opened = tui.until("Agent command center")
                 assert "Group:" in opened
                 tui.send("/")
-                search = tui.until("Search ›")
+                tui.resize(111)
+                search = tui.until_all(("Search ›", "Agent command center"))
                 assert "Search ›" in search and "Agent command center" in search
 
 
@@ -448,7 +449,16 @@ def test_actual_tui_nested_filter_clear_live_rename_and_replay(
                     )
                 )
                 tui.submit_line("/agents", pasted_marker="/agents")
-                replay = tui.until("live-renamed-package-task")
+                tui.until("live-renamed-package-task")
+                tui.resize(111)
+                replay = tui.until_all(
+                    (
+                        "Agent command center",
+                        "root-package-task",
+                        "child-package-task",
+                        "live-renamed-package-task",
+                    )
+                )
                 assert "Agent command center" in replay
                 assert "root-package-task" in replay and "child-package-task" in replay
 
