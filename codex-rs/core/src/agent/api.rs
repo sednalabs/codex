@@ -735,8 +735,8 @@ mod agent_wait_registry_tests {
         let publisher = AgentOutcomePublisher::new(target, registry.clone());
         publisher.publish(snapshot(
             "old-turn",
-            AgentStatus::Completed(None),
-            AgentReadiness::Terminal,
+            AgentStatus::Running,
+            AgentReadiness::Pending,
         ));
         let mut wait = register_agent_wait(&registry, vec![target], AgentWaitReturnWhen::Any);
         publisher.publish(snapshot(

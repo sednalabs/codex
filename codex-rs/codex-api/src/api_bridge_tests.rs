@@ -76,8 +76,8 @@ async fn map_api_error_preserves_retry_delay() {
 
 #[tokio::test(start_paused = true)]
 async fn transient_availability_marker_preserves_public_mapping_and_retry_advice() {
-    let retry_after = RetryAfter::from_delay(std::time::Duration::from_secs(17))
-        .expect("retry advice");
+    let retry_after =
+        RetryAfter::from_delay(std::time::Duration::from_secs(17)).expect("retry advice");
     let transport = TransportError::Http {
         status: http::StatusCode::SERVICE_UNAVAILABLE,
         url: Some("https://example.com/v1/responses".to_string()),

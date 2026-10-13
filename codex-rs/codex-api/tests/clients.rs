@@ -623,8 +623,8 @@ async fn streaming_client_does_not_retry_auth_build_error() -> Result<()> {
 }
 
 #[tokio::test]
-async fn streaming_client_preserves_typed_http_503_source_after_native_retry_budget(
-) -> Result<()> {
+async fn streaming_client_preserves_typed_http_503_source_after_native_retry_budget() -> Result<()>
+{
     let body =
         r#"{"error":{"type":"rate_limit_error","code":"slow_down","message":"retry later"}}"#;
     for max_attempts in [0, 2] {
@@ -724,7 +724,10 @@ async fn streaming_client_fails_closed_on_ambiguous_503_admission() -> Result<()
             .await
             .err()
             .expect("ambiguous response should fail closed");
-        assert!(matches!(error, ApiError::Transport(TransportError::Http { .. })));
+        assert!(matches!(
+            error,
+            ApiError::Transport(TransportError::Http { .. })
+        ));
     }
 
     for name in ["x-openai-authorization-error", "x-error-json"] {
@@ -747,7 +750,10 @@ async fn streaming_client_fails_closed_on_ambiguous_503_admission() -> Result<()
             .await
             .err()
             .expect("identity denial headers must block capacity provenance");
-        assert!(matches!(error, ApiError::Transport(TransportError::Http { .. })));
+        assert!(matches!(
+            error,
+            ApiError::Transport(TransportError::Http { .. })
+        ));
     }
     Ok(())
 }

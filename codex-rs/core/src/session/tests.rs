@@ -12415,9 +12415,7 @@ async fn interrupting_compaction_fallback_collection_cancels_without_dispatch() 
         vec![
             StreamingSseChunk {
                 gate: None,
-                body: responses::sse(vec![responses::ev_response_created(
-                    "fallback-collection",
-                )]),
+                body: responses::sse(vec![responses::ev_response_created("fallback-collection")]),
             },
             StreamingSseChunk {
                 gate: Some(fallback_gate),
@@ -12500,7 +12498,11 @@ async fn interrupting_compaction_fallback_collection_cancels_without_dispatch() 
 
     session.abort_all_tasks(TurnAbortReason::Interrupted).await;
     recv_terminal_event(&events, TerminalEventKind::TurnAborted).await;
-    assert_eq!(server.requests().await.len(), 2, "cancellation must prevent later dispatch");
+    assert_eq!(
+        server.requests().await.len(),
+        2,
+        "cancellation must prevent later dispatch"
+    );
     assert_eq!(
         state
             .lock()
@@ -12520,9 +12522,7 @@ async fn interrupting_remote_compaction_collection_prevents_model_fallback_dispa
     let (server, _) = start_streaming_sse_server(vec![vec![
         StreamingSseChunk {
             gate: None,
-            body: responses::sse(vec![responses::ev_response_created(
-                "primary-collection",
-            )]),
+            body: responses::sse(vec![responses::ev_response_created("primary-collection")]),
         },
         StreamingSseChunk {
             gate: Some(primary_gate),
@@ -12564,12 +12564,9 @@ async fn interrupting_remote_compaction_collection_prevents_model_fallback_dispa
     session
         .spawn_task(turn, Vec::new(), crate::tasks::RegularTask::new())
         .await;
-    timeout(
-        Duration::from_secs(10),
-        server.wait_for_request_count(1),
-    )
-    .await
-    .expect("primary compaction request should begin collection");
+    timeout(Duration::from_secs(10), server.wait_for_request_count(/*count*/ 1))
+        .await
+        .expect("primary compaction request should begin collection");
     assert_eq!(
         timeout(Duration::from_secs(10), collection_observer_rx.recv())
             .await

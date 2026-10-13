@@ -23,8 +23,8 @@ use codex_protocol::user_input::UserInput;
 use core_test_support::PathBufExt;
 use core_test_support::responses;
 use core_test_support::skip_if_no_network;
-use core_test_support::test_codex::local_requests;
 use core_test_support::test_codex::TestCodex;
+use core_test_support::test_codex::local_requests;
 use core_test_support::test_codex::test_codex;
 use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
@@ -630,8 +630,8 @@ async fn responses_http_overload_respects_retry_limits(
 
 /// Only the source-bound typed HTTP availability response enters the lifetime retry path.
 #[tokio::test(flavor = "current_thread")]
-async fn responses_typed_http_503_availability_retries_same_turn_after_native_budget(
-) -> Result<()> {
+async fn responses_typed_http_503_availability_retries_same_turn_after_native_budget() -> Result<()>
+{
     skip_if_no_network!(Ok(()));
 
     let mut telemetry = RetryTelemetryCapture::install();
@@ -673,7 +673,11 @@ async fn responses_typed_http_503_availability_retries_same_turn_after_native_bu
             match wait_for_event(&test.codex, |_| true).await {
                 EventMsg::StreamError(error) => {
                     recovery_events += 1;
-                    assert!(error.message.contains("Service temporarily unavailable; retrying"));
+                    assert!(
+                        error
+                            .message
+                            .contains("Service temporarily unavailable; retrying")
+                    );
                 }
                 EventMsg::Error(error) => panic!("typed availability became terminal: {error:?}"),
                 EventMsg::TurnComplete(event) => {
@@ -769,9 +773,15 @@ async fn partial_stream_then_http_availability_suppresses_stable_draft_replay() 
     .await
     .expect("partial draft should recover through one actual HTTP availability response");
 
-    assert_eq!(streamed_deltas, 1, "replayed stable draft deltas are suppressed");
+    assert_eq!(
+        streamed_deltas, 1,
+        "replayed stable draft deltas are suppressed"
+    );
     assert_eq!(completed_ids, [draft_id]);
-    assert_eq!(recovery_events, 2, "ordinary partial-stream and capacity waits are visible");
+    assert_eq!(
+        recovery_events, 2,
+        "ordinary partial-stream and capacity waits are visible"
+    );
     assert_eq!(response_mock.requests().len(), 3);
     Ok(())
 }
@@ -849,7 +859,10 @@ async fn buffered_prefix_flushed_at_eof_suppresses_stable_draft_replay() -> Resu
 
     assert_eq!(prefix_deltas, 1, "EOF-flushed draft replay is suppressed");
     assert_eq!(completed_ids, [draft_id]);
-    assert_eq!(recovery_events, 2, "stream and capacity retry progress remain visible");
+    assert_eq!(
+        recovery_events, 2,
+        "stream and capacity retry progress remain visible"
+    );
     assert_eq!(response_mock.requests().len(), 3);
     Ok(())
 }
@@ -956,13 +969,11 @@ async fn visible_added_message_without_delta_is_replay_guarded() -> Result<()> {
     let mut completed = 0;
     loop {
         match wait_for_event(&test.codex, |_| true).await {
-            EventMsg::ItemStarted(event)
-                if matches!(&event.item, TurnItem::AgentMessage(item) if item.id == draft_id) =>
+            EventMsg::ItemStarted(event) if matches!(&event.item, TurnItem::AgentMessage(item) if item.id == draft_id) =>
             {
                 started += 1;
             }
-            EventMsg::ItemCompleted(event)
-                if matches!(&event.item, TurnItem::AgentMessage(item) if item.id == draft_id) =>
+            EventMsg::ItemCompleted(event) if matches!(&event.item, TurnItem::AgentMessage(item) if item.id == draft_id) =>
             {
                 completed += 1;
             }
@@ -1021,11 +1032,16 @@ async fn manual_compact_http_availability_wait_is_interruptible() -> Result<()> 
     let EventMsg::StreamError(progress) = progress else {
         unreachable!("predicate selected retry progress")
     };
-    assert!(progress
-        .message
-        .contains("Service temporarily unavailable; retrying"));
+    assert!(
+        progress
+            .message
+            .contains("Service temporarily unavailable; retrying")
+    );
     test.codex.submit(Op::Interrupt).await?;
-    wait_for_event(&test.codex, |event| matches!(event, EventMsg::TurnAborted(_))).await;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnAborted(_))
+    })
+    .await;
     assert_eq!(response_mock.requests().len(), 2);
     Ok(())
 }
@@ -1092,7 +1108,11 @@ async fn compact_v2_typed_http_availability_recovers_beyond_native_retry_limits(
         match wait_for_event(&test.codex, |_| true).await {
             EventMsg::Error(error) => panic!("remote capacity became terminal: {error:?}"),
             EventMsg::StreamError(event) => {
-                assert!(event.message.contains("Service temporarily unavailable; retrying"));
+                assert!(
+                    event
+                        .message
+                        .contains("Service temporarily unavailable; retrying")
+                );
                 recovery_events += 1;
             }
             EventMsg::TurnComplete(event) => {
@@ -1318,7 +1338,9 @@ async fn capacity_retry_rejects_conflicting_tool_call_id() -> Result<()> {
                     }
                 }),
                 responses::ev_function_call(
-                    "capacity-conflict-call", "shell_command", &conflicting_args,
+                    "capacity-conflict-call",
+                    "shell_command",
+                    &conflicting_args,
                 ),
                 responses::ev_completed("capacity-conflict-replayed"),
             ])),

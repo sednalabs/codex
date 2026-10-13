@@ -202,7 +202,7 @@ async fn goal_stays_active_through_capacity_retries_then_completes() -> Result<(
                 registry,
                 state_db.expect("persistent goal state"),
                 AnalyticsEventsClient::disabled(),
-                None,
+                /*metrics_client*/ None,
                 manager,
                 Arc::new(GoalService::new()),
                 |_| GoalExtensionConfig {
@@ -240,7 +240,11 @@ async fn goal_stays_active_through_capacity_retries_then_completes() -> Result<(
             let event = child.next_event().await.expect("child event");
             match event.msg {
                 EventMsg::StreamError(progress) => {
-                    assert!(progress.message.contains("Service temporarily unavailable; retrying"));
+                    assert!(
+                        progress
+                            .message
+                            .contains("Service temporarily unavailable; retrying")
+                    );
                     recovery_events += 1;
                     let goal = state_db
                         .thread_goals()

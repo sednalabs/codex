@@ -100,11 +100,8 @@ use wiremock::matchers::path_regex;
 
 type ConfigMutator = dyn FnOnce(&mut Config) + Send;
 type PreBuildHook = dyn FnOnce(&Path) + Send + 'static;
-type ExtensionBuilderHook = dyn FnOnce(
-        &mut ExtensionRegistryBuilder<Config>,
-        Option<StateDbHandle>,
-        Weak<ThreadManager>,
-    ) + Send;
+type ExtensionBuilderHook = dyn FnOnce(&mut ExtensionRegistryBuilder<Config>, Option<StateDbHandle>, Weak<ThreadManager>)
+    + Send;
 type WorkspaceSetup = dyn FnOnce(AbsolutePathBuf, Arc<dyn ExecutorFileSystem>) -> BoxFuture<'static, Result<()>>
     + Send;
 const TEST_MODEL_WITH_EXPERIMENTAL_TOOLS: &str = "test-gpt-5.1-codex";
@@ -441,10 +438,10 @@ impl TestCodexBuilder {
     pub fn with_extension_builder(
         mut self,
         configure: impl FnOnce(
-                &mut ExtensionRegistryBuilder<Config>,
-                Option<StateDbHandle>,
-                Weak<ThreadManager>,
-            ) + Send
+            &mut ExtensionRegistryBuilder<Config>,
+            Option<StateDbHandle>,
+            Weak<ThreadManager>,
+        ) + Send
             + 'static,
     ) -> Self {
         self.extension_builder_hook = Some(Box::new(configure));

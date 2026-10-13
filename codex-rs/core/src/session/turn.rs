@@ -2631,8 +2631,7 @@ impl AcceptedRetryItems {
             self.by_item_id.insert(id, payload.clone());
         }
         if let Some(call_id) = Self::tool_call_id(item) {
-            self.by_tool_call_id
-                .insert(call_id.to_string(), payload);
+            self.by_tool_call_id.insert(call_id.to_string(), payload);
         }
         if !has_stable_identity {
             self.replay_safe = false;
@@ -2682,8 +2681,7 @@ impl AcceptedRetryItems {
         track_without_provider_id: bool,
     ) {
         if let Some(provider_item_id) = provider_item_id.filter(|id| !id.is_empty()) {
-            self.streamed_draft_ids
-                .insert(provider_item_id.to_string());
+            self.streamed_draft_ids.insert(provider_item_id.to_string());
         } else if track_without_provider_id {
             self.replay_safe = false;
         }
@@ -2961,11 +2959,7 @@ async fn try_run_sampling_request(
                     )
                     .await
                 {
-                    accepted_retry_items.record(
-                        &accepted_item,
-                        stable_item_id,
-                        accepted_payload,
-                    );
+                    accepted_retry_items.record(&accepted_item, stable_item_id, accepted_payload);
                     active_provider_item_id = None;
                     continue;
                 }
@@ -3157,14 +3151,14 @@ async fn try_run_sampling_request(
                             .await;
                         } else if matches!(turn_item, TurnItem::AgentMessage(_)) {
                             emitted_visible_text = match &turn_item {
-                                TurnItem::AgentMessage(message) => message.content.iter().any(
-                                    |content| match content {
-                                        codex_protocol::items::AgentMessageContent::Text { text } => {
-                                            !text.is_empty()
-                                        }
+                                TurnItem::AgentMessage(message) => {
+                                    message.content.iter().any(|content| match content {
+                                        codex_protocol::items::AgentMessageContent::Text {
+                                            text,
+                                        } => !text.is_empty(),
                                         _ => false,
-                                    },
-                                ),
+                                    })
+                                }
                                 _ => false,
                             };
                         }

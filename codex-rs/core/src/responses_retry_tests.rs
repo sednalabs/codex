@@ -1,10 +1,10 @@
+use super::MAX_CAPACITY_RETRY_DELAY;
 use super::ResponsesStreamRequest;
 use super::ResponsesStreamRetryState;
 use super::capacity_backoff;
 use super::handle_response_stream_error;
 use super::is_transient_capacity_availability;
 use super::log_retry;
-use super::MAX_CAPACITY_RETRY_DELAY;
 use crate::realtime_history::RealtimeHistoryState;
 use crate::session::step_context::StepContext;
 use crate::session::tests::make_session_and_context;
@@ -42,7 +42,7 @@ fn capacity_retry_backoff_stays_capped_for_unbounded_attempt_counts() {
 
 #[test]
 fn capacity_retry_first_backoff_respects_jitter_range() {
-    let delay = capacity_backoff(1);
+    let delay = capacity_backoff(/*attempt*/ 1);
     assert!(delay >= Duration::from_millis(900));
     assert!(delay <= Duration::from_millis(1_100));
 }
@@ -115,7 +115,7 @@ async fn stream_retry_preserves_deadline_across_delayed_notification() {
         &session,
         &step_context,
         ResponsesStreamRequest::Sampling,
-        false,
+        /*capacity_replay_is_safe*/ false,
     );
     tokio::pin!(retry);
     assert!(futures::poll!(&mut retry).is_pending());
@@ -144,7 +144,7 @@ async fn capacity_retry_respects_retry_after_as_a_minimum() {
     let advice = RetryAfter::from_delay(Duration::from_secs(5)).expect("retry deadline");
     let retry = handle_response_stream_error(
         &mut retry_state,
-        0,
+        /*max_retries*/ 0,
         CodexErr::new(CodexErrorDetails::RateLimitExceeded("later".into()))
             .with_http_503_slow_down(Http503SlowDown::classified_http_503_slow_down())
             .with_retry_after(advice),
@@ -152,12 +152,14 @@ async fn capacity_retry_respects_retry_after_as_a_minimum() {
         &session,
         &step_context,
         ResponsesStreamRequest::Sampling,
-        true,
+        /*capacity_replay_is_safe*/ true,
     );
     tokio::pin!(retry);
     assert!(futures::poll!(&mut retry).is_pending());
     tokio::time::advance(Duration::from_millis(4_999)).await;
     assert!(futures::poll!(&mut retry).is_pending());
     tokio::time::advance(Duration::from_millis(1)).await;
-    retry.await.expect("capacity retry should proceed at provider deadline");
+    retry
+        .await
+        .expect("capacity retry should proceed at provider deadline");
 }
