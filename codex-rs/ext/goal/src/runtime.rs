@@ -123,18 +123,6 @@ impl GoalRuntimeHandle {
         self.inner.enabled.load(Ordering::Relaxed)
     }
 
-    /// Conservatively report whether idle continuation could reach a live scheduler.
-    /// This is an observation only; `continue_if_idle` still owns submission.
-    pub(crate) async fn can_schedule_continuation(&self) -> bool {
-        if !self.tools_available() {
-            return false;
-        }
-        let Some(manager) = self.inner.thread_manager.upgrade() else {
-            return false;
-        };
-        manager.get_thread(self.thread_id()).await.is_ok()
-    }
-
     pub(crate) fn tools_visible(&self) -> bool {
         self.is_enabled() && self.inner.tools_visible_for_thread
     }

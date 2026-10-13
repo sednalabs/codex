@@ -71,7 +71,6 @@ use serde_json::json;
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
 use tempfile::TempDir;
 use wiremock::MockServer;
 // --- Test helpers -----------------------------------------------------------
