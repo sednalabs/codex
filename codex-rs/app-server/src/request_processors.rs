@@ -414,7 +414,6 @@ use codex_login::LoginSuccessPage;
 use codex_login::LoginSuccessPageBrand;
 use codex_login::ServerOptions as LoginServerOptions;
 use codex_login::ShutdownHandle;
-use codex_login::complete_device_code_login;
 use codex_login::login_with_api_key;
 use codex_login::login_with_bedrock_api_key;
 use codex_login::oauth_client_id;

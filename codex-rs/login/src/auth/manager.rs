@@ -2046,6 +2046,9 @@ pub struct AuthManager {
     codex_home: PathBuf,
     inner: RwLock<CachedAuth>,
     auth_change_tx: watch::Sender<u64>,
+    // Durable automatic-turn auth freshness belongs to this manager's cached auth snapshot.
+    // The auth revision prevents a later cache change from reusing an older State epoch witness.
+    automatic_turn_auth_epoch_witness: Mutex<Option<(i64, u64)>>,
     provider_request_gate: Arc<AsyncRwLock<()>>,
     auth_change_state_tx: watch::Sender<AuthChangeState>,
     workspace_routing_resolver: OnceLock<Weak<dyn WorkspaceRoutingResolver>>,
@@ -2210,6 +2213,7 @@ impl AuthManager {
                 permanent_refresh_failure: None,
             }),
             auth_change_tx,
+            automatic_turn_auth_epoch_witness: Mutex::new(None),
             provider_request_gate: Arc::new(AsyncRwLock::new(())),
             auth_change_state_tx: watch::channel(AuthChangeState::default()).0,
             workspace_routing_resolver: OnceLock::new(),
@@ -2247,6 +2251,7 @@ impl AuthManager {
             codex_home: PathBuf::from("non-existent"),
             inner: RwLock::new(cached),
             auth_change_tx,
+            automatic_turn_auth_epoch_witness: Mutex::new(None),
             provider_request_gate: Arc::new(AsyncRwLock::new(())),
             auth_change_state_tx: watch::channel(AuthChangeState::default()).0,
             workspace_routing_resolver: OnceLock::new(),
@@ -2278,6 +2283,7 @@ impl AuthManager {
             codex_home,
             inner: RwLock::new(cached),
             auth_change_tx,
+            automatic_turn_auth_epoch_witness: Mutex::new(None),
             provider_request_gate: Arc::new(AsyncRwLock::new(())),
             auth_change_state_tx: watch::channel(AuthChangeState::default()).0,
             workspace_routing_resolver: OnceLock::new(),
@@ -2313,6 +2319,7 @@ impl AuthManager {
             codex_home: PathBuf::from("non-existent"),
             inner: RwLock::new(cached),
             auth_change_tx,
+            automatic_turn_auth_epoch_witness: Mutex::new(None),
             provider_request_gate: Arc::new(AsyncRwLock::new(())),
             auth_change_state_tx: watch::channel(AuthChangeState::default()).0,
             workspace_routing_resolver: OnceLock::new(),
@@ -2346,6 +2353,7 @@ impl AuthManager {
                 permanent_refresh_failure: None,
             }),
             auth_change_tx,
+            automatic_turn_auth_epoch_witness: Mutex::new(None),
             provider_request_gate: Arc::new(AsyncRwLock::new(())),
             auth_change_state_tx: watch::channel(AuthChangeState::default()).0,
             workspace_routing_resolver: OnceLock::new(),
@@ -2381,6 +2389,60 @@ impl AuthManager {
     /// Subscribes to cached auth changes that can affect request recovery.
     pub fn auth_change_receiver(&self) -> watch::Receiver<u64> {
         self.auth_change_tx.subscribe()
+    }
+
+    /// Bind this manager's current cached-auth revision to a durable automatic-turn auth epoch.
+    /// Call only after successful auth reload while holding the shared State-domain transition
+    /// lock. A different `AuthManager` has an independent witness.
+    #[doc(hidden)]
+    pub fn mark_automatic_turn_auth_epoch_reconciled(
+        &self,
+        auth_epoch: i64,
+        auth_revision: u64,
+    ) -> std::io::Result<()> {
+        if *self.auth_change_tx.borrow() != auth_revision {
+            return Err(std::io::Error::other(
+                "auth changed before automatic-turn epoch reconciliation",
+            ));
+        }
+        let mut witness = self
+            .automatic_turn_auth_epoch_witness
+            .lock()
+            .map_err(|_| std::io::Error::other("auth epoch witness lock poisoned"))?;
+        *witness = Some((auth_epoch, auth_revision));
+        Ok(())
+    }
+
+    /// Check the durable epoch against the same cached-auth revision used to capture provider
+    /// authority. Cache changes and witnesses from other managers both fail closed.
+    #[doc(hidden)]
+    pub fn is_automatic_turn_auth_epoch_reconciled(
+        &self,
+        auth_epoch: i64,
+        auth_revision: u64,
+    ) -> bool {
+        if *self.auth_change_tx.borrow() != auth_revision {
+            return false;
+        }
+        self.automatic_turn_auth_epoch_witness
+            .lock()
+            .ok()
+            .is_some_and(|witness| *witness == Some((auth_epoch, auth_revision)))
+    }
+
+    /// Return the provider principal only when this exact manager/cache revision has been
+    /// reconciled to the durable auth epoch. This is the gate used before both ticket issuance
+    /// and continuation redemption.
+    #[doc(hidden)]
+    pub fn automatic_turn_principal_if_auth_epoch_reconciled(
+        &self,
+        auth_epoch: i64,
+        auth_revision: u64,
+        principal_identity: Option<String>,
+    ) -> Option<String> {
+        self.is_automatic_turn_auth_epoch_reconciled(auth_epoch, auth_revision)
+            .then_some(principal_identity)
+            .flatten()
     }
 
     /// Captures the current auth revision while excluding credential transitions until the
@@ -2510,6 +2572,51 @@ impl AuthManager {
         tracing::info!("Reloading auth");
         let new_auth = self.load_auth().await;
         self.set_cached_auth(new_auth)
+    }
+
+    /// Reload the active auth source without converting storage/validation failures into an
+    /// unauthenticated cache. Account-transition recovery uses this while the durable State
+    /// admission gate is closed; callers must leave that gate closed if this returns an error.
+    #[doc(hidden)]
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "credential transitions must remain exclusive while auth is loaded and published"
+    )]
+    pub async fn reload_for_auth_transition(&self) -> std::io::Result<u64> {
+        let _transition = self.provider_request_gate.write().await;
+        let new_auth = if let Some(external_auth) = self.external_auth_provider() {
+            Some(
+                self.resolve_external_auth(external_auth.as_ref())
+                    .await
+                    .map_err(|error| std::io::Error::other(error.to_string()))?,
+            )
+        } else {
+            let allowed_login_methods = self.allowed_login_methods();
+            let effective_chatgpt_workspaces = self.effective_chatgpt_workspaces();
+            let auth = load_auth(
+                &self.codex_home,
+                self.enable_codex_api_key_env,
+                self.auth_credentials_store_mode,
+                Some(&allowed_login_methods),
+                effective_chatgpt_workspaces.as_deref(),
+                self.chatgpt_base_url.as_deref(),
+                self.keyring_backend_kind,
+                self.agent_identity_authapi_base_url.as_deref(),
+                &self.auth_route_config,
+            )
+            .await?;
+            if let Some(auth) = auth.as_ref() {
+                validate_auth_restrictions(
+                    Some(&allowed_login_methods),
+                    effective_chatgpt_workspaces.as_deref(),
+                    auth,
+                )
+                .map_err(std::io::Error::other)?;
+            }
+            auth
+        };
+        self.set_cached_auth_inner(new_auth)?;
+        Ok(*self.auth_change_tx.borrow())
     }
 
     async fn reload_if_account_id_matches(
@@ -2656,36 +2763,39 @@ impl AuthManager {
     }
 
     fn set_cached_auth(&self, new_auth: Option<CodexAuth>) -> bool {
-        if let Ok(mut guard) = self.inner.write() {
-            let previous = guard.auth.as_ref();
-            let changed = !AuthManager::auths_equal(previous, new_auth.as_ref());
-            let auth_changed_for_refresh =
-                !Self::auths_equal_for_refresh(previous, new_auth.as_ref());
-            let owner_changed =
-                auth_changed_for_refresh && !same_owner(previous, new_auth.as_ref());
-            if owner_changed {
-                self.auth_route_config
-                    .application_network_policy()
-                    .invalidate();
-            }
-            if auth_changed_for_refresh {
-                guard.permanent_refresh_failure = None;
-            }
-            tracing::info!("Reloaded auth, changed: {changed}");
-            guard.auth = new_auth;
-            if auth_changed_for_refresh {
-                self.auth_change_state_tx.send_modify(|state| {
-                    state.generation += 1;
-                    if owner_changed {
-                        state.owner_generation += 1;
-                    }
-                });
-                self.auth_change_tx.send_modify(|revision| *revision += 1);
-            }
-            changed
-        } else {
-            false
+        self.set_cached_auth_inner(new_auth).unwrap_or(false)
+    }
+
+    fn set_cached_auth_inner(&self, new_auth: Option<CodexAuth>) -> std::io::Result<bool> {
+        let mut guard = self
+            .inner
+            .write()
+            .map_err(|_| std::io::Error::other("authentication manager lock poisoned"))?;
+        let previous = guard.auth.as_ref();
+        let changed = !AuthManager::auths_equal(previous, new_auth.as_ref());
+        let auth_changed_for_refresh =
+            !Self::auths_equal_for_refresh(previous, new_auth.as_ref());
+        let owner_changed = auth_changed_for_refresh && !same_owner(previous, new_auth.as_ref());
+        if owner_changed {
+            self.auth_route_config
+                .application_network_policy()
+                .invalidate();
         }
+        if auth_changed_for_refresh {
+            guard.permanent_refresh_failure = None;
+        }
+        tracing::info!("Reloaded auth, changed: {changed}");
+        guard.auth = new_auth;
+        if auth_changed_for_refresh {
+            self.auth_change_state_tx.send_modify(|state| {
+                state.generation += 1;
+                if owner_changed {
+                    state.owner_generation += 1;
+                }
+            });
+            self.auth_change_tx.send_modify(|revision| *revision += 1);
+        }
+        Ok(changed)
     }
 
     pub async fn set_external_auth(

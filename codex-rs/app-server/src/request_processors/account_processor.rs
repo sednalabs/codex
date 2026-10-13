@@ -4,6 +4,7 @@ use super::bedrock_auth::configure_bedrock_provider;
 use super::bedrock_auth::ensure_user_model_provider_can_be_bedrock;
 use super::*;
 use crate::auth_mode::auth_mode_to_api;
+use crate::auth_transition_lock::AuthTransition;
 use crate::external_auth::ExternalAuthBridge;
 use crate::outgoing_message::AccountNotification;
 use chrono::DateTime;
@@ -42,10 +43,12 @@ enum ActiveLogin {
     Browser {
         shutdown_handle: ShutdownHandle,
         login_id: Uuid,
+        completion: Option<oneshot::Receiver<()>>,
     },
     DeviceCode {
-        cancel: CancellationToken,
+        cancel: Option<oneshot::Sender<()>>,
         login_id: Uuid,
+        completion: Option<oneshot::Receiver<()>>,
     },
 }
 
@@ -58,12 +61,29 @@ impl ActiveLogin {
         }
     }
 
-    fn cancel(&self) {
+    fn cancel(&mut self) {
         match self {
             ActiveLogin::Browser {
                 shutdown_handle, ..
             } => shutdown_handle.shutdown(),
-            ActiveLogin::DeviceCode { cancel, .. } => cancel.cancel(),
+            ActiveLogin::DeviceCode { cancel, .. } => {
+                if let Some(cancel) = cancel.take() {
+                    let _ = cancel.send(());
+                }
+            }
+        }
+    }
+
+    async fn cancel_and_wait(mut self) {
+        self.cancel();
+        let completion = match &mut self {
+            ActiveLogin::Browser { completion, .. }
+            | ActiveLogin::DeviceCode { completion, .. } => completion.take(),
+        };
+        if let Some(completion) = completion {
+            // A closed channel means the task exited (including panic) and dropped its sender.
+            // In that case the durable pending marker remains for serialized recovery.
+            let _ = completion.await;
         }
     }
 }
@@ -227,11 +247,13 @@ impl AccountRequestProcessor {
     }
 
     pub(crate) async fn cancel_active_login(&self) {
-        self.cancel_gateway_login();
+        self.cancel_gateway_login().await;
         self.enterprise_login.cancel(/*login_id*/ None).await;
         let mut guard = self.active_login.lock().await;
-        if let Some(active_login) = guard.take() {
-            drop(active_login);
+        let active_login = guard.take();
+        drop(guard);
+        if let Some(active_login) = active_login {
+            active_login.cancel_and_wait().await;
         }
     }
 
@@ -337,39 +359,52 @@ impl AccountRequestProcessor {
         if self.auth_manager.is_workload_identity_selected() {
             return Err(self.configured_auth_owned_by_host_error());
         }
-        // Revoke durable one-time continuations before any login flow can replace the
-        // authenticated account, including a replacement for the same stable principal.
-        self.invalidate_automatic_turn_capabilities().await?;
-        self.enterprise_login.cancel(/*login_id*/ None).await;
+        let chatgpt_login_success_page = match &params {
+            LoginAccountParams::Chatgpt {
+                app_brand,
+                use_hosted_login_success_page: true,
+                ..
+            } => {
+                let app_brand = match app_brand.clone().unwrap_or_default() {
+                    LoginAppBrand::Codex => LoginSuccessPageBrand::Codex,
+                    LoginAppBrand::Chatgpt => LoginSuccessPageBrand::Chatgpt,
+                };
+                Some(LoginSuccessPage::Hosted {
+                    url: CODEX_OPEN_APP_URL.parse().map_err(|err| {
+                        internal_error(format!("invalid Codex open app URL: {err}"))
+                    })?,
+                    app_brand,
+                })
+            }
+            LoginAccountParams::Chatgpt { .. } => Some(LoginSuccessPage::default()),
+            _ => None,
+        };
+        // Stop any prior login before acquiring the shared transition lock. Its
+        // completion task owns that lock until it has reloaded auth and resolved
+        // the State marker.
+        self.cancel_active_login().await;
+        let mut transition = Some(self.begin_auth_transition().await?);
         match params {
             LoginAccountParams::ApiKey { api_key } => {
                 self.login_api_key_v2(request_id, LoginApiKeyParams { api_key })
                     .await;
             }
             LoginAccountParams::Chatgpt {
-                app_brand,
                 codex_streamlined_login,
-                use_hosted_login_success_page,
+                ..
             } => {
-                let login_success_page = if use_hosted_login_success_page {
-                    let app_brand = match app_brand.unwrap_or_default() {
-                        LoginAppBrand::Codex => LoginSuccessPageBrand::Codex,
-                        LoginAppBrand::Chatgpt => LoginSuccessPageBrand::Chatgpt,
-                    };
-                    LoginSuccessPage::Hosted {
-                        url: CODEX_OPEN_APP_URL.parse().map_err(|err| {
-                            internal_error(format!("invalid Codex open app URL: {err}"))
-                        })?,
-                        app_brand,
-                    }
-                } else {
-                    LoginSuccessPage::default()
-                };
-                self.login_chatgpt_v2(request_id, codex_streamlined_login, login_success_page)
-                    .await;
+                self.login_chatgpt_v2(
+                    request_id,
+                    codex_streamlined_login,
+                    chatgpt_login_success_page
+                        .expect("ChatGPT login success page was precomputed"),
+                    &mut transition,
+                )
+                .await;
             }
             LoginAccountParams::ChatgptDeviceCode => {
-                self.login_chatgpt_device_code_v2(request_id).await;
+                self.login_chatgpt_device_code_v2(request_id, &mut transition)
+                    .await;
             }
             LoginAccountParams::ChatgptAuthTokens {
                 access_token,
@@ -409,6 +444,11 @@ impl AccountRequestProcessor {
                 )
                 .await;
             }
+        }
+        if let Some(transition) = transition {
+            // Successful synchronous paths establish their AuthManager state before
+            // returning; failed validation leaves the existing cached principal intact.
+            self.complete_auth_transition(transition).await?;
         }
         Ok(())
     }
@@ -651,9 +691,10 @@ impl AccountRequestProcessor {
         request_id: ConnectionRequestId,
         codex_streamlined_login: bool,
         login_success_page: LoginSuccessPage,
+        transition: &mut Option<AuthTransition>,
     ) {
         let result = self
-            .login_chatgpt_response(codex_streamlined_login, login_success_page)
+            .login_chatgpt_response(codex_streamlined_login, login_success_page, transition)
             .await;
         self.outgoing.send_result(request_id, result).await;
     }
@@ -662,6 +703,7 @@ impl AccountRequestProcessor {
         &self,
         codex_streamlined_login: bool,
         login_success_page: LoginSuccessPage,
+        transition: &mut Option<AuthTransition>,
     ) -> Result<LoginAccountResponse, JSONRPCErrorError> {
         let opts = self
             .login_chatgpt_common(codex_streamlined_login, login_success_page)
@@ -670,30 +712,31 @@ impl AccountRequestProcessor {
             .map_err(|err| internal_error(format!("failed to start login server: {err}")))?;
         let login_id = Uuid::new_v4();
         let shutdown_handle = server.cancel_handle();
+        let (completion_tx, completion_rx) = oneshot::channel();
 
-        // Replace active login if present.
+        // The active slot owns a completion receiver so cancellation can join the callback task
+        // before another transition reloads auth or clears its durable gate.
         {
             let mut guard = self.active_login.lock().await;
-            if let Some(existing) = guard.take() {
-                drop(existing);
-            }
             *guard = Some(ActiveLogin::Browser {
                 shutdown_handle: shutdown_handle.clone(),
                 login_id,
+                completion: Some(completion_rx),
             });
         }
 
         let processor = self.clone();
         let active_login = self.active_login.clone();
         let auth_url = server.auth_url.clone();
+        let transition = transition.take().ok_or_else(|| {
+            internal_error("missing State admission guard for ChatGPT login".to_string())
+        })?;
         let task = async move {
-            let (success, error_msg, onboarding_entrypoint) = match tokio::time::timeout(
-                LOGIN_CHATGPT_TIMEOUT,
-                server.block_until_done_with_callback_result(),
-            )
-            .await
+            let (success, error_msg, onboarding_entrypoint) = match server
+                .block_until_done_with_callback_result_timeout(LOGIN_CHATGPT_TIMEOUT)
+                .await
             {
-                Ok(Ok(result)) => (
+                Ok(result) => (
                     true,
                     None,
                     result
@@ -702,20 +745,22 @@ impl AccountRequestProcessor {
                             DesktopOnboardingEntrypoint::LifeSciences
                         }),
                 ),
-                Ok(Err(err)) => (false, Some(format!("Login server error: {err}")), None),
-                Err(_elapsed) => {
-                    shutdown_handle.shutdown();
+                Err(err) if err.kind() == std::io::ErrorKind::TimedOut => {
                     (false, Some("Login timed out".to_string()), None)
                 }
+                Err(err) => (false, Some(format!("Login server error: {err}")), None),
             };
 
             processor
-                .send_chatgpt_login_completion_notifications(AccountLoginCompletedNotification {
-                    login_id: Some(login_id.to_string()),
-                    success,
-                    error: error_msg,
-                    onboarding_entrypoint,
-                })
+                .send_chatgpt_login_completion_notifications(
+                    AccountLoginCompletedNotification {
+                        login_id: Some(login_id.to_string()),
+                        success,
+                        error: error_msg,
+                        onboarding_entrypoint,
+                    },
+                    transition,
+                )
                 .await;
 
             // Clear the active login if it matches this attempt. It may have been replaced or cancelled.
@@ -723,6 +768,7 @@ impl AccountRequestProcessor {
             if guard.as_ref().map(ActiveLogin::login_id) == Some(login_id) {
                 *guard = None;
             }
+            let _ = completion_tx.send(());
         };
         tokio::spawn(AuthStorageOriginator::current().scope(task));
 
@@ -732,13 +778,18 @@ impl AccountRequestProcessor {
         })
     }
 
-    async fn login_chatgpt_device_code_v2(&self, request_id: ConnectionRequestId) {
-        let result = self.login_chatgpt_device_code_response().await;
+    async fn login_chatgpt_device_code_v2(
+        &self,
+        request_id: ConnectionRequestId,
+        transition: &mut Option<AuthTransition>,
+    ) {
+        let result = self.login_chatgpt_device_code_response(transition).await;
         self.outgoing.send_result(request_id, result).await;
     }
 
     async fn login_chatgpt_device_code_response(
         &self,
+        transition: &mut Option<AuthTransition>,
     ) -> Result<LoginAccountResponse, JSONRPCErrorError> {
         let opts = self
             .login_chatgpt_common(
@@ -750,16 +801,15 @@ impl AccountRequestProcessor {
             .await
             .map_err(Self::login_chatgpt_device_code_start_error)?;
         let login_id = Uuid::new_v4();
-        let cancel = CancellationToken::new();
+        let (cancel_tx, mut cancel_rx) = oneshot::channel();
+        let (completion_tx, completion_rx) = oneshot::channel();
 
         {
             let mut guard = self.active_login.lock().await;
-            if let Some(existing) = guard.take() {
-                drop(existing);
-            }
             *guard = Some(ActiveLogin::DeviceCode {
-                cancel: cancel.clone(),
+                cancel: Some(cancel_tx),
                 login_id,
+                completion: Some(completion_rx),
             });
         }
 
@@ -768,32 +818,39 @@ impl AccountRequestProcessor {
 
         let processor = self.clone();
         let active_login = self.active_login.clone();
+        let transition = transition.take().ok_or_else(|| {
+            internal_error("missing State admission guard for device-code login".to_string())
+        })?;
         let task = async move {
-            let (success, error_msg) = tokio::select! {
-                _ = cancel.cancelled() => {
-                    (false, Some("Login was not completed".to_string()))
-                }
-                r = complete_device_code_login(opts, device_code) => {
-                    match r {
-                        Ok(()) => (true, None),
-                        Err(err) => (false, Some(err.to_string())),
-                    }
-                }
+            let (success, error_msg) = match
+                codex_login::complete_device_code_login_with_cancel(
+                    opts,
+                    device_code,
+                    &mut cancel_rx,
+                )
+                .await
+            {
+                Ok(()) => (true, None),
+                Err(err) => (false, Some(err.to_string())),
             };
 
             processor
-                .send_chatgpt_login_completion_notifications(AccountLoginCompletedNotification {
-                    login_id: Some(login_id.to_string()),
-                    success,
-                    error: error_msg,
-                    onboarding_entrypoint: None,
-                })
+                .send_chatgpt_login_completion_notifications(
+                    AccountLoginCompletedNotification {
+                        login_id: Some(login_id.to_string()),
+                        success,
+                        error: error_msg,
+                        onboarding_entrypoint: None,
+                    },
+                    transition,
+                )
                 .await;
 
             let mut guard = active_login.lock().await;
             if guard.as_ref().map(ActiveLogin::login_id) == Some(login_id) {
                 *guard = None;
             }
+            let _ = completion_tx.send(());
         };
         tokio::spawn(AuthStorageOriginator::current().scope(task));
 
@@ -809,10 +866,14 @@ impl AccountRequestProcessor {
         login_id: Uuid,
     ) -> std::result::Result<(), CancelLoginError> {
         let mut guard = self.active_login.lock().await;
-        if guard.as_ref().map(ActiveLogin::login_id) == Some(login_id) {
-            if let Some(active) = guard.take() {
-                drop(active);
-            }
+        let active = if guard.as_ref().map(ActiveLogin::login_id) == Some(login_id) {
+            guard.take()
+        } else {
+            None
+        };
+        drop(guard);
+        if let Some(active) = active {
+            active.cancel_and_wait().await;
             Ok(())
         } else {
             Err(CancelLoginError::NotFound)
@@ -915,18 +976,22 @@ impl AccountRequestProcessor {
 
     async fn send_login_success_notifications(&self, login_id: Option<Uuid>) {
         self.thread_manager.invalidate_mcp_runtimes().await;
-        self.send_account_login_notifications(AccountLoginCompletedNotification {
-            login_id: login_id.map(|id| id.to_string()),
-            success: true,
-            error: None,
-            onboarding_entrypoint: None,
-        })
+        self.send_account_login_notifications(
+            AccountLoginCompletedNotification {
+                login_id: login_id.map(|id| id.to_string()),
+                success: true,
+                error: None,
+                onboarding_entrypoint: None,
+            },
+            None,
+        )
         .await;
     }
 
     async fn send_account_login_notifications(
         &self,
         mut payload: AccountLoginCompletedNotification,
+        transition: Option<AuthTransition>,
     ) {
         let auth_changes = self.auth_manager.auth_change_state_receiver();
         let owner_generation = auth_changes.borrow().owner_generation;
@@ -936,18 +1001,18 @@ impl AccountRequestProcessor {
             payload.success = false;
             payload.error = Some(error.to_string());
         }
-        if payload.success {
-            if let Err(error) = self.invalidate_automatic_turn_capabilities().await {
-                tracing::warn!(
-                    ?error,
-                    "failed to invalidate automatic-turn capabilities after account change"
-                );
-                payload.success = false;
-                payload.error = Some(
-                    "Failed to safely update automatic-turn authorization after sign-in."
-                        .to_string(),
-                );
-            }
+        if let Some(transition) = transition
+            && let Err(error) = self.complete_auth_transition(transition).await
+        {
+            tracing::warn!(
+                ?error,
+                "failed to complete automatic-turn auth transition after account change"
+            );
+            payload.success = false;
+            payload.error = Some(
+                "Failed to safely complete automatic-turn authorization after sign-in."
+                    .to_string(),
+            );
         }
         if payload.success && auth_changes.borrow().owner_generation == owner_generation {
             Self::maybe_refresh_plugin_caches_for_current_config(
@@ -984,9 +1049,13 @@ impl AccountRequestProcessor {
     async fn send_chatgpt_login_completion_notifications(
         &self,
         mut payload_v2: AccountLoginCompletedNotification,
+        transition: AuthTransition,
     ) {
+        // Login completion may have persisted credentials before this task was
+        // interrupted. Always reload under the transition lock before opening the
+        // State gate, including the error/cancellation path.
+        self.auth_manager.reload().await;
         if payload_v2.success {
-            self.auth_manager.reload().await;
             let auth_changes = self.auth_manager.auth_change_state_receiver();
             let owner_generation = auth_changes.borrow().owner_generation;
             self.thread_manager.invalidate_mcp_runtimes().await;
@@ -1003,16 +1072,31 @@ impl AccountRequestProcessor {
                 payload_v2.error = Some("account changed before sign-in completed".into());
             }
         }
-        self.send_account_login_notifications(payload_v2).await;
+        self.send_account_login_notifications(payload_v2, Some(transition))
+            .await;
     }
 
     async fn logout_common(&self) -> std::result::Result<Option<AuthMode>, JSONRPCErrorError> {
         if self.auth_manager.is_workload_identity_selected() {
             return Err(self.configured_auth_owned_by_host_error());
         }
-        // Do this before reload/logout can publish a new cached auth state. The persisted
-        // epoch revokes tickets even if a later login returns to the same account/provider.
-        self.invalidate_automatic_turn_capabilities().await?;
+        // Cancel a prior interactive login before acquiring the shared lock: its
+        // completion task must release that lock after resolving its own marker.
+        self.cancel_active_login().await;
+        let transition = self.begin_auth_transition().await?;
+        let result = self.logout_during_transition().await;
+        if result.is_err() {
+            // A failed logout may have changed the on-disk auth file before the
+            // error was returned. Establish the actual current principal first.
+            self.auth_manager.reload().await;
+        }
+        self.complete_auth_transition(transition).await?;
+        result
+    }
+
+    async fn logout_during_transition(
+        &self,
+    ) -> std::result::Result<Option<AuthMode>, JSONRPCErrorError> {
         // Another process may have changed the persisted workspace. Reload both
         // account authority and its policy before selecting a grant to remove.
         self.auth_manager.reload().await;
@@ -1043,8 +1127,6 @@ impl AccountRequestProcessor {
         });
         let config = config.unwrap_or_else(|_| self.config.as_ref().clone());
 
-        self.cancel_active_login().await;
-
         // Retain the credential lock through primary logout. Otherwise a second
         // process can commit after deletion but before the account is removed.
         let enterprise_guard =
@@ -1070,9 +1152,6 @@ impl AccountRequestProcessor {
                 return Err(internal_error(format!("logout failed: {err}")));
             }
         }
-        // Revoke again after the transition so tickets created while logout was in
-        // progress cannot survive into a later login with the same stable principal.
-        self.invalidate_automatic_turn_capabilities().await?;
         drop(enterprise_guard);
         self.thread_manager.invalidate_mcp_runtimes().await;
 
@@ -1100,20 +1179,29 @@ impl AccountRequestProcessor {
             .map(auth_mode_to_api))
     }
 
-    async fn invalidate_automatic_turn_capabilities(
+    async fn begin_auth_transition(&self) -> Result<AuthTransition, JSONRPCErrorError> {
+        AuthTransition::begin(
+            self.state_db.as_ref(),
+            Arc::clone(&self.auth_manager),
+            self.config.codex_home.to_path_buf(),
+        )
+        .await
+        .map_err(|error| {
+            internal_error(format!(
+                "failed to begin automatic-turn auth transition: {error:#}"
+            ))
+        })
+    }
+
+    async fn complete_auth_transition(
         &self,
+        transition: AuthTransition,
     ) -> Result<(), JSONRPCErrorError> {
-        if let Some(state_db) = &self.state_db {
-            state_db
-                .invalidate_all_automatic_turn_capabilities()
-                .await
-                .map_err(|error| {
-                    internal_error(format!(
-                        "failed to invalidate automatic-turn capabilities during auth change: {error:#}"
-                    ))
-                })?;
-        }
-        Ok(())
+        transition.complete().await.map_err(|error| {
+            internal_error(format!(
+                "failed to complete automatic-turn auth transition: {error:#}"
+            ))
+        })
     }
 
     async fn logout_v2(&self, request_id: ConnectionRequestId) -> Result<(), JSONRPCErrorError> {
@@ -1621,6 +1709,49 @@ mod tests {
     use codex_backend_client::TokenUsageProfileStats;
     use http::StatusCode;
     use pretty_assertions::assert_eq;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn cancelling_device_login_waits_for_started_credential_writer() {
+        let (cancel_tx, cancel_rx) = oneshot::channel();
+        let (completion_tx, completion_rx) = oneshot::channel();
+        let (writer_started_tx, writer_started_rx) = oneshot::channel();
+        let (release_writer_tx, release_writer_rx) = mpsc::channel();
+        let login_id = Uuid::new_v4();
+
+        let task = tokio::spawn(async move {
+            let _ = cancel_rx.await;
+            // The login task has already crossed its point-of-no-cancellation and is now
+            // waiting for the blocking credential writer to finish.
+            let _ = tokio::task::spawn_blocking(move || {
+                let _ = writer_started_tx.send(());
+                release_writer_rx
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("test releases the writer");
+            })
+            .await;
+            let _ = completion_tx.send(());
+        });
+
+        let active = ActiveLogin::DeviceCode {
+            cancel: Some(cancel_tx),
+            login_id,
+            completion: Some(completion_rx),
+        };
+        let mut join = Box::pin(active.cancel_and_wait());
+        tokio::select! {
+            biased;
+            _ = &mut join => panic!("cancellation returned while the writer was still active"),
+            result = writer_started_rx => result.expect("writer reached persistence"),
+        }
+
+        release_writer_tx.send(()).expect("writer is still waiting");
+        tokio::time::timeout(Duration::from_secs(2), &mut join)
+            .await
+            .expect("cancellation joins the writer before returning");
+        task.await.expect("login task");
+    }
 
     #[test]
     fn account_token_usage_response_maps_profile_stats_and_daily_buckets() {

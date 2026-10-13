@@ -445,6 +445,17 @@ async fn start_uninitialized(mut args: InProcessStartArgs) -> IoResult<InProcess
     )
     .await;
     let auth_manager = auth_manager_result?;
+    crate::auth_transition_lock::recover_pending_auth_transition(
+        args.state_db.as_ref(),
+        auth_manager.as_ref(),
+        &args.config.codex_home,
+    )
+    .await
+    .map_err(|err| {
+        IoError::other(format!(
+            "failed to recover interrupted account transition before serving in-process requests: {err}"
+        ))
+    })?;
     let channel_capacity = args.channel_capacity.max(1);
     let installation_id_result = resolve_installation_id(&args.config.codex_home).await;
     let installation_id = installation_id_result?;

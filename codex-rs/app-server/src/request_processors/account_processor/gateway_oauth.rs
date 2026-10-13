@@ -168,13 +168,19 @@ impl AccountRequestProcessor {
         }
     }
 
-    pub(super) fn cancel_gateway_login(&self) {
-        let active = self
-            .gateway_login
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        if let Some(active) = active.as_ref() {
-            active.cancel.cancel();
+    pub(super) async fn cancel_gateway_login(&self) {
+        let finished = {
+            let active = self
+                .gateway_login
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            active.as_ref().map(|active| {
+                active.cancel.cancel();
+                active.finished.clone()
+            })
+        };
+        if let Some(finished) = finished {
+            finished.cancelled().await;
         }
     }
 }

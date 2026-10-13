@@ -98,6 +98,7 @@ mod app_info;
 mod app_server_tracing;
 mod attestation;
 mod auth_mode;
+mod auth_transition_lock;
 mod bespoke_event_handling;
 mod code_mode_host;
 mod codex_home_metrics;
@@ -666,6 +667,17 @@ pub async fn run_main_with_transport_options(
         }
     };
     let state_db = state_db_init.state_db;
+    crate::auth_transition_lock::recover_pending_auth_transition(
+        state_db.as_ref(),
+        auth_manager.as_ref(),
+        &config.codex_home,
+    )
+    .await
+    .map_err(|err| {
+        std::io::Error::other(format!(
+            "failed to recover interrupted account transition before serving app-server requests: {err}"
+        ))
+    })?;
     if let Some(recovery_notice) = state_db_init.recovery_notice {
         config_warnings.push(ConfigWarningNotification {
             summary: SQLITE_RECOVERY_CONFIG_WARNING_SUMMARY.to_string(),

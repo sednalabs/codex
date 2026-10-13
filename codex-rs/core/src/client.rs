@@ -248,6 +248,7 @@ enum ClientRouting {
 struct CurrentClientSetup {
     auth: Option<CodexAuth>,
     auth_owner_generation: Option<u64>,
+    auth_manager: Option<Arc<AuthManager>>,
     auth_revision: Option<u64>,
     api_provider: ApiProvider,
     redirect_policy: ClientRedirectPolicy,
@@ -1615,6 +1616,7 @@ impl ModelClient {
             return Ok(CurrentClientSetup {
                 auth,
                 auth_owner_generation,
+                auth_manager: auth_manager.clone(),
                 auth_revision,
                 api_provider,
                 redirect_policy,
@@ -1630,12 +1632,28 @@ impl ModelClient {
     /// Resolves the complete provider identity used to admit a trusted automatic operation.
     pub(crate) async fn current_provider_authority_and_automatic_turn_principal(
         &self,
+        expected_auth_epoch: Option<i64>,
     ) -> Result<(ProviderAuthority, Option<String>)> {
         let setup = self
             .current_client_setup(ClientRouting::Workspace, /*expected_authority*/ None)
             .await?;
         let authority = setup.authority;
-        let principal = setup.automatic_turn_principal;
+        // The witness is stored on the exact AuthManager/cache revision used by this setup, not
+        // on a cloneable StateRuntime shared by other app-server instances.
+        let principal = match expected_auth_epoch {
+            Some(auth_epoch) => setup
+                .auth_manager
+                .as_ref()
+                .zip(setup.auth_revision)
+                .and_then(|(manager, revision)| {
+                    manager.automatic_turn_principal_if_auth_epoch_reconciled(
+                        auth_epoch,
+                        revision,
+                        setup.automatic_turn_principal.clone(),
+                    )
+                }),
+            None => setup.automatic_turn_principal,
+        };
         setup.request_initiation.cancel();
         Ok((authority, principal))
     }

@@ -295,9 +295,24 @@ impl StateRuntime {
             return None;
         }
         sqlx::query_as(
-            "SELECT COALESCE(c.settings_generation, 0), a.generation FROM usage_automatic_turn_auth_epochs AS a LEFT JOIN usage_automatic_turn_chains AS c ON c.thread_id = ? WHERE a.id = 1",
+            "SELECT COALESCE(c.settings_generation, 0), a.generation FROM usage_automatic_turn_auth_epochs AS a LEFT JOIN usage_automatic_turn_chains AS c ON c.thread_id = ? WHERE a.id = 1 AND a.transition_pending = 0",
         )
         .bind(thread_id.to_string())
+        .fetch_optional(self.usage_ledger_pool().as_ref())
+        .await
+        .ok()
+        .flatten()
+    }
+
+    /// Return the current auth epoch only when no account transition is pending. The owning
+    /// AuthManager records its own reconciliation witness after a successful reload.
+    pub async fn automatic_turn_current_auth_epoch(&self) -> Option<i64> {
+        if self.usage_ledger_pool().is_closed() {
+            return None;
+        }
+        sqlx::query_scalar::<_, i64>(
+            "SELECT generation FROM usage_automatic_turn_auth_epochs WHERE id = 1 AND transition_pending = 0",
+        )
         .fetch_optional(self.usage_ledger_pool().as_ref())
         .await
         .ok()
@@ -383,6 +398,79 @@ impl StateRuntime {
             .await?;
         tx.commit().await?;
         Ok(())
+    }
+
+    /// Begin a durable app-server authentication transition before changing persisted or cached
+    /// account state. This revokes existing tickets and prevents new ticket issue/redemption
+    /// until the matching transition is completed after auth has been reloaded.
+    pub async fn begin_automatic_turn_auth_transition(&self) -> anyhow::Result<i64> {
+        let pool = self.usage_ledger_pool();
+        anyhow::ensure!(!pool.is_closed(), "automatic-turn state is unavailable");
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+        sqlx::query(
+            "UPDATE usage_automatic_turn_auth_epochs SET generation = generation + 1, transition_pending = 1 WHERE id = 1",
+        )
+        .execute(&mut *tx)
+        .await?;
+        let generation: i64 = sqlx::query_scalar(
+            "SELECT generation FROM usage_automatic_turn_auth_epochs WHERE id = 1 AND transition_pending = 1",
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+        sqlx::query(
+            "UPDATE usage_automatic_turn_chains SET generation = generation + 1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')",
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("DELETE FROM usage_automatic_turn_eligibility")
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(generation)
+    }
+
+    /// Return the persisted transition token, if startup found an interrupted auth change.
+    /// The caller must first establish the current AuthManager state, and must serialize startup
+    /// recovery with account transitions before completing this token.
+    pub async fn pending_automatic_turn_auth_transition(&self) -> anyhow::Result<Option<i64>> {
+        let generation = sqlx::query_scalar::<_, i64>(
+            "SELECT generation FROM usage_automatic_turn_auth_epochs WHERE id = 1 AND transition_pending = 1",
+        )
+        .fetch_optional(self.usage_ledger_pool().as_ref())
+        .await?;
+        Ok(generation)
+    }
+
+    /// Complete a transition only if it still owns the pending generation. A stale completion
+    /// cannot clear a newer login/logout transition. Call only after the current AuthManager has
+    /// reloaded and established its current authenticated state.
+    pub async fn complete_automatic_turn_auth_transition(
+        &self,
+        transition_generation: i64,
+    ) -> anyhow::Result<bool> {
+        let pool = self.usage_ledger_pool();
+        anyhow::ensure!(!pool.is_closed(), "automatic-turn state is unavailable");
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+        let updated = sqlx::query(
+            "UPDATE usage_automatic_turn_auth_epochs SET generation = generation + 1, transition_pending = 0 WHERE id = 1 AND generation = ? AND transition_pending = 1",
+        )
+        .bind(transition_generation)
+        .execute(&mut *tx)
+        .await?;
+        if updated.rows_affected() != 1 {
+            tx.rollback().await?;
+            return Ok(false);
+        }
+        sqlx::query(
+            "UPDATE usage_automatic_turn_chains SET generation = generation + 1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')",
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("DELETE FROM usage_automatic_turn_eligibility")
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(true)
     }
 
     /// Bind the operation, target precondition, and current thread context to a pending ticket.
@@ -484,7 +572,7 @@ impl StateRuntime {
             return Ok(false);
         }
         let result = sqlx::query(
-            "UPDATE usage_automatic_turn_eligibility SET admitted_client_user_message_id = ?, admitted_operation_kind = ?, admitted_expected_turn_id = ? WHERE thread_id = ? AND trigger_turn_id = ? AND capability = ? AND principal_identity = ? AND allowed_operation_kind = ? AND allowed_expected_turn_id IS ? AND admitted_client_user_message_id IS NULL",
+            "UPDATE usage_automatic_turn_eligibility SET admitted_client_user_message_id = ?, admitted_operation_kind = ?, admitted_expected_turn_id = ? WHERE thread_id = ? AND trigger_turn_id = ? AND capability = ? AND principal_identity = ? AND allowed_operation_kind = ? AND allowed_expected_turn_id IS ? AND admitted_client_user_message_id IS NULL AND EXISTS (SELECT 1 FROM usage_automatic_turn_auth_epochs WHERE id = 1 AND transition_pending = 0)",
         )
         .bind(client_user_message_id)
         .bind(operation_kind)
@@ -525,6 +613,15 @@ impl StateRuntime {
             .usage_ledger_pool()
             .begin_with("BEGIN IMMEDIATE")
             .await?;
+        let transition_pending: i64 = sqlx::query_scalar(
+            "SELECT transition_pending FROM usage_automatic_turn_auth_epochs WHERE id = 1",
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+        if transition_pending != 0 {
+            tx.rollback().await?;
+            return Ok(false);
+        }
         let ticket = sqlx::query_as::<_, (String, Option<String>, i64, i64, Option<String>, Option<String>, Option<String>, Option<String>, String)>(
             "SELECT trigger_turn_id, principal_identity, settings_generation, auth_generation, allowed_operation_kind, allowed_expected_turn_id, admitted_client_user_message_id, trigger_context_fingerprint, retry_reason FROM usage_automatic_turn_eligibility WHERE thread_id = ? AND continuation_ref = ?",
         )
@@ -840,6 +937,16 @@ impl StateRuntime {
             return Ok(true);
         }
 
+        let transition_pending: i64 = sqlx::query_scalar(
+            "SELECT transition_pending FROM usage_automatic_turn_auth_epochs WHERE id = 1",
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+        if transition_pending != 0 {
+            tx.rollback().await?;
+            return Ok(false);
+        }
+
         let Some((
             trigger_turn_id,
             trigger_occurrence_id,
@@ -1031,7 +1138,14 @@ ON CONFLICT(thread_id, client_user_message_id) DO NOTHING
         )
         .fetch_one(&mut *tx)
         .await?;
-        let ticket_principal = if expected_epochs == Some((settings_generation, auth_generation)) {
+        let transition_pending: i64 = sqlx::query_scalar(
+            "SELECT transition_pending FROM usage_automatic_turn_auth_epochs WHERE id = 1",
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+        let ticket_principal = if transition_pending == 0
+            && expected_epochs == Some((settings_generation, auth_generation))
+        {
             principal
         } else {
             None
@@ -1937,6 +2051,118 @@ mod tests {
         assert_eq!(
             runtime.automatic_turn_current_epochs(thread_id).await,
             Some((1, 1))
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn auth_transition_gate_survives_restart_and_rejects_stale_completion() -> Result<()> {
+        let (runtime, _tmp_dir) = init_runtime().await?;
+        let thread_id = ThreadId::new();
+        let old_reference = issue_ticket(runtime.as_ref(), thread_id, "before-transition").await;
+
+        let first = runtime.begin_automatic_turn_auth_transition().await?;
+        assert_eq!(
+            runtime.pending_automatic_turn_auth_transition().await?,
+            Some(first)
+        );
+        assert!(
+            !reserve_retry(
+                runtime.as_ref(),
+                thread_id,
+                &old_reference,
+                "transition-client",
+                "principal:stable-test",
+            )
+            .await?
+        );
+        assert_eq!(runtime.automatic_turn_current_epochs(thread_id).await, None);
+        assert!(
+            runtime
+                .record_automatic_turn_event_with_submission_context(
+                    thread_id,
+                    &policy_error("during-transition"),
+                    Some("principal:stable-test"),
+                    None,
+                    None,
+                    /*expected_epochs*/ None,
+                )
+                .await
+                .is_none()
+        );
+
+        let sqlite = runtime.sqlite().clone();
+        runtime.close().await;
+        let reopened = StateRuntime::init(sqlite, "test-provider".to_string()).await?;
+        assert_eq!(
+            reopened.pending_automatic_turn_auth_transition().await?,
+            Some(first),
+            "startup must leave the durable gate closed until current auth has been established"
+        );
+        assert_eq!(reopened.automatic_turn_current_epochs(thread_id).await, None);
+
+        let second = reopened.begin_automatic_turn_auth_transition().await?;
+        assert_ne!(first, second);
+        assert!(
+            !reopened
+                .complete_automatic_turn_auth_transition(first)
+                .await?,
+            "a stale completion must not clear a newer transition"
+        );
+        assert_eq!(
+            reopened.pending_automatic_turn_auth_transition().await?,
+            Some(second)
+        );
+        assert!(
+            reopened
+                .complete_automatic_turn_auth_transition(second)
+                .await?
+        );
+        assert_eq!(reopened.pending_automatic_turn_auth_transition().await?, None);
+        assert!(reopened.automatic_turn_current_epochs(thread_id).await.is_some());
+
+        let replacement = issue_ticket(reopened.as_ref(), thread_id, "after-transition").await;
+        assert!(!replacement.as_str().is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn another_runtime_epoch_advance_rejects_stale_ticket_issue() -> Result<()> {
+        let tmp_dir = tempdir()?;
+        let sqlite = crate::SqliteConfig::new_for_testing(tmp_dir.path().abs());
+        let first = StateRuntime::init(sqlite.clone(), "test-provider".to_string()).await?;
+        let second = StateRuntime::init(sqlite, "test-provider".to_string()).await?;
+        let thread_id = ThreadId::new();
+
+        let first_epochs = first
+            .automatic_turn_current_epochs(thread_id)
+            .await
+            .expect("State has an initial auth epoch");
+
+        let transition = second.begin_automatic_turn_auth_transition().await?;
+        assert!(
+            second
+                .complete_automatic_turn_auth_transition(transition)
+                .await?
+        );
+
+        assert_eq!(
+            first.automatic_turn_current_epochs(thread_id).await,
+            Some((first_epochs.0, first_epochs.1 + 2))
+        );
+        assert!(
+            first
+                .record_automatic_turn_event_with_submission_context(
+                    thread_id,
+                    &policy_error("stale-cross-process-epoch"),
+                    Some("principal:stable-test"),
+                    None,
+                    None,
+                    Some(first_epochs),
+                )
+                .await
+                .is_none(),
+            "ticket issuance must reject the exact epoch captured before another process changed auth"
         );
         Ok(())
     }

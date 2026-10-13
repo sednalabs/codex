@@ -601,16 +601,18 @@ impl CodexThread {
             codex_protocol::turn_input::TurnInput::UserInput { client_id, .. } => client_id.clone(),
             _ => None,
         };
-        let (provider_authority, principal_identity) = self
-            .session
-            .services
-            .model_client
-            .current_provider_authority_and_automatic_turn_principal()
-            .await?;
         let expected_epochs = match &self.session.services.state_db {
             Some(state_db) => state_db.automatic_turn_current_epochs(self.thread_id).await,
             None => None,
         };
+        let (provider_authority, principal_identity) = self
+            .session
+            .services
+            .model_client
+            .current_provider_authority_and_automatic_turn_principal(
+                expected_epochs.map(|(_, auth_epoch)| auth_epoch),
+            )
+            .await?;
         self.submit_turn_input_with_context(
             request,
             mode,
@@ -666,7 +668,7 @@ impl CodexThread {
             .session
             .services
             .model_client
-            .current_provider_authority_and_automatic_turn_principal()
+            .current_provider_authority_and_automatic_turn_principal(Some(expected_epochs.1))
             .await?;
         let principal_identity = principal_identity.ok_or(CodexErr::AutomaticTurnContextChanged)?;
         if self

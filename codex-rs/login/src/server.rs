@@ -150,6 +150,28 @@ impl LoginServer {
             .map_err(|err| io::Error::other(format!("login server thread panicked: {err:?}")))?
     }
 
+    /// Wait for login, requesting shutdown at the deadline and still joining the callback loop
+    /// before returning. The callback may already be persisting credentials in a blocking task;
+    /// returning before the server task quiesces would release an app-server auth-transition gate
+    /// while that writer could still complete.
+    pub async fn block_until_done_with_callback_result_timeout(
+        mut self,
+        timeout: Duration,
+    ) -> io::Result<LoginCallbackResult> {
+        match tokio::time::timeout(timeout, &mut self.server_handle).await {
+            Ok(result) => result
+                .map_err(|err| io::Error::other(format!("login server thread panicked: {err:?}")))?,
+            Err(_) => {
+                self.shutdown_handle.shutdown();
+                let _ = (&mut self.server_handle).await;
+                Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "Login timed out",
+                ))
+            }
+        }
+    }
+
     /// Requests shutdown of the callback server.
     pub fn cancel(&self) {
         self.shutdown_handle.shutdown();
