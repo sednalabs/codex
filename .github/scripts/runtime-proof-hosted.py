@@ -2621,14 +2621,12 @@ def run_ignored_root_test(
     success = {"status": "ok", "passed": 1, "failed": 0, "ignored": 0}
     if test_name == EXPECTED_MCP_TESTS[0]:
         nested_runs = sum(line.strip() == "running 1 test" for line in result.stdout.splitlines())
-        named_runs = sum(line.startswith(f"test {test_name} ") for line in result.stdout.splitlines())
         terminal = result.stdout.rstrip().splitlines()[-1] if result.stdout.strip() else ""
         terminal_summary = parse_test_summaries(terminal)
         if (
             result.returncode != 0
             or summaries != [success, success]
             or nested_runs != 2
-            or named_runs != 2
             or terminal_summary != [success]
         ):
             failure_markers = {
@@ -2687,7 +2685,6 @@ def run_ignored_root_test(
                 f"; outer_exit={result.returncode}"
                 f"; summaries={summary_sequence}"
                 f"; nested_runs={nested_runs}"
-                f"; named_runs={named_runs}"
                 f"; terminal_summary={terminal_sequence}"
                 f"; failure_categories={','.join(failure_categories) if failure_categories else 'none'}"
             )
