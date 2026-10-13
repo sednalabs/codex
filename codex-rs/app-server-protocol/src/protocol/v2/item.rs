@@ -33,6 +33,7 @@ use codex_protocol::items::CollabAgentToolCallStatus as CoreCollabAgentToolCallS
 use codex_protocol::items::CommandExecutionStatus as CoreCommandExecutionStatus;
 use codex_protocol::items::DynamicToolCallStatus as CoreDynamicToolCallStatus;
 use codex_protocol::items::McpToolCallStatus as CoreMcpToolCallStatus;
+pub use codex_protocol::items::SubAgentInteractionKind;
 use codex_protocol::items::TurnItem as CoreTurnItem;
 use codex_protocol::memory_citation::MemoryCitation as CoreMemoryCitation;
 use codex_protocol::memory_citation::MemoryCitationEntry as CoreMemoryCitationEntry;
@@ -513,6 +514,10 @@ pub enum ThreadItem {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         reasoning_effort: Option<ReasoningEffort>,
+        /// Concrete mailbox operation represented by an interaction.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        interaction_kind: Option<SubAgentInteractionKind>,
     },
     WebSearch(WebSearchItem),
     #[serde(rename_all = "camelCase")]
@@ -1174,6 +1179,7 @@ impl From<CoreTurnItem> for ThreadItem {
                 agent_path: String::from(activity.agent_path),
                 model: activity.model,
                 reasoning_effort: activity.reasoning_effort,
+                interaction_kind: activity.interaction_kind,
             },
             CoreTurnItem::WebSearch(search) => ThreadItem::WebSearch(WebSearchItem {
                 id: search.id,

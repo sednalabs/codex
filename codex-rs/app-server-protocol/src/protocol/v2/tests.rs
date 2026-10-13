@@ -17,6 +17,7 @@ use codex_protocol::items::McpToolCallItem;
 use codex_protocol::items::McpToolCallStatus as CoreMcpToolCallStatus;
 use codex_protocol::items::ReasoningItem;
 use codex_protocol::items::SubAgentActivityItem;
+use codex_protocol::items::SubAgentInteractionKind as CoreSubAgentInteractionKind;
 use codex_protocol::items::TurnItem;
 use codex_protocol::items::UserMessageItem;
 use codex_protocol::items::WebSearchItem as CoreWebSearchItem;
@@ -2959,6 +2960,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             .expect("worker path"),
         model: Some("gpt-5.4".to_string()),
         reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::High),
+        interaction_kind: Some(CoreSubAgentInteractionKind::SendMessage),
     });
 
     assert_eq!(
@@ -2970,6 +2972,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             agent_path: "/root/worker".to_string(),
             model: Some("gpt-5.4".to_string()),
             reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::High),
+            interaction_kind: Some(SubAgentInteractionKind::SendMessage),
         }
     );
 

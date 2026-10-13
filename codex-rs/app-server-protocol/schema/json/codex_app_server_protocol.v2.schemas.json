@@ -15356,6 +15356,13 @@
       ],
       "type": "string"
     },
+    "SubAgentInteractionKind": {
+      "enum": [
+        "send_message",
+        "followup_task"
+      ],
+      "type": "string"
+    },
     "SubAgentSource": {
       "oneOf": [
         {
@@ -16917,6 +16924,17 @@
             },
             "id": {
               "type": "string"
+            },
+            "interactionKind": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/SubAgentInteractionKind"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Concrete mailbox operation represented by an interaction."
             },
             "kind": {
               "$ref": "#/definitions/SubAgentActivityKind"
