@@ -98,7 +98,7 @@
     "codex-rs/codex-mcp/Cargo.toml": "0d4abb5107785b4a6f824b2a26fdcc17d25f61058b5f35c741c3d0608fd0ef2e",
     "codex-rs/codex-mcp/src/lib.rs": "2f4f1fb78be1f117d43b63cc194de2417ab604d9b4ec85baea1ef03e83142538",
     "codex-rs/codex-mcp/src/protected_http_client.rs": "987e22530f799fcc9c0758352bbe248b189802216b69aa1a5bd03ba82ec362be",
-    "codex-rs/codex-mcp/src/protected_http_client_tests.rs": "6d37656b6c0add2e59e01136cc52a1c05121030d8d4ff65e7459fe1ea362967f",
+    "codex-rs/codex-mcp/src/protected_http_client_tests.rs": "9aac2c844151880cc2253bfbe822646e804d42a2e5b8dec0dc63b36c880abe33",
     "codex-rs/codex-mcp/src/rmcp_client.rs": "a310966407a29c921bd3e8a0a6a138c677703f720b21e252c1ee09a0bbee27c1",
     "codex-rs/codex-mcp/src/server.rs": "e7594d31bbea6e50f2d992fd659f2933fc66c194464e58977532b61c7177886d",
     "codex-rs/core/Cargo.toml": "8dd6218698f63e22f2a2404a91f1b5ad276f3fb55e8d2d022c9f38fb25de703f",
@@ -130,7 +130,7 @@
     "docs/divergences/index.yaml": "cc00454e2d9da5d284e873636d6a1aed92b1f60bbae7b5f24fb8988cfb3371f7",
     "docs/downstream-regression-matrix.md": "bc2b98f7a9655eed452e54e79871df9acb1be463d2ba1d1354d86450edd05bb2"
   },
-  "product_source_commit": "863d3f3c323b4420fc3bb489ac4c9e8d489bbfd0",
+  "product_source_commit": "02a1d2985bf4f73017bba1853f7a85b1426258c8",
   "repository": "sednalabs/codex",
   "schema_version": 1,
   "toolchains": {

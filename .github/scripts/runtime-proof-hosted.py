@@ -112,7 +112,7 @@ ROOT_FIXTURE_ACK_FAILURE = re.compile(
 )
 ROOT_FIXTURE_STARTUP_FAILURE = re.compile(
     r"^runtime-proof-root-startup-failure:"
-    r"(runtime_auth|runtime_proof|provider_auth|runtime_config|runtime_protection|empty|unclassified|unavailable)$"
+    r"(runtime_auth|runtime_proof|provider_auth|runtime_config|runtime_protection|io_failure|empty|unclassified|unavailable)$"
 )
 ROOT_FIXTURE_FD_LAYOUT = re.compile(
     r"^runtime-proof-root-fd-layout:"
@@ -2620,6 +2620,17 @@ def run_ignored_root_test(
                 for marker, category in failure_markers.items()
                 if marker in result.stdout
             )
+            startup_failures = {
+                match.group(1)
+                for line in result.stdout.splitlines()
+                if (match := ROOT_FIXTURE_STARTUP_FAILURE.fullmatch(line.strip()))
+                is not None
+            }
+            failure_categories.extend(
+                f"child_startup_{category}"
+                for category in sorted(startup_failures)
+            )
+            failure_categories = sorted(set(failure_categories))
             summary_sequence = ",".join(
                 f"{summary['status']}:{summary['passed']}/{summary['failed']}/{summary['ignored']}"
                 for summary in summaries
