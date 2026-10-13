@@ -9,7 +9,10 @@ fn certificate_digest_matches_ops_protocol_vector() {
         digest,
         "52e6a94793e2f34cfcf40646b31650cb9d72ebda7a063024c385a5cad3ef353e"
     );
-    assert_eq!(wire::digest(b"test-certificate"), format!("sha256:{digest}"));
+    assert_eq!(
+        wire::digest(b"test-certificate"),
+        format!("sha256:{digest}")
+    );
 }
 
 #[test]

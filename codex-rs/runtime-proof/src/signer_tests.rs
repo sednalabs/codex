@@ -369,10 +369,12 @@ fn issuer_certificate_and_native_invocation_use_one_positive_wire_vector() {
         wire::certificate_digest(certificate.as_bytes())
     );
     assert_eq!(request_claims.certificate_sha256.len(), 64);
-    assert!(request_claims
-        .certificate_sha256
-        .bytes()
-        .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()));
+    assert!(
+        request_claims
+            .certificate_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    );
     assert_eq!(request_claims.runtime_incarnation, runtime_incarnation);
     assert_eq!(request_claims.execution_nonce, execution_nonce);
     assert_eq!(request_claims.provider_thread_id, "codex-session-thread");
