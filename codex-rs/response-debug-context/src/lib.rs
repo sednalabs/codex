@@ -52,7 +52,9 @@ pub fn extract_response_debug_context(transport: &TransportError) -> ResponseDeb
 
 pub fn extract_response_debug_context_from_api_error(error: &ApiError) -> ResponseDebugContext {
     match error {
-        ApiError::Transport(transport) => extract_response_debug_context(transport),
+        ApiError::Transport(transport) | ApiError::TransientAvailability(transport) => {
+            extract_response_debug_context(transport)
+        }
         _ => ResponseDebugContext::default(),
     }
 }
@@ -72,7 +74,9 @@ pub fn telemetry_transport_error_message(error: &TransportError) -> String {
 
 pub fn telemetry_api_error_message(error: &ApiError) -> String {
     match error {
-        ApiError::Transport(transport) => telemetry_transport_error_message(transport),
+        ApiError::Transport(transport) | ApiError::TransientAvailability(transport) => {
+            telemetry_transport_error_message(transport)
+        }
         ApiError::Api { status, .. } => format!("api error {}", status.as_u16()),
         ApiError::Stream(err) => err.to_string(),
         ApiError::ContentFilter => {
@@ -99,6 +103,7 @@ pub fn telemetry_api_error_message(error: &ApiError) -> String {
 mod tests {
     use super::ResponseDebugContext;
     use super::extract_response_debug_context;
+    use super::extract_response_debug_context_from_api_error;
     use super::telemetry_api_error_message;
     use super::telemetry_transport_error_message;
     use codex_api::ApiError;
@@ -163,6 +168,26 @@ mod tests {
             }),
             "rate limit exceeded"
         );
+
+        let mut headers = HeaderMap::new();
+        headers.insert("x-request-id", HeaderValue::from_static("req-capacity"));
+        headers.insert("cf-ray", HeaderValue::from_static("ray-capacity"));
+        let availability = ApiError::TransientAvailability(TransportError::Http {
+            retry_after: None,
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            url: Some("https://example.com/v1/responses".to_string()),
+            headers: Some(headers),
+            body: Some(
+                r#"{"error":{"type":"rate_limit_error","code":"slow_down","message":"secret upstream body"}}"#
+                    .to_string(),
+            ),
+        });
+        let context = extract_response_debug_context_from_api_error(&availability);
+        assert_eq!(context.request_id.as_deref(), Some("req-capacity"));
+        assert_eq!(context.cf_ray.as_deref(), Some("ray-capacity"));
+        let telemetry = telemetry_api_error_message(&availability);
+        assert_eq!(telemetry, "http 503");
+        assert!(!telemetry.contains("secret upstream body"));
     }
 
     #[test]

@@ -7,6 +7,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
+use std::sync::Weak;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -20,6 +21,7 @@ use codex_attachment_store::AttachmentStore;
 use codex_config::CloudConfigBundleLoader;
 use codex_core::CodexThread;
 pub use codex_core::StartThreadOptions;
+use codex_core::StateDbHandle;
 use codex_core::ThreadManager;
 use codex_core::TimeProvider;
 pub use codex_core::TurnInputRequest;
@@ -33,6 +35,7 @@ use codex_exec_server::CreateDirectoryOptions;
 use codex_exec_server::ExecutorFileSystem;
 use codex_exec_server::RemoveOptions;
 use codex_extension_api::ExtensionRegistry;
+use codex_extension_api::ExtensionRegistryBuilder;
 use codex_extension_api::LoadInstructionsFuture;
 use codex_extension_api::UserInstructionsProvider;
 use codex_extension_api::empty_extension_registry;
@@ -97,6 +100,11 @@ use wiremock::matchers::path_regex;
 
 type ConfigMutator = dyn FnOnce(&mut Config) + Send;
 type PreBuildHook = dyn FnOnce(&Path) + Send + 'static;
+type ExtensionBuilderHook = dyn FnOnce(
+        &mut ExtensionRegistryBuilder<Config>,
+        Option<StateDbHandle>,
+        Weak<ThreadManager>,
+    ) + Send;
 type WorkspaceSetup = dyn FnOnce(AbsolutePathBuf, Arc<dyn ExecutorFileSystem>) -> BoxFuture<'static, Result<()>>
     + Send;
 const TEST_MODEL_WITH_EXPERIMENTAL_TOOLS: &str = "test-gpt-5.1-codex";
@@ -406,6 +414,7 @@ impl TestAuth {
 pub struct TestCodexBuilder {
     config_mutators: Vec<Box<ConfigMutator>>,
     thread_manager_configurer: Option<Box<dyn FnOnce(ThreadManager) -> ThreadManager + Send>>,
+    extension_builder_hook: Option<Box<ExtensionBuilderHook>>,
     auth: TestAuth,
     analytics_events_client: Option<AnalyticsEventsClient>,
     pre_build_hooks: Vec<Box<PreBuildHook>>,
@@ -426,6 +435,22 @@ pub struct TestCodexBuilder {
 }
 
 impl TestCodexBuilder {
+    /// Installs test extensions while the real thread manager is being built.
+    /// The callback receives the same state handle and cyclic weak reference
+    /// that the manager itself uses; normal builders need no callback.
+    pub fn with_extension_builder(
+        mut self,
+        configure: impl FnOnce(
+                &mut ExtensionRegistryBuilder<Config>,
+                Option<StateDbHandle>,
+                Weak<ThreadManager>,
+            ) + Send
+            + 'static,
+    ) -> Self {
+        self.extension_builder_hook = Some(Box::new(configure));
+        self
+    }
+
     pub fn with_thread_store(mut self, thread_store: Arc<dyn ThreadStore>) -> Self {
         self.thread_store = Some(thread_store);
         self
@@ -852,6 +877,9 @@ impl TestCodexBuilder {
             .or_else(|| codex_utils_cargo_bin::cargo_bin("codex-code-mode-host").ok());
         let thread_manager = Arc::new_cyclic(|manager| {
             let mut extensions = self.extensions.to_builder();
+            if let Some(configure) = self.extension_builder_hook.take() {
+                configure(&mut extensions, state_db.clone(), manager.clone());
+            }
             codex_core::install_agent_message_board(&mut extensions, manager.clone());
             if config.features.enabled(Feature::GuardianV2) {
                 codex_guardian_v2::install(&mut extensions, auth_manager.clone(), manager.clone());
@@ -1522,6 +1550,7 @@ fn function_call_output<'a>(bodies: &'a [Value], call_id: &str) -> &'a Value {
 pub fn test_codex() -> TestCodexBuilder {
     TestCodexBuilder {
         thread_manager_configurer: None,
+        extension_builder_hook: None,
         config_mutators: vec![Box::new(|config| {
             config
                 .features

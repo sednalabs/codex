@@ -139,8 +139,18 @@ impl SamplingExecution {
                 | TransportError::Timeout
                 | TransportError::Connection(_)
                 | TransportError::Network(_),
+            ))
+            | LunaSamplerError::Api(ApiError::TransientAvailability(
+                TransportError::RetryLimit
+                | TransportError::Timeout
+                | TransportError::Connection(_)
+                | TransportError::Network(_),
             )) => true,
             LunaSamplerError::Api(ApiError::Transport(TransportError::Http { status, .. }))
+            | LunaSamplerError::Api(ApiError::TransientAvailability(TransportError::Http {
+                status,
+                ..
+            }))
             | LunaSamplerError::Api(ApiError::Api { status, .. }) => {
                 if *status == StatusCode::UNAUTHORIZED {
                     let Some(recovery) = auth_recovery.as_mut() else {
@@ -164,6 +174,11 @@ impl SamplingExecution {
             | LunaSamplerError::QueueFull
             | LunaSamplerError::Api(
                 ApiError::Transport(
+                    TransportError::Build(_)
+                    | TransportError::ResponseTooLarge { .. }
+                    | TransportError::Policy(_),
+                )
+                | ApiError::TransientAvailability(
                     TransportError::Build(_)
                     | TransportError::ResponseTooLarge { .. }
                     | TransportError::Policy(_),
