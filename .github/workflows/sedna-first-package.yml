@@ -232,6 +232,36 @@ jobs:
         with:
           targets: x86_64-unknown-linux-gnu
 
+      - name: Refresh source-matched Cargo lock
+        shell: bash
+        env:
+          EXPECTED_SOURCE_SHA: ${{ needs.identity.outputs.source_sha }}
+          EXPECTED_SOURCE_TREE: ${{ needs.identity.outputs.source_tree }}
+        run: |
+          set -euo pipefail
+          if [[ "$(git rev-parse HEAD)" != "${EXPECTED_SOURCE_SHA}" || "$(git rev-parse HEAD^{tree})" != "${EXPECTED_SOURCE_TREE}" ]]; then
+            echo "The lock refresh checkout does not match the frozen source identity." >&2
+            exit 1
+          fi
+          if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
+            echo "Refusing to refresh the lock from a dirty source checkout." >&2
+            git status --short >&2
+            exit 1
+          fi
+
+          (cd codex-rs && cargo update --workspace)
+          changed_paths="$(git diff --name-only HEAD)"
+          if [[ -n "${changed_paths}" && "${changed_paths}" != "codex-rs/Cargo.lock" ]]; then
+            echo "The lock refresh changed unexpected paths." >&2
+            printf '%s\n' "${changed_paths}" >&2
+            exit 1
+          fi
+          if [[ -n "$(git diff --cached --name-only)" || -n "$(git ls-files --others --exclude-standard)" ]]; then
+            echo "The lock refresh staged changes or created unexpected untracked files." >&2
+            git status --short >&2
+            exit 1
+          fi
+
       - name: Configure source-matched rusty_v8 artifacts
         uses: ./.github/actions/setup-rusty-v8
         with:
@@ -259,13 +289,18 @@ jobs:
             echo "The preparation checkout does not match the frozen source identity." >&2
             exit 1
           fi
-          if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
-            echo "Refusing to generate outputs from a dirty source checkout." >&2
+          changed_paths="$(git diff --name-only HEAD)"
+          if [[ -n "${changed_paths}" && "${changed_paths}" != "codex-rs/Cargo.lock" ]]; then
+            echo "Refusing to generate outputs after an unexpected tracked change." >&2
+            printf '%s\n' "${changed_paths}" >&2
+            exit 1
+          fi
+          if [[ -n "$(git diff --cached --name-only)" || -n "$(git ls-files --others --exclude-standard)" ]]; then
+            echo "Refusing to generate outputs after staged or untracked changes." >&2
             git status --short >&2
             exit 1
           fi
 
-          (cd codex-rs && cargo update --workspace)
           just write-config-schema
           (
             cd codex-rs
