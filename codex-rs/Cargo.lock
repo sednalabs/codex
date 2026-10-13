@@ -3552,6 +3552,7 @@ dependencies = [
  "codex-analytics",
  "codex-core",
  "codex-extension-api",
+ "codex-features",
  "codex-otel",
  "codex-prompts",
  "codex-protocol",
@@ -3560,12 +3561,15 @@ dependencies = [
  "codex-tools",
  "codex-utils-absolute-path",
  "codex-utils-template",
+ "core_test_support",
  "pretty_assertions",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
  "tracing",
+ "wiremock",
+ "zstd",
 ]
 
 [[package]]
