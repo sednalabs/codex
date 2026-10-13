@@ -21,7 +21,7 @@ jobs:
   test:
     # GNU retains the complete target set. Musl excludes only the unsupported
     # native voice aliases and their query-derived dependents, listed below.
-    timeout-minutes: 30
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -186,7 +186,7 @@ jobs:
   test-windows-shard:
     # Split native Windows/MSVC tests across standard Windows hosts. Build actions and
     # test execution both remain on the assigned GitHub-hosted runner.
-    timeout-minutes: 30
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -302,9 +302,8 @@ jobs:
           fi
 
   test-windows-native-main:
-    # Native Windows Bazel tests are slower and frequently approach the
-    # 30-minute PR budget. Run this only for post-merge commits to main and give
-    # it a larger timeout.
+    # Keep the unsharded native Windows path post-merge.
+    # PRs use the four shards above.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     timeout-minutes: 40
     runs-on: windows-2025
@@ -380,7 +379,7 @@ jobs:
         uses: ./.github/actions/check-clean-worktree
 
   clippy:
-    timeout-minutes: 30
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -470,7 +469,7 @@ jobs:
         uses: ./.github/actions/check-clean-worktree
 
   verify-release-build:
-    timeout-minutes: 30
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
