@@ -115,7 +115,7 @@ ROOT_FIXTURE_STARTUP_FAILURE = re.compile(
     r"(runtime_auth|runtime_proof|provider_auth|runtime_config|runtime_protection|io_failure|empty|unclassified|unavailable)$"
 )
 ROOT_FIXTURE_LAUNCH_FAILURE = re.compile(
-    r"^runtime-proof-root-launch-failure:"
+    r"runtime-proof-root-launch-failure:"
     r"(fixture_setup|spawn|bootstrap_send|auth_send|ack_setup|ack_wait|"
     r"ack_validation|child_wait|child_exit|child_timeout):"
     r"(permission_denied|not_found|timed_out|would_block|unexpected_eof|connection_reset|broken_pipe|other)$"
@@ -633,6 +633,13 @@ def parse_root_fixture_cli_activity(line: str) -> tuple[int, int] | None:
     if max(claims, models) > MAX_ROOT_FIXTURE_CLI_ACTIVITY_COUNT:
         return None
     return claims, models
+
+
+def parse_root_fixture_launch_failure(line: str) -> tuple[str, str] | None:
+    match = ROOT_FIXTURE_LAUNCH_FAILURE.search(line.strip())
+    if match is None:
+        return None
+    return match.group(1), match.group(2)
 
 
 def parse_root_fixture_cli_mcp_phases(line: str) -> tuple[int, int, int, int, int] | None:
@@ -1276,6 +1283,20 @@ def verify_test_summary_parser_contract(manifest: dict[str, Any]) -> None:
     child_and_outer = f"{single_summary}\n{single_summary}"
     if parse_test_summaries(child_and_outer) != expected_single * 2:
         refuse("test summary parser contract failed")
+
+    launch_failure_line = (
+        f"test {EXPECTED_MCP_TESTS[0]} ... "
+        "runtime-proof-root-launch-failure:ack_wait:timed_out"
+    )
+    if parse_root_fixture_launch_failure(launch_failure_line) != (
+        "ack_wait",
+        "timed_out",
+    ):
+        refuse("root launch failure parser contract failed")
+    if parse_root_fixture_launch_failure(
+        "runtime-proof-root-launch-failure:ack_wait:raw detail"
+    ) is not None:
+        refuse("root launch failure parser contract failed")
 
     hash_measurement = (
         "runtime-proof-root-cli-hash:bytes=123456;elapsed_ms=9\n"
@@ -2637,9 +2658,11 @@ def run_ignored_root_test(
                 is not None
             }
             launch_failures = {
-                (match.group(1), match.group(2))
+                launch_failure
                 for line in result.stdout.splitlines()
-                if (match := ROOT_FIXTURE_LAUNCH_FAILURE.fullmatch(line.strip()))
+                if (
+                    launch_failure := parse_root_fixture_launch_failure(line)
+                )
                 is not None
             }
             failure_categories.extend(
