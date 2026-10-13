@@ -12564,9 +12564,12 @@ async fn interrupting_remote_compaction_collection_prevents_model_fallback_dispa
     session
         .spawn_task(turn, Vec::new(), crate::tasks::RegularTask::new())
         .await;
-    timeout(Duration::from_secs(10), server.wait_for_request_count(/*count*/ 1))
-        .await
-        .expect("primary compaction request should begin collection");
+    timeout(
+        Duration::from_secs(10),
+        server.wait_for_request_count(/*count*/ 1),
+    )
+    .await
+    .expect("primary compaction request should begin collection");
     assert_eq!(
         timeout(Duration::from_secs(10), collection_observer_rx.recv())
             .await

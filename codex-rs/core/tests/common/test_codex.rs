@@ -442,7 +442,7 @@ impl TestCodexBuilder {
             Option<StateDbHandle>,
             Weak<ThreadManager>,
         ) + Send
-            + 'static,
+        + 'static,
     ) -> Self {
         self.extension_builder_hook = Some(Box::new(configure));
         self

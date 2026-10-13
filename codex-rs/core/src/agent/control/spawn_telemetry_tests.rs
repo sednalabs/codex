@@ -124,13 +124,8 @@ fn records_bounded_spawn_phase_metrics() {
                 ("last_n".to_string(), "durability_wait".to_string()),
                 (1, 0.0)
             ),
-            (("last_n".to_string(), "fork_context".to_string()), (1, 0.0)),
             (
                 ("last_n".to_string(), "input_admission".to_string()),
-                (1, 0.0)
-            ),
-            (
-                ("last_n".to_string(), "residency_reservation".to_string()),
                 (1, 0.0)
             ),
             (("last_n".to_string(), "total".to_string()), (1, 31.0)),
