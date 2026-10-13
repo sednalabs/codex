@@ -466,7 +466,7 @@ async fn protected_cli_root_and_delegate_calls_are_signed_and_redacted() -> Resu
         );
         anyhow::ensure!(
             invocation_claims.certificate_sha256
-                == format!("sha256:{}", sha256_hex(certificate.as_bytes())),
+                == sha256_hex(certificate.as_bytes()),
             "invocation certificate binding mismatch"
         );
         anyhow::ensure!(

@@ -257,7 +257,7 @@ fn launch_protected_child_inner(failure_phase: &mut &'static str) -> anyhow::Res
     )?;
     let certificate_path = root.join("certificate.jwt");
     std::fs::write(&certificate_path, &certificate)?;
-    let certificate_sha256 = format!("sha256:{}", sha256_file(&certificate_path)?);
+    let certificate_sha256 = sha256_file(&certificate_path)?;
     let auth = json!({
         "version": 1,
         "certificate_sha256": certificate_sha256,
