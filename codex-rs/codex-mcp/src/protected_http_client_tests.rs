@@ -81,7 +81,13 @@ fn retained_protected_http_client_rejects_a_send_after_imported_auth_expiry() {
 }
 
 fn run_protected_child() -> anyhow::Result<()> {
-    codex_runtime_proof::startup::initialize_from_environment()?;
+    if let Err(error) = codex_runtime_proof::startup::initialize_from_environment() {
+        eprintln!(
+            "runtime-proof-root-startup-failure:{}",
+            startup_error_category(&error)
+        );
+        return Err(error);
+    }
     let recorder = Arc::new(RecordingClient::default());
     let http = ProtectedMcpHttpClient::new(recorder.clone(), SERVER, RECIPIENT);
     let request = || HttpRequestParams {
@@ -143,6 +149,42 @@ fn run_protected_child() -> anyhow::Result<()> {
         "expired retained client reached its underlying network delegate"
     );
     Ok(())
+}
+
+fn startup_error_category(error: &anyhow::Error) -> &'static str {
+    let causes = error.chain().map(ToString::to_string).collect::<Vec<_>>();
+    if error
+        .chain()
+        .any(|cause| cause.downcast_ref::<std::io::Error>().is_some())
+    {
+        return "io_failure";
+    }
+    let causes = causes.join(" ").to_ascii_lowercase();
+    if causes.contains("provider")
+        || causes.contains("chatgpt")
+        || causes.contains("jwt")
+        || causes.contains("id token")
+    {
+        "provider_auth"
+    } else if causes.contains("config") || causes.contains("codex_home") {
+        "runtime_config"
+    } else if causes.contains("capabilit")
+        || causes.contains("protection")
+        || causes.contains("no_new_privs")
+        || causes.contains("dumpable")
+        || causes.contains("identity")
+    {
+        "runtime_protection"
+    } else if causes.contains("certificate")
+        || causes.contains("runtime proof")
+        || causes.contains("bootstrap")
+    {
+        "runtime_proof"
+    } else if causes.contains("auth") || causes.contains("credential") {
+        "runtime_auth"
+    } else {
+        "unclassified"
+    }
 }
 
 fn launch_protected_child() -> anyhow::Result<()> {
