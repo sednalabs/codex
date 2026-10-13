@@ -243,6 +243,7 @@ async fn thread_archive_shuts_down_resumed_archived_descendant() -> Result<()> {
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: parent_id.clone(),
                 input: vec![UserInput::Text {
                     text: RESUME_PROMPT.to_string(),
@@ -850,6 +851,7 @@ async fn thread_archive_clears_stale_subscriptions_before_resume() -> Result<()>
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 client_user_message_id: None,
                 input: vec![UserInput::Text {
@@ -918,6 +920,7 @@ async fn thread_archive_clears_stale_subscriptions_before_resume() -> Result<()>
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id,
                 client_user_message_id: None,
                 input: vec![UserInput::Text {

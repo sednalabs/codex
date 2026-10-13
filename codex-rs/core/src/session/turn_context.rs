@@ -3,6 +3,7 @@ use super::token_budget::has_explicit_settings;
 use super::token_budget::resolve_token_budget;
 use super::*;
 use crate::config::TokenBudgetConfig;
+use crate::client::ProviderAuthority;
 use crate::cyber_access_program;
 use crate::environment_selection::EnvironmentConfigOrigin;
 use crate::environment_selection::TurnEnvironmentSnapshot;
@@ -47,6 +48,7 @@ use futures::FutureExt;
 use futures::future::BoxFuture;
 use futures::future::Shared;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -322,6 +324,8 @@ pub(crate) struct NewTurnContextOptions {
 #[derive(Debug)]
 pub struct TurnContext {
     pub(crate) sub_id: String,
+    /// Opaque authority captured for a capability-validated automatic turn. Process-local only.
+    pub(crate) automatic_turn_provider_authority: OnceLock<ProviderAuthority>,
     pub(crate) trace_id: Option<String>,
     /// Call state at turn creation; model requests use the `StepContext` snapshot.
     pub(crate) realtime_active: bool,
@@ -1106,6 +1110,7 @@ impl Session {
         extension_data.insert(skills_snapshot);
         TurnContext {
             sub_id,
+            automatic_turn_provider_authority: OnceLock::new(),
             trace_id: current_span_trace_id(),
             realtime_active: false,
             code_mode_available: true,

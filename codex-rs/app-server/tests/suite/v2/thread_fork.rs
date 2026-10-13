@@ -345,6 +345,7 @@ async fn thread_fork_preserves_persisted_permission_profile_and_honors_overrides
             timeout(
                 DEFAULT_READ_TIMEOUT,
                 mcp.start_turn_and_wait_for_completion(TurnStartParams {
+                    automatic_turn_continuation: None,
                     thread_id: thread.id.clone(),
                     input: vec![UserInput::Text {
                         text: "persist permission profile".to_string(),
@@ -453,6 +454,7 @@ async fn assert_thread_fork_preserves_persisted_approvals_reviewer(
 
         let turn_id = mcp
             .send_turn_start_request(TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 input: vec![UserInput::Text {
                     text: "materialize this thread".to_string(),
@@ -475,6 +477,7 @@ async fn assert_thread_fork_preserves_persisted_approvals_reviewer(
 
         let second_turn_id = mcp
             .send_turn_start_request(TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 input: vec![UserInput::Text {
                     text: "switch to auto-review".to_string(),
@@ -619,6 +622,7 @@ async fn assert_thread_fork_at_named_boundary_keeps_only_terminal_prefix(
     for text in ["first", "second", "third"] {
         let turn_request_id = mcp
             .send_turn_start_request(TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: source_thread_id.clone(),
                 client_user_message_id: None,
                 input: vec![UserInput::Text {
@@ -844,6 +848,7 @@ async fn assert_thread_fork_at_named_boundary_keeps_only_terminal_prefix(
         let completed = timeout(
             DEFAULT_READ_TIMEOUT,
             mcp.start_turn_and_wait_for_completion(TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: forked_thread.id.clone(),
                 input: vec![UserInput::Text {
                     text: "private child prompt".to_string(),
@@ -951,6 +956,7 @@ async fn thread_fork_defers_inherited_active_goal_until_next_turn() -> Result<()
         let completed = timeout(
             DEFAULT_READ_TIMEOUT,
             mcp.start_turn_and_wait_for_completion(TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: source_thread.id.clone(),
                 input: vec![UserInput::Text {
                     text: text.to_string(),
@@ -1093,6 +1099,7 @@ async fn thread_fork_defers_inherited_active_goal_until_next_turn() -> Result<()
     timeout(
         DEFAULT_READ_TIMEOUT,
         mcp.start_turn_and_wait_for_completion(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: forked_thread.id,
             input: vec![UserInput::Text {
                 text: "retry the interrupted prompt".to_string(),
@@ -1586,6 +1593,7 @@ async fn thread_fork_creates_reference_backed_paginated_thread() -> Result<()> {
 
     let turn_id = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: forked_thread_id.clone(),
             input: vec![UserInput::Text {
                 text: "Continue from the fork".to_string(),
@@ -1994,6 +2002,7 @@ async fn assert_thread_fork_freezes_active_paginated_turn_as_interrupted(
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: ephemeral_fork.id,
                 input: vec![UserInput::Text {
                     text: "Continue in an ephemeral fork".to_string(),
@@ -2154,6 +2163,7 @@ async fn assert_thread_fork_freezes_active_paginated_turn_as_interrupted(
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: resumed_thread.id,
                 input: vec![UserInput::Text {
                     text: "Continue after cold resume".to_string(),
@@ -2514,6 +2524,7 @@ async fn assert_thread_fork_ephemeral_remains_pathless_and_omits_listing(
 
     let turn_id = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: fork_thread_id.clone(),
             client_user_message_id: None,
             input: vec![UserInput::Text {
@@ -2633,6 +2644,7 @@ async fn pathless_ephemeral_thread_rejects_codex_home_path_after_reload() -> Res
 
         let turn_id = app_server
             .send_turn_start_request(TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 client_user_message_id: None,
                 input: vec![UserInput::Text {
@@ -2754,6 +2766,7 @@ async fn inheriting_fork_preserves_parent_config(history_mode: ThreadHistoryMode
         })
         .await?;
     mcp.start_turn_and_wait_for_completion(TurnStartParams {
+        automatic_turn_continuation: None,
         thread_id: parent.thread.id.clone(),
         input: vec![UserInput::Text {
             text: "Initial turn".into(),
@@ -2801,6 +2814,7 @@ async fn inheriting_fork_preserves_parent_config(history_mode: ThreadHistoryMode
     assert!(child.thread.path.is_none());
     for id in [&child.thread.id, &parent.thread.id] {
         mcp.start_turn_and_wait_for_completion(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: id.clone(),
             input: vec![UserInput::Text {
                 text: "Continue identically".into(),
@@ -2863,6 +2877,7 @@ async fn inheriting_fork_requires_persisted_parent(
         .await?;
     if ephemeral {
         mcp.start_turn_and_wait_for_completion(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: parent.thread.id.clone(),
             input: vec![UserInput::Text {
                 text: "Complete an ephemeral turn".into(),

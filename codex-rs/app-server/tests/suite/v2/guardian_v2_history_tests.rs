@@ -352,6 +352,7 @@ async fn guardians_retain_evidence_after_compaction_and_resume(
 
         let id = app_server
             .send_turn_start_request(TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread_id.clone(),
                 input: if index == 1 && requires_sync {
                     Vec::new()
@@ -661,6 +662,7 @@ async fn guardians_retain_evidence_after_compaction_and_resume(
             };
             let completed = app_server
                 .start_turn_and_wait_for_completion(TurnStartParams {
+                    automatic_turn_continuation: None,
                     thread_id: thread_id.clone(),
                     input: Vec::new(),
                     ..Default::default()

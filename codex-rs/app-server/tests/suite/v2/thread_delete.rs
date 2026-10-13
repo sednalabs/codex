@@ -374,6 +374,7 @@ async fn thread_delete_removes_persisted_board_even_with_feature_disabled() -> R
     let thread = app.start_thread(ThreadStartParams::default()).await?.thread;
     let completed = app
         .start_turn_and_wait_for_completion(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             input: vec![UserInput::Text {
                 text: "Post the decision".into(),

@@ -273,6 +273,7 @@ async fn thread_read_preserves_file_id_and_root_from_completed_turn(
     let completed = timeout(
         DEFAULT_READ_TIMEOUT,
         mcp.start_turn_and_wait_for_completion(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             input: vec![image.clone()],
             root_turn_id: Some("causal-root".to_string()),
@@ -848,6 +849,7 @@ async fn thread_search_occurrences_reads_paginated_projection() -> Result<()> {
     ] {
         let turn_id = mcp
             .send_turn_start_request(TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: target_thread_id,
                 input: vec![UserInput::Text {
                     text: text.to_string(),
@@ -2204,6 +2206,7 @@ async fn paginated_history_lists_and_legacy_reads_use_projected_turns_and_items(
 
     let turn_start_id = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread_id.to_string(),
             client_user_message_id: None,
             input: vec![UserInput::Text {
@@ -2302,6 +2305,7 @@ async fn thread_read_reports_system_error_idle_flag_after_failed_turn() -> Resul
 
     let turn_start_id = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             client_user_message_id: None,
             input: vec![UserInput::Text {

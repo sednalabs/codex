@@ -106,6 +106,7 @@ async fn circuit_break_action_preserves_warning_and_reports_error_in_live_and_sa
             .request(|request_id| ClientRequest::TurnStart {
                 request_id,
                 params: TurnStartParams {
+                    automatic_turn_continuation: None,
                     thread_id: thread.id.clone(),
                     input: vec![UserInput::Text {
                         text: "Run the checks.".to_owned(),
@@ -216,6 +217,7 @@ async fn managed_reviewer_refreshes_global_instructions_before_reuse() -> Result
         std::fs::write(&instructions_path, instructions)?;
         let request_id = app
             .send_turn_start_request(TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: parent.id.clone(),
                 input: vec![UserInput::Text {
                     text: format!("Run the {} check.", checks[index]),
@@ -304,6 +306,7 @@ async fn managed_reviewers_reuse_fork_and_resume_after_parent_shutdown(
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: parent.id.clone(),
                 input: vec![UserInput::Text {
                     text: "Run the three checks.".to_owned(),
@@ -512,6 +515,7 @@ async fn managed_reviewers_reuse_fork_and_resume_after_parent_shutdown(
     let completed = timeout(
         TIMEOUT,
         app.start_turn_and_wait_for_completion(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: reviewer_id.clone(),
             input: vec![UserInput::Text {
                 text: "Explain your assessment.".to_owned(),

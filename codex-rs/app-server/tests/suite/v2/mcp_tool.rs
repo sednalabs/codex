@@ -376,6 +376,7 @@ async fn model_mcp_tool_call_uses_session_client_extensions() -> Result<()> {
     mcp.request::<TurnStartResponse>(|request_id| ClientRequest::TurnStart {
         request_id,
         params: TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             client_user_message_id: None,
             input: vec![V2UserInput::Text {
@@ -1039,6 +1040,7 @@ async fn mcp_tool_call_completion_notification_contains_truncated_large_result()
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id,
                 client_user_message_id: None,
                 input: vec![V2UserInput::Text {
@@ -1150,6 +1152,7 @@ async fn mcp_tool_call_hint_survives_mid_call_thread_read_and_resume() -> Result
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 client_user_message_id: None,
                 input: vec![V2UserInput::Text {

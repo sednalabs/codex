@@ -139,6 +139,7 @@ async fn code_mode_model_output_uses_structured_host_timing(
     let _: ThreadIncrementElicitationResponse = app_server.read_response(increment_id).await?;
     let start_id = app_server
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.thread.id.clone(),
             input: vec![UserInput::Text {
                 text: "run the timed operation".to_string(),
@@ -313,6 +314,7 @@ async fn app_server_shares_flag_selected_grpc_code_mode_host_across_threads() ->
         let completed = timeout(
             DEFAULT_READ_TIMEOUT,
             app_server.start_turn_and_wait_for_completion(TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.thread.id,
                 input: vec![UserInput::Text {
                     text: prompt.to_string(),

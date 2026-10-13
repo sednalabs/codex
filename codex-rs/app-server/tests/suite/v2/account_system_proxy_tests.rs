@@ -268,6 +268,7 @@ async fn browser_login_bootstraps_through_system_proxy() -> Result<()> {
         .request(ClientRequest::TurnStart {
             request_id: RequestId::Integer(3),
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: started.thread.id.clone(),
                 input: vec![UserInput::Text {
                     text: "Hello through the proxy".to_string(),

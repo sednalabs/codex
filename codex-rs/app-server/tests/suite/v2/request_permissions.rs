@@ -111,6 +111,7 @@ text(await tools.exec_command({{cmd: "{command}"}}));"#,
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 input: vec![V2UserInput::Text {
                     text: "request permission, then run the command in the same cell".to_string(),
@@ -346,6 +347,7 @@ text(await tools.apply_patch("*** Begin Patch\n*** Add File: next.txt\n+next tur
             .request(|request_id| ClientRequest::TurnStart {
                 request_id,
                 params: TurnStartParams {
+                    automatic_turn_continuation: None,
                     thread_id: thread.id.clone(),
                     input: vec![V2UserInput::Text {
                         text: "write the file".to_string(),
@@ -559,6 +561,7 @@ await tools.request_permissions({{permissions: {{file_system: {{write: ["."]}}}}
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 input: vec![V2UserInput::Text {
                     text: "start a background cell".to_string(),
@@ -629,6 +632,7 @@ await tools.request_permissions({{permissions: {{file_system: {{write: ["."]}}}}
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 input: vec![V2UserInput::Text {
                     text: "resume the background cell".to_string(),
@@ -786,6 +790,7 @@ async fn request_permissions_round_trip() -> Result<()> {
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 client_user_message_id: None,
                 environments: Some(vec![environment]),

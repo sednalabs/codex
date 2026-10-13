@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 use std::sync::Mutex;
 use std::sync::PoisonError;
 
@@ -65,6 +66,7 @@ pub(crate) struct ElicitationClientService {
     send_elicitation: Arc<SendElicitation>,
     pause_state: ElicitationPauseState,
     pending_verifications: Arc<Mutex<VerificationCancellations>>,
+    protected_output: bool,
 }
 
 // A notification handler can run before its request handler. Never evict an early
@@ -98,6 +100,8 @@ impl ElicitationClientService {
         client_info: ClientInfo,
         send_elicitation: SendElicitation,
         pause_state: ElicitationPauseState,
+        tool_list_generation: Arc<AtomicUsize>,
+        protected_output: bool,
     ) -> Self {
         let supports_openai_form = client_info
             .capabilities
@@ -123,6 +127,8 @@ impl ElicitationClientService {
             handler: LoggingClientHandler::new(
                 client_info,
                 clone_send_elicitation(Arc::clone(&send_elicitation)),
+                tool_list_generation,
+                protected_output,
             ),
             supports_openai_form,
             supports_openai_elicitation_form,
@@ -130,6 +136,7 @@ impl ElicitationClientService {
             send_elicitation,
             pause_state,
             pending_verifications: Arc::default(),
+            protected_output,
         }
     }
 
@@ -138,6 +145,12 @@ impl ElicitationClientService {
         request: Elicitation,
         context: RequestContext<RoleClient>,
     ) -> Result<ElicitationResponse, rmcp::ErrorData> {
+        if self.protected_output {
+            return Err(rmcp::ErrorData::invalid_request(
+                "server elicitation is disabled for this connection",
+                None,
+            ));
+        }
         let RequestContext { id, meta, ct, .. } = context;
         let request = restore_context_meta(request, meta);
         let user_verification = matches!(&request, Elicitation::UserVerification { .. });

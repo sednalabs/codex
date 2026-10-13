@@ -6134,6 +6134,7 @@ async fn standalone_settings_invalidate_continuation_before_delivering_acceptanc
             trace: None,
             parent_turn_id: None,
             root_turn_id: None,
+            automatic_turn: None,
             residency_guard: None,
         })
         .await
@@ -7080,10 +7081,12 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         ),
         tool_search_handler_cache: Default::default(),
         turn_environments: Arc::clone(&turn_environments),
+        automatic_turn_principals: Mutex::new(HashMap::new()),
     };
 
     let session = Session {
         thread_id,
+        execution_nonce: Uuid::new_v4(),
         installation_id: "11111111-1111-4111-8111-111111111111".to_string(),
         tx_event,
         agent_status: agent_status_tx,
@@ -8561,6 +8564,7 @@ fn submission_dispatch_span_prefers_submission_trace_context() {
             op: Op::Interrupt,
             parent_turn_id: None,
             root_turn_id: None,
+            automatic_turn: None,
             residency_guard: None,
             trace: Some(submission_trace),
         })
@@ -8591,6 +8595,7 @@ fn submission_dispatch_span_uses_debug_for_realtime_audio() {
         }),
         parent_turn_id: None,
         root_turn_id: None,
+        automatic_turn: None,
         residency_guard: None,
         trace: None,
     });
@@ -8951,6 +8956,7 @@ async fn spawn_task_turn_span_inherits_dispatch_trace_context() {
         op: Op::Interrupt,
         parent_turn_id: None,
         root_turn_id: None,
+        automatic_turn: None,
         residency_guard: None,
         trace: Some(submission_trace.clone()),
     });
@@ -9606,10 +9612,12 @@ where
         ),
         tool_search_handler_cache: Default::default(),
         turn_environments: Arc::clone(&turn_environments),
+        automatic_turn_principals: Mutex::new(HashMap::new()),
     };
 
     let session = Arc::new(Session {
         thread_id,
+        execution_nonce: Uuid::new_v4(),
         installation_id: "11111111-1111-4111-8111-111111111111".to_string(),
         tx_event,
         agent_status: agent_status_tx,

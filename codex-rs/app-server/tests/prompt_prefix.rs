@@ -57,6 +57,7 @@ async fn prompt_prefix_matches_release() -> Result<()> {
         let thread = app.start_thread(ThreadStartParams::default()).await?.thread;
         let completed = app
             .start_turn_and_wait_for_completion(TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 input: vec![UserInput::Text {
                     text: "prefix-contract-user-message".to_string(),

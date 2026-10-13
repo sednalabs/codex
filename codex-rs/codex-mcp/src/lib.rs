@@ -118,6 +118,9 @@ pub(crate) mod mcp;
 mod openai_docs_source_attribution;
 mod pagination;
 mod plugin_config;
+mod protected_http_client;
+#[cfg(all(test, target_os = "linux"))]
+mod protected_http_client_tests;
 mod resource_client;
 mod resource_origin;
 pub(crate) mod rmcp_client;

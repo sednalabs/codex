@@ -66,6 +66,7 @@ async fn thread_unsubscribe_keeps_thread_loaded_until_idle_timeout() -> Result<(
     timeout(
         DEFAULT_READ_TIMEOUT,
         mcp.start_turn_and_wait_for_completion(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread_id.clone(),
             input: vec![V2UserInput::Text {
                 text: "hello".to_string(),
@@ -272,6 +273,7 @@ async fn thread_unsubscribe_during_turn_keeps_turn_running(delay_secs: u64) -> R
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread_id.clone(),
                 client_user_message_id: None,
                 input: vec![V2UserInput::Text {
@@ -399,6 +401,7 @@ async fn thread_unsubscribe_preserves_cached_status_before_idle_unload() -> Resu
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread_id.clone(),
                 client_user_message_id: None,
                 input: vec![V2UserInput::Text {
@@ -604,6 +607,7 @@ async fn v2_child_idle_eviction_preserves_mail_and_followup_context() -> Result<
         timeout(
             DEFAULT_READ_TIMEOUT,
             mcp.start_turn_and_wait_for_completion(TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: parent.id.clone(),
                 input: vec![V2UserInput::Text {
                     text: format!("Run {tool}"),

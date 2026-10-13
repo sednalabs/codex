@@ -66,6 +66,7 @@ codex-tcp-tunnel = { workspace = true }
 codex-rmcp-client = { workspace = true }
 codex-rollout = { workspace = true }
 codex-rollout-trace = { workspace = true }
+codex-runtime-proof = { workspace = true }
 codex-sandboxing = { workspace = true }
 codex-skills-extension = { workspace = true }
 codex-state = { workspace = true }
@@ -127,6 +128,8 @@ codex-app-server-client = { workspace = true }
 codex-utils-cargo-bin = { workspace = true }
 codex-utils-pty = { workspace = true }
 flate2 = { workspace = true }
+base64 = { workspace = true }
+ed25519-dalek = { workspace = true }
 insta = { workspace = true }
 jsonwebtoken = { workspace = true }
 predicates = { workspace = true }
@@ -136,6 +139,8 @@ sqlx = { workspace = true }
 tar = { workspace = true }
 tokio-tungstenite = { workspace = true }
 vt100 = { workspace = true }
+serde_json_canonicalizer = { workspace = true }
+uuid = { workspace = true, features = ["serde", "v4"] }
 wiremock = { workspace = true }
 zstd = { workspace = true }
 

@@ -144,6 +144,7 @@ async fn installed_apps_threadless_refresh_updates_existing_thread_tools() -> Re
         .await;
         app_server
             .start_turn_and_wait_for_completion(TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 input: vec![UserInput::Text {
                     text: "Show the available apps".to_string(),
@@ -268,6 +269,7 @@ async fn installed_apps_thread_refresh_updates_live_tools_and_retains_them_on_fa
     let completed = timeout(
         DEFAULT_TIMEOUT,
         app_server.start_turn_and_wait_for_completion(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             input: vec![UserInput::Text {
                 text: "Which tools are available?".to_string(),
@@ -344,6 +346,7 @@ async fn installed_apps_thread_refresh_updates_live_tools_and_retains_them_on_fa
         let completed = timeout(
             DEFAULT_TIMEOUT,
             app_server.start_turn_and_wait_for_completion(TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 input: vec![UserInput::Text {
                     text: "Call Beta.".to_string(),

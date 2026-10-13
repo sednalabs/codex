@@ -88,6 +88,7 @@ async fn projects_list_by_recency_and_preserve_metadata_timestamps() -> Result<(
                 .await?;
             server
                 .start_turn_and_wait_for_completion(TurnStartParams {
+                    automatic_turn_continuation: None,
                     thread_id: started.thread.id.clone(),
                     input: vec![UserInput::Text {
                         text: "Hello".to_string(),
@@ -283,6 +284,7 @@ async fn projects_persist_and_assign_threads() -> Result<()> {
     assert!(ephemeral.thread.path.is_none());
     server
         .start_turn_and_wait_for_completion(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: started.thread.id.clone(),
             input: vec![UserInput::Text {
                 text: "persist this thread".to_string(),
@@ -699,6 +701,7 @@ async fn deleted_project_is_dropped_before_first_durable_thread_persistence() ->
     assert_eq!(read_after_delete.thread.project_id, None);
     server
         .start_turn_and_wait_for_completion(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: started.thread.id.clone(),
             input: vec![UserInput::Text {
                 text: "persist after project deletion".to_string(),
@@ -752,6 +755,7 @@ async fn project_import_is_atomic_and_notifies_after_commit_in_order() -> Result
     let _: serde_json::Value = server.read_notification("thread/started").await?;
     server
         .start_turn_and_wait_for_completion(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: started.thread.id.clone(),
             input: vec![UserInput::Text {
                 text: "persist this thread".to_string(),
@@ -1054,6 +1058,7 @@ async fn assigned_forks_inherit_projects_for_persistent_and_ephemeral_children()
     let _: serde_json::Value = server.read_notification("thread/started").await?;
     server
         .start_turn_and_wait_for_completion(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: started.thread.id.clone(),
             input: vec![UserInput::Text {
                 text: "persist this thread".to_string(),

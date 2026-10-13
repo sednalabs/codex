@@ -63,6 +63,7 @@ clock_source = "external"
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 input: vec![UserInput::Text {
                     text: "What time is it?".to_string(),

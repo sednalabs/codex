@@ -505,6 +505,7 @@ async fn thread_list_reports_system_error_idle_flag_after_failed_turn() -> Resul
 
     let seed_turn_id = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             client_user_message_id: None,
             input: vec![UserInput::Text {
@@ -524,6 +525,7 @@ async fn thread_list_reports_system_error_idle_flag_after_failed_turn() -> Resul
 
     let failed_turn_id = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             client_user_message_id: None,
             input: vec![UserInput::Text {
@@ -3090,6 +3092,7 @@ async fn thread_originator_is_preserved_in_list_read_and_resume(originator: &str
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread_id.clone(),
                 input: vec![UserInput::Text {
                     text: "Persist this thread".to_string(),

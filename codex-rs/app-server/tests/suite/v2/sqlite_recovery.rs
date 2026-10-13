@@ -107,6 +107,7 @@ async fn state_recovery_restores_saved_threads() -> Result<()> {
         .id;
     let completed = server
         .start_turn_and_wait_for_completion(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread_id.clone(),
             input: vec![UserInput::Text {
                 text: "Keep this conversation".to_string(),

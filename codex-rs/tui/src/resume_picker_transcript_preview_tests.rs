@@ -378,6 +378,7 @@ async fn transcript_preview_for_history_mode(
             .request_typed(ClientRequest::TurnStart {
                 request_id: RequestId::String(format!("preview-turn-start-{index}")),
                 params: TurnStartParams {
+                    automatic_turn_continuation: None,
                     thread_id: thread_id.to_string(),
                     input: vec![input],
                     ..Default::default()

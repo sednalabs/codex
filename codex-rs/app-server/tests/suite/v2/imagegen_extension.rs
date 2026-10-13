@@ -1094,6 +1094,7 @@ async fn start_turn(
 
     let turn_req = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id,
             client_user_message_id: None,
             input,

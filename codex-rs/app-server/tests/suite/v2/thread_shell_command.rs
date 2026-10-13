@@ -264,6 +264,7 @@ async fn check_thread_shell_command_in_active_turn(timeout_ms: Option<i64>) -> R
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 client_user_message_id: None,
                 input: vec![V2UserInput::Text {

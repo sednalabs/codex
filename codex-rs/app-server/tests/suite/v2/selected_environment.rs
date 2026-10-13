@@ -33,6 +33,7 @@ fn write_mock_config(codex_home: &Path, server_uri: &str) -> std::io::Result<()>
 
 fn text_turn_params(thread_id: String, prompt: &str) -> TurnStartParams {
     TurnStartParams {
+        automatic_turn_continuation: None,
         thread_id,
         input: vec![V2UserInput::Text {
             text: prompt.to_string(),

@@ -114,6 +114,7 @@ async fn submission_metadata_reaches_persisted_and_feedback_logs() -> Result<()>
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 input: vec![UserInput::Text {
                     text: "run echo".into(),
@@ -299,6 +300,7 @@ supports_websockets = false
             .thread;
         app_server
             .send_turn_start_request(TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 input: vec![UserInput::Text {
                     text: "hello".into(),
@@ -764,6 +766,7 @@ async fn app_server_emits_structured_tool_call_timing_event() -> Result<()> {
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 input: vec![UserInput::Text {
                     text: "run a command".to_string(),

@@ -31,6 +31,8 @@ use codex_protocol::error::Result;
 use codex_protocol::openai_models::ModelsResponse;
 
 use crate::ProviderCapabilities;
+use crate::ProviderRequestAuth;
+use crate::ResolvedProviderAuth;
 use crate::RemoteCompactionSupport;
 use crate::auth::auth_manager_for_provider;
 use crate::auth::resolve_provider_auth as resolve_configured_provider_auth;
@@ -422,6 +424,55 @@ impl ModelProvider for AmazonBedrockModelProvider {
 
     fn api_auth(&self) -> ModelProviderFuture<'_, Result<SharedAuthProvider>> {
         Box::pin(AmazonBedrockModelProvider::api_auth(self))
+    }
+
+    fn request_auth_for_scope(
+        &self,
+        _scope: crate::auth::ProviderAuthScope,
+    ) -> ModelProviderFuture<'_, Result<ProviderRequestAuth>> {
+        Box::pin(async move {
+            let account_auth = self.auth().await;
+            let api_provider = AmazonBedrockModelProvider::api_provider(self).await?;
+            let resolved = if self.info.has_command_auth() {
+                ResolvedProviderAuth::new(resolve_configured_provider_auth(
+                    account_auth.as_ref(),
+                    &self.info,
+                )?)
+            } else {
+                let auth_source = self.auth_source();
+                let managed_auth = self.managed_auth();
+                match auth::resolve_auth_method(
+                    auth_source,
+                    managed_auth.as_ref(),
+                    &self.aws,
+                    self.endpoint,
+                    &self.http_client_factory,
+                )
+                .await?
+                {
+                    auth::BedrockAuthMethod::ManagedBearerToken { token, .. }
+                    | auth::BedrockAuthMethod::EnvBearerToken { token, .. } => {
+                        ResolvedProviderAuth::new(Arc::new(crate::BearerAuthProvider {
+                            token: Some(token),
+                            account_id: None,
+                            is_fedramp_account: false,
+                        }))
+                    }
+                    auth::BedrockAuthMethod::AwsSdkAuth { context } => {
+                        let frozen = context
+                            .freeze_for_request_url(&api_provider.base_url)
+                            .await
+                            .map_err(auth::aws_auth_error_to_codex_error)?;
+                        auth::resolved_frozen_provider_auth(frozen, self.endpoint)
+                    }
+                }
+            };
+            Ok(ProviderRequestAuth {
+                account_auth,
+                api_provider,
+                resolved,
+            })
+        })
     }
 
     fn models_manager(

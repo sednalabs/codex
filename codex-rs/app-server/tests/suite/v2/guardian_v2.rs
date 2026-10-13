@@ -1098,6 +1098,7 @@ async fn guardian_v2_routes_scoped_tool_approvals(
     }
     let turn_request_id = app_server
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread_id.clone(),
             input: turn_input,
             approval_policy: Some(AskForApproval::OnRequest),
@@ -1205,6 +1206,7 @@ async fn guardian_v2_routes_scoped_tool_approvals(
             assert_eq!(completed.thread_id, thread_id);
             let request_id = app_server
                 .send_turn_start_request(TurnStartParams {
+                    automatic_turn_continuation: None,
                     thread_id: thread_id.clone(),
                     input: vec![UserInput::Text {
                         text: ROOT_RESTRICTION.to_owned(),
@@ -1790,6 +1792,7 @@ async fn guardian_v2_routes_scoped_tool_approvals(
         // Only the required-model check should prevent cached approval of the sandboxed command.
         let request_id = app_server
             .send_turn_start_request(TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread_id.clone(),
                 model: Some(REQUIRED_MODEL.to_owned()),
                 input: Vec::new(),
@@ -1845,6 +1848,7 @@ async fn guardian_v2_routes_scoped_tool_approvals(
                 }
                 let id = app_server
                     .send_turn_start_request(TurnStartParams {
+                        automatic_turn_continuation: None,
                         thread_id: thread_id.clone(),
                         input: vec![UserInput::Text {
                             text: ROOT_RESTRICTION.to_owned(),
@@ -1869,6 +1873,7 @@ async fn guardian_v2_routes_scoped_tool_approvals(
                 assert_eq!(completed.thread_id, thread_id);
                 let id = app_server
                     .send_turn_start_request(TurnStartParams {
+                        automatic_turn_continuation: None,
                         thread_id: thread_id.clone(),
                         input: vec![UserInput::Text {
                             text: "Ask the worker to check again under the current restrictions."
@@ -1883,6 +1888,7 @@ async fn guardian_v2_routes_scoped_tool_approvals(
         } else {
             let followup_id = app_server
                 .send_turn_start_request(TurnStartParams {
+                    automatic_turn_continuation: None,
                     thread_id,
                     input: vec![UserInput::Text {
                         text: if matches!(
@@ -2263,6 +2269,7 @@ async fn guardian_v2_trusts_invoked_user_skills_but_rejects_repository_forgery()
         .thread;
     let request_id = app_server
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             input: vec![
                 UserInput::Text {
@@ -2447,6 +2454,7 @@ async fn first_cua_review_does_not_wait_for_initial_score(
         .thread;
     let request_id = app_server
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             input: vec![UserInput::Text {
                 text: USER_CONTEXT.to_owned(),
@@ -2566,6 +2574,7 @@ async fn user_approval_skips_async_guardian_without_changing_other_modes() -> Re
         app_server.clear_message_buffer();
         let request_id = app_server
             .send_turn_start_request(TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 input: vec![UserInput::Text {
                     text: USER_CONTEXT.to_owned(),

@@ -154,6 +154,7 @@ async fn managed_residency_overrides_provider_headers(transport: ModelTransport)
     let completed = timeout(
         READ_TIMEOUT,
         app_server.start_turn_and_wait_for_completion(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.thread.id,
             input: vec![UserInput::Text {
                 text: "hello".to_string(),

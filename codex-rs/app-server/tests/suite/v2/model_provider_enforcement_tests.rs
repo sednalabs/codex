@@ -93,6 +93,7 @@ base_url = "{}/v1"
     }];
     let id = server
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: started.thread.id.clone(),
             input: input.clone(),
             ..Default::default()
@@ -281,6 +282,7 @@ async fn local_config_changes_do_not_block_existing_threads() -> Result<()> {
         std::fs::write(home.path().join("config.toml"), local_settings)?;
         let id = server
             .send_turn_start_request(TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: started.thread.id.clone(),
                 input: vec![UserInput::Text {
                     text: "Continue on the original provider.".into(),
@@ -360,6 +362,7 @@ async fn malformed_system_defaults_do_not_block_existing_thread_turn() -> Result
         .request(ClientRequest::TurnStart {
             request_id: RequestId::Integer(2),
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: started.thread.id.clone(),
                 input: vec![UserInput::Text {
                     text: "Continue on the original provider.".to_string(),

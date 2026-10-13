@@ -119,7 +119,7 @@ async fn bootstrap_discovery_survives_identity_installation_but_account_access_i
     }
 
     let (client, permit) = previous_access.expect("the last identity has active account access");
-    manager.clear_external_auth();
+    manager.clear_external_auth().await;
     assert_eq!(permit.check(), Err(NetworkPolicyDenied::Revoked));
     assert_eq!(
         client.network_policy().acquire(&content_url).err(),

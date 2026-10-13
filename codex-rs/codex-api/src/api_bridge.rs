@@ -280,6 +280,7 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
                 CodexErr::ConnectionFailed(ConnectionFailedError { source })
             }
             TransportError::Network(msg) | TransportError::Build(msg) => CodexErr::Stream(msg),
+            TransportError::AutomaticTurnContextChanged => CodexErr::AutomaticTurnContextChanged,
             error @ TransportError::ResponseTooLarge { .. } => {
                 CodexErr::InvalidRequest(error.to_string())
             }

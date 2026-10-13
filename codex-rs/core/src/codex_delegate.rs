@@ -296,6 +296,7 @@ pub(crate) async fn run_codex_thread_one_shot(
                         trace: None,
                         parent_turn_id: None,
                         root_turn_id: None,
+                        automatic_turn: None,
                         residency_guard: None,
                     })
                     .await;

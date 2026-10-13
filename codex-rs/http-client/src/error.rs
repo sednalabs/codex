@@ -28,6 +28,8 @@ pub enum TransportError {
     Network(String),
     #[error("request build error: {0}")]
     Build(String),
+    #[error("automatic turn context changed before provider request")]
+    AutomaticTurnContextChanged,
     #[error("response body exceeds the {max_bytes} byte limit")]
     ResponseTooLarge { max_bytes: usize },
 }
@@ -43,6 +45,7 @@ impl TransportError {
             | Self::Connection(_)
             | Self::Network(_)
             | Self::Build(_)
+            | Self::AutomaticTurnContextChanged
             | Self::ResponseTooLarge { .. } => None,
         }
     }

@@ -206,7 +206,7 @@ MCP_TEST_PID_FILE = {}
     std::fs::write(&barrier_file, "ready")?;
     drop(outgoing);
     let drained = timeout(Duration::from_secs(/*secs*/ 10), owner.rpc_gate.shutdown()).await;
-    processor.clear_runtime_references();
+    processor.clear_runtime_references().await;
     processor.shutdown_threads().await;
     drained.context("thread/start did not finish during test cleanup")?;
     result?;

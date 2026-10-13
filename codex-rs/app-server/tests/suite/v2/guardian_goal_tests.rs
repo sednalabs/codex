@@ -97,6 +97,7 @@ async fn user_goal_updates_survive_resume_and_clear(unloaded: bool) -> Result<()
     let _: codex_app_server_protocol::ThreadGoalClearResponse = app.read_response(id).await?;
     let id = app
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id,
             input: vec![UserInput::Text {
                 text: "What is the status?".to_owned(),

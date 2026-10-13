@@ -116,6 +116,7 @@ async fn attestation_generate_round_trip_adds_header_to_responses_websocket_hand
                     let ThreadStartResponse { thread, .. } = to_response(response)?;
                     turn_request_id = Some(RequestId::Integer(
                         mcp.send_turn_start_request(TurnStartParams {
+                            automatic_turn_continuation: None,
                             thread_id: thread.id,
                             client_user_message_id: None,
                             input: vec![V2UserInput::Text {

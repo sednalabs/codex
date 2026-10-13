@@ -426,6 +426,7 @@ async fn plugin_upgrade_refreshes_hook_runtime_for_loaded_session() -> Result<()
         timeout(DEFAULT_TIMEOUT, mcp.read_response(thread_start_id)).await??;
     let first_turn_id = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             client_user_message_id: None,
             input: vec![V2UserInput::Text {
@@ -480,6 +481,7 @@ async fn plugin_upgrade_refreshes_hook_runtime_for_loaded_session() -> Result<()
 
     let second_turn_id = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             client_user_message_id: None,
             input: vec![V2UserInput::Text {
@@ -628,6 +630,7 @@ async fn loaded_session_refreshes_externally_updated_plugin_hooks() -> Result<()
         store.install(AbsolutePathBuf::try_from(source.path())?, plugin_id.clone())?;
         let turn_id = mcp
             .send_turn_start_request(TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 input: vec![V2UserInput::Text {
                     text: format!("run version {version}"),
@@ -796,6 +799,7 @@ source = "{}"
 
     let turn_id = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id,
             client_user_message_id: None,
             input: vec![V2UserInput::Text {
@@ -1448,6 +1452,7 @@ command = "python3 {}"
 
     let first_turn_id = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             client_user_message_id: None,
             input: vec![V2UserInput::Text {
@@ -1498,6 +1503,7 @@ command = "python3 {}"
 
     let second_turn_id = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             client_user_message_id: None,
             input: vec![V2UserInput::Text {
@@ -1557,6 +1563,7 @@ command = "python3 {}"
 
     let third_turn_id = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id,
             client_user_message_id: None,
             input: vec![V2UserInput::Text {
@@ -1670,6 +1677,7 @@ command = "python3 {}"
 
     let first_turn_id = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             client_user_message_id: None,
             input: vec![V2UserInput::Text {
@@ -1714,6 +1722,7 @@ command = "python3 {}"
 
     let second_turn_id = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id,
             client_user_message_id: None,
             input: vec![V2UserInput::Text {

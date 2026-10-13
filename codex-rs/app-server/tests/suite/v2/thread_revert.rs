@@ -75,6 +75,7 @@ async fn thread_revert_rejects_ephemeral_without_losing_context(
         .await?;
     let completed = mcp
         .start_turn_and_wait_for_completion(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             input: vec![UserInput::Text {
                 text: "Remember this task".to_string(),
@@ -106,6 +107,7 @@ async fn thread_revert_rejects_ephemeral_without_losing_context(
         }
     );
     mcp.start_turn_and_wait_for_completion(TurnStartParams {
+        automatic_turn_continuation: None,
         thread_id: thread.id,
         input: vec![UserInput::Text {
             text: "Continue".to_string(),
@@ -163,6 +165,7 @@ async fn thread_revert_preserves_model_selected_multi_agent_version(restart: boo
         .await?;
     let completed = mcp
         .start_turn_and_wait_for_completion(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             input: vec![UserInput::Text {
                 text: "First message".to_string(),
@@ -200,6 +203,7 @@ async fn thread_revert_preserves_model_selected_multi_agent_version(restart: boo
             .await?;
     }
     mcp.start_turn_and_wait_for_completion(TurnStartParams {
+        automatic_turn_continuation: None,
         thread_id: thread.id,
         input: vec![UserInput::Text {
             text: "Edited first message".to_string(),
@@ -267,6 +271,7 @@ async fn thread_revert_preserves_fork_cutoff_after_cold_resume() -> Result<()> {
     for text in ["parent first", "parent second"] {
         let completed = mcp
             .start_turn_and_wait_for_completion(TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: parent.id.clone(),
                 cwd: Some(parent.cwd.as_path().to_path_buf()),
                 input: vec![UserInput::Text {
@@ -318,6 +323,7 @@ async fn thread_revert_preserves_fork_cutoff_after_cold_resume() -> Result<()> {
     ] {
         let completed = mcp
             .start_turn_and_wait_for_completion(TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: child.id.clone(),
                 cwd: Some(saved_cwd.clone()),
                 runtime_workspace_roots,
@@ -385,6 +391,7 @@ async fn thread_revert_preserves_fork_cutoff_after_cold_resume() -> Result<()> {
             (saved_cwd.as_path(), saved_roots.clone())
         );
         mcp.start_turn_and_wait_for_completion(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: child.id.clone(),
             input: vec![UserInput::Text {
                 text: "continue after revert and cold resume".to_string(),
@@ -438,6 +445,7 @@ async fn thread_revert_replaces_paginated_history_before_turn() -> Result<()> {
     for text in ["first", "second"] {
         let completed = mcp
             .start_turn_and_wait_for_completion(TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 input: vec![UserInput::Text {
                     text: text.to_string(),
@@ -560,6 +568,7 @@ async fn thread_revert_replaces_paginated_history_before_turn() -> Result<()> {
 
     let third_turn = mcp
         .start_turn_and_wait_for_completion(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             input: vec![UserInput::Text {
                 text: "third".to_string(),
@@ -617,6 +626,7 @@ async fn thread_revert_interrupts_active_turn_and_keeps_thread_loaded() -> Resul
         .await?;
     let first_turn = mcp
         .start_turn_and_wait_for_completion(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             input: vec![UserInput::Text {
                 text: "first".to_string(),
@@ -630,6 +640,7 @@ async fn thread_revert_interrupts_active_turn_and_keeps_thread_loaded() -> Resul
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 input: vec![UserInput::Text {
                     text: "sleep".to_string(),
@@ -699,6 +710,7 @@ async fn thread_revert_interrupts_active_turn_and_keeps_thread_loaded() -> Resul
     assert_eq!(resumed.approval_policy, AskForApproval::Never);
 
     mcp.start_turn_and_wait_for_completion(TurnStartParams {
+        automatic_turn_continuation: None,
         thread_id: thread.id,
         input: vec![UserInput::Text {
             text: "third".to_string(),

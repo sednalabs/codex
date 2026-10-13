@@ -8,6 +8,7 @@ use crate::agent::control::LocalAgentRuntime;
 use crate::agents_md_manager::AgentsMdManager;
 use crate::attestation::AttestationProvider;
 use crate::client::ModelClient;
+use crate::client::ProviderAuthority;
 use crate::config::NetworkProxyAuditMetadata;
 use crate::config::StartedNetworkProxy;
 use crate::current_time::TimeProvider;
@@ -36,6 +37,7 @@ use codex_login::AuthManager;
 use codex_mcp::McpRuntime;
 use codex_models_manager::manager::SharedModelsManager;
 use codex_otel::SessionTelemetry;
+use codex_protocol::automatic_turn::AutomaticTurnContinuationRef;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::models::AdditionalPermissionProfile;
@@ -108,9 +110,152 @@ pub(crate) struct SessionServices {
     pub(crate) code_mode_service: CodeModeService,
     pub(crate) tool_search_handler_cache: ToolSearchHandlerCache,
     pub(crate) turn_environments: Arc<ThreadEnvironments>,
+    /// Server-authenticated provenance for in-flight events. The key is Core's immutable
+    /// submission/turn occurrence id; neither the map nor its values are protocol or history data.
+    pub(crate) automatic_turn_principals: Mutex<HashMap<String, AutomaticTurnPrincipal>>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct AutomaticTurnPrincipal {
+    pub(crate) principal_identity: Option<String>,
+    pub(crate) client_user_message_id: Option<String>,
+    pub(crate) provider_authority: Option<ProviderAuthority>,
+    pub(crate) expected_epochs: Option<(i64, i64)>,
+    pub(crate) continuation_ref: Option<AutomaticTurnContinuationRef>,
 }
 
 impl SessionServices {
+    pub(crate) async fn log_automatic_turn_event(
+        &self,
+        thread_id: ThreadId,
+        event: &codex_protocol::protocol::Event,
+    ) {
+        let relevant = matches!(
+            &event.msg,
+            codex_protocol::protocol::EventMsg::Error(_)
+                | codex_protocol::protocol::EventMsg::ItemCompleted(_)
+                | codex_protocol::protocol::EventMsg::TurnComplete(_)
+                | codex_protocol::protocol::EventMsg::TurnAborted(_)
+        );
+        if !relevant {
+            return;
+        }
+
+        if let Some(state_db) = &self.state_db {
+            let operation = self
+                .automatic_turn_principals
+                .lock()
+                .await
+                .get(&event.id)
+                .cloned();
+            let continuation_ref = state_db
+                .record_automatic_turn_event_with_submission_context(
+                    thread_id,
+                    event,
+                    operation
+                        .as_ref()
+                        .and_then(|operation| operation.principal_identity.as_deref()),
+                    operation
+                        .as_ref()
+                        .and_then(|operation| operation.client_user_message_id.as_deref()),
+                    operation
+                        .as_ref()
+                        .and_then(|operation| operation.continuation_ref.as_ref())
+                        .map(AutomaticTurnContinuationRef::as_str),
+                    operation.as_ref().and_then(|operation| operation.expected_epochs),
+                )
+                .await;
+            if let Some(reference) = continuation_ref.and_then(AutomaticTurnContinuationRef::new) {
+                self.automatic_turn_principals
+                    .lock()
+                    .await
+                    .entry(event.id.clone())
+                    .and_modify(|operation| operation.continuation_ref = Some(reference.clone()));
+            }
+        }
+
+        if matches!(
+            &event.msg,
+            codex_protocol::protocol::EventMsg::TurnComplete(_)
+                | codex_protocol::protocol::EventMsg::TurnAborted(_)
+        ) {
+            self.automatic_turn_principals
+                .lock()
+                .await
+                .remove(&event.id);
+        }
+    }
+
+    pub(crate) async fn register_automatic_turn_principal(
+        &self,
+        event_occurrence_id: impl Into<String>,
+        principal_identity: Option<String>,
+        client_user_message_id: Option<&str>,
+        provider_authority: Option<ProviderAuthority>,
+        expected_epochs: Option<(i64, i64)>,
+        continuation_ref: Option<AutomaticTurnContinuationRef>,
+    ) {
+        let client_user_message_id = client_user_message_id.map(str::to_owned);
+        self.automatic_turn_principals
+            .lock()
+            .await
+            .entry(event_occurrence_id.into())
+            .and_modify(|operation| {
+                if client_user_message_id.is_some() {
+                    operation.principal_identity = principal_identity.clone();
+                    operation.client_user_message_id = client_user_message_id.clone();
+                    operation.provider_authority = provider_authority;
+                    operation.expected_epochs = expected_epochs;
+                    operation.continuation_ref = continuation_ref.clone();
+                }
+            })
+            .or_insert(AutomaticTurnPrincipal {
+                principal_identity,
+                client_user_message_id,
+                provider_authority,
+                expected_epochs,
+                continuation_ref,
+            });
+    }
+
+    pub(crate) async fn remove_automatic_turn_principal_if_matches(
+        &self,
+        event_occurrence_id: &str,
+        principal_identity: Option<&str>,
+        client_user_message_id: Option<&str>,
+    ) {
+        let mut principals = self.automatic_turn_principals.lock().await;
+        if principals.get(event_occurrence_id).is_some_and(|operation| {
+            operation.principal_identity.as_deref() == principal_identity
+                && operation.client_user_message_id.as_deref() == client_user_message_id
+        }) {
+            principals.remove(event_occurrence_id);
+        }
+    }
+
+    pub(crate) async fn automatic_turn_provider_authority(
+        &self,
+        event_occurrence_id: &str,
+    ) -> Option<ProviderAuthority> {
+        self.automatic_turn_principals
+            .lock()
+            .await
+            .get(event_occurrence_id)
+            .and_then(|operation| operation.provider_authority)
+    }
+
+    pub(crate) async fn automatic_turn_continuation_details(
+        &self,
+        event_occurrence_id: &str,
+    ) -> Option<String> {
+        self.automatic_turn_principals
+            .lock()
+            .await
+            .get(event_occurrence_id)
+            .and_then(|operation| operation.continuation_ref.as_ref())
+            .map(AutomaticTurnContinuationRef::to_error_details)
+    }
+
     #[expect(
         clippy::expect_used,
         reason = "poisoned grant state must not authorize further operations"

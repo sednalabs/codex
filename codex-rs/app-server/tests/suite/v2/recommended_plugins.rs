@@ -165,6 +165,7 @@ async fn recommended_plugins_after_external_login(
 
     let turn_id = app_server
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id,
             input: vec![UserInput::Text {
                 text: "suggest a plugin".to_string(),

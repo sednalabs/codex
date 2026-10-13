@@ -96,6 +96,7 @@ async fn usage_limit_window_reaches_turn_analytics() -> Result<()> {
         .thread;
     let completed = app_server
         .start_turn_and_wait_for_completion(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id,
             input: vec![UserInput::Text {
                 text: "Hello".to_string(),
@@ -202,6 +203,7 @@ async fn guardian_review_turns_and_tools_reach_analytics() -> Result<()> {
         .await?;
     let request_id = app_server
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             input: vec![UserInput::Text {
                 text: "Review three commands".to_string(),
@@ -413,6 +415,7 @@ async fn multi_agent_v2_tools_emit_collaborator_analytics() -> Result<()> {
         .thread;
     let completed = app_server
         .start_turn_and_wait_for_completion(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             input: vec![UserInput::Text {
                 text: PARENT_PROMPT.to_string(),
@@ -948,6 +951,7 @@ enabled = true
 
     let turn_request = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id,
             input: vec![UserInput::Text {
                 text: "run the curated plugin metrics script".to_string(),

@@ -232,9 +232,9 @@ impl AccountRequestProcessor {
         }
     }
 
-    pub(crate) fn clear_external_auth(&self) {
+    pub(crate) async fn clear_external_auth(&self) {
         self.workspace_routing_shutdown.cancel();
-        self.auth_manager.clear_external_auth();
+        self.auth_manager.clear_external_auth().await;
     }
 
     fn current_account_updated_notification(&self) -> AccountUpdatedNotification {

@@ -2,6 +2,7 @@ use super::*;
 use crate::ServerNotification;
 use codex_protocol::approvals::ElicitationRequest as CoreElicitationRequest;
 use codex_protocol::approvals::GuardianAssessmentAction as CoreGuardianAssessmentAction;
+use codex_protocol::automatic_turn::AutomaticTurnContinuationRef;
 use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::items::AgentMessageContent;
 use codex_protocol::items::AgentMessageItem;
@@ -2317,6 +2318,7 @@ fn client_request_turn_start_granular_approval_policy_is_marked_experimental() {
         &crate::ClientRequest::TurnStart {
             request_id: crate::RequestId::Integer(4),
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: "thr_123".to_string(),
                 client_user_message_id: None,
                 input: Vec::new(),
@@ -5095,6 +5097,7 @@ fn turn_start_params_preserve_explicit_null_service_tier() {
     );
 
     let without_override = TurnStartParams {
+        automatic_turn_continuation: None,
         disabled_plugin_ids: None,
         thread_id: "thread_123".to_string(),
         client_user_message_id: None,
@@ -5126,6 +5129,28 @@ fn turn_start_params_preserve_explicit_null_service_tier() {
     let serialized_without_override =
         serde_json::to_value(&without_override).expect("params should serialize");
     assert_eq!(serialized_without_override.get("serviceTier"), None);
+}
+
+#[test]
+fn automatic_turn_continuation_uses_a_typed_control_plane_field() {
+    let params: TurnStartParams = serde_json::from_value(json!({
+        "threadId": "thread_123",
+        "input": [{ "type": "text", "text": "continue" }],
+        "automaticTurnContinuation": "opaque-ticket-reference",
+    }))
+    .expect("typed continuation should deserialize");
+    assert_eq!(
+        params.automatic_turn_continuation,
+        AutomaticTurnContinuationRef::new("opaque-ticket-reference")
+    );
+    assert_eq!(params.client_user_message_id, None);
+
+    let serialized = serde_json::to_value(&params).expect("params should serialize");
+    assert_eq!(
+        serialized.get("automaticTurnContinuation"),
+        Some(&json!("opaque-ticket-reference"))
+    );
+    assert!(serialized.get("clientUserMessageId").is_none());
 }
 
 #[test]

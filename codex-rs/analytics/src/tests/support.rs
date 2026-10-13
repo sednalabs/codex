@@ -242,6 +242,7 @@ pub(super) fn sample_turn_start_request(thread_id: &str, request_id: i64) -> Cli
     ClientRequest::TurnStart {
         request_id: RequestId::Integer(request_id),
         params: TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread_id.to_string(),
             client_user_message_id: None,
             input: vec![

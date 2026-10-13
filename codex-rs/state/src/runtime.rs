@@ -22,6 +22,7 @@ use crate::model::epoch_millis_to_datetime;
 use crate::paths::file_modified_time_utc;
 use crate::telemetry::DbKind;
 use crate::telemetry::DbTelemetry;
+use codex_extension_api::ExtensionStorageId;
 use chrono::DateTime;
 use chrono::Utc;
 use codex_history::RolloutItem;
@@ -41,6 +42,7 @@ use std::time::Instant;
 use tracing::warn;
 
 mod backfill;
+mod extension_storage;
 mod external_agent_config_imports;
 mod goals;
 mod guardian_feedback;
@@ -164,6 +166,20 @@ impl StateRuntime {
                 return Err(err);
             }
         };
+        let started = Instant::now();
+        let extension_migrations_result =
+            extension_storage::run_state_extension_migrations(pool.as_ref()).await;
+        crate::telemetry::record_init_result(
+            telemetry_override,
+            DbKind::State,
+            extension_storage::state_extension_migration_phase(),
+            started.elapsed(),
+            &extension_migrations_result,
+        );
+        if let Err(err) = extension_migrations_result {
+            close_sqlite_pools(&[pool.as_ref()]).await;
+            return Err(err);
+        }
         let logs_pool = match sqlite
             .open_logs_db(&logs_migrator, telemetry_override)
             .await
@@ -338,6 +354,29 @@ impl StateRuntime {
     /// Return the state-owned usage ledger pool.
     pub fn usage_pool(&self) -> Arc<sqlx::SqlitePool> {
         Arc::clone(&self.usage_pool)
+    }
+
+    pub fn extension_storage_pool(
+        &self,
+        storage_id: ExtensionStorageId,
+    ) -> Option<Arc<sqlx::SqlitePool>> {
+        if storage_id == extension_storage::USAGE_LEDGER_STORAGE_ID {
+            return Some(Arc::clone(&self.usage_pool));
+        }
+        if storage_id == extension_storage::PHASE2_ATTESTATION_STORAGE_ID {
+            return Some(Arc::clone(&self.pool));
+        }
+        None
+    }
+
+    pub(crate) fn usage_ledger_pool(&self) -> Arc<sqlx::SqlitePool> {
+        self.extension_storage_pool(extension_storage::USAGE_LEDGER_STORAGE_ID)
+            .unwrap_or_else(|| Arc::clone(&self.usage_pool))
+    }
+
+    pub(crate) fn phase2_attestation_pool(&self) -> Arc<sqlx::SqlitePool> {
+        self.extension_storage_pool(extension_storage::PHASE2_ATTESTATION_STORAGE_ID)
+            .unwrap_or_else(|| Arc::clone(&self.pool))
     }
 
     /// Close all SQLite pools and wait for outstanding pool workers to exit.

@@ -164,6 +164,7 @@ async fn set_extra_roots(app_server: &mut TestAppServer, root: &std::path::Path)
 async fn run_turn(app_server: &mut TestAppServer, thread_id: &str, prompt: &str) -> Result<()> {
     let request_id = app_server
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread_id.to_string(),
             input: vec![UserInput::Text {
                 text: prompt.to_string(),

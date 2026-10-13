@@ -414,6 +414,7 @@ async fn thread_delete_with_non_local_thread_store_does_not_create_local_persist
         .request(ClientRequest::TurnStart {
             request_id: RequestId::Integer(2),
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 client_user_message_id: None,
                 input: vec![V2UserInput::Text {
@@ -561,6 +562,7 @@ async fn cold_thread_resume_rechecks_non_local_history_after_config_load() -> Re
         .request(ClientRequest::TurnStart {
             request_id: RequestId::Integer(2),
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 client_user_message_id: None,
                 input: vec![V2UserInput::Text {

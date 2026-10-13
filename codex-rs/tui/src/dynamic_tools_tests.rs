@@ -206,6 +206,7 @@ stream_max_retries = 0
         ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: started.thread.id,
                 input: vec![UserInput::Text {
                     text: "Read the completed task".to_string(),

@@ -862,6 +862,7 @@ async fn trigger_zsh_fork_multi_cmd_approval(
             client.last_turn_status = None;
 
             let mut turn_params = TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread_response.thread.id.clone(),
                 client_user_message_id: None,
                 input: vec![V2UserInput::Text {
@@ -947,6 +948,7 @@ async fn resume_message_v2(
         println!("< thread/resume response: {resume_response:?}");
 
         let turn_response = client.turn_start(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: resume_response.thread.id.clone(),
             client_user_message_id: None,
             input: vec![V2UserInput::Text {
@@ -1089,6 +1091,7 @@ async fn send_message_v2_with_policies(
             })?;
             println!("< thread/start response: {thread_response:?}");
             let mut turn_params = TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread_response.thread.id.clone(),
                 client_user_message_id: None,
                 input: vec![V2UserInput::Text {
@@ -1130,6 +1133,7 @@ async fn send_follow_up_v2(
         println!("< thread/start response: {thread_response:?}");
 
         let first_turn_params = TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread_response.thread.id.clone(),
             client_user_message_id: None,
             input: vec![V2UserInput::Text {
@@ -1144,6 +1148,7 @@ async fn send_follow_up_v2(
         client.stream_turn(&thread_response.thread.id, &first_turn_response.turn.id)?;
 
         let follow_up_params = TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread_response.thread.id.clone(),
             client_user_message_id: None,
             input: vec![V2UserInput::Text {
@@ -1444,6 +1449,7 @@ fn live_elicitation_timeout_pause(
 
     let started_at = Instant::now();
     let turn_response = client.turn_start(TurnStartParams {
+        automatic_turn_continuation: None,
         thread_id: thread_id.clone(),
         client_user_message_id: None,
         input: vec![V2UserInput::Text {

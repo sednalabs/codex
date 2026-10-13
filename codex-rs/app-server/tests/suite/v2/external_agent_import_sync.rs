@@ -315,6 +315,7 @@ async fn cold_diverged_target_is_deferred_without_checkpoint() -> Result<()> {
         fixture
             .app_server
             .start_turn_and_wait_for_completion(TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: original.clone(),
                 input: vec![UserInput::Text {
                     text: NATIVE_USER.to_string(),

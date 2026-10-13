@@ -100,6 +100,7 @@ async fn later_low_does_not_release_earlier_review(mode: &str) -> Result<()> {
         .thread;
     let id = app_server
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id,
             input: vec![UserInput::Text {
                 text: USER_CONTEXT.to_owned(),

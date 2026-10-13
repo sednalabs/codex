@@ -44,6 +44,7 @@ async fn model_call(
         .request_typed(ClientRequest::TurnStart {
             request_id: request_id(),
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.to_owned(),
                 input: vec![UserInput::Text {
                     text: format!("Run {tool}."),

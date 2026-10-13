@@ -223,6 +223,7 @@ async fn misalignment_continuation_requires_current_review_and_submits_once() ->
         assert_eq!(
             params,
             codex_app_server_protocol::TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread_id.to_string(),
                 cwd: Some(config.cwd.to_path_buf()),
                 runtime_workspace_roots: Some(

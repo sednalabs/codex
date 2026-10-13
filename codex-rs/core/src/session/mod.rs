@@ -252,6 +252,7 @@ mod inject;
 mod reasoning_effort;
 mod submission;
 pub(crate) use reasoning_effort::RequestEffortUsage;
+pub(crate) use submission::AutomaticTurnContext;
 pub(crate) use submission::Submission;
 mod input_queue;
 mod mcp;
@@ -1058,6 +1059,7 @@ impl SessionIo {
             trace,
             parent_turn_id,
             root_turn_id,
+            automatic_turn: None,
             residency_guard,
         };
         self.submit_with_id(sub).await?;
@@ -1085,6 +1087,16 @@ impl SessionIo {
         request: impl Into<WithTurnExtensionData<TurnInputRequest>>,
         mode: TurnInputMode,
     ) -> CodexResult<TurnInputSubmission> {
+        self.submit_turn_input_with_automatic_turn(request, mode, None)
+            .await
+    }
+
+    pub(crate) async fn submit_turn_input_with_automatic_turn(
+        &self,
+        request: impl Into<WithTurnExtensionData<TurnInputRequest>>,
+        mode: TurnInputMode,
+        automatic_turn: Option<AutomaticTurnContext>,
+    ) -> CodexResult<TurnInputSubmission> {
         let id = new_submission_id();
         let (reply_tx, reply_rx) = oneshot::channel();
         let WithTurnExtensionData {
@@ -1103,6 +1115,7 @@ impl SessionIo {
             turn_extension_init,
             parent_turn_id: None,
             root_turn_id: None,
+            automatic_turn,
             residency_guard: None,
         })
         .await?;
@@ -1129,6 +1142,7 @@ impl SessionIo {
             turn_extension_init,
             parent_turn_id: None,
             root_turn_id: None,
+            automatic_turn: None,
             residency_guard: None,
         })
         .await?;
@@ -2730,6 +2744,9 @@ impl Session {
         self.services
             .rollout_thread_trace
             .record_protocol_event(&event.msg);
+        self.services
+            .log_automatic_turn_event(self.thread_id, &event)
+            .await;
         if let Some(effects) = after_event
             && let Err(error) = self.send_realtime_history_effects(&event.id, effects).await
         {

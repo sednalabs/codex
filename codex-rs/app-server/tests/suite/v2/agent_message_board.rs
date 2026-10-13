@@ -63,6 +63,7 @@ async fn board_tools_share_multi_agent_namespace(
     let thread = app.start_thread(ThreadStartParams::default()).await?.thread;
     let request = app
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id,
             input: vec![UserInput::Text {
                 text: "List the shared board channels.".into(),

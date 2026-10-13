@@ -6,6 +6,7 @@ use crate::context::ContextualUserFragment;
 use crate::context::GuardianReviewEvidence;
 use crate::elicitation::ElicitationRegistration;
 use crate::session::SessionIo;
+use crate::session::AutomaticTurnContext;
 use crate::session::SessionSettingsUpdate;
 use crate::session::Submission;
 use crate::session::new_submission_id;
@@ -23,6 +24,7 @@ use codex_history::RolloutItem;
 use codex_otel::SessionTelemetry;
 use codex_otel::current_span_w3c_trace_context;
 use codex_protocol::ThreadId;
+use codex_protocol::automatic_turn::AutomaticTurnContinuationRef;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::Personality;
@@ -541,6 +543,7 @@ impl CodexThread {
                 trace: current_span_w3c_trace_context(),
                 parent_turn_id: None,
                 root_turn_id: None,
+                automatic_turn: None,
                 residency_guard: None,
             })
             .await
@@ -581,13 +584,168 @@ impl CodexThread {
         request: impl Into<WithTurnExtensionData<TurnInputRequest>>,
         mode: TurnInputMode,
     ) -> CodexResult<TurnInputSubmission> {
+        self.submit_turn_input_with_context(request, mode, None).await
+    }
+
+    /// Internal app-server bridge for ordinary app-server turns. Core captures a stable,
+    /// non-secret authenticated provider identity plus the current in-memory send authority;
+    /// transport connection IDs and user-supplied message IDs are never authorization.
+    #[doc(hidden)]
+    pub async fn submit_app_server_turn_input(
+        &self,
+        request: impl Into<WithTurnExtensionData<TurnInputRequest>>,
+        mode: TurnInputMode,
+    ) -> CodexResult<TurnInputSubmission> {
+        let request = request.into();
+        let client_user_message_id = match &request.request.input {
+            codex_protocol::turn_input::TurnInput::UserInput { client_id, .. } => client_id.clone(),
+            _ => None,
+        };
+        let (provider_authority, principal_identity) = self
+            .session
+            .services
+            .model_client
+            .current_provider_authority_and_automatic_turn_principal()
+            .await?;
+        let expected_epochs = match &self.session.services.state_db {
+            Some(state_db) => state_db.automatic_turn_current_epochs(self.thread_id).await,
+            None => None,
+        };
+        self.submit_turn_input_with_context(
+            request,
+            mode,
+            Some(AutomaticTurnContext {
+                principal_identity,
+                client_user_message_id,
+                provider_authority: Some(provider_authority),
+                expected_epochs,
+                continuation_ref: None,
+            }),
+        )
+        .await
+    }
+
+    /// Internal app-server bridge for a capability-validated automatic turn. The caller must
+    /// validate the capability, principal, and canonical settings before invoking this method;
+    /// Core captures the current opaque provider authority and carries it only in memory.
+    #[doc(hidden)]
+    pub async fn submit_automatic_turn_input(
+        &self,
+        request: impl Into<WithTurnExtensionData<TurnInputRequest>>,
+        continuation_ref: AutomaticTurnContinuationRef,
+    ) -> CodexResult<TurnInputSubmission> {
+        let request = request.into();
+        let client_user_message_id = match &request.request.input {
+            codex_protocol::turn_input::TurnInput::UserInput { client_id, .. } => {
+                client_id.clone()
+            }
+            _ => None,
+        }
+        .filter(|client_id| !client_id.is_empty())
+        .ok_or_else(|| {
+            CodexErr::InvalidRequest(
+                "automatic-turn submission requires a normal client message id".to_string(),
+            )
+        })?;
+        let state_db = self
+            .session
+            .services
+            .state_db
+            .as_ref()
+            .ok_or_else(|| CodexErr::InvalidRequest("automatic-turn state is unavailable".to_string()))?;
+        let continuation_ref_value = continuation_ref.as_str();
+        let trigger_turn_id = state_db
+            .automatic_turn_trigger_for_continuation_ref(self.thread_id, continuation_ref_value)
+            .await
+            .ok_or_else(|| CodexErr::InvalidRequest("automatic-turn reference is not pending".to_string()))?;
+        let expected_epochs = state_db
+            .automatic_turn_continuation_epochs(self.thread_id, continuation_ref_value)
+            .await
+            .ok_or(CodexErr::AutomaticTurnContextChanged)?;
+        let (provider_authority, principal_identity) = self
+            .session
+            .services
+            .model_client
+            .current_provider_authority_and_automatic_turn_principal()
+            .await?;
+        let principal_identity = principal_identity.ok_or(CodexErr::AutomaticTurnContextChanged)?;
+        if self
+            .session
+            .services
+            .automatic_turn_provider_authority(&trigger_turn_id)
+            .await
+            .is_some_and(|expected| expected != provider_authority)
+        {
+            return Err(CodexErr::AutomaticTurnContextChanged);
+        }
+        if !state_db
+            .reserve_automatic_turn_continuation(
+                self.thread_id,
+                continuation_ref_value,
+                &principal_identity,
+                &client_user_message_id,
+                "start",
+                /*expected_turn_id*/ None,
+            )
+            .await?
+        {
+            return Err(CodexErr::InvalidRequest(
+                "automatic-turn reference is not valid for the current authenticated principal"
+                    .to_string(),
+            ));
+        }
+        let result = self
+            .submit_turn_input_with_context(
+                request,
+                TurnInputMode::StartIfIdle,
+                Some(AutomaticTurnContext {
+                    principal_identity: Some(principal_identity),
+                    client_user_message_id: Some(client_user_message_id.clone()),
+                    provider_authority: Some(provider_authority),
+                    expected_epochs: Some(expected_epochs),
+                    continuation_ref: Some(continuation_ref.clone()),
+                }),
+            )
+            .await;
+        if !matches!(&result, Ok(TurnInputSubmission::Started { .. })) {
+            let _ = state_db
+                .release_automatic_turn_continuation(
+                    self.thread_id,
+                    continuation_ref_value,
+                    &client_user_message_id,
+                )
+                .await;
+        }
+        result
+    }
+
+    /// Return the opaque continuation reference issued for a policy error, if the event was
+    /// backed by a server-authenticated submission context.
+    pub async fn automatic_turn_continuation_details(
+        &self,
+        event_occurrence_id: &str,
+    ) -> Option<String> {
+        self.session
+            .services
+            .automatic_turn_continuation_details(event_occurrence_id)
+            .await
+    }
+
+    async fn submit_turn_input_with_context(
+        &self,
+        request: impl Into<WithTurnExtensionData<TurnInputRequest>>,
+        mode: TurnInputMode,
+        automatic_turn: Option<AutomaticTurnContext>,
+    ) -> CodexResult<TurnInputSubmission> {
         if !matches!(mode, TurnInputMode::Steer { .. }) {
             self.ensure_execution_capacity_for_turn_start(
                 self.session.services.agent_control.as_ref(),
             )
             .await?;
         }
-        self.io.submit_turn_input(request, mode).await
+        self.io
+            .submit_turn_input_with_automatic_turn(request, mode, automatic_turn)
+            .await
     }
 
     /// Persist whether this thread is eligible for future memory generation.
@@ -679,6 +837,12 @@ impl CodexThread {
         &self,
         thread_settings: impl Into<WithTurnExtensionData<ThreadSettingsOverrides>>,
     ) -> CodexResult<()> {
+        if let Some(state_db) = &self.session.services.state_db {
+            state_db
+                .invalidate_automatic_turn_capabilities_for_thread(self.thread_id)
+                .await
+                .map_err(|_| CodexErr::InternalServerError)?;
+        }
         let (reply, result) = oneshot::channel();
         let WithTurnExtensionData {
             request: thread_settings,

@@ -1599,7 +1599,7 @@ async fn workload_identity_auth_is_immutable_and_process_local() {
         .install_external_auth(Arc::new(StaticExternalAuth(auth.clone())))
         .await
         .expect("workload identity auth should install");
-    manager.clear_external_auth();
+    manager.clear_external_auth().await;
 
     assert!(manager.has_external_auth());
     assert_eq!(manager.auth().await, Some(auth.clone()));

@@ -418,6 +418,7 @@ stream_max_retries = 0
 
     let request_id = app_server
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread_id.clone(),
             input: vec![UserInput::Text {
                 text: format!("Use ${SKILL_NAME}"),
@@ -622,6 +623,7 @@ stream_max_retries = 0
         timeout(
             READ_TIMEOUT,
             app_server.start_turn_and_wait_for_completion(TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id,
                 input: vec![UserInput::Text {
                     text: "Continue after the turn-scoped permission expired.".to_string(),
@@ -693,6 +695,7 @@ stream_max_retries = 0
             timeout(
                 READ_TIMEOUT,
                 app_server.start_turn_and_wait_for_completion(TurnStartParams {
+                    automatic_turn_continuation: None,
                     thread_id: thread_id.clone(),
                     input: vec![UserInput::Text {
                         text: "Continue reading the reference.".to_string(),
@@ -749,6 +752,7 @@ stream_max_retries = 0
         timeout(
             READ_TIMEOUT,
             app_server.start_turn_and_wait_for_completion(TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id,
                 input: vec![UserInput::Text {
                     text: "Read the changed reference, then try its old cursor.".to_string(),

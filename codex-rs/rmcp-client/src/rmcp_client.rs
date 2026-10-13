@@ -38,6 +38,7 @@ use rmcp::model::ElicitResult;
 use rmcp::model::ElicitationAction;
 use rmcp::model::Extensions;
 use rmcp::model::InitializeRequestParams;
+use rmcp::model::InitializeResult;
 use rmcp::model::ListResourceTemplatesResult;
 use rmcp::model::ListResourcesResult;
 use rmcp::model::ListToolsResult;
@@ -49,7 +50,6 @@ use rmcp::model::ReadResourceResult;
 use rmcp::model::RequestId;
 use rmcp::model::RequestMetaObject;
 use rmcp::model::RequestParamsMeta;
-use rmcp::model::ServerPeerInfo;
 use rmcp::model::ServerResult;
 use rmcp::model::Tool;
 use rmcp::service::ClientCacheConfig;
@@ -176,6 +176,7 @@ enum TransportRecipe {
         redirect_mode: StreamableHttpRedirectMode,
         oauth_refresh_mode: McpOAuthRefreshMode,
         initialize_deadline: Arc<StdMutex<Option<Instant>>>,
+        protected_output: bool,
     },
 }
 
@@ -192,8 +193,7 @@ impl Drop for InitializeDeadlineGuard {
 #[derive(Clone)]
 struct InitializeContext {
     timeout: Option<Duration>,
-    client_info: InitializeRequestParams,
-    send_elicitation: Arc<SendElicitation>,
+    client_service: ElicitationClientService,
 }
 
 #[derive(Clone)]
@@ -414,6 +414,8 @@ pub struct RmcpClient {
     initialize_context: Mutex<Option<InitializeContext>>,
     session_recovery_lock: Semaphore,
     elicitation_pause_state: ElicitationPauseState,
+    tool_list_generation: Arc<AtomicUsize>,
+    protected_output: bool,
 }
 
 impl RmcpClient {
@@ -454,6 +456,8 @@ impl RmcpClient {
             initialize_context: Mutex::new(None),
             session_recovery_lock: Semaphore::new(/*permits*/ 1),
             elicitation_pause_state: ElicitationPauseState::new(),
+            tool_list_generation: Arc::new(AtomicUsize::new(0)),
+            protected_output: false,
         })
     }
 
@@ -528,6 +532,8 @@ impl RmcpClient {
             requires_read_only_tools: false,
             session_recovery_lock: Semaphore::new(/*permits*/ 1),
             elicitation_pause_state: ElicitationPauseState::new(),
+            tool_list_generation: Arc::new(AtomicUsize::new(0)),
+            protected_output: false,
         })
     }
 
@@ -622,6 +628,7 @@ impl RmcpClient {
             redirect_mode,
             oauth_refresh_mode,
             initialize_deadline: Arc::new(StdMutex::new(None)),
+            protected_output: false,
         };
         let transport = Self::create_pending_transport(&transport_recipe).await?;
         Ok(Self {
@@ -635,6 +642,50 @@ impl RmcpClient {
             requires_read_only_tools: false,
             session_recovery_lock: Semaphore::new(/*permits*/ 1),
             elicitation_pause_state: ElicitationPauseState::new(),
+            tool_list_generation: Arc::new(AtomicUsize::new(0)),
+            protected_output: false,
+        })
+    }
+
+    pub async fn new_protected_streamable_http_client(
+        server_name: &str,
+        url: &str,
+        store_mode: OAuthCredentialsStoreMode,
+        keyring_backend_kind: AuthKeyringBackendKind,
+        http_client: Arc<dyn HttpClient>,
+    ) -> Result<Self> {
+        let transport_recipe = TransportRecipe::StreamableHttp {
+            server_name: server_name.to_string(),
+            url: url.to_string(),
+            bearer_token: None,
+            http_headers: None,
+            env_http_headers: None,
+            oauth_config: None,
+            store_mode,
+            keyring_backend_kind,
+            pinned_credential_store: Arc::new(OnceLock::new()),
+            originator: AuthStorageOriginator::current(),
+            http_client,
+            auth_provider: None,
+            redirect_mode: StreamableHttpRedirectMode::Reject,
+            oauth_refresh_mode: McpOAuthRefreshMode::Legacy,
+            initialize_deadline: Arc::new(StdMutex::new(None)),
+            protected_output: true,
+        };
+        let transport = Self::create_pending_transport(&transport_recipe).await?;
+        Ok(Self {
+            state: Mutex::new(ClientState::Connecting {
+                transport: Some(transport),
+            }),
+            stdio_process: None,
+            transport_recipe,
+            protocol_mode: McpProtocolMode::Legacy,
+            requires_read_only_tools: false,
+            initialize_context: Mutex::new(None),
+            session_recovery_lock: Semaphore::new(/*permits*/ 1),
+            elicitation_pause_state: ElicitationPauseState::new(),
+            tool_list_generation: Arc::new(AtomicUsize::new(0)),
+            protected_output: true,
         })
     }
 
@@ -646,11 +697,17 @@ impl RmcpClient {
         params: InitializeRequestParams,
         timeout: Option<Duration>,
         send_elicitation: SendElicitation,
-    ) -> Result<ServerPeerInfo> {
+    ) -> Result<InitializeResult> {
+        let client_service = ElicitationClientService::new(
+            params,
+            send_elicitation,
+            self.elicitation_pause_state.clone(),
+            Arc::clone(&self.tool_list_generation),
+            self.protected_output,
+        );
         let context = InitializeContext {
             timeout,
-            client_info: params,
-            send_elicitation: Arc::new(send_elicitation),
+            client_service,
         };
         let pending_transport = {
             let mut guard = self.state.lock().await;
@@ -672,7 +729,14 @@ impl RmcpClient {
             .peer()
             .peer_info()
             .ok_or_else(|| anyhow!("handshake succeeded but server info was missing"))?;
-        let initialize_result = initialize_result_rmcp.as_ref().clone();
+        let peer_info = initialize_result_rmcp.as_ref();
+        let mut initialize_result = InitializeResult::new(peer_info.capabilities.clone())
+            .with_protocol_version(peer_info.protocol_version.clone())
+            .with_server_info(peer_info.server_info.clone().ok_or_else(|| {
+                anyhow!("initialization succeeded but server implementation was missing")
+            })?);
+        initialize_result.instructions = peer_info.instructions.clone();
+        initialize_result.meta = peer_info.meta.clone();
 
         {
             let mut initialize_context = self.initialize_context.lock().await;
@@ -1141,6 +1205,7 @@ impl RmcpClient {
                 redirect_mode,
                 oauth_refresh_mode,
                 initialize_deadline,
+                protected_output,
             } => {
                 let has_configured_headers = matches!(
                     bearer_token,
@@ -1160,7 +1225,8 @@ impl RmcpClient {
                         auth_provider.clone()
                     };
 
-                let resolved_oauth_tokens = if bearer_token.is_none()
+                let resolved_oauth_tokens = if !protected_output
+                    && bearer_token.is_none()
                     && auth_provider.is_none()
                     && !default_headers.contains_key(AUTHORIZATION)
                 {
@@ -1311,12 +1377,7 @@ impl RmcpClient {
     )> {
         // Request IDs and remembered cancellations belong to this connection, including
         // when a failed initialization or expired HTTP session creates a new transport.
-        let send_elicitation = Arc::clone(&initialize_context.send_elicitation);
-        let client_service = ElicitationClientService::new(
-            initialize_context.client_info.clone(),
-            Box::new(move |id, request| send_elicitation(id, request)),
-            self.elicitation_pause_state.clone(),
-        );
+        let client_service = initialize_context.client_service.clone();
         let _initialize_deadline = match &self.transport_recipe {
             TransportRecipe::StreamableHttp {
                 initialize_deadline,

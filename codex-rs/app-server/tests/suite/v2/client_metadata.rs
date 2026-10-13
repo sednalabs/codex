@@ -87,6 +87,7 @@ async fn turn_start_forwards_client_metadata_to_responses_request_v2() -> Result
     ]);
     let turn_req = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id,
             client_user_message_id: None,
             input: vec![V2UserInput::Text {
@@ -188,6 +189,7 @@ async fn turn_start_sends_fork_lineage_in_turn_metadata_for_thread_fork_v2() -> 
 
     let turn_req = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             client_user_message_id: None,
             input: vec![V2UserInput::Text {
@@ -383,6 +385,7 @@ async fn turn_start_sends_nested_subagent_lineage_after_cold_thread_resume_v2() 
 
     let turn_req = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             input: vec![V2UserInput::Text {
                 text: "Continue".to_string(),
@@ -497,6 +500,7 @@ async fn turn_steer_updates_client_metadata_on_follow_up_responses_request_v2() 
     ]);
     let turn_req = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             client_user_message_id: None,
             input: vec![V2UserInput::Text {
@@ -642,6 +646,7 @@ async fn turn_start_forwards_client_metadata_to_responses_websocket_request_body
     ]);
     let turn_req = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id,
             client_user_message_id: None,
             input: vec![V2UserInput::Text {

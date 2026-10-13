@@ -156,6 +156,7 @@ impl App {
             .request_typed::<TurnStartResponse>(ClientRequest::TurnStart {
                 request_id: app_server.next_request_id(),
                 params: TurnStartParams {
+                    automatic_turn_continuation: None,
                     thread_id: review.thread_id.to_string(),
                     cwd: Some(config.cwd.to_path_buf()),
                     runtime_workspace_roots: Some(

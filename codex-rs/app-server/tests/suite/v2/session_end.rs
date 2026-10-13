@@ -48,6 +48,7 @@ async fn run_removal_session_end_test(operation: &str) -> Result<()> {
 
     let turn_id = app_server
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread_id.clone(),
             input: vec![UserInput::Text {
                 text: "persist this before removal".to_string(),

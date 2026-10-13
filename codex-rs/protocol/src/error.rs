@@ -110,6 +110,9 @@ pub enum CodexErrorDetails {
     #[error("turn aborted. Something went wrong? Hit `/feedback` to report the issue.")]
     TurnAborted,
 
+    #[error("automatic turn context changed before provider request")]
+    AutomaticTurnContextChanged,
+
     #[error("shared rollout token budget exhausted")]
     SessionBudgetExceeded,
 
@@ -355,6 +358,7 @@ macro_rules! codex_err_tuple_constructors {
 impl CodexErr {
     codex_err_unit_constructors!(
         TurnAborted,
+        AutomaticTurnContextChanged,
         SessionBudgetExceeded,
         ContextWindowExceeded,
         SessionConfiguredNotFirstEvent,
@@ -433,6 +437,7 @@ impl CodexErr {
     pub fn retry_delay(&self, retry_count: u64) -> Option<Duration> {
         match self.details() {
             CodexErrorDetails::TurnAborted
+            | CodexErrorDetails::AutomaticTurnContextChanged
             | CodexErrorDetails::SessionBudgetExceeded
             | CodexErrorDetails::Interrupted
             | CodexErrorDetails::EnvVar(_)

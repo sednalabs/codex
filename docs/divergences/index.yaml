@@ -54,6 +54,317 @@
         "codex-rs/tui/src/app/app_server_events.rs"
       ],
       "extraction_target": "upstream native dynamic-tool provider adapters"
+    },
+    {
+      "id": "github-app-installation-token-broker",
+      "title": "Read-only GitHub App installation-token broker",
+      "status": "live",
+      "category": "operator-workflow",
+      "surface_type": "credential-transport",
+      "surface": [
+        "babysit-pr installation-token broker",
+        "fingerprint-bound observer execution"
+      ],
+      "files": [
+        ".codex/skills/babysit-pr/scripts/github_app_installation_broker.py",
+        ".codex/skills/babysit-pr/scripts/test_github_app_installation_broker.py",
+        ".codex/skills/babysit-pr/references/github-app-installation-broker.md",
+        ".github/scripts/validation-lanes/agent-workflow-sanity.sh"
+      ],
+      "behavior": "Downstream provides a stdlib-only, one-shot transport boundary that validates a GitHub App installation and selected repository, requests only explicit read permissions, caches one short-lived installation token in memory, strips ambient GitHub tokens from a fingerprint-bound child, bounds and redacts output, and revokes the token on exit without PAT or App-user fallback.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.agent-workflow-sanity",
+      "tests": [
+        "test_github_app_installation_broker.py",
+        "agent-workflow-sanity compiles and runs broker tests"
+      ],
+      "owner": "downstream",
+      "notes": "Preserve this operator-only boundary until upstream supplies an equivalent independently attributable installation-token transport with the same selected-repository, read-only, fingerprint, redaction, and revocation guarantees. Live installation proof and production commissioning remain outside Phase A.",
+      "upstreamability_tier": "operator-only",
+      "boundary_type": "credential-transport",
+      "hotspot_files": [
+        ".codex/skills/babysit-pr/scripts/github_app_installation_broker.py"
+      ],
+      "extraction_target": "upstream read-only GitHub App installation transport"
+    },
+    {
+      "id": "mcp-json-resource-model-boundary",
+      "title": "MCP JSON-family resource model-output boundary",
+      "status": "live",
+      "category": "core-runtime",
+      "surface_type": "tool-output",
+      "surface": [
+        "read_mcp_resource model output",
+        "code-mode resource output",
+        "persisted function-call history"
+      ],
+      "files": [
+        "codex-rs/core/src/tools/handlers/mcp_resource.rs",
+        "codex-rs/core/src/tools/handlers/mcp_resource/read_mcp_resource.rs",
+        "codex-rs/core/src/tools/handlers/mcp_resource_tests.rs",
+        "codex-rs/core/src/tools/registry.rs",
+        "codex-rs/core/src/tools/tool_dispatch_trace.rs",
+        "codex-rs/core/src/tools/registry_tests.rs",
+        "codex-rs/core/src/tools/tool_dispatch_trace_tests.rs",
+        "codex-rs/tools/src/tool_output.rs"
+      ],
+      "behavior": "A bounded read_mcp_resource result never reports success with a truncated application/json or application/*+json resource. If the serialized envelope exceeds the model-output budget and contains a JSON-family text resource, the model receives a fixed compact structured error with failed success semantics; code mode retains the complete original serialized resource payload and records successful execution for hooks, lifecycle, telemetry, and rollout tracing. Plain-text and Markdown resources retain generic truncation behavior, and the fixed error remains valid when persisted through the generic history boundary.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.core-context-serialization-targeted; GitHub validation-lab targeted profile",
+      "tests": [
+        "serialize_read_resource_output_preserves_small_json_for_model",
+        "large_json_resource_fails_closed_for_model_and_preserves_code_mode_payload",
+        "serialize_read_resource_output_fails_closed_for_vendor_json_media_type",
+        "serialize_read_resource_output_fails_closed_for_problem_json_media_type",
+        "serialize_read_resource_output_keeps_untyped_json_on_generic_truncation",
+        "serialize_read_resource_output_keeps_large_markdown_on_generic_truncation",
+        "history_does_not_retruncate_bounded_json_resource_error",
+        "oversized_json_resource_keeps_code_mode_execution_successful",
+        "code_mode_execution_status_controls_hooks_and_lifecycle_without_changing_model_output",
+        "model_bounded_output_records_code_mode_execution_as_completed"
+      ],
+      "owner": "downstream",
+      "notes": "Preserve this narrow structured-output boundary until upstream provides equivalent model-safe handling for bounded MCP JSON-family resources. Do not broaden it into a compatibility layer for malformed source resources or alter generic text/Markdown truncation.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "structured-output-correctness",
+      "hotspot_files": [
+        "codex-rs/core/src/tools/handlers/mcp_resource.rs",
+        "codex-rs/core/src/context_manager/history.rs"
+      ],
+      "extraction_target": "upstream model-safe MCP JSON-family resource output boundary"
+    },
+    {
+      "id": "exact-target-wait-mailbox-filter",
+      "title": "Exact-target V2 wait filters queue-only mailbox activity",
+      "status": "live",
+      "category": "agent-runtime",
+      "surface_type": "wait-agent",
+      "surface": ["multi-agent V2 wait_agent", "session input queue"],
+      "files": [
+        "codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs",
+        "codex-rs/core/src/session/input_queue.rs"
+      ],
+      "behavior": "Exact-target waits ignore queue-only inter-agent mailbox activity while retaining FIFO durable messages and later notification summaries; targetless waits remain broadly mailbox-wakeable.",
+      "upstream_equivalent": false,
+      "introduced_in": {"carry_commit": null, "upstream_commit": null},
+      "guardrail_lane": "codex.core-multi-agent-orchestration-targeted",
+      "tests": [
+        "multi_agent_v2_wait_agent_accepts_target_and_timeout_arguments",
+        "multi_agent_v2_wait_agent_does_not_return_completed_content",
+        "multi_agent_v2_wait_agent_wakes_on_trigger_turn_mailbox_notification",
+        "input_queue_tracks_pending_trigger_turn_mail"
+      ],
+      "owner": "downstream",
+      "notes": "Regression repair for exact-target waits; preserve queue-only delivery and notification visibility until upstream adopts the typed actionable-input distinction.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "runtime-regression-repair",
+      "hotspot_files": [
+        "codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs",
+        "codex-rs/core/src/session/input_queue.rs"
+      ],
+      "extraction_target": "upstream exact-target wait mailbox filtering"
+    },
+    {
+      "id": "rmcp-streamable-http-cancellation",
+      "title": "Streamable HTTP MCP request cancellation and independent backlog capacity",
+      "status": "live",
+      "category": "mcp",
+      "surface_type": "protocol-client",
+      "surface": [
+        "rmcp-client Streamable HTTP transport"
+      ],
+      "files": [
+        "codex-rs/Cargo.toml",
+        "codex-rs/Cargo.lock",
+        "codex-rs/rmcp-client/src/lib.rs",
+        "codex-rs/rmcp-client/src/rmcp_client.rs",
+        "codex-rs/rmcp-client/src/request_cancellation_guard.rs",
+        "codex-rs/mcp-server/src/message_processor.rs",
+        "codex-rs/mcp-server/src/outgoing_message.rs",
+        "codex-rs/mcp-server/tests/suite/codex_tool.rs",
+        "codex-rs/rmcp-client/src/oauth_metadata.rs",
+        "codex-rs/rmcp-client/tests/streamable_http_cancellation.rs",
+        "codex-rs/rmcp-client/src/elicitation_client_service.rs",
+        "codex-rs/codex-mcp/src/elicitation.rs",
+        "codex-rs/app-server-protocol/src/protocol/v2/mcp.rs",
+        "codex-rs/core/src/session/mcp.rs",
+        "codex-rs/tui/src/history_cell/mcp.rs"
+      ],
+      "behavior": "The rmcp 3.2 client propagates active and queued tools/call cancellation, preserves elicitation pause accounting, and keeps independent read traffic usable while a cancelled POST is draining. The manual stdio MCP server negotiates only implemented legacy protocol revisions and projects tool results onto that declared wire contract.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.rmcp-client-transport; codex.rmcp-consumers-check; codex.downstream-docs-check",
+      "tests": [
+        "blocked_posts_do_not_starve_an_independent_read",
+        "timed_out_post_sends_matching_cancellation_and_reclaims_capacity",
+        "cancelled_queued_post_is_never_sent_or_executed",
+        "timed_out_mutating_call_is_not_replayed",
+        "externally_aborted_post_sends_matching_cancellation",
+        "initialize_negotiates_only_implemented_protocol_versions",
+        "tool_responses_preserve_the_existing_wire_contract",
+        "active_time_timeout_pauses_while_elicitation_is_pending"
+      ],
+      "owner": "downstream",
+      "notes": "The dedicated HTTP fixture records request and cancellation IDs, saturates ordinary transport capacity, and requires follow-on reads before releasing held requests. Keep explicit Drop cancellation until an upstream equivalent covers caller abort and active-time expiry; source presence alone is not installed-runtime acceptance.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "runtime-extension",
+      "hotspot_files": [
+        "codex-rs/rmcp-client/src/rmcp_client.rs"
+      ],
+      "extraction_target": "upstream request-handle cancellation and concurrent HTTP control capacity"
+    },
+
+    {
+      "id": "strict-workflow-run-watcher-identity",
+      "title": "Strict REST identity and pagination for virtual workflow runs",
+      "status": "live",
+      "category": "agent-workflow",
+      "surface_type": "skill-helper",
+      "surface": ["babysit-gh-workflow-run", "babysit-pr"],
+      "files": [
+        ".codex/skills/babysit-gh-workflow-run/scripts/gh_workflow_run_watch.py",
+        ".codex/skills/babysit-gh-workflow-run/tests/test_view_run_rest.py",
+        ".codex/skills/babysit-pr/scripts/gh_pr_watch.py"
+      ],
+      "behavior": "Virtual or uncatalogued workflow runs use strict REST run and paginated job identity checks; PR observation falls back to statusCheckRollup when older gh clients lack pr checks JSON support.",
+      "upstream_equivalent": false,
+      "introduced_in": {"carry_commit": null, "upstream_commit": null},
+      "guardrail_lane": "codex.agent-workflow-sanity",
+      "tests": ["test_rest_view_rejects_wrong_run_identity_before_jobs_read", "test_rest_view_requires_complete_paginated_jobs", "test_get_pr_checks_falls_back_to_status_rollup"],
+      "owner": "downstream",
+      "notes": "Preserve exact repository/run/job identity and complete pagination; do not import ambient diagnosis or broaden credentials. Reassess against upstream workflow watcher changes before future sync.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "runtime-extension",
+      "hotspot_files": [
+        ".codex/skills/babysit-gh-workflow-run/scripts/gh_workflow_run_watch.py",
+        ".codex/skills/babysit-pr/scripts/gh_pr_watch.py"
+      ],
+      "extraction_target": "upstream exact virtual-workflow watcher identity"
+    },
+    {
+      "id": "linux-preview-code-mode-host-artifact",
+      "title": "Linux x86_64 preview code-mode host artifact",
+      "status": "live",
+      "category": "release",
+      "surface_type": "build-workflow",
+      "surface": ["manual Linux x86_64 preview artifact"],
+      "files": [
+        ".github/workflows/sedna-branch-build.yml",
+        ".github/scripts/validation-lanes/setup-rusty-v8.sh",
+        "docs/carry-divergence-ledger.md",
+        "docs/downstream-regression-matrix.md"
+      ],
+      "behavior": "The preview workflow can build and stage only codex-code-mode-host for Linux x86_64, using the target's checksum-verifying V8 setup helper, locked dependencies, an executable --help smoke, exact source and workflow commit metadata, and SHA-256 digests, while its default CLI and proxy build remains unchanged.",
+      "upstream_equivalent": false,
+      "introduced_in": {"carry_commit": null, "upstream_commit": null},
+      "guardrail_lane": "sedna-branch-build-host-only",
+      "tests": ["manual workflow dispatch with host_only=true and platform=linux-x86_64"],
+      "owner": "downstream",
+      "notes": "Keep this supplemental artifact bound to the exact CLI/proxy source commit; do not treat the host-only artifact as a standalone preview installation.",
+      "upstreamability_tier": "downstream-workflow",
+      "boundary_type": "preview-artifact-production",
+      "hotspot_files": [".github/workflows/sedna-branch-build.yml"],
+      "extraction_target": "upstream preview packaging for the code-mode host helper"
+    },
+    {
+      "id": "native-runtime-mcp-execution-proof",
+      "title": "Native per-execution proof for a protected MCP claim",
+      "status": "live",
+      "category": "agent-runtime",
+      "surface_type": "runtime-credential-proof",
+      "surface": ["protected MCP claim request metadata"],
+      "files": [
+        "codex-rs/runtime-proof/**",
+        "codex-rs/cli/src/main.rs",
+        "codex-rs/cli/tests/runtime_execution_proof.rs",
+        "codex-rs/cli/tests/runtime_execution_proof/support.rs",
+        "codex-rs/core/src/session/session.rs",
+        "codex-rs/core/src/session/turn_tests.rs",
+        "codex-rs/core/src/client.rs",
+        "codex-rs/core/src/client_tests.rs",
+        "codex-rs/core/src/codex_delegate.rs",
+        "codex-rs/core/src/mcp_tool_call.rs",
+        "codex-rs/core/tests/suite/hooks.rs",
+        "codex-rs/exec/src/lib.rs",
+        "codex-rs/codex-mcp/src/rmcp_client.rs",
+        "codex-rs/codex-mcp/src/protected_http_client.rs",
+        "codex-rs/codex-mcp/src/protected_http_client_tests.rs",
+        "codex-rs/rmcp-client/src/rmcp_client.rs",
+        "codex-rs/rmcp-client/src/elicitation_client_service.rs",
+        "codex-rs/rmcp-client/src/logging_client_handler.rs",
+        "codex-rs/codex-mcp/src/server.rs"
+      ],
+      "behavior": "A Linux CLI consumes bounded root-peer anonymous-FD proof and authentication bootstraps before other startup work, validates immutable configuration and the effective built-in ChatGPT recipient, imports finite ChatGPT credentials into ephemeral storage, and retains process-scoped signing and selected MCP bearer capabilities. Each native Session contributes a fresh execution nonce, including delegated Sessions that share the MCP manager; a short-lived signature covers the exact final MCP claim request. Resolved provider configuration is compared with the canonical built-in provider before auth resolution and again before HTTP or websocket transport construction, including provider overrides. A protected MCP target accepts only the reserved local environment and always uses the process-local HTTP client; a remote environment descriptor remains rejected even when paired with the local ID. Until the credential-bearing managed-cloud configuration consumer is admitted to the protected recipient contract, eligible business, enterprise and education protected accounts fail closed before credential import and cloud-loader startup; ordinary Codex cloud configuration behavior is unchanged. Synthetic fixtures use only a fixed public fake credential and loopback recipient. Ordinary invocations remain unconfigured when no protected bootstrap is present.",
+      "upstream_equivalent": false,
+      "introduced_in": {"carry_commit": null, "upstream_commit": null},
+      "guardrail_lane": "core-runtime-surface-smoke; codex.mcp-safety-targeted; codex.downstream-docs-check",
+      "tests": [
+        "canonical_claim_digest_uses_the_ops_jcs_contract",
+        "canonical_claim_digest_distinguishes_omission_null_and_note_changes",
+        "canonical_claim_digest_uses_jcs_utf16_key_order",
+        "canonical_claim_digest_rejects_unsafe_integers_and_floats",
+        "certificate_validation_binds_key_artifact_and_fixed_execution_lease",
+        "protection_drift_erases_the_process_signing_capability",
+        "selected_claim_rejects_a_mismatched_server_or_recipient",
+        "signs_each_final_claim_request_with_native_context_and_fresh_nonce",
+        "bootstrap_frame_is_bounded_and_descriptor_closes",
+        "runtime_execution_nonce_is_per_session_even_with_a_shared_mcp_manager",
+        "post_sampling_token_estimate_is_disabled_by_always_on_sinks",
+        "external_v2_unload_defers_for_pending_finalizers_and_submissions",
+        "session_end_flushes_transcript_and_ignores_control_output",
+        "session_end_skips_subagents",
+        "runtime_proof_metadata_preserves_trace_fields_and_rejects_collision",
+        "protected_cli_root_and_delegate_calls_are_signed_and_redacted",
+        "protected_http_transport_rejects_remote_descriptor_for_local_environment_id",
+        "protected_trace_logging_does_not_echo_proof_or_bearer",
+        "protected_mcp_error_does_not_echo_proof_or_bearer",
+        "protected_mcp_redirect_is_stopped_before_recipient_change",
+        "delayed_mcp_response_is_redacted_after_protected_auth_expiry",
+        "retained_protected_http_client_rejects_a_send_after_imported_auth_expiry",
+        "invalidation_between_getter_precheck_and_lock_still_fails_closed",
+        "protected_cloud_config_refuses_eligible_or_unclassified_accounts",
+        "invalid_auth_bootstraps_are_rejected_before_credential_egress",
+        "protected_model_provider_is_checked_before_auth_resolution",
+        "protected_api_provider_is_pinned_to_the_canonical_builtin_configuration",
+        "protected_api_route_uses_only_the_pinned_recipient_and_endpoint",
+        "delegate_provider_override_is_rejected_before_credential_egress"
+      ],
+      "owner": "downstream",
+      "notes": "The protected launcher supplies the issuer certificate, ephemeral key, and finite authentication inputs through separate anonymous descriptors. The client does not mint authority or trust a thread identifier. Provider credentials use the existing ChatGPT token import path and ephemeral storage; resolved provider and transport configuration are checked against the effective built-in recipient before egress, including delegate role overrides. Current managed-cloud eligibility semantics are matched before protected auth import: eligible or unknown protected plans fail closed until that consumer is admitted without weakening managed requirements. Synthetic tests bind only exact public fake credentials and loopback mocks; an ignored direct transport fixture imports the real protected frame and proves a retained production HTTP client blocks a send after expiry. The delayed CLI response case tests redaction after erasure only. Preserve fail-closed scope matching, key erasure on protection drift, credential and proof redaction, no proof logging, and the ordinary unconfigured path. The lazy post-sampling estimate filter regression checks direct interest on the built sink stack with an ordinary TRACE positive control. Hosted validation is required; generated dependency lock updates are hosted-only. Prior SessionEnd allocation hypotheses were reverted after hosted core validation still failed, and the available traces do not establish a hook-specific cause.",
+      "upstreamability_tier": "downstream-adapter",
+      "boundary_type": "runtime-credential-proof",
+      "hotspot_files": [
+        "codex-rs/core/src/client.rs",
+        "codex-rs/core/src/client_tests.rs",
+        "codex-rs/core/src/session/session.rs",
+        "codex-rs/core/src/session/turn_tests.rs",
+        "codex-rs/core/src/mcp_tool_call.rs"
+      ],
+      "extraction_target": "native host capability for narrowly scoped MCP request proof"
+    }
+  ],
+  "superseded_hunks": [
+    {
+      "id": "http-client-outbound-proxy-blocking-read-upstreamed",
+      "path": "codex-rs/http-client/src/outbound_proxy_tests.rs",
+      "upstream_commit": "c8ddb210d2429cacacf86593e157114b00634f13",
+      "hunk_header": "@@ -64,6 +64,9 @@ fn spawn_http_listener(",
+      "hunk_lines": [
+        "+            stream",
+        "+                .set_nonblocking(false)",
+        "+                .expect(\"HTTP stream should become blocking\");"
+      ]
     }
   ]
 }

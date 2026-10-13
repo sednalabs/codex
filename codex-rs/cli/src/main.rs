@@ -1029,6 +1029,7 @@ fn stage_str(stage: Stage) -> &'static str {
 }
 
 fn main() -> anyhow::Result<()> {
+    codex_runtime_proof::startup::initialize_from_environment()?;
     codex_build_info::initialize!();
     let remote_control_disabled = codex_app_server::take_remote_control_disabled_env();
     arg0_dispatch_or_else(move |arg0_paths: Arg0DispatchPaths| async move {
@@ -2743,6 +2744,45 @@ mod tests {
         let size = std::mem::size_of_val(&future);
 
         assert!(size < 64 * 1024, "interactive TUI future is {size} bytes");
+    }
+
+    #[test]
+    fn protected_runtime_bootstrap_is_the_first_cli_action() {
+        let source = include_str!("main.rs");
+        let main = source
+            .split_once("fn main() -> anyhow::Result<()> {")
+            .expect("CLI main entry should be present")
+            .1;
+        let bootstrap = main
+            .find("codex_runtime_proof::startup::initialize_from_environment()")
+            .expect("runtime proof bootstrap should be first in CLI main");
+        let remote_control = main
+            .find("take_remote_control_disabled_env()")
+            .expect("remote control setup should follow runtime proof bootstrap");
+        let arg0 = main
+            .find("arg0_dispatch_or_else(")
+            .expect("arg0 dispatch should follow runtime proof bootstrap");
+        assert!(bootstrap < remote_control);
+        assert!(bootstrap < arg0);
+    }
+
+    #[test]
+    fn manual_update_url_uses_sedna_releases_only_for_sedna_identity() {
+        assert_eq!(
+            update_manual_install_url_for_release_identity(Some("sednalabs/codex"), Some("v")),
+            "https://github.com/sednalabs/codex/releases"
+        );
+        assert_eq!(
+            update_manual_install_url_for_release_identity(Some("openai/codex"), Some("v")),
+            "https://developers.openai.com/codex/cli/"
+        );
+        assert_eq!(
+            update_manual_install_url_for_release_identity(
+                Some("sednalabs/codex"),
+                /*tag_prefix*/ None,
+            ),
+            "https://developers.openai.com/codex/cli/"
+        );
     }
 
     #[cfg(windows)]

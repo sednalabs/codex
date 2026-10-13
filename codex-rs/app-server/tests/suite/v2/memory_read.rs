@@ -71,6 +71,7 @@ async fn memory_read_version_selects_only_its_own_context() -> Result<()> {
             .await?;
         let response: ThreadStartResponse = app.read_response(start).await?;
         app.send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: response.thread.id,
             input: vec![UserInput::Text {
                 text: "Use my memory preferences".to_string(),

@@ -175,6 +175,7 @@ async fn daybreak_access_respects_plugin_provenance(case: AccessCall) -> Result<
         )
         .await;
         app.start_turn_and_wait_for_completion(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             input: vec![UserInput::Text {
                 text: "Check Daybreak access".to_string(),

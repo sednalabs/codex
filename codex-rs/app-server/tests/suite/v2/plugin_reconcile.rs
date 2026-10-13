@@ -229,6 +229,7 @@ async fn turn_hook_runs(
     let completed = timeout(
         DEFAULT_TIMEOUT,
         app_server.start_turn_and_wait_for_completion(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread_id.clone(),
             input: vec![UserInput::Text {
                 text: "run hooks".to_string(),

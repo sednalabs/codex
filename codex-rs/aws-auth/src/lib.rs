@@ -4,8 +4,13 @@ mod signing;
 mod transport;
 
 use std::sync::Arc;
+use std::collections::hash_map::RandomState;
+use std::hash::BuildHasher;
+use std::hash::Hasher;
+use std::sync::OnceLock;
 use std::time::SystemTime;
 
+use aws_credential_types::Credentials;
 use aws_credential_types::provider::ProvideCredentials;
 use aws_credential_types::provider::SharedCredentialsProvider;
 use bytes::Bytes;
@@ -160,6 +165,101 @@ pub struct AwsAuthContext {
     service: String,
 }
 
+/// A secret-safe, process-local identity for a frozen AWS signer.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct AwsCredentialIdentity([u64; 2]);
+
+impl std::fmt::Debug for AwsCredentialIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("AwsCredentialIdentity(<redacted>)")
+    }
+}
+
+impl AwsCredentialIdentity {
+    pub fn write_to(&self, state: &mut dyn Hasher) {
+        state.write_u64(self.0[0]);
+        state.write_u64(self.0[1]);
+    }
+}
+
+/// AWS credentials captured for one provider request attempt. The underlying credential provider
+/// cannot rotate between authority comparison and SigV4 signing.
+#[derive(Clone)]
+pub struct FrozenAwsAuthContext {
+    network_policy: codex_http_client::NetworkPolicy,
+    credentials: Credentials,
+    region: String,
+    service: String,
+    identity: AwsCredentialIdentity,
+}
+
+impl std::fmt::Debug for FrozenAwsAuthContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FrozenAwsAuthContext")
+            .field("region", &self.region)
+            .field("service", &self.service)
+            .field("identity", &self.identity)
+            .finish_non_exhaustive()
+    }
+}
+
+fn credential_identity(
+    credentials: &Credentials,
+    region: &str,
+    service: &str,
+) -> AwsCredentialIdentity {
+    fn write_bytes(state: &mut dyn Hasher, value: &[u8]) {
+        state.write_usize(value.len());
+        state.write(value);
+    }
+
+    fn write_optional_bytes(state: &mut dyn Hasher, value: Option<&[u8]>) {
+        match value {
+            Some(value) => {
+                state.write_u8(1);
+                write_bytes(state, value);
+            }
+            None => state.write_u8(0),
+        }
+    }
+
+    static KEYS: OnceLock<[RandomState; 2]> = OnceLock::new();
+    let keys = KEYS.get_or_init(|| [RandomState::new(), RandomState::new()]);
+    let mut values = [0; 2];
+    for (index, key) in keys.iter().enumerate() {
+        let mut state = key.build_hasher();
+        state.write(b"aws-sigv4\0");
+        write_bytes(&mut state, credentials.access_key_id().as_bytes());
+        write_bytes(&mut state, credentials.secret_access_key().as_bytes());
+        write_optional_bytes(&mut state, credentials.session_token().map(str::as_bytes));
+        match credentials.expiry() {
+            None => state.write_u8(0),
+            Some(expiry) => match expiry.duration_since(std::time::UNIX_EPOCH) {
+                Ok(duration) => {
+                    state.write_u8(1);
+                    state.write_u64(duration.as_secs());
+                    state.write_u32(duration.subsec_nanos());
+                }
+                Err(error) => {
+                    state.write_u8(2);
+                    state.write_u64(error.duration().as_secs());
+                    state.write_u32(error.duration().subsec_nanos());
+                }
+            },
+        }
+        write_optional_bytes(
+            &mut state,
+            credentials
+                .account_id()
+                .map(|account_id| account_id.as_str().as_bytes()),
+        );
+        write_bytes(&mut state, region.as_bytes());
+        write_bytes(&mut state, service.as_bytes());
+        values[index] = state.finish();
+    }
+    AwsCredentialIdentity(values)
+}
+
 impl std::fmt::Debug for AwsAuthContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AwsAuthContext")
@@ -247,6 +347,31 @@ impl AwsAuthContext {
         self.sign_at(request, SystemTime::now()).await
     }
 
+    /// Resolves one credential snapshot under the same destination policy used for request
+    /// signing. The caller supplies the selected endpoint URL so external credential-provider I/O
+    /// retains the existing request-scoped policy check.
+    pub async fn freeze_for_request_url(
+        &self,
+        request_url: &str,
+    ) -> Result<FrozenAwsAuthContext, AwsAuthError> {
+        let url = request_url
+            .parse::<url::Url>()
+            .map_err(AwsAuthError::InvalidUrl)?;
+        let permit = self.network_policy.acquire(&url)?;
+        let credentials = permit
+            .run(self.credentials_provider.provide_credentials())
+            .await?
+            .map_err(map_credentials_error)?;
+        let identity = credential_identity(&credentials, &self.region, &self.service);
+        Ok(FrozenAwsAuthContext {
+            network_policy: self.network_policy.clone(),
+            credentials,
+            region: self.region.clone(),
+            service: self.service.clone(),
+            identity,
+        })
+    }
+
     async fn sign_at(
         &self,
         request: AwsRequestToSign,
@@ -260,21 +385,38 @@ impl AwsAuthContext {
         let credentials = permit
             .run(self.credentials_provider.provide_credentials())
             .await?
-            .map_err(|error| {
-                let mut source: &(dyn std::error::Error + 'static) = &error;
-                loop {
-                    if let Some(policy) =
-                        source.downcast_ref::<codex_http_client::NetworkPolicyDenied>()
-                    {
-                        return AwsAuthError::Policy(*policy);
-                    }
-                    match source.source() {
-                        Some(next) => source = next,
-                        None => return AwsAuthError::Credentials(error),
-                    }
-                }
-            })?;
+            .map_err(map_credentials_error)?;
         signing::sign_request(&credentials, &self.region, &self.service, request, time)
+    }
+}
+
+impl FrozenAwsAuthContext {
+    pub fn identity(&self) -> AwsCredentialIdentity {
+        self.identity
+    }
+
+    pub async fn sign(&self, request: AwsRequestToSign) -> Result<AwsSignedRequest, AwsAuthError> {
+        let url = request
+            .url
+            .parse::<url::Url>()
+            .map_err(AwsAuthError::InvalidUrl)?;
+        let _permit = self.network_policy.acquire(&url)?;
+        signing::sign_request(&self.credentials, &self.region, &self.service, request, SystemTime::now())
+    }
+}
+
+fn map_credentials_error(
+    error: aws_credential_types::provider::error::CredentialsError,
+) -> AwsAuthError {
+    let mut source: &(dyn std::error::Error + 'static) = &error;
+    loop {
+        if let Some(policy) = source.downcast_ref::<codex_http_client::NetworkPolicyDenied>() {
+            return AwsAuthError::Policy(*policy);
+        }
+        match source.source() {
+            Some(next) => source = next,
+            None => return AwsAuthError::Credentials(error),
+        }
     }
 }
 

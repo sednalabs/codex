@@ -77,6 +77,7 @@ async fn thread_start_stages_daybreak_until_persistence() -> Result<()> {
         assert_eq!(read.thread.daybreak_enabled, daybreak_enabled);
         let completed = app
             .start_turn_and_wait_for_completion(TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: started.thread.id.clone(),
                 input: vec![UserInput::Text {
                     text: "start this task".to_owned(),
@@ -171,6 +172,7 @@ async fn turn_start_forwards_explicit_cyber_access_program() -> Result<()> {
     for program in programs {
         let completed = app
             .start_turn_and_wait_for_completion(TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 cyber_access_program: program,
                 input: vec![UserInput::Text {
@@ -255,6 +257,7 @@ async fn api_key_cyber_access_program_requires_only_forwarding_feature() -> Resu
         ] {
             let completed = app
                 .start_turn_and_wait_for_completion(TurnStartParams {
+                    automatic_turn_continuation: None,
                     thread_id: thread.id.clone(),
                     cyber_access_program: program,
                     input: vec![UserInput::Text {
@@ -326,6 +329,7 @@ async fn api_key_cyber_access_program_server_rejection_does_not_fall_back() -> R
     let thread = app.start_thread(ThreadStartParams::default()).await?.thread;
     let completed = app
         .start_turn_and_wait_for_completion(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id,
             cyber_access_program: Some(CyberAccessProgram::DaybreakBlue),
             input: vec![UserInput::Text {
@@ -424,6 +428,7 @@ async fn daybreak_thread_metadata_persists_independently_across_restart_and_fork
     // Leave the second thread empty to exercise metadata durability without a rollout.
     let completed = app
         .start_turn_and_wait_for_completion(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: first.thread.id.clone(),
             input: vec![UserInput::Text {
                 text: "start this task".to_owned(),
@@ -508,6 +513,7 @@ async fn daybreak_thread_metadata_persists_independently_across_restart_and_fork
         assert_eq!(resumed.thread.daybreak_enabled, Some(enabled));
         let completed = restarted
             .start_turn_and_wait_for_completion(TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread_id.clone(),
                 cyber_access_program: program,
                 input: vec![UserInput::Text {
@@ -599,6 +605,7 @@ async fn turn_start_forwards_cyber_access_program_with_personal_access_token() -
     let thread = app.start_thread(ThreadStartParams::default()).await?.thread;
 
     app.start_turn_and_wait_for_completion(TurnStartParams {
+        automatic_turn_continuation: None,
         thread_id: thread.id,
         cyber_access_program: Some(CyberAccessProgram::DaybreakBlue),
         input: vec![UserInput::Text {

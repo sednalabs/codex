@@ -5,6 +5,7 @@ use super::Turn;
 use crate::JsonSchema;
 use crate::TS;
 use codex_experimental_api_macros::ExperimentalApi;
+use codex_protocol::automatic_turn::AutomaticTurnContinuationRef;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::config_types::Personality;
@@ -172,6 +173,12 @@ pub struct TurnStartParams {
     pub disabled_plugin_ids: Option<Vec<String>>,
     #[ts(optional = nullable)]
     pub client_user_message_id: Option<String>,
+    /// Opaque, non-authoritative reference for a server-admitted automatic-turn retry.
+    /// The matching durable State ticket remains authoritative; this value must never be treated
+    /// as user input or included in rollout history.
+    #[experimental("turn/start.automaticTurnContinuation")]
+    #[ts(optional = nullable)]
+    pub automatic_turn_continuation: Option<AutomaticTurnContinuationRef>,
     pub input: Vec<UserInput>,
     /// Optional source classification for the caller that starts this turn.
     /// Ignored when this request steers an already-active turn.

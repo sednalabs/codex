@@ -102,6 +102,7 @@ async fn widget_reads_survive_history_modes_compaction_restarts_and_app_only_vis
             .await?;
         let turn_id = app_server
             .send_turn_start_request(TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 input: vec![UserInput::Text {
                     text: "Find a lamp.".to_string(),
@@ -197,6 +198,7 @@ async fn widget_reads_survive_history_modes_compaction_restarts_and_app_only_vis
                 .await??;
                 let turn_id = app_server
                     .send_turn_start_request(TurnStartParams {
+                        automatic_turn_continuation: None,
                         thread_id: thread.id.clone(),
                         input: vec![UserInput::Text {
                             text: "What did the apps find?".to_string(),
@@ -245,6 +247,7 @@ async fn widget_reads_survive_history_modes_compaction_restarts_and_app_only_vis
 
     let turn_id = restarted
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: model_visibility_thread_id,
             input: vec![UserInput::Text {
                 text: "Find another lamp.".to_string(),

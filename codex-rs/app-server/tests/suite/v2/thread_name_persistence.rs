@@ -91,6 +91,7 @@ async fn named_empty_paginated_thread_resumes_after_restart() -> Result<()> {
     let completed = timeout(
         READ_TIMEOUT,
         app_server.start_turn_and_wait_for_completion(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread_id.clone(),
             input,
             ..Default::default()

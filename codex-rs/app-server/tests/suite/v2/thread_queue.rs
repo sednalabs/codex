@@ -442,6 +442,7 @@ async fn cold_thread_resume_dispatches_a_persisted_queued_submission() -> Result
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread_id.clone(),
                 input: vec![text("materialize the thread before restarting")],
                 ..Default::default()
@@ -916,6 +917,7 @@ async fn a_new_turn_preserves_queued_messages_until_it_completes() -> Result<()>
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread_id.clone(),
                 input: first.input.clone(),
                 client_user_message_id: Some(first.client_user_message_id.clone()),
@@ -996,6 +998,7 @@ async fn start_blocked_turn(
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread_id.to_string(),
                 input: vec![text("start an approval-blocked turn")],
                 ..Default::default()

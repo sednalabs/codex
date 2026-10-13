@@ -132,6 +132,7 @@ async fn selected_plugin_mcp_startup_respects_explicit_mentions(
     };
     let request_id = app_server
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread_id.clone(),
             input: vec![input],
             environments: Some(vec![
@@ -763,6 +764,7 @@ async fn run_turn(
 ) -> Result<()> {
     let request_id = app_server
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread_id.to_string(),
             input: vec![UserInput::Text {
                 text: text.to_string(),

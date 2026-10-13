@@ -55,10 +55,12 @@ pub use crate::outbound_proxy::cache_system_proxy_route_for_test;
 #[cfg(target_os = "macos")]
 pub use crate::outbound_proxy::macos_system_proxy_configuration;
 pub use crate::request::EncodedJsonBody;
+pub use crate::request::ClaimedRequestInitiation;
 pub use crate::request::PreparedRequestBody;
 pub use crate::request::Request;
 pub use crate::request::RequestBody;
 pub use crate::request::RequestCompression;
+pub use crate::request::RequestInitiation;
 pub use crate::request::Response;
 pub use crate::request_builder::RequestBuilder;
 pub use crate::response::HttpResponse;

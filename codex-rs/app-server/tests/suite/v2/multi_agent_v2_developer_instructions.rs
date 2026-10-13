@@ -207,6 +207,7 @@ async fn spawned_subagents_apply_configured_developer_instruction_precedence(
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 input: vec![UserInput::Text {
                     text: PARENT_PROMPT.to_string(),
@@ -387,6 +388,7 @@ async fn compacted_full_history_fork_replaces_parent_developer_instructions() ->
     timeout(
         READ_TIMEOUT,
         app_server.start_turn_and_wait_for_completion(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             input: vec![UserInput::Text {
                 text: COMPACT_SETUP_PROMPT.to_string(),
@@ -415,6 +417,7 @@ async fn compacted_full_history_fork_replaces_parent_developer_instructions() ->
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id,
                 input: vec![UserInput::Text {
                     text: SPAWN_PROMPT.to_string(),
@@ -651,6 +654,7 @@ async fn cold_resume_preserves_effective_developer_instructions_for_worker(
         timeout(
             READ_TIMEOUT,
             app_server.start_turn_and_wait_for_completion(TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 input: vec![UserInput::Text {
                     text: INITIAL_PROMPT.to_string(),
@@ -970,6 +974,7 @@ features.shell_tool = false
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id,
                 input: vec![UserInput::Text {
                     text: FOLLOWUP_PROMPT.to_string(),

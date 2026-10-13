@@ -506,6 +506,7 @@ async fn initialization_selects_legacy_or_explicit_gateway_login() -> Result<()>
         let thread: ThreadStartResponse = server.read_response(thread).await?;
         let turn = server
             .send_turn_start_request(TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.thread.id,
                 input: vec![UserInput::Text {
                     text: "hello".into(),

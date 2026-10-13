@@ -132,6 +132,7 @@ async fn creation_attaches_to_original_task_and_survives_service_restart() -> co
         .request_typed(ClientRequest::TurnStart {
             request_id: request_id(),
             params: codex_app_server_protocol::TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread_id.clone(),
                 cwd: Some(home.path().to_path_buf()),
                 environments: Some(serde_json::from_value(json!([

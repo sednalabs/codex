@@ -594,7 +594,7 @@ async fn start_uninitialized(mut args: InProcessStartArgs) -> IoResult<InProcess
                 }
             }
 
-            processor.clear_runtime_references();
+            processor.clear_runtime_references().await;
             processor.cancel_active_login().await;
             processor
                 .connection_closed(IN_PROCESS_CONNECTION_ID, &session)

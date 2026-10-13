@@ -85,6 +85,7 @@ decision = "prompt"
     let thread = app.start_thread(ThreadStartParams::default()).await?.thread;
     let request_id = app
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             input: vec![UserInput::Text {
                 text: "Run the command".to_string(),

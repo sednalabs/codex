@@ -175,6 +175,7 @@ async fn run_local_image_turn(detail: Option<ImageDetail>) -> Result<Vec<Value>>
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 client_user_message_id: None,
                 input: vec![V2UserInput::LocalImage {
@@ -260,6 +261,7 @@ async fn turn_start_omits_notification_media_without_changing_model_input() -> R
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id,
                 input: vec![
                     V2UserInput::Text {
@@ -449,6 +451,7 @@ async fn tool_call_metadata_stays_out_of_raw_response_item_notifications(
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id,
                 input: vec![V2UserInput::Text {
                     text: "list calendar events".to_string(),
@@ -575,6 +578,7 @@ async fn turn_start_with_empty_input_runs_model_request() -> Result<()> {
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 client_user_message_id: None,
                 input: Vec::new(),
@@ -702,6 +706,7 @@ async fn turn_start_steers_active_turn_and_returns_active_turn_id() -> Result<()
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 client_user_message_id: None,
                 input: vec![V2UserInput::Text {
@@ -746,6 +751,7 @@ async fn turn_start_steers_active_turn_and_returns_active_turn_id() -> Result<()
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 client_user_message_id: None,
                 input: vec![V2UserInput::Text {
@@ -814,6 +820,7 @@ async fn turn_start_additional_context_flows_to_model_input() -> Result<()> {
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id,
                 client_user_message_id: None,
                 input: vec![V2UserInput::Text {
@@ -895,6 +902,7 @@ async fn turn_start_sends_originator_header(
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 client_user_message_id: None,
                 input: vec![V2UserInput::Text {
@@ -957,6 +965,7 @@ async fn turn_start_emits_user_message_item_with_text_elements() -> Result<()> {
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 client_user_message_id: Some("client-message-1".to_string()),
                 input: vec![V2UserInput::Text {
@@ -1052,6 +1061,7 @@ async fn turn_start_emits_thread_scoped_warning_notification_for_trimmed_skills(
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 client_user_message_id: None,
                 input: vec![V2UserInput::Text {
@@ -1131,6 +1141,7 @@ async fn turn_start_sends_service_tier_id_to_model_request() -> Result<()> {
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 service_tier: Some(Some(service_tier_id.clone())),
                 input: vec![V2UserInput::Text {
@@ -1158,6 +1169,7 @@ async fn turn_start_sends_service_tier_id_to_model_request() -> Result<()> {
     ] {
         let response_mock = responses::mount_sse_once(&server, body.clone()).await;
         mcp.start_turn_and_wait_for_completion(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             service_tier_for_turn,
             input: vec![V2UserInput::Text {
@@ -1250,6 +1262,7 @@ async fn turn_start_emits_raw_response_completed_with_upstream_usage(
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 input: vec![V2UserInput::Text {
                     text: "Hello".to_string(),
@@ -1337,6 +1350,7 @@ async fn thread_start_omits_empty_instruction_overrides_from_model_request() -> 
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id,
                 client_user_message_id: None,
                 input: vec![V2UserInput::Text {
@@ -1429,6 +1443,7 @@ async fn turn_start_tracks_thread_originator_in_analytics() -> Result<()> {
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 client_user_message_id: None,
                 input: vec![V2UserInput::Image {
@@ -1580,6 +1595,7 @@ async fn code_mode_exec_emits_correlated_production_analytics() -> Result<()> {
     let thread = app_server.start_thread(params).await?;
     let turn = app_server
         .start_turn_and_wait_for_completion(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.thread.id,
             input: vec![V2UserInput::Text {
                 text: "run exec".to_string(),
@@ -1685,6 +1701,7 @@ async fn turn_profile_tracks_blocking_tool_and_follow_up_sampling() -> Result<()
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 client_user_message_id: None,
                 input: vec![V2UserInput::Text {
@@ -1758,6 +1775,7 @@ async fn turn_profile_tracks_blocking_tool_and_follow_up_sampling() -> Result<()
 
     let second_turn = mcp
         .start_turn_and_wait_for_completion(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             input: vec![V2UserInput::Text {
                 text: "run the other control tools".to_string(),
@@ -1863,6 +1881,7 @@ async fn turn_start_accepts_text_at_limit_with_mention_item() -> Result<()> {
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id,
                 client_user_message_id: None,
                 input: vec![
@@ -1913,6 +1932,7 @@ async fn turn_start_rejects_combined_oversized_text_input() -> Result<()> {
 
     let turn_req = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             client_user_message_id: None,
             input: vec![
@@ -2003,6 +2023,7 @@ async fn turn_start_rejects_invalid_permission_selection_before_starting_turn() 
         .await?;
     let turn_req = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id,
             client_user_message_id: None,
             input: vec![V2UserInput::Text {
@@ -2100,6 +2121,7 @@ allow_local_binding = false
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id,
                 client_user_message_id: None,
                 input: vec![V2UserInput::Text {
@@ -2233,6 +2255,7 @@ allow_upstream_proxy = false
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id,
                 input: vec![V2UserInput::Text {
                     text: "Verify managed sandbox networking".to_string(),
@@ -2365,6 +2388,7 @@ async fn turn_start_rejects_unknown_environment_before_starting_turn() -> Result
 
     let turn_req = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id,
             client_user_message_id: None,
             input: vec![V2UserInput::Text {
@@ -2436,6 +2460,7 @@ async fn turn_start_emits_notifications_and_accepts_model_override() -> Result<(
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 client_user_message_id: None,
                 input: vec![V2UserInput::Text {
@@ -2474,6 +2499,7 @@ async fn turn_start_emits_notifications_and_accepts_model_override() -> Result<(
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 client_user_message_id: None,
                 input: vec![V2UserInput::Text {
@@ -2549,6 +2575,7 @@ async fn turn_start_accepts_collaboration_mode_override_v2() -> Result<()> {
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 client_user_message_id: None,
                 input: vec![V2UserInput::Text {
@@ -2627,6 +2654,7 @@ async fn turn_start_uses_thread_feature_overrides_for_request_user_input_tool_de
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 client_user_message_id: None,
                 input: vec![V2UserInput::Text {
@@ -2689,6 +2717,7 @@ async fn turn_start_ignores_deprecated_multi_agent_mode() -> Result<()> {
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id,
                 input: vec![V2UserInput::Text {
                     text: "Hello".to_string(),
@@ -2762,6 +2791,7 @@ async fn thread_start_ignores_deprecated_multi_agent_mode() -> Result<()> {
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id,
                 input: vec![V2UserInput::Text {
                     text: "Hello".to_string(),
@@ -2838,6 +2868,7 @@ async fn turn_start_reports_personality_overrides_v2(
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 client_user_message_id: None,
                 input: vec![V2UserInput::Text {
@@ -2861,6 +2892,7 @@ async fn turn_start_reports_personality_overrides_v2(
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 client_user_message_id: None,
                 input: vec![V2UserInput::Text {
@@ -2996,6 +3028,7 @@ async fn turn_start_exec_approval_toggle_v2() -> Result<()> {
     // turn/start — expect CommandExecutionRequestApproval request from server
     let first_turn_id = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             client_user_message_id: None,
             input: vec![V2UserInput::Text {
@@ -3117,6 +3150,7 @@ async fn turn_start_exec_approval_toggle_v2() -> Result<()> {
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 client_user_message_id: None,
                 input: vec![V2UserInput::Text {
@@ -3222,6 +3256,7 @@ async fn run_turn_start_exec_approval_rejection_v2(
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 client_user_message_id: None,
                 input: vec![V2UserInput::Text {
@@ -3393,6 +3428,7 @@ async fn turn_start_explicit_local_environment_updates_legacy_cwd_between_turns(
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 disabled_plugin_ids: None,
                 environments: None,
                 thread_id: thread.id.clone(),
@@ -3444,6 +3480,7 @@ async fn turn_start_explicit_local_environment_updates_legacy_cwd_between_turns(
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 disabled_plugin_ids: None,
                 environments: Some(vec![TurnEnvironmentParams {
                     environment_id: LOCAL_ENVIRONMENT_ID.to_string(),
@@ -3600,6 +3637,7 @@ stream_max_retries = 0
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 client_user_message_id: None,
                 input: vec![V2UserInput::Text {
@@ -3622,6 +3660,7 @@ stream_max_retries = 0
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 client_user_message_id: None,
                 input: vec![V2UserInput::Text {
@@ -3754,6 +3793,7 @@ async fn run_environment_selection_case(
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 client_user_message_id: None,
                 input: vec![V2UserInput::Text {
@@ -3851,6 +3891,7 @@ async fn turn_start_file_change_approval_v2() -> Result<()> {
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 client_user_message_id: None,
                 input: vec![V2UserInput::Text {
@@ -4050,6 +4091,7 @@ async fn turn_start_does_not_stream_apply_patch_change_updates_without_feature_v
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id,
                 client_user_message_id: None,
                 input: vec![V2UserInput::Text {
@@ -4182,6 +4224,7 @@ async fn turn_start_streams_apply_patch_change_updates_v2() -> Result<()> {
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 client_user_message_id: None,
                 input: vec![V2UserInput::Text {
@@ -4317,6 +4360,7 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 client_user_message_id: None,
                 input: vec![V2UserInput::Text {
@@ -4575,6 +4619,7 @@ async fn direct_input_to_multi_agent_v2_subagent_is_rejected(
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 input: vec![V2UserInput::Text {
                     text: PARENT_PROMPT.to_string(),
@@ -4672,6 +4717,7 @@ async fn direct_input_to_multi_agent_v2_subagent_is_rejected(
 
     let direct_turn_req = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: child_thread_id.clone(),
             input: vec![V2UserInput::Text {
                 text: "direct app-server turn".to_string(),
@@ -4989,6 +5035,7 @@ config_file = "./custom-role.toml"
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 client_user_message_id: None,
                 input: vec![V2UserInput::Text {
@@ -5136,6 +5183,7 @@ async fn turn_start_file_change_approval_accept_for_session_persists_v2() -> Res
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 client_user_message_id: None,
                 input: vec![V2UserInput::Text {
@@ -5228,6 +5276,7 @@ async fn turn_start_file_change_approval_accept_for_session_persists_v2() -> Res
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 client_user_message_id: None,
                 input: vec![V2UserInput::Text {
@@ -5364,6 +5413,7 @@ async fn run_turn_start_file_change_approval_rejection_v2(
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 client_user_message_id: None,
                 input: vec![V2UserInput::Text {
@@ -5515,6 +5565,7 @@ async fn command_execution_notifications_include_process_id(
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 client_user_message_id: None,
                 input: vec![V2UserInput::Text {
@@ -5699,6 +5750,7 @@ async fn command_execution_notifications_include_trusted_plugin_id(
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id,
                 input: vec![V2UserInput::Text {
                     text: "run a plugin command".to_string(),
@@ -5781,6 +5833,7 @@ async fn turn_start_with_elevated_override_does_not_persist_project_trust() -> R
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id,
                 cwd: Some(workspace.path().to_path_buf()),
                 sandbox_policy: Some(codex_app_server_protocol::SandboxPolicy::DangerFullAccess),

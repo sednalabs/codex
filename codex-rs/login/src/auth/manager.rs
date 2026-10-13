@@ -20,6 +20,8 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
+use tokio::sync::OwnedRwLockReadGuard;
+use tokio::sync::RwLock as AsyncRwLock;
 use tokio::sync::Semaphore;
 use tokio::sync::watch;
 use tracing::instrument;
@@ -2044,6 +2046,7 @@ pub struct AuthManager {
     codex_home: PathBuf,
     inner: RwLock<CachedAuth>,
     auth_change_tx: watch::Sender<u64>,
+    provider_request_gate: Arc<AsyncRwLock<()>>,
     auth_change_state_tx: watch::Sender<AuthChangeState>,
     workspace_routing_resolver: OnceLock<Weak<dyn WorkspaceRoutingResolver>>,
     enable_codex_api_key_env: bool,
@@ -2060,6 +2063,12 @@ pub struct AuthManager {
     external_auth: RwLock<Option<Arc<dyn ExternalAuth>>>,
     workload_identity_selected: bool,
     auth_route_config: AuthRouteConfig,
+}
+
+/// Keeps a resolved provider-auth snapshot stable until its transport accepts the request.
+/// The guard intentionally exposes no credential or lock details to callers.
+pub struct ProviderRequestGuard {
+    _guard: OwnedRwLockReadGuard<()>,
 }
 
 /// Configuration view required to construct a shared [`AuthManager`].
@@ -2201,6 +2210,7 @@ impl AuthManager {
                 permanent_refresh_failure: None,
             }),
             auth_change_tx,
+            provider_request_gate: Arc::new(AsyncRwLock::new(())),
             auth_change_state_tx: watch::channel(AuthChangeState::default()).0,
             workspace_routing_resolver: OnceLock::new(),
             enable_codex_api_key_env,
@@ -2237,6 +2247,7 @@ impl AuthManager {
             codex_home: PathBuf::from("non-existent"),
             inner: RwLock::new(cached),
             auth_change_tx,
+            provider_request_gate: Arc::new(AsyncRwLock::new(())),
             auth_change_state_tx: watch::channel(AuthChangeState::default()).0,
             workspace_routing_resolver: OnceLock::new(),
             enable_codex_api_key_env: false,
@@ -2267,6 +2278,7 @@ impl AuthManager {
             codex_home,
             inner: RwLock::new(cached),
             auth_change_tx,
+            provider_request_gate: Arc::new(AsyncRwLock::new(())),
             auth_change_state_tx: watch::channel(AuthChangeState::default()).0,
             workspace_routing_resolver: OnceLock::new(),
             enable_codex_api_key_env: false,
@@ -2301,6 +2313,7 @@ impl AuthManager {
             codex_home: PathBuf::from("non-existent"),
             inner: RwLock::new(cached),
             auth_change_tx,
+            provider_request_gate: Arc::new(AsyncRwLock::new(())),
             auth_change_state_tx: watch::channel(AuthChangeState::default()).0,
             workspace_routing_resolver: OnceLock::new(),
             enable_codex_api_key_env: false,
@@ -2333,6 +2346,7 @@ impl AuthManager {
                 permanent_refresh_failure: None,
             }),
             auth_change_tx,
+            provider_request_gate: Arc::new(AsyncRwLock::new(())),
             auth_change_state_tx: watch::channel(AuthChangeState::default()).0,
             workspace_routing_resolver: OnceLock::new(),
             enable_codex_api_key_env: false,
@@ -2367,6 +2381,17 @@ impl AuthManager {
     /// Subscribes to cached auth changes that can affect request recovery.
     pub fn auth_change_receiver(&self) -> watch::Receiver<u64> {
         self.auth_change_tx.subscribe()
+    }
+
+    /// Captures the current auth revision while excluding credential transitions until the
+    /// returned guard is dropped. Resolve credentials before taking this guard, then compare the
+    /// captured revision with the revision observed before resolution.
+    pub async fn current_provider_request_guard(
+        self: &Arc<Self>,
+    ) -> (u64, ProviderRequestGuard) {
+        let guard = Arc::clone(&self.provider_request_gate).read_owned().await;
+        let revision = *self.auth_change_tx.borrow();
+        (revision, ProviderRequestGuard { _guard: guard })
     }
 
     /// Subscribes to credential and owner revisions published together, including when changes coalesce.
@@ -2476,7 +2501,12 @@ impl AuthManager {
     }
 
     /// Reloads auth from the active source. Returns whether the auth value changed.
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "credential transitions must remain exclusive while auth is loaded and published"
+    )]
     pub async fn reload(&self) -> bool {
+        let _transition = self.provider_request_gate.write().await;
         tracing::info!("Reloading auth");
         let new_auth = self.load_auth().await;
         self.set_cached_auth(new_auth)
@@ -2486,6 +2516,7 @@ impl AuthManager {
         &self,
         expected_account_id: Option<&str>,
     ) -> ReloadOutcome {
+        let _transition = self.provider_request_gate.write().await;
         let expected_account_id = match expected_account_id {
             Some(account_id) => account_id,
             None => {
@@ -2673,6 +2704,7 @@ impl AuthManager {
         &self,
         external_auth: Arc<dyn ExternalAuth>,
     ) -> Result<(), RefreshTokenError> {
+        let _transition = self.provider_request_gate.write().await;
         let auth = self.resolve_external_auth(external_auth.as_ref()).await?;
         let mut external_auth_slot = self.external_auth.write().map_err(|_| {
             RefreshTokenError::Transient(std::io::Error::other("external auth lock is poisoned"))
@@ -2685,10 +2717,19 @@ impl AuthManager {
         self.commit_external_auth(auth)
     }
 
-    pub fn clear_external_auth(&self) {
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "clearing external auth and cached credentials is one provider transition"
+    )]
+    pub async fn clear_external_auth(&self) {
         if self.workload_identity_selected {
             return;
         }
+        let _transition = self.provider_request_gate.write().await;
+        self.clear_external_auth_during_transition();
+    }
+
+    fn clear_external_auth_during_transition(&self) {
         if let Ok(mut external_auth) = self.external_auth.write()
             && external_auth.take().is_some()
         {
@@ -2940,21 +2981,32 @@ impl AuthManager {
     /// ephemeral store. Returns `Ok(true)` if credentials were removed, `Ok(false)`
     /// if none were present. On success, reloads the in-memory auth cache so
     /// callers immediately observe the unauthenticated state.
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "logout must exclude provider sends until persisted and cached auth are cleared"
+    )]
     pub async fn logout(&self) -> std::io::Result<bool> {
         self.ensure_logout_allowed()?;
+        let _transition = self.provider_request_gate.write().await;
         let removed = logout_all_stores(
             &self.codex_home,
             self.auth_credentials_store_mode,
             self.keyring_backend_kind,
         )?;
         // Always reload to clear cached auth, even if no stored credentials were present.
-        self.clear_external_auth();
-        self.reload().await;
+        self.clear_external_auth_during_transition();
+        let new_auth = self.load_auth().await;
+        self.set_cached_auth(new_auth);
         Ok(removed)
     }
 
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "logout must exclude provider sends until revocation and credential clearing finish"
+    )]
     pub async fn logout_with_revoke(&self) -> std::io::Result<bool> {
         self.ensure_logout_allowed()?;
+        let _transition = self.provider_request_gate.write().await;
         let auth_dot_json = self
             .auth_cached()
             .and_then(|auth| auth.get_current_auth_json());
@@ -2968,8 +3020,9 @@ impl AuthManager {
             self.keyring_backend_kind,
         )?;
         // Always reload to clear cached auth, even if no stored credentials were present.
-        self.clear_external_auth();
-        self.reload().await;
+        self.clear_external_auth_during_transition();
+        let new_auth = self.load_auth().await;
+        self.set_cached_auth(new_auth);
         Ok(result)
     }
 
@@ -3026,6 +3079,7 @@ impl AuthManager {
         &self,
         reason: ExternalAuthRefreshReason,
     ) -> Result<(), RefreshTokenError> {
+        let _transition = self.provider_request_gate.write().await;
         let Some(external_auth) = self.external_auth_provider() else {
             return Err(RefreshTokenError::Transient(std::io::Error::other(
                 "external auth is not configured",
@@ -3086,11 +3140,16 @@ impl AuthManager {
 
     // Refreshes ChatGPT OAuth tokens, persists the updated auth state, and
     // reloads the in-memory cache so callers immediately observe new tokens.
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "token persistence and cache publication must be one provider transition"
+    )]
     async fn refresh_and_persist_chatgpt_token(
         &self,
         auth: &ChatgptAuth,
         refresh_token: String,
     ) -> Result<(), RefreshTokenError> {
+        let _transition = self.provider_request_gate.write().await;
         let refresh_response = request_chatgpt_token_refresh(refresh_token, auth.client()).await?;
 
         persist_tokens(
@@ -3100,7 +3159,8 @@ impl AuthManager {
             refresh_response.refresh_token,
         )
         .map_err(RefreshTokenError::from)?;
-        self.reload().await;
+        let new_auth = self.load_auth().await;
+        self.set_cached_auth(new_auth);
 
         Ok(())
     }

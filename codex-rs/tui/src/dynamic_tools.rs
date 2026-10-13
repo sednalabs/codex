@@ -1238,6 +1238,7 @@ async fn start_turn(
     request(handle, |request_id| ClientRequest::TurnStart {
         request_id,
         params: TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread_id.to_string(),
             input: Vec::new(),
             // Older app-server/TUI versions are intentionally unsupported:

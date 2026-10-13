@@ -303,6 +303,7 @@ async fn thread_compact_start_triggers_compaction_and_returns_empty_response() -
     timeout(
         DEFAULT_READ_TIMEOUT,
         mcp.start_turn_and_wait_for_completion(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread_id.clone(),
             cwd: Some(updated_cwd.path().to_path_buf()),
             runtime_workspace_roots: Some(updated_roots.clone()),
@@ -474,6 +475,7 @@ async fn send_turn_and_wait(
 ) -> Result<String> {
     let turn_id = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread_id.to_string(),
             client_user_message_id: None,
             input: vec![V2UserInput::Text {

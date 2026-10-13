@@ -219,6 +219,7 @@ async fn turn_token_refresh_exports_thread_storage_originator() -> Result<()> {
     let thread: ThreadStartResponse = server.read_response(request).await?;
     let request = server
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.thread.id,
             input: vec![UserInput::Text {
                 text: "Hello".to_string(),

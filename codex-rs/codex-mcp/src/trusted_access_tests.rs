@@ -641,7 +641,7 @@ async fn rejects_identity_changes_while_request_is_in_flight() -> anyhow::Result
                     .set_external_auth(Arc::new(StaticExternalAuth(auth)))
                     .await?;
             } else {
-                auth_manager.clear_external_auth();
+                auth_manager.clear_external_auth().await;
             }
             release.notify_one();
             Ok::<(), anyhow::Error>(())

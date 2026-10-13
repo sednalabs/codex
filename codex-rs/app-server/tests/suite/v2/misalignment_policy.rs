@@ -200,6 +200,7 @@ async fn assert_policy_violation_completes_turn_with_typed_terminal_error(
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 client_user_message_id: None,
                 input: vec![UserInput::Text {

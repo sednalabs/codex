@@ -3,6 +3,7 @@ use crate::endpoint::realtime_websocket::RealtimeEventParser;
 use crate::endpoint::realtime_websocket::RealtimeSessionConfig;
 use crate::endpoint::realtime_websocket::session_update_session_json;
 use crate::endpoint::session::EndpointSession;
+use crate::endpoint::session::ProviderRequestAttemptFactory;
 use crate::error::ApiError;
 use crate::provider::Provider;
 use bytes::Bytes;
@@ -56,6 +57,15 @@ impl<T: HttpTransport> RealtimeCallClient<T> {
     pub fn with_telemetry(self, request: Option<Arc<dyn RequestTelemetry>>) -> Self {
         Self {
             session: self.session.with_request_telemetry(request),
+        }
+    }
+
+    pub fn with_request_attempt_factory(
+        self,
+        factory: Option<ProviderRequestAttemptFactory<T>>,
+    ) -> Self {
+        Self {
+            session: self.session.with_request_attempt_factory(factory),
         }
     }
 

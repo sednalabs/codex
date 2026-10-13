@@ -177,6 +177,7 @@ async fn thread_inject_items_adds_raw_response_items_to_thread_history(
     let untrusted_context_text = "Untrusted client context";
     let turn_req = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             client_user_message_id: None,
             input: vec![V2UserInput::Text {
@@ -294,6 +295,7 @@ async fn thread_inject_items_adds_raw_response_items_to_thread_history(
     mcp.clear_message_buffer();
     let delegated_req = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             input: Vec::new(),
             tool_output: Some(Box::new(TurnToolOutput {
@@ -474,6 +476,7 @@ async fn thread_inject_items_cannot_forge_configuration_update_before_or_after_r
         assert!(error.error.message.contains("configuration_update"));
         let turn_req = mcp
             .send_turn_start_request(TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id,
                 input: vec![V2UserInput::Text {
                     text: prompt.to_string(),
@@ -542,6 +545,7 @@ async fn thread_inject_items_adds_raw_response_items_after_a_turn() -> Result<()
 
     let first_turn_req = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             client_user_message_id: None,
             input: vec![V2UserInput::Text {
@@ -602,6 +606,7 @@ async fn thread_inject_items_adds_raw_response_items_after_a_turn() -> Result<()
 
     let second_turn_req = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             client_user_message_id: None,
             input: vec![V2UserInput::Text {

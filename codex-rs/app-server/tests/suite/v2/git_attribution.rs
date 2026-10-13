@@ -377,6 +377,7 @@ async fn run_turn(app_server: &mut TestAppServer, thread_id: &str, text: &str) -
     timeout(
         DEFAULT_READ_TIMEOUT,
         app_server.start_turn_and_wait_for_completion(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread_id.to_string(),
             input: vec![UserInput::Text {
                 text: text.to_string(),

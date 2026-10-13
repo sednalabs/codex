@@ -152,6 +152,7 @@ async fn app_server_uses_configured_notes_backend_for_context_window_hints(
     timeout(
         Duration::from_secs(10),
         app_server.start_turn_and_wait_for_completion(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             input: vec![UserInput::Text {
                 text: "inspect history and notes".to_string(),
@@ -374,6 +375,7 @@ async fn history_notes_and_async_message_emit_control_tool_analytics() -> Result
         .thread;
     let completed = app_server
         .start_turn_and_wait_for_completion(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             input: vec![UserInput::Text {
                 text: "exercise control tools".to_string(),

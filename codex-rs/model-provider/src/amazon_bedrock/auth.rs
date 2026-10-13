@@ -6,6 +6,7 @@ use codex_api::SharedAuthProvider;
 use codex_aws_auth::AwsAccessKeys;
 use codex_aws_auth::AwsAuthContext;
 use codex_aws_auth::AwsAuthError;
+use codex_aws_auth::FrozenAwsAuthContext;
 use codex_aws_auth::AwsRequestToSign;
 use codex_http_client::Request;
 use codex_http_client::RequestBody;
@@ -19,6 +20,7 @@ use codex_protocol::error::Result;
 use http::HeaderMap;
 
 use crate::BearerAuthProvider;
+use crate::ResolvedProviderAuth;
 use crate::shared_state::process_shared_state;
 
 use super::BedrockEndpoint;
@@ -215,6 +217,17 @@ pub(super) async fn resolve_provider_auth(
     }
 }
 
+pub(super) fn resolved_frozen_provider_auth(
+    context: FrozenAwsAuthContext,
+    endpoint: BedrockEndpoint,
+) -> ResolvedProviderAuth {
+    let identity = context.identity();
+    ResolvedProviderAuth::for_complete_request_auth(
+        Arc::new(BedrockFrozenSigV4AuthProvider { context, endpoint }),
+        identity,
+    )
+}
+
 pub(super) async fn resolve_region(
     source: BedrockAuthSource,
     managed_auth: Option<&CodexAuth>,
@@ -266,7 +279,7 @@ pub(super) fn bearer_token_region(
         })
 }
 
-fn aws_auth_error_to_codex_error(error: AwsAuthError) -> CodexErr {
+pub(super) fn aws_auth_error_to_codex_error(error: AwsAuthError) -> CodexErr {
     CodexErr::Fatal(format!("failed to resolve Amazon Bedrock auth: {error}"))
 }
 
@@ -346,6 +359,42 @@ impl AuthProvider for BedrockSigV4AuthProvider {
 
     fn apply_auth(&self, request: Request) -> codex_api::AuthProviderFuture<'_> {
         Box::pin(BedrockSigV4AuthProvider::apply_auth(self, request))
+    }
+}
+
+#[derive(Debug)]
+struct BedrockFrozenSigV4AuthProvider {
+    context: FrozenAwsAuthContext,
+    endpoint: BedrockEndpoint,
+}
+
+impl AuthProvider for BedrockFrozenSigV4AuthProvider {
+    fn add_auth_headers(&self, _headers: &mut HeaderMap) {}
+
+    fn apply_auth(&self, request: Request) -> codex_api::AuthProviderFuture<'_> {
+        Box::pin(async move {
+            let mut request = request;
+            if self.endpoint == BedrockEndpoint::Mantle {
+                remove_headers_not_preserved_by_bedrock_mantle(&mut request.headers);
+            }
+            let prepared = request.prepare_body_for_send().map_err(AuthError::Build)?;
+            let signed = self
+                .context
+                .sign(AwsRequestToSign {
+                    method: request.method.clone(),
+                    url: request.url.clone(),
+                    headers: prepared.headers.clone(),
+                    body: prepared.body_bytes(),
+                })
+                .await
+                .map_err(aws_auth_error_to_auth_error)?;
+
+            request.url = signed.url;
+            request.headers = signed.headers;
+            request.body = prepared.body.map(RequestBody::Raw);
+            request.compression = RequestCompression::None;
+            Ok(request)
+        })
     }
 }
 

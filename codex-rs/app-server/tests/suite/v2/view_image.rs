@@ -127,6 +127,7 @@ async fn fresh_context_subagent_inherits_disabled_view_image_and_mcp_tools() -> 
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 input: vec![UserInput::Text {
                     text: PARENT_PROMPT.to_string(),
@@ -242,6 +243,7 @@ async fn guardian_reviewer_inherits_disabled_view_image() -> Result<()> {
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id,
                 input: vec![UserInput::Text {
                     text: "review the requested action".to_string(),

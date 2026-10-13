@@ -13,6 +13,7 @@
 //! Sender evidence is read without the active-turn lock and bound to the accepted turn.
 
 use super::TurnInput;
+use super::AutomaticTurnContext;
 use super::session::Session;
 use super::session::SessionConfiguration;
 use super::session::SessionSettingsUpdate;
@@ -97,6 +98,16 @@ struct PreparedTurnInputSettings {
 }
 
 impl PreparedTurnInputSettings {
+    async fn invalidate_pending_automatic_turns(session: &Session) -> CodexResult<()> {
+        if let Some(state_db) = &session.services.state_db {
+            state_db
+                .invalidate_automatic_turn_capabilities_for_thread(session.thread_id)
+                .await
+                .map_err(|_| CodexErr::InternalServerError)?;
+        }
+        Ok(())
+    }
+
     /// Validates turn-input settings without applying them so rejected input
     /// leaves the thread unchanged.
     async fn prepare(
@@ -155,6 +166,11 @@ impl PreparedTurnInputSettings {
         } else {
             None
         };
+        if emit_thread_settings_applied {
+            // Revoke old retry tickets before publishing new persistent settings. If a later
+            // validation rejects the update, this is deliberately fail-closed.
+            Self::invalidate_pending_automatic_turns(session).await?;
+        }
         let mut updates = self.thread_settings_update.unwrap_or_default();
         updates.service_tier_for_turn = service_tier;
 
@@ -214,6 +230,7 @@ impl PreparedTurnInputSettings {
         let Some(thread_settings_update) = self.thread_settings_update else {
             return Ok(());
         };
+        Self::invalidate_pending_automatic_turns(session).await?;
         thread_settings::apply_update(session, submission_id, thread_settings_update)
             .await
             .map_err(|error| CodexErr::InvalidRequest(error.to_string()))
@@ -232,9 +249,37 @@ pub(super) async fn handle(
     mode: TurnInputMode,
     submission_id: String,
 ) -> CodexResult<TurnInputSubmission> {
+    handle_with_automatic_turn_context(
+        session,
+        request,
+        mode,
+        submission_id,
+        None,
+    )
+    .await
+}
+
+pub(super) async fn handle_with_automatic_turn_context(
+    session: &Arc<Session>,
+    request: impl Into<WithTurnExtensionData<TurnInputRequest>>,
+    mode: TurnInputMode,
+    submission_id: String,
+    automatic_turn: Option<AutomaticTurnContext>,
+) -> CodexResult<TurnInputSubmission> {
+    if automatic_turn
+        .as_ref()
+        .is_some_and(|context| context.provider_authority.is_some())
+        && !matches!(mode, TurnInputMode::StartIfIdle)
+    {
+        return Err(CodexErr::InvalidRequest(
+            "trusted automatic turns must start only when idle".to_string(),
+        ));
+    }
     let request = request.into();
     let result = match mode {
-        TurnInputMode::StartOrSteer => start_or_steer(session, request, submission_id).await,
+        TurnInputMode::StartOrSteer => {
+            start_or_steer(session, request, submission_id, automatic_turn).await
+        }
         TurnInputMode::StartIfIdle => {
             let kind = match &request.request.input {
                 SubmittedTurnInput::UserInput { content, .. } if !content.is_empty() => {
@@ -250,6 +295,7 @@ pub(super) async fn handle(
                 submission_id,
                 kind,
                 /*expected_previous_turn_id*/ None,
+                automatic_turn,
             )
             .await
         }
@@ -267,11 +313,12 @@ pub(super) async fn handle(
                 submission_id,
                 TurnStartKind::Recovery,
                 Some(expected_previous_turn_id),
+                automatic_turn,
             )
             .await
         }
         TurnInputMode::Steer { expected_turn_id } => {
-            steer(session, request, expected_turn_id, submission_id).await
+            steer(session, request, expected_turn_id, submission_id, automatic_turn).await
         }
     };
     // Link this request's trace to the accepted turn, which may have an older trace.
@@ -312,6 +359,7 @@ pub(super) async fn handle_recovery(
         submission_id,
         TurnStartKind::Recovery,
         /*expected_previous_turn_id*/ None,
+        None,
     )
     .await;
     if let Ok(TurnInputSubmission::Started { turn_id, .. }) = &result {
@@ -324,6 +372,7 @@ async fn start_or_steer(
     session: &Arc<Session>,
     request: WithTurnExtensionData<TurnInputRequest>,
     submission_id: String,
+    automatic_turn: Option<AutomaticTurnContext>,
 ) -> CodexResult<TurnInputSubmission> {
     let WithTurnExtensionData {
         request,
@@ -370,6 +419,7 @@ async fn start_or_steer(
             settings.required_active_final_output_json_schema(),
             responsesapi_client_metadata.clone(),
             origin,
+            /*automatic_turn*/ None,
         )
         .await
     {
@@ -414,6 +464,12 @@ async fn start_or_steer(
                     .turn_metadata_state
                     .set_responsesapi_client_metadata(responsesapi_client_metadata);
             }
+            attach_automatic_turn_context(
+                session,
+                turn_context.as_ref(),
+                automatic_turn,
+            )
+            .await;
             session
                 .maybe_emit_model_warnings_for_turn(turn_context.as_ref())
                 .await;
@@ -455,6 +511,7 @@ async fn start_if_idle(
     submission_id: String,
     kind: TurnStartKind,
     expected_previous_turn_id: Option<String>,
+    automatic_turn: Option<AutomaticTurnContext>,
 ) -> CodexResult<TurnInputSubmission> {
     let WithTurnExtensionData {
         request,
@@ -568,6 +625,12 @@ async fn start_if_idle(
             .turn_metadata_state
             .set_responsesapi_client_metadata(responsesapi_client_metadata);
     }
+    attach_automatic_turn_context(
+        session,
+        turn_context.as_ref(),
+        automatic_turn,
+    )
+    .await;
     session
         .maybe_emit_model_warnings_for_turn(turn_context.as_ref())
         .await;
@@ -627,6 +690,7 @@ async fn steer(
     request: WithTurnExtensionData<TurnInputRequest>,
     expected_turn_id: String,
     submission_id: String,
+    automatic_turn: Option<AutomaticTurnContext>,
 ) -> CodexResult<TurnInputSubmission> {
     let WithTurnExtensionData {
         request,
@@ -664,6 +728,7 @@ async fn steer(
             settings.required_active_final_output_json_schema(),
             responsesapi_client_metadata,
             origin,
+            /*automatic_turn*/ None,
         )
         .await
     {
@@ -800,6 +865,7 @@ impl Session {
         required_final_output_json_schema: Option<&Value>,
         responsesapi_client_metadata: Option<HashMap<String, String>>,
         origin: UserInputOrigin,
+        automatic_turn: Option<&AutomaticTurnContext>,
     ) -> Result<(String, String), NotSubmittedReason> {
         let mut active = self.active_turn.lock().await;
         let Some(active_turn) = active.as_mut() else {
@@ -854,6 +920,19 @@ impl Session {
                 .set_responsesapi_client_metadata(responsesapi_client_metadata);
         }
 
+        if let Some(automatic_turn) = automatic_turn {
+            self.services
+                .register_automatic_turn_principal(
+                    active_turn_id.clone(),
+                    automatic_turn.principal_identity.clone(),
+                    automatic_turn.client_user_message_id.as_deref(),
+                    automatic_turn.provider_authority,
+                    automatic_turn.expected_epochs,
+                    automatic_turn.continuation_ref,
+                )
+                .await;
+        }
+
         let input = match input {
             SubmittedTurnInput::UserInput { content, client_id } => {
                 active_task
@@ -886,6 +965,32 @@ impl Session {
             active_task.turn_context.root_turn_id(),
         ))
     }
+}
+
+async fn attach_automatic_turn_context(
+    session: &Session,
+    turn_context: &TurnContext,
+    automatic_turn: Option<AutomaticTurnContext>,
+) {
+    let Some(automatic_turn) = automatic_turn else {
+        return;
+    };
+    if let Some(provider_authority) = automatic_turn.provider_authority {
+        let _ = turn_context
+            .automatic_turn_provider_authority
+            .set(provider_authority);
+    }
+    session
+        .services
+        .register_automatic_turn_principal(
+            turn_context.sub_id.clone(),
+            automatic_turn.principal_identity,
+            automatic_turn.client_user_message_id.as_deref(),
+            automatic_turn.provider_authority,
+            automatic_turn.expected_epochs,
+            automatic_turn.continuation_ref,
+        )
+        .await;
 }
 
 async fn merge_additional_context_input(

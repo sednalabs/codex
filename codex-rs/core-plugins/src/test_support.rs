@@ -96,7 +96,7 @@ pub(crate) async fn set_test_auth_mode(auth_manager: &AuthManager, auth_mode: Op
 
 pub(crate) async fn set_test_auth(auth_manager: &AuthManager, auth: Option<CodexAuth>) {
     let Some(auth) = auth else {
-        auth_manager.clear_external_auth();
+        auth_manager.clear_external_auth().await;
         return;
     };
     auth_manager

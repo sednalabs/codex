@@ -6,6 +6,7 @@ use codex_client::RetryPolicy;
 use codex_client::StreamResponse;
 use codex_client::TransportError;
 use codex_client::run_with_retry;
+use codex_client::run_with_retry_attempt;
 use http::StatusCode;
 use std::future::Future;
 use std::sync::Arc;
@@ -90,6 +91,35 @@ where
                     Err(err) => (http_status(err), Some(err)),
                 };
                 t.on_request(attempt, status, err, start.elapsed());
+            }
+            result
+        }
+    })
+    .await
+}
+
+pub(crate) async fn run_with_attempt_telemetry<T, F, Fut>(
+    policy: RetryPolicy,
+    telemetry: Option<Arc<dyn RequestTelemetry>>,
+    mut send: F,
+) -> Result<T, TransportError>
+where
+    T: WithStatus,
+    F: FnMut(u64) -> Fut,
+    Fut: Future<Output = Result<T, TransportError>>,
+{
+    run_with_retry_attempt(policy, move |attempt| {
+        let telemetry = telemetry.clone();
+        let future = send(attempt);
+        async move {
+            let start = Instant::now();
+            let result = future.await;
+            if let Some(telemetry) = telemetry.as_ref() {
+                let (status, error) = match &result {
+                    Ok(response) => (Some(response.status()), None),
+                    Err(error) => (http_status(error), Some(error)),
+                };
+                telemetry.on_request(attempt, status, error, start.elapsed());
             }
             result
         }

@@ -949,6 +949,7 @@ async fn lifecycle_removes_background_and_current_tasks_without_losing_the_dashb
             .request_typed::<TurnStartResponse>(ClientRequest::TurnStart {
                 request_id: RequestId::String(Uuid::new_v4().to_string()),
                 params: TurnStartParams {
+                    automatic_turn_continuation: None,
                     thread_id: primary.to_string(),
                     input: vec![codex_app_server_protocol::UserInput::Text {
                         text: "Keep working".into(),

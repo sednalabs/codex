@@ -903,6 +903,7 @@ async fn thread_start_without_selected_environment_includes_only_global_instruct
 
     let turn_request_id = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id,
             input: vec![V2UserInput::Text {
                 text: "inspect instructions".to_string(),

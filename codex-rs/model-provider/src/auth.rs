@@ -1,4 +1,8 @@
+use std::collections::hash_map::RandomState;
+use std::hash::BuildHasher;
+use std::hash::Hasher;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
@@ -53,22 +57,109 @@ impl AgentIdentitySessionFallback {
 pub struct ResolvedProviderAuth {
     pub auth: SharedAuthProvider,
     pub agent_identity_telemetry: Option<AgentIdentityTelemetry>,
+    authority_identity: ProviderAuthIdentity,
+    freeze_to_headers: bool,
+}
+
+/// Opaque process-local identity for the effective credentials admitted for a request.
+/// Its keyed hash is never rendered or persisted.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ProviderAuthIdentity([u64; 2]);
+
+impl std::fmt::Debug for ProviderAuthIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ProviderAuthIdentity(<redacted>)")
+    }
+}
+
+fn provider_auth_hash(parts: impl Fn(&mut dyn Hasher)) -> ProviderAuthIdentity {
+    static KEYS: OnceLock<[RandomState; 2]> = OnceLock::new();
+    let keys = KEYS.get_or_init(|| [RandomState::new(), RandomState::new()]);
+    let mut values = [0; 2];
+    for (index, key) in keys.iter().enumerate() {
+        let mut hasher = key.build_hasher();
+        parts(&mut hasher);
+        values[index] = hasher.finish();
+    }
+    ProviderAuthIdentity(values)
+}
+
+fn hash_header_map(headers: &HeaderMap, state: &mut dyn Hasher) {
+    let mut entries = headers
+        .iter()
+        .map(|(name, value)| (name.as_str(), value.as_bytes()))
+        .collect::<Vec<_>>();
+    entries.sort_unstable();
+    for (name, value) in entries {
+        state.write_usize(name.len());
+        state.write(name.as_bytes());
+        state.write_usize(value.len());
+        state.write(value);
+    }
 }
 
 impl ResolvedProviderAuth {
     pub(crate) fn new(auth: SharedAuthProvider) -> Self {
+        let headers = auth.to_auth_headers();
+        Self {
+            auth: Arc::new(HeaderAuthProvider {
+                auth: AuthHeaders::new(headers.clone()),
+            }),
+            agent_identity_telemetry: None,
+            authority_identity: provider_auth_hash(|state| hash_header_map(&headers, state)),
+            freeze_to_headers: true,
+        }
+    }
+
+    pub(crate) fn for_complete_request_auth(
+        auth: SharedAuthProvider,
+        signer_identity: codex_aws_auth::AwsCredentialIdentity,
+    ) -> Self {
         Self {
             auth,
             agent_identity_telemetry: None,
+            authority_identity: provider_auth_hash(|state| {
+                state.write(b"complete-request-auth\0");
+                signer_identity.write_to(state);
+            }),
+            freeze_to_headers: false,
         }
     }
 
     fn for_agent_identity(auth: AgentIdentityAuth) -> Self {
         let agent_identity_telemetry = agent_identity_telemetry(&auth);
+        let record = auth.record();
+        let authority_identity = provider_auth_hash(|state| {
+            state.write(b"agent-identity\0");
+            state.write(record.agent_runtime_id.as_bytes());
+            state.write_u8(0);
+            state.write(record.agent_private_key.as_bytes());
+            state.write_u8(0);
+            state.write(auth.run_task_id().as_bytes());
+            state.write_u8(0);
+            state.write(auth.account_id().as_bytes());
+            state.write_u8(u8::from(auth.is_fedramp_account()));
+        });
         Self {
             auth: Arc::new(AgentIdentityAuthProvider { auth }),
             agent_identity_telemetry: Some(agent_identity_telemetry),
+            authority_identity,
+            freeze_to_headers: true,
         }
+    }
+
+    pub fn freeze(mut self) -> Self {
+        if self.freeze_to_headers {
+            let headers = self.auth.to_auth_headers();
+            self.auth = Arc::new(HeaderAuthProvider {
+                auth: AuthHeaders::new(headers),
+            });
+        }
+        self
+    }
+
+    pub fn authority_identity(&self) -> ProviderAuthIdentity {
+        self.authority_identity
     }
 }
 

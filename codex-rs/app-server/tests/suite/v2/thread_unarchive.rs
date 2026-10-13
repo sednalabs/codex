@@ -85,6 +85,7 @@ async fn thread_unarchive_moves_rollout_back_into_sessions_directory() -> Result
 
     let turn_start_id = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             client_user_message_id: None,
             input: vec![UserInput::Text {

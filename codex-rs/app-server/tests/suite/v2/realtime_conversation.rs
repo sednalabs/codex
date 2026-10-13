@@ -531,6 +531,7 @@ impl RealtimeE2eHarness {
         let request_id = self
             .mcp
             .send_turn_start_request(TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: self.thread_id.clone(),
                 input: vec![V2UserInput::Text {
                     text: text.to_string(),
@@ -1259,6 +1260,7 @@ async fn realtime_timeline_splits_accepted_steering_and_persists_promoted_artifa
     let turn_request = harness
         .mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: harness.thread_id.clone(),
             input: vec![V2UserInput::Text {
                 text: "Start work".to_string(),
@@ -1776,6 +1778,7 @@ async fn realtime_conversation_stop_emits_closed_notification(
     let running_turn_id = if running {
         let request = mcp
             .send_turn_start_request(TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread_start.thread.id.clone(),
                 input: vec![V2UserInput::Text {
                     text: "keep working".into(),
@@ -2699,6 +2702,7 @@ async fn webrtc_v1_default_automatic_output_uses_handoff_append() -> Result<()> 
     let turn_request_id = harness
         .mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: harness.thread_id.clone(),
             input: vec![V2UserInput::Text {
                 text: "say the default output".to_string(),
@@ -2758,6 +2762,7 @@ async fn webrtc_v1_client_managed_handoffs_disable_automatic_output() -> Result<
     let turn_request_id = harness
         .mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: harness.thread_id.clone(),
             input: vec![V2UserInput::Text {
                 text: "leave realtime delivery to the client".to_string(),
@@ -3004,6 +3009,7 @@ async fn realtime_automatic_standalone_output_is_item_and_append_speaks() -> Res
     let turn_request_id = harness
         .mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: harness.thread_id.clone(),
             input: vec![V2UserInput::Text {
                 text: "do something quietly".to_string(),
@@ -3160,6 +3166,7 @@ async fn websocket_v2_assistant_output_without_handoff_reaches_realtime_context(
     let request_id = harness
         .mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: harness.thread_id.clone(),
             input: vec![V2UserInput::Text {
                 text: "direct text turn".to_string(),
@@ -4137,6 +4144,7 @@ async fn realtime_starts_on_forked_and_resumed_threads(
         harness
             .mcp
             .start_turn_and_wait_for_completion(TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: harness.thread_id.clone(),
                 input: vec![V2UserInput::Text {
                     text: "hello".to_string(),

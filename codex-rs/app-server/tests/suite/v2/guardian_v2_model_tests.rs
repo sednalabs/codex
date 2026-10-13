@@ -103,6 +103,7 @@ async fn computer_use_scoring_follows_model_review_requirement(
         state.allow_luna.notify_one();
         let request_id = app_server
             .send_turn_start_request(TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.thread.id.clone(),
                 model: Some(model.to_owned()),
                 input: vec![UserInput::Text {

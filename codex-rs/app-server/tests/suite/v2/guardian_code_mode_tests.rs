@@ -182,6 +182,7 @@ async fn model_guardian_policy_scores_code_mode_cells(
     state.allow_guardian_review.notify_one();
     let id = app_server
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id,
             input: vec![UserInput::Text {
                 text: USER_CONTEXT.to_owned(),

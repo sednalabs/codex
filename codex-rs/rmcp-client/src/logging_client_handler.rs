@@ -1,4 +1,6 @@
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 
 use rmcp::ClientHandler;
 use rmcp::RoleClient;
@@ -26,14 +28,27 @@ use crate::rmcp_client::SendElicitation;
 pub(crate) struct LoggingClientHandler {
     client_info: ClientInfo,
     send_elicitation: Arc<SendElicitation>,
+    tool_list_generation: Arc<AtomicUsize>,
+    protected_output: bool,
 }
 
 impl LoggingClientHandler {
-    pub(crate) fn new(client_info: ClientInfo, send_elicitation: SendElicitation) -> Self {
+    pub(crate) fn new(
+        client_info: ClientInfo,
+        send_elicitation: SendElicitation,
+        tool_list_generation: Arc<AtomicUsize>,
+        protected_output: bool,
+    ) -> Self {
         Self {
             client_info,
             send_elicitation: Arc::new(send_elicitation),
+            tool_list_generation,
+            protected_output,
         }
+    }
+
+    fn record_tool_list_changed(&self) -> usize {
+        self.tool_list_generation.fetch_add(1, Ordering::AcqRel) + 1
     }
 }
 
@@ -43,6 +58,12 @@ impl ClientHandler for LoggingClientHandler {
         request: ElicitRequestParams,
         context: RequestContext<RoleClient>,
     ) -> Result<ElicitResult, rmcp::ErrorData> {
+        if self.protected_output {
+            return Err(rmcp::ErrorData::invalid_request(
+                "server elicitation is disabled for this connection",
+                None,
+            ));
+        }
         (self.send_elicitation)(context.id, Elicitation::Mcp(request))
             .await
             .map(Into::into)
@@ -54,6 +75,9 @@ impl ClientHandler for LoggingClientHandler {
         params: CancelledNotificationParam,
         _context: NotificationContext<RoleClient>,
     ) {
+        if self.protected_output {
+            return;
+        }
         info!(
             "MCP server cancelled request (request_id: {:?}, reason: {:?})",
             params.request_id, params.reason
@@ -65,6 +89,9 @@ impl ClientHandler for LoggingClientHandler {
         params: ProgressNotificationParam,
         _context: NotificationContext<RoleClient>,
     ) {
+        if self.protected_output {
+            return;
+        }
         info!(
             "MCP server progress notification (token: {:?}, progress: {}, total: {:?}, message: {:?})",
             params.progress_token, params.progress, params.total, params.message
@@ -76,6 +103,9 @@ impl ClientHandler for LoggingClientHandler {
         params: ResourceUpdatedNotificationParam,
         _context: NotificationContext<RoleClient>,
     ) {
+        if self.protected_output {
+            return;
+        }
         info!("MCP server resource updated (uri: {})", params.uri);
     }
 
@@ -84,7 +114,8 @@ impl ClientHandler for LoggingClientHandler {
     }
 
     async fn on_tool_list_changed(&self, _context: NotificationContext<RoleClient>) {
-        info!("MCP server tool list changed");
+        let generation = self.record_tool_list_changed();
+        info!(generation, "MCP server tool list changed");
     }
 
     async fn on_prompt_list_changed(&self, _context: NotificationContext<RoleClient>) {
@@ -101,6 +132,9 @@ impl ClientHandler for LoggingClientHandler {
         params: LoggingMessageNotificationParam,
         _context: NotificationContext<RoleClient>,
     ) {
+        if self.protected_output {
+            return;
+        }
         let LoggingMessageNotificationParam {
             level,
             logger,

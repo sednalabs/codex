@@ -34,6 +34,7 @@ impl RetryOn {
             | TransportError::Network(_) => self.retry_transport,
             TransportError::Build(_)
             | TransportError::RetryLimit
+            | TransportError::AutomaticTurnContextChanged
             | TransportError::Policy(_)
             | TransportError::ResponseTooLarge { .. } => false,
         }
@@ -112,6 +113,44 @@ where
                 }
             }
             Err(err) => return Err(err),
+        }
+    }
+    Err(TransportError::RetryLimit)
+}
+
+/// Runs a retry loop whose caller must asynchronously resolve a fresh authority-bound request
+/// attempt before each send.
+pub async fn run_with_retry_attempt<T, F, Fut>(
+    policy: RetryPolicy,
+    mut op: F,
+) -> Result<T, TransportError>
+where
+    F: FnMut(u64) -> Fut,
+    Fut: Future<Output = Result<T, TransportError>>,
+{
+    for attempt in 0..=policy.max_attempts {
+        match op(attempt).await {
+            Ok(response) => return Ok(response),
+            Err(error)
+                if policy
+                    .retry_on
+                    .should_retry(&error, attempt, policy.max_attempts) =>
+            {
+                let retry_attempt = attempt + 1;
+                if let Some(retry_after) = error.retry_after() {
+                    crate::record_retry!(
+                        retry_attempt,
+                        retry_after.remaining_delay(),
+                        RetryOperation::HttpRequest
+                    );
+                    tokio::time::sleep_until(retry_after.deadline()).await;
+                } else {
+                    let delay = backoff(policy.base_delay, retry_attempt);
+                    crate::record_retry!(retry_attempt, delay, RetryOperation::HttpRequest);
+                    tokio::time::sleep(delay).await;
+                }
+            }
+            Err(error) => return Err(error),
         }
     }
     Err(TransportError::RetryLimit)

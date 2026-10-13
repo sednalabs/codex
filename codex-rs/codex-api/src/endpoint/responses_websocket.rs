@@ -15,6 +15,8 @@ use crate::sse::process_responses_event;
 use crate::telemetry::WebsocketTelemetry;
 use chrono::SecondsFormat;
 use chrono::Utc;
+use codex_client::ClaimedRequestInitiation;
+use codex_client::RequestInitiation;
 use codex_client::TransportError;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::RetryAfter;
@@ -60,6 +62,7 @@ enum WsCommand {
     Send {
         message: Message,
         tx_result: oneshot::Sender<Result<(), WsError>>,
+        initiation: Option<ClaimedRequestInitiation>,
     },
 }
 
@@ -77,9 +80,16 @@ impl WsStream {
                             break;
                         };
                         match command {
-                            WsCommand::Send { message, tx_result } => {
+                            WsCommand::Send {
+                                message,
+                                tx_result,
+                                initiation,
+                            } => {
                                 let result = inner.send(message).await;
                                 let should_break = result.is_err();
+                                if let Some(initiation) = initiation {
+                                    initiation.acknowledge();
+                                }
                                 let _ = tx_result.send(result);
                                 if should_break {
                                     break;
@@ -144,9 +154,21 @@ impl WsStream {
         Err(WsError::ConnectionClosed)
     }
 
-    async fn send(&mut self, message: Message) -> Result<(), WsError> {
-        self.request(|tx_result| WsCommand::Send { message, tx_result })
-            .await
+    async fn send(
+        &mut self,
+        message: Message,
+        initiation: Option<RequestInitiation>,
+    ) -> Result<(), WsError> {
+        let initiation = initiation
+            .map(|initiation| initiation.claim())
+            .transpose()
+            .map_err(|error| WsError::Io(std::io::Error::other(error)))?;
+        self.request(|tx_result| WsCommand::Send {
+            message,
+            tx_result,
+            initiation,
+        })
+        .await
     }
 
     async fn next(&mut self) -> Option<Result<Message, WsError>> {
@@ -246,6 +268,22 @@ impl ResponsesWebsocketConnection {
         connection_reused: bool,
         turn_state: Option<Arc<OnceLock<String>>>,
     ) -> Result<ResponseStream, ApiError> {
+        self.stream_request_with_initiation(
+            request,
+            connection_reused,
+            turn_state,
+            RequestInitiation::new(()),
+        )
+        .await
+    }
+
+    pub async fn stream_request_with_initiation(
+        &self,
+        request: ResponsesWsRequest<'_>,
+        connection_reused: bool,
+        turn_state: Option<Arc<OnceLock<String>>>,
+        initiation: RequestInitiation,
+    ) -> Result<ResponseStream, ApiError> {
         let (tx_event, rx_event) =
             mpsc::channel::<std::result::Result<ResponseEvent, ApiError>>(1600);
         let (tx_interrupt, rx_interrupt) = oneshot::channel();
@@ -288,6 +326,10 @@ impl ResponsesWebsocketConnection {
                 reason = "the guard serializes exclusive use of the websocket stream for the lifetime of the response stream"
             )]
             async move {
+                if tx_event.is_closed() {
+                    initiation.cancel();
+                    return;
+                }
                 if let Some(model) = server_model {
                     let _ = tx_event
                         .send(Ok(ResponseEvent::ServerModel {
@@ -307,6 +349,7 @@ impl ResponsesWebsocketConnection {
                     guard = stream.lock() => guard,
                 };
                 if tx_event.is_closed() {
+                    initiation.cancel();
                     return;
                 }
                 let result = {
@@ -329,6 +372,7 @@ impl ResponsesWebsocketConnection {
                             telemetry,
                             turn_state.as_deref(),
                             &timing_log_context,
+                            initiation,
                             rx_interrupt,
                         ) => result,
                         _ = tx_event.closed() => Err(ApiError::Stream(
@@ -403,16 +447,41 @@ impl ResponsesWebsocketClient {
         turn_state: Option<Arc<OnceLock<String>>>,
         telemetry: Option<Arc<dyn WebsocketTelemetry>>,
     ) -> Result<ResponsesWebsocketConnection, ApiError> {
+        self.connect_with_initiation(
+            http_client_factory,
+            extra_headers,
+            default_headers,
+            turn_state,
+            telemetry,
+            RequestInitiation::new(()),
+        )
+        .await
+    }
+
+    pub async fn connect_with_initiation(
+        &self,
+        http_client_factory: &HttpClientFactory,
+        extra_headers: HeaderMap,
+        default_headers: HeaderMap,
+        turn_state: Option<Arc<OnceLock<String>>>,
+        telemetry: Option<Arc<dyn WebsocketTelemetry>>,
+        initiation: RequestInitiation,
+    ) -> Result<ResponsesWebsocketConnection, ApiError> {
         let connector = WebSocketConnector::new(http_client_factory)
             .map_err(|err| ApiError::Stream(format!("failed to configure websocket TLS: {err}")))?;
-        self.connect_with_connector(
+        let claim = initiation
+            .claim()
+            .map_err(|error| ApiError::Transport(TransportError::Build(error)))?;
+        let result = self.connect_with_connector(
             &connector,
             extra_headers,
             default_headers,
             turn_state,
             telemetry,
         )
-        .await
+        .await;
+        claim.acknowledge();
+        result
     }
 
     /// Opens a WebSocket connection long enough to validate the upgrade response.
@@ -679,6 +748,7 @@ async fn run_websocket_response_stream(
     telemetry: Option<Arc<dyn WebsocketTelemetry>>,
     turn_state: Option<&OnceLock<String>>,
     timing_log_context: &ResponsesWebsocketTimingLogContext,
+    initiation: RequestInitiation,
     interrupt: oneshot::Receiver<()>,
 ) -> Result<(), ApiError> {
     let mut last_server_model: Option<String> = None;
@@ -689,6 +759,7 @@ async fn run_websocket_response_stream(
         idle_timeout,
         telemetry.as_ref(),
         timing_log_context.connection_reused,
+        Some(initiation),
     )
     .await?;
 
@@ -712,6 +783,7 @@ async fn run_websocket_response_stream(
                     idle_timeout,
                     /*telemetry*/ None,
                     timing_log_context.connection_reused,
+                    None,
                 )
                     .await?;
                 continue;
@@ -915,12 +987,13 @@ async fn send_websocket_request(
     idle_timeout: Duration,
     telemetry: Option<&Arc<dyn WebsocketTelemetry>>,
     connection_reused: bool,
+    initiation: Option<RequestInitiation>,
 ) -> Result<String, ApiError> {
     let started_at = Utc::now().to_rfc3339_opts(SecondsFormat::Nanos, true);
     let request_start = Instant::now();
     let result = tokio::time::timeout(
         idle_timeout,
-        ws_stream.send(Message::Text(request_text.into())),
+        ws_stream.send(Message::Text(request_text.into()), initiation),
     )
     .await
     .map_err(|_| ApiError::Stream("idle timeout sending websocket request".into()))

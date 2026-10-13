@@ -58,6 +58,7 @@ async fn runtime_enabled_legacy_migration_preserves_cold_resume_model_context() 
     timeout(
         DEFAULT_READ_TIMEOUT,
         primary.start_turn_and_wait_for_completion(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             input: vec![UserInput::Text {
                 text: "legacy user message".to_string(),
@@ -115,6 +116,7 @@ async fn runtime_enabled_legacy_migration_preserves_cold_resume_model_context() 
     timeout(
         DEFAULT_READ_TIMEOUT,
         secondary.start_turn_and_wait_for_completion(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id,
             input: vec![UserInput::Text {
                 text: "resumed user message".to_string(),

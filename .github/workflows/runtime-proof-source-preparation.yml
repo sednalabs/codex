@@ -1,0 +1,147 @@
+name: Runtime proof hosted preparation and validation
+
+on:
+  push:
+    branches: [feature/runtime-proof-hosted-20261005]
+    paths:
+      - .github/workflows/runtime-proof-source-preparation.yml
+      - .github/scripts/runtime-proof-hosted.py
+      - .github/scripts/runtime-proof-source-inputs.json
+      - codex-rs/cli/tests/runtime_execution_proof/support.rs
+      - codex-rs/cli/tests/runtime_execution_proof.rs
+      - codex-rs/codex-mcp/src/protected_http_client_tests.rs
+      - codex-rs/core/src/client.rs
+      - codex-rs/core/src/mcp_tool_call.rs
+      - codex-rs/core/src/mcp_tool_call_tests.rs
+      - codex-rs/core/src/session/turn_tests.rs
+      - codex-rs/exec/src/lib.rs
+      - codex-rs/runtime-proof/Cargo.toml
+      - codex-rs/runtime-proof/src/auth.rs
+      - codex-rs/runtime-proof/src/auth_tests.rs
+      - codex-rs/runtime-proof/src/signer.rs
+      - codex-rs/runtime-proof/src/signer_tests.rs
+      - codex-rs/runtime-proof/src/startup.rs
+      - codex-rs/runtime-proof/src/startup_tests.rs
+      - codex-rs/runtime-proof/src/tests.rs
+      - codex-rs/runtime-proof/src/wire.rs
+
+permissions:
+  contents: read
+
+jobs:
+  bind:
+    runs-on: ubuntu-24.04
+    outputs:
+      phase: ${{ steps.bind_phase.outputs.phase }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Bind exact source inputs and closed phase
+        id: bind_phase
+        env:
+          EXPECTED_WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: python3 .github/scripts/runtime-proof-hosted.py bind >> "$GITHUB_OUTPUT"
+
+  prepare:
+    needs: bind
+    if: ${{ needs.bind.outputs.phase == 'prepare' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@ebb3d1676050bfd0971c36c1e215b5751473994d # 1.96.0
+        with:
+          toolchain: 1.96.0
+          components: rustfmt
+      - uses: ./.github/actions/setup-bazel-ci
+        with:
+          target: x86_64-unknown-linux-gnu
+      - name: Generate only the bounded formatter and lock delta
+        env:
+          EXPECTED_WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: python3 .github/scripts/runtime-proof-hosted.py prepare
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: runtime-proof-preparation-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/runtime-proof-preparation/
+          if-no-files-found: error
+          retention-days: 7
+
+  validate-linux:
+    needs: bind
+    if: ${{ needs.bind.outputs.phase == 'validate' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ci
+      - name: Install Linux build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
+      - uses: dtolnay/rust-toolchain@ebb3d1676050bfd0971c36c1e215b5751473994d # 1.96.0
+        with:
+          toolchain: 1.96.0
+          target: x86_64-unknown-linux-gnu
+      - uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: x86_64-unknown-linux-gnu
+      - name: Compile locked libraries, bind exact test binaries, and run synthetic fixtures
+        env:
+          EXPECTED_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          EXPECTED_RUNNER_OS: ${{ runner.os }}
+          RUSTUP_TOOLCHAIN: 1.96.0
+          RUST_MIN_STACK: "8388608"
+        run: python3 .github/scripts/runtime-proof-hosted.py validate-linux
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: runtime-proof-validation-linux-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/runtime-proof-validation-linux/
+          if-no-files-found: error
+          retention-days: 7
+
+  validate-windows:
+    needs: bind
+    if: ${{ needs.bind.outputs.phase == 'validate' }}
+    runs-on: windows-2022
+    timeout-minutes: 120
+    steps:
+      - name: Pin LF Git behavior before checkout
+        shell: pwsh
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ci
+      - uses: dtolnay/rust-toolchain@ebb3d1676050bfd0971c36c1e215b5751473994d # 1.96.0
+        with:
+          toolchain: 1.96.0
+          target: x86_64-pc-windows-msvc
+      - name: Check ordinary Windows all-target consumers
+        env:
+          EXPECTED_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          EXPECTED_RUNNER_OS: ${{ runner.os }}
+        run: python .github/scripts/runtime-proof-hosted.py validate-windows
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: runtime-proof-validation-windows-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/runtime-proof-validation-windows/
+          if-no-files-found: error
+          retention-days: 7

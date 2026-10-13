@@ -195,6 +195,7 @@ async fn selected_executor_discovers_browser_mcp_with_executor_only_bearer_token
     .await;
     let request_id = app_server
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread_id.clone(),
             input: vec![UserInput::Text {
                 text: "Use the executor browser".to_string(),
@@ -456,6 +457,7 @@ async fn legacy_executor_blocks_plugin_host_credentials_and_keeps_host_owned_mcp
     .await;
     let request_id = app_server
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id,
             input: vec![UserInput::Text {
                 text: "Check legacy executor compatibility".to_string(),
@@ -766,6 +768,7 @@ async fn cached_executor_mcp_cannot_read_host_token_after_capability_downgrade()
     .await;
     let request_id = app_server
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id,
             input: vec![UserInput::Text {
                 text: PARENT_PROMPT.to_string(),
@@ -902,6 +905,7 @@ async fn guardian_review_does_not_discover_executor_mcp() -> Result<()> {
     .await;
     let request_id = app_server
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id,
             input: vec![UserInput::Text {
                 text: "Review a command without starting the browser".to_string(),
@@ -1348,6 +1352,7 @@ startup_timeout_sec = 10
     .await;
     let request_id = app_server
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: selected_thread.clone(),
             input: vec![UserInput::Text {
                 text: "Call the executor MCP echo tool".to_string(),

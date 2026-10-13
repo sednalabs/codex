@@ -61,6 +61,7 @@ async fn fork_before_first_turn_preserves_model_selected_multi_agent_version(
         .thread;
     let completed = mcp
         .start_turn_and_wait_for_completion(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: parent.id.clone(),
             input: vec![UserInput::Text {
                 text: "First message".to_string(),
@@ -116,6 +117,7 @@ async fn fork_before_first_turn_preserves_model_selected_multi_agent_version(
         })
         .await?;
     mcp.start_turn_and_wait_for_completion(TurnStartParams {
+        automatic_turn_continuation: None,
         thread_id: child.id,
         input: vec![UserInput::Text {
             text: "Forked message".to_string(),

@@ -193,6 +193,7 @@ pub(crate) async fn start_structured_turn(
         .request_typed(ClientRequest::TurnStart {
             request_id: RequestId::String(format!("temporary-structured-turn-{}", Uuid::new_v4())),
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id,
                 input: vec![UserInput::Text {
                     text: prompt,

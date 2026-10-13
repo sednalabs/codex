@@ -498,6 +498,7 @@ fn settings_submission(
             trace: None,
             parent_turn_id: None,
             root_turn_id: None,
+            automatic_turn: None,
             residency_guard: None,
         },
         receiver,

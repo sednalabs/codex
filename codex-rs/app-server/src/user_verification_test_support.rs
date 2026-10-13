@@ -262,7 +262,7 @@ impl Harness {
         self.processor
             .connection_closed(ConnectionId(1), &self.session)
             .await;
-        self.processor.clear_runtime_references();
+        self.processor.clear_runtime_references().await;
         self.processor.clear_all_thread_listeners().await;
         self.processor.drain_background_tasks().await;
         self.processor.shutdown_threads().await;

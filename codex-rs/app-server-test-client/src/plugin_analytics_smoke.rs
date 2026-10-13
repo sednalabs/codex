@@ -104,6 +104,7 @@ fn run_plugin_turn(client: &mut CodexClient, expected: &ExpectedPlugin) -> Resul
         ..Default::default()
     })?;
     let turn = client.turn_start(TurnStartParams {
+        automatic_turn_continuation: None,
         thread_id: thread.thread.id.clone(),
         client_user_message_id: None,
         input: vec![UserInput::Mention {

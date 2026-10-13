@@ -238,6 +238,7 @@ async fn thread_resume_paginated_model_context_preserves_original_metadata() -> 
     timeout(
         DEFAULT_READ_TIMEOUT,
         primary.start_turn_and_wait_for_completion(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: conversation_id.clone(),
             input: vec![UserInput::Text {
                 text: "bounded suffix user message".to_string(),
@@ -276,6 +277,7 @@ async fn thread_resume_paginated_model_context_preserves_original_metadata() -> 
     timeout(
         DEFAULT_READ_TIMEOUT,
         secondary.start_turn_and_wait_for_completion(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: conversation_id.clone(),
             input: vec![UserInput::Text {
                 text: "resumed user message".to_string(),
@@ -341,6 +343,7 @@ async fn assert_thread_resume_rejects_writer_owned_by_another_process(
     timeout(
         DEFAULT_READ_TIMEOUT,
         primary.start_turn_and_wait_for_completion(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             input: vec![UserInput::Text {
                 text: "first writer".to_string(),
@@ -394,6 +397,7 @@ async fn assert_thread_resume_rejects_writer_owned_by_another_process(
     timeout(
         DEFAULT_READ_TIMEOUT,
         secondary.start_turn_and_wait_for_completion(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             input: vec![UserInput::Text {
                 text: "second writer".to_string(),
@@ -508,6 +512,7 @@ async fn thread_resume_with_empty_path_uses_running_thread_id() -> Result<()> {
 
     let turn_id = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             client_user_message_id: None,
             input: vec![UserInput::Text {
@@ -582,6 +587,7 @@ async fn thread_resume_running_thread_uses_cached_instruction_sources() -> Resul
 
     let turn_id = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             client_user_message_id: None,
             input: vec![UserInput::Text {
@@ -671,6 +677,7 @@ async fn thread_resume_restores_startup_and_updated_runtime_workspace_roots() ->
         timeout(
             DEFAULT_READ_TIMEOUT,
             mcp.start_turn_and_wait_for_completion(TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 input: vec![UserInput::Text {
                     text: "update workspace selection".to_string(),
@@ -994,6 +1001,7 @@ async fn thread_resume_preserves_persisted_approvals_reviewer() -> Result<()> {
 
         let turn_id = mcp
             .send_turn_start_request(TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 client_user_message_id: None,
                 input: vec![UserInput::Text {
@@ -1123,6 +1131,7 @@ stream_max_retries = 0
 
         let turn_id = mcp
             .send_turn_start_request(TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 client_user_message_id: None,
                 input: vec![UserInput::Text {
@@ -1340,6 +1349,7 @@ async fn thread_resume_preserves_acknowledged_model_effort_and_approvals_reviewe
 
         let turn_id = mcp
             .send_turn_start_request(TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 client_user_message_id: None,
                 input: vec![UserInput::Text {
@@ -1603,6 +1613,7 @@ async fn cold_resume_reresolves_persisted_active_permission_profile() -> Result<
             timeout(
                 DEFAULT_READ_TIMEOUT,
                 mcp.start_turn_and_wait_for_completion(TurnStartParams {
+                    automatic_turn_continuation: None,
                     thread_id: thread_id.clone(),
                     runtime_workspace_roots: Some(vec![AbsolutePathBuf::from_absolute_path(
                         previous_workspace_root.path(),
@@ -1780,6 +1791,7 @@ async fn cold_resume_without_active_permission_profile_uses_current_config() -> 
         timeout(
             DEFAULT_READ_TIMEOUT,
             mcp.start_turn_and_wait_for_completion(TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 input: vec![UserInput::Text {
                     text: "persist full access".to_string(),
@@ -1845,6 +1857,7 @@ async fn cold_resume_restores_profile_selected_by_settings_update() -> Result<()
         timeout(
             DEFAULT_READ_TIMEOUT,
             mcp.start_turn_and_wait_for_completion(TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 input: vec![UserInput::Text {
                     text: "persist permission profile".to_string(),
@@ -1914,6 +1927,7 @@ async fn materialize_dev_permission_thread(
     timeout(
         DEFAULT_READ_TIMEOUT,
         mcp.start_turn_and_wait_for_completion(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             input: vec![UserInput::Text {
                 text: "persist permission profile".to_string(),
@@ -2396,6 +2410,7 @@ async fn thread_resume_running_thread_tracks_thread_originator_in_analytics() ->
 
     let turn_id = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             client_user_message_id: None,
             input: vec![UserInput::Text {
@@ -3011,6 +3026,7 @@ async fn thread_resume_keeps_tool_paused_goal_paused() -> Result<()> {
 
     let turn_id = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             client_user_message_id: None,
             input: vec![UserInput::Text {
@@ -3188,6 +3204,7 @@ async fn thread_goal_set_preserves_budget_limited_same_objective() -> Result<()>
 
     let turn_id = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             client_user_message_id: None,
             input: vec![UserInput::Text {
@@ -3274,6 +3291,7 @@ async fn thread_goal_set_persists_resumable_stopped_statuses() -> Result<()> {
 
     let turn_id = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             client_user_message_id: None,
             input: vec![UserInput::Text {
@@ -3484,6 +3502,7 @@ async fn thread_goal_keeps_original_root_until_external_objective_edit() -> Resu
 
     let start_id = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             input: vec![UserInput::Text {
                 text: "create the original goal".to_string(),
@@ -3678,6 +3697,7 @@ async fn thread_goal_lifecycle_emits_analytics_and_clear_deletes_goal() -> Resul
 
     let turn_id = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             client_user_message_id: None,
             input: vec![UserInput::Text {
@@ -4733,6 +4753,7 @@ async fn thread_resume_checkpoints_settings_without_advancing_recency() -> Resul
 
     let turn_id = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread_id.clone(),
             input: vec![UserInput::Text {
                 text: "Hello".to_string(),
@@ -4795,6 +4816,7 @@ async fn thread_resume_keeps_in_flight_turn_streaming() -> Result<()> {
 
     let seed_turn_id = primary
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             client_user_message_id: None,
             input: vec![UserInput::Text {
@@ -4818,6 +4840,7 @@ async fn thread_resume_keeps_in_flight_turn_streaming() -> Result<()> {
 
     let turn_id = primary
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             client_user_message_id: None,
             input: vec![UserInput::Text {
@@ -4893,6 +4916,7 @@ async fn thread_resume_rejects_history_when_thread_is_running() -> Result<()> {
 
     let seed_turn_id = primary
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             client_user_message_id: None,
             input: vec![UserInput::Text {
@@ -4917,6 +4941,7 @@ async fn thread_resume_rejects_history_when_thread_is_running() -> Result<()> {
     let thread_id = thread.id.clone();
     let running_turn_request_id = primary
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread_id.clone(),
             client_user_message_id: None,
             input: vec![UserInput::Text {
@@ -5010,6 +5035,7 @@ async fn thread_resume_rejects_mismatched_path_for_running_thread_id() -> Result
 
     let seed_turn_id = primary
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             client_user_message_id: None,
             input: vec![UserInput::Text {
@@ -5034,6 +5060,7 @@ async fn thread_resume_rejects_mismatched_path_for_running_thread_id() -> Result
     let thread_id = thread.id.clone();
     let running_turn_request_id = primary
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread_id.clone(),
             client_user_message_id: None,
             input: vec![UserInput::Text {
@@ -5192,6 +5219,7 @@ async fn thread_resume_rejoins_running_paginated_thread_with_initial_page() -> R
 
     let seed_turn_id = primary
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             client_user_message_id: None,
             input: vec![UserInput::Text {
@@ -5212,6 +5240,7 @@ async fn thread_resume_rejoins_running_paginated_thread_with_initial_page() -> R
 
     let running_turn_id = primary
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             client_user_message_id: None,
             input: vec![UserInput::Text {
@@ -5425,6 +5454,7 @@ async fn thread_resume_can_skip_turns_when_thread_is_running() -> Result<()> {
 
     let turn_id = primary
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             client_user_message_id: None,
             input: vec![UserInput::Text {
@@ -5505,6 +5535,7 @@ async fn thread_resume_replays_pending_command_execution_request_approval() -> R
 
     let seed_turn_id = primary
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             client_user_message_id: None,
             input: vec![UserInput::Text {
@@ -5528,6 +5559,7 @@ async fn thread_resume_replays_pending_command_execution_request_approval() -> R
 
     let running_turn_id = primary
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             client_user_message_id: None,
             input: vec![UserInput::Text {
@@ -5646,6 +5678,7 @@ async fn thread_resume_replays_pending_file_change_request_approval() -> Result<
 
     let seed_turn_id = primary
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             client_user_message_id: None,
             input: vec![UserInput::Text {
@@ -5670,6 +5703,7 @@ async fn thread_resume_replays_pending_file_change_request_approval() -> Result<
 
     let running_turn_id = primary
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             client_user_message_id: None,
             input: vec![UserInput::Text {
@@ -5831,6 +5865,7 @@ async fn thread_resume_with_overrides_preserves_recency_and_checkpoints_model() 
 
     let turn_id = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: resumed_thread.id,
             client_user_message_id: None,
             input: vec![UserInput::Text {
@@ -6132,6 +6167,7 @@ async fn start_materialized_thread_and_restart(
 
     let materialize_turn_id = first_mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             client_user_message_id: None,
             input: vec![UserInput::Text {
@@ -6218,6 +6254,7 @@ async fn thread_resume_accepts_deprecated_personality_override() -> Result<()> {
 
     let materialize_id = primary
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id.clone(),
             client_user_message_id: None,
             input: vec![UserInput::Text {
@@ -6258,6 +6295,7 @@ async fn thread_resume_accepts_deprecated_personality_override() -> Result<()> {
 
     let turn_id = secondary
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: resume.thread.id,
             client_user_message_id: None,
             input: vec![UserInput::Text {

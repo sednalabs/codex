@@ -328,6 +328,7 @@ async fn local_executor_does_not_expose_cloud_skills() -> Result<()> {
     .await;
     let turn_start_id = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id,
             input: vec![UserInput::Text {
                 text: format!("Use ${SKILL_NAME}"),
@@ -401,6 +402,7 @@ async fn missing_cloud_provider_does_not_expose_skills_namespace(extra_config: &
     .await;
     let turn_start_id = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id,
             input: vec![UserInput::Text {
                 text: format!("Use ${SKILL_NAME}"),
@@ -1139,6 +1141,7 @@ async fn complete_in_process_turn(
             .request(ClientRequest::TurnStart {
                 request_id,
                 params: TurnStartParams {
+                    automatic_turn_continuation: None,
                     thread_id: thread_id.to_string(),
                     input: vec![UserInput::Text {
                         text: "Persist the thread.".to_string(),

@@ -520,6 +520,48 @@ impl TurnRequestProcessor {
         Ok(())
     }
 
+    fn validate_automatic_turn_retry(params: &TurnStartParams) -> Result<(), JSONRPCErrorError> {
+        let is_retry_text = matches!(
+            params.input.as_slice(),
+            [V2UserInput::Text { text, text_elements }]
+                if text == "continue" && text_elements.is_empty()
+        );
+        let has_overrides = params.disabled_plugin_ids.is_some()
+            || params.client_user_message_id.is_some()
+            || params.turn_trigger.is_some()
+            || params.parent_turn_id.is_some()
+            || params.root_turn_id.is_some()
+            || params.tool_output.is_some()
+            || params.responsesapi_client_metadata.is_some()
+            || params
+                .additional_context
+                .as_ref()
+                .is_some_and(|context| !context.is_empty())
+            || params.environments.is_some()
+            || params.cwd.is_some()
+            || params.runtime_workspace_roots.is_some()
+            || params.approval_policy.is_some()
+            || params.approvals_reviewer.is_some()
+            || params.sandbox_policy.is_some()
+            || params.permissions.is_some()
+            || params.model.is_some()
+            || params.service_tier.is_some()
+            || params.service_tier_for_turn.is_some()
+            || params.effort.is_some()
+            || params.summary.is_some()
+            || params.personality.is_some()
+            || params.output_schema.is_some()
+            || params.collaboration_mode.is_some()
+            || params.multi_agent_mode.is_some()
+            || params.cyber_access_program.is_some();
+        if !is_retry_text || has_overrides {
+            return Err(invalid_request(
+                "automatic-turn continuation must be the bound plain-text retry without overrides",
+            ));
+        }
+        Ok(())
+    }
+
     async fn turn_start_inner(
         &self,
         request_id: ConnectionRequestId,
@@ -539,6 +581,10 @@ impl TurnRequestProcessor {
             .check_thread_model_provider(thread.config().await.as_ref())
             .await
             .map_err(|error| config_load_error(&error))?;
+        let automatic_turn_reference = params.automatic_turn_continuation.clone();
+        if automatic_turn_reference.is_some() {
+            Self::validate_automatic_turn_retry(&params)?;
+        }
         if let Some(tool_output) = &params.tool_output {
             if !params.input.is_empty() {
                 return Err(invalid_request(
@@ -616,7 +662,11 @@ impl TurnRequestProcessor {
                     .into_iter()
                     .map(V2UserInput::into_core)
                     .collect(),
-                client_id: params.client_user_message_id,
+                client_id: if automatic_turn_reference.is_some() {
+                    Some(uuid::Uuid::now_v7().to_string())
+                } else {
+                    params.client_user_message_id
+                },
             }
         };
         let cwd = resolve_request_cwd(params.cwd)?;
@@ -649,24 +699,38 @@ impl TurnRequestProcessor {
             )
             .await?;
 
-        let submission = thread
-            .start_or_steer_turn(
-                TurnInputRequest::new(input)
-                    .with_thread_settings(thread_settings)
-                    .on_start(TurnStartOptions {
-                        turn_trigger: params.turn_trigger,
-                        parent_turn_id: params.parent_turn_id,
-                        initiating_agent_path: None,
-                        root_turn_id: params.root_turn_id,
-                        final_output_json_schema: params.output_schema,
-                        service_tier: params.service_tier_for_turn,
-                        cyber_access_program: params.cyber_access_program.map(Into::into),
-                    })
-                    .with_additional_context(additional_context)
-                    .with_responses_metadata(params.responsesapi_client_metadata)
-                    .with_trace(self.request_trace_context(&request_id).await),
-            )
-            .await
+        let start_options = TurnStartOptions {
+            turn_trigger: params.turn_trigger,
+            parent_turn_id: params.parent_turn_id,
+            initiating_agent_path: None,
+            root_turn_id: params.root_turn_id,
+            final_output_json_schema: params.output_schema,
+            service_tier: params.service_tier_for_turn,
+            cyber_access_program: params.cyber_access_program.map(Into::into),
+        };
+        let trace = self.request_trace_context(&request_id).await;
+        let submission = if let Some(continuation_ref) = automatic_turn_reference {
+            thread
+                .submit_automatic_turn_input(
+                    TurnInputRequest::new(input)
+                        .on_start(start_options)
+                        .with_trace(trace),
+                    continuation_ref,
+                )
+                .await
+        } else {
+            thread
+                .submit_app_server_turn_input(
+                    TurnInputRequest::new(input)
+                        .with_thread_settings(thread_settings)
+                        .on_start(start_options)
+                        .with_additional_context(additional_context)
+                        .with_responses_metadata(params.responsesapi_client_metadata)
+                        .with_trace(trace),
+                    TurnInputMode::StartOrSteer,
+                )
+                .await
+        }
             .map_err(|err| {
                 let error = internal_error(format!("failed to submit turn input: {err}"));
                 self.track_error_response(&request_id, &error, /*error_type*/ None);
@@ -1710,4 +1774,50 @@ fn xcode_26_4_mcp_elicitations_auto_deny(
     // TODO: Remove this compatibility hack once Xcode 26.4 ages out.
     client_name == Some("Xcode")
         && client_version.is_some_and(|version| version.starts_with("26.4"))
+}
+
+#[cfg(test)]
+mod automatic_turn_retry_tests {
+    use super::*;
+
+    fn retry_params() -> TurnStartParams {
+        TurnStartParams {
+            thread_id: "thread_test".to_string(),
+            input: vec![V2UserInput::Text {
+                text: "continue".to_string(),
+                text_elements: Vec::new(),
+            }],
+            automatic_turn_continuation:
+                codex_protocol::automatic_turn::AutomaticTurnContinuationRef::new(
+                    "opaque-shape-is-not-authority",
+                ),
+            ..TurnStartParams::default()
+        }
+    }
+
+    #[test]
+    fn continuation_accepts_only_the_bound_plain_retry() {
+        assert!(TurnRequestProcessor::validate_automatic_turn_retry(&retry_params()).is_ok());
+
+        let mut caller_chosen_id = retry_params();
+        caller_chosen_id.client_user_message_id = Some("caller-chosen-id".to_string());
+        assert!(TurnRequestProcessor::validate_automatic_turn_retry(&caller_chosen_id).is_err());
+
+        let mut changed_content = retry_params();
+        changed_content.input = vec![V2UserInput::Text {
+            text: "continue with my instructions".to_string(),
+            text_elements: Vec::new(),
+        }];
+        assert!(TurnRequestProcessor::validate_automatic_turn_retry(&changed_content).is_err());
+
+        let mut extra_context = retry_params();
+        extra_context.additional_context = Some(HashMap::from([(
+            "caller".to_string(),
+            AdditionalContextEntry {
+                value: "untrusted override".to_string(),
+                kind: AdditionalContextKind::Untrusted,
+            },
+        )]));
+        assert!(TurnRequestProcessor::validate_automatic_turn_retry(&extra_context).is_err());
+    }
 }

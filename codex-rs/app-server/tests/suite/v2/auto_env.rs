@@ -111,6 +111,7 @@ async fn thread_start_with_auto_env_exposes_fixture_cwd_to_model() -> Result<()>
 
     let request_id = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id,
             input: vec![V2UserInput::Text {
                 text: "report the current directory".to_string(),

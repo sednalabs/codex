@@ -540,6 +540,7 @@ async fn live_reviewer_updates_route_approvals_without_changing_future_turns(
 async fn start_turn(app: &mut TestAppServer, thread_id: &str) -> Result<String> {
     let request_id = app
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread_id.to_string(),
             input: vec![UserInput::Text {
                 text: "continue".to_string(),
