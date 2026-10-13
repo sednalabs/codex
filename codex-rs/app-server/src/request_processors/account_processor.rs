@@ -98,6 +98,7 @@ impl Drop for ActiveLogin {
 pub(crate) struct AccountRequestProcessor {
     auth_manager: Arc<AuthManager>,
     thread_manager: Arc<ThreadManager>,
+    state_db: Option<StateDbHandle>,
     outgoing: Arc<OutgoingMessageSender>,
     config: Arc<Config>,
     config_manager: ConfigManager,
@@ -115,6 +116,7 @@ impl AccountRequestProcessor {
     pub(crate) fn new(
         auth_manager: Arc<AuthManager>,
         thread_manager: Arc<ThreadManager>,
+        state_db: Option<StateDbHandle>,
         outgoing: Arc<OutgoingMessageSender>,
         config: Arc<Config>,
         config_manager: ConfigManager,
@@ -133,6 +135,7 @@ impl AccountRequestProcessor {
             _gateway_notifications: Arc::new(gateway_notifications),
             auth_manager,
             thread_manager,
+            state_db,
             outgoing,
             config,
             config_manager,
@@ -334,6 +337,9 @@ impl AccountRequestProcessor {
         if self.auth_manager.is_workload_identity_selected() {
             return Err(self.configured_auth_owned_by_host_error());
         }
+        // Revoke durable one-time continuations before any login flow can replace the
+        // authenticated account, including a replacement for the same stable principal.
+        self.invalidate_automatic_turn_capabilities().await?;
         self.enterprise_login.cancel(/*login_id*/ None).await;
         match params {
             LoginAccountParams::ApiKey { api_key } => {
@@ -930,6 +936,19 @@ impl AccountRequestProcessor {
             payload.success = false;
             payload.error = Some(error.to_string());
         }
+        if payload.success {
+            if let Err(error) = self.invalidate_automatic_turn_capabilities().await {
+                tracing::warn!(
+                    ?error,
+                    "failed to invalidate automatic-turn capabilities after account change"
+                );
+                payload.success = false;
+                payload.error = Some(
+                    "Failed to safely update automatic-turn authorization after sign-in."
+                        .to_string(),
+                );
+            }
+        }
         if payload.success && auth_changes.borrow().owner_generation == owner_generation {
             Self::maybe_refresh_plugin_caches_for_current_config(
                 &self.config_manager,
@@ -991,6 +1010,9 @@ impl AccountRequestProcessor {
         if self.auth_manager.is_workload_identity_selected() {
             return Err(self.configured_auth_owned_by_host_error());
         }
+        // Do this before reload/logout can publish a new cached auth state. The persisted
+        // epoch revokes tickets even if a later login returns to the same account/provider.
+        self.invalidate_automatic_turn_capabilities().await?;
         // Another process may have changed the persisted workspace. Reload both
         // account authority and its policy before selecting a grant to remove.
         self.auth_manager.reload().await;
@@ -1048,6 +1070,9 @@ impl AccountRequestProcessor {
                 return Err(internal_error(format!("logout failed: {err}")));
             }
         }
+        // Revoke again after the transition so tickets created while logout was in
+        // progress cannot survive into a later login with the same stable principal.
+        self.invalidate_automatic_turn_capabilities().await?;
         drop(enterprise_guard);
         self.thread_manager.invalidate_mcp_runtimes().await;
 
@@ -1073,6 +1098,22 @@ impl AccountRequestProcessor {
             .as_ref()
             .map(CodexAuth::api_auth_mode)
             .map(auth_mode_to_api))
+    }
+
+    async fn invalidate_automatic_turn_capabilities(
+        &self,
+    ) -> Result<(), JSONRPCErrorError> {
+        if let Some(state_db) = &self.state_db {
+            state_db
+                .invalidate_all_automatic_turn_capabilities()
+                .await
+                .map_err(|error| {
+                    internal_error(format!(
+                        "failed to invalidate automatic-turn capabilities during auth change: {error:#}"
+                    ))
+                })?;
+        }
+        Ok(())
     }
 
     async fn logout_v2(&self, request_id: ConnectionRequestId) -> Result<(), JSONRPCErrorError> {

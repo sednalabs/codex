@@ -416,6 +416,7 @@ impl MessageProcessor {
         let account_processor = AccountRequestProcessor::new(
             auth_manager.clone(),
             Arc::clone(&thread_manager),
+            state_db.clone(),
             outgoing.clone(),
             Arc::clone(&config),
             config_manager.clone(),
