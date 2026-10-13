@@ -188,6 +188,19 @@ fn startup_error_category(error: &anyhow::Error) -> &'static str {
 }
 
 fn launch_protected_child() -> anyhow::Result<()> {
+    let mut failure_phase: &'static str = "fixture_setup";
+    let result = launch_protected_child_inner(&mut failure_phase);
+    if let Err(error) = &result {
+        eprintln!(
+            "runtime-proof-root-launch-failure:{}:{}",
+            failure_phase,
+            launch_error_category(error)
+        );
+    }
+    result
+}
+
+fn launch_protected_child_inner(failure_phase: &mut &'static str) -> anyhow::Result<()> {
     let temp = tempfile::tempdir()?;
     let root = temp.path();
     std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o711))?;
@@ -306,22 +319,28 @@ fn launch_protected_child() -> anyhow::Result<()> {
             Ok(())
         });
     }
+    *failure_phase = "spawn";
     let mut child = command.spawn()?;
     drop(bootstrap_child);
     drop(auth_child);
     let mut bootstrap = bootstrap_frame(&certificate, &seed);
+    *failure_phase = "bootstrap_send";
     send_packet(&bootstrap_parent, &bootstrap)?;
     bootstrap.fill(0);
     seed.fill(0);
+    *failure_phase = "auth_send";
     send_packet(&auth_parent, &serde_json::to_vec(&auth)?)?;
     let mut ack = [0_u8; 4];
     let mut bootstrap_parent = bootstrap_parent;
+    *failure_phase = "ack_setup";
     bootstrap_parent.set_read_timeout(Some(PROTECTED_CHILD_ACK_TIMEOUT))?;
+    *failure_phase = "ack_wait";
     if let Err(error) = bootstrap_parent.read_exact(&mut ack) {
         let _ = child.kill();
         let _ = child.wait();
         return Err(error.into());
     }
+    *failure_phase = "ack_validation";
     if &ack != b"ACK1" {
         let _ = child.kill();
         let _ = child.wait();
@@ -329,7 +348,9 @@ fn launch_protected_child() -> anyhow::Result<()> {
     }
     let deadline = std::time::Instant::now() + PROTECTED_CHILD_TIMEOUT;
     loop {
+        *failure_phase = "child_wait";
         if let Some(status) = child.try_wait()? {
+            *failure_phase = "child_exit";
             anyhow::ensure!(
                 status.success(),
                 "protected direct-send fixture child failed: {status}"
@@ -337,6 +358,7 @@ fn launch_protected_child() -> anyhow::Result<()> {
             break;
         }
         if std::time::Instant::now() >= deadline {
+            *failure_phase = "child_timeout";
             child.kill()?;
             let _ = child.wait()?;
             anyhow::bail!("protected direct-send fixture child timed out");
@@ -344,6 +366,25 @@ fn launch_protected_child() -> anyhow::Result<()> {
         std::thread::sleep(Duration::from_millis(25));
     }
     Ok(())
+}
+
+fn launch_error_category(error: &anyhow::Error) -> &'static str {
+    let Some(error) = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<std::io::Error>())
+    else {
+        return "other";
+    };
+    match error.kind() {
+        std::io::ErrorKind::PermissionDenied => "permission_denied",
+        std::io::ErrorKind::NotFound => "not_found",
+        std::io::ErrorKind::TimedOut => "timed_out",
+        std::io::ErrorKind::WouldBlock => "would_block",
+        std::io::ErrorKind::UnexpectedEof => "unexpected_eof",
+        std::io::ErrorKind::ConnectionReset => "connection_reset",
+        std::io::ErrorKind::BrokenPipe => "broken_pipe",
+        _ => "other",
+    }
 }
 
 fn seqpacket_pair() -> anyhow::Result<(UnixStream, UnixStream)> {
