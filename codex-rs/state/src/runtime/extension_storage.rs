@@ -23,9 +23,9 @@ CREATE TABLE IF NOT EXISTS extension_migrations (
 "#;
 
 const PHASE2_ATTESTATION_ROOTS_SQL: &str =
-    include_str!("../../migrations/0024_phase2_attestation_roots.sql");
+    include_str!("../../migrations/8000000000000003_phase2_attestation_roots.sql");
 const PHASE2_ATTESTED_BASELINES_SQL: &str =
-    include_str!("../../migrations/0038_phase2_attested_baselines.sql");
+    include_str!("../../migrations/8000000000000000_phase2_attested_baselines.sql");
 
 const STATE_EXTENSION_MIGRATIONS: &[ExtensionStorageMigration] = &[
     ExtensionStorageMigration {
