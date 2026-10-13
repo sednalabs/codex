@@ -470,6 +470,79 @@ fn hash_headers<H: Hasher>(headers: &ApiHeaderMap, state: &mut H) {
     values.hash(state);
 }
 
+fn validate_protected_api_provider(api_provider: &ApiProvider, recipient: &str) -> Result<()> {
+    let expected = codex_model_provider_info::built_in_model_providers(Some(recipient.to_string()))
+        .remove("openai")
+        .ok_or_else(|| {
+            CodexErr::UnsupportedOperation(
+                "protected runtime built-in provider is unavailable".to_string(),
+            )
+        })?
+        .to_api_provider(Some(AuthMode::ChatgptAuthTokens))?;
+    if api_provider.name != expected.name
+        || api_provider.base_url != expected.base_url
+        || api_provider.query_params != expected.query_params
+        || api_provider.headers != expected.headers
+    {
+        return Err(CodexErr::UnsupportedOperation(
+            "protected provider differs from pinned built-in configuration".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_protected_model_provider_info(
+    provider: &ModelProviderInfo,
+    recipient: &str,
+) -> Result<()> {
+    let expected = codex_model_provider_info::built_in_model_providers(Some(recipient.to_string()))
+        .remove("openai")
+        .ok_or_else(|| {
+            CodexErr::UnsupportedOperation(
+                "protected runtime built-in provider is unavailable".to_string(),
+            )
+        })?;
+    if provider != &expected {
+        return Err(CodexErr::UnsupportedOperation(
+            "protected model provider differs from pinned built-in configuration".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn protected_provider_recipient() -> Result<Option<String>> {
+    codex_runtime_proof::protected_provider_recipient()
+        .map_err(|error| CodexErr::UnsupportedOperation(error.to_string()))
+}
+
+fn validate_api_route(
+    api_provider: &ApiProvider,
+    endpoint: &str,
+    recipient: Option<&str>,
+) -> Result<String> {
+    let Some(recipient) = recipient else {
+        return Ok(api_provider.url_for_path(endpoint));
+    };
+    validate_protected_api_provider(api_provider, recipient)?;
+    let request_url = api_provider.url_for_path(endpoint);
+    let expected_url = format!(
+        "{}/{}",
+        recipient.trim_end_matches('/'),
+        endpoint.trim_start_matches('/')
+    );
+    if request_url != expected_url {
+        return Err(CodexErr::UnsupportedOperation(
+            "protected route differs from pinned provider recipient".to_string(),
+        ));
+    }
+    Ok(request_url)
+}
+
+fn validate_protected_api_route(api_provider: &ApiProvider, endpoint: &str) -> Result<String> {
+    let recipient = protected_provider_recipient()?;
+    validate_api_route(api_provider, endpoint, recipient.as_deref())
+}
+
 fn hash_provider_authority<H: Hasher>(
     provider: &ModelProviderInfo,
     api_provider: &ApiProvider,
@@ -1150,6 +1223,9 @@ impl ModelClient {
         expected_authority: Option<ProviderAuthority>,
     ) -> Result<CurrentClientSetup> {
         let auth_manager = self.state.provider.auth_manager();
+        if let Some(recipient) = protected_provider_recipient()? {
+            validate_protected_model_provider_info(self.state.provider.info(), &recipient)?;
+        }
         loop {
             // Resolution may reload external auth or proactively refresh managed auth. It must run
             // before provider-send authority so those write-side transitions cannot self-deadlock.
@@ -1169,6 +1245,19 @@ impl ModelClient {
                 })
                 .await?;
             let api_provider = request_auth.api_provider;
+            if let Some(recipient) = protected_provider_recipient()? {
+                validate_protected_api_provider(&api_provider, &recipient)?;
+                if request_auth
+                    .account_auth
+                    .as_ref()
+                    .map(CodexAuth::api_auth_mode)
+                    != Some(AuthMode::ChatgptAuthTokens)
+                {
+                    return Err(CodexErr::UnsupportedOperation(
+                        "protected runtime requires ephemeral ChatGPT auth tokens".to_string(),
+                    ));
+                }
+            }
             let resolved_auth = request_auth.resolved.freeze();
 
             let (revision, request_authority) = match auth_manager.as_ref() {
@@ -1283,7 +1372,7 @@ impl ModelClient {
         api_provider: &ApiProvider,
         endpoint: &str,
     ) -> Result<ReqwestTransport> {
-        let request_url = api_provider.url_for_path(endpoint);
+        let request_url = validate_protected_api_route(api_provider, endpoint)?;
         let client = create_credential_bound_client_for_route(
             &self.http_client_factory,
             &request_url,
@@ -1314,6 +1403,8 @@ impl ModelClient {
         request_route_telemetry: RequestRouteTelemetry,
         request_initiation: RequestInitiation,
     ) -> std::result::Result<ApiWebSocketConnection, ApiError> {
+        validate_protected_api_route(&api_provider, RESPONSES_ENDPOINT)
+            .map_err(|error| ApiError::Transport(TransportError::Build(error.to_string())))?;
         let headers = self.build_websocket_headers(responses_metadata).await;
         let websocket_telemetry = ModelClientSession::build_websocket_telemetry(
             session_telemetry,

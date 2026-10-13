@@ -332,7 +332,7 @@ jobs:
                 codex-rs/code-mode codex-rs/codex-backend-openapi-models codex-rs/codex-mcp
                 codex-rs/context-fragments codex-rs/docs codex-rs/external-agent-migration codex-rs/file-system
                 codex-rs/keyring-store codex-rs/memories codex-rs/models-manager codex-rs/prompts
-                codex-rs/responses-api-proxy codex-rs/scripts codex-rs/stdio-to-uds codex-rs/uds
+                codex-rs/responses-api-proxy codex-rs/runtime-proof codex-rs/scripts codex-rs/stdio-to-uds codex-rs/uds
                 codex-rs/tools codex-rs/websocket-client
               )
               scope_ignores=()

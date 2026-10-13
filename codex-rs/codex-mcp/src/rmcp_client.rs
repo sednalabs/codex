@@ -39,6 +39,7 @@ use async_channel::Sender;
 use codex_api::SharedAuthProvider;
 use codex_async_utils::CancelErr;
 use codex_async_utils::OrCancelExt;
+use codex_config::McpServerAuth;
 use codex_config::McpServerConfig;
 use codex_config::McpServerTransportConfig;
 use codex_config::types::AuthKeyringBackendKind;
@@ -47,6 +48,7 @@ use codex_connectors::ConnectorRuntimeContext;
 use codex_connectors::ConnectorRuntimeFetchSource;
 use codex_connectors::ConnectorRuntimeFetchTicket;
 use codex_exec_server::Environment;
+use codex_exec_server::HttpClient;
 use codex_protocol::mcp::McpServerInfo;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
@@ -1216,6 +1218,24 @@ async fn make_rmcp_client(
     runtime_auth_provider: Option<SharedAuthProvider>,
 ) -> Result<RmcpClient, StartupOutcomeError> {
     let config = server.config().clone();
+    let protected_target = match &config.transport {
+        McpServerTransportConfig::StreamableHttp { url, .. } => {
+            codex_runtime_proof::is_protected_mcp_target(server_name, url)
+                .map_err(|error| StartupOutcomeError::from(anyhow!(error)))?
+        }
+        McpServerTransportConfig::Stdio { .. } => false,
+    };
+    if protected_target
+        && (config.oauth.is_some()
+            || config.scopes.is_some()
+            || config.auth != McpServerAuth::OAuth
+            || runtime_auth_provider.is_some())
+    {
+        return Err(anyhow!(
+            "protected MCP target rejects OAuth configuration and ambient auth providers"
+        )
+        .into());
+    }
     let resolved_environment =
         resolved_environment.map_err(|err| StartupOutcomeError::from(anyhow!(err)))?;
     let is_local_environment = config.is_local_environment();
@@ -1265,31 +1285,82 @@ async fn make_rmcp_client(
             env_http_headers,
             bearer_token_env_var,
         } => {
-            let http_client = resolved_environment.as_ref().map_or_else(
-                || runtime_context.local_http_client(),
-                |environment| environment.get_http_client(),
-            );
+            if protected_target {
+                if http_headers.is_some()
+                    || env_http_headers.is_some()
+                    || bearer_token_env_var.is_some()
+                {
+                    return Err(anyhow!(
+                        "protected MCP target rejects configured header and environment credentials"
+                    )
+                    .into());
+                }
+                if !protected_http_transport_is_process_local(
+                    server.config(),
+                    resolved_environment.as_ref(),
+                ) {
+                    return Err(anyhow!(
+                        "protected MCP target requires the process-local HTTP transport"
+                    )
+                    .into());
+                }
+            }
+            let http_client = if protected_target {
+                runtime_context.local_http_client()
+            } else {
+                resolved_environment.as_ref().map_or_else(
+                    || runtime_context.local_http_client(),
+                    |environment| environment.get_http_client(),
+                )
+            };
             let http_client = maybe_with_openai_docs_source_attribution(&url, http_client);
-            let resolved_bearer_token =
-                match resolve_bearer_token(server_name, bearer_token_env_var.as_deref()) {
-                    Ok(token) => token,
-                    Err(error) => return Err(error.into()),
-                };
-            RmcpClient::new_streamable_http_client(
-                server_name,
-                &url,
-                resolved_bearer_token,
-                http_headers,
-                env_http_headers,
-                store_mode,
-                keyring_backend_kind,
-                http_client,
-                runtime_auth_provider,
-            )
-            .await
-            .map_err(StartupOutcomeError::from)
+            let http_client = if protected_target {
+                Arc::new(crate::protected_http_client::ProtectedMcpHttpClient::new(
+                    http_client,
+                    server_name,
+                    &url,
+                )) as Arc<dyn HttpClient>
+            } else {
+                http_client
+            };
+            if protected_target {
+                RmcpClient::new_protected_streamable_http_client(
+                    server_name,
+                    &url,
+                    store_mode,
+                    keyring_backend_kind,
+                    http_client,
+                )
+                .await
+                .map_err(StartupOutcomeError::from)
+            } else {
+                RmcpClient::new_streamable_http_client(
+                    server_name,
+                    &url,
+                    match resolve_bearer_token(server_name, bearer_token_env_var.as_deref()) {
+                        Ok(token) => token,
+                        Err(error) => return Err(error.into()),
+                    },
+                    http_headers,
+                    env_http_headers,
+                    store_mode,
+                    keyring_backend_kind,
+                    http_client,
+                    runtime_auth_provider,
+                )
+                .await
+                .map_err(StartupOutcomeError::from)
+            }
         }
     }
+}
+
+fn protected_http_transport_is_process_local(
+    config: &McpServerConfig,
+    resolved_environment: Option<&Arc<Environment>>,
+) -> bool {
+    config.is_local_environment()
+        && resolved_environment.is_none_or(|environment| !environment.is_remote())
 }
 
 #[cfg(test)]
@@ -1308,6 +1379,37 @@ mod tests {
         let error = StartupOutcomeError::from(error);
 
         assert!(error.is_authentication_required());
+    }
+
+    #[tokio::test]
+    async fn protected_http_transport_rejects_remote_descriptor_for_local_environment_id() {
+        let config = serde_json::from_value::<McpServerConfig>(serde_json::json!({
+            "url": "https://ops.example/mcp",
+            "environment_id": "local"
+        }))
+        .expect("protected HTTP server config");
+        let local = Arc::new(
+            Environment::create_for_tests(/*exec_server_url*/ None)
+                .expect("test local environment"),
+        );
+        let remote = Arc::new(
+            Environment::create_for_tests(Some("ws://127.0.0.1:8765".to_string()))
+                .expect("test remote environment"),
+        );
+
+        assert!(!local.is_remote());
+        assert!(protected_http_transport_is_process_local(
+            &config, /*resolved_environment*/ None
+        ));
+        assert!(protected_http_transport_is_process_local(
+            &config,
+            Some(&local)
+        ));
+        assert!(remote.is_remote());
+        assert!(!protected_http_transport_is_process_local(
+            &config,
+            Some(&remote)
+        ));
     }
 
     #[test]

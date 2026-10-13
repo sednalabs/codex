@@ -24,6 +24,7 @@ use codex_analytics::AppInvocation;
 use codex_analytics::InvocationType;
 use codex_analytics::build_track_events_context;
 use codex_config::ConfigLayerSource;
+use codex_config::McpServerTransportConfig;
 use codex_config::types::AppToolApproval;
 use codex_config::types::ApprovalsReviewer;
 use codex_connectors::AppToolPolicy;
@@ -382,97 +383,125 @@ async fn handle_approved_mcp_tool_call(
     let server_origin = prepared_call.server_origin().map(str::to_string);
 
     let start = Instant::now();
+    let mut protected_call = false;
+    let mut runtime_redaction_context: Option<codex_runtime_proof::McpRedactionContext> = None;
     let mut tool_input = arguments_value
         .clone()
         .unwrap_or_else(|| JsonValue::Object(serde_json::Map::new()));
-    let result = async {
-        let result = async {
-            let result = prepared_call
-                .call_with_preparation(|| async {
-                    if let McpToolApprovalApplication::Apply { decision, policy } =
-                        &approval_application
-                    {
-                        let session_approval_key = session_mcp_tool_approval_key(
-                            &invocation,
-                            Some(&metadata),
-                            policy.mode,
-                        );
-                        let persistent_approval_key = if policy.allow_persistent {
-                            persistent_mcp_tool_approval_key(
-                                &invocation,
-                                Some(&metadata),
-                                policy.mode,
-                            )
-                        } else {
-                            None
-                        };
-                        apply_mcp_tool_approval_decision(
-                            sess,
-                            turn_context,
-                            decision,
-                            session_approval_key,
-                            persistent_approval_key,
-                        )
-                        .await;
-                    }
-                    maybe_mark_thread_memory_mode_polluted(sess, turn_context, &prepared_call)
-                        .await;
-                    let rewritten_arguments = rewrite_mcp_tool_arguments_for_openai_files(
+    let transport_url = prepared_call
+        .config()
+        .mcp_server_catalog
+        .server(&server)
+        .and_then(|registration| match &registration.config().transport {
+            McpServerTransportConfig::StreamableHttp { url, .. } => Some(url.clone()),
+            McpServerTransportConfig::Stdio { .. } => None,
+        });
+    let mut result = async {
+        let result = prepared_call
+            .call_with_preparation(|| async {
+                if let McpToolApprovalApplication::Apply { decision, policy } =
+                    &approval_application
+                {
+                    let session_approval_key =
+                        session_mcp_tool_approval_key(&invocation, Some(&metadata), policy.mode);
+                    let persistent_approval_key = if policy.allow_persistent {
+                        persistent_mcp_tool_approval_key(&invocation, Some(&metadata), policy.mode)
+                    } else {
+                        None
+                    };
+                    apply_mcp_tool_approval_decision(
                         sess,
                         turn_context,
-                        arguments_value,
-                        metadata.openai_file_input_optional_fields.as_ref(),
+                        decision,
+                        session_approval_key,
+                        persistent_approval_key,
                     )
-                    .await
-                    .map_err(anyhow::Error::msg)?;
-                    if let Some(rewritten_arguments) = rewritten_arguments.as_ref() {
-                        tool_input = rewritten_arguments.clone();
-                    }
-                    let request_meta = build_mcp_tool_call_request_meta(
-                        turn_context,
-                        &server,
-                        call_id,
-                        Some(&metadata),
-                    );
-                    let request_meta = with_mcp_tool_call_thread_id_meta(
-                        request_meta,
-                        &sess.thread_id.to_string(),
-                    );
-                    let request_meta = augment_mcp_tool_request_meta_with_sandbox_state(
-                        step_context,
-                        &prepared_call,
-                        request_meta,
-                    )
-                    .await?;
-                    let mcp_call_trace = sess
-                        .services
-                        .rollout_thread_trace
-                        .start_mcp_call_trace(call_id);
-                    Ok((
-                        rewritten_arguments,
-                        mcp_call_trace.add_request_meta(request_meta),
-                    ))
-                })
+                    .await;
+                }
+                maybe_mark_thread_memory_mode_polluted(sess, turn_context, &prepared_call).await;
+                let rewritten_arguments = rewrite_mcp_tool_arguments_for_openai_files(
+                    sess,
+                    turn_context,
+                    arguments_value,
+                    metadata.openai_file_input_optional_fields.as_ref(),
+                )
                 .await
-                .map_err(|error| format!("tool call error: {error:?}"))?;
-            let result = sanitize_mcp_tool_result_for_model(
-                &turn_context.model_info.input_modalities,
-                Ok(result),
-            )?;
-            Ok(maybe_request_codex_apps_auth_elicitation(
-                sess,
-                turn_context,
-                prepared_call.config().approval_policy.value(),
-                call_id,
-                &invocation.server,
-                Some(&metadata),
-                result,
-            )
-            .await)
-        }
-        .await;
-        record_mcp_result_span_telemetry(&Span::current(), &result);
-        result
+                .map_err(anyhow::Error::msg)?;
+                if let Some(rewritten_arguments) = rewritten_arguments.as_ref() {
+                    tool_input = rewritten_arguments.clone();
+                }
+                let request_meta = build_mcp_tool_call_request_meta(
+                    turn_context,
+                    &server,
+                    call_id,
+                    Some(&metadata),
+                );
+                let request_meta =
+                    with_mcp_tool_call_thread_id_meta(request_meta, &sess.thread_id.to_string());
+                let request_meta = augment_mcp_tool_request_meta_with_sandbox_state(
+                    step_context,
+                    &prepared_call,
+                    request_meta,
+                )
+                .await?;
+                let mcp_call_trace = sess
+                    .services
+                    .rollout_thread_trace
+                    .start_mcp_call_trace(call_id);
+                let request_meta = mcp_call_trace.add_request_meta(request_meta);
+                if let Some(recipient) = transport_url.as_deref() {
+                    protected_call =
+                        codex_runtime_proof::is_protected_mcp_target(&server, recipient)
+                            .map_err(anyhow::Error::msg)?;
+                }
+                let empty_arguments = JsonValue::Null;
+                let proof_parameters = rewritten_arguments.as_ref().unwrap_or(&empty_arguments);
+                let proof = codex_runtime_proof::sign_claim_proof(
+                    &sess.execution_nonce,
+                    &sess.thread_id.to_string(),
+                    &server,
+                    transport_url.as_deref(),
+                    &tool_name,
+                    proof_parameters,
+                )?;
+                if protected_call && proof.is_none() {
+                    anyhow::bail!(
+                        "protected MCP operation is outside its issuer-bound claim scope"
+                    );
+                }
+                if protected_call {
+                    runtime_redaction_context = codex_runtime_proof::capture_mcp_redaction_context(
+                        &server,
+                        transport_url.as_deref().unwrap_or_default(),
+                        proof.as_ref(),
+                    )?;
+                }
+                let request_meta = add_runtime_proof_meta(request_meta, proof)?;
+                Ok((rewritten_arguments, request_meta))
+            })
+            .await
+            .map_err(|error| {
+                if protected_call {
+                    "protected runtime proof MCP call failed".to_string()
+                } else {
+                    format!("tool call error: {error:?}")
+                }
+            })?;
+        let mut result = sanitize_mcp_tool_result_for_model(
+            &turn_context.model_info.input_modalities,
+            Ok(result),
+        )?;
+        redact_protected_call_tool_result(&mut result, runtime_redaction_context.as_ref());
+        Ok(maybe_request_codex_apps_auth_elicitation(
+            sess,
+            turn_context,
+            prepared_call.config().approval_policy.value(),
+            call_id,
+            &invocation.server,
+            Some(&metadata),
+            result,
+        )
+        .await)
     }
     .instrument(mcp_tool_call_span(
         sess,
@@ -487,6 +516,8 @@ async fn handle_approved_mcp_tool_call(
         },
     ))
     .await;
+    redact_protected_mcp_result(&mut result, runtime_redaction_context.as_ref());
+    record_mcp_result_span_telemetry(&Span::current(), &result);
     if let Err(error) = &result {
         tracing::warn!("MCP tool call error: {error:?}");
     }
@@ -517,6 +548,80 @@ async fn handle_approved_mcp_tool_call(
     HandledMcpToolCall {
         result: CallToolResult::from_result(result),
         tool_input,
+    }
+}
+
+fn add_runtime_proof_meta(
+    meta: Option<JsonValue>,
+    proof: Option<JsonValue>,
+) -> anyhow::Result<Option<JsonValue>> {
+    let Some(proof) = proof else {
+        if meta
+            .as_ref()
+            .and_then(JsonValue::as_object)
+            .is_some_and(|map| map.contains_key(codex_runtime_proof::RESERVED_META_KEY))
+        {
+            anyhow::bail!("reserved runtime proof request metadata was already set");
+        }
+        return Ok(meta);
+    };
+    let mut map = match meta {
+        Some(JsonValue::Object(map)) => map,
+        None => serde_json::Map::new(),
+        Some(_) => anyhow::bail!("runtime proof request metadata must be an object"),
+    };
+    if map.contains_key(codex_runtime_proof::RESERVED_META_KEY) {
+        anyhow::bail!("reserved runtime proof request metadata was already set");
+    }
+    map.insert(codex_runtime_proof::RESERVED_META_KEY.to_string(), proof);
+    Ok(Some(JsonValue::Object(map)))
+}
+
+fn redact_protected_mcp_result(
+    result: &mut Result<CallToolResult, String>,
+    context: Option<&codex_runtime_proof::McpRedactionContext>,
+) {
+    let Some(context) = context else {
+        return;
+    };
+    match result {
+        Ok(result) => redact_protected_call_tool_result(result, Some(context)),
+        Err(error) => {
+            let mut value = JsonValue::String(std::mem::take(error));
+            context.redact(&mut value);
+            *error = value
+                .as_str()
+                .unwrap_or("protected runtime MCP call failed")
+                .to_string();
+        }
+    }
+}
+
+fn redact_protected_call_tool_result(
+    result: &mut CallToolResult,
+    context: Option<&codex_runtime_proof::McpRedactionContext>,
+) {
+    let Some(context) = context else {
+        return;
+    };
+    match serde_json::to_value(&*result) {
+        Ok(mut value) => {
+            context.redact(&mut value);
+            match serde_json::from_value(value) {
+                Ok(redacted) => *result = redacted,
+                Err(_) => *result = safe_redacted_tool_result(),
+            }
+        }
+        Err(_) => *result = safe_redacted_tool_result(),
+    }
+}
+
+fn safe_redacted_tool_result() -> CallToolResult {
+    CallToolResult {
+        content: Vec::new(),
+        structured_content: None,
+        is_error: Some(true),
+        meta: None,
     }
 }
 

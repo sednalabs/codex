@@ -141,6 +141,7 @@ enum TransportRecipe {
         pinned_credential_store: Arc<OnceLock<ResolvedOAuthCredentialStore>>,
         http_client: Arc<dyn HttpClient>,
         auth_provider: Option<SharedAuthProvider>,
+        protected_output: bool,
     },
 }
 
@@ -426,6 +427,7 @@ pub struct RmcpClient {
     session_recovery_lock: Semaphore,
     elicitation_pause_state: ElicitationPauseState,
     tool_list_generation: Arc<AtomicUsize>,
+    protected_output: bool,
 }
 
 impl RmcpClient {
@@ -447,6 +449,7 @@ impl RmcpClient {
             session_recovery_lock: Semaphore::new(/*permits*/ 1),
             elicitation_pause_state: ElicitationPauseState::new(),
             tool_list_generation: Arc::new(AtomicUsize::new(0)),
+            protected_output: false,
         })
     }
 
@@ -482,6 +485,7 @@ impl RmcpClient {
             session_recovery_lock: Semaphore::new(/*permits*/ 1),
             elicitation_pause_state: ElicitationPauseState::new(),
             tool_list_generation: Arc::new(AtomicUsize::new(0)),
+            protected_output: false,
         })
     }
 
@@ -508,6 +512,7 @@ impl RmcpClient {
             pinned_credential_store: Arc::new(OnceLock::new()),
             http_client,
             auth_provider,
+            protected_output: false,
         };
         let transport = Self::create_pending_transport(&transport_recipe).await?;
         Ok(Self {
@@ -520,6 +525,42 @@ impl RmcpClient {
             session_recovery_lock: Semaphore::new(/*permits*/ 1),
             elicitation_pause_state: ElicitationPauseState::new(),
             tool_list_generation: Arc::new(AtomicUsize::new(0)),
+            protected_output: false,
+        })
+    }
+
+    pub async fn new_protected_streamable_http_client(
+        server_name: &str,
+        url: &str,
+        store_mode: OAuthCredentialsStoreMode,
+        keyring_backend_kind: AuthKeyringBackendKind,
+        http_client: Arc<dyn HttpClient>,
+    ) -> Result<Self> {
+        let transport_recipe = TransportRecipe::StreamableHttp {
+            server_name: server_name.to_string(),
+            url: url.to_string(),
+            bearer_token: None,
+            http_headers: None,
+            env_http_headers: None,
+            store_mode,
+            keyring_backend_kind,
+            pinned_credential_store: Arc::new(OnceLock::new()),
+            http_client,
+            auth_provider: None,
+            protected_output: true,
+        };
+        let transport = Self::create_pending_transport(&transport_recipe).await?;
+        Ok(Self {
+            state: Mutex::new(ClientState::Connecting {
+                transport: Some(transport),
+            }),
+            stdio_process: None,
+            transport_recipe,
+            initialize_context: Mutex::new(None),
+            session_recovery_lock: Semaphore::new(/*permits*/ 1),
+            elicitation_pause_state: ElicitationPauseState::new(),
+            tool_list_generation: Arc::new(AtomicUsize::new(0)),
+            protected_output: true,
         })
     }
 
@@ -537,6 +578,7 @@ impl RmcpClient {
             send_elicitation,
             self.elicitation_pause_state.clone(),
             Arc::clone(&self.tool_list_generation),
+            self.protected_output,
         );
         let pending_transport = {
             let mut guard = self.state.lock().await;
@@ -968,6 +1010,7 @@ impl RmcpClient {
                 pinned_credential_store,
                 http_client,
                 auth_provider,
+                protected_output,
             } => {
                 let default_headers =
                     build_default_headers(http_headers.clone(), env_http_headers.clone())?;
@@ -978,7 +1021,8 @@ impl RmcpClient {
                         auth_provider.clone()
                     };
 
-                let resolved_oauth_tokens = if bearer_token.is_none()
+                let resolved_oauth_tokens = if !protected_output
+                    && bearer_token.is_none()
                     && auth_provider.is_none()
                     && !default_headers.contains_key(AUTHORIZATION)
                 {

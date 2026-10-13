@@ -78,7 +78,25 @@ impl McpServerConnectionIdentity {
         supports_openai_form_elicitation: bool,
     ) -> Self {
         let config = server.config();
-        let stored_oauth_url = if runtime_auth_provider.is_none() {
+        let protected_target = match &config.transport {
+            McpServerTransportConfig::StreamableHttp { url, .. } => Some(
+                codex_runtime_proof::is_protected_mcp_target(server_name, url),
+            ),
+            McpServerTransportConfig::Stdio { .. } => None,
+        };
+        let protected_target_error = protected_target
+            .as_ref()
+            .and_then(|target| target.as_ref().err())
+            .map(ToString::to_string);
+        let protected_target_selected = protected_target
+            .as_ref()
+            .is_some_and(|target| matches!(target, Ok(true)));
+        let protected_target_guarded =
+            protected_target_selected || protected_target_error.is_some();
+        let protected_auth_conflict = protected_target_selected && runtime_auth_provider.is_some();
+        let stored_oauth_url = if protected_target_guarded || runtime_auth_provider.is_some() {
+            None
+        } else {
             match &config.transport {
                 McpServerTransportConfig::StreamableHttp {
                     url,
@@ -91,25 +109,36 @@ impl McpServerConnectionIdentity {
                 }
                 | McpServerTransportConfig::Stdio { .. } => None,
             }
-        } else {
-            None
         };
-        let oauth_credentials = stored_oauth_url.map_or(Ok(None), |url| {
-            stored_oauth_credentials(server_name, url, store_mode, keyring_backend_kind).map_err(
-                |error| {
-                    warn!(server_name, %error, "failed to read stored MCP OAuth credentials");
-                    error.to_string()
-                },
-            )
-        });
+        let oauth_credentials = if let Some(error) = protected_target_error {
+            Err(error)
+        } else if protected_auth_conflict {
+            Err("protected MCP target does not accept an ambient ChatGPT auth provider".to_string())
+        } else {
+            stored_oauth_url.map_or(Ok(None), |url| {
+                stored_oauth_credentials(server_name, url, store_mode, keyring_backend_kind)
+                    .map_err(|error| {
+                        warn!(server_name, %error, "failed to read stored MCP OAuth credentials");
+                        error.to_string()
+                    })
+            })
+        };
         let local_stdio_fallback_cwd = (config.is_local_environment()
             && matches!(
                 config.transport,
                 McpServerTransportConfig::Stdio { cwd: None, .. }
             ))
         .then(|| runtime_context.local_stdio_fallback_cwd());
-        let referenced_environment_variables = referenced_environment_variables(config);
-        let runtime_auth = runtime_auth_provider.and(auth).cloned();
+        let referenced_environment_variables = if protected_target_guarded {
+            Vec::new()
+        } else {
+            referenced_environment_variables(config)
+        };
+        let runtime_auth = if protected_target_guarded {
+            None
+        } else {
+            runtime_auth_provider.and(auth).cloned()
+        };
         let runtime_auth_token = runtime_auth.as_ref().and_then(|auth| auth.get_token().ok());
 
         Self {
