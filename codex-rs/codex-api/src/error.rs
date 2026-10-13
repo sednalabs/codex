@@ -10,6 +10,10 @@ use thiserror::Error;
 pub enum ApiError {
     #[error(transparent)]
     Transport(#[from] TransportError),
+    /// An actual HTTP availability response admitted at the Responses transport boundary.
+    /// The original transport error is retained for the existing API error mapping.
+    #[error(transparent)]
+    TransientAvailability(TransportError),
     #[error("api error {status}: {message}")]
     Api { status: StatusCode, message: String },
     #[error("stream error: {0}")]

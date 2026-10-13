@@ -55,6 +55,11 @@ use codex_rollout_trace::InferenceTraceContext;
 use codex_utils_output_truncation::approx_token_count;
 use codex_utils_output_truncation::truncate_text;
 use futures::StreamExt;
+use tokio_util::sync::CancellationToken;
+
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct CompactionCollectionObserver(pub(crate) async_channel::Sender<String>);
 
 #[path = "compact_remote_v2_attempt.rs"]
 mod attempt;
@@ -84,6 +89,7 @@ pub(crate) async fn run_inline_remote_auto_compact_task(
     world_state: Arc<WorldState>,
     reason: CompactionReason,
     phase: CompactionPhase,
+    cancellation_token: &CancellationToken,
 ) -> CodexResult<()> {
     let compaction_metadata = CompactionTurnMetadata::new(
         CompactionTrigger::Auto,
@@ -98,6 +104,7 @@ pub(crate) async fn run_inline_remote_auto_compact_task(
         Some(client_session),
         world_state,
         compaction_metadata,
+        cancellation_token,
     )
     .await
 }
@@ -106,6 +113,7 @@ pub(crate) async fn run_remote_compact_task(
     sess: Arc<Session>,
     step_context: Arc<StepContext>,
     world_state: Arc<WorldState>,
+    cancellation_token: &CancellationToken,
 ) -> CodexResult<()> {
     let compaction_metadata = CompactionTurnMetadata::new(
         CompactionTrigger::Manual,
@@ -120,6 +128,7 @@ pub(crate) async fn run_remote_compact_task(
         /*client_session*/ None,
         world_state,
         compaction_metadata,
+        cancellation_token,
     )
     .await
 }
@@ -131,6 +140,7 @@ async fn run_remote_compact_task_inner(
     client_session: Option<&mut ModelClientSession>,
     world_state: Arc<WorldState>,
     compaction_metadata: CompactionTurnMetadata,
+    cancellation_token: &CancellationToken,
 ) -> CodexResult<()> {
     let turn_context = &step_context.turn;
     let trigger = compaction_metadata.trigger();
@@ -174,6 +184,7 @@ async fn run_remote_compact_task_inner(
         world_state,
         compaction_metadata,
         &mut analytics_details,
+        cancellation_token,
     )
     .await;
     let status = compaction_status_from_result(&result);
@@ -220,6 +231,7 @@ async fn run_remote_compact_task_inner_impl(
     world_state: Arc<WorldState>,
     compaction_metadata: CompactionTurnMetadata,
     analytics_details: &mut CompactionAnalyticsDetails,
+    cancellation_token: &CancellationToken,
 ) -> CodexResult<()> {
     let turn_context = &step_context.turn;
     let context_compaction_item = ContextCompactionItem::new();
@@ -234,18 +246,24 @@ async fn run_remote_compact_task_inner_impl(
     sess.emit_turn_item_started(turn_context, &compaction_item)
         .await;
 
-    let attempt = run_remote_compact_v2_attempt(
-        sess,
-        step_context,
-        client_session.as_deref_mut(),
-        &compaction_trace,
-        compaction_metadata,
-        analytics_details,
-    )
-    .await;
+    let attempt = tokio::select! {
+        biased;
+        _ = cancellation_token.cancelled() => Err(CodexErr::TurnAborted),
+        attempt = run_remote_compact_v2_attempt(
+            sess,
+            step_context,
+            client_session.as_deref_mut(),
+            &compaction_trace,
+            compaction_metadata,
+            analytics_details,
+        ) => attempt,
+    };
     let (attempt, compaction_turn_context) = match attempt {
         Ok(attempt) => (attempt, turn_context),
         Err(error) => {
+            if cancellation_token.is_cancelled() {
+                return Err(CodexErr::TurnAborted);
+            }
             let fallback_turn_context = &replacement_step_context.turn;
             if !should_retry_with_current_model(&error, turn_context, fallback_turn_context) {
                 return Err(error);
@@ -259,15 +277,21 @@ async fn run_remote_compact_task_inner_impl(
                     fallback_turn_context.model_info().slug.as_str(),
                     fallback_turn_context.provider.info().name.as_str(),
                 );
-            let fallback_result = run_remote_compact_v2_attempt(
-                sess,
-                replacement_step_context,
-                client_session,
-                &fallback_compaction_trace,
-                compaction_metadata,
-                analytics_details,
-            )
-            .await;
+            let fallback_result = tokio::select! {
+                biased;
+                _ = cancellation_token.cancelled() => Err(CodexErr::TurnAborted),
+                attempt = run_remote_compact_v2_attempt(
+                    sess,
+                    replacement_step_context,
+                    client_session,
+                    &fallback_compaction_trace,
+                    compaction_metadata,
+                    analytics_details,
+                ) => attempt,
+            };
+            if cancellation_token.is_cancelled() {
+                return Err(CodexErr::TurnAborted);
+            }
             record_model_fallback(
                 &sess.services.session_telemetry,
                 turn_context.model_info().slug.as_str(),
@@ -429,6 +453,7 @@ async fn run_remote_compaction_request_v2(
                     sess,
                     step_context,
                     ResponsesStreamRequest::RemoteCompactionV2,
+                    true,
                 )
                 .await?;
             }
@@ -450,7 +475,18 @@ async fn collect_compaction_output(
     let mut completed_token_usage = None;
     let mut current_response_server_model: Option<String> = None;
     while let Some(event) = stream.next().await {
-        match event? {
+        let event = event?;
+        #[cfg(test)]
+        if let ResponseEvent::Created {
+            response_id: Some(response_id),
+        } = &event
+            && let Some(observer) = turn_context
+                .extension_data
+                .get::<CompactionCollectionObserver>()
+        {
+            let _ = observer.0.try_send(response_id.clone());
+        }
+        match event {
             ResponseEvent::OutputItemDone(item) => {
                 output_item_count += 1;
                 if let ResponseItem::Compaction { .. } = item {

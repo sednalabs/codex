@@ -78,6 +78,25 @@ pub struct CodexErr {
     details: CodexErrorDetails,
     retry_after: Option<RetryAfter>,
     agent_context: Option<AgentErrorContext>,
+    transient_availability_retry: Option<Http503SlowDown>,
+}
+
+/// Private cross-crate proof that an error came from a classified HTTP 503 slow-down response.
+/// This marker is intentionally not part of public error formatting or serialization.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Http503SlowDown(private::Sealed);
+
+mod private {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct Sealed;
+}
+
+impl Http503SlowDown {
+    #[doc(hidden)]
+    pub const fn classified_http_503_slow_down() -> Self {
+        Self(private::Sealed)
+    }
 }
 
 /// The semantic category and diagnostic payload for a [`CodexErr`].
@@ -246,6 +265,7 @@ impl From<CodexErrorDetails> for CodexErr {
             details,
             retry_after: None,
             agent_context: None,
+            transient_availability_retry: None,
         }
     }
 }
@@ -311,6 +331,7 @@ macro_rules! codex_err_unit_constructors {
                 details: CodexErrorDetails::$variant,
                 retry_after: None,
                 agent_context: None,
+                transient_availability_retry: None,
             };
         )*
     };
@@ -388,6 +409,21 @@ impl CodexErr {
     /// Returns the semantic failure and its diagnostic payload.
     pub fn details(&self) -> &CodexErrorDetails {
         &self.details
+    }
+
+    /// Whether this rate-limit detail came from a positively classified HTTP availability
+    /// response, rather than a generic stream or provider error mapping.
+    #[doc(hidden)]
+    pub fn http_503_slow_down_source(&self) -> Option<Http503SlowDown> {
+        self.transient_availability_retry
+    }
+
+    /// Marks only an already-classified transient availability response for the capacity retry
+    /// path. This provenance is intentionally absent from public formatting and serialization.
+    #[doc(hidden)]
+    pub fn with_http_503_slow_down(mut self, proof: Http503SlowDown) -> Self {
+        self.transient_availability_retry = Some(proof);
+        self
     }
 
     /// Returns the delay before the given retry attempt, or `None` for a terminal error.

@@ -351,6 +351,7 @@ pub(crate) async fn run_turn(
             &mut client_session,
             CompactionReason::ContextLimit,
             CompactionPhase::PreTurn,
+            &cancellation_token,
         )
         .await?;
         sess.record_context_updates_and_set_reference_context_item(first_step_context.as_ref())
@@ -626,6 +627,7 @@ pub(crate) async fn run_turn(
                         &mut client_session,
                         CompactionReason::ContextLimit,
                         CompactionPhase::MidTurn,
+                        &cancellation_token,
                     )
                     .await
                     {
@@ -734,6 +736,7 @@ pub(crate) async fn run_turn(
                             &mut client_session,
                             CompactionReason::ContextLimit,
                             CompactionPhase::PostTurn,
+                            &cancellation_token,
                         )
                         .await
                     {
@@ -784,6 +787,7 @@ pub(crate) async fn run_turn(
                     &mut client_session,
                     CompactionReason::ContextLimit,
                     CompactionPhase::MidTurn,
+                    &cancellation_token,
                 )
                 .await?;
                 can_drain_pending_input = false;
@@ -1325,6 +1329,7 @@ async fn run_pre_sampling_compact(
             client_session,
             CompactionReason::ContextLimit,
             CompactionPhase::PreTurn,
+            cancellation_token,
         )
         .await?;
     }
@@ -1421,6 +1426,7 @@ async fn maybe_run_previous_model_inline_compact(
         client_session,
         reason,
         CompactionPhase::PreTurn,
+        cancellation_token,
     )
     .await?;
     Ok(())
@@ -1439,6 +1445,7 @@ async fn run_auto_compact(
     client_session: &mut ModelClientSession,
     reason: CompactionReason,
     phase: CompactionPhase,
+    cancellation_token: &CancellationToken,
 ) -> CodexResult<()> {
     let turn_context = &step_context.turn;
     if matches!(phase, CompactionPhase::PreTurn)
@@ -1485,6 +1492,7 @@ async fn run_auto_compact(
                 world_state,
                 reason,
                 phase,
+                cancellation_token,
             )
             .await?;
         }
@@ -1634,6 +1642,7 @@ async fn run_sampling_request(
     let max_retries = turn_context.provider.info().stream_max_retries();
     record_registration_metrics(&step_context.tool_router, &step_context.session_telemetry);
     let mut retry_state = ResponsesStreamRetryState::default();
+    let mut accepted_retry_items = AcceptedRetryItems::default();
     let mut initial_input = Some(input);
     let mut original_input = None;
     let mut executed_tool_calls_by_output = HashMap::new();
@@ -1680,6 +1689,7 @@ async fn run_sampling_request(
             Arc::clone(&turn_diff_tracker),
             &prompt,
             cancellation_token.child_token(),
+            &mut accepted_retry_items,
         )
         .await
         {
@@ -1712,6 +1722,7 @@ async fn run_sampling_request(
             &sess,
             &step_context,
             ResponsesStreamRequest::Sampling,
+            accepted_retry_items.can_safely_replay(),
         )
         .or_cancel(&preempt)
         .or_cancel(&cancellation_token)
@@ -2187,7 +2198,8 @@ async fn handle_plan_segments(
     state: &mut PlanModeStreamState,
     item_id: &str,
     segments: Vec<ProposedPlanSegment>,
-) {
+) -> bool {
+    let mut emitted = false;
     for segment in segments {
         match segment {
             ProposedPlanSegment::Normal(delta) => {
@@ -2222,10 +2234,12 @@ async fn handle_plan_segments(
                 };
                 sess.send_event(turn_context, EventMsg::AgentMessageContentDelta(event))
                     .await;
+                emitted = true;
             }
             ProposedPlanSegment::ProposedPlanStart => {
                 if !state.plan_item_state.completed {
                     state.plan_item_state.start(sess, turn_context).await;
+                    emitted = true;
                 }
             }
             ProposedPlanSegment::ProposedPlanDelta(delta) => {
@@ -2237,11 +2251,13 @@ async fn handle_plan_segments(
                         .plan_item_state
                         .push_delta(sess, turn_context, &delta)
                         .await;
+                    emitted |= !delta.trim().is_empty();
                 }
             }
             ProposedPlanSegment::ProposedPlanEnd => {}
         }
     }
+    emitted
 }
 
 async fn emit_streamed_assistant_text_delta(
@@ -2250,9 +2266,9 @@ async fn emit_streamed_assistant_text_delta(
     plan_mode_state: Option<&mut PlanModeStreamState>,
     item_id: &str,
     parsed: ParsedAssistantTextDelta,
-) {
+) -> bool {
     if parsed.is_empty() {
-        return;
+        return false;
     }
     if !parsed.citations.is_empty() {
         // Citation extraction is intentionally local for now; we strip citations from display text
@@ -2260,13 +2276,14 @@ async fn emit_streamed_assistant_text_delta(
         let _citations = parsed.citations;
     }
     if let Some(state) = plan_mode_state {
-        if !parsed.plan_segments.is_empty() {
-            handle_plan_segments(sess, turn_context, state, item_id, parsed.plan_segments).await;
-        }
-        return;
+        return if parsed.plan_segments.is_empty() {
+            false
+        } else {
+            handle_plan_segments(sess, turn_context, state, item_id, parsed.plan_segments).await
+        };
     }
     if parsed.visible_text.is_empty() {
-        return;
+        return false;
     }
     let event = AgentMessageContentDeltaEvent {
         thread_id: sess.thread_id.to_string(),
@@ -2276,6 +2293,7 @@ async fn emit_streamed_assistant_text_delta(
     };
     sess.send_event(turn_context, EventMsg::AgentMessageContentDelta(event))
         .await;
+    true
 }
 
 /// Flush buffered assistant text parser state when an assistant message item ends.
@@ -2285,9 +2303,16 @@ async fn flush_assistant_text_segments_for_item(
     plan_mode_state: Option<&mut PlanModeStreamState>,
     parsers: &mut AssistantMessageStreamParsers,
     item_id: &str,
-) {
+    accepted_retry_items: &mut AcceptedRetryItems,
+) -> bool {
     let parsed = parsers.finish_item(item_id);
-    emit_streamed_assistant_text_delta(sess, turn_context, plan_mode_state, item_id, parsed).await;
+    let emitted =
+        emit_streamed_assistant_text_delta(sess, turn_context, plan_mode_state, item_id, parsed)
+            .await;
+    if emitted {
+        accepted_retry_items.record_streamed_draft_emission(item_id);
+    }
+    emitted
 }
 
 /// Flush any remaining buffered assistant text parser state at response completion.
@@ -2296,9 +2321,11 @@ async fn flush_assistant_text_segments_all(
     turn_context: &TurnContext,
     mut plan_mode_state: Option<&mut PlanModeStreamState>,
     parsers: &mut AssistantMessageStreamParsers,
-) {
+    accepted_retry_items: &mut AcceptedRetryItems,
+) -> bool {
+    let mut emitted_any = false;
     for (item_id, parsed) in parsers.drain_finished() {
-        emit_streamed_assistant_text_delta(
+        let emitted = emit_streamed_assistant_text_delta(
             sess,
             turn_context,
             plan_mode_state.as_deref_mut(),
@@ -2306,7 +2333,12 @@ async fn flush_assistant_text_segments_all(
             parsed,
         )
         .await;
+        if emitted {
+            accepted_retry_items.record_streamed_draft_emission(&item_id);
+            emitted_any = true;
+        }
     }
+    emitted_any
 }
 
 /// Emit completion for plan items by parsing the finalized assistant message.
@@ -2504,6 +2536,166 @@ fn assign_missing_streamed_response_item_id(
     Session::assign_missing_response_item_id(item);
 }
 
+struct AcceptedRetryItems {
+    by_item_id: HashMap<String, serde_json::Value>,
+    by_tool_call_id: HashMap<String, serde_json::Value>,
+    streamed_draft_ids: HashSet<String>,
+    draft_replay_identity_by_item_id: HashMap<String, DraftReplayIdentity>,
+    replay_safe: bool,
+}
+
+struct DraftReplayIdentity {
+    provider_item_id: Option<String>,
+    track_without_provider_id: bool,
+}
+
+impl Default for AcceptedRetryItems {
+    fn default() -> Self {
+        Self {
+            by_item_id: HashMap::new(),
+            by_tool_call_id: HashMap::new(),
+            streamed_draft_ids: HashSet::new(),
+            draft_replay_identity_by_item_id: HashMap::new(),
+            replay_safe: true,
+        }
+    }
+}
+
+impl AcceptedRetryItems {
+    fn stable_item_id(item: &ResponseItem) -> Option<String> {
+        item.id()
+            .filter(|id| !id.is_empty())
+            .map(|id| id.as_str().to_string())
+    }
+
+    fn tool_call_id(item: &ResponseItem) -> Option<&str> {
+        match item {
+            ResponseItem::FunctionCall { call_id, .. }
+            | ResponseItem::CustomToolCall { call_id, .. } => Some(call_id.as_str()),
+            ResponseItem::LocalShellCall { call_id, .. }
+            | ResponseItem::ToolSearchCall { call_id, .. } => call_id.as_deref(),
+            _ => None,
+        }
+        .filter(|call_id| !call_id.is_empty())
+    }
+
+    fn contains_identity(&self, item: &ResponseItem, stable_item_id: Option<&str>) -> bool {
+        stable_item_id.is_some_and(|id| self.by_item_id.contains_key(id))
+            || Self::tool_call_id(item)
+                .is_some_and(|call_id| self.by_tool_call_id.contains_key(call_id))
+    }
+
+    fn check_replay(
+        &self,
+        item: &ResponseItem,
+        stable_item_id: Option<&str>,
+    ) -> CodexResult<(bool, serde_json::Value)> {
+        let mut payload = serde_json::to_value(item).map_err(|_| {
+            CodexErr::InvalidRequest("could not inspect replayed provider output".into())
+        })?;
+        if let Some(object) = payload.as_object_mut() {
+            object.remove("id");
+        }
+        let mut replayed = false;
+        if let Some(id) = stable_item_id
+            && let Some(prior) = self.by_item_id.get(id)
+        {
+            if prior != &payload {
+                return Err(CodexErr::InvalidRequest(
+                    "provider replayed an accepted item ID with different content".into(),
+                ));
+            }
+            replayed = true;
+        }
+        if let Some(call_id) = Self::tool_call_id(item)
+            && let Some(prior) = self.by_tool_call_id.get(call_id)
+        {
+            if prior != &payload {
+                return Err(CodexErr::InvalidRequest(
+                    "provider replayed an accepted tool call ID with different arguments".into(),
+                ));
+            }
+            replayed = true;
+        }
+        Ok((replayed, payload))
+    }
+
+    fn record(
+        &mut self,
+        item: &ResponseItem,
+        stable_item_id: Option<String>,
+        payload: serde_json::Value,
+    ) {
+        let has_stable_identity = stable_item_id.is_some() || Self::tool_call_id(item).is_some();
+        if let Some(id) = stable_item_id {
+            self.by_item_id.insert(id, payload.clone());
+        }
+        if let Some(call_id) = Self::tool_call_id(item) {
+            self.by_tool_call_id
+                .insert(call_id.to_string(), payload);
+        }
+        if !has_stable_identity {
+            self.replay_safe = false;
+        }
+    }
+
+    fn can_safely_replay(&self) -> bool {
+        self.replay_safe
+    }
+
+    fn bind_streamed_draft(
+        &mut self,
+        item_id: String,
+        provider_item_id: Option<String>,
+        track_without_provider_id: bool,
+    ) {
+        self.draft_replay_identity_by_item_id.insert(
+            item_id,
+            DraftReplayIdentity {
+                provider_item_id,
+                track_without_provider_id,
+            },
+        );
+    }
+
+    fn record_streamed_draft_emission(&mut self, item_id: &str) {
+        let (provider_item_id, track_without_provider_id) =
+            match self.draft_replay_identity_by_item_id.get(item_id) {
+                Some(identity) => (
+                    identity.provider_item_id.clone(),
+                    identity.track_without_provider_id,
+                ),
+                None => {
+                    self.replay_safe = false;
+                    return;
+                }
+            };
+        self.record_streamed_draft_emission_for_provider(
+            provider_item_id.as_deref(),
+            track_without_provider_id,
+        );
+    }
+
+    fn record_streamed_draft_emission_for_provider(
+        &mut self,
+        provider_item_id: Option<&str>,
+        track_without_provider_id: bool,
+    ) {
+        if let Some(provider_item_id) = provider_item_id.filter(|id| !id.is_empty()) {
+            self.streamed_draft_ids
+                .insert(provider_item_id.to_string());
+        } else if track_without_provider_id {
+            self.replay_safe = false;
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReplaySuppression {
+    AcceptedItem,
+    StreamedDraft,
+}
+
 #[allow(clippy::too_many_arguments)]
 #[instrument(level = "trace",
     skip_all,
@@ -2522,6 +2714,7 @@ async fn try_run_sampling_request(
     turn_diff_tracker: SharedTurnDiffTracker,
     prompt: &Prompt,
     cancellation_token: CancellationToken,
+    accepted_retry_items: &mut AcceptedRetryItems,
 ) -> CodexResult<SamplingRequestResult> {
     let turn_context = Arc::clone(&step_context.turn);
     feedback_tags!(
@@ -2587,6 +2780,8 @@ async fn try_run_sampling_request(
         String,
         Box<dyn ToolArgumentDiffConsumer>,
     )> = None;
+    let mut active_provider_item_id: Option<String> = None;
+    let mut replay_suppression: Option<ReplaySuppression> = None;
     let mut should_emit_turn_diff = false;
     let mut should_emit_token_count = false;
     const MAX_ANALYTICS_TOOL_CALL_IDS_PER_RESPONSE: usize = 256;
@@ -2671,6 +2866,20 @@ async fn try_run_sampling_request(
             .record_responses(&handle_responses, &event);
         record_turn_ttft_metric(&turn_context, &event).await;
 
+        if replay_suppression.is_some()
+            && matches!(
+                &event,
+                ResponseEvent::OutputTextDelta(_)
+                    | ResponseEvent::ToolCallInputDelta { .. }
+                    | ResponseEvent::ReasoningSummaryDelta { .. }
+                    | ResponseEvent::ReasoningSummaryPartAdded { .. }
+                    | ResponseEvent::ReasoningSummaryDone { .. }
+                    | ResponseEvent::ReasoningContentDelta { .. }
+            )
+        {
+            continue;
+        }
+
         match event {
             ResponseEvent::Created { response_id } => {
                 if let Some(response_id) = response_id {
@@ -2680,7 +2889,22 @@ async fn try_run_sampling_request(
                 }
             }
             ResponseEvent::OutputItemDone(mut item) => {
+                let stable_item_id = AcceptedRetryItems::stable_item_id(&item);
                 assign_missing_streamed_response_item_id(&mut item, active_item.as_ref());
+                let (replayed, accepted_payload) =
+                    match accepted_retry_items.check_replay(&item, stable_item_id.as_deref()) {
+                        Ok(checked) => checked,
+                        Err(err) => break Err(err),
+                    };
+                if replay_suppression.take() == Some(ReplaySuppression::AcceptedItem) || replayed {
+                    active_item = None;
+                    active_provider_item_id = None;
+                    active_item_is_streaming_to_client = false;
+                    active_tool_argument_diff_consumer = None;
+                    continue;
+                }
+                let accepted_item = item.clone();
+                replay_suppression = None;
                 sess.reserve_assistant_message_order(&turn_context, &item)
                     .await;
                 if analytics_tool_call_ids.len() < MAX_ANALYTICS_TOOL_CALL_IDS_PER_RESPONSE {
@@ -2721,6 +2945,7 @@ async fn try_run_sampling_request(
                         plan_mode_state.as_mut(),
                         &mut assistant_message_stream_parsers,
                         &item_id,
+                        accepted_retry_items,
                     )
                     .await;
                 }
@@ -2736,6 +2961,12 @@ async fn try_run_sampling_request(
                     )
                     .await
                 {
+                    accepted_retry_items.record(
+                        &accepted_item,
+                        stable_item_id,
+                        accepted_payload,
+                    );
+                    active_provider_item_id = None;
                     continue;
                 }
 
@@ -2779,7 +3010,14 @@ async fn try_run_sampling_request(
                         .instrument(handle_responses)
                         .await
                     {
-                        Ok(output_result) => output_result,
+                        Ok(output_result) => {
+                            accepted_retry_items.record(
+                                &accepted_item,
+                                stable_item_id,
+                                accepted_payload,
+                            );
+                            output_result
+                        }
                         Err(err) => break Err(err),
                     };
                 if let Some(tool_future) = output_result.tool_future {
@@ -2789,6 +3027,7 @@ async fn try_run_sampling_request(
                     last_agent_message = Some(agent_message);
                 }
                 needs_follow_up |= output_result.needs_follow_up;
+                active_provider_item_id = None;
                 // Hosts can keep the current response intact and deliver mail before the next
                 // model request instead of cutting off its remaining tool calls.
                 if preempt_for_mailbox_mail
@@ -2813,6 +3052,28 @@ async fn try_run_sampling_request(
                 }
             }
             ResponseEvent::OutputItemAdded(mut item) => {
+                let stable_item_id = AcceptedRetryItems::stable_item_id(&item);
+                if accepted_retry_items.contains_identity(&item, stable_item_id.as_deref()) {
+                    replay_suppression = Some(ReplaySuppression::AcceptedItem);
+                    active_item = None;
+                    active_provider_item_id = None;
+                    active_item_is_streaming_to_client = false;
+                    active_tool_argument_diff_consumer = None;
+                    continue;
+                }
+                if stable_item_id
+                    .as_ref()
+                    .is_some_and(|id| accepted_retry_items.streamed_draft_ids.contains(id))
+                {
+                    replay_suppression = Some(ReplaySuppression::StreamedDraft);
+                    active_item = None;
+                    active_provider_item_id = stable_item_id;
+                    active_item_is_streaming_to_client = false;
+                    active_tool_argument_diff_consumer = None;
+                    continue;
+                }
+                replay_suppression = None;
+                active_provider_item_id = stable_item_id.clone();
                 assign_missing_streamed_response_item_id(&mut item, /*active_item*/ None);
                 sess.reserve_assistant_message_order(&turn_context, &item)
                     .await;
@@ -2840,6 +3101,13 @@ async fn try_run_sampling_request(
                 {
                     let mut turn_item = turn_item;
                     let stream_item_to_client = !defer_streamed_turn_items_for_contributors;
+                    if stream_item_to_client && matches!(turn_item, TurnItem::AgentMessage(_)) {
+                        accepted_retry_items.bind_streamed_draft(
+                            turn_item.id(),
+                            stable_item_id.clone(),
+                            !defer_streamed_turn_items_for_contributors,
+                        );
+                    }
                     let mut seeded_parsed: Option<ParsedAssistantTextDelta> = None;
                     let mut seeded_item_id: Option<String> = None;
                     if stream_item_to_client
@@ -2863,6 +3131,7 @@ async fn try_run_sampling_request(
                         seeded_item_id = Some(item_id);
                     }
                     if stream_item_to_client {
+                        let mut emitted_visible_text = false;
                         if let Some(state) = plan_mode_state.as_mut()
                             && matches!(turn_item, TurnItem::AgentMessage(_))
                         {
@@ -2878,7 +3147,7 @@ async fn try_run_sampling_request(
                             seeded_item_id.as_deref(),
                             seeded_parsed,
                         ) {
-                            emit_streamed_assistant_text_delta(
+                            emitted_visible_text = emit_streamed_assistant_text_delta(
                                 &sess,
                                 &turn_context,
                                 Some(state),
@@ -2886,6 +3155,24 @@ async fn try_run_sampling_request(
                                 parsed,
                             )
                             .await;
+                        } else if matches!(turn_item, TurnItem::AgentMessage(_)) {
+                            emitted_visible_text = match &turn_item {
+                                TurnItem::AgentMessage(message) => message.content.iter().any(
+                                    |content| match content {
+                                        codex_protocol::items::AgentMessageContent::Text { text } => {
+                                            !text.is_empty()
+                                        }
+                                        _ => false,
+                                    },
+                                ),
+                                _ => false,
+                            };
+                        }
+                        if emitted_visible_text {
+                            accepted_retry_items.record_streamed_draft_emission_for_provider(
+                                stable_item_id.as_deref(),
+                                !defer_streamed_turn_items_for_contributors,
+                            );
                         }
                     }
                     active_item = Some(turn_item);
@@ -2977,6 +3264,7 @@ async fn try_run_sampling_request(
                     &turn_context,
                     plan_mode_state.as_mut(),
                     &mut assistant_message_stream_parsers,
+                    accepted_retry_items,
                 )
                 .await;
                 sess.record_observed_response_completed(
@@ -3027,7 +3315,7 @@ async fn try_run_sampling_request(
                     let item_id = active.id();
                     if matches!(active, TurnItem::AgentMessage(_)) {
                         let parsed = assistant_message_stream_parsers.parse_delta(&item_id, &delta);
-                        emit_streamed_assistant_text_delta(
+                        let emitted_visible_text = emit_streamed_assistant_text_delta(
                             &sess,
                             &turn_context,
                             plan_mode_state.as_mut(),
@@ -3035,6 +3323,12 @@ async fn try_run_sampling_request(
                             parsed,
                         )
                         .await;
+                        if emitted_visible_text {
+                            accepted_retry_items.record_streamed_draft_emission_for_provider(
+                                active_provider_item_id.as_deref(),
+                                !defer_streamed_turn_items_for_contributors,
+                            );
+                        }
                     } else {
                         let event = AgentMessageContentDeltaEvent {
                             thread_id: sess.thread_id.to_string(),
@@ -3174,6 +3468,7 @@ async fn try_run_sampling_request(
         &turn_context,
         plan_mode_state.as_mut(),
         &mut assistant_message_stream_parsers,
+        accepted_retry_items,
     )
     .await;
 

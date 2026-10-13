@@ -2444,6 +2444,7 @@ fn websocket_error_detail(err: &ApiError) -> String {
         | ApiError::UsageNotIncluded
         | ApiError::Retryable { .. }
         | ApiError::RateLimitExceeded { .. }
+        | ApiError::TransientAvailability(_)
         | ApiError::RateLimit(_)
         | ApiError::InvalidRequest { .. }
         | ApiError::InvalidPrompt { .. }

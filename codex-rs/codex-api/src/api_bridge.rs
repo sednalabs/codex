@@ -11,6 +11,7 @@ use codex_protocol::auth::PlanType;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::ConnectionFailedError;
+use codex_protocol::error::Http503SlowDown;
 use codex_protocol::error::RetryLimitReachedError;
 use codex_protocol::error::UnexpectedResponseError;
 use codex_protocol::error::UsageLimitReachedError;
@@ -20,11 +21,14 @@ use serde::Deserialize;
 use serde_json::Value;
 
 pub fn map_api_error(err: ApiError) -> CodexErr {
+    let transient_availability = matches!(&err, ApiError::TransientAvailability(_));
     let retry_after = match &err {
         ApiError::Retryable { retry_after, .. }
         | ApiError::RateLimitExceeded { retry_after, .. }
         | ApiError::ServerOverloaded { retry_after }
         | ApiError::Transport(TransportError::Http { retry_after, .. }) => *retry_after,
+        ApiError::TransientAvailability(TransportError::Http { retry_after, .. }) => *retry_after,
+        ApiError::TransientAvailability(_) => None,
         ApiError::Transport(_)
         | ApiError::Api { .. }
         | ApiError::Stream(_)
@@ -40,7 +44,16 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
         | ApiError::BioPolicy { .. }
         | ApiError::MisalignmentPolicyViolation { .. } => None,
     };
+    let err = match err {
+        ApiError::TransientAvailability(transport) => ApiError::Transport(transport),
+        err => err,
+    };
     let error = map_api_error_details(err);
+    let error = if transient_availability {
+        error.with_http_503_slow_down(Http503SlowDown::classified_http_503_slow_down())
+    } else {
+        error
+    };
     match retry_after {
         Some(retry_after) => error.with_retry_after(retry_after),
         None => error,
@@ -55,6 +68,9 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
         ApiError::Retryable { message, .. } => CodexErr::Stream(message),
         ApiError::RateLimitExceeded { message, .. } => {
             CodexErr::new(CodexErrorDetails::RateLimitExceeded(message))
+        }
+        ApiError::TransientAvailability(transport) => {
+            map_api_error_details(ApiError::Transport(transport))
         }
         ApiError::Stream(msg) => CodexErr::Stream(msg),
         ApiError::ContentFilter => CodexErr::new(CodexErrorDetails::ContentFilter),

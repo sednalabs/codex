@@ -9,15 +9,24 @@ use codex_http_client::RetryAfter;
 use codex_http_client::TransportError;
 use codex_login::CodexAuth;
 use codex_models_manager::bundled_models_response;
+use codex_protocol::config_types::CollaborationMode;
+use codex_protocol::config_types::ModeKind;
+use codex_protocol::config_types::Settings;
+use codex_protocol::items::TurnItem;
+use codex_protocol::models::PermissionProfile;
+use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_protocol::turn_input::TurnInputRequest;
 use codex_protocol::user_input::UserInput;
+use core_test_support::PathBufExt;
 use core_test_support::responses;
 use core_test_support::skip_if_no_network;
+use core_test_support::test_codex::local_requests;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::test_codex;
+use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
 use http::Method;
 use http::StatusCode;
@@ -260,6 +269,39 @@ async fn submit_user_input(test: &TestCodex, text: &str) -> Result<()> {
             text: text.to_string(),
             text_elements: Vec::new(),
         }]))
+        .await?;
+    Ok(())
+}
+
+async fn submit_plan_input(test: &TestCodex, text: &str) -> Result<()> {
+    let cwd = std::env::current_dir()?.abs();
+    let (sandbox_policy, permission_profile) =
+        turn_permission_fields(PermissionProfile::Disabled, cwd.as_path());
+    test.codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: text.to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
+                environments: Some(local_requests(cwd)),
+                approval_policy: Some(AskForApproval::Never),
+                sandbox_policy: Some(sandbox_policy),
+                permission_profile,
+                collaboration_mode: Some(CollaborationMode {
+                    mode: ModeKind::Plan,
+                    settings: Settings {
+                        model: test.session_configured.model.clone(),
+                        reasoning_effort: None,
+                        developer_instructions: None,
+                    },
+                }),
+                ..Default::default()
+            },
+        })
         .await?;
     Ok(())
 }
@@ -583,6 +625,893 @@ async fn responses_http_overload_respects_retry_limits(
         "overload should exhaust the configured retry budgets"
     );
 
+    Ok(())
+}
+
+/// Only the source-bound typed HTTP availability response enters the lifetime retry path.
+#[tokio::test(flavor = "current_thread")]
+async fn responses_typed_http_503_availability_retries_same_turn_after_native_budget(
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let mut telemetry = RetryTelemetryCapture::install();
+    let server = responses::start_mock_server().await;
+    let response_mock = responses::mount_response_sequence(
+        &server,
+        vec![
+            ResponseTemplate::new(503).set_body_json(json!({
+                "error": {
+                    "type": "rate_limit_error",
+                    "code": "slow_down",
+                    "message": "retry later"
+                }
+            })),
+            responses::sse_response(responses::sse(vec![
+                responses::ev_response_created("availability-recovered"),
+                responses::ev_completed("availability-recovered"),
+            ])),
+        ],
+    )
+    .await;
+    let test = test_codex()
+        .with_config(|config| {
+            config.model_provider.request_max_retries = Some(0);
+            config.model_provider.stream_max_retries = Some(0);
+        })
+        .build_with_auto_env(&server)
+        .await?;
+
+    submit_user_input(&test, "recover this same turn after availability").await?;
+    let retry = telemetry.next_retry().await;
+    assert_eq!(retry.layer, "stream");
+    assert_eq!(retry.operation, "sampling");
+    wait_for_retry(&mut telemetry, &retry).await;
+
+    let mut recovery_events = 0;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match wait_for_event(&test.codex, |_| true).await {
+                EventMsg::StreamError(error) => {
+                    recovery_events += 1;
+                    assert!(error.message.contains("Service temporarily unavailable; retrying"));
+                }
+                EventMsg::Error(error) => panic!("typed availability became terminal: {error:?}"),
+                EventMsg::TurnComplete(event) => {
+                    assert_eq!(event.error, None);
+                    break;
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("typed availability should complete the same turn");
+    assert_eq!(recovery_events, 1);
+
+    let requests = response_mock.requests();
+    assert_eq!(requests.len(), 2);
+    let first_turn_id = requests[0].body_json()["client_metadata"]["turn_id"].clone();
+    assert_eq!(
+        requests[1].body_json()["client_metadata"]["turn_id"],
+        first_turn_id
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn partial_stream_then_http_availability_suppresses_stable_draft_replay() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let draft_id = "capacity-stable-draft";
+    let response_mock = responses::mount_response_sequence(
+        &server,
+        vec![
+            responses::sse_response(responses::sse(vec![
+                responses::ev_response_created("partial-before-availability"),
+                responses::ev_message_item_added(draft_id, ""),
+                responses::ev_output_text_delta("visible before retry\n"),
+            ])),
+            ResponseTemplate::new(503).set_body_json(json!({
+                "error": {
+                    "type": "rate_limit_error",
+                    "code": "slow_down",
+                    "message": "retry later"
+                }
+            })),
+            responses::sse_response(responses::sse(vec![
+                responses::ev_response_created("draft-replay-recovered"),
+                responses::ev_message_item_added(draft_id, ""),
+                responses::ev_output_text_delta("visible before retry\n"),
+                responses::ev_assistant_message(draft_id, "visible before retry\ncompleted"),
+                responses::ev_completed("draft-replay-recovered"),
+            ])),
+        ],
+    )
+    .await;
+    let test = test_codex()
+        .with_config(|config| {
+            config.model_provider.request_max_retries = Some(0);
+            config.model_provider.stream_max_retries = Some(1);
+        })
+        .build_with_auto_env(&server)
+        .await?;
+
+    submit_user_input(&test, "recover a partial assistant draft").await?;
+    let mut streamed_deltas = 0;
+    let mut completed_ids = Vec::new();
+    let mut recovery_events = 0;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match wait_for_event(&test.codex, |_| true).await {
+                EventMsg::AgentMessageContentDelta(event)
+                    if event.delta.contains("visible before retry") =>
+                {
+                    streamed_deltas += 1;
+                }
+                EventMsg::ItemCompleted(event) => {
+                    if let codex_protocol::items::TurnItem::AgentMessage(item) = event.item {
+                        if item.id == draft_id {
+                            completed_ids.push(item.id);
+                        }
+                    }
+                }
+                EventMsg::StreamError(_) => recovery_events += 1,
+                EventMsg::Error(error) => panic!("capacity retry became terminal: {error:?}"),
+                EventMsg::TurnComplete(event) => {
+                    assert_eq!(event.error, None);
+                    break;
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("partial draft should recover through one actual HTTP availability response");
+
+    assert_eq!(streamed_deltas, 1, "replayed stable draft deltas are suppressed");
+    assert_eq!(completed_ids, [draft_id]);
+    assert_eq!(recovery_events, 2, "ordinary partial-stream and capacity waits are visible");
+    assert_eq!(response_mock.requests().len(), 3);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn buffered_prefix_flushed_at_eof_suppresses_stable_draft_replay() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let draft_id = "capacity-buffered-prefix-draft";
+    let response_mock = responses::mount_response_sequence(
+        &server,
+        vec![
+            responses::sse_response(responses::sse(vec![
+                responses::ev_response_created("buffered-prefix-partial"),
+                responses::ev_message_item_added(draft_id, ""),
+                responses::ev_output_text_delta("<oai-mem-"),
+            ])),
+            ResponseTemplate::new(503).set_body_json(json!({
+                "error": {
+                    "type": "rate_limit_error",
+                    "code": "slow_down",
+                    "message": "retry later"
+                }
+            })),
+            responses::sse_response(responses::sse(vec![
+                responses::ev_response_created("buffered-prefix-recovered"),
+                responses::ev_message_item_added(draft_id, ""),
+                responses::ev_output_text_delta("<oai-mem-"),
+                responses::ev_assistant_message(draft_id, "<oai-mem-"),
+                responses::ev_completed("buffered-prefix-recovered"),
+            ])),
+        ],
+    )
+    .await;
+    let test = test_codex()
+        .with_config(|config| {
+            config.model_provider.request_max_retries = Some(0);
+            config.model_provider.stream_max_retries = Some(1);
+        })
+        .build_with_auto_env(&server)
+        .await?;
+
+    submit_user_input(&test, "recover a buffered assistant prefix").await?;
+    let mut prefix_deltas = 0;
+    let mut recovery_events = 0;
+    let mut completed_ids = Vec::new();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match wait_for_event(&test.codex, |_| true).await {
+                EventMsg::AgentMessageContentDelta(event) if event.delta == "<oai-mem-" => {
+                    prefix_deltas += 1;
+                }
+                EventMsg::ItemCompleted(event) => {
+                    if let TurnItem::AgentMessage(item) = event.item
+                        && item.id == draft_id
+                    {
+                        completed_ids.push(item.id);
+                    }
+                }
+                EventMsg::StreamError(_) => recovery_events += 1,
+                EventMsg::Error(error) => {
+                    panic!("buffered draft replay became terminal: {error:?}")
+                }
+                EventMsg::TurnComplete(event) => {
+                    assert_eq!(event.error, None);
+                    break;
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("buffered stable draft should recover after typed availability");
+
+    assert_eq!(prefix_deltas, 1, "EOF-flushed draft replay is suppressed");
+    assert_eq!(completed_ids, [draft_id]);
+    assert_eq!(recovery_events, 2, "stream and capacity retry progress remain visible");
+    assert_eq!(response_mock.requests().len(), 3);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn buffered_prefix_without_provider_id_disables_capacity_replay() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let response_mock = responses::mount_response_sequence(
+        &server,
+        vec![
+            responses::sse_response(responses::sse(vec![
+                responses::ev_response_created("buffered-prefix-no-id-partial"),
+                responses::ev_message_item_added("", ""),
+                responses::ev_output_text_delta("<oai-mem-"),
+            ])),
+            ResponseTemplate::new(503).set_body_json(json!({
+                "error": {
+                    "type": "rate_limit_error",
+                    "code": "slow_down",
+                    "message": "retry later"
+                }
+            })),
+        ],
+    )
+    .await;
+    let test = test_codex()
+        .with_config(|config| {
+            config.model_provider.request_max_retries = Some(0);
+            config.model_provider.stream_max_retries = Some(1);
+        })
+        .build_with_auto_env(&server)
+        .await?;
+
+    submit_user_input(&test, "do not replay a draft without provider identity").await?;
+    let mut prefix_deltas = 0;
+    let mut terminal_errors = 0;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match wait_for_event(&test.codex, |_| true).await {
+                EventMsg::AgentMessageContentDelta(event) if event.delta == "<oai-mem-" => {
+                    prefix_deltas += 1;
+                }
+                EventMsg::Error(_) => terminal_errors += 1,
+                EventMsg::TurnComplete(event) => {
+                    assert!(event.error.is_some());
+                    break;
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("unsafe no-ID partial output should stop after finite retry handling");
+
+    assert_eq!(prefix_deltas, 1);
+    assert_eq!(terminal_errors, 1);
+    assert_eq!(response_mock.requests().len(), 2);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn visible_added_message_without_delta_is_replay_guarded() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let draft_id = "capacity-seeded-draft";
+    let seeded_text = "visible seeded message";
+    let response_mock = responses::mount_response_sequence(
+        &server,
+        vec![
+            responses::sse_response(responses::sse(vec![
+                responses::ev_response_created("seeded-partial"),
+                responses::ev_message_item_added(draft_id, seeded_text),
+            ])),
+            ResponseTemplate::new(503).set_body_json(json!({
+                "error": {
+                    "type": "rate_limit_error",
+                    "code": "slow_down",
+                    "message": "retry later"
+                }
+            })),
+            responses::sse_response(responses::sse(vec![
+                responses::ev_response_created("seeded-recovered"),
+                responses::ev_message_item_added(draft_id, seeded_text),
+                responses::ev_assistant_message(draft_id, seeded_text),
+                responses::ev_completed("seeded-recovered"),
+            ])),
+        ],
+    )
+    .await;
+    let test = test_codex()
+        .with_config(|config| {
+            config.model_provider.request_max_retries = Some(0);
+            config.model_provider.stream_max_retries = Some(1);
+            config.model_provider.supports_websockets = false;
+        })
+        .build_with_auto_env(&server)
+        .await?;
+
+    submit_user_input(&test, "recover a seeded visible draft").await?;
+    let mut started = 0;
+    let mut completed = 0;
+    loop {
+        match wait_for_event(&test.codex, |_| true).await {
+            EventMsg::ItemStarted(event)
+                if matches!(&event.item, TurnItem::AgentMessage(item) if item.id == draft_id) =>
+            {
+                started += 1;
+            }
+            EventMsg::ItemCompleted(event)
+                if matches!(&event.item, TurnItem::AgentMessage(item) if item.id == draft_id) =>
+            {
+                completed += 1;
+            }
+            EventMsg::Error(error) => panic!("seeded draft retry became terminal: {error:?}"),
+            EventMsg::TurnComplete(event) => {
+                assert_eq!(event.error, None);
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(started, 1, "seeded visible replay must not emit twice");
+    assert_eq!(completed, 1);
+    assert_eq!(response_mock.requests().len(), 3);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn manual_compact_http_availability_wait_is_interruptible() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let response_mock = responses::mount_response_sequence(
+        &server,
+        vec![
+            responses::sse_response(responses::sse(vec![
+                responses::ev_response_created("manual-cancel-seed"),
+                responses::ev_completed("manual-cancel-seed"),
+            ])),
+            ResponseTemplate::new(503)
+                .insert_header("Retry-After", "120")
+                .set_body_json(json!({
+                    "error": {
+                        "type": "rate_limit_error",
+                        "code": "slow_down",
+                        "message": "retry later"
+                    }
+                })),
+        ],
+    )
+    .await;
+    let test = test_codex()
+        .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+        .with_config(|config| {
+            config.model_provider.request_max_retries = Some(0);
+            config.model_provider.stream_max_retries = Some(0);
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    test.submit_turn("seed manual compaction").await?;
+    test.codex.submit(Op::Compact).await?;
+    let progress = wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::StreamError(_))
+    })
+    .await;
+    let EventMsg::StreamError(progress) = progress else {
+        unreachable!("predicate selected retry progress")
+    };
+    assert!(progress
+        .message
+        .contains("Service temporarily unavailable; retrying"));
+    test.codex.submit(Op::Interrupt).await?;
+    wait_for_event(&test.codex, |event| matches!(event, EventMsg::TurnAborted(_))).await;
+    assert_eq!(response_mock.requests().len(), 2);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn compact_v2_typed_http_availability_recovers_beyond_native_retry_limits() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let response_mock = responses::mount_response_sequence(
+        &server,
+        vec![
+            responses::sse_response(responses::sse(vec![
+                responses::ev_response_created("compact-capacity-seed"),
+                responses::ev_completed("compact-capacity-seed"),
+            ])),
+            ResponseTemplate::new(503).set_body_json(json!({
+                "error": {
+                    "type": "rate_limit_error",
+                    "code": "slow_down",
+                    "message": "retry later"
+                }
+            })),
+            ResponseTemplate::new(503).set_body_json(json!({
+                "error": {
+                    "type": "rate_limit_error",
+                    "code": "slow_down",
+                    "message": "retry later"
+                }
+            })),
+            ResponseTemplate::new(503).set_body_json(json!({
+                "error": {
+                    "type": "rate_limit_error",
+                    "code": "slow_down",
+                    "message": "retry later"
+                }
+            })),
+            responses::sse_response(responses::sse(vec![
+                json!({
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "compaction",
+                        "encrypted_content": "capacity-recovered-summary",
+                    }
+                }),
+                responses::ev_completed("capacity-recovered-compaction"),
+            ])),
+        ],
+    )
+    .await;
+    let test = test_codex()
+        .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+        .with_config(|config| {
+            config.model_provider.request_max_retries = Some(0);
+            config.model_provider.stream_max_retries = Some(1);
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    test.submit_turn("seed history for compaction").await?;
+    test.codex.submit(Op::Compact).await?;
+
+    let mut recovery_events = 0;
+    loop {
+        match wait_for_event(&test.codex, |_| true).await {
+            EventMsg::Error(error) => panic!("remote capacity became terminal: {error:?}"),
+            EventMsg::StreamError(event) => {
+                assert!(event.message.contains("Service temporarily unavailable; retrying"));
+                recovery_events += 1;
+            }
+            EventMsg::TurnComplete(event) => {
+                assert_eq!(event.error, None);
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(recovery_events, 3);
+    let requests = response_mock.requests();
+    assert_eq!(requests.len(), 5);
+    for request in &requests[1..] {
+        assert_eq!(request.path(), "/v1/responses");
+        assert!(
+            !request.inputs_of_type("compaction_trigger").is_empty(),
+            "expected remote compaction v2 requests across capacity retries"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn capacity_retry_deduplicates_accepted_output_and_tool_ids() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let first_call_id = "capacity-accepted-call";
+    let distinct_call_id = "capacity-distinct-call";
+    let partial_id = "capacity-accepted-message";
+    let effects_dir = tempfile::tempdir()?;
+    let effect_path = effects_dir.path().join("effect.txt");
+    let first_args = json!({
+        "command": format!("printf 'first\\n' >> {effect_path:?}"),
+        "login": false,
+        "timeout_ms": 5_000,
+    })
+    .to_string();
+    let distinct_args = json!({
+        "command": format!("printf 'distinct\\n' >> {effect_path:?}"),
+        "login": false,
+        "timeout_ms": 5_000,
+    })
+    .to_string();
+    let response_mock = responses::mount_response_sequence(
+        &server,
+        vec![
+            responses::sse_response(responses::sse(vec![
+                responses::ev_response_created("capacity-partial-failed"),
+                responses::ev_message_item_added(partial_id, ""),
+                responses::ev_output_text_delta("accepted before failure"),
+                responses::ev_assistant_message(partial_id, "accepted before failure"),
+                responses::ev_function_call(first_call_id, "shell_command", &first_args),
+            ])),
+            ResponseTemplate::new(503).set_body_json(json!({
+                "error": {
+                    "type": "rate_limit_error",
+                    "code": "slow_down",
+                    "message": "retry later"
+                }
+            })),
+            responses::sse_response(responses::sse(vec![
+                responses::ev_response_created("capacity-replay-recovery"),
+                responses::ev_message_item_added(partial_id, ""),
+                responses::ev_output_text_delta("accepted before failure"),
+                responses::ev_assistant_message(partial_id, "accepted before failure"),
+                responses::ev_function_call(first_call_id, "shell_command", &first_args),
+                responses::ev_function_call(distinct_call_id, "shell_command", &distinct_args),
+                responses::ev_completed("capacity-replay-recovery"),
+            ])),
+            responses::sse_response(responses::sse(vec![
+                responses::ev_response_created("capacity-replay-finished"),
+                responses::ev_assistant_message("capacity-final-message", "finished"),
+                responses::ev_completed("capacity-replay-finished"),
+            ])),
+        ],
+    )
+    .await;
+    let test = test_codex()
+        .with_config(|config| {
+            config.model_provider.request_max_retries = Some(0);
+            config.model_provider.stream_max_retries = Some(1);
+            config.model_provider.supports_websockets = false;
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    submit_user_input(&test, "recover the accepted effects").await?;
+
+    let mut accepted_message_ids = Vec::new();
+    let mut streamed_partial_deltas = 0;
+    let mut retry_events = 0;
+    loop {
+        match wait_for_event(&test.codex, |_| true).await {
+            EventMsg::ItemCompleted(event) => {
+                if let codex_protocol::items::TurnItem::AgentMessage(item) = event.item {
+                    accepted_message_ids.push(item.id);
+                }
+            }
+            EventMsg::AgentMessageContentDelta(event)
+                if event.item_id == partial_id
+                    && event.delta.contains("accepted before failure") =>
+            {
+                streamed_partial_deltas += 1;
+            }
+            EventMsg::StreamError(_) => retry_events += 1,
+            EventMsg::Error(error) => panic!("capacity replay became terminal: {error:?}"),
+            EventMsg::TurnComplete(event) => {
+                assert_eq!(event.error, None);
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert!(retry_events >= 1);
+    assert_eq!(streamed_partial_deltas, 1);
+    assert_eq!(
+        accepted_message_ids
+            .iter()
+            .filter(|id| id.as_str() == partial_id)
+            .count(),
+        1,
+        "only one completed assistant item with the accepted provider ID",
+    );
+    assert_eq!(std::fs::read_to_string(&effect_path)?, "first\ndistinct\n");
+
+    let requests = response_mock.requests();
+    assert_eq!(requests.len(), 4);
+    let retry_body = requests[2].body_json();
+    let retry_items = retry_body["input"].as_array().expect("retry prompt input");
+    assert_eq!(
+        retry_items
+            .iter()
+            .filter(|item| item["type"] == "message" && item["id"] == partial_id)
+            .count(),
+        1,
+        "the completed assistant item, not merely its draft delta, entered history",
+    );
+    assert_eq!(
+        retry_items
+            .iter()
+            .filter(|item| item["type"] == "function_call" && item["call_id"] == first_call_id)
+            .count(),
+        1,
+    );
+    assert_eq!(
+        retry_items
+            .iter()
+            .filter(|item| {
+                item["type"] == "function_call_output" && item["call_id"] == first_call_id
+            })
+            .count(),
+        1,
+    );
+    let follow_up_body = requests[3].body_json();
+    let follow_up_items = follow_up_body["input"].as_array().expect("follow-up input");
+    assert_eq!(
+        follow_up_items
+            .iter()
+            .filter(|item| {
+                item["type"] == "function_call_output" && item["call_id"] == first_call_id
+            })
+            .count(),
+        1,
+    );
+    assert_eq!(
+        follow_up_items
+            .iter()
+            .filter(|item| {
+                item["type"] == "function_call_output" && item["call_id"] == distinct_call_id
+            })
+            .count(),
+        1,
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn capacity_retry_rejects_conflicting_tool_call_id() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let effects_dir = tempfile::tempdir()?;
+    let effect_path = effects_dir.path().join("effect.txt");
+    let accepted_args = json!({
+        "command": format!("printf 'accepted\\n' >> {effect_path:?}"),
+        "login": false,
+        "timeout_ms": 5_000,
+    })
+    .to_string();
+    let conflicting_args = json!({
+        "command": format!("printf 'conflict\\n' >> {effect_path:?}"),
+        "login": false,
+        "timeout_ms": 5_000,
+    })
+    .to_string();
+    let response_mock = responses::mount_response_sequence(
+        &server,
+        vec![
+            responses::sse_response(responses::sse(vec![
+                responses::ev_response_created("capacity-conflict-partial"),
+                responses::ev_function_call(
+                    "capacity-conflict-call",
+                    "shell_command",
+                    &accepted_args,
+                ),
+            ])),
+            ResponseTemplate::new(503).set_body_json(json!({
+                "error": {
+                    "type": "rate_limit_error",
+                    "code": "slow_down",
+                    "message": "retry later"
+                }
+            })),
+            responses::sse_response(responses::sse(vec![
+                responses::ev_response_created("capacity-conflict-replayed"),
+                json!({
+                    "type": "response.output_item.added",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "capacity-conflict-call",
+                        "name": "shell_command",
+                        "arguments": accepted_args,
+                    }
+                }),
+                responses::ev_function_call(
+                    "capacity-conflict-call", "shell_command", &conflicting_args,
+                ),
+                responses::ev_completed("capacity-conflict-replayed"),
+            ])),
+        ],
+    )
+    .await;
+    let test = test_codex()
+        .with_config(|config| {
+            config.model_provider.request_max_retries = Some(0);
+            config.model_provider.stream_max_retries = Some(1);
+            config.model_provider.supports_websockets = false;
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    submit_user_input(&test, "reject a changed accepted call").await?;
+    let mut terminal_errors = 0;
+    loop {
+        match wait_for_event(&test.codex, |_| true).await {
+            EventMsg::Error(error) => {
+                terminal_errors += 1;
+                assert!(error.message.contains("different arguments"));
+            }
+            EventMsg::TurnComplete(event) => {
+                assert!(event.error.is_some());
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(terminal_errors, 1);
+    assert_eq!(std::fs::read_to_string(&effect_path)?, "accepted\n");
+    assert_eq!(response_mock.requests().len(), 3);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn capacity_retry_suppresses_same_id_unfinished_plan_draft_replay() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let draft_id = "capacity-plan-draft";
+    let distinct_id = "capacity-plan-distinct";
+    let plan_text = "Intro\n<proposed_plan>\n- Step 1\n</proposed_plan>";
+    let response_mock = responses::mount_response_sequence(
+        &server,
+        vec![
+            responses::sse_response(responses::sse(vec![
+                responses::ev_response_created("capacity-plan-partial"),
+                responses::ev_message_item_added(draft_id, ""),
+                responses::ev_output_text_delta(plan_text),
+            ])),
+            ResponseTemplate::new(503).set_body_json(json!({
+                "error": {
+                    "type": "rate_limit_error",
+                    "code": "slow_down",
+                    "message": "retry later"
+                }
+            })),
+            responses::sse_response(responses::sse(vec![
+                responses::ev_response_created("capacity-plan-recovered"),
+                responses::ev_message_item_added(draft_id, ""),
+                responses::ev_output_text_delta(plan_text),
+                responses::ev_assistant_message(draft_id, plan_text),
+                responses::ev_message_item_added(distinct_id, ""),
+                responses::ev_output_text_delta("Distinct note\n"),
+                responses::ev_assistant_message(distinct_id, "Distinct note\n"),
+                responses::ev_completed("capacity-plan-recovered"),
+            ])),
+        ],
+    )
+    .await;
+    let test = test_codex()
+        .with_config(|config| {
+            config.model_provider.request_max_retries = Some(0);
+            config.model_provider.stream_max_retries = Some(1);
+            config.model_provider.supports_websockets = false;
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    submit_plan_input(&test, "recover an unfinished plan draft").await?;
+
+    let mut draft_text = String::new();
+    let mut distinct_text = String::new();
+    let mut plan_deltas = String::new();
+    let mut completed_draft = 0;
+    let mut completed_plan = 0;
+    let mut retry_events = 0;
+    loop {
+        match wait_for_event(&test.codex, |_| true).await {
+            EventMsg::AgentMessageContentDelta(event) if event.item_id == draft_id => {
+                draft_text.push_str(&event.delta);
+            }
+            EventMsg::AgentMessageContentDelta(event) if event.item_id == distinct_id => {
+                distinct_text.push_str(&event.delta);
+            }
+            EventMsg::PlanDelta(event) => plan_deltas.push_str(&event.delta),
+            EventMsg::ItemCompleted(event) => match event.item {
+                TurnItem::AgentMessage(item) if item.id == draft_id => completed_draft += 1,
+                TurnItem::Plan(_) => completed_plan += 1,
+                _ => {}
+            },
+            EventMsg::StreamError(_) => retry_events += 1,
+            EventMsg::Error(error) => panic!("plan replay became terminal: {error:?}"),
+            EventMsg::TurnComplete(event) => {
+                assert_eq!(event.error, None);
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert!(retry_events >= 1);
+    assert_eq!(draft_text, "Intro\n");
+    assert_eq!(plan_deltas, "- Step 1\n");
+    assert_eq!(distinct_text, "Distinct note\n");
+    assert_eq!(completed_draft, 1);
+    assert_eq!(completed_plan, 1);
+    let requests = response_mock.requests();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(
+        requests[2].body_json()["input"]
+            .as_array()
+            .expect("retry prompt input")
+            .iter()
+            .filter(|item| item["type"] == "message" && item["id"] == draft_id)
+            .count(),
+        0,
+        "the failed plan draft is not accepted history",
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn empty_plan_draft_does_not_suppress_later_visible_replay() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let draft_id = "capacity-empty-plan-draft";
+    let plan_text = "<proposed_plan>\n- Recovery step\n</proposed_plan>";
+    let response_mock = responses::mount_response_sequence(
+        &server,
+        vec![
+            responses::sse_response(responses::sse(vec![
+                responses::ev_response_created("empty-plan-partial"),
+                responses::ev_message_item_added(draft_id, " \n"),
+            ])),
+            ResponseTemplate::new(503).set_body_json(json!({
+                "error": {
+                    "type": "rate_limit_error",
+                    "code": "slow_down",
+                    "message": "retry later"
+                }
+            })),
+            responses::sse_response(responses::sse(vec![
+                responses::ev_response_created("empty-plan-recovered"),
+                responses::ev_message_item_added(draft_id, ""),
+                responses::ev_output_text_delta(plan_text),
+                responses::ev_assistant_message(draft_id, plan_text),
+                responses::ev_completed("empty-plan-recovered"),
+            ])),
+        ],
+    )
+    .await;
+    let test = test_codex()
+        .with_config(|config| {
+            config.model_provider.request_max_retries = Some(0);
+            config.model_provider.stream_max_retries = Some(1);
+            config.model_provider.supports_websockets = false;
+        })
+        .build_with_auto_env(&server)
+        .await?;
+
+    submit_plan_input(&test, "recover a visible plan after an empty draft").await?;
+    let mut completed_draft = false;
+    let mut plan_delta = String::new();
+    loop {
+        match wait_for_event(&test.codex, |_| true).await {
+            EventMsg::PlanDelta(event) => plan_delta.push_str(&event.delta),
+            EventMsg::ItemCompleted(event) => {
+                if let TurnItem::AgentMessage(item) = event.item {
+                    completed_draft |= item.id == draft_id;
+                }
+            }
+            EventMsg::Error(error) => panic!("visible plan replay was suppressed: {error:?}"),
+            EventMsg::TurnComplete(event) => {
+                assert_eq!(event.error, None);
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert!(completed_draft);
+    assert!(plan_delta.contains("Recovery step"));
+    assert_eq!(response_mock.requests().len(), 3);
     Ok(())
 }
 

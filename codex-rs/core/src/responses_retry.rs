@@ -10,6 +10,7 @@ use crate::context::ContextualUserFragment;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
+use codex_client::backoff;
 use codex_client::RetryOperation;
 use codex_features::Feature;
 use codex_http_client::RetryAfter;
@@ -22,6 +23,8 @@ use tracing::warn;
 
 const INITIAL_CONNECTION_RETRY_DELAY: Duration = Duration::from_secs(5);
 const MAX_CONNECTION_RETRY_DELAY: Duration = Duration::from_secs(60);
+const MAX_CAPACITY_RETRY_DELAY: Duration = Duration::from_secs(60);
+const CAPACITY_BACKOFF_CAP_ATTEMPT: u64 = 10;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum ResponsesStreamRequest {
@@ -33,6 +36,7 @@ pub(crate) struct ResponsesStreamRetryState {
     retries: u64,
     connection_retries: u64,
     connection_retry_delay: Duration,
+    capacity_retries: u64,
 }
 
 impl Default for ResponsesStreamRetryState {
@@ -41,6 +45,7 @@ impl Default for ResponsesStreamRetryState {
             retries: 0,
             connection_retries: 0,
             connection_retry_delay: INITIAL_CONNECTION_RETRY_DELAY,
+            capacity_retries: 0,
         }
     }
 }
@@ -62,6 +67,7 @@ pub(crate) async fn handle_response_stream_error(
     sess: &Session,
     step_context: &StepContext,
     request: ResponsesStreamRequest,
+    capacity_replay_is_safe: bool,
 ) -> Result<(), CodexErr> {
     let turn_context = &step_context.turn;
     if matches!(request, ResponsesStreamRequest::Sampling)
@@ -84,6 +90,36 @@ pub(crate) async fn handle_response_stream_error(
         ResponsesStreamRequest::Sampling => RetryOperation::Sampling,
         ResponsesStreamRequest::RemoteCompactionV2 => RetryOperation::RemoteCompactionV2,
     };
+    if capacity_replay_is_safe && is_transient_capacity_availability(&err) {
+        retry_state.capacity_retries = retry_state.capacity_retries.saturating_add(1);
+        let attempt = retry_state.capacity_retries;
+        let local_delay = capacity_backoff(attempt);
+        let now = Instant::now();
+        let retry_at = err
+            .retry_after()
+            .map(|advice| (now + local_delay).max(advice.deadline()))
+            .unwrap_or(now + local_delay);
+        let delay = retry_at.saturating_duration_since(now);
+        warn!(
+            turn_id = %turn_context.sub_id,
+            attempt,
+            ?delay,
+            error = %err,
+            "transient provider availability; waiting to retry the same request"
+        );
+        sess.notify_stream_error(
+            turn_context,
+            format!(
+                "Service temporarily unavailable; retrying in {}s (attempt {attempt})",
+                delay.as_secs().max(1)
+            ),
+            err,
+        )
+        .await;
+        codex_client::record_retry!(attempt, delay, operation);
+        tokio::time::sleep_until(retry_at).await;
+        return Ok(());
+    }
     let retry_count = retry_state.retries.saturating_add(1);
     let Some(delay) = err.retry_delay(retry_count) else {
         return Err(err);
@@ -173,6 +209,19 @@ pub(crate) async fn handle_response_stream_error(
             retry_at: retry_after.map(RetryAfter::deadline),
         });
     Err(err)
+}
+
+fn is_transient_capacity_availability(err: &CodexErr) -> bool {
+    err.http_503_slow_down_source().is_some()
+        && matches!(err.details(), CodexErrorDetails::RateLimitExceeded(_))
+}
+
+fn capacity_backoff(attempt: u64) -> Duration {
+    backoff(
+        Duration::from_secs(1),
+        attempt.min(CAPACITY_BACKOFF_CAP_ATTEMPT),
+    )
+    .min(MAX_CAPACITY_RETRY_DELAY)
 }
 
 fn log_retry(

@@ -71,6 +71,7 @@ impl SessionTask for CompactTask {
                     session.clone(),
                     step_context,
                     world_state,
+                    &cancellation_token,
                 )
                 .await
             }

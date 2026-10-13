@@ -12363,6 +12363,7 @@ async fn remote_compaction_v2_retains_only_the_selected_step(first_attempt: Firs
         ),
         CompactionReason::ModelDownshift,
         CompactionPhase::PreTurn,
+        &tokio_util::sync::CancellationToken::new(),
     )
     .await
     .expect("compaction succeeds");
@@ -12399,7 +12400,7 @@ async fn remote_compaction_v2_retains_only_the_selected_step(first_attempt: Firs
 }
 
 #[tokio::test]
-async fn interrupting_compaction_fallback_retains_last_known_step_context() {
+async fn interrupting_compaction_fallback_collection_cancels_without_dispatch() {
     let (release_primary, primary_gate) = tokio::sync::oneshot::channel();
     let (release_fallback, fallback_gate) = tokio::sync::oneshot::channel();
     let (server, _) = start_streaming_sse_server(vec![
@@ -12411,13 +12412,26 @@ async fn interrupting_compaction_fallback_retains_last_known_step_context() {
                 "compact with the current model",
             ),
         }],
-        vec![StreamingSseChunk {
-            gate: Some(fallback_gate),
-            body: responses::sse_completed("fallback"),
-        }],
+        vec![
+            StreamingSseChunk {
+                gate: None,
+                body: responses::sse(vec![responses::ev_response_created(
+                    "fallback-collection",
+                )]),
+            },
+            StreamingSseChunk {
+                gate: Some(fallback_gate),
+                body: responses::sse_completed("fallback"),
+            },
+        ],
     ])
     .await;
     let (session, mut turn, events) = make_remote_compaction_session(server.uri()).await;
+    let (collection_observer_tx, collection_observer_rx) = async_channel::bounded(1);
+    turn.extension_data
+        .insert(crate::compact_remote_v2::CompactionCollectionObserver(
+            collection_observer_tx,
+        ));
     update_turn_settings_for_test(
         Arc::get_mut(&mut turn).expect("unshared turn"),
         |settings| {
@@ -12476,9 +12490,17 @@ async fn interrupting_compaction_fallback_retains_last_known_step_context() {
         .clone()
         .expect("fallback step");
     assert_eq!(fallback.settings.model_info.slug, "gpt-5.2");
+    assert_eq!(
+        timeout(Duration::from_secs(10), collection_observer_rx.recv())
+            .await
+            .expect("fallback collection should consume its created event")
+            .expect("collection observer remains open"),
+        "fallback-collection",
+    );
 
     session.abort_all_tasks(TurnAbortReason::Interrupted).await;
     recv_terminal_event(&events, TerminalEventKind::TurnAborted).await;
+    assert_eq!(server.requests().await.len(), 2, "cancellation must prevent later dispatch");
     assert_eq!(
         state
             .lock()
@@ -12489,6 +12511,81 @@ async fn interrupting_compaction_fallback_retains_last_known_step_context() {
         Some(Arc::as_ptr(&fallback)),
     );
     drop(release_fallback);
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn interrupting_remote_compaction_collection_prevents_model_fallback_dispatch() {
+    let (release_primary, primary_gate) = tokio::sync::oneshot::channel();
+    let (server, _) = start_streaming_sse_server(vec![vec![
+        StreamingSseChunk {
+            gate: None,
+            body: responses::sse(vec![responses::ev_response_created(
+                "primary-collection",
+            )]),
+        },
+        StreamingSseChunk {
+            gate: Some(primary_gate),
+            body: responses::sse_failed(
+                "primary",
+                "context_length_exceeded",
+                "compact with the current model",
+            ),
+        },
+    ]])
+    .await;
+    let (session, mut turn, events) = make_remote_compaction_session(server.uri()).await;
+    let (collection_observer_tx, collection_observer_rx) = async_channel::bounded(1);
+    turn.extension_data
+        .insert(crate::compact_remote_v2::CompactionCollectionObserver(
+            collection_observer_tx,
+        ));
+    update_turn_settings_for_test(
+        Arc::get_mut(&mut turn).expect("unshared turn"),
+        |settings| {
+            Arc::make_mut(&mut settings.model_info).comp_hash = Some("new".to_string());
+        },
+    );
+    session
+        .set_previous_turn_settings(Some(PreviousTurnSettings {
+            model: "gpt-5.4".to_string(),
+            comp_hash: Some("old".to_string()),
+            cyber_access_program: None,
+            realtime_active: Some(turn.realtime_active),
+        }))
+        .await;
+    session
+        .record_conversation_items(
+            &turn,
+            turn.model_info(),
+            &[user_message("before compaction")],
+        )
+        .await;
+    session
+        .spawn_task(turn, Vec::new(), crate::tasks::RegularTask::new())
+        .await;
+    timeout(
+        Duration::from_secs(10),
+        server.wait_for_request_count(1),
+    )
+    .await
+    .expect("primary compaction request should begin collection");
+    assert_eq!(
+        timeout(Duration::from_secs(10), collection_observer_rx.recv())
+            .await
+            .expect("primary collection should consume its created event")
+            .expect("collection observer remains open"),
+        "primary-collection",
+    );
+
+    session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+    recv_terminal_event(&events, TerminalEventKind::TurnAborted).await;
+    assert_eq!(
+        server.requests().await.len(),
+        1,
+        "cancelled primary collection must not dispatch selected-model fallback"
+    );
+    let _ = release_primary.send(());
     server.shutdown().await;
 }
 

@@ -1,6 +1,8 @@
 #![allow(clippy::expect_used)]
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -97,6 +99,31 @@ impl HttpTransport for RecordingTransport {
             status: StatusCode::OK,
             headers: HeaderMap::new(),
             bytes: Box::pin(stream),
+        })
+    }
+}
+
+#[derive(Clone)]
+struct HttpErrorTransport {
+    attempts: Arc<AtomicUsize>,
+    status: StatusCode,
+    headers: HeaderMap,
+    body: String,
+}
+
+impl HttpTransport for HttpErrorTransport {
+    async fn execute(&self, _req: Request) -> Result<Response, TransportError> {
+        unreachable!("streaming test transport")
+    }
+
+    async fn stream(&self, _req: Request) -> Result<StreamResponse, TransportError> {
+        self.attempts.fetch_add(1, Ordering::AcqRel);
+        Err(TransportError::Http {
+            status: self.status,
+            url: Some("https://example.com/v1/responses".to_string()),
+            headers: Some(self.headers.clone()),
+            body: Some(self.body.clone()),
+            retry_after: None,
         })
     }
 }
@@ -592,6 +619,136 @@ async fn streaming_client_does_not_retry_auth_build_error() -> Result<()> {
     ));
     assert_eq!(auth.attempts(), 1);
     assert_eq!(state.take_stream_requests().len(), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn streaming_client_preserves_typed_http_503_source_after_native_retry_budget(
+) -> Result<()> {
+    let body =
+        r#"{"error":{"type":"rate_limit_error","code":"slow_down","message":"retry later"}}"#;
+    for max_attempts in [0, 2] {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let mut provider = provider("openai");
+        provider.retry.max_attempts = max_attempts;
+        provider.retry.retry_5xx = true;
+        let transport = HttpErrorTransport {
+            attempts: Arc::clone(&attempts),
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            headers: HeaderMap::new(),
+            body: body.to_string(),
+        };
+        let client = ResponsesClient::new(transport, provider, Arc::new(NoAuth));
+        let error = client
+            .stream(
+                serde_json::json!({ "model": "gpt-test" }),
+                HeaderMap::new(),
+                Compression::None,
+                /*turn_state*/ None,
+            )
+            .await
+            .err()
+            .expect("HTTP 503 should fail after native request retries");
+
+        let ApiError::TransientAvailability(TransportError::Http {
+            status,
+            body: Some(actual_body),
+            ..
+        }) = error
+        else {
+            panic!("expected source-tagged actual HTTP 503");
+        };
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(actual_body, body);
+        assert_eq!(attempts.load(Ordering::Acquire), max_attempts as usize + 1);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn streaming_client_fails_closed_on_ambiguous_503_admission() -> Result<()> {
+    let cases = [
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            HeaderMap::new(),
+            r#"{"error":{"code":"slow_down"}}"#,
+        ),
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            HeaderMap::new(),
+            r#"{
+                "error":{"type":"rate_limit_error","code":"slow_down","code":"quota_exceeded"}
+            }"#,
+        ),
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            HeaderMap::new(),
+            r#"{
+                "error":{"type":"rate_limit_error","type":"insufficient_quota","code":"slow_down"}
+            }"#,
+        ),
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            HeaderMap::new(),
+            r#"{
+                "error":{"type":"rate_limit_error","code":"slow_down"},
+                "error":{"type":"insufficient_quota","code":"slow_down"}
+            }"#,
+        ),
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            HeaderMap::new(),
+            r#"{"error":{"type":"rate_limit_error","code":"rate_limit_exceeded"}}"#,
+        ),
+        (
+            StatusCode::TOO_MANY_REQUESTS,
+            HeaderMap::new(),
+            r#"{"error":{"type":"rate_limit_error","code":"slow_down"}}"#,
+        ),
+    ];
+    for (status, headers, body) in cases {
+        let transport = HttpErrorTransport {
+            attempts: Arc::new(AtomicUsize::new(0)),
+            status,
+            headers,
+            body: body.to_string(),
+        };
+        let client = ResponsesClient::new(transport, provider("openai"), Arc::new(NoAuth));
+        let error = client
+            .stream(
+                serde_json::json!({ "model": "gpt-test" }),
+                HeaderMap::new(),
+                Compression::None,
+                /*turn_state*/ None,
+            )
+            .await
+            .err()
+            .expect("ambiguous response should fail closed");
+        assert!(matches!(error, ApiError::Transport(TransportError::Http { .. })));
+    }
+
+    for name in ["x-openai-authorization-error", "x-error-json"] {
+        let mut headers = HeaderMap::new();
+        headers.insert(name, HeaderValue::from_static("present"));
+        let transport = HttpErrorTransport {
+            attempts: Arc::new(AtomicUsize::new(0)),
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            headers,
+            body: r#"{"error":{"type":"rate_limit_error","code":"slow_down"}}"#.to_string(),
+        };
+        let client = ResponsesClient::new(transport, provider("openai"), Arc::new(NoAuth));
+        let error = client
+            .stream(
+                serde_json::json!({ "model": "gpt-test" }),
+                HeaderMap::new(),
+                Compression::None,
+                /*turn_state*/ None,
+            )
+            .await
+            .err()
+            .expect("identity denial headers must block capacity provenance");
+        assert!(matches!(error, ApiError::Transport(TransportError::Http { .. })));
+    }
     Ok(())
 }
 

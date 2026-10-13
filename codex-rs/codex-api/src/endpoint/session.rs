@@ -15,6 +15,7 @@ use codex_client::StreamResponse;
 use codex_client::TransportError;
 use http::HeaderMap;
 use http::Method;
+use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Arc;
 use tracing::instrument;
@@ -167,8 +168,53 @@ impl<T: HttpTransport> EndpointSession<T> {
                 }
             },
         )
-        .await?;
+        .await;
+
+        let stream = match stream {
+            Ok(stream) => stream,
+            Err(error) if is_transient_availability_response(&error) => {
+                return Err(ApiError::TransientAvailability(error));
+            }
+            Err(error) => return Err(ApiError::Transport(error)),
+        };
 
         Ok((stream.stream, stream.started_at))
     }
+}
+
+#[derive(Deserialize)]
+struct AvailabilityErrorEnvelope {
+    error: AvailabilityError,
+}
+
+#[derive(Deserialize)]
+struct AvailabilityError {
+    #[serde(rename = "type")]
+    error_type: String,
+    code: String,
+}
+
+fn is_transient_availability_response(error: &TransportError) -> bool {
+    let TransportError::Http {
+        status,
+        headers,
+        body: Some(body),
+        ..
+    } = error
+    else {
+        return false;
+    };
+
+    if *status != http::StatusCode::SERVICE_UNAVAILABLE
+        || headers.as_ref().is_some_and(|headers| {
+            headers.contains_key("x-openai-authorization-error")
+                || headers.contains_key("x-error-json")
+        })
+    {
+        return false;
+    }
+
+    serde_json::from_str::<AvailabilityErrorEnvelope>(body).is_ok_and(|envelope| {
+        envelope.error.error_type == "rate_limit_error" && envelope.error.code == "slow_down"
+    })
 }

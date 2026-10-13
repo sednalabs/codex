@@ -81,6 +81,25 @@ fn retryability_preserves_error_details_distinctions() {
     }
 }
 
+#[test]
+fn transient_availability_provenance_is_private_and_survives_retry_advice() {
+    let retry_after = RetryAfter::from_delay(Duration::from_secs(5)).expect("retry advice");
+    let error = CodexErr::new(CodexErrorDetails::RateLimitExceeded("later".into()))
+        .with_http_503_slow_down(Http503SlowDown::classified_http_503_slow_down())
+        .with_retry_after(retry_after);
+    assert!(error.http_503_slow_down_source().is_some());
+    assert_eq!(error.to_string(), "rate limit exceeded: later");
+    assert_eq!(error.retry_after(), Some(retry_after));
+    assert_eq!(
+        error.to_codex_protocol_error(),
+        CodexErrorInfo::RateLimitExceeded
+    );
+
+    let generic = CodexErr::new(CodexErrorDetails::RateLimitExceeded("later".into()))
+        .with_retry_after(retry_after);
+    assert!(generic.http_503_slow_down_source().is_none());
+}
+
 /// Retryable errors prefer server advice and otherwise back off by attempt; advice does not
 /// make a terminal error retryable.
 #[test]

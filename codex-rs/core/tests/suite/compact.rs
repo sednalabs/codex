@@ -51,6 +51,7 @@ use core_test_support::test_path_buf;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_match;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;

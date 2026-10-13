@@ -74,6 +74,46 @@ async fn map_api_error_preserves_retry_delay() {
     }
 }
 
+#[tokio::test(start_paused = true)]
+async fn transient_availability_marker_preserves_public_mapping_and_retry_advice() {
+    let retry_after = RetryAfter::from_delay(std::time::Duration::from_secs(17))
+        .expect("retry advice");
+    let transport = TransportError::Http {
+        status: http::StatusCode::SERVICE_UNAVAILABLE,
+        url: Some("https://example.com/v1/responses".to_string()),
+        headers: None,
+        body: Some(
+            r#"{"error":{"type":"rate_limit_error","code":"slow_down","message":"retry later"}}"#
+                .to_string(),
+        ),
+        retry_after: Some(retry_after),
+    };
+    let mapped = map_api_error(ApiError::TransientAvailability(transport));
+    assert!(mapped.http_503_slow_down_source().is_some());
+    assert!(matches!(
+        mapped.details(),
+        CodexErrorDetails::RateLimitExceeded(message) if message == "retry later"
+    ));
+    assert_eq!(mapped.retry_after(), Some(retry_after));
+    assert_eq!(mapped.to_string(), "rate limit exceeded: retry later");
+    assert_eq!(
+        mapped.to_codex_protocol_error(),
+        CodexErrorInfo::RateLimitExceeded
+    );
+
+    let generic = map_api_error(ApiError::Transport(TransportError::Http {
+        status: http::StatusCode::SERVICE_UNAVAILABLE,
+        url: None,
+        headers: None,
+        body: Some(
+            r#"{"error":{"type":"rate_limit_error","code":"slow_down","message":"retry later"}}"#
+                .to_string(),
+        ),
+        retry_after: Some(retry_after),
+    }));
+    assert!(generic.http_503_slow_down_source().is_none());
+}
+
 /// Mapping a new error category preserves elapsed advice without making hard failures retryable.
 #[tokio::test(start_paused = true)]
 async fn http_retry_deadline_survives_mapping_and_respects_terminal_errors() {
