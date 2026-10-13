@@ -114,6 +114,12 @@ ROOT_FIXTURE_STARTUP_FAILURE = re.compile(
     r"^runtime-proof-root-startup-failure:"
     r"(runtime_auth|runtime_proof|provider_auth|runtime_config|runtime_protection|io_failure|empty|unclassified|unavailable)$"
 )
+ROOT_FIXTURE_LAUNCH_FAILURE = re.compile(
+    r"^runtime-proof-root-launch-failure:"
+    r"(fixture_setup|spawn|bootstrap_send|auth_send|ack_setup|ack_wait|"
+    r"ack_validation|child_wait|child_exit|child_timeout):"
+    r"(permission_denied|not_found|timed_out|would_block|unexpected_eof|connection_reset|broken_pipe|other)$"
+)
 ROOT_FIXTURE_FD_LAYOUT = re.compile(
     r"^runtime-proof-root-fd-layout:"
     r"(crossed_targets|auth_source_at_bootstrap_target|bootstrap_source_at_auth_target|no_cross_target_alias)$"
@@ -2619,6 +2625,10 @@ def run_ignored_root_test(
                 category
                 for marker, category in failure_markers.items()
                 if marker in result.stdout
+                and not (
+                    marker == "protected direct-send child"
+                    and "launch protected direct-send child" in result.stdout
+                )
             )
             startup_failures = {
                 match.group(1)
@@ -2626,9 +2636,19 @@ def run_ignored_root_test(
                 if (match := ROOT_FIXTURE_STARTUP_FAILURE.fullmatch(line.strip()))
                 is not None
             }
+            launch_failures = {
+                (match.group(1), match.group(2))
+                for line in result.stdout.splitlines()
+                if (match := ROOT_FIXTURE_LAUNCH_FAILURE.fullmatch(line.strip()))
+                is not None
+            }
             failure_categories.extend(
                 f"child_startup_{category}"
                 for category in sorted(startup_failures)
+            )
+            failure_categories.extend(
+                f"launch_{phase}_{category}"
+                for phase, category in sorted(launch_failures)
             )
             failure_categories = sorted(set(failure_categories))
             summary_sequence = ",".join(
