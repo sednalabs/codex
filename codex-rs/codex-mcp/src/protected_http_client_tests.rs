@@ -213,8 +213,17 @@ fn launch_protected_child_inner(failure_phase: &mut &'static str) -> anyhow::Res
     std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o555))?;
 
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-    let executable = std::env::current_exe()?;
-    let artifact_sha256 = sha256_file(&executable)?;
+    let source_executable = std::env::current_exe()?;
+    let artifact_sha256 = sha256_file(&source_executable)?;
+    // The child drops to UID/GID 65534, so keep its executable under the
+    // fixture root instead of the runner-owned Cargo target directories.
+    let executable = root.join("protected-client-fixture");
+    std::fs::copy(&source_executable, &executable)?;
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755))?;
+    anyhow::ensure!(
+        sha256_file(&executable)? == artifact_sha256,
+        "staged protected-client fixture executable changed during copy"
+    );
     let config_sha256 = sha256_file(&config_path)?;
     // Start the short-lived auth window after the required full-image digest.
     // Protected startup hashes the child executable before ACK and its first send.
@@ -273,7 +282,6 @@ fn launch_protected_child_inner(failure_phase: &mut &'static str) -> anyhow::Res
 
     let (bootstrap_parent, bootstrap_child) = seqpacket_pair()?;
     let (auth_parent, auth_child) = seqpacket_pair()?;
-    let executable = std::env::current_exe()?;
     let bootstrap_fd = bootstrap_child.as_raw_fd();
     let auth_fd = auth_child.as_raw_fd();
     let mut command = Command::new(executable);
