@@ -189,15 +189,13 @@ fn startup_error_category(error: &anyhow::Error) -> &'static str {
 
 fn launch_protected_child() -> anyhow::Result<()> {
     let mut failure_phase: &'static str = "fixture_setup";
-    let result = launch_protected_child_inner(&mut failure_phase);
-    if let Err(error) = &result {
-        eprintln!(
+    launch_protected_child_inner(&mut failure_phase).map_err(|error| {
+        anyhow::anyhow!(
             "runtime-proof-root-launch-failure:{}:{}",
             failure_phase,
-            launch_error_category(error)
-        );
-    }
-    result
+            launch_error_category(&error)
+        )
+    })
 }
 
 fn launch_protected_child_inner(failure_phase: &mut &'static str) -> anyhow::Result<()> {
