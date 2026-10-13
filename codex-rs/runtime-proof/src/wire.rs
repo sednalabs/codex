@@ -134,12 +134,18 @@ fn validate_numbers(value: &Value) -> Result<()> {
     }
 }
 
-pub(crate) fn digest(bytes: &[u8]) -> String {
-    let mut output = String::from("sha256:");
+/// Computes the certificate digest encoding used by the Ops runtime verifier.
+pub(crate) fn certificate_digest(bytes: &[u8]) -> String {
+    let mut output = String::with_capacity(64);
     use sha2::Digest as _;
     for byte in Sha256::digest(bytes) {
         use std::fmt::Write as _;
         let _ = write!(output, "{byte:02x}");
     }
     output
+}
+
+pub(crate) fn digest(bytes: &[u8]) -> String {
+    let digest = certificate_digest(bytes);
+    format!("sha256:{digest}")
 }

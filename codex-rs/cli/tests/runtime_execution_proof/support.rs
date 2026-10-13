@@ -940,7 +940,7 @@ impl ProtectedRuntimeFixture {
         eprintln!("runtime-proof-root-stage:cli_bootstrap_sent");
         let mut auth_packet = serde_json::json!({
             "version": 1,
-            "certificate_sha256": format!("sha256:{}", sha256_hex(certificate.as_bytes())),
+            "certificate_sha256": sha256_hex(certificate.as_bytes()),
             "runtime_incarnation": "11111111-1111-4111-8111-111111111111",
             "principal": "22222222-2222-4222-8222-222222222222",
             "project_id": 7,
