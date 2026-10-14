@@ -574,12 +574,31 @@ pub(crate) async fn start_app_server_for_picker(
     state_db: Option<StateDbHandle>,
     environment_manager: Arc<EnvironmentManager>,
 ) -> color_eyre::Result<AppServerSession> {
+    start_app_server_for_picker_with_overrides(
+        config,
+        target,
+        Vec::new(),
+        LoaderOverrides::default(),
+        state_db,
+        environment_manager,
+    )
+    .await
+}
+
+pub(crate) async fn start_app_server_for_picker_with_overrides(
+    config: &Config,
+    target: &AppServerTarget,
+    cli_kv_overrides: Vec<(String, toml::Value)>,
+    loader_overrides: LoaderOverrides,
+    state_db: Option<StateDbHandle>,
+    environment_manager: Arc<EnvironmentManager>,
+) -> color_eyre::Result<AppServerSession> {
     let app_server = start_app_server(
         target,
         Arg0DispatchPaths::default(),
         config.clone(),
-        Vec::new(),
-        LoaderOverrides::default(),
+        cli_kv_overrides,
+        loader_overrides,
         /*strict_config*/ false,
         CloudConfigBundleLoader::default(),
         codex_feedback::CodexFeedback::new(),
