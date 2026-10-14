@@ -7,7 +7,6 @@
 //! input only after `/proc/<pid>/exe` is bound to the already verified file
 //! object.
 
-use crate::auth;
 use crate::auth::AuthFrame;
 use crate::provider_auth::ProviderAuth;
 use crate::provider_auth::ProviderCredentialClass;
@@ -688,13 +687,13 @@ fn validate_live_credentials(
     {
         bail!("fixed provider-auth credential is outside the protected live contract");
     }
-    auth::validate_provider_credential(
+    crate::provider_auth::validate_provider_credential(
         provider,
         PROVIDER_RECIPIENT,
         &mcp_bearer.0,
         unix_seconds()?.saturating_add(policy.execution_lease_seconds as i64),
     )?;
-    auth::ensure_protected_cloud_config_ineligible(provider.plan_type.as_deref())?;
+    crate::provider_auth::ensure_protected_cloud_config_ineligible(provider.plan_type.as_deref())?;
     Ok(())
 }
 
