@@ -38,7 +38,6 @@ use std::os::unix::process::CommandExt as _;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Child;
-use std::process::ChildStdin;
 use std::process::Command;
 use std::process::ExitStatus;
 use std::process::Stdio;
@@ -939,7 +938,7 @@ fn write_prompt_until<W: std::io::Write + AsRawFd>(
         if remaining.is_zero() {
             bail!("fixed task prompt exceeded its certificate lease");
         }
-        let fractional_millisecond = if remaining.subsec_nanos() % 1_000_000 == 0 {
+        let fractional_millisecond = if remaining.subsec_nanos().is_multiple_of(1_000_000) {
             0
         } else {
             1
