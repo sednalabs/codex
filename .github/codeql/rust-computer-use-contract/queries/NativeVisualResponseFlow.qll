@@ -3,6 +3,7 @@ import codeql.rust.controlflow.BasicBlocks
 import codeql.rust.controlflow.CfgNodes
 import codeql.rust.controlflow.ControlFlowGraph
 import codeql.rust.dataflow.DataFlow
+import codeql.rust.dataflow.TaintTracking
 
 /**
  * Shared, deliberately bounded response-flow facts for native visual
@@ -289,7 +290,61 @@ predicate responseContentItemsClearAfterGuard(
  * Keep helper recognition body-backed.  The guard must still force a failed
  * response when image output is absent; naming a function alone is not enough.
  */
-predicate guardWritesFailureDetail(Function target, FieldExpr successField) {
+/** A bounded, local write of the supplied diagnostic into the supplied content. */
+predicate helperDetailMutation(Function helper, MethodCallExpr mutation) {
+  exists(
+    DataFlow::ParameterNode items, DataFlow::ParameterNode message,
+    DataFlow::ExprNode receiver, DataFlow::ExprNode text, Expr item
+  |
+    items.isParameterOf(helper, 0) and
+    message.isParameterOf(helper, 1) and
+    mutation.getEnclosingCallable() = helper and
+    receiver.asExpr() = mutation.getReceiver() and
+    TaintTracking::localTaint(items, receiver) and
+    (
+      mutation.getIdentifier().getText() = "push_str" and
+      text.asExpr() = mutation.getPositionalArgument(0)
+      or
+      (
+        mutation.getIdentifier().getText() = "insert" and
+        item = mutation.getPositionalArgument(1)
+        or
+        mutation.getIdentifier().getText() = "push" and
+        item = mutation.getPositionalArgument(0)
+      ) and
+      (
+        text.asExpr() = item or
+        text.asExpr() = item.(StructExpr).getFieldExpr("text").getExpr()
+      )
+    ) and
+    TaintTracking::localTaint(message, text)
+  )
+}
+
+/** Reachability that deliberately stops at a message-bearing content write. */
+predicate detailFreeReachable(Function helper, CfgNode node) {
+  node.getEnclosingCallable() = helper and
+  not exists(MethodCallExpr mutation |
+    helperDetailMutation(helper, mutation) and node = mutation.getACfgNode()
+  ) and
+  (
+    not exists(node.getAPredecessor()) or
+    detailFreeReachable(helper, node.getAPredecessor())
+  )
+}
+
+predicate helperRetainsFailureDetail(Function helper) {
+  exists(MethodCallExpr mutation | helperDetailMutation(helper, mutation)) and
+  not exists(CfgNode exit |
+    exit.getEnclosingCallable() = helper and
+    not exists(exit.getASuccessor()) and
+    detailFreeReachable(helper, exit)
+  )
+}
+
+predicate guardWritesFailureDetail(
+  Function target, AssignmentExpr successWrite, FieldExpr successField
+) {
   exists(AssignmentExpr errorWrite, FieldExpr errorField |
     errorWrite.getEnclosingCallable() = target and
     errorWrite.getLhs() = errorField and
@@ -298,8 +353,7 @@ predicate guardWritesFailureDetail(Function target, FieldExpr successField) {
   ) or
   exists(
     Call diagnostic, Function helper, RefExpr borrow, FieldExpr contentItems,
-    Variable responseVariable, MethodCallExpr insertion, DataFlow::ParameterNode parameter,
-    DataFlow::ExprNode receiver
+    Variable responseVariable
   |
     diagnostic.getEnclosingCallable() = target and
     helper = diagnostic.getStaticTarget() and
@@ -313,16 +367,10 @@ predicate guardWritesFailureDetail(Function target, FieldExpr successField) {
     responseVariableExpr(contentItems.getContainer(), responseVariable) and
     successField.hasContainer() and
     responseVariableExpr(successField.getContainer(), responseVariable) and
-    // Current dynamic responses retain failure detail as typed text content.
-    // Do not trust a same-named helper that no longer writes its actual input.
-    insertion.getEnclosingCallable() = helper and
-    (
-      insertion.getIdentifier().getText() = "insert" or
-      insertion.getIdentifier().getText() = "push"
-    ) and
-    parameter.isParameterOf(helper, 0) and
-    receiver.asExpr() = insertion.getReceiver() and
-    DataFlow::localFlow(parameter, receiver)
+    // Every helper completion must retain the actual diagnostic in the actual
+    // content, and the call must precede the failed-success write.
+    helperRetainsFailureDetail(helper) and
+    nodeBefore(diagnostic.getACfgNode(), successWrite.getACfgNode())
   )
 }
 
@@ -341,7 +389,7 @@ predicate guardBodyDowngrades(Call guard) {
           successField.getIdentifier().getText() = "success" and
           falseValue = successWrite.getRhs() and
           falseValue.getTextValue() = "false" and
-          guardWritesFailureDetail(target, successField)
+          guardWritesFailureDetail(target, successWrite, successField)
         )
       )
     )

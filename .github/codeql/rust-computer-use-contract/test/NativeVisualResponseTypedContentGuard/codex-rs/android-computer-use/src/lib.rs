@@ -47,3 +47,47 @@ mod helper_loses_detail {
         Ok(response)
     }
 }
+
+mod helper_discards_message {
+    use super::*;
+
+    fn append_text(items: &mut Vec<String>, _message: &str) {
+        items.insert(0, String::new());
+    }
+
+    fn require_native_image_for_visual_response(response: &mut Response, message: &str) {
+        if response.content_items.is_empty() {
+            append_text(&mut response.content_items, message);
+            response.success = false;
+        }
+    }
+
+    fn install_build_from_run() -> ProviderResult {
+        let mut response = build_response();
+        require_native_image_for_visual_response(&mut response, "missing image");
+        Ok(response)
+    }
+}
+
+mod helper_skips_detail {
+    use super::*;
+
+    fn append_text(items: &mut Vec<String>, message: &str) {
+        if message.is_empty() {
+            items.insert(0, message.to_string());
+        }
+    }
+
+    fn require_native_image_for_visual_response(response: &mut Response, message: &str) {
+        if response.content_items.is_empty() {
+            append_text(&mut response.content_items, message);
+            response.success = false;
+        }
+    }
+
+    fn observe() -> ProviderResult {
+        let mut response = build_response();
+        require_native_image_for_visual_response(&mut response, "missing image");
+        Ok(response)
+    }
+}

@@ -478,6 +478,72 @@ fn canceled_mcp_server_elicitation_response_uses_cancel_action() {
 }
 
 #[tokio::test]
+async fn pending_native_request_is_dropped_on_interrupt_without_replay() {
+    struct PendingProvider(Option<tokio::sync::oneshot::Sender<()>>);
+
+    impl Drop for PendingProvider {
+        fn drop(&mut self) {
+            if let Some(sender) = self.0.take() {
+                let _ = sender.send(());
+            }
+        }
+    }
+
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (dropped_tx, dropped_rx) = tokio::sync::oneshot::channel();
+    let (interrupt_tx, mut interrupt_rx) = mpsc::unbounded_channel();
+    let request = async move {
+        let _provider = PendingProvider(Some(dropped_tx));
+        let _ = started_tx.send(());
+        std::future::pending::<()>().await;
+    };
+    let task = tokio::spawn(async move {
+        let mut channel_open = true;
+        complete_server_request_or_interrupt(request, &mut interrupt_rx, &mut channel_open).await
+    });
+    started_rx.await.expect("provider request was dispatched");
+    interrupt_tx.send(()).expect("interrupt pending request");
+
+    assert!(task.await.expect("request task completed"));
+    dropped_rx.await.expect("provider future was dropped");
+}
+
+#[tokio::test]
+async fn queued_interrupt_prevents_native_request_dispatch() {
+    let (interrupt_tx, mut interrupt_rx) = mpsc::unbounded_channel();
+    interrupt_tx.send(()).expect("queue interrupt");
+    let mut channel_open = true;
+    let mut dispatched = false;
+    assert!(
+        complete_server_request_or_interrupt(
+            async { dispatched = true },
+            &mut interrupt_rx,
+            &mut channel_open,
+        )
+        .await
+    );
+    assert!(!dispatched);
+}
+
+#[tokio::test]
+async fn closed_interrupt_channel_does_not_cancel_native_request() {
+    let (interrupt_tx, mut interrupt_rx) = mpsc::unbounded_channel::<()>();
+    drop(interrupt_tx);
+    let mut channel_open = true;
+    let mut completed = false;
+    assert!(
+        !complete_server_request_or_interrupt(
+            async { completed = true },
+            &mut interrupt_rx,
+            &mut channel_open,
+        )
+        .await
+    );
+    assert!(completed);
+    assert!(!channel_open);
+}
+
+#[tokio::test]
 async fn native_visual_tools_are_registered_for_exec_start_and_resume() {
     let codex_home = tempdir().expect("create temp codex home");
     let cwd = tempdir().expect("create temp cwd");

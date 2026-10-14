@@ -1458,21 +1458,13 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                     interrupt_channel_open = false;
                     continue;
                 }
-                if let Err(err) = send_request_with_response::<TurnInterruptResponse>(
+                interrupt_exec_turn(
                     &client,
-                    ClientRequest::TurnInterrupt {
-                        request_id: request_ids.next(),
-                        params: TurnInterruptParams {
-                            thread_id: primary_thread_id_for_requests.clone(),
-                            turn_id: task_id.clone(),
-                        },
-                    },
-                    "turn/interrupt",
+                    &mut request_ids,
+                    &primary_thread_id_for_requests,
+                    &task_id,
                 )
-                .await
-                {
-                    warn!("turn/interrupt failed: {err}");
-                }
+                .await;
                 continue;
             }
             maybe_event = client.next_event() => maybe_event,
@@ -1484,13 +1476,29 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
 
         match server_event {
             InProcessServerEvent::ServerRequest(request) => {
-                handle_server_request(
-                    &client,
-                    *request,
-                    config.codex_home.as_path(),
-                    &mut error_seen,
+                if complete_server_request_or_interrupt(
+                    handle_server_request(
+                        &client,
+                        *request,
+                        config.codex_home.as_path(),
+                        &mut error_seen,
+                    ),
+                    &mut interrupt_rx,
+                    &mut interrupt_channel_open,
                 )
-                .await;
+                .await
+                {
+                    // Drop the provider future before interrupting the turn.
+                    // An action already sent to a remote device is uncertain;
+                    // cancellation must never retry or replay that action.
+                    interrupt_exec_turn(
+                        &client,
+                        &mut request_ids,
+                        &primary_thread_id_for_requests,
+                        &task_id,
+                    )
+                    .await;
+                }
             }
             InProcessServerEvent::ServerNotification(notification) => {
                 let mut notification = *notification;
@@ -2273,6 +2281,49 @@ fn server_request_method_name(request: &ServerRequest) -> String {
                 .map(str::to_owned)
         })
         .unwrap_or_else(|| "unknown".to_string())
+}
+
+async fn interrupt_exec_turn(
+    client: &InProcessAppServerClient,
+    request_ids: &mut RequestIdSequencer,
+    thread_id: &str,
+    turn_id: &str,
+) {
+    if let Err(err) = send_request_with_response::<TurnInterruptResponse>(
+        client,
+        ClientRequest::TurnInterrupt {
+            request_id: request_ids.next(),
+            params: TurnInterruptParams {
+                thread_id: thread_id.to_string(),
+                turn_id: turn_id.to_string(),
+            },
+        },
+        "turn/interrupt",
+    )
+    .await
+    {
+        warn!("turn/interrupt failed: {err}");
+    }
+}
+
+async fn complete_server_request_or_interrupt(
+    request: impl std::future::Future<Output = ()>,
+    interrupt_rx: &mut mpsc::UnboundedReceiver<()>,
+    interrupt_channel_open: &mut bool,
+) -> bool {
+    tokio::pin!(request);
+    loop {
+        tokio::select! {
+            biased;
+            interrupt = interrupt_rx.recv(), if *interrupt_channel_open => {
+                if interrupt.is_some() {
+                    return true;
+                }
+                *interrupt_channel_open = false;
+            }
+            () = &mut request => return false,
+        }
+    }
 }
 
 async fn handle_server_request(
