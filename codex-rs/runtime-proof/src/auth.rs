@@ -66,22 +66,22 @@ static PROTECTED_RUNTIME_EVER_ACTIVE: AtomicBool = AtomicBool::new(false);
 static PROTECTED_RUNTIME_FAILED: AtomicBool = AtomicBool::new(false);
 
 #[cfg(target_os = "linux")]
-#[derive(Deserialize)]
+#[derive(Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
-struct AuthFrame {
-    version: u8,
-    certificate_sha256: String,
-    runtime_incarnation: uuid::Uuid,
-    principal: uuid::Uuid,
-    project_id: u64,
-    codex_home: String,
-    config_sha256: String,
-    mcp_server: String,
-    recipient: String,
-    provider_recipient: String,
-    expires_at: i64,
-    provider: ProviderAuth,
-    mcp_bearer: SecretString,
+pub(crate) struct AuthFrame {
+    pub(crate) version: u8,
+    pub(crate) certificate_sha256: String,
+    pub(crate) runtime_incarnation: uuid::Uuid,
+    pub(crate) principal: uuid::Uuid,
+    pub(crate) project_id: u64,
+    pub(crate) codex_home: String,
+    pub(crate) config_sha256: String,
+    pub(crate) mcp_server: String,
+    pub(crate) recipient: String,
+    pub(crate) provider_recipient: String,
+    pub(crate) expires_at: i64,
+    pub(crate) provider: ProviderAuth,
+    pub(crate) mcp_bearer: SecretString,
 }
 
 #[cfg(target_os = "linux")]
@@ -226,7 +226,7 @@ fn validate_and_import(
     Ok(())
 }
 
-fn validate_raw_config(
+pub(crate) fn validate_raw_config(
     config: &[u8],
     server: &str,
     recipient: &str,
@@ -261,24 +261,36 @@ fn validate_raw_config(
         .and_then(toml::Value::as_table)
         .context("protected runtime config does not contain the selected MCP server")?;
     let selected_url_matches = selected.get("url").and_then(toml::Value::as_str) == Some(recipient);
+    let claim_tool_is_explicitly_approved = selected
+        .get("tools")
+        .and_then(toml::Value::as_table)
+        .is_some_and(|tools| {
+            tools.len() == 1
+                && tools
+                    .get("work_item_claim")
+                    .and_then(toml::Value::as_table)
+                    .is_some_and(|claim| {
+                        claim.len() == 1
+                            && claim.get("approval_mode").and_then(toml::Value::as_str)
+                                == Some("approve")
+                    })
+        });
     let fixture_claim_approval = credential_class == &ProviderCredentialClass::SyntheticFixture
         && server == "ops"
+        && mcp_servers.len() == 1
         && selected.len() == 2
+        && claim_tool_is_explicitly_approved;
+    let live_claim_approval = credential_class == &ProviderCredentialClass::Live
+        && server == "ops"
+        && mcp_servers.len() == 1
+        && selected.len() == 4
+        && selected.get("required").and_then(toml::Value::as_bool) == Some(true)
         && selected
-            .get("tools")
-            .and_then(toml::Value::as_table)
-            .is_some_and(|tools| {
-                tools.len() == 1
-                    && tools
-                        .get("work_item_claim")
-                        .and_then(toml::Value::as_table)
-                        .is_some_and(|claim| {
-                            claim.len() == 1
-                                && claim.get("approval_mode").and_then(toml::Value::as_str)
-                                    == Some("approve")
-                        })
-            });
-    if !selected_url_matches || (selected.len() != 1 && !fixture_claim_approval) {
+            .get("enabled_tools")
+            .and_then(toml::Value::as_array)
+            .is_some_and(|tools| tools.len() == 1 && tools[0].as_str() == Some("work_item_claim"))
+        && claim_tool_is_explicitly_approved;
+    if !selected_url_matches || (!fixture_claim_approval && !live_claim_approval) {
         bail!("protected runtime MCP config contains unadmitted settings");
     }
     if table.contains_key("env") || table.contains_key("dotenv") {

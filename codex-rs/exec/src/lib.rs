@@ -60,11 +60,13 @@ use codex_app_server_protocol::TurnStartedNotification;
 use codex_arg0::Arg0DispatchPaths;
 use codex_browser_computer_use::BrowserComputerUseOutcome;
 use codex_cloud_config::cloud_config_bundle_loader_for_storage;
+use codex_config::AppToolApproval;
 use codex_config::CloudConfigBundleLoader;
 use codex_config::ConfigLayerSource;
 use codex_config::ConfigLayerStackOrdering;
 use codex_config::ConfigLoadError;
 use codex_config::ConfigLoadOptions;
+use codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID;
 use codex_config::LoaderOverrides;
 use codex_config::McpServerAuth;
 use codex_config::McpServerConfig;
@@ -315,12 +317,33 @@ fn validate_protected_runtime_config(
     let server = mcp_servers
         .get(&server_name)
         .context("protected runtime config lacks its selected MCP server")?;
+    validate_protected_claim_server(server, &recipient)?;
+    Ok(())
+}
+
+fn validate_protected_claim_server(
+    server: &McpServerConfig,
+    recipient: &str,
+) -> anyhow::Result<()> {
     if !server.enabled
+        || !server.required
+        || server.environment_id != DEFAULT_MCP_SERVER_ENVIRONMENT_ID
         || server.auth != McpServerAuth::OAuth
         || server.oauth.is_some()
         || server.scopes.is_some()
+        || server.enabled_tools.as_ref().is_none_or(|tools| {
+            tools.len() != 1 || tools.first().is_none_or(|tool| tool != "work_item_claim")
+        })
+        || server.disabled_tools.is_some()
+        || server.default_tools_approval_mode.is_some()
+        || server.tools.len() != 1
+        || server
+            .tools
+            .get("work_item_claim")
+            .and_then(|tool| tool.approval_mode)
+            != Some(AppToolApproval::Approve)
     {
-        anyhow::bail!("protected MCP server config contains OAuth or disabled-server settings");
+        anyhow::bail!("protected MCP server config is outside the fixed claim-only profile");
     }
     match &server.transport {
         McpServerTransportConfig::StreamableHttp {
@@ -328,7 +351,7 @@ fn validate_protected_runtime_config(
             http_headers,
             env_http_headers,
             bearer_token_env_var,
-        } if url == &recipient
+        } if url == recipient
             && http_headers.is_none()
             && env_http_headers.is_none()
             && bearer_token_env_var.is_none() =>

@@ -1,0 +1,355 @@
+use super::*;
+use crate::provider_auth::ProviderCredentialClass;
+use ed25519_dalek::Signature;
+use ed25519_dalek::Verifier as _;
+use pretty_assertions::assert_eq;
+use std::os::fd::AsRawFd as _;
+use std::os::fd::FromRawFd as _;
+use std::os::unix::fs::MetadataExt as _;
+use std::os::unix::fs::PermissionsExt as _;
+use std::os::unix::process::CommandExt as _;
+use std::process::Command;
+use std::time::Duration;
+use std::time::Instant;
+
+fn fixed_policy(seed: &[u8; RUNTIME_SEED_BYTES]) -> LauncherPolicy {
+    let issuer = SigningKey::from_bytes(seed);
+    LauncherPolicy {
+        version: 1,
+        codex_dev_path: PathBuf::from("/"),
+        codex_dev_sha256: "a".repeat(64),
+        runtime_uid: 65534,
+        runtime_gid: 65534,
+        working_directory: PathBuf::from("/"),
+        principal: Uuid::from_u128(1),
+        project_id: 17,
+        work_item_ref: "w12345".to_string(),
+        mcp_recipient: "https://mcp.example/".to_string(),
+        issuer_kid: "issuer-v1".to_string(),
+        issuer_public_key: URL_SAFE_NO_PAD.encode(issuer.verifying_key().as_bytes()),
+        execution_lease_seconds: 60,
+        task_prompt: "Claim the fixed Work item after checking its current state.".to_string(),
+    }
+}
+
+fn fixed_claims() -> wire::CertificateClaims {
+    wire::CertificateClaims {
+        version: 1,
+        runtime_public_key: URL_SAFE_NO_PAD.encode([4_u8; 32]),
+        runtime_incarnation: Uuid::from_u128(2),
+        provider: "codex-native-runtime".to_string(),
+        artifact_sha256: "b".repeat(64),
+        principal: Uuid::from_u128(1),
+        project_id: 17,
+        execution_lease_seconds: 60,
+        work_item_ref: "w12345".to_string(),
+        recipient: "https://mcp.example/".to_string(),
+        mcp_server: MCP_SERVER.to_string(),
+        method: "tools/call".to_string(),
+        tool: MCP_TOOL.to_string(),
+        purpose: "work-claim".to_string(),
+        iat: 1_800_000_000,
+        exp: 1_800_000_060,
+    }
+}
+
+#[test]
+fn generated_claim_profile_matches_the_protected_runtime_admission() {
+    let config = render_codex_config("https://mcp.example/");
+    auth::validate_raw_config(
+        config.as_bytes(),
+        MCP_SERVER,
+        "https://mcp.example/",
+        &ProviderCredentialClass::Live,
+    )
+    .expect("launcher profile is admitted by the child runtime");
+
+    let unapproved = config.replace("approval_mode = \"approve\"", "approval_mode = \"prompt\"");
+    assert!(
+        auth::validate_raw_config(
+            unapproved.as_bytes(),
+            MCP_SERVER,
+            "https://mcp.example/",
+            &ProviderCredentialClass::Live,
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn issued_certificate_matches_the_existing_compact_jws_contract() {
+    let issuer_seed = [7_u8; RUNTIME_SEED_BYTES];
+    let policy = fixed_policy(&issuer_seed);
+    let claims = fixed_claims();
+    let certificate = issue_certificate(&claims, &issuer_seed, &policy)
+        .expect("fixed issuer can sign the runtime certificate");
+
+    let (header, parsed_claims) =
+        wire::parse_certificate(&certificate).expect("certificate parses through the runtime seam");
+    assert_eq!(header.alg, "EdDSA");
+    assert_eq!(header.typ, "runtime-certificate+jwt");
+    assert_eq!(header.kid, policy.issuer_kid);
+    assert_eq!(
+        serde_json::to_value(parsed_claims).expect("claims serialize"),
+        serde_json::to_value(claims).expect("expected claims serialize")
+    );
+
+    let mut parts = certificate.split('.');
+    let header = parts.next().expect("header segment");
+    let claims = parts.next().expect("claims segment");
+    let signature = URL_SAFE_NO_PAD
+        .decode(parts.next().expect("signature segment"))
+        .expect("signature is base64url encoded");
+    assert!(parts.next().is_none());
+    let issuer = SigningKey::from_bytes(&issuer_seed);
+    issuer
+        .verifying_key()
+        .verify(
+            format!("{header}.{claims}").as_bytes(),
+            &Signature::from_slice(&signature).expect("Ed25519 signature has the fixed size"),
+        )
+        .expect("signature verifies against the root-pinned issuer key");
+}
+
+#[test]
+fn bootstrap_packet_contains_only_the_length_prefixed_certificate_and_ephemeral_seed() {
+    let certificate = "fixed-certificate";
+    let seed = [9_u8; RUNTIME_SEED_BYTES];
+    let packet = make_bootstrap_packet(certificate, &seed).expect("bounded bootstrap packet");
+    let bytes = packet.as_slice();
+    assert_eq!(
+        u32::from_be_bytes(bytes[..4].try_into().expect("certificate length")) as usize,
+        certificate.len()
+    );
+    assert_eq!(&bytes[4..4 + certificate.len()], certificate.as_bytes());
+    assert_eq!(&bytes[4 + certificate.len()..], &seed);
+}
+
+#[test]
+fn fixed_task_prompt_write_obeys_the_execution_deadline_under_backpressure() {
+    let mut descriptors = [0; 2];
+    assert_eq!(
+        unsafe { libc::pipe2(descriptors.as_mut_ptr(), libc::O_CLOEXEC) },
+        0,
+        "create a private prompt pipe"
+    );
+    let _reader = unsafe { std::fs::File::from_raw_fd(descriptors[0]) };
+    let mut writer = unsafe { std::fs::File::from_raw_fd(descriptors[1]) };
+    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    assert!(page_size > 0, "report the host page size");
+    assert!(
+        unsafe {
+            libc::fcntl(
+                writer.as_raw_fd(),
+                libc::F_SETPIPE_SZ,
+                page_size as libc::c_int,
+            )
+        } >= 0,
+        "bound the pipe capacity for this backpressure regression"
+    );
+
+    let prompt = vec![b'x'; 1024 * 1024];
+    let started = Instant::now();
+    let result = write_prompt_until(&mut writer, &prompt, started + Duration::from_millis(100));
+
+    assert!(
+        result.is_err(),
+        "a blocked prompt must expire with its task lease"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "prompt backpressure must not bypass the finite lease"
+    );
+}
+
+#[test]
+fn runtime_home_layout_preserves_child_write_and_protected_config_boundaries() {
+    if let Some(base) = std::env::var_os("CODEX_RUNTIME_PROOF_LAYOUT_TEST_CHILD") {
+        assert_runtime_home_access(&PathBuf::from(base));
+        return;
+    }
+
+    let launcher_uid = unsafe { libc::geteuid() };
+    let (runtime_uid, runtime_gid) = if launcher_uid == 0 {
+        (65_534, 65_534)
+    } else {
+        (launcher_uid, unsafe { libc::getegid() })
+    };
+    let seed = [7_u8; RUNTIME_SEED_BYTES];
+    let mut policy = fixed_policy(&seed);
+    policy.runtime_uid = runtime_uid;
+    policy.runtime_gid = runtime_gid;
+
+    let base = std::env::temp_dir().join(format!(
+        "codex-runtime-proof-layout-{}-{}",
+        std::process::id(),
+        Uuid::new_v4()
+    ));
+    fs::create_dir(&base).expect("create private layout test directory");
+    fs::set_permissions(&base, fs::Permissions::from_mode(0o711))
+        .expect("allow the runtime identity to traverse the fixture root");
+    let run_path = base.join("run");
+    fs::create_dir(&run_path).expect("create run directory before applying service modes");
+
+    let run = prepare_run_directory(&run_path, &policy, PathBuf::from("/"), launcher_uid)
+        .expect("prepare the same home layout used by the systemd service");
+
+    assert_owned_mode(&run_path, launcher_uid, runtime_gid, 0o710);
+    assert_owned_mode(&run.codex_home, launcher_uid, runtime_gid, 0o550);
+    let config = run.codex_home.join("config.toml");
+    assert_owned_mode(&config, launcher_uid, runtime_gid, 0o440);
+    assert_eq!(
+        sha256_hex(&fs::read(&config).expect("read protected generated config")),
+        run.config_sha256
+    );
+
+    let installation_id = run.codex_home.join("installation_id");
+    assert_owned_mode(&installation_id, runtime_uid, runtime_gid, 0o600);
+    let installation_id_text = fs::read_to_string(&installation_id)
+        .expect("the dropped child can open its pre-created installation ID");
+    Uuid::parse_str(installation_id_text.trim()).expect("installation ID is a UUID");
+
+    assert_owned_mode(&run.child_home, runtime_uid, runtime_gid, 0o700);
+    for child_dir in ["tmp", "config", "cache", "data", "state", "runtime"] {
+        let path = run.child_home.join(child_dir);
+        assert_owned_mode(&path, runtime_uid, runtime_gid, 0o700);
+    }
+    let mut child = Command::new("/proc/self/exe");
+    child
+        .args([
+            "--exact",
+            "launcher::launcher_tests::runtime_home_layout_preserves_child_write_and_protected_config_boundaries",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env_clear()
+        .env("CODEX_RUNTIME_PROOF_LAYOUT_TEST_CHILD", &base)
+        .env("CODEX_RUNTIME_PROOF_LAYOUT_CODEX_HOME", &run.codex_home)
+        .env("CODEX_RUNTIME_PROOF_LAYOUT_CHILD_HOME", &run.child_home)
+        .env("CODEX_RUNTIME_PROOF_LAYOUT_CONFIG", &config)
+        .env(
+            "CODEX_RUNTIME_PROOF_LAYOUT_INSTALLATION_ID",
+            &installation_id,
+        )
+        .env("CODEX_RUNTIME_PROOF_LAYOUT_RUNTIME_TMP", run.child_home.join("tmp"));
+    if launcher_uid == 0 {
+        let runtime_uid = policy.runtime_uid;
+        let runtime_gid = policy.runtime_gid;
+        unsafe {
+            child.pre_exec(move || {
+                if libc::setgroups(0, std::ptr::null()) != 0
+                    || libc::setresgid(runtime_gid, runtime_gid, runtime_gid) != 0
+                    || libc::setresuid(runtime_uid, runtime_uid, runtime_uid) != 0
+                    || libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0
+                    || libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) != 0
+                {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+    let status = child
+        .status()
+        .expect("run the layout checks as the configured runtime identity");
+    assert!(
+        status.success(),
+        "runtime identity home access checks failed"
+    );
+    assert_eq!(
+        fs::read(run.child_home.join("tmp/permission-contract"))
+            .expect("read test marker written by runtime identity"),
+        b"child-writable".to_vec()
+    );
+
+    fs::remove_dir_all(&base).expect("remove test runtime tree");
+}
+
+fn assert_runtime_home_access(base: &std::path::Path) {
+    let codex_home = PathBuf::from(
+        std::env::var_os("CODEX_RUNTIME_PROOF_LAYOUT_CODEX_HOME")
+            .expect("protected CODEX_HOME path was supplied by the parent test"),
+    );
+    let child_home = PathBuf::from(
+        std::env::var_os("CODEX_RUNTIME_PROOF_LAYOUT_CHILD_HOME")
+            .expect("child HOME path was supplied by the parent test"),
+    );
+    let config = PathBuf::from(
+        std::env::var_os("CODEX_RUNTIME_PROOF_LAYOUT_CONFIG")
+            .expect("protected config path was supplied by the parent test"),
+    );
+    let installation_id = PathBuf::from(
+        std::env::var_os("CODEX_RUNTIME_PROOF_LAYOUT_INSTALLATION_ID")
+            .expect("installation ID path was supplied by the parent test"),
+    );
+    let runtime_tmp = PathBuf::from(
+        std::env::var_os("CODEX_RUNTIME_PROOF_LAYOUT_RUNTIME_TMP")
+            .expect("runtime temporary directory was supplied by the parent test"),
+    );
+
+    assert!(
+        fs::read(&config).is_ok(),
+        "runtime identity can read config"
+    );
+    assert!(
+        Uuid::parse_str(
+            fs::read_to_string(&installation_id)
+                .expect("runtime identity can read installation ID")
+                .trim()
+        )
+        .is_ok()
+    );
+    fs::write(runtime_tmp.join("permission-contract"), b"child-writable")
+        .expect("runtime identity can write its temp area");
+    assert!(
+        fs::OpenOptions::new().write(true).open(&config).is_err(),
+        "runtime identity cannot change its protected MCP configuration"
+    );
+    assert!(
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(codex_home.join("unapproved"))
+            .is_err(),
+        "runtime identity cannot add settings under CODEX_HOME"
+    );
+    assert!(child_home.is_dir(), "runtime identity can access its HOME");
+    assert!(base.is_dir(), "runtime identity can traverse its run root");
+}
+
+fn assert_owned_mode(path: &std::path::Path, uid: u32, gid: u32, mode: u32) {
+    let metadata = fs::symlink_metadata(path).expect("inspect prepared path");
+    assert!(metadata.is_file() || metadata.is_dir());
+    assert_eq!(
+        metadata.uid(),
+        uid,
+        "unexpected owner for {}",
+        path.display()
+    );
+    assert_eq!(
+        metadata.gid(),
+        gid,
+        "unexpected group for {}",
+        path.display()
+    );
+    assert_eq!(
+        metadata.mode() & 0o777,
+        mode,
+        "unexpected mode for {}",
+        path.display()
+    );
+}
+
+#[test]
+fn launcher_policy_rejects_unsafe_project_ids_and_noncanonical_issuer_pins() {
+    let seed = [7_u8; RUNTIME_SEED_BYTES];
+    let mut policy = fixed_policy(&seed);
+    validate_policy(&policy).expect("fixed canonical policy is accepted");
+
+    policy.project_id = 1_u64 << 53;
+    assert!(validate_policy(&policy).is_err());
+
+    policy.project_id = 17;
+    policy.issuer_public_key.push('=');
+    assert!(validate_policy(&policy).is_err());
+}

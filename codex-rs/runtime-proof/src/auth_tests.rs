@@ -21,8 +21,11 @@ fn fixture_claim_approval_is_exact_and_unavailable_to_live_credentials() {
     let pinned_only = format!(
         "model_provider = \"openai\"\ncli_auth_credentials_store = \"ephemeral\"\n\n[mcp_servers.ops]\nurl = \"{recipient}\"\n"
     );
-    let config = format!(
-        "model_provider = \"openai\"\ncli_auth_credentials_store = \"ephemeral\"\n\n[mcp_servers.ops]\nurl = \"{recipient}\"\n\n[mcp_servers.ops.tools.work_item_claim]\napproval_mode = \"approve\"\n"
+    let fixture_config = format!(
+        "model_provider = \"openai\"\ncli_auth_credentials_store = \"ephemeral\"\n\n[mcp_servers.ops]\nurl = \"{recipient}\"\nrequired = true\n\n[mcp_servers.ops.tools.work_item_claim]\napproval_mode = \"approve\"\n"
+    );
+    let live_config = format!(
+        "model_provider = \"openai\"\ncli_auth_credentials_store = \"ephemeral\"\n\n[mcp_servers.ops]\nurl = \"{recipient}\"\nrequired = true\nenabled_tools = [\"work_item_claim\"]\n\n[mcp_servers.ops.tools.work_item_claim]\napproval_mode = \"approve\"\n"
     );
 
     assert!(
@@ -32,11 +35,11 @@ fn fixture_claim_approval_is_exact_and_unavailable_to_live_credentials() {
             recipient,
             &ProviderCredentialClass::Live,
         )
-        .is_ok()
+        .is_err()
     );
     assert!(
         validate_raw_config(
-            config.as_bytes(),
+            fixture_config.as_bytes(),
             "ops",
             recipient,
             &ProviderCredentialClass::SyntheticFixture,
@@ -45,10 +48,28 @@ fn fixture_claim_approval_is_exact_and_unavailable_to_live_credentials() {
     );
     assert!(
         validate_raw_config(
-            config.as_bytes(),
+            fixture_config.as_bytes(),
             "ops",
             recipient,
             &ProviderCredentialClass::Live,
+        )
+        .is_err()
+    );
+    assert!(
+        validate_raw_config(
+            live_config.as_bytes(),
+            "ops",
+            recipient,
+            &ProviderCredentialClass::Live,
+        )
+        .is_ok()
+    );
+    assert!(
+        validate_raw_config(
+            live_config.as_bytes(),
+            "ops",
+            recipient,
+            &ProviderCredentialClass::SyntheticFixture,
         )
         .is_err()
     );
@@ -65,10 +86,45 @@ fn fixture_claim_approval_is_exact_and_unavailable_to_live_credentials() {
         )
         .is_err()
     );
+    assert!(
+        validate_raw_config(
+            extra_tool.as_bytes(),
+            "ops",
+            recipient,
+            &ProviderCredentialClass::Live,
+        )
+        .is_err()
+    );
+
+    let additional_server = format!(
+        "{live_config}\n[mcp_servers.untrusted]\nurl = \"https://untrusted.example/mcp\"\n"
+    );
+    assert!(
+        validate_raw_config(
+            additional_server.as_bytes(),
+            "ops",
+            recipient,
+            &ProviderCredentialClass::Live,
+        )
+        .is_err()
+    );
+
+    let unapproved_tool_list = format!(
+        "model_provider = \"openai\"\ncli_auth_credentials_store = \"ephemeral\"\n\n[mcp_servers.ops]\nurl = \"{recipient}\"\nenabled_tools = [\"work_item_claim\"]\n"
+    );
+    assert!(
+        validate_raw_config(
+            unapproved_tool_list.as_bytes(),
+            "ops",
+            recipient,
+            &ProviderCredentialClass::Live,
+        )
+        .is_err()
+    );
 
     assert!(
         validate_raw_config(
-            config.as_bytes(),
+            fixture_config.as_bytes(),
             "other",
             recipient,
             &ProviderCredentialClass::SyntheticFixture,
