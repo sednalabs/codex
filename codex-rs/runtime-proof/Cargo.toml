@@ -33,5 +33,8 @@ url = { workspace = true }
 uuid = { workspace = true, features = ["serde", "v4"] }
 zeroize = { workspace = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+reqwest = { workspace = true, features = ["blocking"] }
+
 [dev-dependencies]
 pretty_assertions = { workspace = true }

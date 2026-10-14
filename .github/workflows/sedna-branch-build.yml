@@ -173,7 +173,7 @@ jobs:
         install -Dm 0755 "target/x86_64-unknown-linux-gnu/release/codex-code-mode-host" "${stage_dir}/codex-code-mode-host"
         install -Dm 0755 "target/x86_64-unknown-linux-gnu/release/codex-responses-api-proxy" "${stage_dir}/codex-responses-api-proxy"
         install -Dm 0755 "target/x86_64-unknown-linux-gnu/release/codex-runtime-proof-launcher" "${stage_dir}/codex-runtime-proof-launcher"
-        install -Dm 0644 codex-rs/runtime-proof/systemd/codex-runtime-proof-claim.service "${stage_dir}/systemd/codex-runtime-proof-claim.service"
+        install -Dm 0644 runtime-proof/systemd/codex-runtime-proof-claim.service "${stage_dir}/systemd/codex-runtime-proof-claim.service"
 
         file "${stage_dir}/codex" | grep -F 'x86-64'
         readelf -l "${stage_dir}/codex" | grep -F '/lib64/ld-linux-x86-64.so.2'
@@ -255,7 +255,7 @@ jobs:
         install -Dm 0755 "target/aarch64-unknown-linux-gnu/release/codex-code-mode-host" "${stage_dir}/codex-code-mode-host"
         install -Dm 0755 "target/aarch64-unknown-linux-gnu/release/codex-responses-api-proxy" "${stage_dir}/codex-responses-api-proxy"
         install -Dm 0755 "target/aarch64-unknown-linux-gnu/release/codex-runtime-proof-launcher" "${stage_dir}/codex-runtime-proof-launcher"
-        install -Dm 0644 codex-rs/runtime-proof/systemd/codex-runtime-proof-claim.service "${stage_dir}/systemd/codex-runtime-proof-claim.service"
+        install -Dm 0644 runtime-proof/systemd/codex-runtime-proof-claim.service "${stage_dir}/systemd/codex-runtime-proof-claim.service"
 
         file "${stage_dir}/codex" | grep -F 'ARM aarch64'
         readelf -l "${stage_dir}/codex" | grep -F '/lib/ld-linux-aarch64.so.1'

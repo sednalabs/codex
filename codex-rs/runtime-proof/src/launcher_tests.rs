@@ -1,5 +1,4 @@
 use super::*;
-use crate::provider_auth::ProviderCredentialClass;
 use ed25519_dalek::Signature;
 use ed25519_dalek::Verifier as _;
 use pretty_assertions::assert_eq;
@@ -21,6 +20,13 @@ fn fixed_policy(seed: &[u8; RUNTIME_SEED_BYTES]) -> LauncherPolicy {
         project_id: 17,
         work_item_ref: "w12345".to_string(),
         mcp_recipient: "https://mcp.example/".to_string(),
+        mcp_oauth: crate::mcp_oauth::McpOAuthPolicy {
+            token_endpoint: "https://issuer.example/oauth/token".to_string(),
+            expected_issuer: "https://issuer.example/".to_string(),
+            client_id: "codex-work-claim".to_string(),
+            audience: "https://mcp.example/".to_string(),
+            requested_scope: "ops:write".to_string(),
+        },
         issuer_kid: "issuer-v1".to_string(),
         issuer_public_key: URL_SAFE_NO_PAD.encode(issuer.verifying_key().as_bytes()),
         execution_lease_seconds: 60,
@@ -50,13 +56,21 @@ fn fixed_claims() -> wire::CertificateClaims {
 }
 
 #[test]
+fn effective_certificate_expiry_never_outlives_the_mcp_token() {
+    let (expires_at, lease_seconds) = effective_expiry(100, 1_000, 400)
+        .expect("token expiry bounds the fixed task certificate");
+    assert_eq!(expires_at, 400);
+    assert_eq!(lease_seconds, 300);
+    assert!(effective_expiry(100, 1_000, 100).is_err());
+}
+
+#[test]
 fn generated_claim_profile_matches_the_protected_runtime_admission() {
     let config = render_codex_config("https://mcp.example/");
     crate::auth::validate_raw_config(
         config.as_bytes(),
         MCP_SERVER,
         "https://mcp.example/",
-        &ProviderCredentialClass::Live,
     )
     .expect("launcher profile is admitted by the child runtime");
 
@@ -66,7 +80,6 @@ fn generated_claim_profile_matches_the_protected_runtime_admission() {
             unapproved.as_bytes(),
             MCP_SERVER,
             "https://mcp.example/",
-            &ProviderCredentialClass::Live,
         )
         .is_err()
     );
@@ -190,31 +203,46 @@ fn runtime_home_layout_preserves_child_write_and_protected_config_boundaries() {
     let run = prepare_run_directory(&run_path, &policy, PathBuf::from("/"), launcher_uid)
         .expect("prepare the same home layout used by the systemd service");
 
-    assert_owned_mode(&run_path, launcher_uid, runtime_gid, 0o710);
-    assert_owned_mode(&run.codex_home, launcher_uid, runtime_gid, 0o550);
+    assert_owned_mode(&run_path, launcher_uid, runtime_gid, /*mode*/ 0o710);
+    assert_owned_mode(
+        &run.codex_home,
+        launcher_uid,
+        runtime_gid,
+        /*mode*/ 0o550,
+    );
     let config = run.codex_home.join("config.toml");
-    assert_owned_mode(&config, launcher_uid, runtime_gid, 0o440);
+    assert_owned_mode(&config, launcher_uid, runtime_gid, /*mode*/ 0o440);
     assert_eq!(
         sha256_hex(&fs::read(&config).expect("read protected generated config")),
         run.config_sha256
     );
 
     let installation_id = run.codex_home.join("installation_id");
-    assert_owned_mode(&installation_id, runtime_uid, runtime_gid, 0o600);
+    assert_owned_mode(
+        &installation_id,
+        runtime_uid,
+        runtime_gid,
+        /*mode*/ 0o600,
+    );
     let installation_id_text = fs::read_to_string(&installation_id)
         .expect("the dropped child can open its pre-created installation ID");
     Uuid::parse_str(installation_id_text.trim()).expect("installation ID is a UUID");
 
-    assert_owned_mode(&run.child_home, runtime_uid, runtime_gid, 0o700);
+    assert_owned_mode(
+        &run.child_home,
+        runtime_uid,
+        runtime_gid,
+        /*mode*/ 0o700,
+    );
     for child_dir in ["tmp", "config", "cache", "data", "state", "runtime"] {
         let path = run.child_home.join(child_dir);
-        assert_owned_mode(&path, runtime_uid, runtime_gid, 0o700);
+        assert_owned_mode(&path, runtime_uid, runtime_gid, /*mode*/ 0o700);
     }
     let mut child = Command::new("/proc/self/exe");
     child
         .args([
             "--exact",
-            "launcher::launcher_tests::runtime_home_layout_preserves_child_write_and_protected_config_boundaries",
+            "launcher::tests::runtime_home_layout_preserves_child_write_and_protected_config_boundaries",
             "--nocapture",
             "--test-threads=1",
         ])

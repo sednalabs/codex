@@ -8,6 +8,8 @@
 //! object.
 
 use crate::auth::AuthFrame;
+use crate::mcp_oauth::McpOAuthPolicy;
+use crate::mcp_oauth::exchange_client_credentials;
 use crate::provider_auth::ProviderAuth;
 use crate::provider_auth::ProviderCredentialClass;
 use crate::provider_auth::SecretString;
@@ -53,7 +55,7 @@ const POLICY_PATH: &str = "/etc/codex/runtime-proof/claim-launch.json";
 const CREDENTIALS_DIRECTORY_ENV: &str = "CREDENTIALS_DIRECTORY";
 const ISSUER_SEED_CREDENTIAL: &str = "runtime-proof-issuer-seed";
 const PROVIDER_AUTH_CREDENTIAL: &str = "provider-auth.json";
-const MCP_BEARER_CREDENTIAL: &str = "ops-mcp-bearer";
+const MCP_CLIENT_SECRET_CREDENTIAL: &str = "ops-mcp-client-secret";
 const RUNTIME_DIRECTORY: &str = "/run/codex-runtime-proof";
 const PROVIDER_RECIPIENT: &str = "https://chatgpt.com/backend-api/codex";
 const MCP_SERVER: &str = "ops";
@@ -64,7 +66,7 @@ const CHILD_SOURCE_FD_MIN: RawFd = 32;
 const RUNTIME_SEED_BYTES: usize = 32;
 const MAX_POLICY_BYTES: usize = 32 * 1024;
 const MAX_PROVIDER_AUTH_BYTES: usize = 24 * 1024;
-const MAX_MCP_BEARER_BYTES: usize = 16 * 1024;
+const MAX_MCP_CLIENT_SECRET_BYTES: usize = 4096;
 const MAX_EXECUTABLE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const ACK_TIMEOUT: Duration = Duration::from_secs(60);
 const READINESS_PACKET: &[u8; 4] = b"ACK1";
@@ -83,6 +85,7 @@ struct LauncherPolicy {
     project_id: u64,
     work_item_ref: String,
     mcp_recipient: String,
+    mcp_oauth: McpOAuthPolicy,
     issuer_kid: String,
     issuer_public_key: String,
     execution_lease_seconds: u32,
@@ -207,6 +210,7 @@ fn validate_policy(policy: &LauncherPolicy) -> Result<()> {
         bail!("fixed MCP recipient exceeds its size limit");
     }
     validate_https_recipient(&policy.mcp_recipient)?;
+    policy.mcp_oauth.validate()?;
     if policy.issuer_kid.is_empty()
         || policy.issuer_kid.len() > 128
         || !policy
@@ -525,10 +529,33 @@ fn supervise_child(
 ) -> Result<i32> {
     verify_child_image_and_identity(child, executable, policy)?;
 
-    let (now, expires_at, task_deadline) = certificate_timing(policy)?;
     let issuer_seed = read_issuer_seed(credential_directory, policy)?;
     let mut runtime_seed = Zeroizing::new([0_u8; RUNTIME_SEED_BYTES]);
     rand::rng().fill_bytes(runtime_seed.as_mut());
+    let provider = read_provider_auth(credential_directory)?;
+    let client_secret = read_mcp_client_secret(credential_directory)?;
+    let mcp_access_token = exchange_client_credentials(
+        &policy.mcp_oauth,
+        &client_secret,
+        policy.principal,
+        policy.project_id,
+    )?;
+    drop(client_secret);
+
+    let (now, policy_expires_at, policy_task_deadline) = certificate_timing(policy)?;
+    let (expires_at, execution_lease_seconds) = effective_expiry(
+        now,
+        policy_expires_at,
+        mcp_access_token.expires_at,
+    )?;
+    let task_deadline = if expires_at == policy_expires_at {
+        policy_task_deadline
+    } else {
+        Instant::now()
+            .checked_add(Duration::from_secs(u64::from(execution_lease_seconds)))
+            .context("MCP token task deadline overflowed")?
+    };
+
     let claims = wire::CertificateClaims {
         version: 1,
         runtime_public_key: URL_SAFE_NO_PAD.encode(
@@ -541,7 +568,7 @@ fn supervise_child(
         artifact_sha256: executable.digest.clone(),
         principal: policy.principal,
         project_id: policy.project_id,
-        execution_lease_seconds: policy.execution_lease_seconds,
+        execution_lease_seconds,
         work_item_ref: policy.work_item_ref.clone(),
         recipient: policy.mcp_recipient.clone(),
         mcp_server: MCP_SERVER.to_string(),
@@ -554,9 +581,7 @@ fn supervise_child(
     let certificate = issue_certificate(&claims, &issuer_seed, policy)?;
     drop(issuer_seed);
     let certificate_sha256 = wire::certificate_digest(certificate.as_bytes());
-    let provider = read_provider_auth(credential_directory)?;
-    let mcp_bearer = read_mcp_bearer(credential_directory)?;
-    validate_live_credentials(&provider, &mcp_bearer, policy)?;
+    validate_live_credentials(&provider, &mcp_access_token.bearer, expires_at)?;
 
     let auth_packet = {
         let auth_frame = AuthFrame {
@@ -572,7 +597,7 @@ fn supervise_child(
             provider_recipient: PROVIDER_RECIPIENT.to_string(),
             expires_at,
             provider,
-            mcp_bearer,
+            mcp_bearer: mcp_access_token.bearer,
         };
         Zeroizing::new(
             serde_json::to_vec(&auth_frame).context("encode protected runtime auth frame")?,
@@ -601,6 +626,17 @@ fn supervise_child(
     }
     let status = wait_for_child(child, task_deadline)?;
     Ok(exit_code(status))
+}
+
+fn effective_expiry(now: i64, policy_expires_at: i64, token_expires_at: i64) -> Result<(i64, u32)> {
+    let expires_at = policy_expires_at.min(token_expires_at);
+    let remaining = expires_at.saturating_sub(now);
+    if remaining <= 0 {
+        bail!("MCP client-credentials token expired before task admission");
+    }
+    let lease_seconds = u32::try_from(remaining)
+        .context("effective runtime lease is outside the supported range")?;
+    Ok((expires_at, lease_seconds))
 }
 
 fn verify_child_image_and_identity(
@@ -676,20 +712,23 @@ fn read_provider_auth(directory: &Path) -> Result<ProviderAuth> {
     serde_json::from_slice(&bytes).context("parse fixed provider-auth credential")
 }
 
-fn read_mcp_bearer(directory: &Path) -> Result<SecretString> {
-    let bytes = read_credential(directory, MCP_BEARER_CREDENTIAL, MAX_MCP_BEARER_BYTES)?;
-    let bearer = std::str::from_utf8(&bytes)?.to_string();
-    let bearer = SecretString(bearer);
-    if bearer.0.is_empty() || bearer.0.chars().any(char::is_control) {
-        bail!("fixed MCP credential is invalid");
+fn read_mcp_client_secret(directory: &Path) -> Result<SecretString> {
+    let bytes = read_credential(
+        directory,
+        MCP_CLIENT_SECRET_CREDENTIAL,
+        MAX_MCP_CLIENT_SECRET_BYTES,
+    )?;
+    let secret = std::str::from_utf8(&bytes)?.to_string();
+    if secret.is_empty() || secret.chars().any(char::is_control) {
+        bail!("fixed MCP OAuth client secret is invalid");
     }
-    Ok(bearer)
+    Ok(SecretString(secret))
 }
 
 fn validate_live_credentials(
     provider: &ProviderAuth,
     mcp_bearer: &SecretString,
-    policy: &LauncherPolicy,
+    issued_until: i64,
 ) -> Result<()> {
     if provider.credential_class != ProviderCredentialClass::Live
         || provider.kind != "chatgpt_access_token"
@@ -702,7 +741,7 @@ fn validate_live_credentials(
         || provider.plan_type.as_ref().is_none_or(|plan| {
             plan.is_empty() || plan.len() > 64 || plan.chars().any(char::is_control)
         })
-        || mcp_bearer.0.len() > MAX_MCP_BEARER_BYTES
+        || mcp_bearer.0.len() > 16 * 1024
     {
         bail!("fixed provider-auth credential is outside the protected live contract");
     }
@@ -710,7 +749,7 @@ fn validate_live_credentials(
         provider,
         PROVIDER_RECIPIENT,
         &mcp_bearer.0,
-        unix_seconds()?.saturating_add(policy.execution_lease_seconds as i64),
+        issued_until,
     )?;
     crate::provider_auth::ensure_protected_cloud_config_ineligible(provider.plan_type.as_deref())?;
     Ok(())

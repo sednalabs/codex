@@ -195,7 +195,6 @@ fn validate_and_import(
         &config_bytes,
         &frame.mcp_server,
         &frame.recipient,
-        &frame.provider.credential_class,
     )?;
 
     codex_login::auth::login_with_chatgpt_auth_tokens(
@@ -230,7 +229,6 @@ pub(crate) fn validate_raw_config(
     config: &[u8],
     server: &str,
     recipient: &str,
-    credential_class: &ProviderCredentialClass,
 ) -> Result<()> {
     let config: toml::Value =
         toml::from_str(std::str::from_utf8(config)?).context("parse immutable runtime config")?;
@@ -275,13 +273,7 @@ pub(crate) fn validate_raw_config(
                                 == Some("approve")
                     })
         });
-    let fixture_claim_approval = credential_class == &ProviderCredentialClass::SyntheticFixture
-        && server == "ops"
-        && mcp_servers.len() == 1
-        && selected.len() == 2
-        && claim_tool_is_explicitly_approved;
-    let live_claim_approval = credential_class == &ProviderCredentialClass::Live
-        && server == "ops"
+    let fixed_claim_profile = server == "ops"
         && mcp_servers.len() == 1
         && selected.len() == 4
         && selected.get("required").and_then(toml::Value::as_bool) == Some(true)
@@ -290,7 +282,7 @@ pub(crate) fn validate_raw_config(
             .and_then(toml::Value::as_array)
             .is_some_and(|tools| tools.len() == 1 && tools[0].as_str() == Some("work_item_claim"))
         && claim_tool_is_explicitly_approved;
-    if !selected_url_matches || (!fixture_claim_approval && !live_claim_approval) {
+    if !selected_url_matches || !fixed_claim_profile {
         bail!("protected runtime MCP config contains unadmitted settings");
     }
     if table.contains_key("env") || table.contains_key("dotenv") {
