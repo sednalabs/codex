@@ -68,6 +68,7 @@ CLIPPY_REQUIRED_PREFIXES = (
 
 PACKAGE_ROOT_PATHS = {
     "package.json",
+    "package-lock.json",
     "pnpm-lock.yaml",
     "pnpm-workspace.yaml",
 }
@@ -249,7 +250,7 @@ def classify(paths: Iterable[str]) -> Scope:
 
         if (
             suffix in JS_TS_SUFFIXES
-            or path in PACKAGE_ROOT_PATHS
+            or name in PACKAGE_ROOT_PATHS
             or name in {"tsconfig.json", "eslint.config.js", "eslint.config.mjs"}
         ):
             codeql.add("javascript-typescript")

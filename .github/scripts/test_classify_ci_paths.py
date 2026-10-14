@@ -57,6 +57,18 @@ class ClassifyCiPathsTests(unittest.TestCase):
         self.assertFalse(scope.sdk_python)
         self.assertEqual(scope.codeql_languages, ("javascript-typescript",))
 
+    def test_nested_package_manifests_select_js_codeql(self) -> None:
+        for path in (
+            "sdk/typescript/package.json",
+            "sdk/typescript/package-lock.json",
+            "sdk/typescript/pnpm-lock.yaml",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(
+                    classify([path]).codeql_languages,
+                    ("javascript-typescript",),
+                )
+
     def test_packaging_change_selects_package_lane(self) -> None:
         scope = classify(["scripts/stage_npm_packages.py"])
         self.assertTrue(scope.repo_package)
