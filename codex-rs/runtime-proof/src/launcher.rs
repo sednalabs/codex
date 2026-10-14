@@ -543,16 +543,10 @@ fn supervise_child(
     drop(client_secret);
 
     let (now, policy_expires_at, policy_task_deadline) = certificate_timing(policy)?;
-    let (expires_at, execution_lease_seconds) = effective_expiry(
-        now,
-        policy_expires_at,
-        mcp_access_token.expires_at,
-    )?;
-    let task_deadline = task_deadline_for_expiry(
-        expires_at,
-        policy_expires_at,
-        policy_task_deadline,
-    )?;
+    let (expires_at, execution_lease_seconds) =
+        effective_expiry(now, policy_expires_at, mcp_access_token.expires_at)?;
+    let task_deadline =
+        task_deadline_for_expiry(expires_at, policy_expires_at, policy_task_deadline)?;
 
     let claims = wire::CertificateClaims {
         version: 1,
@@ -1173,13 +1167,6 @@ fn hex(bytes: &[u8]) -> String {
         let _ = write!(output, "{byte:02x}");
     }
     output
-}
-
-fn unix_seconds() -> Result<i64> {
-    Ok(SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .context("system clock precedes Unix epoch")?
-        .as_secs() as i64)
 }
 
 fn certificate_timing(policy: &LauncherPolicy) -> Result<(i64, i64, Instant)> {

@@ -10,15 +10,12 @@ use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
 use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use reqwest::StatusCode;
-use reqwest::blocking::Client;
-use reqwest::blocking::ClientBuilder;
-use reqwest::blocking::Request;
-use reqwest::header::CONTENT_TYPE;
+use codex_http_client::HttpClient;
+use codex_http_client::HttpClientBuilder;
 use serde::Deserialize;
 use serde_json::Value;
-use std::io::Read as _;
 use std::time::Duration;
 use url::Url;
 use uuid::Uuid;
@@ -30,6 +27,12 @@ const MAX_TOKEN_CLAIMS_BYTES: usize = 8 * 1024;
 const TOKEN_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const TOKEN_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUIRED_SCOPE: &str = "ops:write";
+
+struct PreparedClientCredentialsRequest {
+    endpoint: String,
+    authorization: Zeroizing<String>,
+    body: String,
+}
 
 /// Root-selected client-credentials endpoint and exact protected MCP token contract.
 #[derive(Deserialize)]
@@ -94,18 +97,48 @@ pub(crate) fn exchange_client_credentials(
         bail!("fixed MCP OAuth identity is outside the admitted token contract");
     }
 
-    let client = oauth_client_builder()
-        .https_only(true)
+    let client = oauth_http_client()?;
+    let request = prepare_client_credentials_request(policy, client_secret)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
         .build()
-        .context("build bounded MCP OAuth client")?;
-    let request = build_client_credentials_request(&client, policy, client_secret)?;
+        .context("build fixed MCP OAuth runtime")?;
+    runtime.block_on(exchange_with_client(
+        &client, request, policy, principal, project_id,
+    ))
+}
+
+async fn exchange_with_client(
+    client: &HttpClient,
+    request: PreparedClientCredentialsRequest,
+    policy: &McpOAuthPolicy,
+    principal: Uuid,
+    project_id: u64,
+) -> Result<McpAccessToken> {
+    let PreparedClientCredentialsRequest {
+        endpoint,
+        authorization,
+        body,
+    } = request;
     let response = client
-        .execute(request)
+        .post(endpoint.as_str())
+        .header("authorization", authorization.as_str())
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(body)
+        .timeout(TOKEN_REQUEST_TIMEOUT)
+        .send()
+        .await
         .context("request fixed MCP client-credentials token")?;
-    if response.status() != StatusCode::OK {
+    drop(authorization);
+    if response.status().as_u16() != 200 {
         bail!("fixed MCP OAuth endpoint returned a non-success response");
     }
-    if !is_json_content_type(response.headers().get(CONTENT_TYPE)) {
+    if !is_json_content_type(
+        response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
+    ) {
         bail!("fixed MCP OAuth endpoint returned a non-JSON response");
     }
     if response
@@ -115,33 +148,44 @@ pub(crate) fn exchange_client_credentials(
         bail!("fixed MCP OAuth response exceeds its size limit");
     }
     let mut body = Zeroizing::new(Vec::with_capacity(1024));
-    response
-        .take(MAX_TOKEN_RESPONSE_BYTES as u64 + 1)
-        .read_to_end(&mut body)
-        .context("read fixed MCP OAuth response")?;
-    if body.len() > MAX_TOKEN_RESPONSE_BYTES {
-        bail!("fixed MCP OAuth response exceeds its size limit");
+    let mut response = response;
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .context("read fixed MCP OAuth response")?
+    {
+        let next_length = body
+            .len()
+            .checked_add(chunk.len())
+            .context("fixed MCP OAuth response size overflowed")?;
+        if next_length > MAX_TOKEN_RESPONSE_BYTES {
+            bail!("fixed MCP OAuth response exceeds its size limit");
+        }
+        body.extend_from_slice(&chunk);
     }
 
-    let response: TokenEndpointResponse = serde_json::from_slice(&body)
-        .context("decode fixed MCP OAuth token response")?;
+    let response: TokenEndpointResponse =
+        serde_json::from_slice(&body).context("decode fixed MCP OAuth token response")?;
     validate_token_response(response, policy, principal, project_id, unix_seconds()?)
 }
 
-fn oauth_client_builder() -> ClientBuilder {
-    Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
+fn oauth_http_client() -> Result<HttpClient> {
+    // The endpoint comes from root-owned fixed policy. Sending the client secret through a
+    // caller-controlled or ambient proxy would add another credential recipient, so this one
+    // exchange uses the HTTP abstraction's explicit direct-route builder.
+    HttpClientBuilder::new()
+        .without_redirects()
+        .without_retries()
+        .without_request_logging()
         .connect_timeout(TOKEN_CONNECT_TIMEOUT)
-        .timeout(TOKEN_REQUEST_TIMEOUT)
-        .retry(reqwest::retry::never())
-        .no_proxy()
+        .build_direct()
+        .context("build bounded MCP OAuth client")
 }
 
-fn build_client_credentials_request(
-    client: &Client,
+fn prepare_client_credentials_request(
     policy: &McpOAuthPolicy,
     client_secret: &SecretString,
-) -> Result<Request> {
+) -> Result<PreparedClientCredentialsRequest> {
     if client_secret.0.is_empty()
         || client_secret.0.len() > 4096
         || client_secret.0.chars().any(char::is_control)
@@ -149,30 +193,46 @@ fn build_client_credentials_request(
         bail!("fixed MCP OAuth client secret is invalid");
     }
     let encoded_client_id = form_encoded_component(&policy.client_id);
-    let encoded_client_secret = Zeroizing::new(form_encoded_component(&client_secret.0));
-    client
-        .post(&policy.token_endpoint)
-        .basic_auth(
-            &encoded_client_id,
-            Some(encoded_client_secret.as_str()),
-        )
-        .form(&[
-            ("grant_type", "client_credentials"),
-            ("audience", policy.audience.as_str()),
-            ("scope", policy.requested_scope.as_str()),
-        ])
-        .build()
-        .context("build fixed MCP client-credentials request")
+    let mut basic_credentials = Zeroizing::new(String::with_capacity(
+        encoded_client_id.len() + client_secret.0.len() + 1,
+    ));
+    basic_credentials.push_str(&encoded_client_id);
+    basic_credentials.push(':');
+    append_form_encoded(&mut basic_credentials, client_secret.0.as_bytes());
+
+    let mut authorization = Zeroizing::new(String::from("Basic "));
+    STANDARD.encode_string(basic_credentials.as_bytes(), &mut *authorization);
+
+    let mut body = String::from("grant_type=client_credentials&audience=");
+    append_form_encoded(&mut body, policy.audience.as_bytes());
+    body.push_str("&scope=");
+    append_form_encoded(&mut body, policy.requested_scope.as_bytes());
+
+    Ok(PreparedClientCredentialsRequest {
+        endpoint: policy.token_endpoint.clone(),
+        authorization,
+        body,
+    })
 }
 
 fn form_encoded_component(value: &str) -> String {
-    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
-    serializer.append_pair("value", value);
-    serializer
-        .finish()
-        .strip_prefix("value=")
-        .unwrap_or_default()
-        .to_string()
+    let mut encoded = String::with_capacity(value.len());
+    append_form_encoded(&mut encoded, value.as_bytes());
+    encoded
+}
+
+fn append_form_encoded(output: &mut String, bytes: &[u8]) {
+    use std::fmt::Write as _;
+
+    for byte in bytes {
+        match *byte {
+            b' ' => output.push('+'),
+            b'*' | b'-' | b'.' | b'_' | b'0'..=b'9' | b'A'..=b'Z' | b'a'..=b'z' => {
+                output.push(char::from(*byte));
+            }
+            _ => write!(output, "%{byte:02X}").expect("writing to a string cannot fail"),
+        }
+    }
 }
 
 fn validate_token_response(
@@ -186,9 +246,10 @@ fn validate_token_response(
         || response
             .expires_in
             .is_some_and(|expires_in| expires_in == 0 || expires_in > 86_400)
-        || response.scope.as_deref().is_some_and(|scope| {
-            scope.split_whitespace().collect::<Vec<_>>() != [REQUIRED_SCOPE]
-        })
+        || response
+            .scope
+            .as_deref()
+            .is_some_and(|scope| scope.split_whitespace().collect::<Vec<_>>() != [REQUIRED_SCOPE])
         || response.access_token.0.is_empty()
         || response.access_token.0.len() > MAX_ACCESS_TOKEN_BYTES
         || response.access_token.0.chars().any(char::is_control)
@@ -218,8 +279,8 @@ fn validate_token_response(
     });
     let audiences_match = claim_audiences(&claims)
         .is_some_and(|audiences| audiences.as_slice() == [policy.audience.as_str()]);
-    let scopes_match = claim_scopes(&claims)
-        .is_some_and(|scopes| scopes.as_slice() == [REQUIRED_SCOPE]);
+    let scopes_match =
+        claim_scopes(&claims).is_some_and(|scopes| scopes.as_slice() == [REQUIRED_SCOPE]);
     let token_project = claim_project_id(&claims);
     let expires_at = claims.get("exp").and_then(Value::as_i64);
     let response_expires_at = response
@@ -238,7 +299,10 @@ fn validate_token_response(
         || !client_identity_matches
         || !audiences_match
         || !scopes_match
-        || response.scope.as_deref().is_some_and(|scope| scope != REQUIRED_SCOPE)
+        || response
+            .scope
+            .as_deref()
+            .is_some_and(|scope| scope != REQUIRED_SCOPE)
         || token_project != Some(project_id)
         || expires_at.is_none_or(|expires| expires <= now)
     {
@@ -292,10 +356,7 @@ fn parse_access_token_claims(token: &str) -> Result<(AccessTokenHeader, Value)> 
 fn claim_audiences(claims: &Value) -> Option<Vec<&str>> {
     match claims.get("aud") {
         Some(Value::String(value)) => Some(value.split_whitespace().collect()),
-        Some(Value::Array(values)) => values
-            .iter()
-            .map(Value::as_str)
-            .collect::<Option<Vec<_>>>(),
+        Some(Value::Array(values)) => values.iter().map(Value::as_str).collect::<Option<Vec<_>>>(),
         _ => None,
     }
 }
@@ -307,10 +368,7 @@ fn claim_scopes(claims: &Value) -> Option<Vec<&str>> {
         .or_else(|| claims.get("scopes"));
     match value {
         Some(Value::String(scopes)) => Some(scopes.split_whitespace().collect()),
-        Some(Value::Array(scopes)) => scopes
-            .iter()
-            .map(Value::as_str)
-            .collect::<Option<Vec<_>>>(),
+        Some(Value::Array(scopes)) => scopes.iter().map(Value::as_str).collect::<Option<Vec<_>>>(),
         _ => None,
     }
 }
@@ -338,9 +396,8 @@ fn validate_https_url(value: &str, name: &str) -> Result<()> {
     Ok(())
 }
 
-fn is_json_content_type(value: Option<&reqwest::header::HeaderValue>) -> bool {
+fn is_json_content_type(value: Option<&str>) -> bool {
     value
-        .and_then(|value| value.to_str().ok())
         .and_then(|value| value.split(';').next())
         .is_some_and(|media_type| {
             let media_type = media_type.trim().to_ascii_lowercase();

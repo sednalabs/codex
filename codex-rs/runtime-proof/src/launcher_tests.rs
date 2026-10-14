@@ -57,8 +57,8 @@ fn fixed_claims() -> wire::CertificateClaims {
 
 #[test]
 fn effective_certificate_expiry_never_outlives_the_mcp_token() {
-    let (expires_at, lease_seconds) = effective_expiry(100, 1_000, 400)
-        .expect("token expiry bounds the fixed task certificate");
+    let (expires_at, lease_seconds) =
+        effective_expiry(100, 1_000, 400).expect("token expiry bounds the fixed task certificate");
     assert_eq!(expires_at, 400);
     assert_eq!(lease_seconds, 300);
     assert!(effective_expiry(100, 1_000, 100).is_err());
@@ -87,12 +87,8 @@ fn token_deadline_preserves_fractional_time_from_the_policy_clock_pair() {
 #[test]
 fn generated_claim_profile_matches_the_protected_runtime_admission() {
     let config = render_codex_config("https://mcp.example/");
-    crate::auth::validate_raw_config(
-        config.as_bytes(),
-        MCP_SERVER,
-        "https://mcp.example/",
-    )
-    .expect("launcher profile is admitted by the child runtime");
+    crate::auth::validate_raw_config(config.as_bytes(), MCP_SERVER, "https://mcp.example/")
+        .expect("launcher profile is admitted by the child runtime");
 
     let unapproved = config.replace("approval_mode = \"approve\"", "approval_mode = \"prompt\"");
     assert!(

@@ -1,5 +1,6 @@
 #[cfg(target_os = "linux")]
 use crate::provider_auth::ProviderAuth;
+#[cfg(target_os = "linux")]
 use crate::provider_auth::ProviderCredentialClass;
 #[cfg(target_os = "linux")]
 use crate::provider_auth::SecretString;
@@ -191,11 +192,7 @@ fn validate_and_import(
     if sha256_hex(&config_bytes) != frame.config_sha256 {
         bail!("runtime auth frame config digest does not match CODEX_HOME/config.toml");
     }
-    validate_raw_config(
-        &config_bytes,
-        &frame.mcp_server,
-        &frame.recipient,
-    )?;
+    validate_raw_config(&config_bytes, &frame.mcp_server, &frame.recipient)?;
 
     codex_login::auth::login_with_chatgpt_auth_tokens(
         &home,
@@ -225,11 +222,7 @@ fn validate_and_import(
     Ok(())
 }
 
-pub(crate) fn validate_raw_config(
-    config: &[u8],
-    server: &str,
-    recipient: &str,
-) -> Result<()> {
+pub(crate) fn validate_raw_config(config: &[u8], server: &str, recipient: &str) -> Result<()> {
     let config: toml::Value =
         toml::from_str(std::str::from_utf8(config)?).context("parse immutable runtime config")?;
     let table = config

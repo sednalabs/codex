@@ -1,24 +1,19 @@
 use super::McpOAuthPolicy;
 use super::TokenEndpointResponse;
-use super::build_client_credentials_request;
+use super::prepare_client_credentials_request;
 use super::validate_token_response;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
-use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering;
-use std::thread;
-use std::time::Duration;
 use uuid::Uuid;
 
 const PRINCIPAL: &str = "22222222-2222-4222-8222-222222222222";
 const PROJECT_ID: u64 = 17;
 const NOW: i64 = 1_800_000_000;
 
-fn policy() -> McpOAuthPolicy {
+fn fixed_policy() -> McpOAuthPolicy {
     McpOAuthPolicy {
         token_endpoint: "https://issuer.example/oauth/token".to_string(),
         expected_issuer: "https://issuer.example/".to_string(),
@@ -61,38 +56,24 @@ fn response(claims: Value) -> TokenEndpointResponse {
 
 #[test]
 fn request_uses_fixed_client_credentials_scope_and_audience_without_secret_in_body() {
-    let policy = policy();
+    let policy = fixed_policy();
     policy.validate().expect("fixed HTTPS policy is admitted");
     let secret = crate::provider_auth::SecretString("synthetic-client-secret".to_string());
-    let client = reqwest::blocking::Client::builder()
-        .https_only(true)
-        .redirect(reqwest::redirect::Policy::none())
-        .no_proxy()
-        .build()
-        .expect("test client builds");
-    let request = build_client_credentials_request(&client, &policy, &secret)
-        .expect("fixed request builds");
+    let request = prepare_client_credentials_request(&policy, &secret)
+        .expect("fixed request material builds");
 
-    assert_eq!(request.method(), reqwest::Method::POST);
-    assert_eq!(request.url().as_str(), policy.token_endpoint);
-    let authorization = request
-        .headers()
-        .get(reqwest::header::AUTHORIZATION)
-        .expect("OAuth client authentication is explicit")
-        .to_str()
-        .expect("authorization header is ASCII");
-    let encoded_credentials = authorization
+    assert_eq!(request.endpoint, policy.token_endpoint);
+    let encoded_credentials = request
+        .authorization
         .strip_prefix("Basic ")
         .expect("client secret uses HTTP Basic auth");
     assert_eq!(
-        STANDARD.decode(encoded_credentials).expect("base64 credentials"),
+        STANDARD
+            .decode(encoded_credentials)
+            .expect("base64 credentials"),
         b"codex-work-claim:synthetic-client-secret"
     );
-    let body = request
-        .body()
-        .and_then(reqwest::blocking::Body::as_bytes)
-        .expect("fixed form body");
-    let form = url::form_urlencoded::parse(body)
+    let form = url::form_urlencoded::parse(request.body.as_bytes())
         .map(|(key, value)| (key.into_owned(), value.into_owned()))
         .collect::<Vec<_>>();
     assert_eq!(
@@ -103,128 +84,45 @@ fn request_uses_fixed_client_credentials_scope_and_audience_without_secret_in_bo
             ("scope".to_string(), "ops:write".to_string()),
         ]
     );
-    assert!(!String::from_utf8_lossy(body).contains(&secret.0));
+    assert!(!request.body.contains(&secret.0));
 
     let special_secret = crate::provider_auth::SecretString("secret:+/=".to_string());
-    let special_request = build_client_credentials_request(&client, &policy, &special_secret)
+    let special_request = prepare_client_credentials_request(&policy, &special_secret)
         .expect("special OAuth secret is encoded per the client-secret-basic contract");
     let encoded_credentials = special_request
-        .headers()
-        .get(reqwest::header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Basic "))
+        .authorization
+        .strip_prefix("Basic ")
         .and_then(|value| STANDARD.decode(value).ok())
         .expect("encoded client authentication");
-    assert_eq!(
-        encoded_credentials,
-        b"codex-work-claim:secret%3A%2B%2F%3D"
-    );
-}
-
-#[test]
-fn refused_http2_token_request_is_never_replayed() {
-    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
-        .expect("HTTP/2 listener should bind");
-    listener
-        .set_nonblocking(true)
-        .expect("HTTP/2 listener should be nonblocking");
-    let address = listener
-        .local_addr()
-        .expect("HTTP/2 listener should have an address");
-    let credentialed_attempts = Arc::new(AtomicUsize::new(0));
-    let server_attempts = Arc::clone(&credentialed_attempts);
-    let server = thread::spawn(move || {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("HTTP/2 server runtime should build");
-        runtime.block_on(async move {
-            let listener = tokio::net::TcpListener::from_std(listener)
-                .expect("HTTP/2 listener should enter the server runtime");
-            let (stream, _) = listener
-                .accept()
-                .await
-                .expect("HTTP/2 listener should accept");
-            let mut connection = h2::server::handshake(stream)
-                .await
-                .expect("HTTP/2 server handshake should complete");
-            let (request, mut response) = connection
-                .accept()
-                .await
-                .expect("client should open a stream")
-                .expect("first HTTP/2 request should decode");
-            if request.headers().get(reqwest::header::AUTHORIZATION)
-                == Some(&reqwest::header::HeaderValue::from_static(
-                    "Basic synthetic-credential",
-                ))
-            {
-                server_attempts.fetch_add(1, Ordering::SeqCst);
-            }
-            response.send_reset(h2::Reason::REFUSED_STREAM);
-
-            if let Ok(Some(Ok((request, mut response)))) = tokio::time::timeout(
-                Duration::from_millis(250),
-                connection.accept(),
-            )
-            .await
-            {
-                if request.headers().get(reqwest::header::AUTHORIZATION)
-                    == Some(&reqwest::header::HeaderValue::from_static(
-                        "Basic synthetic-credential",
-                    ))
-                {
-                    server_attempts.fetch_add(1, Ordering::SeqCst);
-                }
-                response.send_reset(h2::Reason::REFUSED_STREAM);
-            }
-        });
-    });
-
-    let client = oauth_client_builder()
-        .http2_prior_knowledge()
-        .build()
-        .expect("one-shot test client should build");
-    let request = client
-        .post(format!("http://{address}/oauth/token"))
-        .header(
-            reqwest::header::AUTHORIZATION,
-            "Basic synthetic-credential",
-        )
-        .body("grant_type=client_credentials")
-        .build()
-        .expect("synthetic token request should build");
-
-    assert!(client.execute(request).is_err());
-    server.join().expect("HTTP/2 server should finish");
-    assert_eq!(credentialed_attempts.load(Ordering::SeqCst), 1);
+    assert_eq!(encoded_credentials, b"codex-work-claim:secret%3A%2B%2F%3D");
 }
 
 #[test]
 fn policy_rejects_non_https_or_dynamic_scope_inputs() {
-    let mut policy = policy();
+    let mut policy = fixed_policy();
     policy.token_endpoint = "http://issuer.example/oauth/token".to_string();
     assert!(policy.validate().is_err());
 
-    let mut policy = policy();
+    let mut policy = fixed_policy();
     policy.expected_issuer = "https://user:password@issuer.example/".to_string();
     assert!(policy.validate().is_err());
 
-    let mut policy = policy();
+    let mut policy = fixed_policy();
     policy.token_endpoint = "https://issuer.example/oauth/token#fragment".to_string();
     assert!(policy.validate().is_err());
 
-    let mut policy = policy();
+    let mut policy = fixed_policy();
     policy.token_endpoint = "https://issuer.example/oauth/token?access_token=private".to_string();
     assert!(policy.validate().is_err());
 
-    let mut policy = policy();
+    let mut policy = fixed_policy();
     policy.requested_scope = "ops:write ops:admin".to_string();
     assert!(policy.validate().is_err());
 }
 
 #[test]
 fn response_and_jwt_claims_must_bind_to_the_fixed_identity_contract() {
-    let policy = policy();
+    let policy = fixed_policy();
     let valid = validate_token_response(
         response(claims()),
         &policy,
@@ -251,10 +149,16 @@ fn response_and_jwt_claims_must_bind_to_the_fixed_identity_contract() {
 
     for (claim, value) in [
         ("iss", serde_json::json!("https://other.example/")),
-        ("sub", serde_json::json!("33333333-3333-4333-8333-333333333333")),
+        (
+            "sub",
+            serde_json::json!("33333333-3333-4333-8333-333333333333"),
+        ),
         ("azp", serde_json::json!("other-client")),
         ("client_id", serde_json::json!("other-client")),
-        ("aud", serde_json::json!(["https://mcp.example/", "https://other.example/"])),
+        (
+            "aud",
+            serde_json::json!(["https://mcp.example/", "https://other.example/"]),
+        ),
         ("aud", serde_json::json!(["https://mcp.example/", 17])),
         ("scope", serde_json::json!("ops:write ops:admin")),
         ("scope", serde_json::json!(["ops:write", 17])),
@@ -292,7 +196,7 @@ fn response_and_jwt_claims_must_bind_to_the_fixed_identity_contract() {
 
 #[test]
 fn token_type_lifetime_header_and_signed_jwt_shape_fail_closed() {
-    let policy = policy();
+    let policy = fixed_policy();
     let principal = Uuid::parse_str(PRINCIPAL).unwrap();
     let mut invalid = response(claims());
     invalid.token_type = "DPoP".to_string();

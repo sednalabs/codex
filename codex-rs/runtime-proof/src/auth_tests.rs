@@ -24,67 +24,25 @@ fn protected_runtime_config_is_exactly_claim_only() {
         "model_provider = \"openai\"\ncli_auth_credentials_store = \"ephemeral\"\n\n[mcp_servers.ops]\nurl = \"{recipient}\"\nrequired = true\nenabled_tools = [\"work_item_claim\"]\n\n[mcp_servers.ops.tools.work_item_claim]\napproval_mode = \"approve\"\n"
     );
 
-    assert!(
-        validate_raw_config(
-            pinned_only.as_bytes(),
-            "ops",
-            recipient,
-        )
-        .is_err()
-    );
-    assert!(
-        validate_raw_config(
-            claim_only_config.as_bytes(),
-            "ops",
-            recipient,
-        )
-        .is_ok()
-    );
+    assert!(validate_raw_config(pinned_only.as_bytes(), "ops", recipient,).is_err());
+    assert!(validate_raw_config(claim_only_config.as_bytes(), "ops", recipient,).is_ok());
 
     let extra_tool = format!(
         "model_provider = \"openai\"\ncli_auth_credentials_store = \"ephemeral\"\n\n[mcp_servers.ops]\nurl = \"{recipient}\"\nrequired = true\nenabled_tools = [\"work_item_claim\"]\n\n[mcp_servers.ops.tools.work_item_claim]\napproval_mode = \"approve\"\n\n[mcp_servers.ops.tools.other]\napproval_mode = \"approve\"\n"
     );
-    assert!(
-        validate_raw_config(
-            extra_tool.as_bytes(),
-            "ops",
-            recipient,
-        )
-        .is_err()
-    );
+    assert!(validate_raw_config(extra_tool.as_bytes(), "ops", recipient,).is_err());
 
     let additional_server = format!(
         "{claim_only_config}\n[mcp_servers.untrusted]\nurl = \"https://untrusted.example/mcp\"\n"
     );
-    assert!(
-        validate_raw_config(
-            additional_server.as_bytes(),
-            "ops",
-            recipient,
-        )
-        .is_err()
-    );
+    assert!(validate_raw_config(additional_server.as_bytes(), "ops", recipient,).is_err());
 
     let unapproved_tool_list = format!(
         "model_provider = \"openai\"\ncli_auth_credentials_store = \"ephemeral\"\n\n[mcp_servers.ops]\nurl = \"{recipient}\"\nrequired = true\nenabled_tools = [\"work_item_claim\"]\n"
     );
-    assert!(
-        validate_raw_config(
-            unapproved_tool_list.as_bytes(),
-            "ops",
-            recipient,
-        )
-        .is_err()
-    );
+    assert!(validate_raw_config(unapproved_tool_list.as_bytes(), "ops", recipient,).is_err());
 
-    assert!(
-        validate_raw_config(
-            claim_only_config.as_bytes(),
-            "other",
-            recipient,
-        )
-        .is_err()
-    );
+    assert!(validate_raw_config(claim_only_config.as_bytes(), "other", recipient,).is_err());
 }
 
 #[test]
