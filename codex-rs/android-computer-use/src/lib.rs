@@ -2238,6 +2238,32 @@ mod tests {
     }
 
     #[test]
+    fn append_text_preserves_empty_and_native_image_content() {
+        for original in [
+            Vec::new(),
+            vec![DynamicToolCallOutputContentItem::InputImage {
+                image_url: "data:image/png;base64,AAAA".to_string(),
+            }],
+        ] {
+            let mut items = original.clone();
+            append_text(&mut items, "\nmissing native image diagnostic");
+            assert!(matches!(
+                items.first(),
+                Some(DynamicToolCallOutputContentItem::InputText { text })
+                    if text == "missing native image diagnostic"
+            ));
+            assert_eq!(&items[1..], original.as_slice());
+            append_text(&mut items, "\nrecovery guidance");
+            assert!(matches!(
+                items.first(),
+                Some(DynamicToolCallOutputContentItem::InputText { text })
+                    if text == "missing native image diagnostic\nrecovery guidance"
+            ));
+            assert_eq!(&items[1..], original.as_slice());
+        }
+    }
+
+    #[test]
     fn visual_response_with_native_image_remains_successful() {
         let mut response = DynamicToolCallResponse {
             content_items: vec![

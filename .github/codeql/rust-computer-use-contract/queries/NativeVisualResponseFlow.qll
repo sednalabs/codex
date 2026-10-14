@@ -291,30 +291,50 @@ predicate responseContentItemsClearAfterGuard(
  * response when image output is absent; naming a function alone is not enough.
  */
 /** A bounded, local write of the supplied diagnostic into the supplied content. */
+predicate helperItemsReceiver(Function helper, Expr receiver) {
+  exists(Variable items |
+    items.getParameter() = helper.getParam(0) and responseVariableExpr(receiver, items)
+  )
+}
+
+/** The mutable text binding extracted directly from the supplied first item. */
+predicate helperTextReceiver(Function helper, Expr receiver) {
+  exists(LetExpr binding, MethodCallExpr first, StructPatField field, Variable text |
+    binding.getEnclosingCallable() = helper and
+    binding.getScrutinee() = first and
+    first.getIdentifier().getText() = "first_mut" and
+    helperItemsReceiver(helper, first.getReceiver()) and
+    field.getParentNode*() = binding.getPat() and
+    field.getFieldName() = "text" and
+    field.getPat() = text.getPat() and
+    responseVariableExpr(receiver, text)
+  )
+}
+
 predicate helperDetailMutation(Function helper, MethodCallExpr mutation) {
   exists(
-    DataFlow::ParameterNode items, DataFlow::ParameterNode message,
-    DataFlow::ExprNode receiver, DataFlow::ExprNode text, Expr item
+    DataFlow::ParameterNode message, DataFlow::ExprNode text
   |
-    items.isParameterOf(helper, 0) and
     message.isParameterOf(helper, 1) and
     mutation.getEnclosingCallable() = helper and
-    receiver.asExpr() = mutation.getReceiver() and
-    TaintTracking::localTaint(items, receiver) and
     (
       mutation.getIdentifier().getText() = "push_str" and
+      helperTextReceiver(helper, mutation.getReceiver()) and
       text.asExpr() = mutation.getPositionalArgument(0)
       or
-      (
-        mutation.getIdentifier().getText() = "insert" and
-        item = mutation.getPositionalArgument(1)
-        or
-        mutation.getIdentifier().getText() = "push" and
-        item = mutation.getPositionalArgument(0)
-      ) and
-      (
-        text.asExpr() = item or
-        text.asExpr() = item.(StructExpr).getFieldExpr("text").getExpr()
+      helperItemsReceiver(helper, mutation.getReceiver()) and
+      exists(Expr item |
+        (
+          mutation.getIdentifier().getText() = "insert" and
+          item = mutation.getPositionalArgument(1)
+          or
+          mutation.getIdentifier().getText() = "push" and
+          item = mutation.getPositionalArgument(0)
+        ) and
+        (
+          text.asExpr() = item or
+          text.asExpr() = item.(StructExpr).getFieldExpr("text").getExpr()
+        )
       )
     ) and
     TaintTracking::localTaint(message, text)
@@ -333,8 +353,34 @@ predicate detailFreeReachable(Function helper, CfgNode node) {
   )
 }
 
+/**
+ * Trust only the small current append helper vocabulary. Unknown calls and
+ * assignments fail closed, including clear, replacement, detached clones and
+ * arbitrary mutable borrows. No interprocedural mutation summary is inferred.
+ */
+predicate helperOperationKnown(Function helper, Call call) {
+  exists(MethodCallExpr method |
+    call = method and
+    (
+      helperDetailMutation(helper, method) or
+      method.getIdentifier().getText() = "first_mut" and
+      helperItemsReceiver(helper, method.getReceiver()) or
+      exists(DataFlow::ParameterNode message, DataFlow::ExprNode receiver |
+        message.isParameterOf(helper, 1) and
+        receiver.asExpr() = method.getReceiver() and
+        TaintTracking::localTaint(message, receiver) and
+        method.getIdentifier().getText() = ["trim", "to_string"]
+      )
+    )
+  )
+}
+
 predicate helperRetainsFailureDetail(Function helper) {
   exists(MethodCallExpr mutation | helperDetailMutation(helper, mutation)) and
+  not exists(AssignmentExpr assignment | assignment.getEnclosingCallable() = helper) and
+  not exists(Call call |
+    call.getEnclosingCallable() = helper and not helperOperationKnown(helper, call)
+  ) and
   not exists(CfgNode exit |
     exit.getEnclosingCallable() = helper and
     not exists(exit.getASuccessor()) and
