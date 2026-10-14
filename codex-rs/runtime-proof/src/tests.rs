@@ -3,6 +3,19 @@ use pretty_assertions::assert_eq;
 use serde_json::Value;
 
 #[test]
+fn certificate_digest_matches_ops_protocol_vector() {
+    let digest = wire::certificate_digest(b"test-certificate");
+    assert_eq!(
+        digest,
+        "52e6a94793e2f34cfcf40646b31650cb9d72ebda7a063024c385a5cad3ef353e"
+    );
+    assert_eq!(
+        wire::digest(b"test-certificate"),
+        format!("sha256:{digest}")
+    );
+}
+
+#[test]
 fn canonical_claim_digest_uses_the_ops_jcs_contract() {
     let first = serde_json::json!({
         "claim_precondition": {

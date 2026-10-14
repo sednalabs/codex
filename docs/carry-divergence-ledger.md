@@ -462,6 +462,13 @@ and enforcing the lease and claim invariants. Preserve this boundary during
 upstream sync unless upstream provides an equivalent host-held per-execution
 capability and exact-request binding.
 
+The `certificate_sha256` wire field is the bare lowercase hexadecimal SHA-256
+of the exact compact certificate bytes, matching the Ops verifier. The
+`operation_sha256` field retains its separate `sha256:`-prefixed encoding; the
+two fields must not share an encoding change. The
+`certificate_digest_matches_ops_protocol_vector` regression pins this producer
+contract to the Ops protocol's expected digest.
+
 Protected startup also consumes a separate finite authentication frame from
 the root launcher. It imports ChatGPT credentials through the existing
 ephemeral auth path and keeps the selected MCP bearer in private runtime state.
