@@ -497,7 +497,7 @@ jobs:
           CODEX_DOWNSTREAM_COMMIT: ${{ needs.resolve.outputs.downstream_commit_short }}
         run: |
           set -euo pipefail
-          cargo build --locked --target "${TARGET}" --release --bin codex --bin codex-responses-api-proxy
+          cargo build --locked --target "${TARGET}" --release --bin codex --bin codex-responses-api-proxy --bin codex-runtime-proof-launcher
 
       - name: Check post-build disk headroom
         if: ${{ always() && !cancelled() }}
@@ -573,6 +573,7 @@ jobs:
         with:
           target: ${{ env.TARGET }}
           artifacts-dir: ${{ github.workspace }}/codex-rs/target/${{ env.TARGET }}/release
+          binaries: codex codex-responses-api-proxy codex-runtime-proof-launcher
 
       - name: Stage release assets
         shell: bash
@@ -610,9 +611,12 @@ jobs:
 
           install -Dm 0755 "target/${TARGET}/release/codex" "${stage_dir}/codex"
           install -Dm 0755 "target/${TARGET}/release/codex-responses-api-proxy" "${stage_dir}/codex-responses-api-proxy"
+          install -Dm 0755 "target/${TARGET}/release/codex-runtime-proof-launcher" "${stage_dir}/codex-runtime-proof-launcher"
+          install -Dm 0644 runtime-proof/systemd/codex-runtime-proof-claim.service "${stage_dir}/systemd/codex-runtime-proof-claim.service"
 
           cp "target/${TARGET}/release/codex.sigstore" "${dist_dir}/${archive_base}-codex.sigstore"
           cp "target/${TARGET}/release/codex-responses-api-proxy.sigstore" "${dist_dir}/${archive_base}-codex-responses-api-proxy.sigstore"
+          cp "target/${TARGET}/release/codex-runtime-proof-launcher.sigstore" "${dist_dir}/${archive_base}-codex-runtime-proof-launcher.sigstore"
 
           tar -C "${stage_dir}" -czf "${dist_dir}/${archive_base}.tar.gz" .
           install -m 0644 Cargo.toml Cargo.lock "${stage_dir}/"

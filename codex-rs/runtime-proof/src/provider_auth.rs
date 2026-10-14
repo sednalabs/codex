@@ -2,9 +2,11 @@ use anyhow::Result;
 use anyhow::bail;
 use serde::Deserialize;
 use serde::Deserializer;
+use serde::Serialize;
+use serde::Serializer;
 use zeroize::Zeroize;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ProviderAuth {
     pub(crate) kind: String,
@@ -14,7 +16,7 @@ pub(crate) struct ProviderAuth {
     pub(crate) plan_type: Option<String>,
 }
 
-#[derive(Deserialize, PartialEq, Eq)]
+#[derive(Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ProviderCredentialClass {
     Live,
@@ -29,6 +31,15 @@ impl<'de> Deserialize<'de> for SecretString {
         D: Deserializer<'de>,
     {
         String::deserialize(deserializer).map(Self)
+    }
+}
+
+impl Serialize for SecretString {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.0)
     }
 }
 

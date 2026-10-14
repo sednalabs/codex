@@ -1156,6 +1156,19 @@ business-like, enterprise and education plan rules and refuses eligible or
 unknown protected plans before credential import and loader startup, while
 keeping known ineligible plans and ordinary cloud behavior intact.
 
+The launcher unit regressions must bind its generated claim-only MCP profile
+to the same raw-config admission used by the protected child, verify a
+certificate signature with the configured issuer pin, check the exact
+length-prefixed bootstrap packet, bound fixed-prompt delivery when the child
+pipe is backpressured, and reject unsafe project IDs or noncanonical issuer
+pins. Linux release and branch-preview packaging must
+include the launcher and its systemd unit template in x86_64 and Arm64 archives,
+verify the architecture and binary digest, and keep the template inert; source
+or package proof does not establish policy/credential provisioning, service
+installation, issuer appointment, or first use. Its runtime-home regression
+checks that the child can write its private state and read its installation ID
+without changing generated configuration or adding CODEX_HOME settings.
+
 The protected CLI fixture additionally consumes the exact delegated process's
 non-timeout wait result before root finalization: the positive case requires
 completion, and the provider-override case requires the expected provider-pin

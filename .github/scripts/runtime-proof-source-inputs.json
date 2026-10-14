@@ -88,8 +88,8 @@
     "taiki-e/install-action": "44c6d64aa62cd779e873306675c7a58e86d6d532"
   },
   "product_inputs": {
-    "MODULE.bazel.lock": "857f1a4ef82f16b6d91d41d8524543ab301401c28c02489d78dab35d103a7112",
-    "codex-rs/Cargo.lock": "011d0fe4cc58c985c23b18080e1bad044022148c50171c4887d76c5a9b9cd082",
+    "MODULE.bazel.lock": "0cb5531c94f0fdc8af000e09e91b96fb3700bed54eb8dca485b08c4663c45264",
+    "codex-rs/Cargo.lock": "c14fcdab5a538b22eb89a6a5dc282d8196d6f7bf70df711b93e9d192c0aa12f0",
     "codex-rs/Cargo.toml": "16e77ab9720649b477101dfa9117257ef953ab80dbd8541a30e74d244cb11c1c",
     "codex-rs/cli/Cargo.toml": "d9ab2cb774f23e689a8159bcd29e5eb655445258c93b3233b38511538818e307",
     "codex-rs/cli/src/main.rs": "4ba4b566f49c32fe92a071d506cce394ab2ea49055717b3bfbcb14181bbcd881",
@@ -130,7 +130,7 @@
     "docs/divergences/index.yaml": "cc00454e2d9da5d284e873636d6a1aed92b1f60bbae7b5f24fb8988cfb3371f7",
     "docs/downstream-regression-matrix.md": "bc2b98f7a9655eed452e54e79871df9acb1be463d2ba1d1354d86450edd05bb2"
   },
-  "product_source_commit": "ae505aa4e482da9ac03da939d59b920eb2f65aaa",
+  "product_source_commit": "e28449f72459e7658e93238cc66efa90d696cd81",
   "repository": "sednalabs/codex",
   "schema_version": 1,
   "toolchains": {

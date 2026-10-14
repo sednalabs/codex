@@ -1,0 +1,40 @@
+[Unit]
+Description=One fixed protected Codex Work-item claim
+ConditionPathExists=/etc/codex/runtime-proof/claim-launch.json
+
+[Service]
+Type=oneshot
+User=root
+Group=codex-runtime-proof
+ExecStart=/usr/libexec/codex/codex-runtime-proof-launcher
+TimeoutStartSec=31min
+TimeoutStopSec=10s
+KillMode=control-group
+SendSIGKILL=yes
+RuntimeDirectory=codex-runtime-proof
+RuntimeDirectoryMode=0710
+RuntimeDirectoryPreserve=no
+UMask=0077
+LoadCredential=runtime-proof-issuer-seed:/etc/codex/runtime-proof/issuer-seed
+LoadCredential=provider-auth.json:/etc/codex/runtime-proof/provider-auth.json
+LoadCredential=ops-mcp-client-secret:/etc/codex/runtime-proof/ops-mcp-client-secret
+CapabilityBoundingSet=CAP_CHOWN CAP_KILL CAP_SETGID CAP_SETUID CAP_SYS_PTRACE
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=tmpfs
+ReadWritePaths=/run/codex-runtime-proof
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectHostname=yes
+ProtectClock=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+StandardOutput=null
+StandardError=journal

@@ -159,7 +159,7 @@ jobs:
           printf '%s\n' "${source_status}" >&2
           exit 1
         fi
-        cargo build --locked --target x86_64-unknown-linux-gnu --release --bin codex --bin codex-code-mode-host --bin codex-responses-api-proxy
+        cargo build --locked --target x86_64-unknown-linux-gnu --release --bin codex --bin codex-code-mode-host --bin codex-responses-api-proxy --bin codex-runtime-proof-launcher
         mkdir -p ../dist
 
         stage_dir="${RUNNER_TEMP}/sedna-branch/x86_64-unknown-linux-gnu"
@@ -172,6 +172,8 @@ jobs:
         install -Dm 0755 "target/x86_64-unknown-linux-gnu/release/codex" "${stage_dir}/codex"
         install -Dm 0755 "target/x86_64-unknown-linux-gnu/release/codex-code-mode-host" "${stage_dir}/codex-code-mode-host"
         install -Dm 0755 "target/x86_64-unknown-linux-gnu/release/codex-responses-api-proxy" "${stage_dir}/codex-responses-api-proxy"
+        install -Dm 0755 "target/x86_64-unknown-linux-gnu/release/codex-runtime-proof-launcher" "${stage_dir}/codex-runtime-proof-launcher"
+        install -Dm 0644 runtime-proof/systemd/codex-runtime-proof-claim.service "${stage_dir}/systemd/codex-runtime-proof-claim.service"
 
         file "${stage_dir}/codex" | grep -F 'x86-64'
         readelf -l "${stage_dir}/codex" | grep -F '/lib64/ld-linux-x86-64.so.2'
@@ -186,10 +188,13 @@ jobs:
         "${stage_dir}/codex" exec --help >/dev/null
         "${stage_dir}/codex" app-server --help >/dev/null
         "${stage_dir}/codex-responses-api-proxy" --help >/dev/null
+        file "${stage_dir}/codex-runtime-proof-launcher" | grep -F 'x86-64'
+        readelf -l "${stage_dir}/codex-runtime-proof-launcher" | grep -F '/lib64/ld-linux-x86-64.so.2'
 
         tar -C "${stage_dir}" -czf "../dist/${archive_base}.tar.gz" .
 
         python3 - <<'PY' > "../dist/${archive_base}.json"
+        import hashlib
         import json
         import os
         import subprocess
@@ -205,6 +210,12 @@ jobs:
                 f'{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{os.environ["GITHUB_RUN_ID"]}'
             ),
         }
+        launcher_path = os.path.join(
+            os.environ["RUNNER_TEMP"],
+            "sedna-branch/x86_64-unknown-linux-gnu/codex-runtime-proof-launcher",
+        )
+        with open(launcher_path, "rb") as launcher_file:
+            payload["runtimeProofLauncherSha256"] = hashlib.sha256(launcher_file.read()).hexdigest()
         json.dump(payload, sys.stdout, indent=2)
         sys.stdout.write("\n")
         PY
@@ -230,7 +241,7 @@ jobs:
           printf '%s\n' "${source_status}" >&2
           exit 1
         fi
-        cargo build --locked --target aarch64-unknown-linux-gnu --release --bin codex --bin codex-code-mode-host --bin codex-responses-api-proxy
+        cargo build --locked --target aarch64-unknown-linux-gnu --release --bin codex --bin codex-code-mode-host --bin codex-responses-api-proxy --bin codex-runtime-proof-launcher
         mkdir -p ../dist
 
         stage_dir="${RUNNER_TEMP}/sedna-branch/aarch64-unknown-linux-gnu"
@@ -243,6 +254,8 @@ jobs:
         install -Dm 0755 "target/aarch64-unknown-linux-gnu/release/codex" "${stage_dir}/codex"
         install -Dm 0755 "target/aarch64-unknown-linux-gnu/release/codex-code-mode-host" "${stage_dir}/codex-code-mode-host"
         install -Dm 0755 "target/aarch64-unknown-linux-gnu/release/codex-responses-api-proxy" "${stage_dir}/codex-responses-api-proxy"
+        install -Dm 0755 "target/aarch64-unknown-linux-gnu/release/codex-runtime-proof-launcher" "${stage_dir}/codex-runtime-proof-launcher"
+        install -Dm 0644 runtime-proof/systemd/codex-runtime-proof-claim.service "${stage_dir}/systemd/codex-runtime-proof-claim.service"
 
         file "${stage_dir}/codex" | grep -F 'ARM aarch64'
         readelf -l "${stage_dir}/codex" | grep -F '/lib/ld-linux-aarch64.so.1'
@@ -257,10 +270,13 @@ jobs:
         "${stage_dir}/codex" exec --help >/dev/null
         "${stage_dir}/codex" app-server --help >/dev/null
         "${stage_dir}/codex-responses-api-proxy" --help >/dev/null
+        file "${stage_dir}/codex-runtime-proof-launcher" | grep -F 'ARM aarch64'
+        readelf -l "${stage_dir}/codex-runtime-proof-launcher" | grep -F '/lib/ld-linux-aarch64.so.1'
 
         tar -C "${stage_dir}" -czf "../dist/${archive_base}.tar.gz" .
 
         python3 - <<'PY' > "../dist/${archive_base}.json"
+        import hashlib
         import json
         import os
         import subprocess
@@ -277,6 +293,12 @@ jobs:
                 f'{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{os.environ["GITHUB_RUN_ID"]}'
             ),
         }
+        launcher_path = os.path.join(
+            os.environ["RUNNER_TEMP"],
+            "sedna-branch/aarch64-unknown-linux-gnu/codex-runtime-proof-launcher",
+        )
+        with open(launcher_path, "rb") as launcher_file:
+            payload["runtimeProofLauncherSha256"] = hashlib.sha256(launcher_file.read()).hexdigest()
         json.dump(payload, sys.stdout, indent=2)
         sys.stdout.write("\n")
         PY
