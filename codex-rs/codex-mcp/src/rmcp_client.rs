@@ -80,10 +80,10 @@ use futures::future::FutureExt;
 use futures::future::Shared;
 use rmcp::model::ClientCapabilities;
 use rmcp::model::ElicitationCapability;
+use rmcp::model::InitializeResult;
 use rmcp::model::Implementation;
 use rmcp::model::InitializeRequestParams;
 use rmcp::model::ProtocolVersion;
-use rmcp::model::ServerPeerInfo;
 use rmcp::model::Tool as RmcpTool;
 use tokio::sync::watch;
 use tokio::time::Instant as TokioInstant;
@@ -1013,8 +1013,10 @@ async fn start_server_task(
         }
     });
     let list_start = Instant::now();
-    let server_info =
-        mcp_server_info_from_implementation(&server_name, initialize_result.server_info);
+    let server_info = mcp_server_info_from_implementation(
+        &server_name,
+        Some(initialize_result.server_info),
+    );
     let fetch_ticket = codex_apps_tools_cache_context
         .as_ref()
         .map(|context| context.begin_fetch(ConnectorRuntimeFetchSource::Startup));
@@ -1077,7 +1079,7 @@ fn record_protocol_discovery_metrics(
     mode: McpProtocolMode,
     is_codex_apps_mcp_server: bool,
     started_at: Instant,
-    result: &Result<ServerPeerInfo>,
+    result: &Result<InitializeResult>,
 ) {
     let Some(metrics) = codex_otel::global() else {
         return;

@@ -46,6 +46,7 @@ impl ProtectedMcpHttpClient {
         params.headers.push(HttpHeader {
             name: "authorization".to_string(),
             value: format!("Bearer {}", bearer.as_str()),
+            value_env_var: None,
         });
         params.redirect_policy = HttpRedirectPolicy::Stop;
         Ok(params)

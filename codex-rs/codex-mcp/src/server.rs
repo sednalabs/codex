@@ -224,6 +224,8 @@ impl McpServerConnectionIdentity {
                 McpServerTransportConfig::StreamableHttp { .. }
                 | McpServerTransportConfig::Stdio { .. } => None,
             }
+        } else {
+            None
         };
         let oauth_credentials = if let Some(error) = protected_target_error {
             Err(error)
