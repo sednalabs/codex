@@ -277,6 +277,7 @@ jobs:
         env:
           EXPECTED_SOURCE_SHA: ${{ needs.identity.outputs.source_sha }}
           EXPECTED_SOURCE_TREE: ${{ needs.identity.outputs.source_tree }}
+          RUST_MIN_STACK: "8388608"
         run: |
           set -euo pipefail
           if [[ "$(git rev-parse HEAD)" != "${EXPECTED_SOURCE_SHA}" || "$(git rev-parse HEAD^{tree})" != "${EXPECTED_SOURCE_TREE}" ]]; then
