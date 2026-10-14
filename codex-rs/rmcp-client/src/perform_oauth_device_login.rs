@@ -492,6 +492,10 @@ mod tests {
     use codex_exec_server::HttpRequestResponse;
     use codex_exec_server::HttpResponseBodyStream;
     use codex_exec_server::ExecServerError;
+    use codex_exec_server::HttpHeader;
+    use codex_exec_server::ByteChunk;
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
@@ -542,15 +546,146 @@ mod tests {
         assert!(basic_credentials(post_method, "client", Some("secret")).is_none());
     }
 
-    #[test]
-    fn pkce_fallback_request_forms_keep_resolved_scopes() {
-        let scopes = ["ops:read".to_string(), "ops:write".to_string()];
-        let pkce = DevicePkce { code_challenge: "challenge".into(), code_verifier: "verifier".into() };
-        for pkce in [Some(&pkce), None] {
-            let body = form_body(&device_authorization_fields("client", None, DeviceClientAuthMethod::None, &scopes, None, pkce));
-            let body = String::from_utf8(body).expect("form body");
-            assert!(body.contains("scope=ops%3Aread+ops%3Awrite"));
+    struct ScriptedHttpClient {
+        requests: Mutex<Vec<HttpRequestParams>>,
+        responses: Mutex<VecDeque<(u16, Vec<u8>)>>,
+    }
+    impl ScriptedHttpClient {
+        fn new(responses: impl IntoIterator<Item = (u16, Vec<u8>)>) -> Self {
+            Self { requests: Mutex::new(Vec::new()), responses: Mutex::new(responses.into_iter().collect()) }
         }
+    }
+    impl HttpClient for ScriptedHttpClient {
+        fn http_request(
+            &self,
+            params: HttpRequestParams,
+        ) -> BoxFuture<'_, std::result::Result<HttpRequestResponse, ExecServerError>> {
+            self.requests.lock().expect("request lock").push(params);
+            let (status, body) = self.responses.lock().expect("response lock").pop_front().expect("scripted response");
+            Box::pin(async move {
+                Ok(HttpRequestResponse {
+                    status,
+                    headers: vec![HttpHeader { name: "content-type".into(), value: "application/json".into(), value_env_var: None }],
+                    body: ByteChunk::from(body),
+                })
+            })
+        }
+
+        fn http_request_stream(
+            &self,
+            _params: HttpRequestParams,
+        ) -> BoxFuture<'_, std::result::Result<(HttpRequestResponse, HttpResponseBodyStream), ExecServerError>> {
+            Box::pin(async { std::future::pending().await })
+        }
+    }
+
+    fn test_oauth_http_adapter(client: Arc<dyn HttpClient>) -> OAuthHttpClientAdapter {
+        OAuthHttpClientAdapter::new_with_redirect_mode(
+            client, http::HeaderMap::new(), "https://issuer.example", false,
+            StreamableHttpRedirectMode::Legacy,
+        ).expect("OAuth HTTP adapter")
+    }
+
+    fn request_form(params: &HttpRequestParams) -> Vec<(String, String)> {
+        url::form_urlencoded::parse(params.body.as_ref().expect("request body").as_ref())
+            .map(|(key, value)| (key.into_owned(), value.into_owned()))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn client_auth_methods_are_applied_to_actual_device_and_token_requests() {
+        let device_response = br#"{"device_code":"device","user_code":"user","verification_uri":"https://issuer.example/verify","expires_in":60}"#.to_vec();
+        let token_response = br#"{"access_token":"token","token_type":"Bearer","expires_in":3600}"#.to_vec();
+        for (methods, expected_method) in [
+            (vec!["client_secret_basic", "client_secret_post"], DeviceClientAuthMethod::ClientSecretBasic),
+            (vec!["client_secret_post"], DeviceClientAuthMethod::ClientSecretPost),
+        ] {
+            let metadata: AuthorizationMetadata = serde_json::from_value(serde_json::json!({
+                "authorization_endpoint":"https://issuer.example/authorize",
+                "token_endpoint":"https://issuer.example/token",
+                "token_endpoint_auth_methods_supported":methods
+            })).expect("metadata");
+            let method = device_client_auth_method(&metadata, true);
+            assert_eq!(method, expected_method);
+            let client = Arc::new(ScriptedHttpClient::new([
+                (200, device_response.clone()),
+                (200, token_response.clone()),
+            ]));
+            let adapter = test_oauth_http_adapter(client.clone());
+            let scopes = ["ops:read".to_string()];
+            let details = request_device_authorization(
+                &adapter, "https://issuer.example/device", "client: +",
+                Some("secret +:%"), method, &scopes, None, None, None,
+            ).await.expect("device authorization");
+            poll_device_token(
+                &adapter, "https://issuer.example/token", "client: +",
+                Some("secret +:%"), method, None, &details, None,
+            ).await.expect("device token");
+            let requests = client.requests.lock().expect("request lock");
+            assert_eq!(requests.len(), 2);
+            for request in requests.iter() {
+                let authorization = request.headers.iter().find(|header| header.name.eq_ignore_ascii_case("authorization"));
+                match expected_method {
+                    DeviceClientAuthMethod::ClientSecretBasic => {
+                        let expected = base64::engine::general_purpose::STANDARD.encode("client%3A+%2B:secret+%2B%3A%25");
+                        let expected = format!("Basic {expected}");
+                        assert_eq!(authorization.map(|header| header.value.as_str()), Some(expected.as_str()));
+                        assert!(!request_form(request).iter().any(|(key, _)| key == "client_secret"));
+                    }
+                    DeviceClientAuthMethod::ClientSecretPost => {
+                        assert!(authorization.is_none());
+                        assert!(request_form(request).iter().any(|(key, value)| key == "client_secret" && value == "secret +:%"));
+                    }
+                    DeviceClientAuthMethod::None => unreachable!("configured secret selected a secret auth method"),
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn pkce_fallback_retries_actual_device_requests_with_resolved_scopes() {
+        let success = br#"{"device_code":"device","user_code":"user","verification_uri":"https://issuer.example/verify","expires_in":60}"#.to_vec();
+        let client = Arc::new(ScriptedHttpClient::new([
+            (400, br#"{"error":"invalid_request"}"#.to_vec()),
+            (200, success),
+        ]));
+        let adapter = test_oauth_http_adapter(client.clone());
+        let scopes = ["ops:read".to_string(), "ops:write".to_string()];
+        let (details, pkce) = request_device_authorization_with_pkce_fallback(
+            &adapter, "https://issuer.example/device", "client", None,
+            DeviceClientAuthMethod::None, &scopes, None,
+        ).await.expect("fallback request");
+        assert_eq!(details.device_code, "device");
+        assert!(pkce.is_none());
+        let requests = client.requests.lock().expect("request lock");
+        assert_eq!(requests.len(), 2);
+        for request in requests.iter() {
+            let fields = request_form(request);
+            assert!(fields.iter().any(|(key, value)| key == "scope" && value == "ops:read ops:write"));
+        }
+        assert!(request_form(&requests[0]).iter().any(|(key, _)| key == "code_challenge"));
+        assert!(!request_form(&requests[1]).iter().any(|(key, _)| key == "code_challenge"));
+    }
+
+    #[tokio::test]
+    async fn typed_registration_metadata_causes_registration_request() {
+        let metadata: AuthorizationMetadata = serde_json::from_value(serde_json::json!({
+            "authorization_endpoint":"https://issuer.example/authorize",
+            "token_endpoint":"https://issuer.example/token",
+            "registration_endpoint":"https://issuer.example/register",
+            "device_authorization_endpoint":"https://issuer.example/device",
+            "grant_types_supported":["urn:ietf:params:oauth:grant-type:device_code"]
+        })).expect("metadata");
+        let response = br#"{"client_id":"dynamic-client"}"#.to_vec();
+        let client = Arc::new(ScriptedHttpClient::new([(201, response)]));
+        let adapter = test_oauth_http_adapter(client.clone());
+        let client_id = resolve_device_client_id(
+            &adapter, &metadata, &["ops:read".to_string()], McpOAuthClientRegistration::Auto,
+        ).await.expect("dynamic registration");
+        assert_eq!(client_id, "dynamic-client");
+        let requests = client.requests.lock().expect("request lock");
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].url, "https://issuer.example/register");
     }
 
     #[tokio::test]
