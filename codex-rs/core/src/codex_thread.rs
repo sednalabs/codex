@@ -852,7 +852,7 @@ impl CodexThread {
     ) -> CodexResult<()> {
         if let Some(state_db) = &self.session.services.state_db {
             state_db
-                .invalidate_automatic_turn_capabilities_for_thread(self.thread_id)
+                .invalidate_automatic_turn_capabilities_for_thread(self.session.thread_id())
                 .await
                 .map_err(|_| CodexErr::InternalServerError)?;
         }
