@@ -222,15 +222,18 @@ fn form_encoded_component(value: &str) -> String {
 }
 
 fn append_form_encoded(output: &mut String, bytes: &[u8]) {
-    use std::fmt::Write as _;
-
     for byte in bytes {
         match *byte {
             b' ' => output.push('+'),
             b'*' | b'-' | b'.' | b'_' | b'0'..=b'9' | b'A'..=b'Z' | b'a'..=b'z' => {
                 output.push(char::from(*byte));
             }
-            _ => write!(output, "%{byte:02X}").expect("writing to a string cannot fail"),
+            _ => {
+                const HEX: &[u8; 16] = b"0123456789ABCDEF";
+                output.push('%');
+                output.push(char::from(HEX[usize::from(byte >> 4)]));
+                output.push(char::from(HEX[usize::from(byte & 0x0f)]));
+            }
         }
     }
 }
