@@ -232,6 +232,7 @@ async fn assert_legacy_oauth_without_starting_an_mcp_session(
                     Some(StreamableHttpOAuthDiscovery {
                         scopes_supported: Some(vec!["mcp:read".to_string()]),
                         callback_mode: McpOAuthCallbackMode::CallbackSpecific,
+                        device_authorization: None,
                     }),
                 );
             }
