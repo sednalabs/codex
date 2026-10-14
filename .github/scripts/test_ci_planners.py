@@ -6037,50 +6037,19 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 "selected_languages": "${{ steps.plan.outputs.selected_languages }}",
             },
         )
-        plan_checkout = next(
-            step
-            for step in plan_steps
-            if step.get("name") == "Checkout PR head for path classification"
-        )
-        self.assertEqual(
-            plan_checkout.get("if"),
-            "${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}",
-        )
-        self.assertEqual(plan_checkout.get("uses"), "actions/checkout@v7")
-        self.assertEqual(
-            plan_checkout.get("with") or {},
-            {
-                "ref": "${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}",
-                "fetch-depth": "1",
-                "persist-credentials": "false",
-            },
-        )
         select_step = next(
             step for step in plan_steps if step.get("name") == "Select CodeQL languages"
         )
         self.assertEqual(select_step.get("id"), "plan")
-        self.assertEqual(
-            select_step.get("env") or {},
-            {
-                "BASE_SHA": "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || '' }}",
-                "HEAD_SHA": "${{ github.event.pull_request.head.sha || github.sha }}",
-            },
-        )
+        self.assertIsNone(select_step.get("env"))
         select_run = select_step.get("run") or ""
         self.assertIn(
             'full_languages=\'["actions","c-cpp","javascript-typescript","python","rust"]\'',
             select_run,
         )
-        self.assertIn(
-            "if [[ '${{ github.event_name }}' != 'pull_request' && '${{ github.event_name }}' != 'merge_group' ]]; then",
-            select_run,
-        )
-        self.assertIn('git fetch --no-tags --depth=1 origin "${BASE_SHA}"', select_run)
-        self.assertIn("classify_ci_paths.py --base-sha", select_run)
-        self.assertIn("Unable to fetch PR base; running every CodeQL language.", select_run)
-        self.assertIn("Unable to classify PR paths; running every CodeQL language.", select_run)
-        self.assertIn('["codeql_languages"]', select_run)
-        self.assertIn('"language": "not-applicable"', select_run)
+        self.assertIn('emit_matrix "${full_languages}"', select_run)
+        self.assertIn("produce every active default-branch category", select_run)
+        self.assertNotIn("classify_ci_paths.py", select_run)
         for rust_scope in (
             '"codex-rs-core"',
             '"codex-rs-tui"',
