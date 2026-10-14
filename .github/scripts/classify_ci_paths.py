@@ -15,14 +15,34 @@ from dataclasses import asdict, dataclass
 from pathlib import PurePosixPath
 from typing import Iterable
 
+CODEQL_ALL = (
+    "actions",
+    "c-cpp",
+    "javascript-typescript",
+    "python",
+    "rust",
+)
+
 SOURCE_FORMAT_SUFFIXES = {
     ".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx",
     ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx",
     ".py", ".rs", ".toml", ".json", ".yaml", ".yml",
 }
 
+C_CPP_SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx"}
+JS_TS_SUFFIXES = {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"}
+
 FULL_BLOCKING_PATHS = {
     ".github/workflows/blocking-ci.yml",
+    ".github/scripts/classify_ci_paths.py",
+    ".github/scripts/test_classify_ci_paths.py",
+}
+
+FULL_CODEQL_PREFIXES = (
+    ".github/codeql/",
+)
+FULL_CODEQL_PATHS = {
+    ".github/workflows/codeql.yml",
     ".github/scripts/classify_ci_paths.py",
     ".github/scripts/test_classify_ci_paths.py",
 }
@@ -48,6 +68,7 @@ CLIPPY_REQUIRED_PREFIXES = (
 
 PACKAGE_ROOT_PATHS = {
     "package.json",
+    "package-lock.json",
     "pnpm-lock.yaml",
     "pnpm-workspace.yaml",
 }
@@ -81,10 +102,14 @@ class Scope:
     repo_readme: bool
     sdk_python: bool
     sdk_typescript: bool
+    codeql_languages: tuple[str, ...]
     force_full_blocking: bool
+    force_full_codeql: bool
 
     def to_jsonable(self) -> dict[str, object]:
-        return asdict(self)
+        result = asdict(self)
+        result["codeql_languages"] = list(self.codeql_languages)
+        return result
 
 
 def _norm(path: str) -> str:
@@ -111,9 +136,15 @@ def classify(paths: Iterable[str]) -> Scope:
             repo_readme=True,
             sdk_python=True,
             sdk_typescript=True,
+            codeql_languages=CODEQL_ALL,
             force_full_blocking=True,
+            force_full_codeql=True,
         )
     force_full_blocking = any(path in FULL_BLOCKING_PATHS for path in changed)
+    force_full_codeql = any(
+        path in FULL_CODEQL_PATHS or _starts(path, *FULL_CODEQL_PREFIXES)
+        for path in changed
+    )
     clippy = any(
         path in CLIPPY_REQUIRED_PATHS
         or _starts(path, *CLIPPY_REQUIRED_PREFIXES)
@@ -127,6 +158,8 @@ def classify(paths: Iterable[str]) -> Scope:
     repo_readme = force_full_blocking
     sdk_python = force_full_blocking
     sdk_typescript = force_full_blocking
+
+    codeql: set[str] = set(CODEQL_ALL if force_full_codeql else ())
 
     for path in changed:
         posix_path = PurePosixPath(path)
@@ -206,6 +239,35 @@ def classify(paths: Iterable[str]) -> Scope:
         ):
             sdk_typescript = True
 
+        if _starts(path, ".github/workflows/", ".github/actions/"):
+            codeql.add("actions")
+
+        if (
+            suffix in C_CPP_SUFFIXES
+            or name == "CMakeLists.txt"
+        ):
+            codeql.add("c-cpp")
+
+        if (
+            suffix in JS_TS_SUFFIXES
+            or name in PACKAGE_ROOT_PATHS
+            or name in {"tsconfig.json", "eslint.config.js", "eslint.config.mjs"}
+        ):
+            codeql.add("javascript-typescript")
+
+        if (
+            suffix == ".py"
+            or name in {"pyproject.toml", "uv.lock", "requirements.txt"}
+        ):
+            codeql.add("python")
+
+        if (
+            suffix == ".rs"
+            or name in {"Cargo.toml", "Cargo.lock", "rust-toolchain", "rust-toolchain.toml"}
+            or _starts(path, ".cargo/", "codex-rs/.cargo/")
+        ):
+            codeql.add("rust")
+
     return Scope(
         clippy=clippy,
         cargo_deny=cargo_deny,
@@ -215,7 +277,9 @@ def classify(paths: Iterable[str]) -> Scope:
         repo_readme=repo_readme,
         sdk_python=sdk_python,
         sdk_typescript=sdk_typescript,
+        codeql_languages=tuple(language for language in CODEQL_ALL if language in codeql),
         force_full_blocking=force_full_blocking,
+        force_full_codeql=force_full_codeql,
     )
 
 

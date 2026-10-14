@@ -40,9 +40,20 @@ jobs:
       run_analysis: ${{ steps.plan.outputs.run_analysis }}
       selected_languages: ${{ steps.plan.outputs.selected_languages }}
     steps:
+      - name: Checkout PR head for path classification
+        if: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
       - name: Select CodeQL languages
         id: plan
         shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || '' }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
 
@@ -115,11 +126,32 @@ jobs:
 
           full_languages='["actions","c-cpp","javascript-typescript","python","rust"]'
 
-          # Code scanning configuration checks require pull requests and queue
-          # candidates to produce every active default-branch category. Keep
-          # the same language coverage for every event; Rust is still split
-          # into the complete bounded shard set below.
-          emit_matrix "${full_languages}"
+          # Scheduled scans, pushes, and manual runs keep full repository
+          # coverage. Pull requests and merge-queue attempts are path scoped.
+          if [[ '${{ github.event_name }}' != 'pull_request' && '${{ github.event_name }}' != 'merge_group' ]]; then
+            emit_matrix "${full_languages}"
+            exit 0
+          fi
+
+          if ! git fetch --no-tags --depth=1 origin "${BASE_SHA}"; then
+            echo "::warning title=CodeQL path classification::Unable to fetch PR base; running every CodeQL language."
+            emit_matrix "${full_languages}"
+            exit 0
+          fi
+
+          if ! scope="$(python3 .github/scripts/classify_ci_paths.py --base-sha "${BASE_SHA}" --head-sha "${HEAD_SHA}")"; then
+            echo "::warning title=CodeQL path classification::Unable to classify PR paths; running every CodeQL language."
+            emit_matrix "${full_languages}"
+            exit 0
+          fi
+
+          languages="$(SCOPE_JSON="${scope}" python3 - <<'PY'
+          import json
+          import os
+          print(json.dumps(json.loads(os.environ["SCOPE_JSON"])["codeql_languages"], separators=(",", ":")))
+          PY
+          )"
+          emit_matrix "${languages}"
 
       - name: Summarize CodeQL scope
         shell: bash
