@@ -58,11 +58,16 @@ def test_cli_public_commands(
 
 def test_cli_version_matches_release_sources(package: SmokePackage) -> None:
     """Verify the compiled banner against the sources used to package the release."""
-    root = next(
-        parent
-        for parent in Path(__file__).resolve().parents
-        if (parent / "codex-rs/Cargo.toml").is_file()
-    )
+    try:
+        root = next(
+            parent
+            for parent in Path(__file__).resolve().parents
+            if (parent / "codex-rs/Cargo.toml").is_file()
+        )
+    except StopIteration as error:
+        raise FileNotFoundError(
+            "Could not find workspace root containing 'codex-rs/Cargo.toml'"
+        ) from error
     manifest = tomllib.loads((root / "codex-rs/Cargo.toml").read_text())
     version = manifest["workspace"]["package"]["version"]
     assert package.run("--version").stdout == f"codex-cli {version}\n"

@@ -19,7 +19,17 @@ import pytest
 from openai_codex import ApprovalMode, Codex, CodexConfig, Sandbox
 
 from fixtures import SmokePackage
-from tui_pty import PackagedTui, shared_agent_server
+from tui_pty import PackagedTui, plain, shared_agent_server
+
+
+def test_plain_strips_terminal_control_sequences_in_linear_scanner() -> None:
+    raw = b"before\x1b[31mred\x1b[0m\x1b]0;title\x07after\x1b]0;title2\x1b\\"
+    assert plain(raw) == "beforeredafter"
+
+
+def test_plain_discards_an_unterminated_osc_sequence() -> None:
+    raw = b"visible\x1b]" + (b"x\x1b]" * 1024)
+    assert plain(raw) == "visible"
 
 
 def _mock_config(
@@ -199,7 +209,8 @@ def browser_output_diagnostic(record_property):
                     and item.get("type") == "function_call_output"
                 ]
         except (TypeError, ValueError):
-            pass
+            # A malformed mocked request has no trustworthy call-output evidence.
+            call_outputs = []
 
     call_ids = []
     tool_names = []
@@ -742,7 +753,7 @@ def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate
         ]
         assert model_images == image_bytes, {
             "model_image_count": len(model_images),
-            "model_image_bytes_match_fixture": model_images == image_bytes,
+            "fixture_image_count": len(image_bytes),
         }
         for capture, image in zip(
             manifest_on_disk["captures"], model_images, strict=True
@@ -750,7 +761,8 @@ def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate
             saved = (fixture_dir / capture["path"]).read_bytes()
             assert saved == image, {
                 "capture_order": capture["order"],
-                "saved_png_matches_typed_image": saved == image,
+                "saved_png_bytes": len(saved),
+                "model_image_bytes": len(image),
             }
             hash_matches = hashlib.sha256(saved).hexdigest() == capture["sha256"]
             assert hash_matches, {

@@ -3,7 +3,6 @@
 import fcntl
 import os
 import pty
-import re
 import select
 import signal
 import struct
@@ -16,11 +15,42 @@ from contextlib import contextmanager
 from fixtures import SmokePackage
 
 
-ANSI = re.compile(rb"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\)|.)")
-
-
 def plain(raw: bytes) -> str:
-    return ANSI.sub(b"", raw).decode("utf-8", errors="replace")
+    visible = bytearray()
+    index = 0
+    while index < len(raw):
+        if raw[index] != 0x1B:
+            visible.append(raw[index])
+            index += 1
+            continue
+
+        index += 1
+        if index >= len(raw):
+            break
+        marker = raw[index]
+        if marker == ord("["):
+            index += 1
+            while index < len(raw) and not 0x40 <= raw[index] <= 0x7E:
+                index += 1
+            if index < len(raw):
+                index += 1
+        elif marker == ord("]"):
+            index += 1
+            while index < len(raw):
+                if raw[index] == 0x07:
+                    index += 1
+                    break
+                if (
+                    raw[index] == 0x1B
+                    and index + 1 < len(raw)
+                    and raw[index + 1] == ord("\\")
+                ):
+                    index += 2
+                    break
+                index += 1
+        else:
+            index += 1
+    return visible.decode("utf-8", errors="replace")
 
 
 @contextmanager
@@ -97,6 +127,9 @@ class PackagedTui:
                 start_new_session=True,
                 close_fds=True,
             )
+        except BaseException:
+            os.close(master)
+            raise
         finally:
             os.close(slave)
         self.master = master
