@@ -85,6 +85,10 @@
         }
       ]
     },
+    "AutomaticTurnContinuationRef": {
+      "description": "An opaque reference to a server-side automatic-turn admission.\n\nIt is safe to transport, but grants no authority without the matching durable State ticket, exact thread and stable authenticated-principal identity, current epochs, and one-time admission check. It must never be used as user content or persisted in rollout history.",
+      "type": "string"
+    },
     "ByteRange": {
       "properties": {
         "end": {

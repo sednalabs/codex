@@ -435,6 +435,18 @@ class AutoReviewRequirements(BaseModel):
     required_on_models: Annotated[list[str] | None, Field(alias="requiredOnModels")] = None
 
 
+class AutomaticTurnContinuationRef(RootModel[str]):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    root: Annotated[
+        str,
+        Field(
+            description="An opaque reference to a server-side automatic-turn admission.\n\nIt is safe to transport, but grants no authority without the matching durable State ticket, exact thread and stable authenticated-principal identity, current epochs, and one-time admission check. It must never be used as user content or persisted in rollout history."
+        ),
+    ]
+
+
 class BrowserUseAccessApprovalLifetime(Enum):
     turn = "turn"
     thread = "thread"
