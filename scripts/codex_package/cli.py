@@ -40,6 +40,11 @@ def parse_args() -> argparse.Namespace:
         help="Package variant to build.",
     )
     parser.add_argument(
+        "--package-version",
+        default=read_workspace_version(),
+        help="Package version to record in codex-package.json.",
+    )
+    parser.add_argument(
         "--package-dir",
         type=Path,
         default=argparse.SUPPRESS,
@@ -183,7 +188,6 @@ def main() -> int:
             "--codex-windows-sandbox-setup-bin",
         ),
     )
-    version = read_workspace_version()
     inputs = PackageInputs(
         entrypoint_bin=source_outputs.entrypoint_bin,
         code_mode_host_bin=source_outputs.code_mode_host_bin,
@@ -194,7 +198,7 @@ def main() -> int:
         codex_windows_sandbox_setup_bin=source_outputs.codex_windows_sandbox_setup_bin,
     )
     prepare_package_dir(package_dir, force=args.force)
-    build_package_dir(package_dir, version, variant, spec, inputs)
+    build_package_dir(package_dir, args.package_version, variant, spec, inputs)
     validate_package_dir(
         package_dir, variant, spec, include_zsh=inputs.zsh_bin is not None
     )

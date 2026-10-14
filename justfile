@@ -52,6 +52,11 @@ file-search *args:
 code-mode-host *args:
     cargo run --bin codex-code-mode-host -- {args}
 
+# Assemble a canonical package with optional workflow-selected version metadata.
+[no-cd]
+assemble-codex-package *args:
+    {{ python }} {{ justfile_directory() }}/scripts/build_codex_package.py {args}
+
 # Build the CLI and run the app-server test client
 app-server-test-client *args:
     cargo build -p codex-cli

@@ -15,6 +15,7 @@ on:
       - "MODULE.bazel.lock"
       - "codex-rs/**"
       - "justfile"
+      - "scripts/build_codex_package.py"
       - "scripts/codex_package/**"
       - "sdk/python/**"
       - ".github/actions/**"
@@ -71,10 +72,16 @@ jobs:
           WORKFLOW_HOST_SHA: ${{ github.sha }}
           EVENT_REF: ${{ github.ref }}
           PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
           REPOSITORY: ${{ github.repository }}
           OPERATION_INPUT: ${{ inputs.operation }}
           SELECTED_BASE_SHA: be2e129ecd67d900c016eda12d5d193e33d9c3da
+          MAIN_PREVIEW_BASE_SHA: 73dc0ce2874c3c6cbece36cd890aeab184eb705e
+          MAIN_PREVIEW_BASE_TREE: af03577a8821881e0f56585fc3f7ef6b2f9a4c83
+          MAIN_PREVIEW_HEAD_REF: repair/mcp-device-auth-package-73dc-20261015
         run: |
           set -euo pipefail
 
@@ -107,8 +114,34 @@ jobs:
               echo "Only same-repository pull requests targeting main use this package route." >&2
               exit 1
             fi
-            if ! git merge-base --is-ancestor "${SELECTED_BASE_SHA}" "${SOURCE_SHA}"; then
-              echo "The pull-request candidate is not descended from the selected be2e base." >&2
+            if git merge-base --is-ancestor "${SELECTED_BASE_SHA}" "${SOURCE_SHA}"; then
+              :
+            elif [[ "${PR_BASE_SHA}" == "${MAIN_PREVIEW_BASE_SHA}" && "${PR_HEAD_REF}" == "${MAIN_PREVIEW_HEAD_REF}" ]]; then
+              if [[ "$(git rev-parse "${MAIN_PREVIEW_BASE_SHA}^{tree}")" != "${MAIN_PREVIEW_BASE_TREE}" ]]; then
+                echo "The pinned main-preview base does not match its frozen tree." >&2
+                exit 1
+              fi
+              if [[ ! "${PR_NUMBER}" =~ ^[1-9][0-9]*$ || "${EVENT_REF}" != "refs/pull/${PR_NUMBER}/merge" ]]; then
+                echo "The main-preview event ref does not match this pull request." >&2
+                exit 1
+              fi
+              if ! git merge-base --is-ancestor "${MAIN_PREVIEW_BASE_SHA}" "${SOURCE_SHA}"; then
+                echo "The main-preview source is not descended from its pinned base." >&2
+                exit 1
+              fi
+              if [[ -n "$(git rev-list --merges "${MAIN_PREVIEW_BASE_SHA}..${SOURCE_SHA}")" ]]; then
+                echo "The main-preview source contains ancestry outside the pinned linear branch." >&2
+                exit 1
+              fi
+
+              host_base="$(git rev-parse "${WORKFLOW_HOST_SHA}^1")"
+              host_source="$(git rev-parse "${WORKFLOW_HOST_SHA}^2")"
+              if [[ "${host_base}" != "${MAIN_PREVIEW_BASE_SHA}" || "${host_source}" != "${SOURCE_SHA}" || "${workflow_host_tree}" != "${source_tree}" ]]; then
+                echo "The main-preview workflow host does not bind the pinned base and exact source." >&2
+                exit 1
+              fi
+            else
+              echo "The pull-request candidate is neither descended from the selected be2e base nor the exact pinned main-preview route." >&2
               exit 1
             fi
           elif [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
@@ -136,14 +169,14 @@ jobs:
 
           required_package_paths=(
             "justfile"
+            "scripts/build_codex_package.py"
             "scripts/codex_package/test_cargo.py"
             "scripts/codex_package/test_layout.py"
             "scripts/codex_package/smoke_tests/pyproject.toml"
             "scripts/codex_package/smoke_tests/uv.lock"
+            "scripts/codex_package/smoke_tests/conftest.py"
+            "scripts/codex_package/smoke_tests/fixtures.py"
             "scripts/codex_package/smoke_tests/test_codex_package.py"
-            "scripts/codex_package/smoke_tests/first_binary/artifact.py"
-            "scripts/codex_package/smoke_tests/first_binary/conftest.py"
-            "scripts/codex_package/smoke_tests/first_binary/package_acceptance.py"
             "scripts/codex_package/smoke_tests/first_binary/test_tui_package_version.py"
             "scripts/codex_package/smoke_tests/first_binary/test_tui_agents_acceptance.py"
             "scripts/codex_package/smoke_tests/first_binary/tui_pty.py"
@@ -361,7 +394,6 @@ jobs:
       WORKFLOW_HOST_SHA: ${{ needs.identity.outputs.workflow_host_sha }}
       WORKFLOW_HOST_TREE: ${{ needs.identity.outputs.workflow_host_tree }}
       TARGET: ${{ matrix.target }}
-      DIST_DIR: ${{ runner.temp }}/sedna-first-dist
       BINARY_KIND: ${{ matrix.binary_kind }}
       LOADER: ${{ matrix.loader }}
     steps:
@@ -421,6 +453,8 @@ jobs:
       - name: Build canonical packages and shipped proxy
         working-directory: codex-rs
         shell: bash
+        env:
+          DIST_DIR: ${{ runner.temp }}/sedna-first-dist
         run: |
           set -euo pipefail
           if [[ "$(git rev-parse HEAD)" != "${SOURCE_SHA}" || "$(git rev-parse HEAD^{tree})" != "${SOURCE_TREE}" ]]; then
