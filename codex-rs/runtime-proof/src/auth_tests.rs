@@ -22,7 +22,7 @@ fn fixture_claim_approval_is_exact_and_unavailable_to_live_credentials() {
         "model_provider = \"openai\"\ncli_auth_credentials_store = \"ephemeral\"\n\n[mcp_servers.ops]\nurl = \"{recipient}\"\n"
     );
     let fixture_config = format!(
-        "model_provider = \"openai\"\ncli_auth_credentials_store = \"ephemeral\"\n\n[mcp_servers.ops]\nurl = \"{recipient}\"\nrequired = true\n\n[mcp_servers.ops.tools.work_item_claim]\napproval_mode = \"approve\"\n"
+        "model_provider = \"openai\"\ncli_auth_credentials_store = \"ephemeral\"\n\n[mcp_servers.ops]\nurl = \"{recipient}\"\n\n[mcp_servers.ops.tools.work_item_claim]\napproval_mode = \"approve\"\n"
     );
     let live_config = format!(
         "model_provider = \"openai\"\ncli_auth_credentials_store = \"ephemeral\"\n\n[mcp_servers.ops]\nurl = \"{recipient}\"\nrequired = true\nenabled_tools = [\"work_item_claim\"]\n\n[mcp_servers.ops.tools.work_item_claim]\napproval_mode = \"approve\"\n"

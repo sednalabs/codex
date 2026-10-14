@@ -333,7 +333,12 @@ fn create_run_directory(
         let path = runtime_directory.join(Uuid::new_v4().to_string());
         match fs::create_dir(&path) {
             Ok(()) => {
-                return prepare_run_directory(&path, policy, working_directory, 0);
+                return prepare_run_directory(
+                    &path,
+                    policy,
+                    working_directory,
+                    /*launcher_uid*/ 0,
+                );
             }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(error).context("create fixed runtime directory"),
@@ -348,7 +353,7 @@ fn prepare_run_directory(
     working_directory: PathBuf,
     launcher_uid: u32,
 ) -> Result<RunDirectory> {
-    set_owner_and_mode(path, launcher_uid, policy.runtime_gid, 0o710)?;
+    set_owner_and_mode(path, launcher_uid, policy.runtime_gid, /*mode*/ 0o710)?;
     let codex_home = path.join("codex-home");
     fs::create_dir(&codex_home)?;
 
@@ -357,7 +362,7 @@ fn prepare_run_directory(
     write_owned_file(
         &config_path,
         config.as_bytes(),
-        0o440,
+        /*mode*/ 0o440,
         launcher_uid,
         policy.runtime_gid,
     )?;
@@ -367,7 +372,7 @@ fn prepare_run_directory(
     write_owned_file(
         &installation_id,
         format!("{}\n", Uuid::new_v4()).as_bytes(),
-        0o600,
+        /*mode*/ 0o600,
         launcher_uid,
         policy.runtime_gid,
     )?;
@@ -375,18 +380,33 @@ fn prepare_run_directory(
         &installation_id,
         policy.runtime_uid,
         policy.runtime_gid,
-        0o600,
+        /*mode*/ 0o600,
     )?;
-    set_owner_and_mode(&codex_home, launcher_uid, policy.runtime_gid, 0o550)?;
+    set_owner_and_mode(
+        &codex_home,
+        launcher_uid,
+        policy.runtime_gid,
+        /*mode*/ 0o550,
+    )?;
 
     let child_home = path.join("child-home");
     fs::create_dir(&child_home)?;
     for child_dir in ["tmp", "config", "cache", "data", "state", "runtime"] {
         let child_path = child_home.join(child_dir);
         fs::create_dir(&child_path)?;
-        set_owner_and_mode(&child_path, policy.runtime_uid, policy.runtime_gid, 0o700)?;
+        set_owner_and_mode(
+            &child_path,
+            policy.runtime_uid,
+            policy.runtime_gid,
+            /*mode*/ 0o700,
+        )?;
     }
-    set_owner_and_mode(&child_home, policy.runtime_uid, policy.runtime_gid, 0o700)?;
+    set_owner_and_mode(
+        &child_home,
+        policy.runtime_uid,
+        policy.runtime_gid,
+        /*mode*/ 0o700,
+    )?;
 
     Ok(RunDirectory {
         codex_home,
@@ -636,7 +656,7 @@ fn parse_identity_fields(value: &str) -> Result<[u32; 4]> {
 }
 
 fn read_issuer_seed(directory: &Path, policy: &LauncherPolicy) -> Result<Zeroizing<[u8; 32]>> {
-    let mut credential = read_credential(directory, ISSUER_SEED_CREDENTIAL, 32)?;
+    let mut credential = read_credential(directory, ISSUER_SEED_CREDENTIAL, /*max_bytes*/ 32)?;
     if credential.len() != 32 {
         bail!("issuer signing credential has an invalid size");
     }

@@ -3,11 +3,7 @@ use crate::provider_auth::ProviderCredentialClass;
 use ed25519_dalek::Signature;
 use ed25519_dalek::Verifier as _;
 use pretty_assertions::assert_eq;
-use std::os::fd::AsRawFd as _;
-use std::os::fd::FromRawFd as _;
-use std::os::unix::fs::MetadataExt as _;
 use std::os::unix::fs::PermissionsExt as _;
-use std::os::unix::process::CommandExt as _;
 use std::process::Command;
 use std::time::Duration;
 use std::time::Instant;
@@ -56,7 +52,7 @@ fn fixed_claims() -> wire::CertificateClaims {
 #[test]
 fn generated_claim_profile_matches_the_protected_runtime_admission() {
     let config = render_codex_config("https://mcp.example/");
-    auth::validate_raw_config(
+    crate::auth::validate_raw_config(
         config.as_bytes(),
         MCP_SERVER,
         "https://mcp.example/",
@@ -66,7 +62,7 @@ fn generated_claim_profile_matches_the_protected_runtime_admission() {
 
     let unapproved = config.replace("approval_mode = \"approve\"", "approval_mode = \"prompt\"");
     assert!(
-        auth::validate_raw_config(
+        crate::auth::validate_raw_config(
             unapproved.as_bytes(),
             MCP_SERVER,
             "https://mcp.example/",
