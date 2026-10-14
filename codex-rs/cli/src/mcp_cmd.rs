@@ -473,7 +473,7 @@ async fn run_add(config: &Config, add_args: AddArgs) -> Result<()> {
                 /*configured_scopes*/ None,
                 oauth_config.discovered_scopes.clone(),
             );
-            perform_oauth_login_retry_without_scopes(
+            perform_oauth_login_with_mode(
                 credential_name.as_ref(),
                 &oauth_config.url,
                 config.mcp_oauth_credentials_store_mode,
