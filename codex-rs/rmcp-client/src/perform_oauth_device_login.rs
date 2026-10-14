@@ -92,26 +92,26 @@ pub async fn perform_oauth_device_login(
 
     let (details, pkce) = request_device_authorization_with_pkce_fallback(
         &oauth_http_client, &device_endpoint, &client_id,
-        credentials.client_secret.as_ref().map(|secret| secret.secret()),
+        credentials.client_secret.as_ref().map(|secret| secret.secret().as_str()),
         scopes, oauth_resource,
     ).await?;
     show_authorization_prompt(DeviceAuthorizationPrompt::new(server_name, &details));
     let token_response = match poll_device_token(
         &oauth_http_client, &token_endpoint, &client_id,
-        credentials.client_secret.as_ref().map(|secret| secret.secret()),
+        credentials.client_secret.as_ref().map(|secret| secret.secret().as_str()),
         oauth_resource, &details, pkce.as_ref(),
     ).await {
         Ok(tokens) => tokens,
         Err(error) if pkce.is_some() && is_invalid_request_provider_error(&error) => {
             let details = request_device_authorization(
                 &oauth_http_client, &device_endpoint, &client_id,
-                credentials.client_secret.as_ref().map(|secret| secret.secret()),
+                credentials.client_secret.as_ref().map(|secret| secret.secret().as_str()),
                 scopes, oauth_resource, None, None,
             ).await.context("OAuth device token endpoint rejected PKCE verifier, and retry without PKCE failed during device authorization")?;
             show_authorization_prompt(DeviceAuthorizationPrompt::new(server_name, &details));
             poll_device_token(
                 &oauth_http_client, &token_endpoint, &client_id,
-                credentials.client_secret.as_ref().map(|secret| secret.secret()),
+                credentials.client_secret.as_ref().map(|secret| secret.secret().as_str()),
                 oauth_resource, &details, None,
             ).await.context("OAuth device token endpoint rejected PKCE verifier, and retry without PKCE failed")?
         }
