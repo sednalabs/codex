@@ -83,7 +83,7 @@ pub(crate) fn certificate_for_auth() -> Result<(wire::CertificateClaims, String)
     };
     Ok((
         signer.claims.clone(),
-        wire::digest(signer.certificate.as_bytes()),
+        wire::certificate_digest(signer.certificate.as_bytes()),
     ))
 }
 
@@ -169,7 +169,7 @@ impl RuntimeProofSigner {
         let operation = wire::canonical_operation(&self.claims.tool, parameters)?;
         let proof_claims = wire::RequestClaims {
             version: 1,
-            certificate_sha256: wire::digest(self.certificate.as_bytes()),
+            certificate_sha256: wire::certificate_digest(self.certificate.as_bytes()),
             runtime_incarnation: self.claims.runtime_incarnation,
             execution_nonce: *execution_nonce,
             provider_thread_id: provider_thread_id.to_string(),

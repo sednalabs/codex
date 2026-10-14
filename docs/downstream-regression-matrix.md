@@ -1114,7 +1114,9 @@ cause. The native Linux qualification uses the repository's existing
 `RUST_MIN_STACK` value. Do not record the affected test as passing until it
 runs successfully in the hosted validation surface.
 
-The focused native proof suite must cover a fixed JCS operation/digest vector,
+The focused native proof suite must cover a fixed certificate digest vector
+using the Ops verifier's bare lowercase hexadecimal encoding while preserving
+the `sha256:` prefix on operation digests, a fixed JCS operation/digest vector,
 safe integer rejection, omitted-versus-null and changed-parameter binding,
 certificate/key/artifact and fixed lease validation, per-request signature
 verification, mismatched server/recipient rejection, distinct root/delegate
