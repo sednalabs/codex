@@ -549,16 +549,12 @@ async fn handle_approved_mcp_tool_call(
                     )
                     .await?;
                     if let Some(recipient) = transport_url.as_deref() {
-                        protected_call = codex_runtime_proof::is_protected_mcp_target(
-                            &server,
-                            recipient,
-                        )
-                        .map_err(anyhow::Error::msg)?;
+                        protected_call =
+                            codex_runtime_proof::is_protected_mcp_target(&server, recipient)
+                                .map_err(anyhow::Error::msg)?;
                     }
                     let empty_arguments = JsonValue::Null;
-                    let proof_parameters = rewritten_arguments
-                        .as_ref()
-                        .unwrap_or(&empty_arguments);
+                    let proof_parameters = rewritten_arguments.as_ref().unwrap_or(&empty_arguments);
                     let proof = codex_runtime_proof::sign_claim_proof(
                         &sess.execution_nonce,
                         &sess.thread_id.to_string(),
@@ -627,10 +623,7 @@ async fn handle_approved_mcp_tool_call(
                 Ok(result),
             )?;
             let mut result = result;
-            redact_protected_call_tool_result(
-                &mut result,
-                runtime_redaction_context.as_ref(),
-            );
+            redact_protected_call_tool_result(&mut result, runtime_redaction_context.as_ref());
             Ok(maybe_request_codex_apps_auth_elicitation(
                 sess,
                 turn_context,

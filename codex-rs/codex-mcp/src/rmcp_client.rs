@@ -55,8 +55,8 @@ use codex_config::types::AuthKeyringBackendKind;
 use codex_config::types::OAuthCredentialsStoreMode;
 use codex_connectors::ConnectorRuntimeContext;
 use codex_connectors::ConnectorRuntimeFetchSource;
-use codex_exec_server::HttpClient;
 use codex_exec_server::Environment;
+use codex_exec_server::HttpClient;
 use codex_login::AuthChangeState;
 use codex_otel::auth_storage::AuthStorageOriginator;
 use codex_protocol::mcp::ClientMcpExtensions;
@@ -80,9 +80,9 @@ use futures::future::FutureExt;
 use futures::future::Shared;
 use rmcp::model::ClientCapabilities;
 use rmcp::model::ElicitationCapability;
-use rmcp::model::InitializeResult;
 use rmcp::model::Implementation;
 use rmcp::model::InitializeRequestParams;
+use rmcp::model::InitializeResult;
 use rmcp::model::ProtocolVersion;
 use rmcp::model::Tool as RmcpTool;
 use tokio::sync::watch;
@@ -1013,10 +1013,8 @@ async fn start_server_task(
         }
     });
     let list_start = Instant::now();
-    let server_info = mcp_server_info_from_implementation(
-        &server_name,
-        Some(initialize_result.server_info),
-    );
+    let server_info =
+        mcp_server_info_from_implementation(&server_name, Some(initialize_result.server_info));
     let fetch_ticket = codex_apps_tools_cache_context
         .as_ref()
         .map(|context| context.begin_fetch(ConnectorRuntimeFetchSource::Startup));
@@ -1316,13 +1314,12 @@ pub(crate) async fn make_rmcp_client(
             if protected_target {
                 let http_client = runtime_context.local_http_client();
                 let http_client = maybe_with_openai_docs_source_attribution(&url, http_client);
-                let http_client = Arc::new(
-                    crate::protected_http_client::ProtectedMcpHttpClient::new(
+                let http_client =
+                    Arc::new(crate::protected_http_client::ProtectedMcpHttpClient::new(
                         http_client,
                         server_name,
                         &url,
-                    ),
-                ) as Arc<dyn HttpClient>;
+                    )) as Arc<dyn HttpClient>;
                 RmcpClient::new_protected_streamable_http_client(
                     server_name,
                     &url,
@@ -1354,25 +1351,26 @@ pub(crate) async fn make_rmcp_client(
                 } else {
                     false
                 };
-                let (http_client, resolved_bearer_token) =
-                    if executor_resolves_bearer_token && let Some(env_var) = bearer_token_env_var.as_ref() {
-                        (
-                            Arc::new(ExecutorEnvironmentHttpClient {
-                                bearer_token_env_var: env_var.clone(),
-                                http_client,
-                            }) as Arc<dyn HttpClient>,
-                            Some(StreamableHttpBearerToken::ProvidedByHttpClient),
-                        )
-                    } else {
-                        let token = resolve_bearer_token(
-                            server_name,
-                            bearer_token_env_var.as_deref(),
-                            server.credential_policy(),
-                        )
-                        .map_err(StartupOutcomeError::from)?
-                        .map(StreamableHttpBearerToken::Resolved);
-                        (http_client, token)
-                    };
+                let (http_client, resolved_bearer_token) = if executor_resolves_bearer_token
+                    && let Some(env_var) = bearer_token_env_var.as_ref()
+                {
+                    (
+                        Arc::new(ExecutorEnvironmentHttpClient {
+                            bearer_token_env_var: env_var.clone(),
+                            http_client,
+                        }) as Arc<dyn HttpClient>,
+                        Some(StreamableHttpBearerToken::ProvidedByHttpClient),
+                    )
+                } else {
+                    let token = resolve_bearer_token(
+                        server_name,
+                        bearer_token_env_var.as_deref(),
+                        server.credential_policy(),
+                    )
+                    .map_err(StartupOutcomeError::from)?
+                    .map(StreamableHttpBearerToken::Resolved);
+                    (http_client, token)
+                };
                 let redirect_mode = if server.is_agent_plugin() {
                     StreamableHttpRedirectMode::AgentPluginV1
                 } else {

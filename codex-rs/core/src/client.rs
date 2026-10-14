@@ -25,6 +25,8 @@
 //! WebSocket prewarm is treated as the first websocket connection attempt for a turn. If it
 //! fails, normal stream retry/fallback logic handles recovery on the same turn.
 
+use sha2::Digest;
+use sha2::Sha256;
 use std::collections::HashMap;
 use std::collections::hash_map::RandomState;
 use std::hash::BuildHasher;
@@ -35,8 +37,6 @@ use std::sync::Mutex as StdMutex;
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
-use sha2::Digest;
-use sha2::Sha256;
 use url::Url;
 
 #[path = "client_tool_metadata.rs"]
@@ -60,9 +60,9 @@ use codex_api::RealtimeCallClient as ApiRealtimeCallClient;
 use codex_api::RealtimeSessionConfig as ApiRealtimeSessionConfig;
 use codex_api::Reasoning;
 use codex_api::ReasoningContext;
+use codex_api::RequestInitiation;
 use codex_api::RequestTelemetry;
 use codex_api::ReqwestTransport;
-use codex_api::RequestInitiation;
 use codex_api::ResponseCreateWsRequest;
 use codex_api::ResponsesApiRequest;
 use codex_api::ResponsesClient as ApiResponsesClient;
@@ -820,10 +820,7 @@ fn stable_automatic_turn_principal(
         update_stable_identity_field(&mut hasher, name, value);
     }
 
-    Some(format!(
-        "provider-authority:v1:{:x}",
-        hasher.finalize()
-    ))
+    Some(format!("provider-authority:v1:{:x}", hasher.finalize()))
 }
 
 fn stable_endpoint_identity(value: &str) -> Option<String> {
@@ -1216,13 +1213,10 @@ impl ModelClient {
                 client_setup.request_initiation,
             ),
         );
-        let client = ApiMemoriesClient::new(
-            transport,
-            client_setup.api_provider,
-            client_setup.api_auth,
-        )
-        .with_telemetry(Some(request_telemetry))
-        .with_request_attempt_factory(Some(request_attempt_factory));
+        let client =
+            ApiMemoriesClient::new(transport, client_setup.api_provider, client_setup.api_auth)
+                .with_telemetry(Some(request_telemetry))
+                .with_request_attempt_factory(Some(request_attempt_factory));
 
         let payload = ApiMemorySummarizeInput {
             model: model_info.slug.clone(),
@@ -1555,15 +1549,15 @@ impl ModelClient {
                         .await?;
                     (resolved.provider, resolved.redirect_policy)
                 }
-                ClientRouting::ConfiguredProvider => {
-                    (request_auth.api_provider.clone(), ClientRedirectPolicy::Default)
-                }
+                ClientRouting::ConfiguredProvider => (
+                    request_auth.api_provider.clone(),
+                    ClientRedirectPolicy::Default,
+                ),
             };
             let api_provider = provider_override.clone().unwrap_or(api_provider);
             if let Some(recipient) = protected_provider_recipient()? {
                 validate_protected_api_provider(&api_provider, &recipient)?;
-                if auth.as_ref().map(CodexAuth::api_auth_mode)
-                    != Some(AuthMode::ChatgptAuthTokens)
+                if auth.as_ref().map(CodexAuth::api_auth_mode) != Some(AuthMode::ChatgptAuthTokens)
                 {
                     return Err(CodexErr::UnsupportedOperation(
                         "protected runtime requires ephemeral ChatGPT auth tokens".to_string(),
@@ -2585,10 +2579,7 @@ impl ModelClientSession {
                 Ok(Some(request_initiation)) => request_initiation,
                 Ok(None) => match self
                     .client
-                    .current_client_setup(
-                        ClientRouting::Workspace,
-                        Some(connection_authority),
-                    )
+                    .current_client_setup(ClientRouting::Workspace, Some(connection_authority))
                     .await
                 {
                     Ok(setup) => setup.request_initiation,
@@ -2617,7 +2608,7 @@ impl ModelClientSession {
                     continue;
                 }
                 Err(err) => return Err(provider.map_api_error(err)),
-            }
+            };
 
             // Measure the complete logical request, not only the websocket delta.
             if !warmup

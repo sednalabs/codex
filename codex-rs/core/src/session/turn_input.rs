@@ -12,8 +12,8 @@
 //! Realtime drain refusals are returned to the fanout for ordered session teardown.
 //! Sender evidence is read without the active-turn lock and bound to the accepted turn.
 
-use super::TurnInput;
 use super::AutomaticTurnContext;
+use super::TurnInput;
 use super::session::Session;
 use super::session::SessionConfiguration;
 use super::session::SessionSettingsUpdate;
@@ -249,14 +249,7 @@ pub(super) async fn handle(
     mode: TurnInputMode,
     submission_id: String,
 ) -> CodexResult<TurnInputSubmission> {
-    handle_with_automatic_turn_context(
-        session,
-        request,
-        mode,
-        submission_id,
-        None,
-    )
-    .await
+    handle_with_automatic_turn_context(session, request, mode, submission_id, None).await
 }
 
 pub(super) async fn handle_with_automatic_turn_context(
@@ -318,7 +311,14 @@ pub(super) async fn handle_with_automatic_turn_context(
             .await
         }
         TurnInputMode::Steer { expected_turn_id } => {
-            steer(session, request, expected_turn_id, submission_id, automatic_turn).await
+            steer(
+                session,
+                request,
+                expected_turn_id,
+                submission_id,
+                automatic_turn,
+            )
+            .await
         }
     };
     // Link this request's trace to the accepted turn, which may have an older trace.
@@ -464,12 +464,7 @@ async fn start_or_steer(
                     .turn_metadata_state
                     .set_responsesapi_client_metadata(responsesapi_client_metadata);
             }
-            attach_automatic_turn_context(
-                session,
-                turn_context.as_ref(),
-                automatic_turn,
-            )
-            .await;
+            attach_automatic_turn_context(session, turn_context.as_ref(), automatic_turn).await;
             session
                 .maybe_emit_model_warnings_for_turn(turn_context.as_ref())
                 .await;
@@ -625,12 +620,7 @@ async fn start_if_idle(
             .turn_metadata_state
             .set_responsesapi_client_metadata(responsesapi_client_metadata);
     }
-    attach_automatic_turn_context(
-        session,
-        turn_context.as_ref(),
-        automatic_turn,
-    )
-    .await;
+    attach_automatic_turn_context(session, turn_context.as_ref(), automatic_turn).await;
     session
         .maybe_emit_model_warnings_for_turn(turn_context.as_ref())
         .await;

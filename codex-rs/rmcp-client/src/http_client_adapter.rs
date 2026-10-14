@@ -783,9 +783,9 @@ fn mcp_redirect_policy(
 ) -> HttpRedirectPolicy {
     if mode == StreamableHttpRedirectMode::Reject
         || headers
-        .get(HEADER_MCP_PROTOCOL_VERSION)
-        .and_then(|value| value.to_str().ok())
-        == Some(ProtocolVersion::V_2026_07_28.as_str())
+            .get(HEADER_MCP_PROTOCOL_VERSION)
+            .and_then(|value| value.to_str().ok())
+            == Some(ProtocolVersion::V_2026_07_28.as_str())
         || (mode == StreamableHttpRedirectMode::AgentPluginV1
             && (has_configured_headers || headers.contains_key(AUTHORIZATION)))
     {

@@ -37,11 +37,11 @@ use codex_login::AuthManager;
 use codex_mcp::McpRuntime;
 use codex_models_manager::manager::SharedModelsManager;
 use codex_otel::SessionTelemetry;
+use codex_protocol::ThreadId;
 use codex_protocol::automatic_turn::AutomaticTurnContinuationRef;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::models::AdditionalPermissionProfile;
-use codex_protocol::ThreadId;
 use codex_rollout::state_db::StateDbHandle;
 use codex_rollout_trace::ThreadTraceContext;
 use codex_sandboxing::policy_transforms::merge_permission_profiles;
@@ -163,7 +163,9 @@ impl SessionServices {
                         .as_ref()
                         .and_then(|operation| operation.continuation_ref.as_ref())
                         .map(AutomaticTurnContinuationRef::as_str),
-                    operation.as_ref().and_then(|operation| operation.expected_epochs),
+                    operation
+                        .as_ref()
+                        .and_then(|operation| operation.expected_epochs),
                 )
                 .await;
             if let Some(reference) = continuation_ref.and_then(AutomaticTurnContinuationRef::new) {
@@ -226,10 +228,13 @@ impl SessionServices {
         client_user_message_id: Option<&str>,
     ) {
         let mut principals = self.automatic_turn_principals.lock().await;
-        if principals.get(event_occurrence_id).is_some_and(|operation| {
-            operation.principal_identity.as_deref() == principal_identity
-                && operation.client_user_message_id.as_deref() == client_user_message_id
-        }) {
+        if principals
+            .get(event_occurrence_id)
+            .is_some_and(|operation| {
+                operation.principal_identity.as_deref() == principal_identity
+                    && operation.client_user_message_id.as_deref() == client_user_message_id
+            })
+        {
             principals.remove(event_occurrence_id);
         }
     }
