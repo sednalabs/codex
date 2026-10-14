@@ -65,6 +65,26 @@ fn effective_certificate_expiry_never_outlives_the_mcp_token() {
 }
 
 #[test]
+fn token_deadline_preserves_fractional_time_from_the_policy_clock_pair() {
+    let monotonic_start = Instant::now();
+    let policy_task_deadline = monotonic_start + Duration::from_millis(1_200);
+
+    let token_task_deadline =
+        task_deadline_for_expiry(101, 102, policy_task_deadline).expect("token expiry is earlier");
+
+    assert_eq!(
+        token_task_deadline.duration_since(monotonic_start),
+        Duration::from_millis(200)
+    );
+    assert_eq!(
+        task_deadline_for_expiry(102, 102, policy_task_deadline)
+            .expect("policy expiry keeps its deadline"),
+        policy_task_deadline
+    );
+    assert!(task_deadline_for_expiry(103, 102, policy_task_deadline).is_err());
+}
+
+#[test]
 fn generated_claim_profile_matches_the_protected_runtime_admission() {
     let config = render_codex_config("https://mcp.example/");
     crate::auth::validate_raw_config(

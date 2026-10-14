@@ -13,6 +13,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use reqwest::StatusCode;
 use reqwest::blocking::Client;
+use reqwest::blocking::ClientBuilder;
 use reqwest::blocking::Request;
 use reqwest::header::CONTENT_TYPE;
 use serde::Deserialize;
@@ -93,12 +94,8 @@ pub(crate) fn exchange_client_credentials(
         bail!("fixed MCP OAuth identity is outside the admitted token contract");
     }
 
-    let client = Client::builder()
+    let client = oauth_client_builder()
         .https_only(true)
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(TOKEN_CONNECT_TIMEOUT)
-        .timeout(TOKEN_REQUEST_TIMEOUT)
-        .no_proxy()
         .build()
         .context("build bounded MCP OAuth client")?;
     let request = build_client_credentials_request(&client, policy, client_secret)?;
@@ -129,6 +126,15 @@ pub(crate) fn exchange_client_credentials(
     let response: TokenEndpointResponse = serde_json::from_slice(&body)
         .context("decode fixed MCP OAuth token response")?;
     validate_token_response(response, policy, principal, project_id, unix_seconds()?)
+}
+
+fn oauth_client_builder() -> ClientBuilder {
+    Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(TOKEN_CONNECT_TIMEOUT)
+        .timeout(TOKEN_REQUEST_TIMEOUT)
+        .retry(reqwest::retry::never())
+        .no_proxy()
 }
 
 fn build_client_credentials_request(

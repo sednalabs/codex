@@ -34,7 +34,11 @@ uuid = { workspace = true, features = ["serde", "v4"] }
 zeroize = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-reqwest = { workspace = true, features = ["blocking"] }
+reqwest = { workspace = true, features = ["blocking", "form"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+h2 = { workspace = true }
+tokio = { workspace = true, features = ["net", "rt", "time"] }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }

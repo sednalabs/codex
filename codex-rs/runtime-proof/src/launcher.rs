@@ -548,13 +548,11 @@ fn supervise_child(
         policy_expires_at,
         mcp_access_token.expires_at,
     )?;
-    let task_deadline = if expires_at == policy_expires_at {
-        policy_task_deadline
-    } else {
-        Instant::now()
-            .checked_add(Duration::from_secs(u64::from(execution_lease_seconds)))
-            .context("MCP token task deadline overflowed")?
-    };
+    let task_deadline = task_deadline_for_expiry(
+        expires_at,
+        policy_expires_at,
+        policy_task_deadline,
+    )?;
 
     let claims = wire::CertificateClaims {
         version: 1,
@@ -637,6 +635,23 @@ fn effective_expiry(now: i64, policy_expires_at: i64, token_expires_at: i64) -> 
     let lease_seconds = u32::try_from(remaining)
         .context("effective runtime lease is outside the supported range")?;
     Ok((expires_at, lease_seconds))
+}
+
+fn task_deadline_for_expiry(
+    expires_at: i64,
+    policy_expires_at: i64,
+    policy_task_deadline: Instant,
+) -> Result<Instant> {
+    let shortening_seconds = policy_expires_at
+        .checked_sub(expires_at)
+        .filter(|seconds| *seconds >= 0)
+        .context("effective runtime expiry exceeds its fixed policy expiry")?;
+    let shortening = Duration::from_secs(
+        u64::try_from(shortening_seconds).context("effective runtime expiry is invalid")?,
+    );
+    policy_task_deadline
+        .checked_sub(shortening)
+        .context("effective runtime task deadline is outside the supported range")
 }
 
 fn verify_child_image_and_identity(

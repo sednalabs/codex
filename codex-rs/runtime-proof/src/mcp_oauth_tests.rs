@@ -7,6 +7,11 @@ use base64::engine::general_purpose::STANDARD;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
+use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
+use std::thread;
+use std::time::Duration;
 use uuid::Uuid;
 
 const PRINCIPAL: &str = "22222222-2222-4222-8222-222222222222";
@@ -114,6 +119,84 @@ fn request_uses_fixed_client_credentials_scope_and_audience_without_secret_in_bo
         encoded_credentials,
         b"codex-work-claim:secret%3A%2B%2F%3D"
     );
+}
+
+#[test]
+fn refused_http2_token_request_is_never_replayed() {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
+        .expect("HTTP/2 listener should bind");
+    listener
+        .set_nonblocking(true)
+        .expect("HTTP/2 listener should be nonblocking");
+    let address = listener
+        .local_addr()
+        .expect("HTTP/2 listener should have an address");
+    let credentialed_attempts = Arc::new(AtomicUsize::new(0));
+    let server_attempts = Arc::clone(&credentialed_attempts);
+    let server = thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("HTTP/2 server runtime should build");
+        runtime.block_on(async move {
+            let listener = tokio::net::TcpListener::from_std(listener)
+                .expect("HTTP/2 listener should enter the server runtime");
+            let (stream, _) = listener
+                .accept()
+                .await
+                .expect("HTTP/2 listener should accept");
+            let mut connection = h2::server::handshake(stream)
+                .await
+                .expect("HTTP/2 server handshake should complete");
+            let (request, mut response) = connection
+                .accept()
+                .await
+                .expect("client should open a stream")
+                .expect("first HTTP/2 request should decode");
+            if request.headers().get(reqwest::header::AUTHORIZATION)
+                == Some(&reqwest::header::HeaderValue::from_static(
+                    "Basic synthetic-credential",
+                ))
+            {
+                server_attempts.fetch_add(1, Ordering::SeqCst);
+            }
+            response.send_reset(h2::Reason::REFUSED_STREAM);
+
+            if let Ok(Some(Ok((request, mut response)))) = tokio::time::timeout(
+                Duration::from_millis(250),
+                connection.accept(),
+            )
+            .await
+            {
+                if request.headers().get(reqwest::header::AUTHORIZATION)
+                    == Some(&reqwest::header::HeaderValue::from_static(
+                        "Basic synthetic-credential",
+                    ))
+                {
+                    server_attempts.fetch_add(1, Ordering::SeqCst);
+                }
+                response.send_reset(h2::Reason::REFUSED_STREAM);
+            }
+        });
+    });
+
+    let client = oauth_client_builder()
+        .http2_prior_knowledge()
+        .build()
+        .expect("one-shot test client should build");
+    let request = client
+        .post(format!("http://{address}/oauth/token"))
+        .header(
+            reqwest::header::AUTHORIZATION,
+            "Basic synthetic-credential",
+        )
+        .body("grant_type=client_credentials")
+        .build()
+        .expect("synthetic token request should build");
+
+    assert!(client.execute(request).is_err());
+    server.join().expect("HTTP/2 server should finish");
+    assert_eq!(credentialed_attempts.load(Ordering::SeqCst), 1);
 }
 
 #[test]
