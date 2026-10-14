@@ -30,6 +30,10 @@ pub(super) fn sampler_failure_reason(error: &LunaSamplerError) -> &'static str {
         LunaSamplerError::InputTooLarge => "input_too_large",
         LunaSamplerError::QueueFull => "queue_full",
         LunaSamplerError::Api(error) => match error {
+            ApiError::Transport(TransportError::AutomaticTurnContextChanged)
+            | ApiError::TransientAvailability(TransportError::AutomaticTurnContextChanged) => {
+                "automatic_turn_context_changed"
+            }
             ApiError::Transport(TransportError::Http { status, .. })
             | ApiError::Api { status, .. } => match status.as_u16() {
                 401 => "http_401",
@@ -60,6 +64,30 @@ pub(super) fn sampler_failure_reason(error: &LunaSamplerError) -> &'static str {
             ApiError::ServerOverloaded { .. } => "server_overloaded",
             ApiError::FlexUnavailable => "flex_unavailable",
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LunaSamplerError;
+    use super::sampler_failure_reason;
+    use codex_api::ApiError;
+    use codex_api::TransportError;
+
+    #[test]
+    fn automatic_turn_context_change_has_fixed_low_cardinality_reason() {
+        assert_eq!(
+            sampler_failure_reason(&LunaSamplerError::Api(ApiError::Transport(
+                TransportError::AutomaticTurnContextChanged
+            ))),
+            "automatic_turn_context_changed"
+        );
+        assert_eq!(
+            sampler_failure_reason(&LunaSamplerError::Api(ApiError::TransientAvailability(
+                TransportError::AutomaticTurnContextChanged
+            ))),
+            "automatic_turn_context_changed"
+        );
     }
 }
 

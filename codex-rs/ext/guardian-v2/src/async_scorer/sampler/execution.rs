@@ -31,6 +31,17 @@ const RESPONSES_LITE_METADATA_KEY: &str =
     "ws_request_header_x_openai_internal_codex_responses_lite";
 const TURN_METADATA_KEY: &str = "x-codex-turn-metadata";
 
+fn is_terminal_automatic_turn_context_change(error: &LunaSamplerError) -> bool {
+    matches!(
+        error,
+        LunaSamplerError::Api(ApiError::Transport(
+            TransportError::AutomaticTurnContextChanged
+        )) | LunaSamplerError::Api(ApiError::TransientAvailability(
+            TransportError::AutomaticTurnContextChanged
+        ))
+    )
+}
+
 pub(super) struct SamplingExecution {
     pub(super) auth_owner_generation: Option<u64>,
     pub(super) config: Arc<LunaSamplerConfig>,
@@ -124,6 +135,9 @@ impl SamplingExecution {
         auth_recovery: &mut Option<UnauthorizedRecovery>,
         retries: &mut usize,
     ) -> bool {
+        if is_terminal_automatic_turn_context_change(error) {
+            return false;
+        }
         let retryable = match error {
             LunaSamplerError::ConnectionTimeout
             | LunaSamplerError::Api(
@@ -176,12 +190,14 @@ impl SamplingExecution {
                 ApiError::Transport(
                     TransportError::Build(_)
                     | TransportError::ResponseTooLarge { .. }
-                    | TransportError::Policy(_),
+                    | TransportError::Policy(_)
+                    | TransportError::AutomaticTurnContextChanged,
                 )
                 | ApiError::TransientAvailability(
                     TransportError::Build(_)
                     | TransportError::ResponseTooLarge { .. }
-                    | TransportError::Policy(_),
+                    | TransportError::Policy(_)
+                    | TransportError::AutomaticTurnContextChanged,
                 )
                 | ApiError::ContextWindowExceeded
                 | ApiError::QuotaExceeded
@@ -443,6 +459,31 @@ impl SamplingExecution {
             }
             return Err(LunaSamplerError::MissingOutput);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LunaSamplerError;
+    use super::is_terminal_automatic_turn_context_change;
+    use codex_api::ApiError;
+    use codex_api::TransportError;
+
+    #[test]
+    fn automatic_turn_context_change_is_terminal_for_both_api_wrappers() {
+        assert!(is_terminal_automatic_turn_context_change(
+            &LunaSamplerError::Api(ApiError::Transport(
+                TransportError::AutomaticTurnContextChanged
+            ))
+        ));
+        assert!(is_terminal_automatic_turn_context_change(
+            &LunaSamplerError::Api(ApiError::TransientAvailability(
+                TransportError::AutomaticTurnContextChanged
+            ))
+        ));
+        assert!(!is_terminal_automatic_turn_context_change(
+            &LunaSamplerError::Api(ApiError::Transport(TransportError::Timeout))
+        ));
     }
 }
 
