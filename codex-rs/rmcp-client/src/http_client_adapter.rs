@@ -73,6 +73,7 @@ const EVENT_STREAM_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 pub enum StreamableHttpRedirectMode {
     Legacy,
     AgentPluginV1,
+    Reject,
 }
 
 #[derive(Clone)]
@@ -780,7 +781,8 @@ fn mcp_redirect_policy(
     headers: &HeaderMap,
     has_configured_headers: bool,
 ) -> HttpRedirectPolicy {
-    if headers
+    if mode == StreamableHttpRedirectMode::Reject
+        || headers
         .get(HEADER_MCP_PROTOCOL_VERSION)
         .and_then(|value| value.to_str().ok())
         == Some(ProtocolVersion::V_2026_07_28.as_str())

@@ -67,6 +67,18 @@ fn requests_without_sensitive_headers_follow_redirects() {
 }
 
 #[test]
+fn reject_mode_stops_redirects_without_sensitive_headers() {
+    assert_eq!(
+        mcp_redirect_policy(
+            StreamableHttpRedirectMode::Reject,
+            &HeaderMap::new(),
+            /*has_configured_headers*/ false,
+        ),
+        HttpRedirectPolicy::Stop
+    );
+}
+
+#[test]
 fn authorization_redirects_depend_on_mode() {
     let mut headers = HeaderMap::new();
     headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer secret"));
