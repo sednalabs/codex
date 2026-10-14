@@ -60,3 +60,17 @@ fn oauth_client_secret_requires_url_and_client_id_without_disclosure() {
         assert!(!error.to_string().contains("cli-secret-marker"));
     }
 }
+
+#[test]
+fn device_login_flag_is_explicit_and_cannot_select_another_login_strategy() {
+    let cli = McpCli::try_parse_from(["mcp", "login", "--device-auth", "fixture"])
+        .expect("parse device login");
+    let McpSubcommand::Login(args) = cli.subcommand else {
+        panic!("expected MCP login");
+    };
+    assert!(args.device_auth);
+    for extra in [vec!["--no-browser"], vec!["--oauth-client-registration", "dcr"]] {
+        assert!(McpCli::try_parse_from(["mcp", "login", "--device-auth", "fixture"]
+            .into_iter().chain(extra)).is_err());
+    }
+}

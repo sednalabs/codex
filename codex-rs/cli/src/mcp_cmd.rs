@@ -35,6 +35,9 @@ use codex_mcp::resolve_oauth_callback;
 use codex_mcp::resolve_oauth_scopes;
 use codex_protocol::protocol::McpAuthStatus;
 use codex_rmcp_client::McpOAuthCallbackMode;
+use codex_rmcp_client::DeviceAuthorizationPrompt;
+use codex_rmcp_client::perform_oauth_device_login;
+use codex_rmcp_client::discover_streamable_http_oauth;
 use codex_rmcp_client::McpOAuthClientRegistration;
 use codex_rmcp_client::OAuthDiscoveryTimeout;
 use codex_rmcp_client::StreamableHttpRedirectMode;
@@ -217,6 +220,10 @@ pub struct LoginArgs {
     /// Print the authorization URL and accept the callback URL without opening a browser.
     #[arg(long)]
     pub no_browser: bool,
+
+    /// Authenticate using the advertised device-code flow and a configured public client.
+    #[arg(long, conflicts_with_all = ["no_browser", "oauth_client_registration"])]
+    pub device_auth: bool,
 
     /// Comma-separated list of OAuth scopes to request.
     #[arg(long, value_delimiter = ',', value_name = "SCOPE,SCOPE")]
@@ -554,6 +561,7 @@ async fn run_login(config: &Config, login_args: LoginArgs) -> Result<()> {
     let LoginArgs {
         name,
         no_browser,
+        device_auth,
         scopes,
         oauth_client_registration,
     } = login_args;
@@ -603,6 +611,49 @@ async fn run_login(config: &Config, login_args: LoginArgs) -> Result<()> {
     let resolved_scopes =
         resolve_oauth_scopes(explicit_scopes, server.scopes.clone(), discovered_scopes);
     let credential_name = server.oauth_credential_name(&name);
+    if device_auth {
+        let oauth = server.oauth.as_ref().context("Device login requires a configured public OAuth client")?;
+        if oauth.client_secret.is_some() {
+            bail!("Device login requires a public OAuth client without a client secret");
+        }
+        let client_id = oauth.client_id.as_deref().filter(|value| !value.trim().is_empty())
+            .context("Device login requires a configured public OAuth client id")?;
+        let discovery = discover_streamable_http_oauth(
+            &url,
+            http_headers.clone(),
+            env_http_headers.clone(),
+            Arc::clone(&http_client),
+            OAuthDiscoveryTimeout::LOCAL,
+            StreamableHttpRedirectMode::Legacy,
+        ).await?.context("MCP server does not advertise OAuth metadata")?;
+        let device = discovery.device_authorization
+            .context("MCP server does not advertise an issuer-bound device-code flow")?;
+        let login = perform_oauth_device_login(
+            credential_name.as_ref(),
+            &url,
+            config.mcp_oauth_credentials_store_mode,
+            config.auth_keyring_backend_kind(),
+            http_headers,
+            env_http_headers,
+            &resolved_scopes.scopes,
+            client_id,
+            &device.issuer,
+            http_client,
+            server.oauth_resource.as_deref(),
+            &device.device_authorization_endpoint,
+            &device.token_endpoint,
+            print_device_authorization_prompt,
+        );
+        tokio::select! {
+            result = login => result?,
+            cancelled = tokio::signal::ctrl_c() => {
+                cancelled.context("failed to listen for device-login cancellation")?;
+                bail!("OAuth device login cancelled");
+            }
+        }
+        println!("Successfully logged in to MCP server '{name}'.");
+        return Ok(());
+    }
     let callback_url =
         resolve_oauth_callback(server, &url, config.mcp_oauth_callback_url.as_deref())?;
 
@@ -630,6 +681,15 @@ async fn run_login(config: &Config, login_args: LoginArgs) -> Result<()> {
     .await?;
     println!("Successfully logged in to MCP server '{name}'.");
     Ok(())
+}
+
+fn print_device_authorization_prompt(prompt: DeviceAuthorizationPrompt) {
+    println!(
+        "Authorize `{}` by opening this URL in your browser:\n{}\n\nEnter code: {}\n",
+        prompt.server_name(),
+        prompt.verification_uri(),
+        prompt.user_code()
+    );
 }
 
 async fn run_logout(config: &Config, logout_args: LogoutArgs) -> Result<()> {

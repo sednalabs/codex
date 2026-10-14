@@ -42,6 +42,15 @@ impl OAuthDiscoveryTimeout {
 pub struct StreamableHttpOAuthDiscovery {
     pub scopes_supported: Option<Vec<String>>,
     pub callback_mode: McpOAuthCallbackMode,
+    pub device_authorization: Option<DeviceAuthorizationMetadata>,
+}
+
+/// Advertised endpoints and issuer for a pre-registered public device client.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceAuthorizationMetadata {
+    pub issuer: String,
+    pub device_authorization_endpoint: String,
+    pub token_endpoint: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -268,15 +277,35 @@ async fn discover_streamable_http_oauth_with_manager(
         Ok(resolution) if !resolution.source.is_discovered() => Ok(None),
         Ok(resolution) => {
             let metadata = resolution.metadata;
+            let device_authorization = advertised_device_authorization(&metadata);
             Ok(Some(StreamableHttpOAuthDiscovery {
                 callback_mode: callback_mode(&metadata)
                     .unwrap_or(McpOAuthCallbackMode::CallbackSpecific),
                 scopes_supported: normalize_scopes(metadata.scopes_supported),
+                device_authorization,
             }))
         }
         Err(AuthError::NoAuthorizationSupport) => Ok(None),
         Err(err) => Err(err.into()),
     }
+}
+
+fn advertised_device_authorization(
+    metadata: &rmcp::transport::auth::AuthorizationMetadata,
+) -> Option<DeviceAuthorizationMetadata> {
+    let issuer = metadata.issuer.as_deref().filter(|value| !value.trim().is_empty())?;
+    let endpoint = metadata.additional_fields.get("device_authorization_endpoint")?.as_str()
+        .filter(|value| !value.trim().is_empty())?;
+    let grants = metadata.additional_fields.get("grant_types_supported")?.as_array()?;
+    if !grants.iter().any(|value| value.as_str() == Some("urn:ietf:params:oauth:grant-type:device_code"))
+        || metadata.token_endpoint.trim().is_empty() {
+        return None;
+    }
+    Some(DeviceAuthorizationMetadata {
+        issuer: issuer.to_string(),
+        device_authorization_endpoint: endpoint.to_string(),
+        token_endpoint: metadata.token_endpoint.clone(),
+    })
 }
 
 fn normalize_scopes(scopes_supported: Option<Vec<String>>) -> Option<Vec<String>> {
@@ -703,6 +732,7 @@ mod tests {
             StreamableHttpOAuthDiscovery {
                 scopes_supported: Some(vec!["profile".to_string(), "email".to_string()]),
                 callback_mode: McpOAuthCallbackMode::IssuerBound,
+                device_authorization: None,
             }
         );
     }
@@ -734,6 +764,7 @@ mod tests {
             StreamableHttpOAuthDiscovery {
                 scopes_supported: None,
                 callback_mode: McpOAuthCallbackMode::CallbackSpecific,
+                device_authorization: None,
             }
         );
     }
