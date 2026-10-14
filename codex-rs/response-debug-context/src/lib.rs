@@ -69,6 +69,9 @@ pub fn telemetry_transport_error_message(error: &TransportError) -> String {
         TransportError::Network(err) => err.to_string(),
         TransportError::Build(err) => err.to_string(),
         TransportError::Policy(denied) => denied.to_string(),
+        TransportError::AutomaticTurnContextChanged => {
+            "automatic turn context changed before provider request".to_string()
+        }
     }
 }
 
@@ -194,6 +197,7 @@ mod tests {
     fn telemetry_error_messages_preserve_non_http_details() {
         let network = TransportError::Network("dns lookup failed".to_string());
         let build = TransportError::Build("invalid header value".to_string());
+        let context_changed = TransportError::AutomaticTurnContextChanged;
         let stream = ApiError::Stream("socket closed".to_string());
 
         assert_eq!(
@@ -203,6 +207,10 @@ mod tests {
         assert_eq!(
             telemetry_transport_error_message(&build),
             "invalid header value"
+        );
+        assert_eq!(
+            telemetry_transport_error_message(&context_changed),
+            "automatic turn context changed before provider request"
         );
         assert_eq!(telemetry_api_error_message(&stream), "socket closed");
     }
