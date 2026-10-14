@@ -476,7 +476,7 @@ async fn handle_approved_mcp_tool_call(
             McpServerTransportConfig::Stdio { .. } => None,
         });
     let mut elicitation_type = None;
-    let result = async {
+    let mut result = async {
         let result = async {
             let mut result = prepared_call
                 .call_with_preparation(/*requested_timeout*/ None, || async {

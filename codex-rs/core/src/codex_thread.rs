@@ -602,7 +602,9 @@ impl CodexThread {
             _ => None,
         };
         let expected_epochs = match &self.session.services.state_db {
-            Some(state_db) => state_db.automatic_turn_current_epochs(self.thread_id).await,
+            Some(state_db) => state_db
+                .automatic_turn_current_epochs(self.session.thread_id())
+                .await,
             None => None,
         };
         let (provider_authority, principal_identity) = self
@@ -657,11 +659,19 @@ impl CodexThread {
             .ok_or_else(|| CodexErr::InvalidRequest("automatic-turn state is unavailable".to_string()))?;
         let continuation_ref_value = continuation_ref.as_str();
         let trigger_turn_id = state_db
-            .automatic_turn_trigger_for_continuation_ref(self.thread_id, continuation_ref_value)
+            .automatic_turn_trigger_for_continuation_ref(
+                self.session.thread_id(),
+                continuation_ref_value,
+            )
             .await
-            .ok_or_else(|| CodexErr::InvalidRequest("automatic-turn reference is not pending".to_string()))?;
+            .ok_or_else(|| {
+                CodexErr::InvalidRequest("automatic-turn reference is not pending".to_string())
+            })?;
         let expected_epochs = state_db
-            .automatic_turn_continuation_epochs(self.thread_id, continuation_ref_value)
+            .automatic_turn_continuation_epochs(
+                self.session.thread_id(),
+                continuation_ref_value,
+            )
             .await
             .ok_or(CodexErr::AutomaticTurnContextChanged)?;
         let (provider_authority, principal_identity) = self
@@ -682,14 +692,15 @@ impl CodexThread {
         }
         if !state_db
             .reserve_automatic_turn_continuation(
-                self.thread_id,
+                self.session.thread_id(),
                 continuation_ref_value,
                 &principal_identity,
                 &client_user_message_id,
                 "start",
                 /*expected_turn_id*/ None,
             )
-            .await?
+            .await
+            .map_err(|_| CodexErr::InternalServerError)?
         {
             return Err(CodexErr::InvalidRequest(
                 "automatic-turn reference is not valid for the current authenticated principal"
@@ -712,7 +723,7 @@ impl CodexThread {
         if !matches!(&result, Ok(TurnInputSubmission::Started { .. })) {
             let _ = state_db
                 .release_automatic_turn_continuation(
-                    self.thread_id,
+                    self.session.thread_id(),
                     continuation_ref_value,
                     &client_user_message_id,
                 )

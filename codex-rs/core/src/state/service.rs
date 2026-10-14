@@ -41,6 +41,7 @@ use codex_protocol::automatic_turn::AutomaticTurnContinuationRef;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::models::AdditionalPermissionProfile;
+use codex_protocol::ThreadId;
 use codex_rollout::state_db::StateDbHandle;
 use codex_rollout_trace::ThreadTraceContext;
 use codex_sandboxing::policy_transforms::merge_permission_profiles;

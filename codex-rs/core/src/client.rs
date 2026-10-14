@@ -87,7 +87,6 @@ use codex_login::RefreshTokenError;
 use codex_login::UnauthorizedRecovery;
 use codex_login::default_client::ClientRedirectPolicy;
 use codex_login::default_client::add_originator_header;
-use codex_login::default_client::create_credential_bound_client_for_route;
 use codex_login::default_client::create_client_for_route;
 use codex_otel::SessionTelemetry;
 use codex_otel::WEBSOCKET_CONTINUATION_COUNT_METRIC;
@@ -261,9 +260,9 @@ struct CurrentClientSetup {
     request_initiation: RequestInitiation,
 }
 
-/// Complete process-local provider authority and transport identity admitted for an automatic
-/// operation or bound to a cached connection. The keyed fingerprint is opaque and is never
-/// persisted or exposed in diagnostics.
+/// Complete non-secret process-local provider authority and transport identity admitted for an
+/// automatic operation or bound to a cached connection. The keyed fingerprint is opaque and is
+/// never persisted or exposed in diagnostics.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ProviderAuthority {
     revision: Option<u64>,
@@ -567,23 +566,23 @@ fn sideband_websocket_auth_headers(api_auth: &dyn AuthProvider) -> ApiHeaderMap 
     headers
 }
 
-fn hash_sorted_map<H: Hasher>(values: Option<&HashMap<String, String>>, state: &mut H) {
-    let mut values = values
+fn hash_sorted_map_keys<H: Hasher, V>(values: Option<&HashMap<String, V>>, state: &mut H) {
+    let mut keys = values
         .into_iter()
         .flatten()
-        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .map(|(key, _)| key.as_str())
         .collect::<Vec<_>>();
-    values.sort_unstable();
-    values.hash(state);
+    keys.sort_unstable();
+    keys.hash(state);
 }
 
 fn hash_headers<H: Hasher>(headers: &ApiHeaderMap, state: &mut H) {
-    let mut values = headers
+    let mut names = headers
         .iter()
-        .map(|(name, value)| (name.as_str(), value.as_bytes()))
+        .map(|(name, _)| name.as_str())
         .collect::<Vec<_>>();
-    values.sort_unstable();
-    values.hash(state);
+    names.sort_unstable();
+    names.hash(state);
 }
 
 fn validate_protected_api_provider(api_provider: &ApiProvider, recipient: &str) -> Result<()> {
@@ -678,16 +677,20 @@ fn hash_provider_authority<H: Hasher>(
     provider.name.hash(state);
     provider.base_url.hash(state);
     provider.env_key.hash(state);
-    provider.experimental_bearer_token.hash(state);
+    // Credential-bearing values are deliberately excluded from this opaque in-process
+    // authority fingerprint. Auth revision and non-secret provider/route identity bind the
+    // authority; automatic-turn eligibility separately rejects configured bearer/header/query
+    // credentials that cannot be reconstructed safely after restart.
+    provider.experimental_bearer_token.is_some().hash(state);
     provider.wire_api.to_string().hash(state);
     provider.requires_openai_auth.hash(state);
     provider.supports_websockets.hash(state);
-    hash_sorted_map(provider.query_params.as_ref(), state);
-    hash_sorted_map(provider.http_headers.as_ref(), state);
-    hash_sorted_map(provider.env_http_headers.as_ref(), state);
+    hash_sorted_map_keys(provider.query_params.as_ref(), state);
+    hash_sorted_map_keys(provider.http_headers.as_ref(), state);
+    hash_sorted_map_keys(provider.env_http_headers.as_ref(), state);
     if let Some(command_auth) = provider.auth.as_ref() {
         command_auth.command.hash(state);
-        command_auth.args.hash(state);
+        command_auth.args.len().hash(state);
         command_auth.timeout_ms.hash(state);
         command_auth.refresh_interval_ms.hash(state);
         command_auth.cwd.as_path().hash(state);
@@ -699,7 +702,7 @@ fn hash_provider_authority<H: Hasher>(
 
     api_provider.name.hash(state);
     api_provider.base_url.hash(state);
-    hash_sorted_map(api_provider.query_params.as_ref(), state);
+    hash_sorted_map_keys(api_provider.query_params.as_ref(), state);
     hash_headers(&api_provider.headers, state);
     api_provider.retry.max_attempts.hash(state);
     api_provider.stream_idle_timeout.hash(state);
@@ -1802,29 +1805,24 @@ impl ModelClient {
         endpoint: &str,
         redirect_policy: ClientRedirectPolicy,
     ) -> Result<ReqwestTransport> {
+        let protected_recipient = protected_provider_recipient()?;
         let redirect_policy = if api_provider
             .headers
             .contains_key(codex_model_provider::ACCOUNT_ROUTING_HEADER)
+            || protected_recipient.is_some()
         {
             ClientRedirectPolicy::Reject
         } else {
             redirect_policy
         };
-        let request_url = validate_protected_api_route(api_provider, endpoint)?;
-        let client = if protected_provider_recipient()?.is_some() {
-            create_credential_bound_client_for_route(
-                &self.http_client_factory,
-                &request_url,
-                ClientRouteClass::Api,
-            )
-        } else {
-            create_client_for_route(
-                &self.http_client_factory,
-                &request_url,
-                ClientRouteClass::Api,
-                redirect_policy,
-            )
-        }
+        let request_url =
+            validate_api_route(api_provider, endpoint, protected_recipient.as_deref())?;
+        let client = create_client_for_route(
+            &self.http_client_factory,
+            &request_url,
+            ClientRouteClass::Api,
+            redirect_policy,
+        )
         .map_err(std::io::Error::from)?;
         Ok(ReqwestTransport::from_http_client(client))
     }

@@ -436,6 +436,15 @@ impl TurnContext {
                 && !has_explicit_settings(&config),
             config,
             auth_manager: self.auth_manager.clone(),
+            automatic_turn_provider_authority: {
+                let authority = OnceLock::new();
+                if let Some(provider_authority) =
+                    self.automatic_turn_provider_authority.get().copied()
+                {
+                    let _ = authority.set(provider_authority);
+                }
+                authority
+            },
             initial_settings: Arc::clone(&step_settings),
             disabled_plugin_ids: self.disabled_plugin_ids.clone(),
             active_host_plugin_identities: None,
@@ -836,6 +845,15 @@ impl TurnContext {
             configured_token_budget: self.configured_token_budget.clone(),
             use_model_token_budget_defaults: self.use_model_token_budget_defaults,
             auth_manager: self.auth_manager.clone(),
+            automatic_turn_provider_authority: {
+                let authority = OnceLock::new();
+                if let Some(provider_authority) =
+                    self.automatic_turn_provider_authority.get().copied()
+                {
+                    let _ = authority.set(provider_authority);
+                }
+                authority
+            },
             initial_settings: Arc::clone(&step_settings),
             disabled_plugin_ids: self.disabled_plugin_ids.clone(),
             active_host_plugin_identities: self.active_host_plugin_identities.clone(),

@@ -928,7 +928,7 @@ impl Session {
                     automatic_turn.client_user_message_id.as_deref(),
                     automatic_turn.provider_authority,
                     automatic_turn.expected_epochs,
-                    automatic_turn.continuation_ref,
+                    automatic_turn.continuation_ref.clone(),
                 )
                 .await;
         }
