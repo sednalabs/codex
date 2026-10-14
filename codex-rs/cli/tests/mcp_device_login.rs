@@ -176,30 +176,70 @@ async fn device_login_persists_issuer_bound_tokens_in_the_existing_file_store() 
         serde_json::from_slice(&std::fs::read(home.path().join(".credentials.json"))?)?;
     let entries = store.as_object().expect("credential map");
     assert_eq!(entries.len(), 1);
-        "access_token": "synthetic-access",
-        "refresh_token": "synthetic-refresh",
-        "expires_at": null,
-        "scopes": ["read", "write"]
-    }));
-    let posts: Vec<_> = server.received_requests().await.unwrap().into_iter()
-        .filter(|request| request.method.as_str() == "POST").collect();
-    assert_eq!(posts.iter().map(|request| request.url.path()).collect::<Vec<_>>(), vec!["/device", "/token"]);
+    assert_eq!(
+        entries.values().next().unwrap(),
+        &json!({
+            "server_name": "fixture",
+            "server_url": format!("{base}/mcp"),
+            "issuer": base,
+            "client_id": "fixed-device-client",
+            "access_token": "synthetic-access",
+            "refresh_token": "synthetic-refresh",
+            "expires_at": null,
+            "scopes": ["read", "write"]
+        })
+    );
+    let posts: Vec<_> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|request| request.method.as_str() == "POST")
+        .collect();
+    assert_eq!(
+        posts
+            .iter()
+            .map(|request| request.url.path())
+            .collect::<Vec<_>>(),
+        vec!["/device", "/token"]
+    );
     let mut device_form: BTreeMap<String, String> = url::form_urlencoded::parse(&posts[0].body)
-        .map(|(key, value)| (key.into_owned(), value.into_owned())).collect();
-    let challenge = device_form.remove("code_challenge").expect("PKCE challenge");
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect();
+    let challenge = device_form
+        .remove("code_challenge")
+        .expect("PKCE challenge");
     assert!(!challenge.is_empty());
-    assert_eq!(device_form, BTreeMap::from([
-        ("client_id".to_string(), "fixed-device-client".to_string()),
-        ("scope".to_string(), "read write".to_string()),
-        ("code_challenge_method".to_string(), "S256".to_string())
-    ]));
+    assert_eq!(
+        device_form,
+        BTreeMap::from([
+            ("client_id".to_string(), "fixed-device-client".to_string()),
+            ("scope".to_string(), "read write".to_string()),
+            ("code_challenge_method".to_string(), "S256".to_string())
+        ])
+    );
     let mut token_form: BTreeMap<String, String> = url::form_urlencoded::parse(&posts[1].body)
-        .map(|(key, value)| (key.into_owned(), value.into_owned())).collect();
-    assert!(!token_form.remove("code_verifier").expect("PKCE verifier").is_empty());
-    assert_eq!(token_form, BTreeMap::from([
-        ("client_id".to_string(), "fixed-device-client".to_string()),
-        ("grant_type".to_string(), "urn:ietf:params:oauth:grant-type:device_code".to_string()),
-        ("device_code".to_string(), "synthetic-device-code".to_string())
-    ]));
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect();
+    assert!(
+        !token_form
+            .remove("code_verifier")
+            .expect("PKCE verifier")
+            .is_empty()
+    );
+    assert_eq!(
+        token_form,
+        BTreeMap::from([
+            ("client_id".to_string(), "fixed-device-client".to_string()),
+            (
+                "grant_type".to_string(),
+                "urn:ietf:params:oauth:grant-type:device_code".to_string()
+            ),
+            (
+                "device_code".to_string(),
+                "synthetic-device-code".to_string()
+            )
+        ])
+    );
     Ok(())
 }
