@@ -80,8 +80,7 @@ async fn device_login_preserves_configured_and_discovered_scopes_on_rejection() 
         }))?;
         std::fs::write(&credentials, &predecessor)?;
 
-        let mut command =
-            assert_cmd::Command::new(codex_utils_cargo_bin::cargo_bin("codex")?);
+        let mut command = assert_cmd::Command::new(codex_utils_cargo_bin::cargo_bin("codex")?);
         command
             .env("CODEX_HOME", home.path())
             .args(["mcp", "login", "--device-auth", "fixture"])
@@ -99,10 +98,9 @@ async fn device_login_preserves_configured_and_discovered_scopes_on_rejection() 
             .collect();
         assert_eq!(posts.len(), 1);
         assert_eq!(posts[0].url.path(), "/device");
-        let mut form: BTreeMap<String, String> =
-            url::form_urlencoded::parse(&posts[0].body)
-                .map(|(key, value)| (key.into_owned(), value.into_owned()))
-                .collect();
+        let mut form: BTreeMap<String, String> = url::form_urlencoded::parse(&posts[0].body)
+            .map(|(key, value)| (key.into_owned(), value.into_owned()))
+            .collect();
         // The random PKCE challenge is the sole unstable request field.
         assert!(form.remove("code_challenge").is_some());
         assert_eq!(
