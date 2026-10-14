@@ -85,6 +85,7 @@ pub use perform_oauth_login::OAuthProviderError;
 pub use perform_oauth_login::OauthLoginHandle;
 pub use perform_oauth_login::perform_oauth_login;
 pub use perform_oauth_device_login::perform_oauth_device_login;
+pub use perform_oauth_device_login::DeviceAuthorizationPrompt;
 pub use perform_oauth_login::perform_oauth_login_return_url;
 pub use perform_oauth_login::perform_oauth_login_silent;
 pub use perform_oauth_login::perform_oauth_login_with_callback_input;

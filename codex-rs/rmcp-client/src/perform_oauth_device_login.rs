@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fmt;
+use std::future::Future;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -314,11 +315,31 @@ async fn oauth_post(
         .method(http::Method::POST).uri(endpoint)
         .header(http::header::CONTENT_TYPE, content_type).body(body)
         .context("failed to build OAuth device request")?;
-    let operation = http.execute_request(request, OAuthHttpRedirectPolicy::Stop, Some(timeout));
-    tokio::time::timeout(timeout, operation).await
-        .map_err(|_| device_expired_error())?
-        .map_err(|error| anyhow!("OAuth device request failed: {error}"))
+    let operation = async {
+        http.execute_request(request, OAuthHttpRedirectPolicy::Stop, Some(timeout))
+            .await
+            .map_err(|error| anyhow!("OAuth device request failed: {error}"))
+    };
+    match deadline {
+        Some(deadline) => await_device_deadline(deadline, operation).await,
+        None => tokio::time::timeout(HTTP_OPERATION_TIMEOUT, operation)
+            .await
+            .map_err(|_| anyhow!("OAuth device request timed out"))?,
+    }
 }
+async fn await_device_deadline<T>(
+    deadline: Instant,
+    operation: impl Future<Output = Result<T>>,
+) -> Result<T> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Err(device_expired_error());
+    }
+    tokio::time::timeout(remaining, operation)
+        .await
+        .map_err(|_| device_expired_error())?
+}
+
 fn form_body(fields: &[(&str, String)]) -> Vec<u8> {
     url::form_urlencoded::Serializer::new(String::new())
         .extend_pairs(fields.iter().map(|(key, value)| (*key, value.as_str())))
@@ -407,17 +428,11 @@ mod tests {
     #[test]
     fn pkce_fallback_retains_resolved_scopes() {
         let scopes = ["ops:read".to_string(), "ops:write".to_string()];
-        for pkce in [None, Some(DevicePkce {
-            code_challenge: "challenge".into(), code_verifier: "verifier".into(),
-        })] {
-            let body = form_body(&[
-                ("client_id", "client".to_string()),
-                ("scope", scopes.join(" ")),
-                ("code_challenge_method", "S256".to_string()),
-            ]);
-            assert!(String::from_utf8(body).unwrap().contains("ops%3Aread+ops%3Awrite"));
-            assert_eq!(pkce.is_some(), pkce.is_some());
-        }
+        let body = form_body(&[
+            ("client_id", "client".to_string()),
+            ("scope", scopes.join(" ")),
+        ]);
+        assert!(String::from_utf8(body).expect("form body").contains("ops%3Aread+ops%3Awrite"));
     }
 
     #[tokio::test]
@@ -433,7 +448,7 @@ mod tests {
             let _marker = marker;
             std::future::pending::<Result<()>>().await
         };
-        assert!(tokio::time::timeout_at(deadline.into(), pending).await.is_err());
+        assert!(await_device_deadline(deadline, pending).await.is_err());
         assert_eq!(dropped.load(Ordering::SeqCst), 1);
     }
 }
