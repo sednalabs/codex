@@ -84,8 +84,8 @@ install:
     rustup show active-toolchain
     cargo fetch
 
-[unix]
 # Stage an exact Linux preview beside, but do not activate it over, Codex.
+[unix]
 install-branch-artifact *args:
     cd "{{ justfile_directory() }}" && python3 scripts/install/install_branch_artifact.py {{args}}
 

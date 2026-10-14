@@ -13,7 +13,6 @@ import unittest
 from unittest.mock import patch
 import zipfile
 
-import install_branch_artifact
 from install_branch_artifact import (
     BINARIES,
     Refusal,
@@ -140,6 +139,30 @@ class InstallBranchArtifactTest(unittest.TestCase):
                 with self.assertRaises(Refusal):
                     preview_root()
 
+    def test_preview_root_expands_xdg_and_canonicalizes_its_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            home = root / "home"
+            data_home = root / "data"
+            data_home.mkdir()
+            link = root / "data-link"
+            try:
+                link.symlink_to(data_home, target_is_directory=True)
+            except OSError as exc:
+                self.skipTest(f"directory symlinks are unavailable: {exc}")
+
+            with patch.dict(
+                os.environ,
+                {
+                    "HOME": str(home),
+                    "XDG_DATA_HOME": "~/../data-link",
+                    "CODEX_HOME": str(root / "codex-home"),
+                },
+            ):
+                self.assertEqual(
+                    preview_root(), data_home / "codex" / "branch-previews"
+                )
+
     def test_selected_build_must_use_the_exact_standard_hosted_runner(self) -> None:
         run = {"id": 42, "run_attempt": 1}
         jobs = {
@@ -164,11 +187,11 @@ class InstallBranchArtifactTest(unittest.TestCase):
                 },
             ]
         }
-        with patch.object(install_branch_artifact, "gh_json", return_value=jobs):
+        with patch("install_branch_artifact.gh_json", return_value=jobs):
             validate_hosted_jobs("sednalabs/codex", run, "linux-aarch64")
 
         jobs["jobs"][1]["runner_group_name"] = "Self-hosted"
-        with patch.object(install_branch_artifact, "gh_json", return_value=jobs):
+        with patch("install_branch_artifact.gh_json", return_value=jobs):
             with self.assertRaises(Refusal):
                 validate_hosted_jobs("sednalabs/codex", run, "linux-aarch64")
 

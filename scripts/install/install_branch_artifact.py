@@ -623,9 +623,15 @@ def unpack_preview_zip(
 
 
 def preview_root() -> Path:
-    data_home = Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local/share")))
+    data_home = Path(
+        os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local/share"))
+    ).expanduser()
     if not data_home.is_absolute():
         raise Refusal("XDG_DATA_HOME must be an absolute path")
+    # Canonicalize an intentionally user-selected XDG root once. This supports
+    # symlinked XDG locations without following later symlink substitutions
+    # below the dedicated preview directory.
+    data_home = data_home.resolve(strict=False)
     root = data_home / "codex" / "branch-previews"
     codex_home = Path(
         os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))
