@@ -675,7 +675,7 @@ mod tests {
         assert_eq!(registration_count.load(Ordering::SeqCst), 0);
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn device_login_polls_until_authorized() {
         let poll_count = Arc::new(AtomicUsize::new(0));
         let server = spawn_device_server(poll_count.clone()).await;
@@ -712,7 +712,7 @@ mod tests {
         assert_eq!(poll_count.load(Ordering::SeqCst), 2);
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn device_login_retries_without_pkce_when_rejected() {
         let device_request_count = Arc::new(AtomicUsize::new(0));
         let poll_count = Arc::new(AtomicUsize::new(0));
