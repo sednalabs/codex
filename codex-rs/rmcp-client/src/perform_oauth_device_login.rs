@@ -513,9 +513,8 @@ mod boundary_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::Form;
-    use axum::Json;
     use axum::Router;
+    use bytes::Bytes;
     use axum::http::StatusCode;
     use axum::http::header::CONTENT_TYPE;
     use axum::response::IntoResponse;
@@ -528,6 +527,10 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
     use tokio::net::TcpListener;
+
+    fn decode_form(body: &[u8]) -> HashMap<String, String> {
+        url::form_urlencoded::parse(body).into_owned().collect()
+    }
 
     fn json_response(status: StatusCode, value: serde_json::Value) -> Response {
         (
@@ -648,7 +651,8 @@ mod tests {
     }
 
     async fn spawn_device_server(poll_count: Arc<AtomicUsize>) -> String {
-        async fn device(Form(form): Form<HashMap<String, String>>) -> Response {
+        async fn device(body: Bytes) -> Response {
+            let form = decode_form(&body);
             assert_eq!(
                 form,
                 HashMap::from([
@@ -672,8 +676,9 @@ mod tests {
 
         async fn token(
             axum::extract::State(poll_count): axum::extract::State<Arc<AtomicUsize>>,
-            Form(form): Form<HashMap<String, String>>,
+            body: Bytes,
         ) -> Response {
+            let form = decode_form(&body);
             assert_eq!(
                 form,
                 HashMap::from([
@@ -721,8 +726,9 @@ mod tests {
     ) -> String {
         async fn device(
             axum::extract::State(state): axum::extract::State<RejectPkceState>,
-            Form(form): Form<HashMap<String, String>>,
+            body: Bytes,
         ) -> Response {
+            let form = decode_form(&body);
             let request_count = state.device_request_count.fetch_add(1, Ordering::SeqCst);
             if request_count == 0 {
                 assert!(form.contains_key("code_challenge"));
@@ -755,8 +761,9 @@ mod tests {
 
         async fn token(
             axum::extract::State(state): axum::extract::State<RejectPkceState>,
-            Form(form): Form<HashMap<String, String>>,
+            body: Bytes,
         ) -> Response {
+            let form = decode_form(&body);
             assert_eq!(
                 form,
                 HashMap::from([
