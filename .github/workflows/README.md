@@ -67,12 +67,12 @@ contract today.
   `build-mode: none`. This keeps coverage over the vendored C sandbox code and
   Rust sources without relying on CodeQL autobuild, which has no useful build
   system to discover in this repository.
-- Pull requests and merge-queue runs analyze the same active language matrix
-  as protected branch pushes, scheduled runs, and manual dispatches. This keeps
-  their real CodeQL configuration categories aligned with the default branch;
-  Rust remains split across the complete, disjoint shard set to bound query
-  evaluation without reducing source coverage. `classify_ci_paths.py` continues
-  to route other CI scopes but does not select CodeQL languages.
+- Pull requests and merge-queue runs use `classify_ci_paths.py` to select the
+  affected CodeQL languages from changed paths. If base checkout or path
+  classification fails, the planner falls back to the full language matrix.
+  Protected branch pushes, schedules, and manual dispatches retain full
+  repository coverage, so path-scoped PR analysis does not replace the
+  authoritative branch scans.
 - The workflow uses `.github/codeql/codeql-config.yml` for shared CodeQL
   settings, `.github/codeql/codeql-actions.yml` for Actions-only
   query additions, and `.github/codeql/codeql-rust.yml` for Rust-specific
