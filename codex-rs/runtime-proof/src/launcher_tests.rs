@@ -57,11 +57,20 @@ fn fixed_claims() -> wire::CertificateClaims {
 
 #[test]
 fn effective_certificate_expiry_never_outlives_the_mcp_token() {
-    let (expires_at, lease_seconds) =
-        effective_expiry(100, 1_000, 400).expect("token expiry bounds the fixed task certificate");
+    let (expires_at, lease_seconds) = effective_expiry(
+        /*now*/ 100,
+        /*policy_expires_at*/ 1_000,
+        /*token_expires_at*/ 400,
+    )
+    .expect("token expiry bounds the fixed task certificate");
     assert_eq!(expires_at, 400);
     assert_eq!(lease_seconds, 300);
-    assert!(effective_expiry(100, 1_000, 100).is_err());
+    assert!(effective_expiry(
+        /*now*/ 100,
+        /*policy_expires_at*/ 1_000,
+        /*token_expires_at*/ 100,
+    )
+    .is_err());
 }
 
 #[test]
@@ -69,19 +78,32 @@ fn token_deadline_preserves_fractional_time_from_the_policy_clock_pair() {
     let monotonic_start = Instant::now();
     let policy_task_deadline = monotonic_start + Duration::from_millis(1_200);
 
-    let token_task_deadline =
-        task_deadline_for_expiry(101, 102, policy_task_deadline).expect("token expiry is earlier");
+    let token_task_deadline = task_deadline_for_expiry(
+        /*expires_at*/ 101,
+        /*policy_expires_at*/ 102,
+        policy_task_deadline,
+    )
+    .expect("token expiry is earlier");
 
     assert_eq!(
         token_task_deadline.duration_since(monotonic_start),
         Duration::from_millis(200)
     );
     assert_eq!(
-        task_deadline_for_expiry(102, 102, policy_task_deadline)
+        task_deadline_for_expiry(
+            /*expires_at*/ 102,
+            /*policy_expires_at*/ 102,
+            policy_task_deadline,
+        )
             .expect("policy expiry keeps its deadline"),
         policy_task_deadline
     );
-    assert!(task_deadline_for_expiry(103, 102, policy_task_deadline).is_err());
+    assert!(task_deadline_for_expiry(
+        /*expires_at*/ 103,
+        /*policy_expires_at*/ 102,
+        policy_task_deadline,
+    )
+    .is_err());
 }
 
 #[test]
@@ -302,6 +324,15 @@ fn runtime_home_layout_preserves_child_write_and_protected_config_boundaries() {
         b"child-writable".to_vec()
     );
 
+    // Restore parent access after testing the intentionally immutable runtime
+    // home; the test harness still owns and must remove the private fixture.
+    fs::set_permissions(
+        &run.codex_home,
+        fs::Permissions::from_mode(/*mode*/ 0o700),
+    )
+        .expect("restore fixture cleanup access to protected home");
+    fs::set_permissions(&base, fs::Permissions::from_mode(/*mode*/ 0o700))
+        .expect("restore fixture cleanup access to run root");
     fs::remove_dir_all(&base).expect("remove test runtime tree");
 }
 

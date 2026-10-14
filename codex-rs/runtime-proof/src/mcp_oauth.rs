@@ -201,7 +201,7 @@ fn prepare_client_credentials_request(
     append_form_encoded(&mut basic_credentials, client_secret.0.as_bytes());
 
     let mut authorization = Zeroizing::new(String::from("Basic "));
-    STANDARD.encode_string(basic_credentials.as_bytes(), &mut *authorization);
+    STANDARD.encode_string(basic_credentials.as_bytes(), &mut authorization);
 
     let mut body = String::from("grant_type=client_credentials&audience=");
     append_form_encoded(&mut body, policy.audience.as_bytes());

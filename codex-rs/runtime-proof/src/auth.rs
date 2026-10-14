@@ -1,8 +1,6 @@
 #[cfg(target_os = "linux")]
 use crate::provider_auth::ProviderAuth;
 #[cfg(target_os = "linux")]
-use crate::provider_auth::ProviderCredentialClass;
-#[cfg(target_os = "linux")]
 use crate::provider_auth::SecretString;
 #[cfg(target_os = "linux")]
 use crate::provider_auth::ensure_protected_cloud_config_ineligible;
