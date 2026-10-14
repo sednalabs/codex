@@ -34,6 +34,7 @@ pub use model::QueuedUserSubmissionRecord;
 pub use model::RolloutMigrationCursor;
 pub use model::RolloutMigrationSkippedRollout;
 pub use model::RolloutMigrationState;
+pub use runtime::ExtensionStorageId;
 pub use runtime::GuardianReviewRecord;
 pub use runtime::MAX_GUARDIAN_REVIEW_BYTES;
 pub use runtime::MAX_GUARDIAN_REVIEW_RECORDS;

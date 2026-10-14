@@ -1,4 +1,4 @@
-use codex_extension_api::ExtensionStorageId;
+use super::ExtensionStorageId;
 use sqlx::Row;
 use sqlx::SqlitePool;
 use std::time::SystemTime;

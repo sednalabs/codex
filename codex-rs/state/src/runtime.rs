@@ -22,7 +22,6 @@ use crate::model::epoch_millis_to_datetime;
 use crate::paths::file_modified_time_utc;
 use crate::telemetry::DbKind;
 use crate::telemetry::DbTelemetry;
-use codex_extension_api::ExtensionStorageId;
 use chrono::DateTime;
 use chrono::Utc;
 use codex_history::RolloutItem;
@@ -40,6 +39,22 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicI64;
 use std::time::Instant;
 use tracing::warn;
+
+/// Opaque identifier for a state-owned extension storage pool.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub struct ExtensionStorageId(&'static str);
+
+impl ExtensionStorageId {
+    /// Creates an identifier for a stable extension storage namespace.
+    pub const fn new(value: &'static str) -> Self {
+        Self(value)
+    }
+
+    /// Returns the stable namespace string.
+    pub const fn as_str(&self) -> &'static str {
+        self.0
+    }
+}
 
 mod backfill;
 mod extension_storage;
