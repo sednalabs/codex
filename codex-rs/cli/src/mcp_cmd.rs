@@ -267,63 +267,6 @@ async fn perform_oauth_login_retry_without_scopes(
     }
 }
 
-/// Preserve compatibility with device authorization providers that reject
-/// discovered scopes. If a discovered-scope request is rejected by the
-/// provider, retry the device flow once without scopes.
-#[allow(clippy::too_many_arguments)]
-async fn perform_oauth_device_login_retry_without_scopes(
-    name: &str,
-    url: &str,
-    store_mode: codex_config::types::OAuthCredentialsStoreMode,
-    keyring_backend_kind: AuthKeyringBackendKind,
-    http_headers: Option<HashMap<String, String>>,
-    env_http_headers: Option<HashMap<String, String>>,
-    resolved_scopes: &ResolvedMcpOAuthScopes,
-    oauth_client_id: Option<&str>,
-    oauth_resource: Option<&str>,
-    device_authorization_endpoint: &str,
-    token_endpoint: &str,
-    prompt_handler: fn(DeviceAuthorizationPrompt),
-) -> Result<()> {
-    match perform_oauth_device_login(
-        name,
-        url,
-        store_mode,
-        keyring_backend_kind,
-        http_headers.clone(),
-        env_http_headers.clone(),
-        &resolved_scopes.scopes,
-        oauth_client_id,
-        oauth_resource,
-        device_authorization_endpoint,
-        token_endpoint,
-        prompt_handler,
-    )
-    .await
-    {
-        Ok(()) => Ok(()),
-        Err(err) if should_retry_without_scopes(resolved_scopes, &err) => {
-            println!("OAuth provider rejected discovered scopes. Retrying without scopes…");
-            perform_oauth_device_login(
-                name,
-                url,
-                store_mode,
-                keyring_backend_kind,
-                http_headers,
-                env_http_headers,
-                &[],
-                oauth_client_id,
-                oauth_resource,
-                device_authorization_endpoint,
-                token_endpoint,
-                prompt_handler,
-            )
-            .await
-        }
-        Err(err) => Err(err),
-    }
-}
-
 async fn validate_profile_v2_migration(
     config_overrides: &CliConfigOverrides,
     loader_overrides: LoaderOverrides,
@@ -604,14 +547,14 @@ async fn run_login(config_overrides: &CliConfigOverrides, login_args: LoginArgs)
             );
         };
 
-        perform_oauth_device_login_retry_without_scopes(
+        perform_oauth_device_login(
             &name,
             &url,
             config.mcp_oauth_credentials_store_mode,
             config.auth_keyring_backend_kind(),
             http_headers,
             env_http_headers,
-            &resolved_scopes,
+            &resolved_scopes.scopes,
             server.oauth_client_id(),
             server.oauth_resource.as_deref(),
             device_authorization_endpoint,
