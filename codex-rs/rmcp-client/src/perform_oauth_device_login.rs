@@ -371,7 +371,9 @@ fn build_oauth_request(
         .method(http::Method::POST).uri(endpoint)
         .header(http::header::CONTENT_TYPE, content_type);
     if let Some((client_id, secret)) = basic_credentials {
-        let encoded = base64::engine::general_purpose::STANDARD.encode(format!("{client_id}:{secret}"));
+        let encoded_client_id: String = url::form_urlencoded::byte_serialize(client_id.as_bytes()).collect();
+        let encoded_secret: String = url::form_urlencoded::byte_serialize(secret.as_bytes()).collect();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(format!("{encoded_client_id}:{encoded_secret}"));
         builder = builder.header(http::header::AUTHORIZATION, format!("Basic {encoded}"));
     }
     builder.body(body).context("failed to build OAuth device request")
@@ -478,9 +480,10 @@ mod tests {
     #[test]
     fn client_secret_auth_methods_are_applied_without_secret_leaks() {
         let basic_body = form_body(&[("client_id", "public-id".to_string())]);
-        let basic = build_oauth_request("https://issuer.example/device", "application/x-www-form-urlencoded", basic_body, Some(("public-id", "never-log-this"))).expect("basic request");
-        assert_eq!(basic.headers()[http::header::AUTHORIZATION], "Basic cHVibGljLWlkOm5ldmVyLWxvZy10aGlz");
-        assert!(!String::from_utf8(basic.body().clone()).expect("body").contains("never-log-this"));
+        let basic = build_oauth_request("https://issuer.example/device", "application/x-www-form-urlencoded", basic_body, Some(("id +:%", "secret +:%"))).expect("basic request");
+        let expected_credentials = base64::engine::general_purpose::STANDARD.encode("id+%2B%3A%25:secret+%2B%3A%25");
+        assert_eq!(basic.headers()[http::header::AUTHORIZATION], format!("Basic {expected_credentials}"));
+        assert!(!String::from_utf8(basic.body().clone()).expect("body").contains("secret +:%"));
 
         let post_body = form_body(&[("client_id", "public-id".to_string()), ("client_secret", "never-log-this".to_string())]);
         let post = build_oauth_request("https://issuer.example/token", "application/x-www-form-urlencoded", post_body, None).expect("post request");
