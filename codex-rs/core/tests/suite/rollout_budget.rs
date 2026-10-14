@@ -433,6 +433,7 @@ async fn restates_the_current_remainder_after_rollback() -> Result<()> {
         .await?;
 
     test.submit_turn("rolled-back turn").await?;
+    wait_for_event(&test.codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
     let rollback_id = test
         .codex
         .submit(Op::ThreadRollback { num_turns: 1 })
@@ -455,6 +456,7 @@ async fn restates_the_current_remainder_after_rollback() -> Result<()> {
     .await
     .expect("timed out waiting for thread rollback")?;
     test.submit_turn("turn after rollback").await?;
+    wait_for_event(&test.codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
 
     let requests = responses.requests();
     assert_eq!(
