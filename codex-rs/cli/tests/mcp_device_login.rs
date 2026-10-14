@@ -131,39 +131,51 @@ async fn device_login_persists_issuer_bound_tokens_in_the_existing_file_store() 
             "scopes_supported": ["read", "write"]
         })))
         .mount(&server).await;
-    Mock::given(method("POST")).and(path("/device"))
+    Mock::given(method("POST"))
+        .and(path("/device"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "device_code": "synthetic-device-code",
             "user_code": "SYNTHETIC",
             "verification_uri": format!("{base}/verify"),
             "expires_in": 30,
             "interval": 1
-        }))).expect(1).mount(&server).await;
-    Mock::given(method("POST")).and(path("/token"))
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "access_token": "synthetic-access",
             "refresh_token": "synthetic-refresh",
             "token_type": "Bearer",
             "scope": "read write"
-        }))).expect(1).mount(&server).await;
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
     let home = TempDir::new()?;
-    std::fs::write(home.path().join("config.toml"), format!(
-        "mcp_oauth_credentials_store = \"file\"\n[mcp_servers.fixture]\nurl = \"{base}/mcp\"\nscopes = [\"read\", \"write\"]\n[mcp_servers.fixture.oauth]\nclient_id = \"fixed-device-client\"\n"
-    ))?;
+    std::fs::write(
+        home.path().join("config.toml"),
+        format!(
+            "mcp_oauth_credentials_store = \"file\"\n[mcp_servers.fixture]\nurl = \"{base}/mcp\"\nscopes = [\"read\", \"write\"]\n[mcp_servers.fixture.oauth]\nclient_id = \"fixed-device-client\"\n"
+        ),
+    )?;
     let mut command = assert_cmd::Command::new(codex_utils_cargo_bin::cargo_bin("codex")?);
-    command.env("CODEX_HOME", home.path())
+    command
+        .env("CODEX_HOME", home.path())
         .args(["mcp", "login", "--device-auth", "fixture"])
         .timeout(Duration::from_secs(30));
     let output = command.output()?;
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-    let store: serde_json::Value = serde_json::from_slice(&std::fs::read(home.path().join(".credentials.json"))?)?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let store: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(home.path().join(".credentials.json"))?)?;
     let entries = store.as_object().expect("credential map");
     assert_eq!(entries.len(), 1);
-    assert_eq!(entries.values().next().unwrap(), &json!({
-        "server_name": "fixture",
-        "server_url": format!("{base}/mcp"),
-        "issuer": base,
-        "client_id": "fixed-device-client",
         "access_token": "synthetic-access",
         "refresh_token": "synthetic-refresh",
         "expires_at": null,

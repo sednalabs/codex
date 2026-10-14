@@ -34,15 +34,15 @@ use codex_mcp::oauth_login_support;
 use codex_mcp::resolve_oauth_callback;
 use codex_mcp::resolve_oauth_scopes;
 use codex_protocol::protocol::McpAuthStatus;
-use codex_rmcp_client::McpOAuthCallbackMode;
 use codex_rmcp_client::DeviceAuthorizationPrompt;
-use codex_rmcp_client::perform_oauth_device_login;
-use codex_rmcp_client::discover_streamable_http_oauth;
+use codex_rmcp_client::McpOAuthCallbackMode;
 use codex_rmcp_client::McpOAuthClientRegistration;
 use codex_rmcp_client::OAuthDiscoveryTimeout;
 use codex_rmcp_client::StreamableHttpRedirectMode;
 use codex_rmcp_client::delete_enterprise_oauth_tokens;
 use codex_rmcp_client::delete_oauth_tokens;
+use codex_rmcp_client::discover_streamable_http_oauth;
+use codex_rmcp_client::perform_oauth_device_login;
 use codex_rmcp_client::resolve_mcp_oauth_callback_url;
 use codex_utils_cli::CliConfigOverrides;
 use codex_utils_cli::format_env_display;
@@ -612,11 +612,17 @@ async fn run_login(config: &Config, login_args: LoginArgs) -> Result<()> {
         resolve_oauth_scopes(explicit_scopes, server.scopes.clone(), discovered_scopes);
     let credential_name = server.oauth_credential_name(&name);
     if device_auth {
-        let oauth = server.oauth.as_ref().context("Device login requires a configured public OAuth client")?;
+        let oauth = server
+            .oauth
+            .as_ref()
+            .context("Device login requires a configured public OAuth client")?;
         if oauth.client_secret.is_some() {
             bail!("Device login requires a public OAuth client without a client secret");
         }
-        let client_id = oauth.client_id.as_deref().filter(|value| !value.trim().is_empty())
+        let client_id = oauth
+            .client_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
             .context("Device login requires a configured public OAuth client id")?;
         let discovery = discover_streamable_http_oauth(
             &url,
@@ -625,8 +631,11 @@ async fn run_login(config: &Config, login_args: LoginArgs) -> Result<()> {
             Arc::clone(&http_client),
             OAuthDiscoveryTimeout::LOCAL,
             StreamableHttpRedirectMode::Legacy,
-        ).await?.context("MCP server does not advertise OAuth metadata")?;
-        let device = discovery.device_authorization
+        )
+        .await?
+        .context("MCP server does not advertise OAuth metadata")?;
+        let device = discovery
+            .device_authorization
             .context("MCP server does not advertise an issuer-bound device-code flow")?;
         let login = perform_oauth_device_login(
             credential_name.as_ref(),

@@ -69,8 +69,17 @@ fn device_login_flag_is_explicit_and_cannot_select_another_login_strategy() {
         panic!("expected MCP login");
     };
     assert!(args.device_auth);
-    for extra in [vec!["--no-browser"], vec!["--oauth-client-registration", "dcr"]] {
-        assert!(McpCli::try_parse_from(["mcp", "login", "--device-auth", "fixture"]
-            .into_iter().chain(extra)).is_err());
+    for extra in [
+        vec!["--no-browser"],
+        vec!["--oauth-client-registration", "dcr"],
+    ] {
+        assert!(
+            McpCli::try_parse_from(
+                ["mcp", "login", "--device-auth", "fixture"]
+                    .into_iter()
+                    .chain(extra)
+            )
+            .is_err()
+        );
     }
 }

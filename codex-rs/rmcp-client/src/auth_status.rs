@@ -293,12 +293,24 @@ async fn discover_streamable_http_oauth_with_manager(
 fn advertised_device_authorization(
     metadata: &rmcp::transport::auth::AuthorizationMetadata,
 ) -> Option<DeviceAuthorizationMetadata> {
-    let issuer = metadata.issuer.as_deref().filter(|value| !value.trim().is_empty())?;
-    let endpoint = metadata.additional_fields.get("device_authorization_endpoint")?.as_str()
+    let issuer = metadata
+        .issuer
+        .as_deref()
         .filter(|value| !value.trim().is_empty())?;
-    let grants = metadata.additional_fields.get("grant_types_supported")?.as_array()?;
-    if !grants.iter().any(|value| value.as_str() == Some("urn:ietf:params:oauth:grant-type:device_code"))
-        || metadata.token_endpoint.trim().is_empty() {
+    let endpoint = metadata
+        .additional_fields
+        .get("device_authorization_endpoint")?
+        .as_str()
+        .filter(|value| !value.trim().is_empty())?;
+    let grants = metadata
+        .additional_fields
+        .get("grant_types_supported")?
+        .as_array()?;
+    if !grants
+        .iter()
+        .any(|value| value.as_str() == Some("urn:ietf:params:oauth:grant-type:device_code"))
+        || metadata.token_endpoint.trim().is_empty()
+    {
         return None;
     }
     Some(DeviceAuthorizationMetadata {

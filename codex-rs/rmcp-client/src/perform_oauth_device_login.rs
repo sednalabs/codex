@@ -2,18 +2,18 @@ use std::collections::HashMap;
 use std::fmt;
 use std::time::Duration;
 
+use crate::http_client_adapter::StreamableHttpRedirectMode;
+use crate::oauth_http_client::OAuthHttpClientAdapter;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
-use oauth2::PkceCodeChallenge;
-use http::StatusCode;
-use std::sync::Arc;
 use codex_exec_server::HttpClient;
+use http::StatusCode;
+use oauth2::PkceCodeChallenge;
 use rmcp::transport::auth::OAuthHttpRedirectPolicy;
-use crate::oauth_http_client::OAuthHttpClientAdapter;
-use crate::http_client_adapter::StreamableHttpRedirectMode;
 use rmcp::transport::auth::OAuthTokenResponse;
 use serde::Deserialize;
+use std::sync::Arc;
 use tokio::time::Instant;
 use tokio::time::sleep;
 use tokio::time::timeout_at;
@@ -57,13 +57,19 @@ pub async fn perform_oauth_device_login(
         transport,
         default_headers,
         server_url,
-        http_headers.as_ref().is_some_and(|headers| !headers.is_empty())
-            || env_http_headers.as_ref().is_some_and(|headers| !headers.is_empty()),
+        http_headers
+            .as_ref()
+            .is_some_and(|headers| !headers.is_empty())
+            || env_http_headers
+                .as_ref()
+                .is_some_and(|headers| !headers.is_empty()),
         StreamableHttpRedirectMode::Legacy,
     )?;
     let oauth_client_id = oauth_client_id.trim();
     if oauth_client_id.is_empty() || issuer.trim().is_empty() {
-        return Err(anyhow!("OAuth device login requires an advertised issuer and configured public client id"));
+        return Err(anyhow!(
+            "OAuth device login requires an advertised issuer and configured public client id"
+        ));
     }
     let (details, pkce) = request_device_authorization_with_pkce_fallback(
         &http_client,
@@ -170,26 +176,40 @@ async fn post_device_form(
         .extend_pairs(form.iter().map(|(name, value)| (*name, value.as_str())))
         .finish();
     let request = http::Request::post(endpoint)
-        .header(http::header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .header(
+            http::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded",
+        )
         .body(body.into_bytes())?;
-    let response = client.execute_request(request, OAuthHttpRedirectPolicy::Stop, Some(Duration::from_secs(30)))
-        .await.map_err(|error| anyhow!("OAuth device HTTP operation failed: {error}"))?;
+    let response = client
+        .execute_request(
+            request,
+            OAuthHttpRedirectPolicy::Stop,
+            Some(Duration::from_secs(30)),
+        )
+        .await
+        .map_err(|error| anyhow!("OAuth device HTTP operation failed: {error}"))?;
     Ok((response.status(), response.into_body()))
 }
 
 #[cfg(test)]
 async fn test_device_client() -> OAuthHttpClientAdapter {
     let client: Arc<dyn HttpClient> = Arc::new(codex_exec_server::RouteAwareHttpClient::new(
-        codex_http_client::HttpClientFactory::new(codex_http_client::OutboundProxyPolicy::ReqwestDefault),
+        codex_http_client::HttpClientFactory::new(
+            codex_http_client::OutboundProxyPolicy::ReqwestDefault,
+        ),
     ));
-    crate::oauth::test_support::warm_http_client(client.as_ref()).await.expect("warm test HTTP client");
+    crate::oauth::test_support::warm_http_client(client.as_ref())
+        .await
+        .expect("warm test HTTP client");
     OAuthHttpClientAdapter::new_with_redirect_mode(
         client,
         http::HeaderMap::new(),
         "http://127.0.0.1/mcp",
         /*has_configured_headers*/ false,
         StreamableHttpRedirectMode::Legacy,
-    ).expect("test HTTP client")
+    )
+    .expect("test HTTP client")
 }
 
 async fn request_device_authorization_with_pkce_fallback(
@@ -251,7 +271,8 @@ async fn request_device_authorization(
         form.push(("code_challenge_method", "S256".to_string()));
     }
 
-    let (status, body) = post_device_form(http_client, endpoint, &form).await
+    let (status, body) = post_device_form(http_client, endpoint, &form)
+        .await
         .context("failed to request OAuth device authorization")?;
     if !status.is_success() {
         return Err(provider_error_from_body(
@@ -345,7 +366,8 @@ async fn poll_device_token_once(
         form.push(("code_verifier", pkce.code_verifier.clone()));
     }
 
-    let (status, body) = post_device_form(http_client, token_endpoint, &form).await
+    let (status, body) = post_device_form(http_client, token_endpoint, &form)
+        .await
         .context("failed to request OAuth device token")?;
     if status.is_success() {
         let token_response = serde_json::from_slice::<OAuthTokenResponse>(&body)
@@ -624,7 +646,6 @@ mod tests {
             MAX_DEVICE_EXPIRES_IN_SECS
         );
     }
-
 
     async fn spawn_device_server(poll_count: Arc<AtomicUsize>) -> String {
         async fn device(Form(form): Form<HashMap<String, String>>) -> Response {
