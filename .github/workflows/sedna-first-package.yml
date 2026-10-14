@@ -324,7 +324,7 @@ jobs:
           if [[ -n "${untracked}" ]]; then
             while IFS= read -r path; do
               case "${path}" in
-                "codex-rs/app-server-protocol/schema/typescript/v2/CollabAgentRef.ts"|"codex-rs/app-server-protocol/schema/typescript/v2/WaitAgentOutcome.ts") ;;
+                "codex-rs/app-server-protocol/schema/typescript/v2/CollabAgentRef.ts"|"codex-rs/app-server-protocol/schema/typescript/v2/WaitAgentOutcome.ts"|"codex-rs/app-server-protocol/schema/typescript/AutomaticTurnContinuationRef.ts") ;;
                 *)
                   echo "Unexpected untracked output from the fixed generators." >&2
                   printf '%s\n' "${path}" >&2
