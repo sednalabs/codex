@@ -37,6 +37,7 @@ use codex_protocol::protocol::McpAuthStatus;
 use codex_rmcp_client::McpOAuthCallbackMode;
 use codex_rmcp_client::McpOAuthClientRegistration;
 use codex_rmcp_client::OAuthDiscoveryTimeout;
+use codex_rmcp_client::perform_oauth_device_login;
 use codex_rmcp_client::StreamableHttpRedirectMode;
 use codex_rmcp_client::delete_enterprise_oauth_tokens;
 use codex_rmcp_client::delete_oauth_tokens;
@@ -47,7 +48,7 @@ use codex_utils_redacted_string::RedactedString;
 
 use crate::cloud_config;
 use crate::mcp_login::McpLoginMode;
-use crate::mcp_login::perform_oauth_login_retry_without_scopes;
+use crate::mcp_login::perform_oauth_login_with_mode;
 use crate::plugin_cmd::load_cli_auth_manager;
 
 #[cfg(test)]
@@ -217,6 +218,10 @@ pub struct LoginArgs {
     /// Print the authorization URL and accept the callback URL without opening a browser.
     #[arg(long)]
     pub no_browser: bool,
+
+    /// Use OAuth device authorization for browserless MCP servers.
+    #[arg(long, conflicts_with = "no_browser")]
+    pub device_auth: bool,
 
     /// Comma-separated list of OAuth scopes to request.
     #[arg(long, value_delimiter = ',', value_name = "SCOPE,SCOPE")]
@@ -547,6 +552,7 @@ async fn run_login(config: &Config, login_args: LoginArgs) -> Result<()> {
     let LoginArgs {
         name,
         no_browser,
+        device_auth,
         scopes,
         oauth_client_registration,
     } = login_args;
@@ -599,28 +605,48 @@ async fn run_login(config: &Config, login_args: LoginArgs) -> Result<()> {
     let callback_url =
         resolve_oauth_callback(server, &url, config.mcp_oauth_callback_url.as_deref())?;
 
-    perform_oauth_login_retry_without_scopes(
-        credential_name.as_ref(),
-        &url,
-        config.mcp_oauth_credentials_store_mode,
-        config.auth_keyring_backend_kind(),
-        http_headers,
-        env_http_headers,
-        &resolved_scopes,
-        server.oauth.as_ref(),
-        client_registration,
-        server.oauth_resource.as_deref(),
-        server.oauth_callback_port(config.mcp_oauth_callback_port),
-        callback_url.as_deref(),
-        config.mcp_oauth_callback_url.as_deref(),
-        http_client,
-        if no_browser {
-            McpLoginMode::PasteCallback
-        } else {
-            McpLoginMode::Browser
-        },
-    )
-    .await?;
+    if device_auth {
+        perform_oauth_device_login(
+            credential_name.as_ref(),
+            &url,
+            config.mcp_oauth_credentials_store_mode,
+            config.auth_keyring_backend_kind(),
+            http_headers,
+            env_http_headers,
+            &resolved_scopes.scopes,
+            server.oauth.as_ref(),
+            client_registration,
+            server.oauth_resource.as_deref(),
+            Arc::clone(&http_client),
+            StreamableHttpRedirectMode::Legacy,
+            |prompt| println!(
+                "Authorize MCP server '{}' at {} with code {}.",
+                prompt.server_name(),
+                prompt.verification_uri(),
+                prompt.user_code()
+            ),
+        )
+        .await?;
+    } else {
+        perform_oauth_login_with_mode(
+            credential_name.as_ref(),
+            &url,
+            config.mcp_oauth_credentials_store_mode,
+            config.auth_keyring_backend_kind(),
+            http_headers,
+            env_http_headers,
+            &resolved_scopes,
+            server.oauth.as_ref(),
+            client_registration,
+            server.oauth_resource.as_deref(),
+            server.oauth_callback_port(config.mcp_oauth_callback_port),
+            callback_url.as_deref(),
+            config.mcp_oauth_callback_url.as_deref(),
+            http_client,
+            if no_browser { McpLoginMode::PasteCallback } else { McpLoginMode::Browser },
+        )
+        .await?;
+    }
     println!("Successfully logged in to MCP server '{name}'.");
     Ok(())
 }

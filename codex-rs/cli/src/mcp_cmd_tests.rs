@@ -234,6 +234,7 @@ async fn application_network_mcp_login_denies_even_an_allowed_mcp_server() -> an
             super::LoginArgs {
                 name: "policy-probe".to_string(),
                 no_browser: true,
+                device_auth: false,
                 scopes: Vec::new(),
                 oauth_client_registration: None,
             },

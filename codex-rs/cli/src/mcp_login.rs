@@ -19,7 +19,6 @@ use codex_config::types::AuthKeyringBackendKind;
 use codex_config::types::OAuthCredentialsStoreMode;
 use codex_exec_server::HttpClient;
 use codex_mcp::ResolvedMcpOAuthScopes;
-use codex_mcp::should_retry_without_scopes;
 use codex_rmcp_client::McpOAuthClientRegistration;
 use codex_rmcp_client::perform_oauth_login;
 use codex_rmcp_client::perform_oauth_login_with_callback_input;
@@ -40,9 +39,9 @@ pub(crate) enum McpLoginMode {
     PasteCallback,
 }
 
-/// Retry provider-rejected discovered scopes once, retaining the selected input mode.
+/// Perform MCP OAuth login once with the complete resolved scope set.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn perform_oauth_login_retry_without_scopes(
+pub(crate) async fn perform_oauth_login_with_mode(
     name: &str,
     url: &str,
     store_mode: OAuthCredentialsStoreMode,
@@ -60,73 +59,35 @@ pub(crate) async fn perform_oauth_login_retry_without_scopes(
     mode: McpLoginMode,
 ) -> Result<()> {
     let mut pending_input = None;
-    // Tokio retains its process-wide signal handler, so keep listening throughout
-    // token exchange and scope retries after the callback input reader is dropped.
     let ctrl_c = tokio::signal::ctrl_c();
     tokio::pin!(ctrl_c);
-    for (attempt, scopes) in [resolved_scopes.scopes.as_slice(), &[]]
-        .into_iter()
-        .enumerate()
-    {
-        let login = async {
-            match mode {
-                McpLoginMode::Browser => {
-                    perform_oauth_login(
-                        name,
-                        url,
-                        store_mode,
-                        keyring_backend_kind,
-                        http_headers.clone(),
-                        env_http_headers.clone(),
-                        scopes,
-                        oauth_config,
-                        client_registration,
-                        oauth_resource,
-                        callback_port,
-                        callback_url,
-                        global_callback_url,
-                        Arc::clone(&http_client),
-                    )
-                    .await
-                }
-                McpLoginMode::PasteCallback => {
-                    let input = &mut pending_input;
-                    perform_oauth_login_with_callback_input(
-                        name,
-                        url,
-                        store_mode,
-                        keyring_backend_kind,
-                        http_headers.clone(),
-                        env_http_headers.clone(),
-                        scopes,
-                        oauth_config,
-                        client_registration,
-                        oauth_resource,
-                        callback_port,
-                        callback_url,
-                        global_callback_url,
-                        Arc::clone(&http_client),
-                        move |authorization_url| read_callback(authorization_url, input),
-                    )
-                    .await
-                }
+    let login = async {
+        match mode {
+            McpLoginMode::Browser => perform_oauth_login(
+                name, url, store_mode, keyring_backend_kind,
+                http_headers.clone(), env_http_headers.clone(), &resolved_scopes.scopes,
+                oauth_config, client_registration, oauth_resource, callback_port,
+                callback_url, global_callback_url, Arc::clone(&http_client),
+            ).await,
+            McpLoginMode::PasteCallback => {
+                let input = &mut pending_input;
+                perform_oauth_login_with_callback_input(
+                    name, url, store_mode, keyring_backend_kind,
+                    http_headers.clone(), env_http_headers.clone(), &resolved_scopes.scopes,
+                    oauth_config, client_registration, oauth_resource, callback_port,
+                    callback_url, global_callback_url, Arc::clone(&http_client),
+                    move |authorization_url| read_callback(authorization_url, input),
+                ).await
             }
-        };
-        let result = tokio::select! {
-            result = login => result,
-            result = &mut ctrl_c, if matches!(mode, McpLoginMode::PasteCallback) => {
-                result.context("failed to listen for Ctrl-C")?;
-                bail!("OAuth login cancelled");
-            }
-        };
-        match result {
-            Err(error) if attempt == 0 && should_retry_without_scopes(resolved_scopes, &error) => {
-                println!("OAuth provider rejected discovered scopes. Retrying without scopes…");
-            }
-            result => return result,
+        }
+    };
+    tokio::select! {
+        result = login => result,
+        result = &mut ctrl_c, if matches!(mode, McpLoginMode::PasteCallback) => {
+            result.context("failed to listen for Ctrl-C")?;
+            bail!("OAuth login cancelled");
         }
     }
-    unreachable!("the empty-scope attempt always returns")
 }
 
 async fn read_callback(
