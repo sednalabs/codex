@@ -2,7 +2,6 @@ use crate::oauth_metadata::discover_metadata;
 use std::collections::HashMap;
 use std::fmt;
 use std::time::Duration;
-use std::time::Instant;
 
 use anyhow::Context;
 use anyhow::Result;
@@ -14,7 +13,9 @@ use rmcp::transport::AuthorizationManager;
 use rmcp::transport::auth::OAuthTokenResponse;
 use serde::Deserialize;
 use serde::Serialize;
+use tokio::time::Instant;
 use tokio::time::sleep;
+use tokio::time::timeout_at;
 
 use crate::StoredOAuthTokens;
 use crate::WrappedOAuthTokenResponse;
@@ -50,7 +51,10 @@ pub async fn perform_oauth_device_login(
     mut show_authorization_prompt: impl FnMut(DeviceAuthorizationPrompt),
 ) -> Result<()> {
     let default_headers = build_default_headers(http_headers, env_http_headers)?;
-    let http_client = build_reqwest_client(Client::builder(), &default_headers)?;
+    let http_client = build_reqwest_client(
+        Client::builder().timeout(Duration::from_secs(30)),
+        &default_headers,
+    )?;
     let oauth_client_id =
         resolve_device_oauth_client_id(server_url, &http_client, scopes, oauth_client_id).await?;
     let (details, pkce) = request_device_authorization_with_pkce_fallback(
@@ -344,16 +348,25 @@ async fn poll_device_token(
             ));
         }
 
-        match poll_device_token_once(
-            http_client,
-            token_endpoint,
-            client_id,
-            oauth_resource,
-            &details.device_code,
-            pkce,
+        let outcome = timeout_at(
+            deadline,
+            poll_device_token_once(
+                http_client,
+                token_endpoint,
+                client_id,
+                oauth_resource,
+                &details.device_code,
+                pkce,
+            ),
         )
-        .await?
-        {
+        .await
+        .map_err(|_| anyhow!("OAuth device code expired before authorization completed"))??;
+        if Instant::now() >= deadline {
+            return Err(anyhow!(
+                "OAuth device code expired before authorization completed"
+            ));
+        }
+        match outcome {
             DevicePollOutcome::Authorized(token_response) => return Ok(token_response),
             DevicePollOutcome::Pending => sleep_until_next_poll(interval, deadline).await?,
             DevicePollOutcome::SlowDown => {
@@ -555,6 +568,10 @@ struct DeviceClientRegistrationResponse {
 }
 
 #[cfg(test)]
+#[path = "device_login_boundary_tests.rs"]
+mod boundary_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use axum::Form;
@@ -658,7 +675,7 @@ mod tests {
         assert_eq!(registration_count.load(Ordering::SeqCst), 0);
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn device_login_polls_until_authorized() {
         let poll_count = Arc::new(AtomicUsize::new(0));
         let server = spawn_device_server(poll_count.clone()).await;
@@ -695,7 +712,7 @@ mod tests {
         assert_eq!(poll_count.load(Ordering::SeqCst), 2);
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn device_login_retries_without_pkce_when_rejected() {
         let device_request_count = Arc::new(AtomicUsize::new(0));
         let poll_count = Arc::new(AtomicUsize::new(0));

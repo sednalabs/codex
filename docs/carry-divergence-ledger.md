@@ -3219,7 +3219,10 @@ bundles during upstream sync merely because they once shared this carry entry.
   when server grant metadata permits or omits grant support.
 - After client-id resolution, the flow uses PKCE, the identity-provider
   verification URL/user code, token-endpoint polling, and the existing MCP
-  OAuth token cache.
+  OAuth token cache through its existing cross-process credential lock. Resolved
+  scopes are preserved exactly; a rejected device request never retries with an
+  empty scope set. Device expiry also bounds an in-flight token response, and
+  cancellation drops the request without publishing credentials.
 - Upstream `AuthorizationManager` is the primary discovery authority for both
   local and runtime-routed HTTP clients. The downstream mapping preserves the
   device endpoint and grant fields from upstream metadata extensions. A narrow

@@ -136,5 +136,32 @@ class NamedRustTests(TestCase):
         run.assert_not_called()
 
 
+    def test_nested_summary_uses_the_enclosing_target_counts(self) -> None:
+        output = (
+            "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 234 filtered out\n"
+            "test result: ok. 235 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out\n"
+        )
+        self.assertEqual(MODULE.test_result_counts(output), {
+            "passed": 235, "failed": 0, "ignored": 1, "measured": 0, "filtered": 0,
+        })
+
+    def test_nested_summary_retains_named_outcome_and_exit_guards(self) -> None:
+        expected_counts = {
+            "passed": 235, "failed": 0, "ignored": 1, "measured": 0, "filtered": 0,
+        }
+        for code, outcome, expected in [(0, "ok", "success"), (1, "ok", "failure"), (0, "ignored", "failure")]:
+            with self.subTest(code=code, outcome=outcome):
+                output = (
+                    "test child::fixture ... ok\n"
+                    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 234 filtered out\n"
+                    f"test suite::known ... {outcome}\n"
+                    "test result: ok. 235 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out\n"
+                )
+                result = self.run_request(output, test_code=code)
+                self.assertEqual(result["status"], expected)
+                self.assertEqual(result["tests"][0]["result_counts"], expected_counts)
+                self.assertEqual(result["tests"][0]["observed_outcomes"], [outcome])
+
+
 if __name__ == "__main__":
     main()

@@ -60,9 +60,12 @@ def command_diagnostics(completed: subprocess.CompletedProcess[str]) -> dict[str
 
 def test_result_counts(output: str) -> dict[str, int] | None:
     matches = list(TEST_RESULT_RE.finditer(output))
-    if len(matches) != 1:
+    if not matches:
         return None
-    match = matches[0]
+    # Cross-process fixtures can emit child libtest summaries. The enclosing
+    # target emits its summary last; named outcomes and exit status are still
+    # reconciled separately before accepting any requested test.
+    match = matches[-1]
     return {
         name: int(match.group(name))
         for name in ("passed", "failed", "ignored", "measured", "filtered")
