@@ -468,10 +468,10 @@ mcp-safety-targeted:
 # Focused downstream MCP OAuth device-login slice for browserless hosts.
 mcp-device-login-targeted:
     cargo test -p codex-rmcp-client auth_status::tests::discover_streamable_http_oauth_returns_normalized_scopes --lib -- --exact --test-threads=1
-    cargo test -p codex-rmcp-client perform_oauth_login::tests::start_authorization_routes_dynamic_registration_through_configured_client --lib -- --exact --test-threads=1
+    cargo test -p codex-rmcp-client perform_oauth_login::tests::start_authorization_uses_configured_client_id --lib -- --exact --test-threads=1
     cargo test -p codex-rmcp-client perform_oauth_device_login:: --lib -- --test-threads=1
     cargo test -p codex-cli --test mcp_device_login -- --test-threads=1
-    cargo test -p codex-client custom_ca::tests::reqwest_client_builder_installs_rustls_provider_without_custom_ca --lib -- --exact --test-threads=1
+    cargo test -p codex-http-client custom_ca::tests::reqwest_client_builder_installs_rustls_provider_without_custom_ca --lib -- --exact --test-threads=1
 
 # Focused sub-agent selection, role, backend, and cold-reload slice.
 core-subagent-model-pinning-targeted:
