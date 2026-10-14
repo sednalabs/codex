@@ -554,28 +554,35 @@ mod tests {
         fn new(responses: impl IntoIterator<Item = (u16, Vec<u8>)>) -> Self {
             Self { requests: Mutex::new(Vec::new()), responses: Mutex::new(responses.into_iter().collect()) }
         }
+
+        fn next_response(&self, params: HttpRequestParams) -> (HttpRequestResponse, Vec<u8>) {
+            self.requests.lock().expect("request lock").push(params);
+            let (status, body) = self.responses.lock().expect("response lock").pop_front().expect("scripted response");
+            let response = HttpRequestResponse {
+                status,
+                headers: vec![HttpHeader { name: "content-type".into(), value: "application/json".into(), value_env_var: None }],
+                body: ByteChunk::from(Vec::new()),
+            };
+            (response, body)
+        }
     }
     impl HttpClient for ScriptedHttpClient {
         fn http_request(
             &self,
             params: HttpRequestParams,
         ) -> BoxFuture<'_, std::result::Result<HttpRequestResponse, ExecServerError>> {
-            self.requests.lock().expect("request lock").push(params);
-            let (status, body) = self.responses.lock().expect("response lock").pop_front().expect("scripted response");
-            Box::pin(async move {
-                Ok(HttpRequestResponse {
-                    status,
-                    headers: vec![HttpHeader { name: "content-type".into(), value: "application/json".into(), value_env_var: None }],
-                    body: ByteChunk::from(body),
-                })
-            })
+            let (response, body) = self.next_response(params);
+            let response = HttpRequestResponse { body: ByteChunk::from(body), ..response };
+            Box::pin(async move { Ok(response) })
         }
 
         fn http_request_stream(
             &self,
-            _params: HttpRequestParams,
+            params: HttpRequestParams,
         ) -> BoxFuture<'_, std::result::Result<(HttpRequestResponse, HttpResponseBodyStream), ExecServerError>> {
-            Box::pin(async { std::future::pending().await })
+            let (response, body) = self.next_response(params);
+            let stream = HttpResponseBodyStream::from_chunks(vec![body]);
+            Box::pin(async move { Ok((response, stream)) })
         }
     }
 
