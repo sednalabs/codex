@@ -1243,9 +1243,16 @@ fn compact_summary_text(text: &str) -> String {
     compact
 }
 
-fn append_text(items: &mut [DynamicToolCallOutputContentItem], extra: &str) {
+fn append_text(items: &mut Vec<DynamicToolCallOutputContentItem>, extra: &str) {
     if let Some(DynamicToolCallOutputContentItem::InputText { text }) = items.first_mut() {
         text.push_str(extra);
+    } else {
+        items.insert(
+            0,
+            DynamicToolCallOutputContentItem::InputText {
+                text: extra.trim().to_string(),
+            },
+        );
     }
 }
 
@@ -2207,6 +2214,27 @@ mod tests {
         };
         assert!(text.contains("visible_ui: text only"));
         assert!(text.contains("must return screenshots as native image content items"));
+    }
+
+    #[test]
+    fn visual_response_without_text_retains_missing_image_diagnostic() {
+        let mut response = DynamicToolCallResponse {
+            content_items: Vec::new(),
+            success: true,
+        };
+
+        require_native_image_for_visual_response(
+            &mut response,
+            "Android observation missing native image output.",
+        );
+
+        assert!(!response.success);
+        assert!(matches!(
+            response.content_items.as_slice(),
+            [DynamicToolCallOutputContentItem::InputText { text }]
+                if text.contains("Android observation missing native image output.")
+                    && text.contains("must return screenshots as native image content items")
+        ));
     }
 
     #[test]

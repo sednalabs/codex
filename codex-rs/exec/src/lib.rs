@@ -26,6 +26,9 @@ use codex_app_server_client::InProcessServerEvent;
 use codex_app_server_client::TypedRequestError;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ConfigWarningNotification;
+use codex_app_server_protocol::DynamicToolCallParams;
+use codex_app_server_protocol::DynamicToolCallResponse;
+use codex_app_server_protocol::DynamicToolSpec;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::McpServerElicitationAction;
 use codex_app_server_protocol::McpServerElicitationRequestResponse;
@@ -1481,7 +1484,13 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
 
         match server_event {
             InProcessServerEvent::ServerRequest(request) => {
-                handle_server_request(&client, *request, &mut error_seen).await;
+                handle_server_request(
+                    &client,
+                    *request,
+                    config.codex_home.as_path(),
+                    &mut error_seen,
+                )
+                .await;
             }
             InProcessServerEvent::ServerNotification(notification) => {
                 let mut notification = *notification;
@@ -1603,6 +1612,7 @@ fn thread_start_params_from_config(
         sandbox: sandbox.flatten(),
         permissions,
         config: thread_config_overrides_from_config(config),
+        dynamic_tools: configured_native_dynamic_tools(config),
         ephemeral: Some(config.ephemeral),
         daybreak_enabled: (config.daybreak_enabled && !config.ephemeral).then_some(true),
         history_mode: (!config.ephemeral).then_some(ThreadHistoryMode::Paginated),
@@ -1634,8 +1644,57 @@ fn thread_resume_params_from_config(
         sandbox: sandbox.flatten(),
         permissions,
         config: thread_config_overrides_from_config(config),
+        dynamic_tools: configured_native_dynamic_tools(config),
         exclude_turns: true,
         ..ThreadResumeParams::default()
+    }
+}
+
+fn configured_native_dynamic_tools(config: &Config) -> Option<Vec<DynamicToolSpec>> {
+    let mut tools =
+        codex_browser_computer_use::configured_browser_dynamic_tools_for_codex_home(
+            config.codex_home.as_path(),
+        );
+    tools.extend(
+        codex_android_computer_use::configured_android_dynamic_tools_for_codex_home(
+            config.codex_home.as_path(),
+        ),
+    );
+    (!tools.is_empty()).then_some(tools)
+}
+
+async fn handle_exec_native_dynamic_tool(
+    params: &DynamicToolCallParams,
+    codex_home: &Path,
+) -> Option<DynamicToolCallResponse> {
+    match params.namespace.as_deref() {
+        Some("codex_browser") => {
+            match codex_browser_computer_use::handle_browser_computer_use_for_codex_home(
+                params,
+                codex_home,
+            )
+            .await
+            {
+                codex_browser_computer_use::BrowserComputerUseOutcome::Handled(response) => {
+                    Some(response)
+                }
+                codex_browser_computer_use::BrowserComputerUseOutcome::Unavailable => None,
+            }
+        }
+        Some("codex_android") => {
+            match codex_android_computer_use::handle_android_computer_use_for_codex_home(
+                params,
+                codex_home,
+            )
+            .await
+            {
+                codex_android_computer_use::AndroidComputerUseOutcome::Handled(response) => {
+                    Some(response)
+                }
+                codex_android_computer_use::AndroidComputerUseOutcome::Unavailable => None,
+            }
+        }
+        _ => None,
     }
 }
 
@@ -2219,6 +2278,7 @@ fn server_request_method_name(request: &ServerRequest) -> String {
 async fn handle_server_request(
     client: &InProcessAppServerClient,
     request: ServerRequest,
+    codex_home: &Path,
     error_seen: &mut bool,
 ) {
     let method = server_request_method_name(&request);
@@ -2277,16 +2337,24 @@ async fn handle_server_request(
             .await
         }
         ServerRequest::DynamicToolCall { request_id, params } => {
-            reject_server_request(
-                client,
-                request_id,
-                &method,
-                format!(
-                    "dynamic tool calls are not supported in exec mode for thread `{}`",
-                    params.thread_id
-                ),
-            )
-            .await
+            match handle_exec_native_dynamic_tool(&params, codex_home).await {
+                Some(response) => match serde_json::to_value(response) {
+                    Ok(value) => resolve_server_request(client, request_id, value, &method).await,
+                    Err(err) => Err(format!("failed to serialize native visual response: {err}")),
+                },
+                None => {
+                    reject_server_request(
+                        client,
+                        request_id,
+                        &method,
+                        format!(
+                            "dynamic tool calls are not supported in exec mode for thread `{}`",
+                            params.thread_id
+                        ),
+                    )
+                    .await
+                }
+            }
         }
         ServerRequest::ChatgptAuthTokensRefresh { request_id, .. } => {
             reject_server_request(

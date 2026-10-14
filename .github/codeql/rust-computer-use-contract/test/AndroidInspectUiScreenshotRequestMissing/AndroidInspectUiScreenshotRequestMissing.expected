@@ -1,0 +1,1 @@
+| codex-rs/computer-use-runtime/src/lib.rs:7:1:10:1 | fn inspect_ui | This Android inspect_ui call path does not request screenshots. Set include_screenshot: true so successful visual observations can include native image output. |

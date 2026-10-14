@@ -3,6 +3,7 @@ use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
+use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
 use crate::tools::context::boxed_tool_output;
 use crate::tools::handlers::parse_arguments;
@@ -17,6 +18,7 @@ use codex_protocol::items::DynamicToolCallItem;
 use codex_protocol::items::DynamicToolCallStatus;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::FunctionCallOutputContentItem;
+use codex_protocol::models::ResponseInputItem;
 use codex_tools::ResponsesApiNamespace;
 use codex_tools::ResponsesApiNamespaceTool;
 use codex_tools::ToolName;
@@ -174,7 +176,7 @@ impl DynamicToolHandler {
             .map(FunctionCallOutputContentItem::from)
             .collect::<Vec<_>>();
         let output_item_count = body.len();
-        let output = boxed_tool_output(FunctionToolOutput::from_content(body, Some(success)));
+        let output = dynamic_tool_output(&self.tool_name, body, success);
         record_browser_core_output_stage(
             &diagnostic_call_id,
             /*response_received*/ true,
@@ -182,6 +184,58 @@ impl DynamicToolHandler {
             output_item_count,
         );
         Ok(output)
+    }
+}
+
+fn dynamic_tool_output(
+    tool_name: &ToolName,
+    body: Vec<FunctionCallOutputContentItem>,
+    success: bool,
+) -> Box<dyn ToolOutput> {
+    let output = FunctionToolOutput::from_content(body, Some(success));
+    let native_visual = matches!(
+        (tool_name.namespace.as_deref(), tool_name.name.as_str()),
+        (Some("codex_browser"), "browser_observe" | "browser_step")
+            | (
+                Some("codex_android"),
+                "android_observe" | "android_step" | "android_install_build_from_run"
+            )
+    );
+    if native_visual {
+        boxed_tool_output(NativeVisualDynamicToolOutput { output })
+    } else {
+        boxed_tool_output(output)
+    }
+}
+
+/// Native visual tools keep the same typed content in direct and code-mode results.
+/// Other dynamic tools retain the upstream code-mode result contract.
+struct NativeVisualDynamicToolOutput {
+    output: FunctionToolOutput,
+}
+
+impl ToolOutput for NativeVisualDynamicToolOutput {
+    fn log_output(&self) -> String {
+        self.output.log_output()
+    }
+
+    fn success_for_logging(&self) -> bool {
+        self.output.success_for_logging()
+    }
+
+    fn to_response_item(&self, call_id: &str, payload: &ToolPayload) -> ResponseInputItem {
+        self.output.to_response_item(call_id, payload)
+    }
+
+    fn post_tool_use_response(&self, call_id: &str, payload: &ToolPayload) -> Option<Value> {
+        self.output.post_tool_use_response(call_id, payload)
+    }
+
+    fn code_mode_result(&self, _payload: &ToolPayload) -> Value {
+        serde_json::json!({
+            "content": self.output.body,
+            "success": self.output.success.unwrap_or(true),
+        })
     }
 }
 

@@ -1,0 +1,18 @@
+<!DOCTYPE qhelp SYSTEM "qhelp.dtd">
+<qhelp>
+  <overview>
+    <p>
+      Triggers such as <code>pull_request_target</code> and
+      <code>workflow_run</code> can run with trusted repository context while
+      processing data influenced by less-trusted events.
+    </p>
+  </overview>
+  <recommendation>
+    <p>
+      Split untrusted event processing from write operations. Use read-only
+      token permissions for the event-handling job, and move repository writes
+      to a separate protected workflow or a narrowly scoped job that does not
+      checkout or execute untrusted code.
+    </p>
+  </recommendation>
+</qhelp>

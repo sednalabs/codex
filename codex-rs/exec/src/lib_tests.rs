@@ -478,6 +478,201 @@ fn canceled_mcp_server_elicitation_response_uses_cancel_action() {
 }
 
 #[tokio::test]
+async fn native_visual_tools_are_registered_for_exec_start_and_resume() {
+    let codex_home = tempdir().expect("create temp codex home");
+    let cwd = tempdir().expect("create temp cwd");
+    let config = ConfigBuilder::default()
+        .loader_overrides(LoaderOverrides::without_managed_config_for_tests())
+        .codex_home(codex_home.path().to_path_buf())
+        .fallback_cwd(Some(cwd.path().to_path_buf()))
+        .build()
+        .await
+        .expect("build exec config");
+    assert!(configured_native_dynamic_tools(&config).is_none());
+    std::fs::write(
+        codex_home.path().join("browser-computer-use.json"),
+        r#"{"provider":"playwright"}"#,
+    )
+    .expect("configure browser provider");
+    std::fs::write(
+        codex_home.path().join("android-computer-use.json"),
+        r#"{"mcp_url":"https://android-provider.example/mcp"}"#,
+    )
+    .expect("configure Android provider");
+
+    let start = thread_start_params_from_config(&config, &ThreadSource::User);
+    let resume = thread_resume_params_from_config(
+        &config,
+        "native-thread".to_string(),
+        /*approvals_reviewer_override*/ None,
+    );
+    let specs = start.dynamic_tools.expect("configured native tools");
+    assert_eq!(
+        serde_json::to_value(&specs).expect("serialize native specs"),
+        serde_json::to_value(resume.dynamic_tools.expect("resume native tools"))
+            .expect("serialize resumed native specs")
+    );
+    let names = specs
+        .iter()
+        .flat_map(|spec| match spec {
+            DynamicToolSpec::Namespace(namespace) => namespace
+                .tools
+                .iter()
+                .map(|tool| match tool {
+                    codex_app_server_protocol::DynamicToolNamespaceTool::Function(function) => {
+                        (namespace.name.as_str(), function.name.as_str())
+                    }
+                })
+                .collect::<Vec<_>>(),
+            DynamicToolSpec::Function(_) => panic!("native tools must remain namespaced"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        names,
+        vec![
+            ("codex_browser", "browser_observe"),
+            ("codex_browser", "browser_step"),
+            ("codex_android", "android_observe"),
+            ("codex_android", "android_step"),
+            ("codex_android", "android_install_build_from_run"),
+        ]
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn exec_dispatches_browser_provider_and_preserves_typed_images() {
+    let codex_home = tempdir().expect("create temp codex home");
+    let provider = r#"
+import json, sys
+request = json.load(sys.stdin)
+assert request["namespace"] == "codex_browser"
+assert request["threadId"] == "native-thread"
+assert request["turnId"] == "native-turn"
+assert request["callId"] == "native-call"
+assert request["tool"] == "browser_observe"
+assert request["arguments"] == {"url": "https://example.test"}
+json.dump({"contentItems": [{"type": "inputText", "text": "observed"},
+    {"type": "inputImage", "imageUrl": "data:image/png;base64,AAAA"}],
+    "success": True}, sys.stdout)
+"#;
+    std::fs::write(
+        codex_home.path().join("browser-computer-use.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "command": ["python3", "-c", provider],
+        }))
+        .expect("serialize browser config"),
+    )
+    .expect("write browser provider config");
+    let params = DynamicToolCallParams {
+        thread_id: "native-thread".to_string(),
+        turn_id: "native-turn".to_string(),
+        call_id: "native-call".to_string(),
+        namespace: Some("codex_browser".to_string()),
+        tool: "browser_observe".to_string(),
+        arguments: serde_json::json!({"url": "https://example.test"}),
+    };
+
+    let response = handle_exec_native_dynamic_tool(&params, codex_home.path())
+        .await
+        .expect("native browser request is dispatched");
+    assert!(response.success, "{response:?}");
+    assert!(matches!(
+        response.content_items.as_slice(),
+        [codex_app_server_protocol::DynamicToolCallOutputContentItem::InputText { text },
+            codex_app_server_protocol::DynamicToolCallOutputContentItem::InputImage { image_url }]
+            if text == "observed" && image_url == "data:image/png;base64,AAAA"
+    ));
+
+    let mut unrelated = params;
+    for (namespace, tool) in [
+        (Some("other_namespace"), "browser_observe"),
+        (Some("codex_browser"), "unrecognized_tool"),
+        (Some("codex_android"), "unrecognized_tool"),
+        (None, "browser_observe"),
+    ] {
+        unrelated.namespace = namespace.map(str::to_string);
+        unrelated.tool = tool.to_string();
+        assert!(
+            handle_exec_native_dynamic_tool(&unrelated, codex_home.path())
+                .await
+                .is_none()
+        );
+    }
+}
+
+#[tokio::test]
+async fn exec_dispatches_android_provider_and_preserves_typed_images() {
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::body_partial_json;
+    use wiremock::matchers::method;
+
+    let server = MockServer::start().await;
+    for (request_method, result) in [
+        ("initialize", serde_json::json!({})),
+        ("notifications/initialized", serde_json::json!({})),
+        (
+            "tools/list",
+            serde_json::json!({"tools": [{"name": "android.inspect_ui"}]}),
+        ),
+    ] {
+        Mock::given(method("POST"))
+            .and(body_partial_json(serde_json::json!({"method": request_method})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "jsonrpc": "2.0", "result": result,
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
+    Mock::given(method("POST"))
+        .and(body_partial_json(serde_json::json!({
+            "method": "tools/call",
+            "params": {
+                "name": "android.inspect_ui",
+                "arguments": {"include_screenshot": true},
+            },
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "jsonrpc": "2.0",
+            "result": {
+                "structuredContent": {"node_count": 0, "nodes": []},
+                "content": [{"type": "image", "mimeType": "image/png", "data": "AAAA"}],
+            },
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let codex_home = tempdir().expect("create temp codex home");
+    std::fs::write(
+        codex_home.path().join("android-computer-use.json"),
+        serde_json::to_vec(&serde_json::json!({"mcp_url": server.uri()}))
+            .expect("serialize Android config"),
+    )
+    .expect("configure Android provider");
+    let params = DynamicToolCallParams {
+        thread_id: "native-thread".to_string(),
+        turn_id: "native-turn".to_string(),
+        call_id: "native-call".to_string(),
+        namespace: Some("codex_android".to_string()),
+        tool: "android_observe".to_string(),
+        arguments: serde_json::json!({}),
+    };
+
+    let response = handle_exec_native_dynamic_tool(&params, codex_home.path())
+        .await
+        .expect("native Android request is dispatched");
+    assert!(response.success, "{response:?}");
+    assert!(response.content_items.iter().any(|item| matches!(
+        item,
+        codex_app_server_protocol::DynamicToolCallOutputContentItem::InputImage { image_url }
+            if image_url == "data:image/png;base64,AAAA"
+    )));
+}
+
+#[tokio::test]
 async fn thread_start_params_include_review_policy_when_review_policy_is_manual_only() {
     let codex_home = tempdir().expect("create temp codex home");
     let cwd = tempdir().expect("create temp cwd");
