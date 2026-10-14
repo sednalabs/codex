@@ -163,9 +163,7 @@ async fn resolve_device_client_id(
     if registration == McpOAuthClientRegistration::Cimd {
         bail!("MCP device authorization requires a configured public client ID or Dynamic Client Registration; CIMD is not supported for this device flow");
     }
-    let endpoint = metadata.registration_endpoint.clone()
-        .filter(|endpoint| !endpoint.trim().is_empty())
-        .ok_or_else(|| anyhow!("OAuth device login requires a configured public client ID because dynamic client registration is not advertised"))?;
+    let endpoint = dynamic_registration_endpoint(metadata)?;
     validate_oauth_endpoint(&endpoint)?;
     let supports_refresh = metadata.additional_fields.get("grant_types_supported")
         .and_then(serde_json::Value::as_array)
@@ -192,6 +190,12 @@ fn metadata_endpoint(metadata: &HashMap<String, serde_json::Value>, key: &str) -
         .filter(|endpoint| !endpoint.trim().is_empty()).map(str::to_string)
         .ok_or_else(|| anyhow!("OAuth authorization server metadata does not include {key}"))
 }
+fn dynamic_registration_endpoint(metadata: &AuthorizationMetadata) -> Result<String> {
+    metadata.registration_endpoint.clone()
+        .filter(|endpoint| !endpoint.trim().is_empty())
+        .ok_or_else(|| anyhow!("OAuth device login requires a configured public client ID because dynamic client registration is not advertised"))
+}
+
 fn device_authorization_endpoint(metadata: &AuthorizationMetadata) -> Result<String> {
     metadata_endpoint(&metadata.additional_fields, "device_authorization_endpoint")
 }
@@ -251,6 +255,24 @@ async fn request_device_authorization(
     client_secret: Option<&str>, auth_method: DeviceClientAuthMethod, scopes: &[String], resource: Option<&str>,
     pkce: Option<&DevicePkce>, deadline: Option<Instant>,
 ) -> Result<DeviceAuthorizationResponse> {
+    let fields = device_authorization_fields(client_id, client_secret, auth_method, scopes, resource, pkce);
+    let response = oauth_post(
+        http, endpoint, "application/x-www-form-urlencoded", form_body(&fields), deadline,
+        basic_credentials(auth_method, client_id, client_secret),
+    ).await?;
+    if !response.status().is_success() {
+        return Err(provider_error_from_body(response.status(), response.body(), "device authorization"));
+    }
+    let details = serde_json::from_slice::<DeviceAuthorizationResponse>(response.body())
+        .context("failed to parse OAuth device authorization response")?;
+    validate_verification_uri(details.verification_uri_complete.as_deref().unwrap_or(&details.verification_uri))?;
+    Ok(details)
+}
+
+fn device_authorization_fields(
+    client_id: &str, client_secret: Option<&str>, auth_method: DeviceClientAuthMethod,
+    scopes: &[String], resource: Option<&str>, pkce: Option<&DevicePkce>,
+) -> Vec<(&'static str, String)> {
     let mut fields = vec![("client_id", client_id.to_string())];
     if let Some(secret) = form_client_secret(auth_method, client_secret) {
         fields.push(("client_secret", secret.to_string()));
@@ -263,17 +285,7 @@ async fn request_device_authorization(
         fields.push(("code_challenge", pkce.code_challenge.clone()));
         fields.push(("code_challenge_method", "S256".to_string()));
     }
-    let response = oauth_post(
-        http, endpoint, "application/x-www-form-urlencoded", form_body(&fields), deadline,
-        basic_credentials(auth_method, client_id, client_secret),
-    ).await?;
-    if !response.status().is_success() {
-        return Err(provider_error_from_body(response.status(), response.body(), "device authorization"));
-    }
-    let details = serde_json::from_slice::<DeviceAuthorizationResponse>(response.body())
-        .context("failed to parse OAuth device authorization response")?;
-    validate_verification_uri(details.verification_uri_complete.as_deref().unwrap_or(&details.verification_uri))?;
-    Ok(details)
+    fields
 }
 fn validate_verification_uri(uri: &str) -> Result<()> {
     let parsed = Url::parse(uri).context("OAuth device verification URI is invalid")?;
@@ -474,6 +486,12 @@ struct DeviceClientRegistrationResponse { client_id: String }
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+    use futures::future::BoxFuture;
+    use codex_exec_server::HttpClient;
+    use codex_exec_server::HttpRequestParams;
+    use codex_exec_server::HttpRequestResponse;
+    use codex_exec_server::HttpResponseBodyStream;
+    use codex_exec_server::ExecServerError;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
@@ -494,6 +512,64 @@ mod tests {
     }
 
     #[test]
+    fn metadata_selected_client_auth_method_reaches_both_device_and_token_forms() {
+        let basic_metadata: AuthorizationMetadata = serde_json::from_value(serde_json::json!({
+            "authorization_endpoint":"https://issuer.example/authorize",
+            "token_endpoint":"https://issuer.example/token",
+            "token_endpoint_auth_methods_supported":["client_secret_basic","client_secret_post"]
+        })).expect("metadata");
+        let basic_method = device_client_auth_method(&basic_metadata, true);
+        assert_eq!(basic_method, DeviceClientAuthMethod::ClientSecretBasic);
+        let scope = vec!["ops:read".to_string()];
+        let details = DeviceAuthorizationResponse { device_code:"device".into(), user_code:"user".into(), verification_uri:"https://issuer.example/verify".into(), verification_uri_complete:None, expires_in:Some(60), interval:Some(1) };
+        let device = device_authorization_fields("client", Some("secret"), basic_method, &scope, None, None);
+        let token = token_form("client", Some("secret"), basic_method, None, &details, None);
+        assert!(!device.iter().any(|(key, _)| *key == "client_secret"));
+        assert!(!token.iter().any(|(key, _)| *key == "client_secret"));
+        assert!(basic_credentials(basic_method, "client", Some("secret")).is_some());
+
+        let post_metadata: AuthorizationMetadata = serde_json::from_value(serde_json::json!({
+            "authorization_endpoint":"https://issuer.example/authorize",
+            "token_endpoint":"https://issuer.example/token",
+            "token_endpoint_auth_methods_supported":["client_secret_post"]
+        })).expect("metadata");
+        let post_method = device_client_auth_method(&post_metadata, true);
+        assert_eq!(post_method, DeviceClientAuthMethod::ClientSecretPost);
+        for secret_field in [
+            device_authorization_fields("client", Some("secret"), post_method, &scope, None, None).iter().any(|(key, _)| *key == "client_secret"),
+            token_form("client", Some("secret"), post_method, None, &details, None).iter().any(|(key, _)| *key == "client_secret"),
+        ] { assert!(secret_field); }
+        assert!(basic_credentials(post_method, "client", Some("secret")).is_none());
+    }
+
+    #[test]
+    fn pkce_fallback_request_forms_keep_resolved_scopes() {
+        let scopes = ["ops:read".to_string(), "ops:write".to_string()];
+        let pkce = DevicePkce { code_challenge: "challenge".into(), code_verifier: "verifier".into() };
+        for pkce in [Some(&pkce), None] {
+            let body = form_body(&device_authorization_fields("client", None, DeviceClientAuthMethod::None, &scopes, None, pkce));
+            let body = String::from_utf8(body).expect("form body");
+            assert!(body.contains("scope=ops%3Aread+ops%3Awrite"));
+        }
+    }
+
+    #[tokio::test]
+    async fn configured_client_can_be_configured_from_resolved_metadata() {
+        let metadata: AuthorizationMetadata = serde_json::from_value(serde_json::json!({
+            "authorization_endpoint":"https://issuer.example/authorize",
+            "token_endpoint":"https://issuer.example/token",
+            "device_authorization_endpoint":"https://issuer.example/device"
+        })).expect("metadata");
+        let endpoint = device_authorization_endpoint(&metadata).expect("device endpoint");
+        let mut manager = AuthorizationManager::new("https://mcp.example")
+            .await.expect("authorization manager");
+        manager.set_metadata(metadata);
+        manager.configure_client(OAuthClientConfig::new("client", "https://mcp.example"))
+            .expect("configured client with installed metadata");
+        assert_eq!(endpoint, "https://issuer.example/device");
+    }
+
+    #[test]
     fn typed_metadata_registration_endpoint_is_used() {
         let metadata: AuthorizationMetadata = serde_json::from_value(serde_json::json!({
             "authorization_endpoint":"https://issuer.example/authorize",
@@ -501,24 +577,56 @@ mod tests {
             "registration_endpoint":"https://issuer.example/register",
             "device_authorization_endpoint":"https://issuer.example/device"
         })).expect("metadata");
-        assert_eq!(metadata.registration_endpoint.as_deref(), Some("https://issuer.example/register"));
+        assert_eq!(dynamic_registration_endpoint(&metadata).expect("registration endpoint"), "https://issuer.example/register");
         assert_eq!(device_authorization_endpoint(&metadata).expect("device endpoint"), "https://issuer.example/device");
     }
 
-    #[tokio::test]
-    async fn in_flight_poll_is_cancelled_at_device_expiry() {
-        struct DropMarker(Arc<AtomicUsize>);
-        impl Drop for DropMarker {
-            fn drop(&mut self) { self.0.fetch_add(1, Ordering::SeqCst); }
+    struct DropMarker(Arc<AtomicUsize>);
+    impl Drop for DropMarker {
+        fn drop(&mut self) { self.0.fetch_add(1, Ordering::SeqCst); }
+    }
+
+    struct PendingHttpClient {
+        dropped: Arc<AtomicUsize>,
+    }
+    impl HttpClient for PendingHttpClient {
+        fn http_request(
+            &self,
+            _params: HttpRequestParams,
+        ) -> BoxFuture<'_, std::result::Result<HttpRequestResponse, ExecServerError>> {
+            let marker = DropMarker(Arc::clone(&self.dropped));
+            Box::pin(async move {
+                let _marker = marker;
+                std::future::pending().await
+            })
         }
+
+        fn http_request_stream(
+            &self,
+            _params: HttpRequestParams,
+        ) -> BoxFuture<'_, std::result::Result<(HttpRequestResponse, HttpResponseBodyStream), ExecServerError>> {
+            let marker = DropMarker(Arc::clone(&self.dropped));
+            Box::pin(async move {
+                let _marker = marker;
+                std::future::pending().await
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn in_flight_device_token_http_request_is_cancelled_at_expiry() {
         let dropped = Arc::new(AtomicUsize::new(0));
-        let marker = DropMarker(Arc::clone(&dropped));
+        let http_client: Arc<dyn HttpClient> = Arc::new(PendingHttpClient { dropped: Arc::clone(&dropped) });
+        let http = OAuthHttpClientAdapter::new_with_redirect_mode(
+            http_client, http::HeaderMap::new(), "https://issuer.example", false,
+            StreamableHttpRedirectMode::Legacy,
+        ).expect("OAuth HTTP adapter");
         let deadline = Instant::now() + Duration::from_millis(10);
-        let pending = async move {
-            let _marker = marker;
-            std::future::pending::<Result<()>>().await
-        };
-        assert!(await_device_deadline(deadline, pending).await.is_err());
+        let error = oauth_post(
+            &http, "https://issuer.example/token", "application/x-www-form-urlencoded",
+            b"grant_type=device_code".to_vec(), Some(deadline), None,
+        ).await.expect_err("request must expire");
+        assert!(error.to_string().contains("expired"));
         assert_eq!(dropped.load(Ordering::SeqCst), 1);
     }
 }
