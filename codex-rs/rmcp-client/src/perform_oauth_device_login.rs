@@ -12,8 +12,10 @@ use codex_config::McpServerOAuthConfig;
 use codex_config::types::AuthKeyringBackendKind;
 use codex_config::types::OAuthCredentialsStoreMode;
 use codex_exec_server::HttpClient;
+use base64::Engine;
 use oauth2::PkceCodeChallenge;
 use rmcp::transport::AuthorizationManager;
+use rmcp::transport::auth::AuthorizationMetadata;
 use rmcp::transport::auth::OAuthClientConfig;
 use rmcp::transport::auth::OAuthTokenResponse;
 use rmcp::transport::auth::OAuthHttpRedirectPolicy;
@@ -70,14 +72,17 @@ pub async fn perform_oauth_device_login(
     auth_manager.set_allow_missing_issuer(true);
     let metadata = auth_manager.resolve_metadata().await?.metadata;
     validate_authorization_server_endpoints(&metadata)?;
+    // RMCP requires resolved metadata to be installed before client configuration.
+    auth_manager.set_metadata(metadata.clone());
 
     let credentials = OAuthClientCredentials::resolve(oauth_config)?;
     let client_id = match credentials.client_id {
         Some(client_id) => client_id,
         None => resolve_device_client_id(
-            &oauth_http_client, &metadata.additional_fields, scopes, client_registration,
+            &oauth_http_client, &metadata, scopes, client_registration,
         ).await?,
     };
+    let client_auth_method = device_client_auth_method(&metadata, credentials.client_secret.is_some());
     let mut client_config = OAuthClientConfig::new(&client_id, server_url)
         .with_scopes(scopes.to_vec());
     if let Some(secret) = credentials.client_secret.as_ref() {
@@ -85,7 +90,7 @@ pub async fn perform_oauth_device_login(
     }
     auth_manager.configure_client(client_config)?;
 
-    let device_endpoint = metadata_endpoint(&metadata.additional_fields, "device_authorization_endpoint")?;
+    let device_endpoint = device_authorization_endpoint(&metadata)?;
     validate_oauth_endpoint(&device_endpoint)?;
     let token_endpoint = metadata.token_endpoint.clone();
     validate_oauth_endpoint(&token_endpoint)?;
@@ -93,26 +98,26 @@ pub async fn perform_oauth_device_login(
     let (details, pkce) = request_device_authorization_with_pkce_fallback(
         &oauth_http_client, &device_endpoint, &client_id,
         credentials.client_secret.as_ref().map(|secret| secret.secret().as_str()),
-        scopes, oauth_resource,
+        client_auth_method, scopes, oauth_resource,
     ).await?;
     show_authorization_prompt(DeviceAuthorizationPrompt::new(server_name, &details));
     let token_response = match poll_device_token(
         &oauth_http_client, &token_endpoint, &client_id,
         credentials.client_secret.as_ref().map(|secret| secret.secret().as_str()),
-        oauth_resource, &details, pkce.as_ref(),
+        client_auth_method, oauth_resource, &details, pkce.as_ref(),
     ).await {
         Ok(tokens) => tokens,
         Err(error) if pkce.is_some() && is_invalid_request_provider_error(&error) => {
             let details = request_device_authorization(
                 &oauth_http_client, &device_endpoint, &client_id,
                 credentials.client_secret.as_ref().map(|secret| secret.secret().as_str()),
-                scopes, oauth_resource, None, None,
+                client_auth_method, scopes, oauth_resource, None, None,
             ).await.context("OAuth device token endpoint rejected PKCE verifier, and retry without PKCE failed during device authorization")?;
             show_authorization_prompt(DeviceAuthorizationPrompt::new(server_name, &details));
             poll_device_token(
                 &oauth_http_client, &token_endpoint, &client_id,
                 credentials.client_secret.as_ref().map(|secret| secret.secret().as_str()),
-                oauth_resource, &details, None,
+                client_auth_method, oauth_resource, &details, None,
             ).await.context("OAuth device token endpoint rejected PKCE verifier, and retry without PKCE failed")?
         }
         Err(error) => return Err(error),
@@ -151,17 +156,18 @@ impl DeviceAuthorizationPrompt {
 
 async fn resolve_device_client_id(
     http: &OAuthHttpClientAdapter,
-    metadata: &HashMap<String, serde_json::Value>,
+    metadata: &AuthorizationMetadata,
     scopes: &[String],
     registration: McpOAuthClientRegistration,
 ) -> Result<String> {
     if registration == McpOAuthClientRegistration::Cimd {
         bail!("MCP device authorization requires a configured public client ID or Dynamic Client Registration; CIMD is not supported for this device flow");
     }
-    let endpoint = metadata_endpoint(metadata, "registration_endpoint")
-        .context("OAuth device login requires a configured public client ID because dynamic client registration is not advertised")?;
+    let endpoint = metadata.registration_endpoint.clone()
+        .filter(|endpoint| !endpoint.trim().is_empty())
+        .ok_or_else(|| anyhow!("OAuth device login requires a configured public client ID because dynamic client registration is not advertised"))?;
     validate_oauth_endpoint(&endpoint)?;
-    let supports_refresh = metadata.get("grant_types_supported")
+    let supports_refresh = metadata.additional_fields.get("grant_types_supported")
         .and_then(serde_json::Value::as_array)
         .is_none_or(|grants| grants.iter().any(|grant| grant.as_str() == Some("refresh_token")));
     let mut grant_types = vec![DEVICE_CODE_GRANT_TYPE];
@@ -170,7 +176,7 @@ async fn resolve_device_client_id(
         client_name: "Codex", grant_types, token_endpoint_auth_method: "none",
         scope: (!scopes.is_empty()).then(|| scopes.join(" ")),
     };
-    let response = oauth_post(http, &endpoint, "application/json", serde_json::to_vec(&request)?, None).await?;
+    let response = oauth_post(http, &endpoint, "application/json", serde_json::to_vec(&request)?, None, None).await?;
     if !response.status().is_success() {
         return Err(provider_error_from_body(response.status(), response.body(), "dynamic client registration"));
     }
@@ -186,6 +192,30 @@ fn metadata_endpoint(metadata: &HashMap<String, serde_json::Value>, key: &str) -
         .filter(|endpoint| !endpoint.trim().is_empty()).map(str::to_string)
         .ok_or_else(|| anyhow!("OAuth authorization server metadata does not include {key}"))
 }
+fn device_authorization_endpoint(metadata: &AuthorizationMetadata) -> Result<String> {
+    metadata_endpoint(&metadata.additional_fields, "device_authorization_endpoint")
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeviceClientAuthMethod { None, ClientSecretBasic, ClientSecretPost }
+
+fn device_client_auth_method(metadata: &AuthorizationMetadata, has_secret: bool) -> DeviceClientAuthMethod {
+    if !has_secret { return DeviceClientAuthMethod::None; }
+    let methods = metadata.additional_fields.get("token_endpoint_auth_methods_supported")
+        .and_then(serde_json::Value::as_array);
+    let Some(methods) = methods else { return DeviceClientAuthMethod::ClientSecretBasic; };
+    let has_basic = methods.iter().any(|method| method.as_str() == Some("client_secret_basic"));
+    let has_post = methods.iter().any(|method| method.as_str() == Some("client_secret_post"));
+    if has_basic { DeviceClientAuthMethod::ClientSecretBasic }
+    else if has_post { DeviceClientAuthMethod::ClientSecretPost }
+    else { DeviceClientAuthMethod::None }
+}
+
+fn basic_credentials<'a>(method: DeviceClientAuthMethod, client_id: &'a str, secret: Option<&'a str>) -> Option<(&'a str, &'a str)> {
+    if method != DeviceClientAuthMethod::ClientSecretBasic { return None; }
+    secret.map(|secret| (client_id, secret))
+}
+
 fn validate_oauth_endpoint(endpoint: &str) -> Result<()> {
     let parsed = Url::parse(endpoint).context("OAuth endpoint is not a valid URL")?;
     let loopback_http = parsed.scheme() == "http"
@@ -199,16 +229,16 @@ fn validate_oauth_endpoint(endpoint: &str) -> Result<()> {
 
 async fn request_device_authorization_with_pkce_fallback(
     http: &OAuthHttpClientAdapter, endpoint: &str, client_id: &str,
-    client_secret: Option<&str>, scopes: &[String], resource: Option<&str>,
+    client_secret: Option<&str>, auth_method: DeviceClientAuthMethod, scopes: &[String], resource: Option<&str>,
 ) -> Result<(DeviceAuthorizationResponse, Option<DevicePkce>)> {
     let pkce = DevicePkce::new_random();
     match request_device_authorization(
-        http, endpoint, client_id, client_secret, scopes, resource, Some(&pkce), None,
+        http, endpoint, client_id, client_secret, auth_method, scopes, resource, Some(&pkce), None,
     ).await {
         Ok(details) => Ok((details, Some(pkce))),
         Err(error) if is_invalid_request_provider_error(&error) => {
             let details = request_device_authorization(
-                http, endpoint, client_id, client_secret, scopes, resource, None, None,
+                http, endpoint, client_id, client_secret, auth_method, scopes, resource, None, None,
             ).await.context("OAuth device authorization rejected PKCE parameters, and retry without PKCE failed")?;
             Ok((details, None))
         }
@@ -218,11 +248,13 @@ async fn request_device_authorization_with_pkce_fallback(
 
 async fn request_device_authorization(
     http: &OAuthHttpClientAdapter, endpoint: &str, client_id: &str,
-    client_secret: Option<&str>, scopes: &[String], resource: Option<&str>,
+    client_secret: Option<&str>, auth_method: DeviceClientAuthMethod, scopes: &[String], resource: Option<&str>,
     pkce: Option<&DevicePkce>, deadline: Option<Instant>,
 ) -> Result<DeviceAuthorizationResponse> {
     let mut fields = vec![("client_id", client_id.to_string())];
-    if let Some(secret) = client_secret { fields.push(("client_secret", secret.to_string())); }
+    if let Some(secret) = form_client_secret(auth_method, client_secret) {
+        fields.push(("client_secret", secret.to_string()));
+    }
     if !scopes.is_empty() { fields.push(("scope", scopes.join(" "))); }
     if let Some(resource) = resource.filter(|resource| !resource.trim().is_empty()) {
         fields.push(("resource", resource.to_string()));
@@ -233,6 +265,7 @@ async fn request_device_authorization(
     }
     let response = oauth_post(
         http, endpoint, "application/x-www-form-urlencoded", form_body(&fields), deadline,
+        basic_credentials(auth_method, client_id, client_secret),
     ).await?;
     if !response.status().is_success() {
         return Err(provider_error_from_body(response.status(), response.body(), "device authorization"));
@@ -252,14 +285,15 @@ fn validate_verification_uri(uri: &str) -> Result<()> {
 
 async fn poll_device_token(
     http: &OAuthHttpClientAdapter, endpoint: &str, client_id: &str, client_secret: Option<&str>,
-    resource: Option<&str>, details: &DeviceAuthorizationResponse, pkce: Option<&DevicePkce>,
+    auth_method: DeviceClientAuthMethod, resource: Option<&str>, details: &DeviceAuthorizationResponse, pkce: Option<&DevicePkce>,
 ) -> Result<OAuthTokenResponse> {
     let deadline = Instant::now() + Duration::from_secs(device_authorization_expires_in(details));
     let mut interval = Duration::from_secs(details.interval.unwrap_or(DEFAULT_DEVICE_POLL_INTERVAL_SECS).max(1));
     loop {
-        let fields = token_form(client_id, client_secret, resource, details, pkce);
+        let fields = token_form(client_id, client_secret, auth_method, resource, details, pkce);
         let response = oauth_post(
             http, endpoint, "application/x-www-form-urlencoded", form_body(&fields), Some(deadline),
+            basic_credentials(auth_method, client_id, client_secret),
         ).await?;
         if response.status().is_success() {
             return serde_json::from_slice::<OAuthTokenResponse>(response.body())
@@ -278,7 +312,7 @@ async fn poll_device_token(
     }
 }
 fn token_form(
-    client_id: &str, client_secret: Option<&str>, resource: Option<&str>,
+    client_id: &str, client_secret: Option<&str>, auth_method: DeviceClientAuthMethod, resource: Option<&str>,
     details: &DeviceAuthorizationResponse, pkce: Option<&DevicePkce>,
 ) -> Vec<(&'static str, String)> {
     let mut fields = vec![
@@ -286,13 +320,19 @@ fn token_form(
         ("device_code", details.device_code.clone()),
         ("client_id", client_id.to_string()),
     ];
-    if let Some(secret) = client_secret { fields.push(("client_secret", secret.to_string())); }
+    if let Some(secret) = form_client_secret(auth_method, client_secret) {
+        fields.push(("client_secret", secret.to_string()));
+    }
     if let Some(resource) = resource.filter(|resource| !resource.trim().is_empty()) {
         fields.push(("resource", resource.to_string()));
     }
     if let Some(pkce) = pkce { fields.push(("code_verifier", pkce.code_verifier.clone())); }
     fields
 }
+fn form_client_secret<'a>(method: DeviceClientAuthMethod, secret: Option<&'a str>) -> Option<&'a str> {
+    (method == DeviceClientAuthMethod::ClientSecretPost).then_some(secret).flatten()
+}
+
 fn device_authorization_expires_in(details: &DeviceAuthorizationResponse) -> u64 {
     details.expires_in.unwrap_or(DEFAULT_DEVICE_EXPIRES_IN_SECS)
         .clamp(MIN_DEVICE_EXPIRES_IN_SECS, MAX_DEVICE_EXPIRES_IN_SECS)
@@ -306,15 +346,12 @@ async fn sleep_until_next_poll(interval: Duration, deadline: Instant) -> Result<
 }
 async fn oauth_post(
     http: &OAuthHttpClientAdapter, endpoint: &str, content_type: &str, body: Vec<u8>,
-    deadline: Option<Instant>,
+    deadline: Option<Instant>, basic_credentials: Option<(&str, &str)>,
 ) -> Result<http::Response<Vec<u8>>> {
     let timeout = deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()))
         .unwrap_or(HTTP_OPERATION_TIMEOUT);
     if timeout.is_zero() { return Err(device_expired_error()); }
-    let request = http::Request::builder()
-        .method(http::Method::POST).uri(endpoint)
-        .header(http::header::CONTENT_TYPE, content_type).body(body)
-        .context("failed to build OAuth device request")?;
+    let request = build_oauth_request(endpoint, content_type, body, basic_credentials)?;
     let operation = async {
         http.execute_request(request, OAuthHttpRedirectPolicy::Stop, Some(timeout))
             .await
@@ -327,6 +364,19 @@ async fn oauth_post(
             .map_err(|_| anyhow!("OAuth device request timed out"))?,
     }
 }
+fn build_oauth_request(
+    endpoint: &str, content_type: &str, body: Vec<u8>, basic_credentials: Option<(&str, &str)>,
+) -> Result<http::Request<Vec<u8>>> {
+    let mut builder = http::Request::builder()
+        .method(http::Method::POST).uri(endpoint)
+        .header(http::header::CONTENT_TYPE, content_type);
+    if let Some((client_id, secret)) = basic_credentials {
+        let encoded = base64::engine::general_purpose::STANDARD.encode(format!("{client_id}:{secret}"));
+        builder = builder.header(http::header::AUTHORIZATION, format!("Basic {encoded}"));
+    }
+    builder.body(body).context("failed to build OAuth device request")
+}
+
 async fn await_device_deadline<T>(
     deadline: Instant,
     operation: impl Future<Output = Result<T>>,
@@ -426,13 +476,30 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    fn pkce_fallback_retains_resolved_scopes() {
-        let scopes = ["ops:read".to_string(), "ops:write".to_string()];
-        let body = form_body(&[
-            ("client_id", "client".to_string()),
-            ("scope", scopes.join(" ")),
-        ]);
-        assert!(String::from_utf8(body).expect("form body").contains("ops%3Aread+ops%3Awrite"));
+    fn client_secret_auth_methods_are_applied_without_secret_leaks() {
+        let basic_body = form_body(&[("client_id", "public-id".to_string())]);
+        let basic = build_oauth_request("https://issuer.example/device", "application/x-www-form-urlencoded", basic_body, Some(("public-id", "never-log-this"))).expect("basic request");
+        assert_eq!(basic.headers()[http::header::AUTHORIZATION], "Basic cHVibGljLWlkOm5ldmVyLWxvZy10aGlz");
+        assert!(!String::from_utf8(basic.body().clone()).expect("body").contains("never-log-this"));
+
+        let post_body = form_body(&[("client_id", "public-id".to_string()), ("client_secret", "never-log-this".to_string())]);
+        let post = build_oauth_request("https://issuer.example/token", "application/x-www-form-urlencoded", post_body, None).expect("post request");
+        assert!(post.headers().get(http::header::AUTHORIZATION).is_none());
+        assert!(String::from_utf8(post.body().clone()).expect("body").contains("client_secret=never-log-this"));
+        assert_eq!(form_client_secret(DeviceClientAuthMethod::ClientSecretPost, Some("never-log-this")), Some("never-log-this"));
+        assert_eq!(form_client_secret(DeviceClientAuthMethod::ClientSecretBasic, Some("never-log-this")), None);
+    }
+
+    #[test]
+    fn typed_metadata_registration_endpoint_is_used() {
+        let metadata: AuthorizationMetadata = serde_json::from_value(serde_json::json!({
+            "authorization_endpoint":"https://issuer.example/authorize",
+            "token_endpoint":"https://issuer.example/token",
+            "registration_endpoint":"https://issuer.example/register",
+            "device_authorization_endpoint":"https://issuer.example/device"
+        })).expect("metadata");
+        assert_eq!(metadata.registration_endpoint.as_deref(), Some("https://issuer.example/register"));
+        assert_eq!(device_authorization_endpoint(&metadata).expect("device endpoint"), "https://issuer.example/device");
     }
 
     #[tokio::test]
