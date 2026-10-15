@@ -1157,6 +1157,14 @@ fn default_openai_model_instructions_are_overlaid_before_config_precedence() {
             .is_some_and(|template| template.contains(WAIT_SENTENCE)),
         "the cached/source candidate must remain unchanged"
     );
+    assert!(
+        candidate
+            .model_messages
+            .as_ref()
+            .and_then(|messages| messages.instructions_template.as_deref())
+            .is_some_and(|template| template.contains(COMMENTARY_SENTENCE)),
+        "the cached/source candidate must retain both original cadence sentences"
+    );
 
     let explicit_provider_model = construct_model_info_from_candidates(
         "gpt-6.1-sol",
