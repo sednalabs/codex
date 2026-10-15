@@ -843,6 +843,7 @@ mod tests {
         let expected = [
             "open_state",
             "migrate_state",
+            "migrate_state_extensions",
             "open_logs",
             "migrate_logs",
             "open_goals",

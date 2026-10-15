@@ -2227,11 +2227,19 @@ mod tests {
         );
 
         // A late duplicate for the exact aborted occurrence is tombstoned.
+        let expected_epochs = runtime.automatic_turn_current_epochs(thread_id).await;
         runtime
-            .record_automatic_turn_event(thread_id, &policy_error("e1"))
+            .record_automatic_turn_event_with_submission_context(
+                thread_id,
+                &policy_error("e1"),
+                Some("principal:stable-test"),
+                /*client_user_message_id*/ None,
+                /*continuation_ref*/ None,
+                expected_epochs,
+            )
             .await;
         runtime
-            .record_automatic_turn_event(
+            .record_automatic_turn_event_with_submission_context(
                 thread_id,
                 &Event {
                     id: "e1".to_string(),
@@ -2250,11 +2258,22 @@ mod tests {
                         time_to_first_token_ms: None,
                     }),
                 },
+                Some("principal:stable-test"),
+                /*client_user_message_id*/ None,
+                /*continuation_ref*/ None,
+                expected_epochs,
             )
             .await;
+        assert!(
+            runtime
+                .automatic_turn_capability(thread_id, "turn")
+                .await
+                .is_none(),
+            "authenticated duplicates of the aborted occurrence must remain tombstoned"
+        );
         // A newer occurrence may legitimately reuse regular turn id T and must remain eligible.
         runtime
-            .record_automatic_turn_event(
+            .record_automatic_turn_event_with_submission_context(
                 thread_id,
                 &Event {
                     id: "e2".to_string(),
@@ -2273,6 +2292,10 @@ mod tests {
                         time_to_first_token_ms: None,
                     }),
                 },
+                Some("principal:stable-test"),
+                /*client_user_message_id*/ None,
+                /*continuation_ref*/ None,
+                expected_epochs,
             )
             .await;
         let after_late_policy_generation: i64 = sqlx::query_scalar(
