@@ -77,6 +77,73 @@ jobs:
         shell: bash
         run: ./scripts/check-module-bazel-lock.sh
 
+      - name: Capture GNU hosted-runner resource baseline
+        if: matrix.os == 'ubuntu-24.04' && matrix.target == 'x86_64-unknown-linux-gnu'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          baseline_dir="${RUNNER_TEMP}/gnu-runner-resource-baseline"
+          mkdir -p "${baseline_dir}"
+          baseline_file="${baseline_dir}/baseline.txt"
+
+          sample_filesystem() {
+            local label="$1"
+            local path="$2"
+            [[ -e "${path}" ]] || return 0
+            printf 'filesystem_bytes.%s=' "${label}"
+            df -B1 --output=size,used,avail,pcent "${path}" | tail -n 1
+            printf 'filesystem_inodes.%s=' "${label}"
+            df --output=itotal,iused,iavail,ipcent "${path}" | tail -n 1
+          }
+
+          sample_directory() {
+            local label="$1"
+            local path="$2"
+            if [[ -d "${path}" ]]; then
+              local bytes
+              bytes="$(du -x -s -B1 -- "${path}/." 2>/dev/null | awk 'NR == 1 { print $1 }' || true)"
+              printf 'directory_bytes.%s=%s\n' "${label}" "${bytes:-unavailable}"
+            else
+              printf 'directory_bytes.%s=absent\n' "${label}"
+            fi
+          }
+
+          {
+            printf 'captured_utc=%s\n' "$(date -u +%FT%TZ)"
+            sample_filesystem root /
+            sample_filesystem ci_build_root "${CI_BUILD_ROOT}"
+            sample_filesystem runner_temp "${RUNNER_TEMP}"
+            sample_filesystem workspace "${GITHUB_WORKSPACE}"
+
+            sample_directory ci_build_root "${CI_BUILD_ROOT}"
+            sample_directory bazel_output_base "${BAZEL_OUTPUT_BASE}"
+            sample_directory bazel_output_user_root "${BAZEL_OUTPUT_USER_ROOT}"
+            sample_directory bazel_repository_cache "${BAZEL_REPOSITORY_CACHE}"
+            sample_directory bazel_repo_contents_cache "${BAZEL_REPO_CONTENTS_CACHE}"
+            sample_directory cargo_target_dir "${CARGO_TARGET_DIR}"
+            sample_directory ci_tmp "${TMP}"
+            sample_directory runner_temp "${RUNNER_TEMP}"
+            sample_directory workspace "${GITHUB_WORKSPACE}"
+            sample_directory runner_diagnostic_cache "${HOME}/actions-runner/cached"
+
+            sample_directory hosted_tool_cache "${RUNNER_TOOL_CACHE:-/opt/hostedtoolcache}"
+            sample_directory android_sdk /usr/local/lib/android/sdk
+            sample_directory dotnet_sdk /usr/share/dotnet
+            sample_directory ghc /opt/ghc
+            sample_directory chromium /usr/local/share/chromium
+          } > "${baseline_file}"
+
+      - name: Upload GNU hosted-runner resource baseline
+        if: always() && !cancelled() && matrix.os == 'ubuntu-24.04' && matrix.target == 'x86_64-unknown-linux-gnu'
+        continue-on-error: true
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: gnu-runner-resource-baseline-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/gnu-runner-resource-baseline/baseline.txt
+          if-no-files-found: error
+          retention-days: 3
+
       - name: bazel test //...
         env:
           TARGET: ${{ matrix.target }}
