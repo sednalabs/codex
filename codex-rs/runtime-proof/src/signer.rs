@@ -49,7 +49,7 @@ fn signer_state() -> &'static Mutex<SignerState> {
     SIGNER.get_or_init(|| Mutex::new(SignerState::Uninitialized))
 }
 
-#[cfg(any(test, target_os = "linux"))]
+#[cfg(target_os = "linux")]
 pub(crate) fn install_bootstrap(certificate: String, seed: Zeroizing<[u8; 32]>) -> Result<()> {
     let artifact_sha256 = startup::current_artifact_sha256()?;
     let (header, claims) = wire::parse_certificate(&certificate)?;
@@ -87,7 +87,7 @@ pub(crate) fn erase_signer_authority() -> Result<()> {
     Ok(())
 }
 
-#[cfg(any(test, target_os = "linux"))]
+#[cfg(target_os = "linux")]
 pub(crate) fn certificate_for_auth() -> Result<(wire::CertificateClaims, String)> {
     let state = signer_state()
         .lock()

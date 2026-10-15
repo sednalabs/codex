@@ -1,9 +1,9 @@
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
-#[cfg(any(test, target_os = "linux"))]
+#[cfg(target_os = "linux")]
 use std::fs::File;
-#[cfg(any(test, target_os = "linux"))]
+#[cfg(target_os = "linux")]
 use std::io::Read;
 #[cfg(target_os = "linux")]
 use zeroize::Zeroizing;
@@ -327,7 +327,7 @@ fn complete_bootstrap_ack(file: &File) -> Result<()> {
     Ok(())
 }
 
-#[cfg(any(test, target_os = "linux"))]
+#[cfg(target_os = "linux")]
 pub(crate) fn current_artifact_sha256() -> Result<String> {
     let executable = std::env::current_exe().context("cannot locate runtime executable")?;
     let mut file = File::open(executable).context("cannot open runtime executable")?;
