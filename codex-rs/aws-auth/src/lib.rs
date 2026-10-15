@@ -3,10 +3,10 @@ mod discovery;
 mod signing;
 mod transport;
 
-use std::sync::Arc;
 use std::collections::hash_map::RandomState;
 use std::hash::BuildHasher;
 use std::hash::Hasher;
+use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::SystemTime;
 
@@ -401,7 +401,13 @@ impl FrozenAwsAuthContext {
             .parse::<url::Url>()
             .map_err(AwsAuthError::InvalidUrl)?;
         let _permit = self.network_policy.acquire(&url)?;
-        signing::sign_request(&self.credentials, &self.region, &self.service, request, SystemTime::now())
+        signing::sign_request(
+            &self.credentials,
+            &self.region,
+            &self.service,
+            request,
+            SystemTime::now(),
+        )
     }
 }
 

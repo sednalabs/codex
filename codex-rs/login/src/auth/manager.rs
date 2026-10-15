@@ -2448,9 +2448,7 @@ impl AuthManager {
     /// Captures the current auth revision while excluding credential transitions until the
     /// returned guard is dropped. Resolve credentials before taking this guard, then compare the
     /// captured revision with the revision observed before resolution.
-    pub async fn current_provider_request_guard(
-        self: &Arc<Self>,
-    ) -> (u64, ProviderRequestGuard) {
+    pub async fn current_provider_request_guard(self: &Arc<Self>) -> (u64, ProviderRequestGuard) {
         let guard = Arc::clone(&self.provider_request_gate).read_owned().await;
         let revision = *self.auth_change_tx.borrow();
         (revision, ProviderRequestGuard { _guard: guard })
@@ -2773,8 +2771,7 @@ impl AuthManager {
             .map_err(|_| std::io::Error::other("authentication manager lock poisoned"))?;
         let previous = guard.auth.as_ref();
         let changed = !AuthManager::auths_equal(previous, new_auth.as_ref());
-        let auth_changed_for_refresh =
-            !Self::auths_equal_for_refresh(previous, new_auth.as_ref());
+        let auth_changed_for_refresh = !Self::auths_equal_for_refresh(previous, new_auth.as_ref());
         let owner_changed = auth_changed_for_refresh && !same_owner(previous, new_auth.as_ref());
         if owner_changed {
             self.auth_route_config

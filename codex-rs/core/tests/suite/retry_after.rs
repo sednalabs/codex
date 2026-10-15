@@ -281,24 +281,22 @@ async fn submit_plan_input(test: &TestCodex, text: &str) -> Result<()> {
         text: text.to_string(),
         text_elements: Vec::new(),
     }])
-        .with_thread_settings(codex_protocol::protocol::ThreadSettingsOverrides {
-            environments: Some(local_requests(cwd)),
-            approval_policy: Some(AskForApproval::Never),
-            sandbox_policy: Some(sandbox_policy),
-            permission_profile,
-            collaboration_mode: Some(CollaborationMode {
-                mode: ModeKind::Plan,
-                settings: Settings {
-                    model: test.session_configured.model.clone(),
-                    reasoning_effort: None,
-                    developer_instructions: None,
-                },
-            }),
-            ..Default::default()
-        });
-    test.codex
-        .start_or_steer_turn(request)
-        .await?;
+    .with_thread_settings(codex_protocol::protocol::ThreadSettingsOverrides {
+        environments: Some(local_requests(cwd)),
+        approval_policy: Some(AskForApproval::Never),
+        sandbox_policy: Some(sandbox_policy),
+        permission_profile,
+        collaboration_mode: Some(CollaborationMode {
+            mode: ModeKind::Plan,
+            settings: Settings {
+                model: test.session_configured.model.clone(),
+                reasoning_effort: None,
+                developer_instructions: None,
+            },
+        }),
+        ..Default::default()
+    });
+    test.codex.start_or_steer_turn(request).await?;
     Ok(())
 }
 

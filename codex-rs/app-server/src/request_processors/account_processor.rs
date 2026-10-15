@@ -396,8 +396,7 @@ impl AccountRequestProcessor {
                 self.login_chatgpt_v2(
                     request_id,
                     codex_streamlined_login,
-                    chatgpt_login_success_page
-                        .expect("ChatGPT login success page was precomputed"),
+                    chatgpt_login_success_page.expect("ChatGPT login success page was precomputed"),
                     &mut transition,
                 )
                 .await;
@@ -822,13 +821,12 @@ impl AccountRequestProcessor {
             internal_error("missing State admission guard for device-code login".to_string())
         })?;
         let task = async move {
-            let (success, error_msg) = match
-                codex_login::complete_device_code_login_with_cancel(
-                    opts,
-                    device_code,
-                    &mut cancel_rx,
-                )
-                .await
+            let (success, error_msg) = match codex_login::complete_device_code_login_with_cancel(
+                opts,
+                device_code,
+                &mut cancel_rx,
+            )
+            .await
             {
                 Ok(()) => (true, None),
                 Err(err) => (false, Some(err.to_string())),
@@ -1010,8 +1008,7 @@ impl AccountRequestProcessor {
             );
             payload.success = false;
             payload.error = Some(
-                "Failed to safely complete automatic-turn authorization after sign-in."
-                    .to_string(),
+                "Failed to safely complete automatic-turn authorization after sign-in.".to_string(),
             );
         }
         if payload.success && auth_changes.borrow().owner_generation == owner_generation {

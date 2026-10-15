@@ -15,9 +15,9 @@ use oauth2::PkceCodeVerifier;
 use oauth2::TokenResponse;
 use pretty_assertions::assert_eq;
 use serde_json::json;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
-use std::sync::Mutex;
 use tokio::net::TcpListener;
 
 #[derive(Clone)]
@@ -286,10 +286,7 @@ async fn device_login_retries_typed_invalid_request_without_pkce_preserving_inpu
         let device_forms = state.device_forms.lock().expect("device forms");
         let token_forms = state.token_forms.lock().expect("token forms");
         assert_eq!(device_forms.len(), 2);
-        assert_eq!(
-            device_forms[0].get("scope"),
-            device_forms[1].get("scope")
-        );
+        assert_eq!(device_forms[0].get("scope"), device_forms[1].get("scope"));
         assert_eq!(
             device_forms[0].get("resource").map(String::as_str),
             Some("https://resource.example.test/mcp")

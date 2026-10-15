@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
 use std::sync::Mutex;
 use std::sync::PoisonError;
+use std::sync::atomic::AtomicUsize;
 
 use codex_protocol::mcp::OPENAI_ELICITATION_EXTENSION_ID;
 

@@ -194,9 +194,7 @@ fn acquire_blocking(lock_home: &Path) -> io::Result<AuthTransitionLock> {
     loop {
         match file.try_lock() {
             Ok(()) => return Ok(AuthTransitionLock { _file: file }),
-            Err(std::fs::TryLockError::WouldBlock)
-                if started.elapsed() >= LOCK_ACQUIRE_TIMEOUT =>
-            {
+            Err(std::fs::TryLockError::WouldBlock) if started.elapsed() >= LOCK_ACQUIRE_TIMEOUT => {
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,
                     "timed out waiting for app-server auth transition lock",
@@ -220,14 +218,14 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
+    use base64::Engine as _;
     use codex_login::AuthCredentialsStoreMode;
     use codex_login::AuthKeyringBackendKind;
-    use codex_login::CodexAuth;
     use codex_login::AuthManager;
+    use codex_login::CodexAuth;
     use codex_login::test_support::transport_default_auth_route_config;
     use codex_state::SqliteConfig;
     use codex_utils_absolute_path::test_support::PathExt;
-    use base64::Engine as _;
     use tempfile::tempdir;
 
     async fn auth_manager(codex_home: &Path) -> Arc<AuthManager> {
@@ -302,8 +300,7 @@ mod tests {
         tokio::task::yield_now().await;
         assert!(!second.is_finished());
         drop(first);
-        tokio::time::timeout(Duration::from_secs(2), second)
-            .await??;
+        tokio::time::timeout(Duration::from_secs(2), second).await??;
         Ok(())
     }
 
@@ -319,9 +316,10 @@ mod tests {
         let manager = auth_manager(codex_home.path()).await;
         let pending_generation = state_db.begin_automatic_turn_auth_transition().await?;
 
-        let held_lock = AuthTransitionLock::acquire(
-            auth_transition_lock_home(Some(&state_db), codex_home.path()),
-        )
+        let held_lock = AuthTransitionLock::acquire(auth_transition_lock_home(
+            Some(&state_db),
+            codex_home.path(),
+        ))
         .await?;
         let recovery_state_db = state_db.clone();
         let recovery_manager = Arc::clone(&manager);
@@ -354,14 +352,10 @@ mod tests {
             .await
             .expect("recovery completed the durable auth epoch");
         let (auth_revision, _provider_guard) = manager.current_provider_request_guard().await;
-        assert_eq!(
-            reconciled_auth_epoch,
-            pending_generation + 1
+        assert_eq!(reconciled_auth_epoch, pending_generation + 1);
+        assert!(
+            manager.is_automatic_turn_auth_epoch_reconciled(reconciled_auth_epoch, auth_revision)
         );
-        assert!(manager.is_automatic_turn_auth_epoch_reconciled(
-            reconciled_auth_epoch,
-            auth_revision
-        ));
         Ok(())
     }
 
@@ -492,14 +486,10 @@ mod tests {
             .automatic_turn_current_epochs(thread_id)
             .await
             .ok_or_else(|| anyhow::anyhow!("State epoch is available after transition"))?;
-        assert!(manager_b.is_automatic_turn_auth_epoch_reconciled(
-            epochs_b.1,
-            auth_revision_b
-        ));
-        assert!(!manager_a.is_automatic_turn_auth_epoch_reconciled(
-            epochs_b.1,
-            stale_auth_revision_a
-        ));
+        assert!(manager_b.is_automatic_turn_auth_epoch_reconciled(epochs_b.1, auth_revision_b));
+        assert!(
+            !manager_a.is_automatic_turn_auth_epoch_reconciled(epochs_b.1, stale_auth_revision_a)
+        );
         assert_eq!(
             cached_principal(&manager_a).as_deref(),
             Some(stale_principal_a.as_str()),
@@ -509,12 +499,11 @@ mod tests {
         // This is the same principal gate used by ModelClient after it captures the exact
         // ProviderAuthority/AuthManager pair. A stale manager gets no principal for either issue
         // or redeem, despite sharing State with the manager that just reconciled.
-        let principal_a_at_b_epoch = manager_a
-            .automatic_turn_principal_if_auth_epoch_reconciled(
-                epochs_b.1,
-                stale_auth_revision_a,
-                Some(stale_principal_a.clone()),
-            );
+        let principal_a_at_b_epoch = manager_a.automatic_turn_principal_if_auth_epoch_reconciled(
+            epochs_b.1,
+            stale_auth_revision_a,
+            Some(stale_principal_a.clone()),
+        );
         let expected_epochs_a = principal_a_at_b_epoch.as_ref().map(|_| epochs_b);
         assert!(expected_epochs_a.is_none());
         assert!(
@@ -559,16 +548,18 @@ mod tests {
             )
             .await
             .expect("the reconciled manager can issue its principal-bound ticket");
-        assert!(state_db_b
-            .reserve_automatic_turn_continuation(
-                thread_id,
-                &ticket_b,
-                &principal_b,
-                "manager-b-client",
-                "start",
-                None,
-            )
-            .await?);
+        assert!(
+            state_db_b
+                .reserve_automatic_turn_continuation(
+                    thread_id,
+                    &ticket_b,
+                    &principal_b,
+                    "manager-b-client",
+                    "start",
+                    None,
+                )
+                .await?
+        );
 
         // A's own transition changes its persisted identity. The new cache revision and epoch
         // witness must replace, not inherit, its previously stale cached principal.
@@ -628,16 +619,18 @@ mod tests {
             )
             .await
             .expect("A's reconciled cache can issue its own ticket");
-        assert!(state_db_a
-            .reserve_automatic_turn_continuation(
-                thread_id,
-                &ticket_a,
-                &principal_a_current,
-                "manager-a-client-2",
-                "start",
-                None,
-            )
-            .await?);
+        assert!(
+            state_db_a
+                .reserve_automatic_turn_continuation(
+                    thread_id,
+                    &ticket_a,
+                    &principal_a_current,
+                    "manager-a-client-2",
+                    "start",
+                    None,
+                )
+                .await?
+        );
         Ok(())
     }
 

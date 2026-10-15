@@ -472,14 +472,15 @@ impl ResponsesWebsocketClient {
         let claim = initiation
             .claim()
             .map_err(|error| ApiError::Transport(TransportError::Build(error)))?;
-        let result = self.connect_with_connector(
-            &connector,
-            extra_headers,
-            default_headers,
-            turn_state,
-            telemetry,
-        )
-        .await;
+        let result = self
+            .connect_with_connector(
+                &connector,
+                extra_headers,
+                default_headers,
+                turn_state,
+                telemetry,
+            )
+            .await;
         claim.acknowledge();
         result
     }

@@ -93,7 +93,9 @@ def read_lines(path: Path) -> list[str]:
     return path.read_text(encoding="utf-8", errors="replace").splitlines()
 
 
-def primary_signal(error_lines: list[str], tail_lines: list[str], schema_drift: dict) -> str:
+def primary_signal(
+    error_lines: list[str], tail_lines: list[str], schema_drift: dict
+) -> str:
     if schema_drift:
         return sanitize_line(str(schema_drift.get("summary") or ""))
     if error_lines:
@@ -204,7 +206,10 @@ def load_failure_diagnostic(path_value: str) -> dict:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, ValueError, json.JSONDecodeError):
         return invalid
-    if not isinstance(payload, dict) or payload.get("schema_version") != DIAGNOSTIC_SCHEMA_VERSION:
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema_version") != DIAGNOSTIC_SCHEMA_VERSION
+    ):
         invalid["diagnostic"]["code"] = "diagnostic_schema_unsupported"
         return invalid
 
@@ -236,17 +241,25 @@ def load_failure_diagnostic(path_value: str) -> dict:
         "identity_status": scalar("identity_status") or "incomplete",
         "exit_code": scalar("exit_code"),
         "diagnostic": {
-            "kind": diagnostic.get("kind") if isinstance(diagnostic.get("kind"), str) else "unknown",
-            "code": diagnostic.get("code") if isinstance(diagnostic.get("code"), str) else "unknown_input",
+            "kind": diagnostic.get("kind")
+            if isinstance(diagnostic.get("kind"), str)
+            else "unknown",
+            "code": diagnostic.get("code")
+            if isinstance(diagnostic.get("code"), str)
+            else "unknown_input",
             "test_or_invariant_id": (
                 diagnostic.get("test_or_invariant_id")
                 if isinstance(diagnostic.get("test_or_invariant_id"), str)
                 else ""
             ),
-            "location": diagnostic.get("location") if isinstance(diagnostic.get("location"), str) else "",
+            "location": diagnostic.get("location")
+            if isinstance(diagnostic.get("location"), str)
+            else "",
         },
         "evidence": {
-            "url": evidence.get("url") if isinstance(evidence.get("url"), str) else None,
+            "url": evidence.get("url")
+            if isinstance(evidence.get("url"), str)
+            else None,
             "fingerprint": (
                 evidence.get("fingerprint")
                 if isinstance(evidence.get("fingerprint"), str)
@@ -260,7 +273,9 @@ def load_failure_diagnostic(path_value: str) -> dict:
         },
     }
     identity_missing = payload.get("identity_missing")
-    if isinstance(identity_missing, list) and all(isinstance(item, str) for item in identity_missing):
+    if isinstance(identity_missing, list) and all(
+        isinstance(item, str) for item in identity_missing
+    ):
         result["identity_missing"] = identity_missing[:20]
     reproducer = payload.get("reproducer")
     if isinstance(reproducer, dict) and isinstance(reproducer.get("id"), str):
@@ -284,7 +299,8 @@ def main() -> None:
         "lane_id": args.lane_id,
         "lane_phase": args.lane_phase or "downstream_lanes",
         "summary_title": args.summary_title,
-        "script_path": args.script_path or ("legacy-run-command" if args.run_command else ""),
+        "script_path": args.script_path
+        or ("legacy-run-command" if args.run_command else ""),
         "script_args": script_args if isinstance(script_args, list) else [],
         "status_class": args.status_class or "active",
         "frontier_default": parse_bool(args.frontier_default),
@@ -322,7 +338,9 @@ def main() -> None:
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    output_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
 
 
 if __name__ == "__main__":

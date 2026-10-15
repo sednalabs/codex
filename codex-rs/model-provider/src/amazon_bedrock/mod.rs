@@ -32,8 +32,8 @@ use codex_protocol::openai_models::ModelsResponse;
 
 use crate::ProviderCapabilities;
 use crate::ProviderRequestAuth;
-use crate::ResolvedProviderAuth;
 use crate::RemoteCompactionSupport;
+use crate::ResolvedProviderAuth;
 use crate::auth::auth_manager_for_provider;
 use crate::auth::resolve_provider_auth as resolve_configured_provider_auth;
 use crate::provider::ModelProvider;

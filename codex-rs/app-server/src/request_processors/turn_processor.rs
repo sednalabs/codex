@@ -731,11 +731,11 @@ impl TurnRequestProcessor {
                 )
                 .await
         }
-            .map_err(|err| {
-                let error = internal_error(format!("failed to submit turn input: {err}"));
-                self.track_error_response(&request_id, &error, /*error_type*/ None);
-                error
-            })?;
+        .map_err(|err| {
+            let error = internal_error(format!("failed to submit turn input: {err}"));
+            self.track_error_response(&request_id, &error, /*error_type*/ None);
+            error
+        })?;
         let (turn_id, root_turn_id, started) = match submission {
             TurnInputSubmission::Started {
                 turn_id,

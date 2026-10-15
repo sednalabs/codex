@@ -718,7 +718,9 @@ async fn exec_dispatches_android_provider_and_preserves_typed_images() {
         ),
     ] {
         Mock::given(method("POST"))
-            .and(body_partial_json(serde_json::json!({"method": request_method})))
+            .and(body_partial_json(
+                serde_json::json!({"method": request_method}),
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "jsonrpc": "2.0", "result": result,
             })))

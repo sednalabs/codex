@@ -3,13 +3,13 @@ use super::ModelClient;
 use super::NonIncrementalReason;
 use super::PendingUnauthorizedRetry;
 use super::Prompt;
-use super::stable_automatic_turn_principal;
 use super::UnauthorizedRecoveryExecution;
 use super::X_CODEX_INSTALLATION_ID_HEADER;
 use super::X_CODEX_PARENT_THREAD_ID_HEADER;
 use super::X_CODEX_TURN_METADATA_HEADER;
 use super::X_CODEX_WINDOW_ID_HEADER;
 use super::X_OPENAI_SUBAGENT_HEADER;
+use super::stable_automatic_turn_principal;
 use crate::AttestationContext;
 use crate::AttestationProvider;
 use crate::GenerateAttestationFuture;
@@ -263,7 +263,10 @@ async fn workspace_routed_http_rejects_redirects_without_a_routing_header() {
             Some(manager),
         );
         let mut setup = client
-            .current_client_setup(super::ClientRouting::Workspace, /*expected_authority*/ None)
+            .current_client_setup(
+                super::ClientRouting::Workspace,
+                /*expected_authority*/ None,
+            )
             .await
             .unwrap();
         if routing_override.is_some() {
@@ -2265,9 +2268,8 @@ fn auth_request_telemetry_context_tracks_agent_identity_ids() {
 
 #[test]
 fn automatic_turn_principal_is_stable_but_bound_to_authenticated_route() {
-    let provider = ModelProviderInfo::create_openai_provider(Some(
-        CHATGPT_CODEX_BASE_URL.to_string(),
-    ));
+    let provider =
+        ModelProviderInfo::create_openai_provider(Some(CHATGPT_CODEX_BASE_URL.to_string()));
     let mut api_provider = provider
         .to_api_provider(Some(AuthMode::ChatgptAuthTokens))
         .expect("API provider");
@@ -2340,28 +2342,32 @@ fn automatic_turn_principal_is_stable_but_bound_to_authenticated_route() {
     )
     .expect("configured-provider route has a stable identity");
     assert_ne!(stable, configured_route);
-    assert!(stable_automatic_turn_principal(
-        &provider,
-        &api_provider,
-        Some(&CodexAuth::from_api_key("not-persisted")),
-        super::ClientRouting::Workspace,
-        super::ClientRedirectPolicy::Default,
-    )
-    .is_none());
+    assert!(
+        stable_automatic_turn_principal(
+            &provider,
+            &api_provider,
+            Some(&CodexAuth::from_api_key("not-persisted")),
+            super::ClientRouting::Workspace,
+            super::ClientRedirectPolicy::Default,
+        )
+        .is_none()
+    );
 
     let mut custom_route_header = api_provider.clone();
     custom_route_header.headers.insert(
         http::HeaderName::from_static("x-route-id"),
         http::HeaderValue::from_static("tenant-a"),
     );
-    assert!(stable_automatic_turn_principal(
-        &provider,
-        &custom_route_header,
-        Some(&auth),
-        super::ClientRouting::Workspace,
-        super::ClientRedirectPolicy::Default,
-    )
-    .is_none());
+    assert!(
+        stable_automatic_turn_principal(
+            &provider,
+            &custom_route_header,
+            Some(&auth),
+            super::ClientRouting::Workspace,
+            super::ClientRedirectPolicy::Default,
+        )
+        .is_none()
+    );
 }
 
 fn model_client_with_counting_attestation(

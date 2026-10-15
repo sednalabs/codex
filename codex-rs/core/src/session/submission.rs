@@ -1,7 +1,7 @@
 //! Core-owned queue metadata; forwarding transfers the residency guard with the operation.
 
-use codex_extension_api::ExtensionDataInit;
 use crate::client::ProviderAuthority;
+use codex_extension_api::ExtensionDataInit;
 use codex_protocol::automatic_turn::AutomaticTurnContinuationRef;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::W3cTraceContext;

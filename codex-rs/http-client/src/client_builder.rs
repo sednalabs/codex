@@ -6,6 +6,7 @@
 //! paths.
 
 use http::HeaderMap;
+use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -37,6 +38,7 @@ pub struct HttpClientBuilder {
     http2_prior_knowledge: bool,
     pub(crate) default_headers: Option<HeaderMap>,
     follow_redirects: bool,
+    retry_requests: bool,
     pub(crate) redirect_observed: Option<Arc<AtomicBool>>,
     connect_timeout: Option<Duration>,
     chatgpt_cloudflare_cookie_store: bool,
@@ -118,6 +120,13 @@ impl HttpClientBuilder {
 
     pub fn without_redirects(mut self) -> Self {
         self.follow_redirects = false;
+        self
+    }
+
+    /// Disables transport-internal retries for requests whose authority must be reacquired per
+    /// attempt. This leaves zero-write stale pooled-connection recovery enabled.
+    pub fn without_retries(mut self) -> Self {
+        self.retry_requests = false;
         self
     }
 
@@ -301,17 +310,29 @@ impl HttpClientBuilder {
         self,
         proxy_routing: ProxyRouting,
     ) -> TransportClient {
-        self.build_with_custom_ca_fallback_using(proxy_routing, build_reqwest_client_with_custom_ca)
+        self.build_with_custom_ca_fallback_using(
+            proxy_routing,
+            build_reqwest_client_with_custom_ca,
+            reqwest::ClientBuilder::build,
+        )
     }
 
-    fn build_with_custom_ca_fallback_using(
+    #[expect(
+        clippy::expect_used,
+        reason = "the minimal credential-bound client is an internal construction invariant"
+    )]
+    fn build_with_custom_ca_fallback_using<E>(
         mut self,
         proxy_routing: ProxyRouting,
         build_with_custom_ca: impl FnOnce(
             reqwest::ClientBuilder,
         )
             -> Result<reqwest::Client, BuildCustomCaTransportError>,
-    ) -> TransportClient {
+        build_fallback: impl FnOnce(reqwest::ClientBuilder) -> Result<reqwest::Client, E>,
+    ) -> TransportClient
+    where
+        E: fmt::Display,
+    {
         let request_logging = self.request_logging;
         let default_headers = self.default_headers.take().unwrap_or_default();
         let inner = match build_with_custom_ca(self.clone().reqwest_builder(proxy_routing)) {
@@ -324,18 +345,30 @@ impl HttpClientBuilder {
                     "HTTP client fell back to system root certificates"
                 );
                 tracing::warn!(error = %error, "failed to build HTTP client with custom CA");
-                self.reqwest_builder(proxy_routing)
-                    .build()
+                build_fallback(self.clone().reqwest_builder(proxy_routing))
                     .unwrap_or_else(|fallback_error| {
                         tracing::warn!(
                             error = %fallback_error,
                             "failed to build fallback HTTP client"
                         );
-                        reqwest::Client::new()
+                        self.last_resort_reqwest_builder()
+                            .build()
+                            .expect("minimal credential-bound HTTP client policy should build")
                     })
             }
         };
         TransportClient::new(inner, request_logging, default_headers)
+    }
+
+    fn last_resort_reqwest_builder(&self) -> reqwest::ClientBuilder {
+        let mut builder = reqwest::Client::builder();
+        if !self.follow_redirects {
+            builder = builder.redirect(reqwest::redirect::Policy::none());
+        }
+        if !self.retry_requests {
+            builder = builder.retry(reqwest::retry::never());
+        }
+        builder
     }
 
     fn into_reqwest_parts(mut self) -> (reqwest::ClientBuilder, RequestLogging, HeaderMap) {
@@ -381,6 +414,9 @@ impl HttpClientBuilder {
                 reqwest::redirect::Policy::default().redirect(attempt)
             }));
         }
+        if !self.retry_requests {
+            builder = builder.retry(reqwest::retry::never());
+        }
         if let Some(connect_timeout) = self.connect_timeout {
             builder = builder.connect_timeout(connect_timeout);
         }
@@ -400,6 +436,7 @@ impl Default for HttpClientBuilder {
             http2_prior_knowledge: false,
             default_headers: None,
             follow_redirects: true,
+            retry_requests: true,
             redirect_observed: None,
             connect_timeout: None,
             chatgpt_cloudflare_cookie_store: false,

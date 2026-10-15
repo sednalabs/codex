@@ -10,13 +10,7 @@ pub const AUTOMATIC_TURN_REFERENCE_DETAILS_PREFIX: &str = "automatic-turn-refere
 /// admission check. It must
 /// never be used as user content or persisted in rollout history.
 #[derive(
-    Clone,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-    schemars::JsonSchema,
-    ts_rs::TS,
+    Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema, ts_rs::TS,
 )]
 #[serde(try_from = "String", into = "String")]
 #[schemars(with = "String")]
@@ -38,7 +32,7 @@ impl AutomaticTurnContinuationRef {
         (!value.is_empty()
             && bytes.len() <= AUTOMATIC_TURN_REFERENCE_MAX_BYTES
             && bytes.iter().all(u8::is_ascii_graphic))
-            .then_some(Self(value))
+        .then_some(Self(value))
     }
 
     pub fn as_str(&self) -> &str {
@@ -88,9 +82,7 @@ mod tests {
             reference.clone()
         );
         assert_eq!(
-            AutomaticTurnContinuationRef::from_error_details(Some(
-                &reference.to_error_details()
-            )),
+            AutomaticTurnContinuationRef::from_error_details(Some(&reference.to_error_details())),
             Some(reference)
         );
     }
@@ -99,14 +91,18 @@ mod tests {
     fn continuation_reference_is_opaque_and_shape_validation_is_not_authority() {
         assert!(AutomaticTurnContinuationRef::new(String::new()).is_none());
         assert!(AutomaticTurnContinuationRef::new("contains space").is_none());
-        assert!(serde_json::from_str::<AutomaticTurnContinuationRef>("\"contains space\"")
-            .is_err());
+        assert!(
+            serde_json::from_str::<AutomaticTurnContinuationRef>("\"contains space\"").is_err()
+        );
 
         // A valid-looking reference can be parsed but only the server-side State row authorizes
         // redemption; this protocol type has no provenance, principal, or capability data.
         let reference = AutomaticTurnContinuationRef::new("forged-but-well-shaped")
             .expect("shape alone is accepted");
         assert_eq!(reference.as_str(), "forged-but-well-shaped");
-        assert_eq!(format!("{reference:?}"), "AutomaticTurnContinuationRef(<opaque>)");
+        assert_eq!(
+            format!("{reference:?}"),
+            "AutomaticTurnContinuationRef(<opaque>)"
+        );
     }
 }

@@ -101,10 +101,14 @@ def action_artifact(
     if host_only:
         binaries = {"codex-code-mode-host": elf()}
     else:
-        binaries = dict(package_files or {name: elf() for name in installer.EXECUTABLES})
+        binaries = dict(
+            package_files or {name: elf() for name in installer.EXECUTABLES}
+        )
     if runtime_proof:
         binaries["codex-runtime-proof-launcher"] = elf()
-        binaries["systemd/codex-runtime-proof-claim.service"] = b"[Unit]\nDescription=Synthetic fixture\n"
+        binaries["systemd/codex-runtime-proof-claim.service"] = (
+            b"[Unit]\nDescription=Synthetic fixture\n"
+        )
     metadata = {
         "repository": installer.REPOSITORY,
         "commit": source_sha,
@@ -115,7 +119,9 @@ def action_artifact(
     if target == "aarch64-unknown-linux-gnu":
         metadata["target"] = target
     if runtime_proof:
-        metadata["runtimeProofLauncherSha256"] = sha(binaries["codex-runtime-proof-launcher"])
+        metadata["runtimeProofLauncherSha256"] = sha(
+            binaries["codex-runtime-proof-launcher"]
+        )
     if host_only:
         metadata["artifact"] = "codex-code-mode-host"
         metadata["workflowCommit"] = WORKFLOW_SHA
@@ -525,7 +531,9 @@ class BranchArtifactInstallerTests(unittest.TestCase):
         with self.assertRaisesRegex(installer.InstallError, "unsafe or unexpected"):
             installer.package_files(artifact, self.root / "unsafe-package")
 
-    def test_runtime_proof_auxiliaries_do_not_change_installed_executables(self) -> None:
+    def test_runtime_proof_auxiliaries_do_not_change_installed_executables(
+        self,
+    ) -> None:
         artifact = self.resolve_exact(
             make_api({41: (1001, action_artifact(1001, runtime_proof=True))})
         )
@@ -548,7 +556,9 @@ class BranchArtifactInstallerTests(unittest.TestCase):
     def test_runtime_proof_launcher_digest_must_match(self) -> None:
         payload = action_artifact(1001, runtime_proof=True)
         with zipfile.ZipFile(io.BytesIO(payload)) as archive:
-            metadata_name = next(name for name in archive.namelist() if name.endswith(".json"))
+            metadata_name = next(
+                name for name in archive.namelist() if name.endswith(".json")
+            )
         payload = rewrite_json_member(
             payload,
             metadata_name,
@@ -561,7 +571,9 @@ class BranchArtifactInstallerTests(unittest.TestCase):
     def test_declared_runtime_proof_inputs_are_required(self) -> None:
         payload = action_artifact(1001)
         with zipfile.ZipFile(io.BytesIO(payload)) as archive:
-            metadata_name = next(name for name in archive.namelist() if name.endswith(".json"))
+            metadata_name = next(
+                name for name in archive.namelist() if name.endswith(".json")
+            )
         payload = rewrite_json_member(
             payload,
             metadata_name,
@@ -588,7 +600,9 @@ class BranchArtifactInstallerTests(unittest.TestCase):
             archive.addfile(info)
         archive_path = self.root / "linked-service.tar.gz"
         archive_path.write_bytes(output.getvalue())
-        with self.assertRaisesRegex(installer.InstallError, "unsafe or duplicate runtime-proof"):
+        with self.assertRaisesRegex(
+            installer.InstallError, "unsafe or duplicate runtime-proof"
+        ):
             installer.safe_tar_extract(
                 archive_path,
                 self.root / "linked-service",

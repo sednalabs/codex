@@ -57,12 +57,8 @@ impl StateRuntime {
         }
         match self
             .record_automatic_turn_event_inner(
-                thread_id,
-                event,
-                principal,
-                /*client_user_message_id*/ None,
-                /*continuation_ref*/ None,
-                /*expected_epochs*/ None,
+                thread_id, event, principal, /*client_user_message_id*/ None,
+                /*continuation_ref*/ None, /*expected_epochs*/ None,
             )
             .await
         {
@@ -654,8 +650,7 @@ impl StateRuntime {
             || allowed_operation_kind.as_deref() != Some(operation_kind)
             || allowed_expected_turn_id != expected_turn_id.map(str::to_owned)
             || admitted_client_user_message_id.is_some()
-            || trigger_context_fingerprint.as_deref()
-                != Some(EXPECTED_TRIGGER_CONTEXT_FINGERPRINT)
+            || trigger_context_fingerprint.as_deref() != Some(EXPECTED_TRIGGER_CONTEXT_FINGERPRINT)
             || retry_reason != EXPECTED_RETRY_REASON
             || current_epochs != Some((settings_generation, auth_generation))
         {
@@ -1012,8 +1007,7 @@ impl StateRuntime {
                 .as_deref()
                 .is_some_and(|kind| kind != "start")
             || admitted_expected_turn_id.is_some()
-            || trigger_context_fingerprint.as_deref()
-                != Some(EXPECTED_TRIGGER_CONTEXT_FINGERPRINT)
+            || trigger_context_fingerprint.as_deref() != Some(EXPECTED_TRIGGER_CONTEXT_FINGERPRINT)
             || retry_reason != EXPECTED_RETRY_REASON
         {
             return Ok(false);
@@ -1243,7 +1237,8 @@ ON CONFLICT(thread_id, client_user_message_id) DO NOTHING
             return Ok(None);
         }
 
-        let capability_and_reference = if next_attempt <= MAX_ATTEMPTS && ticket_principal.is_some() {
+        let capability_and_reference = if next_attempt <= MAX_ATTEMPTS && ticket_principal.is_some()
+        {
             let capability = Uuid::new_v4().to_string();
             let continuation_ref = Uuid::new_v4().simple().to_string();
             sqlx::query(
@@ -1288,9 +1283,8 @@ ON CONFLICT(thread_id, client_user_message_id) DO NOTHING
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
-        Ok(capability_and_reference.and_then(|(_, continuation_ref)| {
-            ticket_principal.map(|_| continuation_ref)
-        }))
+        Ok(capability_and_reference
+            .and_then(|(_, continuation_ref)| ticket_principal.map(|_| continuation_ref)))
     }
 
     fn automatic_turn_error_outcome(error: &ErrorEvent) -> &'static str {
@@ -1612,7 +1606,8 @@ mod tests {
         thread_id: ThreadId,
         trigger_turn_id: &str,
     ) -> AutomaticTurnContinuationRef {
-        issue_ticket_for_principal(runtime, thread_id, trigger_turn_id, "principal:stable-test").await
+        issue_ticket_for_principal(runtime, thread_id, trigger_turn_id, "principal:stable-test")
+            .await
     }
 
     async fn issue_ticket_for_principal(
@@ -1776,12 +1771,25 @@ mod tests {
     async fn trusted_projection_requires_the_server_principal() -> Result<()> {
         let (runtime, _tmp_dir) = init_runtime().await?;
         let thread_id = ThreadId::new();
-        let reference =
-            issue_ticket_for_principal(runtime.as_ref(), thread_id, "trigger", "principal:account-1")
-                .await;
+        let reference = issue_ticket_for_principal(
+            runtime.as_ref(),
+            thread_id,
+            "trigger",
+            "principal:account-1",
+        )
+        .await;
         let client_id = "bound-client-id";
         let sibling_attempt = automatic_user_message(thread_id, "turn", client_id);
-        assert!(reserve_retry(runtime.as_ref(), thread_id, &reference, client_id, "principal:account-1").await?);
+        assert!(
+            reserve_retry(
+                runtime.as_ref(),
+                thread_id,
+                &reference,
+                client_id,
+                "principal:account-1"
+            )
+            .await?
+        );
         record_retry(
             runtime.as_ref(),
             thread_id,
@@ -1822,14 +1830,18 @@ mod tests {
             .await;
 
         assert!(reference.is_none());
-        assert!(runtime
-            .automatic_turn_capability(thread_id, "unbound-trigger")
-            .await
-            .is_none());
-        assert!(runtime
-            .automatic_turn_continuation_reference(thread_id, "unbound-trigger")
-            .await
-            .is_none());
+        assert!(
+            runtime
+                .automatic_turn_capability(thread_id, "unbound-trigger")
+                .await
+                .is_none()
+        );
+        assert!(
+            runtime
+                .automatic_turn_continuation_reference(thread_id, "unbound-trigger")
+                .await
+                .is_none()
+        );
         let forged_shape = AutomaticTurnContinuationRef::new("well-shaped-but-unissued")
             .expect("wire shape does not establish authority");
         assert!(
@@ -1847,15 +1859,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn continuation_ticket_survives_state_reopen_and_revalidates_stable_identity() -> Result<()>
-    {
+    async fn continuation_ticket_survives_state_reopen_and_revalidates_stable_identity()
+    -> Result<()> {
         let tmp_dir = tempdir()?;
         let sqlite = crate::SqliteConfig::new_for_testing(tmp_dir.path().abs());
         let runtime = StateRuntime::init(sqlite.clone(), "test-provider".to_string()).await?;
         let thread_id = ThreadId::new();
-        let reference =
-            issue_ticket_for_principal(runtime.as_ref(), thread_id, "trigger", "principal:account-1")
-                .await;
+        let reference = issue_ticket_for_principal(
+            runtime.as_ref(),
+            thread_id,
+            "trigger",
+            "principal:account-1",
+        )
+        .await;
         runtime.close().await;
 
         let reopened = StateRuntime::init(sqlite, "test-provider".to_string()).await?;
@@ -2099,7 +2115,10 @@ mod tests {
             Some(first),
             "startup must leave the durable gate closed until current auth has been established"
         );
-        assert_eq!(reopened.automatic_turn_current_epochs(thread_id).await, None);
+        assert_eq!(
+            reopened.automatic_turn_current_epochs(thread_id).await,
+            None
+        );
 
         let second = reopened.begin_automatic_turn_auth_transition().await?;
         assert_ne!(first, second);
@@ -2118,8 +2137,16 @@ mod tests {
                 .complete_automatic_turn_auth_transition(second)
                 .await?
         );
-        assert_eq!(reopened.pending_automatic_turn_auth_transition().await?, None);
-        assert!(reopened.automatic_turn_current_epochs(thread_id).await.is_some());
+        assert_eq!(
+            reopened.pending_automatic_turn_auth_transition().await?,
+            None
+        );
+        assert!(
+            reopened
+                .automatic_turn_current_epochs(thread_id)
+                .await
+                .is_some()
+        );
 
         let replacement = issue_ticket(reopened.as_ref(), thread_id, "after-transition").await;
         assert!(!replacement.as_str().is_empty());
@@ -2174,15 +2201,25 @@ mod tests {
         let reference = issue_ticket(runtime.as_ref(), thread_id, "trigger").await;
         let client_id = "aborted-client-id";
         let mut automatic = automatic_user_message(thread_id, "turn", client_id);
-        assert!(reserve_retry(
+        assert!(
+            reserve_retry(
+                runtime.as_ref(),
+                thread_id,
+                &reference,
+                client_id,
+                "principal:stable-test",
+            )
+            .await?
+        );
+        automatic.id = "e1".to_string();
+        record_retry(
             runtime.as_ref(),
             thread_id,
+            &automatic,
             &reference,
-            client_id,
             "principal:stable-test",
-        ).await?);
-        automatic.id = "e1".to_string();
-        record_retry(runtime.as_ref(), thread_id, &automatic, &reference, "principal:stable-test").await;
+        )
+        .await;
 
         let aborted = Event {
             id: "e1".to_string(),
@@ -2324,9 +2361,13 @@ mod tests {
     async fn admitted_abort_before_item_projection_is_persisted() -> Result<()> {
         let (runtime, _tmp_dir) = init_runtime().await?;
         let thread_id = ThreadId::new();
-        let reference =
-            issue_ticket_for_principal(runtime.as_ref(), thread_id, "trigger", "principal:account-1")
-                .await;
+        let reference = issue_ticket_for_principal(
+            runtime.as_ref(),
+            thread_id,
+            "trigger",
+            "principal:account-1",
+        )
+        .await;
         let client_id = "aborted-before-item-client-id";
         assert!(
             runtime
@@ -2388,15 +2429,32 @@ mod tests {
         let reference = issue_ticket(runtime.as_ref(), thread_id, "trigger").await;
         let client_id = "duplicate-client-id";
         let valid = automatic_user_message(thread_id, "turn", client_id);
-        assert!(reserve_retry(
+        assert!(
+            reserve_retry(
+                runtime.as_ref(),
+                thread_id,
+                &reference,
+                client_id,
+                "principal:stable-test",
+            )
+            .await?
+        );
+        record_retry(
             runtime.as_ref(),
             thread_id,
+            &valid,
             &reference,
-            client_id,
             "principal:stable-test",
-        ).await?);
-        record_retry(runtime.as_ref(), thread_id, &valid, &reference, "principal:stable-test").await;
-        record_retry(runtime.as_ref(), thread_id, &valid, &reference, "principal:stable-test").await;
+        )
+        .await;
+        record_retry(
+            runtime.as_ref(),
+            thread_id,
+            &valid,
+            &reference,
+            "principal:stable-test",
+        )
+        .await;
         // A repeated policy event arrives after the ticket was consumed but before any new turn;
         // no second ticket is minted.
         runtime
@@ -2504,14 +2562,24 @@ mod tests {
         for index in 0..3 {
             let client_id = format!("retry-client-{index}");
             let retry = automatic_user_message(thread_id, turn_id, &client_id);
-            assert!(reserve_retry(
+            assert!(
+                reserve_retry(
+                    runtime.as_ref(),
+                    thread_id,
+                    &reference,
+                    &client_id,
+                    "principal:stable-test",
+                )
+                .await?
+            );
+            record_retry(
                 runtime.as_ref(),
                 thread_id,
+                &retry,
                 &reference,
-                &client_id,
                 "principal:stable-test",
-            ).await?);
-            record_retry(runtime.as_ref(), thread_id, &retry, &reference, "principal:stable-test").await;
+            )
+            .await;
             if index < 2 {
                 reference = issue_ticket_for_principal(
                     runtime.as_ref(),
@@ -2581,14 +2649,16 @@ mod tests {
             .expect("first occurrence should issue a reference");
         let first_client_id = "occurrence-1-client";
         let mut first_attempt = automatic_user_message(thread_id, turn_id, first_client_id);
-        assert!(reserve_retry(
-            runtime.as_ref(),
-            thread_id,
-            &first_reference,
-            first_client_id,
-            "principal:stable-test",
-        )
-        .await?);
+        assert!(
+            reserve_retry(
+                runtime.as_ref(),
+                thread_id,
+                &first_reference,
+                first_client_id,
+                "principal:stable-test",
+            )
+            .await?
+        );
         first_attempt.id = "occurrence-1".to_string();
         record_retry(
             runtime.as_ref(),
@@ -2633,14 +2703,16 @@ mod tests {
         // distinct server event occurrence even though its regular turn id is reused.
         let second_client_id = "occurrence-2-client";
         let mut second_attempt = automatic_user_message(thread_id, turn_id, second_client_id);
-        assert!(reserve_retry(
-            runtime.as_ref(),
-            thread_id,
-            &second_reference,
-            second_client_id,
-            "principal:stable-test",
-        )
-        .await?);
+        assert!(
+            reserve_retry(
+                runtime.as_ref(),
+                thread_id,
+                &second_reference,
+                second_client_id,
+                "principal:stable-test",
+            )
+            .await?
+        );
         second_attempt.id = "occurrence-2".to_string();
         record_retry(
             runtime.as_ref(),

@@ -336,7 +336,10 @@ fn validate_protected_runtime_config(
     Ok(())
 }
 
-fn validate_protected_claim_server(server: &McpServerConfig, recipient: &str) -> anyhow::Result<()> {
+fn validate_protected_claim_server(
+    server: &McpServerConfig,
+    recipient: &str,
+) -> anyhow::Result<()> {
     if !server.enabled
         || !server.required
         || server.environment_id != DEFAULT_MCP_SERVER_ENVIRONMENT_ID
@@ -1681,10 +1684,9 @@ fn thread_resume_params_from_config(
 }
 
 fn configured_native_dynamic_tools(config: &Config) -> Option<Vec<DynamicToolSpec>> {
-    let mut tools =
-        codex_browser_computer_use::configured_browser_dynamic_tools_for_codex_home(
-            config.codex_home.as_path(),
-        );
+    let mut tools = codex_browser_computer_use::configured_browser_dynamic_tools_for_codex_home(
+        config.codex_home.as_path(),
+    );
     tools.extend(
         codex_android_computer_use::configured_android_dynamic_tools_for_codex_home(
             config.codex_home.as_path(),
@@ -1700,8 +1702,7 @@ async fn handle_exec_native_dynamic_tool(
     match params.namespace.as_deref() {
         Some("codex_browser") => {
             match codex_browser_computer_use::handle_browser_computer_use_for_codex_home(
-                params,
-                codex_home,
+                params, codex_home,
             )
             .await
             {
@@ -1713,8 +1714,7 @@ async fn handle_exec_native_dynamic_tool(
         }
         Some("codex_android") => {
             match codex_android_computer_use::handle_android_computer_use_for_codex_home(
-                params,
-                codex_home,
+                params, codex_home,
             )
             .await
             {

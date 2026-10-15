@@ -159,15 +159,13 @@ impl LoginServer {
         timeout: Duration,
     ) -> io::Result<LoginCallbackResult> {
         match tokio::time::timeout(timeout, &mut self.server_handle).await {
-            Ok(result) => result
-                .map_err(|err| io::Error::other(format!("login server thread panicked: {err:?}")))?,
+            Ok(result) => result.map_err(|err| {
+                io::Error::other(format!("login server thread panicked: {err:?}"))
+            })?,
             Err(_) => {
                 self.shutdown_handle.shutdown();
                 let _ = (&mut self.server_handle).await;
-                Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "Login timed out",
-                ))
+                Err(io::Error::new(io::ErrorKind::TimedOut, "Login timed out"))
             }
         }
     }

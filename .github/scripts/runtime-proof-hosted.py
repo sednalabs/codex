@@ -38,7 +38,11 @@ EXPECTED_PACKAGE_MANIFESTS = {
 }
 EXPECTED_ARTIFACT_TARGETS = {
     ("codex-cli", "codex", "bin"): "cli/src/main.rs",
-    ("codex-cli", "runtime_execution_proof", "test"): "cli/tests/runtime_execution_proof.rs",
+    (
+        "codex-cli",
+        "runtime_execution_proof",
+        "test",
+    ): "cli/tests/runtime_execution_proof.rs",
     ("codex-mcp", "codex_mcp", "lib"): "codex-mcp/src/lib.rs",
     ("codex-runtime-proof", "codex_runtime_proof", "lib"): "runtime-proof/src/lib.rs",
     ("codex-rmcp-client", "codex_rmcp_client", "lib"): "rmcp-client/src/lib.rs",
@@ -76,7 +80,15 @@ RUNNER_RESULT_KEYS = {
     "process",
 }
 MAX_RUNNER_RECORD_BYTES = 8192
-TARGET_IDENTITY_FIELDS = ("name", "kind", "crate_types", "src_path", "edition", "test", "doctest")
+TARGET_IDENTITY_FIELDS = (
+    "name",
+    "kind",
+    "crate_types",
+    "src_path",
+    "edition",
+    "test",
+    "doctest",
+)
 EXPECTED_FORMAT_PACKAGES = [
     "codex-runtime-proof",
     "codex-core",
@@ -339,14 +351,20 @@ def load_manifest() -> dict[str, Any]:
         refuse("manifest formatter package set changed")
     if value["linux_library_test_packages"] != CARGO_PACKAGES:
         refuse("manifest Linux library test package set changed")
-    if value["cli_ignored_tests"] != EXPECTED_CLI_TESTS or value["mcp_ignored_tests"] != EXPECTED_MCP_TESTS:
+    if (
+        value["cli_ignored_tests"] != EXPECTED_CLI_TESTS
+        or value["mcp_ignored_tests"] != EXPECTED_MCP_TESTS
+    ):
         refuse("manifest ignored-test inventory changed")
     expected_generated = ["codex-rs/Cargo.lock", "MODULE.bazel.lock"] + sorted(
         relative for relative in value["product_inputs"] if relative.endswith(".rs")
     )
     if value["generated_allowed_paths"] != expected_generated:
         refuse("manifest generated-file allowlist changed")
-    if value["pinned_actions"] != EXPECTED_ACTIONS or value["local_helpers"] != EXPECTED_LOCAL_HELPERS:
+    if (
+        value["pinned_actions"] != EXPECTED_ACTIONS
+        or value["local_helpers"] != EXPECTED_LOCAL_HELPERS
+    ):
         refuse("manifest action or local-helper pins changed")
     if value["toolchains"] != {
         "cargo_rust": "1.96.0",
@@ -387,7 +405,9 @@ def verify_commit_binding(manifest: dict[str, Any]) -> tuple[str, str]:
     event_sha = os.environ.get("GITHUB_SHA", "")
     workflow_sha = os.environ.get("EXPECTED_WORKFLOW_SHA", "")
     if repository != EXPECTED_REPOSITORY or event != "push" or ref != EXPECTED_BRANCH:
-        refuse("hosted source-preparation trigger is outside the fixed repository branch")
+        refuse(
+            "hosted source-preparation trigger is outside the fixed repository branch"
+        )
     head = run_git("rev-parse", "HEAD").strip()
     if not re.fullmatch(r"[0-9a-f]{40}", event_sha) or head != event_sha:
         refuse("checked-out commit does not match the push event SHA")
@@ -395,10 +415,14 @@ def verify_commit_binding(manifest: dict[str, Any]) -> tuple[str, str]:
     if not re.fullmatch(r"[0-9a-f]{40}", source_commit):
         refuse("manifest product source commit is invalid")
     run_git("merge-base", "--is-ancestor", source_commit, head)
-    changed = set(run_git("diff", "--name-only", f"{source_commit}..{head}").splitlines())
+    changed = set(
+        run_git("diff", "--name-only", f"{source_commit}..{head}").splitlines()
+    )
     harness_paths = set(manifest["harness_paths"])
     if not changed or not changed <= harness_paths:
-        refuse("candidate differs from its product source outside the three harness paths")
+        refuse(
+            "candidate differs from its product source outside the three harness paths"
+        )
     if manifest["base_commit"] != "4a1ecb1e26fa0c6e8933bb73188bc6735da18ee7":
         refuse("manifest base commit differs from the admitted source base")
     run_git("merge-base", "--is-ancestor", manifest["base_commit"], source_commit)
@@ -427,7 +451,9 @@ def verify_commit_binding(manifest: dict[str, Any]) -> tuple[str, str]:
         or "pull_request:" in workflow_source
         or "permissions:\n  contents: read" not in workflow_source
     ):
-        refuse("workflow trigger or permissions differ from the admitted fixed contract")
+        refuse(
+            "workflow trigger or permissions differ from the admitted fixed contract"
+        )
     autocrlf_config = "git config --global core.autocrlf false"
     eol_config = "git config --global core.eol lf"
     windows_job = workflow_source.split("  validate-windows:", 1)[-1]
@@ -480,7 +506,9 @@ def run_fixed(command: list[str], cwd: Path = CODEX_RS, quiet: bool = False) -> 
         stdout=subprocess.DEVNULL if quiet else None,
     )
     if result.returncode != 0:
-        refuse(f"fixed hosted command failed with exit {result.returncode}: {Path(command[0]).name}")
+        refuse(
+            f"fixed hosted command failed with exit {result.returncode}: {Path(command[0]).name}"
+        )
 
 
 def prepare(manifest: dict[str, Any]) -> None:
@@ -490,7 +518,14 @@ def prepare(manifest: dict[str, Any]) -> None:
     if current_diff_paths():
         refuse("preparation checkout unexpectedly contains a working diff")
     run_fixed(
-        ["cargo", "metadata", "--manifest-path", "codex-rs/Cargo.toml", "--format-version", "1"],
+        [
+            "cargo",
+            "metadata",
+            "--manifest-path",
+            "codex-rs/Cargo.toml",
+            "--format-version",
+            "1",
+        ],
         ROOT,
         quiet=True,
     )
@@ -530,12 +565,16 @@ def prepare(manifest: dict[str, Any]) -> None:
     changed = current_diff_paths()
     allowed = set(manifest["generated_allowed_paths"])
     if not changed or not set(changed) <= allowed:
-        refuse("generated source delta is empty or outside the exact formatter and lock allowlist")
+        refuse(
+            "generated source delta is empty or outside the exact formatter and lock allowlist"
+        )
     verify_no_untracked()
     runner_temp = Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)
     output = runner_temp / "runtime-proof-preparation"
     output.mkdir(mode=0o700)
-    patch = subprocess.check_output(["git", "diff", "--binary", "HEAD", "--", *changed], cwd=ROOT)
+    patch = subprocess.check_output(
+        ["git", "diff", "--binary", "HEAD", "--", *changed], cwd=ROOT
+    )
     (output / "preparation.patch").write_bytes(patch)
     provenance = {
         "repository": EXPECTED_REPOSITORY,
@@ -549,7 +588,9 @@ def prepare(manifest: dict[str, Any]) -> None:
         "local_helper_sha256": manifest["local_helpers"],
         "changed_paths": changed,
         "patch_sha256": sha256_bytes(patch),
-        "output_sha256": {relative: sha256_file(ROOT / relative) for relative in changed},
+        "output_sha256": {
+            relative: sha256_file(ROOT / relative) for relative in changed
+        },
         "acceptance": "bounded source preparation only; no compile, fixture, platform, or delivery acceptance",
     }
     (output / "provenance.json").write_text(
@@ -642,7 +683,9 @@ def parse_root_fixture_launch_failure(line: str) -> tuple[str, str] | None:
     return match.group(1), match.group(2)
 
 
-def parse_root_fixture_cli_mcp_phases(line: str) -> tuple[int, int, int, int, int] | None:
+def parse_root_fixture_cli_mcp_phases(
+    line: str,
+) -> tuple[int, int, int, int, int] | None:
     match = ROOT_FIXTURE_CLI_MCP_PHASES.fullmatch(line.strip())
     if match is None:
         return None
@@ -740,9 +783,10 @@ def valid_runner_binding(value: Any) -> bool:
     artifact_path = PurePosixPath(value["artifact_relative_path"])
     expected_cwd = None
     if isinstance(package, str) and package in EXPECTED_PACKAGE_MANIFESTS:
-        expected_cwd = "codex-rs/" + PurePosixPath(
-            EXPECTED_PACKAGE_MANIFESTS[package]
-        ).parent.as_posix()
+        expected_cwd = (
+            "codex-rs/"
+            + PurePosixPath(EXPECTED_PACKAGE_MANIFESTS[package]).parent.as_posix()
+        )
     return (
         isinstance(value, dict)
         and set(value) == RUNNER_BINDING_KEYS
@@ -800,10 +844,7 @@ def runner_process_result_shape(value: Any) -> bool:
             "missing_test_summary",
             "test_summary_failure",
         }
-        and (
-            value.get("exit_code") is None
-            or type(value.get("exit_code")) is int
-        )
+        and (value.get("exit_code") is None or type(value.get("exit_code")) is int)
         and (
             value.get("signal") is None
             or (type(value.get("signal")) is int and value["signal"] > 0)
@@ -858,9 +899,7 @@ def runner_process_is_consistent(process: dict[str, Any]) -> bool:
     return {**expected, "summaries": summaries} == process
 
 
-def cargo_runner_command(
-    cargo: str, package: str, runner_args: list[str]
-) -> list[str]:
+def cargo_runner_command(cargo: str, package: str, runner_args: list[str]) -> list[str]:
     runner_config = (
         f"target.'{LINUX_HOST_TARGET}'.runner="
         f"{json.dumps(runner_args, separators=(',', ':'))}"
@@ -1015,7 +1054,9 @@ def write_reserved_runner_result(
     descriptor: int, binding: dict[str, Any], process: dict[str, Any]
 ) -> None:
     result = make_runner_result(binding, process)
-    payload = (json.dumps(result, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    payload = (
+        json.dumps(result, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode()
     if len(payload) > MAX_RUNNER_RECORD_BYTES:
         refuse("Cargo runner result exceeds its fixed size limit")
     remaining = memoryview(payload)
@@ -1051,10 +1092,7 @@ def runner_package_source_digest(
     package: str, source_relative: str, manifest: dict[str, Any]
 ) -> str:
     expected_target = LIBRARY_TEST_TARGETS.get(package)
-    if (
-        expected_target is None
-        or source_relative != f"codex-rs/{expected_target[1]}"
-    ):
+    if expected_target is None or source_relative != f"codex-rs/{expected_target[1]}":
         refuse("Cargo runner package source is not admitted")
 
     product_commit = manifest["product_source_commit"]
@@ -1274,9 +1312,7 @@ def cargo_library_process_result(
 
 def verify_test_summary_parser_contract(manifest: dict[str, Any]) -> None:
     single_summary = "test result: ok. 1 passed; 0 failed; 0 ignored;"
-    expected_single = [
-        {"status": "ok", "passed": 1, "failed": 0, "ignored": 0}
-    ]
+    expected_single = [{"status": "ok", "passed": 1, "failed": 0, "ignored": 0}]
     if parse_test_summaries(single_summary) != expected_single:
         refuse("test summary parser contract failed")
 
@@ -1293,9 +1329,12 @@ def verify_test_summary_parser_contract(manifest: dict[str, Any]) -> None:
         "timed_out",
     ):
         refuse("root launch failure parser contract failed")
-    if parse_root_fixture_launch_failure(
-        "runtime-proof-root-launch-failure:ack_wait:raw detail"
-    ) is not None:
+    if (
+        parse_root_fixture_launch_failure(
+            "runtime-proof-root-launch-failure:ack_wait:raw detail"
+        )
+        is not None
+    ):
         refuse("root launch failure parser contract failed")
 
     hash_measurement = (
@@ -1322,55 +1361,79 @@ def verify_test_summary_parser_contract(manifest: dict[str, Any]) -> None:
         "runtime-proof-root-cli-failure:exit=1;stderr=provider_auth"
     ) != ("1", "provider_auth"):
         refuse("root fixture CLI failure parser contract failed")
-    if parse_root_fixture_cli_failure(
-        "runtime-proof-root-cli-failure:exit=999;stderr=provider_auth"
-    ) is not None:
+    if (
+        parse_root_fixture_cli_failure(
+            "runtime-proof-root-cli-failure:exit=999;stderr=provider_auth"
+        )
+        is not None
+    ):
         refuse("root fixture CLI failure parser contract failed")
-    if parse_root_fixture_cli_failure(
-        "runtime-proof-root-cli-failure:exit=1;stderr=raw details"
-    ) is not None:
+    if (
+        parse_root_fixture_cli_failure(
+            "runtime-proof-root-cli-failure:exit=1;stderr=raw details"
+        )
+        is not None
+    ):
         refuse("root fixture CLI failure parser contract failed")
     if parse_root_fixture_cli_activity(
         "runtime-proof-root-cli-activity:claims=2;models=1"
     ) != (2, 1):
         refuse("root fixture CLI activity parser contract failed")
-    if parse_root_fixture_cli_activity(
-        "runtime-proof-root-cli-activity:claims=65;models=1"
-    ) is not None:
+    if (
+        parse_root_fixture_cli_activity(
+            "runtime-proof-root-cli-activity:claims=65;models=1"
+        )
+        is not None
+    ):
         refuse("root fixture CLI activity parser contract failed")
-    if parse_root_fixture_cli_activity(
-        "runtime-proof-root-cli-activity:claims=1;models=secret"
-    ) is not None:
+    if (
+        parse_root_fixture_cli_activity(
+            "runtime-proof-root-cli-activity:claims=1;models=secret"
+        )
+        is not None
+    ):
         refuse("root fixture CLI activity parser contract failed")
     if parse_root_fixture_cli_mcp_phases(
         "runtime-proof-root-cli-mcp-phases:initialize=1;initialized=1;"
         "tools_list=1;tools_call=0;other=0"
     ) != (1, 1, 1, 0, 0):
         refuse("root fixture CLI MCP phase parser contract failed")
-    if parse_root_fixture_cli_mcp_phases(
-        "runtime-proof-root-cli-mcp-phases:initialize=65;initialized=0;"
-        "tools_list=0;tools_call=0;other=0"
-    ) is not None:
+    if (
+        parse_root_fixture_cli_mcp_phases(
+            "runtime-proof-root-cli-mcp-phases:initialize=65;initialized=0;"
+            "tools_list=0;tools_call=0;other=0"
+        )
+        is not None
+    ):
         refuse("root fixture CLI MCP phase parser contract failed")
-    if parse_root_fixture_cli_mcp_phases(
-        "runtime-proof-root-cli-mcp-phases:initialize=0;initialized=0;"
-        "tools_list=0;tools_call=0;other=secret"
-    ) is not None:
+    if (
+        parse_root_fixture_cli_mcp_phases(
+            "runtime-proof-root-cli-mcp-phases:initialize=0;initialized=0;"
+            "tools_list=0;tools_call=0;other=secret"
+        )
+        is not None
+    ):
         refuse("root fixture CLI MCP phase parser contract failed")
     if parse_root_fixture_cli_error_path(
         "runtime-proof-root-cli-error-path:first_event=thread_started;"
         "last_event=error;family=mcp"
     ) != ("thread_started", "error", "mcp"):
         refuse("root fixture CLI error-path parser contract failed")
-    if parse_root_fixture_cli_error_path(
-        "runtime-proof-root-cli-error-path:first_event=raw;last_event=error;"
-        "family=mcp"
-    ) is not None:
+    if (
+        parse_root_fixture_cli_error_path(
+            "runtime-proof-root-cli-error-path:first_event=raw;last_event=error;"
+            "family=mcp"
+        )
+        is not None
+    ):
         refuse("root fixture CLI error-path parser contract failed")
-    if parse_root_fixture_cli_error_path(
-        "runtime-proof-root-cli-error-path:first_event=none;last_event=none;"
-        "family=raw details"
-    ) is not None:
+    if (
+        parse_root_fixture_cli_error_path(
+            "runtime-proof-root-cli-error-path:first_event=none;last_event=none;"
+            "family=raw details"
+        )
+        is not None
+    ):
         refuse("root fixture CLI error-path parser contract failed")
     if parse_root_fixture_expiry_summary(
         "runtime-proof-expiry-summary:cli=nonzero;cli_first_event=turn_started;"
@@ -1392,19 +1455,25 @@ def verify_test_summary_parser_contract(manifest: dict[str, Any]) -> None:
         "clean",
     ):
         refuse("root fixture expiry summary parser contract failed")
-    if parse_root_fixture_expiry_summary(
-        "runtime-proof-expiry-summary:cli=success;cli_first_event=none;cli_last_event=none;"
-        "cli_error_family=unclassified;claims=65;initialize=1;tools_list=1;"
-        "claim_auth=match;provider_token_output=redacted;mcp_bearer_output=redacted;"
-        "secrets_storage=clean;auth_files=clean"
-    ) is not None:
+    if (
+        parse_root_fixture_expiry_summary(
+            "runtime-proof-expiry-summary:cli=success;cli_first_event=none;cli_last_event=none;"
+            "cli_error_family=unclassified;claims=65;initialize=1;tools_list=1;"
+            "claim_auth=match;provider_token_output=redacted;mcp_bearer_output=redacted;"
+            "secrets_storage=clean;auth_files=clean"
+        )
+        is not None
+    ):
         refuse("root fixture expiry summary parser contract failed")
-    if parse_root_fixture_expiry_summary(
-        "runtime-proof-expiry-summary:cli=success;cli_first_event=none;cli_last_event=none;"
-        "cli_error_family=unclassified;claims=1;initialize=1;tools_list=1;"
-        "claim_auth=token-value;provider_token_output=redacted;mcp_bearer_output=redacted;"
-        "secrets_storage=clean;auth_files=clean"
-    ) is not None:
+    if (
+        parse_root_fixture_expiry_summary(
+            "runtime-proof-expiry-summary:cli=success;cli_first_event=none;cli_last_event=none;"
+            "cli_error_family=unclassified;claims=1;initialize=1;tools_list=1;"
+            "claim_auth=token-value;provider_token_output=redacted;mcp_bearer_output=redacted;"
+            "secrets_storage=clean;auth_files=clean"
+        )
+        is not None
+    ):
         refuse("root fixture expiry summary parser contract failed")
 
     oversized_failed_then_success = (
@@ -1447,9 +1516,9 @@ def verify_test_summary_parser_contract(manifest: dict[str, Any]) -> None:
         ):
             if source in manifest["product_inputs"]:
                 refuse("Cargo runner source provenance contract failed")
-            if runner_package_source_digest(
-                package, source, manifest
-            ) != sha256_file(ROOT / source):
+            if runner_package_source_digest(package, source, manifest) != sha256_file(
+                ROOT / source
+            ):
                 refuse("Cargo runner source provenance contract failed")
         try:
             runner_package_source_digest(
@@ -1466,9 +1535,9 @@ def verify_test_summary_parser_contract(manifest: dict[str, Any]) -> None:
         "summaries": runner_summaries,
     }
     runner_result = make_runner_result(binding, runner_process)
-    if not valid_runner_result(runner_result, binding) or not runner_process_is_consistent(
-        runner_process
-    ):
+    if not valid_runner_result(
+        runner_result, binding
+    ) or not runner_process_is_consistent(runner_process):
         refuse("Cargo runner result contract failed")
     if valid_runner_result({**runner_result, "extra": True}, binding):
         refuse("Cargo runner result contract failed")
@@ -1486,9 +1555,9 @@ def verify_test_summary_parser_contract(manifest: dict[str, Any]) -> None:
         **cargo_library_process_result(-9, [], "7" * 64),
         "summaries": [],
     }
-    if not runner_process_is_consistent(signaled_runner_process) or runner_process_is_consistent(
-        {**signaled_runner_process, "signal": 0}
-    ):
+    if not runner_process_is_consistent(
+        signaled_runner_process
+    ) or runner_process_is_consistent({**signaled_runner_process, "signal": 0}):
         refuse("Cargo runner result contract failed")
     spawn_failed_runner_process = {
         **cargo_library_process_result(None, [], "8" * 64, spawn_failed=True),
@@ -1526,29 +1595,41 @@ def verify_test_summary_parser_contract(manifest: dict[str, Any]) -> None:
         "child_status": "unknown",
         "runner_output_sha256": None,
     }
-    if library_runner_decision(
-        17, "9" * 64, "missing", None, binding, runner_summaries, "3" * 64, "3" * 64
-    ) != expected_decision:
+    if (
+        library_runner_decision(
+            17, "9" * 64, "missing", None, binding, runner_summaries, "3" * 64, "3" * 64
+        )
+        != expected_decision
+    ):
         refuse("Cargo runner decision contract failed")
-    if library_runner_decision(
-        17, "9" * 64, "missing", None, binding, runner_summaries, "3" * 64, None
-    ) != expected_decision:
+    if (
+        library_runner_decision(
+            17, "9" * 64, "missing", None, binding, runner_summaries, "3" * 64, None
+        )
+        != expected_decision
+    ):
         refuse("Cargo runner decision contract failed")
     refused_decision = {
         **expected_decision,
         "reason": "runner_result_refused",
     }
-    if library_runner_decision(
-        17, "9" * 64, "refused", None, binding, runner_summaries, "3" * 64, "3" * 64
-    ) != refused_decision:
+    if (
+        library_runner_decision(
+            17, "9" * 64, "refused", None, binding, runner_summaries, "3" * 64, "3" * 64
+        )
+        != refused_decision
+    ):
         refuse("Cargo runner decision contract failed")
     unsupported_decision = {
         **expected_decision,
         "reason": "cargo_summary_unsupported",
     }
-    if library_runner_decision(
-        17, "9" * 64, "present", runner_result, binding, None, "3" * 64, "3" * 64
-    ) != unsupported_decision:
+    if (
+        library_runner_decision(
+            17, "9" * 64, "present", runner_result, binding, None, "3" * 64, "3" * 64
+        )
+        != unsupported_decision
+    ):
         refuse("Cargo runner decision contract failed")
     wrong_invocation_result = make_runner_result(
         {**binding, "invocation_id": "f" * 32}, runner_process
@@ -1562,16 +1643,19 @@ def verify_test_summary_parser_contract(manifest: dict[str, Any]) -> None:
         "cargo_exit_code": 0,
     }
     for invalid_result in (wrong_invocation_result, wrong_digest_result):
-        if library_runner_decision(
-            0,
-            "9" * 64,
-            "present",
-            invalid_result,
-            binding,
-            runner_summaries,
-            "3" * 64,
-            "3" * 64,
-        ) != invalid_result_decision:
+        if (
+            library_runner_decision(
+                0,
+                "9" * 64,
+                "present",
+                invalid_result,
+                binding,
+                runner_summaries,
+                "3" * 64,
+                "3" * 64,
+            )
+            != invalid_result_decision
+        ):
             refuse("Cargo runner decision contract failed")
     nonzero_cargo_decision = {
         "accepted": False,
@@ -1581,16 +1665,19 @@ def verify_test_summary_parser_contract(manifest: dict[str, Any]) -> None:
         "child_status": "passed",
         "runner_output_sha256": "5" * 64,
     }
-    if library_runner_decision(
-        1,
-        "9" * 64,
-        "present",
-        runner_result,
-        binding,
-        runner_summaries,
-        "3" * 64,
-        "3" * 64,
-    ) != nonzero_cargo_decision:
+    if (
+        library_runner_decision(
+            1,
+            "9" * 64,
+            "present",
+            runner_result,
+            binding,
+            runner_summaries,
+            "3" * 64,
+            "3" * 64,
+        )
+        != nonzero_cargo_decision
+    ):
         refuse("Cargo runner decision contract failed")
     successful_decision = {
         **nonzero_cargo_decision,
@@ -1598,64 +1685,76 @@ def verify_test_summary_parser_contract(manifest: dict[str, Any]) -> None:
         "reason": "accepted",
         "cargo_exit_code": 0,
     }
-    if library_runner_decision(
-        0,
-        "9" * 64,
-        "present",
-        runner_result,
-        binding,
-        runner_summaries,
-        "3" * 64,
-        "3" * 64,
-    ) != successful_decision:
+    if (
+        library_runner_decision(
+            0,
+            "9" * 64,
+            "present",
+            runner_result,
+            binding,
+            runner_summaries,
+            "3" * 64,
+            "3" * 64,
+        )
+        != successful_decision
+    ):
         refuse("Cargo runner decision contract failed")
     changed_binary_decision = {
         **successful_decision,
         "accepted": False,
         "reason": "bound_binary_changed",
     }
-    if library_runner_decision(
-        0,
-        "9" * 64,
-        "present",
-        runner_result,
-        binding,
-        runner_summaries,
-        "3" * 64,
-        "4" * 64,
-    ) != changed_binary_decision:
+    if (
+        library_runner_decision(
+            0,
+            "9" * 64,
+            "present",
+            runner_result,
+            binding,
+            runner_summaries,
+            "3" * 64,
+            "4" * 64,
+        )
+        != changed_binary_decision
+    ):
         refuse("Cargo runner decision contract failed")
     unavailable_binary_decision = {
         **successful_decision,
         "accepted": False,
         "reason": "bound_binary_unavailable",
     }
-    if library_runner_decision(
-        0,
-        "9" * 64,
-        "present",
-        runner_result,
-        binding,
-        runner_summaries,
-        "3" * 64,
-        None,
-    ) != unavailable_binary_decision:
+    if (
+        library_runner_decision(
+            0,
+            "9" * 64,
+            "present",
+            runner_result,
+            binding,
+            runner_summaries,
+            "3" * 64,
+            None,
+        )
+        != unavailable_binary_decision
+    ):
         refuse("Cargo runner decision contract failed")
     summary_mismatch_decision = {
         **successful_decision,
         "accepted": False,
         "reason": "cargo_runner_summaries_disagree",
     }
-    if library_runner_decision(
-        0,
-        "9" * 64,
-        "present",
-        runner_result,
-        binding,
-        [{"status": "ok", "passed": 2, "failed": 0, "ignored": 0}],
-        "3" * 64,
-        "3" * 64,
-    ) != summary_mismatch_decision:
+    if (
+        library_runner_decision(
+            0,
+            "9" * 64,
+            "present",
+            runner_result,
+            binding,
+            [{"status": "ok", "passed": 2, "failed": 0, "ignored": 0}],
+            "3" * 64,
+            "3" * 64,
+        )
+        != summary_mismatch_decision
+    ):
         refuse("Cargo runner decision contract failed")
 
     success = [{"status": "ok", "passed": 2, "failed": 0, "ignored": 1}]
@@ -1694,7 +1793,11 @@ def verify_test_summary_parser_contract(manifest: dict[str, Any]) -> None:
             None,
             "e" * 64,
             True,
-            {"classification": "test_process_spawn_failure", "exit_code": None, "signal": None},
+            {
+                "classification": "test_process_spawn_failure",
+                "exit_code": None,
+                "signal": None,
+            },
         ),
     ]
     for returncode, digest, spawn_failed, status in empty_cases:
@@ -1773,7 +1876,11 @@ def verify_test_summary_parser_contract(manifest: dict[str, Any]) -> None:
         }
     )
     dependency_metadata_failure = bounded_library_failure_summary(
-        "codex-core", f"{dependency_metadata_error}\n{build_failed}", 101, set(), {"serde"}
+        "codex-core",
+        f"{dependency_metadata_error}\n{build_failed}",
+        101,
+        set(),
+        {"serde"},
     )
     if dependency_metadata_failure != {
         "classification": "compiler_error",
@@ -1791,7 +1898,11 @@ def verify_test_summary_parser_contract(manifest: dict[str, Any]) -> None:
         refuse("Cargo incompatible dependency root contract failed")
 
     unknown_dependency_root_failure = bounded_library_failure_summary(
-        "codex-core", f"{dependency_metadata_error}\n{build_failed}", 101, set(), {"unrelated"}
+        "codex-core",
+        f"{dependency_metadata_error}\n{build_failed}",
+        101,
+        set(),
+        {"unrelated"},
     )
     if unknown_dependency_root_failure != {
         "classification": "compiler_error",
@@ -1822,7 +1933,11 @@ def verify_test_summary_parser_contract(manifest: dict[str, Any]) -> None:
         }
     )
     malformed_dependency_failure = bounded_library_failure_summary(
-        "codex-core", f"{malformed_dependency_error}\n{build_failed}", 101, set(), {"serde"}
+        "codex-core",
+        f"{malformed_dependency_error}\n{build_failed}",
+        101,
+        set(),
+        {"serde"},
     )
     if malformed_dependency_failure != {
         "classification": "compiler_error",
@@ -1840,7 +1955,11 @@ def verify_test_summary_parser_contract(manifest: dict[str, Any]) -> None:
         refuse("Cargo malformed dependency metadata withholding contract failed")
 
     preterminal_dependency_metadata_success = bounded_library_failure_summary(
-        "codex-core", f"{dependency_metadata_error}\n{build_succeeded}", 0, set(), {"serde"}
+        "codex-core",
+        f"{dependency_metadata_error}\n{build_succeeded}",
+        0,
+        set(),
+        {"serde"},
     )
     if preterminal_dependency_metadata_success != {
         "classification": "build_failure_unclassified",
@@ -1912,7 +2031,7 @@ def verify_test_summary_parser_contract(manifest: dict[str, Any]) -> None:
     )
     if bounded_library_failure_summary(
         "codex-core",
-        f'{build_succeeded}\n{postbuild_error}\n'
+        f"{build_succeeded}\n{postbuild_error}\n"
         "test result: FAILED. 0 passed; 1 failed; 0 ignored;",
         101,
         set(),
@@ -1934,7 +2053,7 @@ def verify_test_summary_parser_contract(manifest: dict[str, Any]) -> None:
 
     if bounded_library_failure_summary(
         "codex-core",
-        f'{build_succeeded}\n{dependency_metadata_error}\n'
+        f"{build_succeeded}\n{dependency_metadata_error}\n"
         "test result: FAILED. 0 passed; 1 failed; 0 ignored;",
         101,
         set(),
@@ -2232,7 +2351,9 @@ def run_library_suite(
     binary = artifact_path(artifact["relative_path"])
     before_hash = sha256_file(binary)
     if before_hash != artifact["sha256"]:
-        refuse(f"bound library test executable changed before invocation: {package_name}")
+        refuse(
+            f"bound library test executable changed before invocation: {package_name}"
+        )
     head = run_git("rev-parse", "HEAD").strip()
     script_sha256 = sha256_file(Path(__file__).resolve(strict=True))
     invocation_id = uuid.uuid4().hex
@@ -2373,14 +2494,17 @@ def cargo_metadata_index() -> dict[str, dict[str, Any]]:
             package
             for package in packages
             if package.get("name") == name
-            and Path(package.get("manifest_path", "")).resolve(strict=True) == expected_manifest
+            and Path(package.get("manifest_path", "")).resolve(strict=True)
+            == expected_manifest
         ]
         if (
             len(matches) != 1
             or not isinstance(matches[0].get("id"), str)
             or not matches[0]["id"]
         ):
-            refuse(f"Cargo metadata did not bind one exact package identity and manifest: {name}")
+            refuse(
+                f"Cargo metadata did not bind one exact package identity and manifest: {name}"
+            )
         indexed[name] = matches[0]
     return indexed
 
@@ -2422,17 +2546,22 @@ def cargo_artifact_details(
     package = metadata.get(package_name)
     expected_source = EXPECTED_ARTIFACT_TARGETS.get((package_name, target_name, kind))
     if package is None or expected_source is None:
-        refuse(f"artifact request is outside the exact Cargo metadata inventory: {package_name}/{target_name}")
+        refuse(
+            f"artifact request is outside the exact Cargo metadata inventory: {package_name}/{target_name}"
+        )
     expected_target_source = (CODEX_RS / expected_source).resolve(strict=True)
     target_matches = [
         target
         for target in package.get("targets", [])
         if target.get("name") == target_name
         and kind in target.get("kind", [])
-        and Path(target.get("src_path", "")).resolve(strict=True) == expected_target_source
+        and Path(target.get("src_path", "")).resolve(strict=True)
+        == expected_target_source
     ]
     if len(target_matches) != 1:
-        refuse(f"Cargo metadata did not bind one exact target source: {package_name}/{target_name}")
+        refuse(
+            f"Cargo metadata did not bind one exact target source: {package_name}/{target_name}"
+        )
     expected_target = target_identity(target_matches[0])
     if require_test_profile and (
         target_matches[0].get("kind") != ["lib"]
@@ -2485,7 +2614,9 @@ def cargo_artifact_details(
         ):
             artifacts.append(Path(event["executable"]))
     if len(artifacts) != 1:
-        refuse(f"expected exactly one compiler artifact for {package_name}/{target_name}")
+        refuse(
+            f"expected exactly one compiler artifact for {package_name}/{target_name}"
+        )
     if capture_library_failure and build_finished != [True]:
         refuse(f"locked library build phase was not exactly successful: {package_name}")
     artifact = artifacts[0]
@@ -2494,7 +2625,11 @@ def cargo_artifact_details(
     target_root = Path(os.environ.get("CARGO_TARGET_DIR", ""))
     if not target_root.is_absolute():
         refuse("fixed Cargo target directory is unavailable")
-    if artifact.is_symlink() or not artifact.is_file() or not os.access(artifact, os.X_OK):
+    if (
+        artifact.is_symlink()
+        or not artifact.is_file()
+        or not os.access(artifact, os.X_OK)
+    ):
         refuse(f"compiler artifact is not a regular executable: {target_name}")
     resolved_target = target_root.resolve(strict=True)
     resolved_artifact = artifact.resolve(strict=True)
@@ -2519,9 +2654,9 @@ def cargo_artifact(
     target_name: str,
     kind: str,
 ) -> Path:
-    return cargo_artifact_details(
-        command, metadata, package_name, target_name, kind
-    )["relative_path"]
+    return cargo_artifact_details(command, metadata, package_name, target_name, kind)[
+        "relative_path"
+    ]
 
 
 def pinned_toolchain_executable(name: str) -> Path:
@@ -2620,8 +2755,12 @@ def run_ignored_root_test(
     cli_hash_measurement = parse_root_fixture_cli_hash_measurement(result.stdout)
     success = {"status": "ok", "passed": 1, "failed": 0, "ignored": 0}
     if test_name == EXPECTED_MCP_TESTS[0]:
-        nested_runs = sum(line.strip() == "running 1 test" for line in result.stdout.splitlines())
-        terminal = result.stdout.rstrip().splitlines()[-1] if result.stdout.strip() else ""
+        nested_runs = sum(
+            line.strip() == "running 1 test" for line in result.stdout.splitlines()
+        )
+        terminal = (
+            result.stdout.rstrip().splitlines()[-1] if result.stdout.strip() else ""
+        )
         terminal_summary = parse_test_summaries(terminal)
         if (
             result.returncode != 0
@@ -2658,28 +2797,31 @@ def run_ignored_root_test(
             launch_failures = {
                 launch_failure
                 for line in result.stdout.splitlines()
-                if (
-                    launch_failure := parse_root_fixture_launch_failure(line)
-                )
+                if (launch_failure := parse_root_fixture_launch_failure(line))
                 is not None
             }
             failure_categories.extend(
-                f"child_startup_{category}"
-                for category in sorted(startup_failures)
+                f"child_startup_{category}" for category in sorted(startup_failures)
             )
             failure_categories.extend(
                 f"launch_{phase}_{category}"
                 for phase, category in sorted(launch_failures)
             )
             failure_categories = sorted(set(failure_categories))
-            summary_sequence = ",".join(
-                f"{summary['status']}:{summary['passed']}/{summary['failed']}/{summary['ignored']}"
-                for summary in summaries
-            ) or "none"
-            terminal_sequence = ",".join(
-                f"{summary['status']}:{summary['passed']}/{summary['failed']}/{summary['ignored']}"
-                for summary in terminal_summary
-            ) or "none"
+            summary_sequence = (
+                ",".join(
+                    f"{summary['status']}:{summary['passed']}/{summary['failed']}/{summary['ignored']}"
+                    for summary in summaries
+                )
+                or "none"
+            )
+            terminal_sequence = (
+                ",".join(
+                    f"{summary['status']}:{summary['passed']}/{summary['failed']}/{summary['ignored']}"
+                    for summary in terminal_summary
+                )
+                or "none"
+            )
             refuse(
                 "retained-client fixture failed its bounded child/outer checks"
                 f"; outer_exit={result.returncode}"
@@ -2719,7 +2861,9 @@ def run_ignored_root_test(
                 ):
                     fixture_secret_matches.add((match.group(1), match.group(2)))
             if trace_failures:
-                details += "; trace_failure_categories=" + ",".join(sorted(trace_failures))
+                details += "; trace_failure_categories=" + ",".join(
+                    sorted(trace_failures)
+                )
             if fixture_secret_matches:
                 matches = ",".join(
                     f"{kind}:{area}" for kind, area in sorted(fixture_secret_matches)
@@ -2776,7 +2920,9 @@ def run_ignored_root_test(
                     ack_failure = ROOT_FIXTURE_ACK_FAILURE.fullmatch(line.strip())
                     if ack_failure is not None:
                         ack_failures.add(ack_failure.group(1))
-                    startup_failure = ROOT_FIXTURE_STARTUP_FAILURE.fullmatch(line.strip())
+                    startup_failure = ROOT_FIXTURE_STARTUP_FAILURE.fullmatch(
+                        line.strip()
+                    )
                     if startup_failure is not None:
                         startup_failures.add(startup_failure.group(1))
                 last_stage = stages[-1] if stages else "none"
@@ -2799,8 +2945,7 @@ def run_ignored_root_test(
                     details += "; expiry_ack_error_category=not_reported"
                 if len(startup_failures) == 1:
                     details += (
-                        "; expiry_startup_category="
-                        f"{next(iter(startup_failures))}"
+                        f"; expiry_startup_category={next(iter(startup_failures))}"
                     )
                 elif startup_failures:
                     details += "; expiry_startup_category=ambiguous"
@@ -2893,9 +3038,7 @@ def run_ignored_root_test(
                 details += "; fd_layout=not_reported"
             if len(channel_pending) == 1:
                 bootstrap_pending, auth_pending = next(iter(channel_pending))
-                details += (
-                    f"; bootstrap_packet={bootstrap_pending}; auth_packet={auth_pending}"
-                )
+                details += f"; bootstrap_packet={bootstrap_pending}; auth_packet={auth_pending}"
             elif channel_pending:
                 details += "; channel_packet_state=ambiguous"
             else:
@@ -2924,7 +3067,9 @@ def run_ignored_root_test(
                 details += "; cli_failure=not_reported"
             if len(cli_activities) == 1:
                 claims, models = next(iter(cli_activities))
-                details += f"; cli_activity_claims={claims}; cli_activity_models={models}"
+                details += (
+                    f"; cli_activity_claims={claims}; cli_activity_models={models}"
+                )
             elif cli_activities:
                 details += "; cli_activity=ambiguous"
             else:
@@ -2989,7 +3134,10 @@ def validate_linux(manifest: dict[str, Any]) -> None:
     head, workflow_sha = verify_inputs(manifest)
     if manifest["phase"] != "validate":
         refuse("compiled Linux validation is permitted only in validate phase")
-    if os.environ.get("EXPECTED_RUNNER_OS") != "Linux" or os.environ.get("RUNNER_TEMP") is None:
+    if (
+        os.environ.get("EXPECTED_RUNNER_OS") != "Linux"
+        or os.environ.get("RUNNER_TEMP") is None
+    ):
         refuse("Linux validation runner identity is unavailable")
 
     metadata = cargo_metadata_index()
@@ -3000,7 +3148,16 @@ def validate_linux(manifest: dict[str, Any]) -> None:
         for package in manifest["linux_library_test_packages"]
     ]
     cli_relative = cargo_artifact(
-        ["cargo", "build", "--locked", "-p", "codex-cli", "--bin", "codex", "--message-format=json"],
+        [
+            "cargo",
+            "build",
+            "--locked",
+            "-p",
+            "codex-cli",
+            "--bin",
+            "codex",
+            "--message-format=json",
+        ],
         metadata,
         "codex-cli",
         "codex",
@@ -3032,14 +3189,22 @@ def validate_linux(manifest: dict[str, Any]) -> None:
     cli_binary = artifact_path(cli_test_relative)
     mcp_binary = artifact_path(mcp_test_relative)
     cli_image = artifact_path(cli_relative)
-    if cargo_bin_fallback(cli_binary, "codex").resolve(strict=True) != cli_image.resolve(strict=True):
-        refuse("CLI fixture's cargo_bin fallback does not resolve to the bound CLI image")
+    if cargo_bin_fallback(cli_binary, "codex").resolve(
+        strict=True
+    ) != cli_image.resolve(strict=True):
+        refuse(
+            "CLI fixture's cargo_bin fallback does not resolve to the bound CLI image"
+        )
     expected_cli = set(manifest["cli_ignored_tests"])
     expected_mcp = set(manifest["mcp_ignored_tests"])
     if ignored_inventory(cli_binary) != expected_cli:
-        refuse("CLI ignored-test inventory differs from the exact admitted seven fixtures")
+        refuse(
+            "CLI ignored-test inventory differs from the exact admitted seven fixtures"
+        )
     if ignored_inventory(mcp_binary) != expected_mcp:
-        refuse("MCP ignored-test inventory differs from the exact admitted retained-send fixture")
+        refuse(
+            "MCP ignored-test inventory differs from the exact admitted retained-send fixture"
+        )
 
     cli_image_sha256 = sha256_file(cli_image)
     cli_test_sha256 = sha256_file(cli_binary)
@@ -3067,7 +3232,10 @@ def validate_linux(manifest: dict[str, Any]) -> None:
         "runner": "ubuntu-24.04",
         "library_tests": library_results,
         "artifacts": {
-            "cli_executable": {"target_relative_path": str(cli_relative), "sha256": cli_image_sha256},
+            "cli_executable": {
+                "target_relative_path": str(cli_relative),
+                "sha256": cli_image_sha256,
+            },
             "cli_runtime_execution_proof_test": {
                 "target_relative_path": str(cli_test_relative),
                 "sha256": cli_test_sha256,
@@ -3085,14 +3253,19 @@ def validate_linux(manifest: dict[str, Any]) -> None:
 
 def validate_windows(manifest: dict[str, Any]) -> None:
     head, workflow_sha = verify_inputs(manifest)
-    if manifest["phase"] != "validate" or os.environ.get("EXPECTED_RUNNER_OS") != "Windows":
+    if (
+        manifest["phase"] != "validate"
+        or os.environ.get("EXPECTED_RUNNER_OS") != "Windows"
+    ):
         refuse("Windows validation runner or phase does not match the fixed contract")
     command = ["cargo", "check", "--locked", "--all-targets"]
     for package in WINDOWS_PACKAGES:
         command.extend(["-p", package])
     result = subprocess.run(command, cwd=CODEX_RS, check=False)
     if result.returncode != 0:
-        refuse(f"ordinary Windows all-target source check failed with exit {result.returncode}")
+        refuse(
+            f"ordinary Windows all-target source check failed with exit {result.returncode}"
+        )
     verify_clean_checkout()
     write_report(
         "runtime-proof-validation-windows",
@@ -3116,8 +3289,15 @@ def main() -> None:
     if len(sys.argv) == 4 and sys.argv[1] == RUNNER_MODE:
         cargo_runtime_test_runner(sys.argv[2], sys.argv[3])
         return
-    if len(sys.argv) != 2 or sys.argv[1] not in {"bind", "prepare", "validate-linux", "validate-windows"}:
-        refuse("use one fixed phase command: bind, prepare, validate-linux, or validate-windows")
+    if len(sys.argv) != 2 or sys.argv[1] not in {
+        "bind",
+        "prepare",
+        "validate-linux",
+        "validate-windows",
+    }:
+        refuse(
+            "use one fixed phase command: bind, prepare, validate-linux, or validate-windows"
+        )
     mode = sys.argv[1]
     manifest = load_manifest()
     if mode == "bind":

@@ -51,13 +51,11 @@ async fn device_login_preserves_configured_and_discovered_scopes_on_rejection() 
         .with_no_client_auth()
         .with_single_cert(
             vec![certificate.cert.der().clone()],
-            rustls::pki_types::PrivatePkcs8KeyDer::from(certificate.signing_key.serialize_der()).into(),
+            rustls::pki_types::PrivatePkcs8KeyDer::from(certificate.signing_key.serialize_der())
+                .into(),
         )?;
-        let mut tls_tasks = spawn_tls_forwarder(
-            listener,
-            TlsAcceptor::from(Arc::new(tls)),
-            upstream_address,
-        );
+        let mut tls_tasks =
+            spawn_tls_forwarder(listener, TlsAcceptor::from(Arc::new(tls)), upstream_address);
 
         Mock::given(method("GET"))
             .and(path("/.well-known/oauth-protected-resource/mcp"))

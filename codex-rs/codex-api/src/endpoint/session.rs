@@ -278,7 +278,9 @@ impl<T: HttpTransport> EndpointSession<T> {
                     if let Some(claim) = claim {
                         claim.acknowledge();
                     }
-                    response.await.map(|response| ResponseWithAuth { response, auth })
+                    response
+                        .await
+                        .map(|response| ResponseWithAuth { response, auth })
                 }
             },
         )
@@ -304,26 +306,22 @@ impl<T: HttpTransport> EndpointSession<T> {
     where
         C: Fn(&mut Request),
     {
-        let (prepared_body, prepared_content_type, prepared_content_encoding) =
-            match body.map(RequestBody::EncodedJson) {
-                Some(body) => {
-                    let mut request = Self::make_request(
-                        &self.provider,
-                        &method,
-                        path,
-                        &extra_headers,
-                        Some(&body),
-                    );
-                    configure(&mut request);
-                    let request = request.into_prepared().map_err(TransportError::Build)?;
-                    (
-                        request.body,
-                        request.headers.get(http::header::CONTENT_TYPE).cloned(),
-                        request.headers.get(http::header::CONTENT_ENCODING).cloned(),
-                    )
-                }
-                None => (None, None, None),
-            };
+        let (prepared_body, prepared_content_type, prepared_content_encoding) = match body
+            .map(RequestBody::EncodedJson)
+        {
+            Some(body) => {
+                let mut request =
+                    Self::make_request(&self.provider, &method, path, &extra_headers, Some(&body));
+                configure(&mut request);
+                let request = request.into_prepared().map_err(TransportError::Build)?;
+                (
+                    request.body,
+                    request.headers.get(http::header::CONTENT_TYPE).cloned(),
+                    request.headers.get(http::header::CONTENT_ENCODING).cloned(),
+                )
+            }
+            None => (None, None, None),
+        };
 
         let stream = run_with_attempt_telemetry(
             self.provider.retry.to_policy(),
@@ -366,7 +364,9 @@ impl<T: HttpTransport> EndpointSession<T> {
                         request.compression = RequestCompression::None;
                         match prepared_content_type.as_ref() {
                             Some(value) => {
-                                request.headers.insert(http::header::CONTENT_TYPE, value.clone());
+                                request
+                                    .headers
+                                    .insert(http::header::CONTENT_TYPE, value.clone());
                             }
                             None => {
                                 request.headers.remove(http::header::CONTENT_TYPE);

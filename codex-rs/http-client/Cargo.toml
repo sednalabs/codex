@@ -42,6 +42,7 @@ workspace = true
 
 [dev-dependencies]
 codex-utils-cargo-bin = { workspace = true }
+h2 = "0.4.17"
 opentelemetry_sdk = { workspace = true }
 pretty_assertions = { workspace = true }
 rcgen = { workspace = true }
