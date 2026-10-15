@@ -132,6 +132,15 @@ def require(condition: bool, message: str) -> None:
         raise RuntimeError(message)
 
 
+class TraceVerificationError(RuntimeError):
+    """A failed packaged-process assertion with a bounded structural receipt."""
+
+    def __init__(self, assertion_id: str, receipt: dict[str, str]) -> None:
+        super().__init__("trace_validation_failed")
+        self.assertion_id = assertion_id
+        self.receipt = receipt
+
+
 def safe_child_diagnostic(stderr: str) -> str:
     """Accept only the child's fixed type/category record; never log raw stderr."""
     byte_count = len(stderr.encode("utf-8", errors="replace"))
@@ -708,20 +717,171 @@ stream_max_retries = 0
             config_path.write_text(original_config, encoding="utf-8")
 
 
-def verify_trace(trace_path: Path, expected_entrypoint: str, expected_host: str) -> None:
-    require(trace_path.is_file(), "Code-mode process trace was not written.")
-    found = False
-    # The closing bracket immediately after argv[0] proves there are no extra
-    # arguments, rather than merely checking that the expected argv[0] occurs.
-    expected_call = f'execve("{expected_host}", ["{expected_host}"], '
-    entrypoint_found = False
-    for line in trace_path.read_text(encoding="utf-8", errors="replace").splitlines():
-        if expected_call in line and line.rstrip().endswith("= 0"):
-            found = True
-        if f'execve("{expected_entrypoint}", ["{expected_entrypoint}"' in line and line.rstrip().endswith("= 0"):
-            entrypoint_found = True
-    require(found, "The packaged host was not selected with the expected executable argv.")
-    require(entrypoint_found, "The expected packaged entrypoint was not executed with its real argv.")
+def trace_execve_observation(
+    lines: list[str], expected_executable: str, expected_argv: list[str]
+) -> dict[str, str | bool]:
+    """Compare private execve records without returning paths or argv values."""
+    basename_token = f'/{Path(expected_executable).name}"'
+    exact_path = f'execve("{expected_executable}",'
+    expected_vector = "[" + ", ".join(json.dumps(arg) for arg in expected_argv) + "]"
+    extra_argument_prefix = expected_vector[:-1] + ","
+    argv0_prefix = f'["{expected_executable}"'
+    truncated_argv0 = re.compile(
+        re.escape(f'["{expected_executable[:32]}') + r'[^\"]*"\.\.\.'
+    )
+    pending: dict[str, tuple[str, str, str]] = {}
+    records: list[tuple[str, str, str, str, str]] = []
+
+    def pid_for(line: str) -> str:
+        match = re.match(r"^(?:\[pid\s+(\d+)\]\s+|(\d+)\s+)", line)
+        return (match.group(1) or match.group(2)) if match else "single"
+
+    def result_for(line: str) -> str:
+        if re.search(r"=\s*0\s*$", line):
+            return "success"
+        error = re.search(r"=\s*-1\s+([A-Z][A-Z0-9_]{0,31})\b", line)
+        return f"error_{error.group(1).lower()}" if error else "unparsed"
+
+    for line in lines:
+        pid = pid_for(line)
+        if "<... execve resumed>" in line:
+            unfinished = pending.pop(pid, None)
+            if unfinished is not None:
+                path, argv, argv0 = unfinished
+                records.append((path, argv, argv0, result_for(line), "paired_resumed"))
+            continue
+        if "execve(" not in line or basename_token not in line:
+            continue
+        path = "exact" if exact_path in line else "other_same_basename"
+        argv = (
+            "expected"
+            if expected_vector in line
+            else "extra_arguments"
+            if extra_argument_prefix in line
+            else "truncated"
+            if truncated_argv0.search(line)
+            else "empty"
+            if re.search(r",\s*\[\s*\]\s*,", line)
+            else "different"
+        )
+        argv0 = (
+            "exact"
+            if argv0_prefix in line
+            else "truncated_expected_prefix"
+            if truncated_argv0.search(line)
+            else "different"
+        )
+        if "<unfinished ...>" in line:
+            pending[pid] = (path, argv, argv0)
+        else:
+            records.append((path, argv, argv0, result_for(line), "complete"))
+
+    records.extend(
+        (path, argv, argv0, "unfinished_without_result", "unfinished")
+        for path, argv, argv0 in pending.values()
+    )
+    exact_records = [record for record in records if record[0] == "exact"]
+    relevant = exact_records or records
+    results = [record[3] for record in relevant]
+    syscall_result = next(
+        (value for value in results if value == "success" or value.startswith("error_")),
+        "unfinished_without_result" if "unfinished_without_result" in results else "unparsed",
+    )
+    argv_shape = next(
+        (
+            value
+            for value in ("expected", "extra_arguments", "truncated", "empty", "different")
+            if any(record[1] == value for record in relevant)
+        ),
+        "unparsed",
+    )
+    record_form = next(
+        (
+            value
+            for value in ("complete", "paired_resumed", "unfinished")
+            if any(record[4] == value for record in relevant)
+        ),
+        "unparsed",
+    )
+    return {
+        "record_count": "zero" if not records else "one" if len(records) == 1 else "multiple",
+        "path_relation": (
+            "exact" if exact_records else "other_same_basename" if records else "not_seen"
+        ),
+        "syscall_result": syscall_result,
+        "argv_shape": argv_shape,
+        "argv0_relation": next(
+            (record[2] for record in relevant if record[2] != "different"),
+            "different" if records else "unparsed",
+        ),
+        "record_form": record_form,
+        "accepted": any(
+            record[0] == "exact" and record[1] == "expected" and record[3] == "success"
+            for record in records
+        ),
+    }
+
+
+def verify_trace(
+    trace_path: Path,
+    entrypoint: str,
+    expected_entrypoint: str,
+    expected_host: str,
+) -> None:
+    if not trace_path.is_file():
+        raise TraceVerificationError(
+            "trace.present",
+            {
+                "trace_present": "absent",
+                "tested_entrypoint": entrypoint,
+                "reason": "trace_file_absent",
+            },
+        )
+    lines = trace_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    # The SDK's default CLI launch is `codex app-server --listen stdio://`;
+    # this fixture supplies no config_overrides. The explicit app-server
+    # launch_args_override is a one-element tuple.
+    expected_entrypoint_argv = [expected_entrypoint]
+    if entrypoint == "codex":
+        expected_entrypoint_argv.extend(["app-server", "--listen", "stdio://"])
+    observations = {
+        "host": trace_execve_observation(lines, expected_host, [expected_host]),
+        "entrypoint": trace_execve_observation(
+            lines, expected_entrypoint, expected_entrypoint_argv
+        ),
+    }
+    assertion_id = (
+        "trace.host_exec_exact"
+        if not observations["host"]["accepted"]
+        else "trace.entrypoint_exec_exact"
+        if not observations["entrypoint"]["accepted"]
+        else None
+    )
+    if assertion_id is None:
+        return
+
+    receipt = {
+        "trace_present": "present",
+        "tested_entrypoint": entrypoint,
+        "reason": (
+            "host_exec_contract_not_observed"
+            if assertion_id == "trace.host_exec_exact"
+            else "entrypoint_exec_contract_not_observed"
+        ),
+    }
+    for role, observation in observations.items():
+        for field in (
+            "record_count",
+            "path_relation",
+            "syscall_result",
+            "argv_shape",
+            "argv0_relation",
+            "record_form",
+        ):
+            value = observation[field]
+            if isinstance(value, str) and re.fullmatch(r"[a-z0-9_]{1,64}", value):
+                receipt[f"{role}_{field}"] = value
+    raise TraceVerificationError(assertion_id, receipt)
 
 
 def run_default_instruction_consumer(
@@ -998,6 +1158,10 @@ def main() -> None:
             command = [
                 "strace",
                 "-f",
+                # Preserve full fixture-authored argv paths; omit -v so envp
+                # values remain abbreviated in the private trace.
+                "-s",
+                "4096",
                 "-e",
                 "trace=execve",
                 "-o",
@@ -1028,7 +1192,7 @@ def main() -> None:
                 result.get("entrypoint") == entrypoint and result.get("probe_ok") is True,
                 f"Packaged {entrypoint} probe identity mismatch.",
             )
-            verify_trace(trace_path, result["entrypoint_path"], result["host_path"])
+            verify_trace(trace_path, entrypoint, result["entrypoint_path"], result["host_path"])
             print(
                 json.dumps(
                     {
@@ -1087,6 +1251,19 @@ if __name__ == "__main__":
             suffix += f"; fixture_line={fixture_line}"
         if packaged_probe_details is not None:
             suffix += "; " + "; ".join(packaged_probe_details)
+        elif isinstance(error, TraceVerificationError):
+            category = "trace_validation_failed"
+            suffix += f"; assertion_id={error.assertion_id}"
+            for key, value in error.receipt.items():
+                if re.fullmatch(r"[a-z][a-z0-9_]{0,63}", key) and re.fullmatch(
+                    r"[a-z0-9_]{1,64}", value
+                ):
+                    suffix += f"; {key}={value}"
+            source_id, function, line = safe_exception_origin(error)
+            suffix += (
+                f"; origin_source={source_id}; origin_function={function}; "
+                f"origin_line={line}"
+            )
         else:
             source_id, function, line = safe_exception_origin(error)
             suffix += (
