@@ -5,6 +5,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: validation-responses-attribution-compat-82f3bef4
@@ -49,14 +50,48 @@ jobs:
         run: |
           sudo apt-get update -y
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
-      - name: Build the required Code Mode host
-        working-directory: codex-rs
+      - name: Verify and consume the exact packaged Code Mode host
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          cargo build --locked -p codex-code-mode-host --bin codex-code-mode-host
-          test -x "$CARGO_TARGET_DIR/debug/codex-code-mode-host"
-          echo "CARGO_BIN_EXE_codex_code_mode_host=$CARGO_TARGET_DIR/debug/codex-code-mode-host" >> "$GITHUB_ENV"
+          git fetch --no-tags --depth=1 origin 5d5a60c151d617eafffe203fd02b733e03e01788
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          import tempfile
+          import types
+
+          helper_sha = "5d5a60c151d617eafffe203fd02b733e03e01788"
+          source = subprocess.check_output(["git", "show", f"{helper_sha}:scripts/install_branch_artifact"])
+          blob = hashlib.sha1(f"blob {len(source)}\0".encode() + source).hexdigest()
+          assert blob == "28b0c8f9c3de72f87f541bab1d88f4d7e472a6ec"
+          module = types.ModuleType("pinned_branch_installer")
+          module.__file__ = "scripts/install_branch_artifact"
+          sys.modules[module.__name__] = module
+          exec(compile(source, module.__file__, "exec"), module.__dict__)
+          api = module.GitHubApi(module.github_token())
+          run = module.fetch_run(api, 38667463865)
+          record = api.json("/repos/sednalabs/codex/actions/artifacts/11943777510")
+          assert record["id"] == 11943777510
+          assert record["digest"] == "sha256:294d6da1413fada60e1337fbc353ed3ef571418b465f699ce99aae79c86e2fc6"
+          destination = Path(os.environ["RUNNER_TEMP"]) / "verified-package"
+          with tempfile.TemporaryDirectory(dir=os.environ["RUNNER_TEMP"]) as temporary:
+              artifact = module.read_artifact(api, run, record, "x86_64-unknown-linux-gnu", Path(temporary))
+              assert artifact.source_sha == os.environ["SOURCE_SHA"]
+              assert artifact.ref == os.environ["SOURCE_SHA"]
+              files, manifest = module.package_files(artifact, destination)
+          host = files["codex-code-mode-host"]
+          assert host.is_file() and os.access(host, os.X_OK)
+          Path("evidence/package.json").write_text(json.dumps(manifest, indent=2) + "\n")
+          with open(os.environ["GITHUB_ENV"], "a") as output:
+              output.write(f"CARGO_BIN_EXE_codex_code_mode_host={host}\n")
+          PY
       - name: Prove regression against the comparison runtime
         working-directory: codex-rs
         shell: bash
