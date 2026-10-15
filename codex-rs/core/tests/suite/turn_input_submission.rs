@@ -30,6 +30,7 @@ use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::protocol::TurnEnvironmentRequests;
 use codex_protocol::protocol::TurnEnvironmentSelections;
 use codex_protocol::turn_input::TurnAttribution;
+use codex_protocol::turn_input::TurnInputMode;
 use codex_protocol::user_input::UserInput;
 use core_test_support::responses;
 use core_test_support::responses::ev_completed;
@@ -52,6 +53,63 @@ use test_case::test_case;
 use tokio::sync::Barrier;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
+
+#[tokio::test]
+async fn authenticated_app_server_input_can_start_and_steer() -> anyhow::Result<()> {
+    let (release_initial, initial_gate) = oneshot::channel();
+    let (server, _completions) = start_streaming_sse_server(vec![
+        vec![StreamingSseChunk {
+            gate: Some(initial_gate),
+            body: responses::sse_completed("initial"),
+        }],
+        vec![StreamingSseChunk {
+            gate: None,
+            body: responses::sse_completed("steered"),
+        }],
+    ])
+    .await;
+    let mock = responses::start_mock_server().await;
+    let test = test_codex().build_with_auto_env(&mock).await?;
+    let mut config = test.config.clone();
+    config.model_provider.base_url = Some(format!("{}/v1", server.uri()));
+    let thread = test
+        .thread_manager
+        .start_thread(StartThreadOptions {
+            environments: Some(vec![test.executor_environment().request()]),
+            ..StartThreadOptions::new(config)
+        })
+        .await?
+        .thread;
+
+    let submission = thread
+        .submit_app_server_turn_input(
+            user_message_request("ordinary start"),
+            TurnInputMode::StartOrSteer,
+        )
+        .await?;
+    let TurnInputSubmission::Started { turn_id, .. } = submission else {
+        anyhow::bail!("authenticated ordinary input must start a turn");
+    };
+    server.wait_for_request_count(/*count*/ 1).await;
+    assert_eq!(
+        thread
+            .submit_app_server_turn_input(
+                user_message_request("ordinary steer"),
+                TurnInputMode::StartOrSteer,
+            )
+            .await?,
+        TurnInputSubmission::Steered {
+            root_turn_id: turn_id.clone(),
+            turn_id,
+        }
+    );
+    release_initial.send(()).expect("initial response is waiting");
+    wait_for_event(&thread, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    assert_eq!(server.requests().await.len(), 2);
+    thread.shutdown_and_wait().await?;
+    server.shutdown().await;
+    Ok(())
+}
 
 /// Accepted steering changes future captures, while rejected input and automatic starts
 /// preserve the policy belonging to each turn.

@@ -259,9 +259,11 @@ pub(super) async fn handle_with_automatic_turn_context(
     submission_id: String,
     automatic_turn: Option<AutomaticTurnContext>,
 ) -> CodexResult<TurnInputSubmission> {
+    // Ordinary app-server input also carries provider authority for error provenance.
+    // Only a redeemed automatic continuation is restricted to start-only admission.
     if automatic_turn
         .as_ref()
-        .is_some_and(|context| context.provider_authority.is_some())
+        .is_some_and(|context| context.continuation_ref.is_some())
         && !matches!(mode, TurnInputMode::StartIfIdle)
     {
         return Err(CodexErr::InvalidRequest(

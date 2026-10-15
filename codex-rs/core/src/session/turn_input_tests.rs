@@ -8,6 +8,7 @@ use crate::state::TaskKind;
 use crate::tasks::SessionTask;
 use crate::tasks::SessionTaskResult;
 use codex_protocol::AgentPath;
+use codex_protocol::automatic_turn::AutomaticTurnContinuationRef;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
@@ -244,6 +245,100 @@ async fn start_only_rejects_active_turn_without_injecting() {
             .0
     );
 
+    session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+}
+
+#[tokio::test]
+async fn redeemed_automatic_turn_cannot_start_or_steer_an_active_turn() {
+    let (session, turn_context, _rx) = make_session_and_context_with_rx().await;
+    let original_settings = session.thread_settings_snapshot().await;
+    session
+        .spawn_task(
+            Arc::clone(&turn_context),
+            Vec::new(),
+            NeverEndingTask {
+                kind: TaskKind::Regular,
+                listen_to_cancellation_token: true,
+            },
+        )
+        .await;
+    let (provider_authority, principal_identity) = session
+        .services
+        .model_client
+        .current_provider_authority_and_automatic_turn_principal(None)
+        .await
+        .expect("resolve provider authority");
+    // The public bridge validates and reserves the ticket before constructing this context.
+    // Exercise the inner admission boundary without granting any external reference authority.
+    let automatic_turn = AutomaticTurnContext {
+        principal_identity,
+        client_user_message_id: Some("automatic-message".to_string()),
+        provider_authority: Some(provider_authority),
+        expected_epochs: None,
+        continuation_ref: Some(
+            AutomaticTurnContinuationRef::new("reserved-continuation")
+                .expect("valid reference shape"),
+        ),
+    };
+    for mode in [
+        TurnInputMode::StartOrSteer,
+        TurnInputMode::Steer {
+            expected_turn_id: turn_context.sub_id.clone(),
+        },
+    ] {
+        let result = handle_with_automatic_turn_context(
+            &session,
+            TurnInputRequest::user_input(vec![UserInput::Text {
+                text: "automatic continuation".to_string(),
+                text_elements: Vec::new(),
+            }]),
+            mode,
+            "automatic-submission".to_string(),
+            Some(automatic_turn.clone()),
+        )
+        .await;
+        assert!(matches!(
+            result
+                .expect_err("a redeemed continuation must not steer")
+                .details(),
+            CodexErrorDetails::InvalidRequest(message)
+                if message == "trusted automatic turns must start only when idle"
+        ));
+    }
+    let submission = handle_with_automatic_turn_context(
+        &session,
+        TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "automatic continuation".to_string(),
+            text_elements: Vec::new(),
+        }]),
+        TurnInputMode::StartIfIdle,
+        "automatic-submission".to_string(),
+        Some(automatic_turn),
+    )
+    .await
+    .expect("start-only admission returns a typed rejection");
+    assert_eq!(
+        submission,
+        TurnInputSubmission::NotSubmitted {
+            reason: NotSubmittedReason::NotIdle,
+        }
+    );
+    assert_eq!(session.thread_settings_snapshot().await, original_settings);
+    assert_eq!(
+        session
+            .input_queue
+            .get_pending_input(&session.active_turn)
+            .await
+            .0,
+        Vec::<TurnInput>::new()
+    );
+    assert_eq!(
+        session
+            .services
+            .automatic_turn_provider_authority("automatic-submission")
+            .await,
+        None
+    );
     session.abort_all_tasks(TurnAbortReason::Interrupted).await;
 }
 
