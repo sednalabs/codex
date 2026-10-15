@@ -156,7 +156,7 @@ jobs:
           RUST_TEST_REQUEST_JSON: ${{ inputs.request_json }}
         run: |
           set -euo pipefail
-          if [[ "${VALIDATION_TARGET_SHA}" != "ae94a802f4ca31130c1f1be5d4703c9062b84560" || "${VALIDATION_BASE_REF}" != "e135df532669849b682dfac712c3f59aded039ba1" || "${VALIDATION_PROFILE}" != "rust_integration" ]]; then
+          if [[ "${VALIDATION_TARGET_SHA}" != "ae94a802f4ca31130c1f1be5d4703c9062b84560" || "${VALIDATION_BASE_REF}" != "e135df532669849b682dfac712c3f59aded039ba" || "${VALIDATION_PROFILE}" != "rust_integration" ]]; then
             echo "CLI preparation is restricted to the fixed usage integration target" >&2
             exit 1
           fi
