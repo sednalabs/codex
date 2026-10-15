@@ -1,6 +1,10 @@
 //! Host-held, per-execution MCP proof for the protected claim cohort.
 
 mod auth;
+#[cfg(target_os = "linux")]
+pub mod launcher;
+#[cfg(target_os = "linux")]
+mod mcp_oauth;
 mod provider_auth;
 mod signer;
 pub mod startup;

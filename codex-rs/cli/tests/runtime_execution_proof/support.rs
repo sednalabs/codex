@@ -742,7 +742,7 @@ impl ProtectedRuntimeFixture {
         fs::write(
             home.join("config.toml"),
             format!(
-                "model = \"gpt-5.2\"\nmodel_provider = \"openai\"\nopenai_base_url = {:?}\ncli_auth_credentials_store = \"ephemeral\"\napproval_policy = \"never\"\nlog_dir = {:?}\n\n[features]\ncollab = true\n\n[agents.\"proof-child\"]\ndescription = \"synthetic provider guard fixture\"\nconfig_file = {:?}\n\n[mcp_servers.ops]\nurl = {:?}\n\n[mcp_servers.ops.tools.work_item_claim]\napproval_mode = \"approve\"\n",
+                "model = \"gpt-5.2\"\nmodel_provider = \"openai\"\nopenai_base_url = {:?}\ncli_auth_credentials_store = \"ephemeral\"\napproval_policy = \"never\"\nlog_dir = {:?}\n\n[features]\ncollab = true\n\n[agents.\"proof-child\"]\ndescription = \"synthetic provider guard fixture\"\nconfig_file = {:?}\n\n[mcp_servers.ops]\nurl = {:?}\nrequired = true\nenabled_tools = [\"work_item_claim\"]\n\n[mcp_servers.ops.tools.work_item_claim]\napproval_mode = \"approve\"\n",
                 provider_recipient,
                 root.join("logs").display().to_string(),
                 home.join("agents/proof-child.toml").display().to_string(),

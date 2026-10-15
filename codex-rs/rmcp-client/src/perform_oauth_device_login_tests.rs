@@ -304,6 +304,141 @@ async fn device_login_fails_closed_on_denial_and_expiry() {
 }
 
 #[tokio::test]
+async fn device_login_expiry_bounds_an_in_flight_token_response() {
+    use axum::Router;
+    use axum::routing::post;
+
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind synthetic token server");
+    let endpoint = format!(
+        "http://{}/token",
+        listener.local_addr().expect("local addr")
+    );
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            Router::new().route(
+                "/token",
+                post(|| async {
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    Json(json!({
+                        "access_token": "synthetic-late-token",
+                        "token_type": "Bearer"
+                    }))
+                }),
+            ),
+        )
+        .await
+        .expect("serve synthetic token server");
+    });
+    let adapter = OAuthHttpClientAdapter::new_with_max_timeout_and_redirect_mode(
+        http_client(),
+        build_default_headers(/*http_headers*/ None, /*env_http_headers*/ None)
+            .expect("empty headers"),
+        "https://resource.example.test/mcp",
+        DEVICE_HTTP_REQUEST_TIMEOUT,
+        /*has_configured_headers*/ false,
+        StreamableHttpRedirectMode::Legacy,
+    )
+    .expect("synthetic OAuth client");
+    let details = DeviceAuthorizationResponse {
+        device_code: "synthetic-device-code".to_string(),
+        user_code: "SYNTHETIC-CODE".to_string(),
+        verification_uri: "https://login.example.test/device".to_string(),
+        verification_uri_complete: None,
+        expires_in: Some(2),
+        interval: Some(1),
+    };
+
+    let error = poll_device_token(
+        &adapter,
+        &endpoint,
+        "synthetic-client",
+        /*resource*/ None,
+        &details,
+    )
+    .await
+    .expect_err("a late token response must not outlive device authorization");
+    assert!(
+        error.to_string().contains("expired"),
+        "unexpected error: {error:#}"
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn device_login_cancellation_drops_the_in_flight_poll() {
+    use std::sync::Arc;
+    use tokio::sync::Notify;
+
+    let admitted = Arc::new(Notify::new());
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind synthetic token server");
+    let endpoint = format!(
+        "http://{}/token",
+        listener.local_addr().expect("local addr")
+    );
+    let notify = admitted.clone();
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            Router::new().route(
+                "/token",
+                post(move || {
+                    let notify = notify.clone();
+                    async move {
+                        notify.notify_one();
+                        std::future::pending::<axum::response::Response>().await
+                    }
+                }),
+            ),
+        )
+        .await
+        .expect("serve synthetic token server");
+    });
+    let adapter = OAuthHttpClientAdapter::new_with_max_timeout_and_redirect_mode(
+        http_client(),
+        build_default_headers(/*http_headers*/ None, /*env_http_headers*/ None)
+            .expect("empty headers"),
+        "https://resource.example.test/mcp",
+        DEVICE_HTTP_REQUEST_TIMEOUT,
+        /*has_configured_headers*/ false,
+        StreamableHttpRedirectMode::Legacy,
+    )
+    .expect("synthetic OAuth client");
+    let details = DeviceAuthorizationResponse {
+        device_code: "synthetic-device-code".to_string(),
+        user_code: "SYNTHETIC-CODE".to_string(),
+        verification_uri: "https://login.example.test/device".to_string(),
+        verification_uri_complete: None,
+        expires_in: Some(60),
+        interval: Some(1),
+    };
+    let polling = tokio::spawn(async move {
+        poll_device_token(
+            &adapter,
+            &endpoint,
+            "synthetic-client",
+            /*resource*/ None,
+            &details,
+        )
+        .await
+    });
+
+    admitted.notified().await;
+    polling.abort();
+    assert!(
+        polling
+            .await
+            .expect_err("polling task must be cancelled")
+            .is_cancelled()
+    );
+    server.abort();
+}
+
+#[tokio::test]
 async fn device_login_does_not_poll_before_an_extreme_provider_interval() {
     let polls = Arc::new(AtomicUsize::new(0));
     let server = spawn_server(PollState {

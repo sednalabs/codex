@@ -14,7 +14,7 @@ pub const MAX_CERTIFICATE_BYTES: usize = 16 * 1024;
 pub const MAX_CERTIFICATE_SECONDS: i64 = 30 * 60;
 pub const MAX_PROOF_SECONDS: i64 = 60;
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CertificateHeader {
     pub alg: String,
@@ -22,7 +22,7 @@ pub(crate) struct CertificateHeader {
     pub kid: String,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CertificateClaims {
     pub version: u8,

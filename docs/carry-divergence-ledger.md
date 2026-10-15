@@ -414,8 +414,8 @@ The `sedna-branch-build` workflow has an opt-in `host_only=true` dispatch for
 `--help` before uploading a separate archive. The artifact metadata records the
 exact source commit and workflow commit; adjacent SHA-256 files cover both the
 binary and archive. The default preview dispatch continues to build the CLI and
-responses API proxy. Before Cargo runs, the host-only path sources the target's
-existing `setup-rusty-v8.sh` helper, which downloads the matching Codex release
+responses API proxy. Before Cargo runs, the host-only path uses the target's
+existing `setup-rusty-v8` action, which downloads the matching Codex release
 archive and binding and verifies them against the target's pinned checksum
 manifest. Use the host-only artifact only with companion binaries built from
 the same source commit.
@@ -511,3 +511,18 @@ uses the production protected HTTP client twice: the initial selected request
 reaches a recording delegate, while the retained client rejects a second send
 after expiry before that delegate is called. Both tests are source fixtures
 until explicitly run on a disposable hosted Linux runner.
+
+## Current MCP device authorization and protected launcher joins
+
+Device authorization retains its trusted metadata and routed HTTP client. Resolved
+scopes are sent unchanged; scope rejection never triggers an empty-scope login.
+The original device deadline bounds token requests, including response-body
+collection, and cancellation does not publish credentials.
+
+The fixed-policy Linux launcher and inert systemd unit are retained as source
+and branch-package inputs. The launcher accepts no caller-selected arguments,
+checks its measured child and immutable claim-only configuration, and supplies
+finite proof/authentication frames only through the existing anonymous-descriptor
+boundary. Packaging is not issuer appointment, policy or credential provisioning,
+service installation, or live execution authority. The ordinary branch installer
+continues to install only the CLI and its two existing companion executables.

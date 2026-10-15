@@ -3,7 +3,6 @@ use std::fmt;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
-use std::time::Instant;
 
 use anyhow::Context;
 use anyhow::Result;
@@ -16,7 +15,9 @@ use rmcp::transport::auth::OAuthHttpRedirectPolicy;
 use rmcp::transport::auth::OAuthTokenResponse;
 use serde::Deserialize;
 use serde::Serialize;
+use tokio::time::Instant;
 use tokio::time::sleep;
+use tokio::time::timeout_at;
 use url::Url;
 
 use crate::StoredOAuthTokens;
@@ -364,15 +365,23 @@ where
         }
         let timeout =
             DEVICE_HTTP_REQUEST_TIMEOUT.min(deadline.saturating_duration_since(Instant::now()));
-        let response = execute_oauth_request(
-            http_client,
-            endpoint,
-            encode_form(&form),
-            "application/x-www-form-urlencoded",
-            timeout,
+        let response = timeout_at(
+            deadline,
+            execute_oauth_request(
+                http_client,
+                endpoint,
+                encode_form(&form),
+                "application/x-www-form-urlencoded",
+                timeout,
+            ),
         )
-        .await
-        .context("failed to poll OAuth device token")?;
+        .await;
+        if Instant::now() >= deadline {
+            bail!("OAuth device code expired before authorization completed");
+        }
+        let response = response
+            .map_err(|_| anyhow!("OAuth device code expired before authorization completed"))?
+            .context("failed to poll OAuth device token")?;
         if response.status().is_success() {
             return serde_json::from_slice::<OAuthTokenResponse>(response.body())
                 .map_err(|_| anyhow!("failed to parse OAuth device token response"));

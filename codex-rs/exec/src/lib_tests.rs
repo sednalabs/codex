@@ -11,12 +11,45 @@ use opentelemetry::trace::TraceId;
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_sdk::trace::SdkTracerProvider;
 use pretty_assertions::assert_eq;
+use serde_json::json;
 use std::io;
 use std::io::Write;
 use std::sync::Arc;
 use std::sync::Mutex;
 use tempfile::tempdir;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
+
+#[test]
+fn protected_runtime_accepts_only_the_fixed_claim_tool_profile() {
+    let recipient = "https://ops.example/mcp";
+    let valid = || {
+        serde_json::from_value::<McpServerConfig>(json!({
+            "url": recipient,
+            "required": true,
+            "enabled_tools": ["work_item_claim"],
+            "tools": { "work_item_claim": { "approval_mode": "approve" } },
+        }))
+        .expect("valid protected MCP profile")
+    };
+
+    assert!(validate_protected_claim_server(&valid(), recipient).is_ok());
+
+    for config in [
+        json!({ "url": recipient, "enabled": false, "required": true, "enabled_tools": ["work_item_claim"], "tools": { "work_item_claim": { "approval_mode": "approve" } } }),
+        json!({ "url": recipient, "required": false, "enabled_tools": ["work_item_claim"], "tools": { "work_item_claim": { "approval_mode": "approve" } } }),
+        json!({ "url": recipient, "enabled_tools": ["work_item_claim", "other"], "tools": { "work_item_claim": { "approval_mode": "approve" } } }),
+        json!({ "url": recipient, "enabled_tools": ["work_item_claim"], "tools": { "work_item_claim": { "approval_mode": "prompt" } } }),
+        json!({ "url": recipient, "enabled_tools": ["work_item_claim"], "tools": { "work_item_claim": { "approval_mode": "approve" }, "other": { "approval_mode": "approve" } } }),
+        json!({ "url": recipient, "enabled_tools": ["work_item_claim"], "default_tools_approval_mode": "approve", "tools": { "work_item_claim": { "approval_mode": "approve" } } }),
+        json!({ "url": recipient, "enabled_tools": ["work_item_claim"], "environment_id": "remote", "tools": { "work_item_claim": { "approval_mode": "approve" } } }),
+        json!({ "url": recipient, "enabled_tools": ["work_item_claim"], "bearer_token_env_var": "OPS_TOKEN", "tools": { "work_item_claim": { "approval_mode": "approve" } } }),
+        json!({ "url": recipient, "enabled_tools": ["work_item_claim"], "http_headers_helper": "untrusted-helper", "tools": { "work_item_claim": { "approval_mode": "approve" } } }),
+    ] {
+        let server = serde_json::from_value::<McpServerConfig>(config)
+            .expect("fixture MCP configuration shape parses");
+        assert!(validate_protected_claim_server(&server, recipient).is_err());
+    }
+}
 
 fn test_tracing_subscriber() -> impl tracing::Subscriber + Send + Sync {
     let provider = SdkTracerProvider::builder().build();

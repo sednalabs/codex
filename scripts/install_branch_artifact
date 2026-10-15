@@ -411,7 +411,10 @@ def read_artifact(api: GitHubApi, run: dict[str, Any], record: dict[str, Any], t
         or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.+-]{0,127}", preview_version) is None
     ):
         fail(f"Actions artifact {artifact_id} metadata omitted previewVersion")
-    if not preview_version.endswith(f"+g{source_sha[:8]}"):
+    if (
+        preview_version.count("+") != 1
+        or preview_version.partition("+")[2].rsplit(".", 1)[-1] != f"g{source_sha[:8]}"
+    ):
         fail(f"Actions artifact {artifact_id} previewVersion does not match its product source SHA")
     expected_version = f"{preview_version.replace('+', '__')}-{target}.tar.gz"
     if "artifact" in metadata or archive_name != f"codex-sedna-preview-{expected_version}":
@@ -544,8 +547,19 @@ def elf_machine(path: Path, target: str) -> None:
         fail(f"{path.name} has ELF machine {machine}, expected {expected_machine} for {target}")
 
 
-def safe_tar_extract(archive_path: Path, destination: Path, expected_names: set[str], target: str) -> dict[str, Path]:
+def safe_tar_extract(
+    archive_path: Path,
+    destination: Path,
+    expected_names: set[str],
+    target: str,
+    runtime_proof_sha256: str | None = None,
+) -> dict[str, Path]:
     extracted: dict[str, Path] = {}
+    auxiliary: set[str] = set()
+    auxiliary_names = {
+        "codex-runtime-proof-launcher",
+        "systemd/codex-runtime-proof-claim.service",
+    }
     destination.mkdir(mode=0o700, parents=True, exist_ok=True)
     try:
         with tarfile.open(archive_path, mode="r:gz") as archive:
@@ -553,6 +567,28 @@ def safe_tar_extract(archive_path: Path, destination: Path, expected_names: set[
                 if member.name in ("", ".", "./"):
                     continue
                 path = PurePosixPath(member.name)
+                if runtime_proof_sha256 is not None and not path.is_absolute() and "\\" not in member.name:
+                    name = path.as_posix()
+                    if name == "systemd" and member.isdir():
+                        continue
+                    if name in auxiliary_names:
+                        if not member.isfile() or name in auxiliary:
+                            fail(f"refusing unsafe or duplicate runtime-proof member {member.name!r}")
+                        auxiliary.add(name)
+                        if name == "codex-runtime-proof-launcher":
+                            source = archive.extractfile(member)
+                            if source is None:
+                                fail("could not read runtime-proof launcher")
+                            launcher = destination / name
+                            with source, launcher.open("xb") as output:
+                                shutil.copyfileobj(source, output, length=1024 * 1024)
+                            if sha256_file(launcher) != runtime_proof_sha256:
+                                fail("runtime-proof launcher digest does not match package metadata")
+                            elf_machine(launcher, target)
+                        # These exact auxiliary members remain available in the
+                        # archive, but ordinary branch installation never installs
+                        # the privileged launcher or its inert service template.
+                        continue
                 if (
                     path.is_absolute()
                     or len(path.parts) != 1
@@ -575,6 +611,8 @@ def safe_tar_extract(archive_path: Path, destination: Path, expected_names: set[
     if set(extracted) != expected_names:
         missing = ", ".join(sorted(expected_names - set(extracted)))
         fail(f"package archive is missing required executable(s): {missing}")
+    if runtime_proof_sha256 is not None and auxiliary != auxiliary_names:
+        fail("package archive is missing the declared runtime-proof inputs")
     for path in extracted.values():
         elf_machine(path, target)
     return extracted
@@ -585,7 +623,19 @@ def package_files(artifact: Artifact, destination: Path) -> tuple[dict[str, Path
     destination.mkdir(mode=0o700, parents=True, exist_ok=True)
     staged = destination / "payload"
     staged.mkdir(mode=0o700)
-    files = safe_tar_extract(package_archive, staged, set(EXECUTABLES), artifact.target)
+    runtime_proof_sha256 = artifact.metadata.get("runtimeProofLauncherSha256")
+    if runtime_proof_sha256 is not None and (
+        not isinstance(runtime_proof_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", runtime_proof_sha256) is None
+    ):
+        fail("runtime-proof launcher metadata has an invalid SHA-256 digest")
+    files = safe_tar_extract(
+        package_archive,
+        staged,
+        set(EXECUTABLES),
+        artifact.target,
+        runtime_proof_sha256,
+    )
     manifest = {
         "schemaVersion": 1,
         "repository": REPOSITORY,

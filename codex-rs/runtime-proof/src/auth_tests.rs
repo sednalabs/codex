@@ -6,7 +6,6 @@ use super::clear_auth_state;
 use super::failed_target_match;
 use super::protected_mcp_target_from_store;
 use super::validate_raw_config;
-use crate::provider_auth::ProviderCredentialClass;
 use pretty_assertions::assert_eq;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
@@ -16,65 +15,34 @@ use std::thread;
 use zeroize::Zeroizing;
 
 #[test]
-fn fixture_claim_approval_is_exact_and_unavailable_to_live_credentials() {
+fn protected_runtime_config_is_exactly_claim_only() {
     let recipient = "http://127.0.0.1:12345/mcp";
     let pinned_only = format!(
         "model_provider = \"openai\"\ncli_auth_credentials_store = \"ephemeral\"\n\n[mcp_servers.ops]\nurl = \"{recipient}\"\n"
     );
-    let config = format!(
-        "model_provider = \"openai\"\ncli_auth_credentials_store = \"ephemeral\"\n\n[mcp_servers.ops]\nurl = \"{recipient}\"\n\n[mcp_servers.ops.tools.work_item_claim]\napproval_mode = \"approve\"\n"
+    let claim_only_config = format!(
+        "model_provider = \"openai\"\ncli_auth_credentials_store = \"ephemeral\"\n\n[mcp_servers.ops]\nurl = \"{recipient}\"\nrequired = true\nenabled_tools = [\"work_item_claim\"]\n\n[mcp_servers.ops.tools.work_item_claim]\napproval_mode = \"approve\"\n"
     );
 
-    assert!(
-        validate_raw_config(
-            pinned_only.as_bytes(),
-            "ops",
-            recipient,
-            &ProviderCredentialClass::Live,
-        )
-        .is_ok()
-    );
-    assert!(
-        validate_raw_config(
-            config.as_bytes(),
-            "ops",
-            recipient,
-            &ProviderCredentialClass::SyntheticFixture,
-        )
-        .is_ok()
-    );
-    assert!(
-        validate_raw_config(
-            config.as_bytes(),
-            "ops",
-            recipient,
-            &ProviderCredentialClass::Live,
-        )
-        .is_err()
-    );
+    assert!(validate_raw_config(pinned_only.as_bytes(), "ops", recipient,).is_err());
+    assert!(validate_raw_config(claim_only_config.as_bytes(), "ops", recipient,).is_ok());
 
     let extra_tool = format!(
-        "model_provider = \"openai\"\ncli_auth_credentials_store = \"ephemeral\"\n\n[mcp_servers.ops]\nurl = \"{recipient}\"\n\n[mcp_servers.ops.tools.work_item_claim]\napproval_mode = \"approve\"\n\n[mcp_servers.ops.tools.other]\napproval_mode = \"approve\"\n"
+        "model_provider = \"openai\"\ncli_auth_credentials_store = \"ephemeral\"\n\n[mcp_servers.ops]\nurl = \"{recipient}\"\nrequired = true\nenabled_tools = [\"work_item_claim\"]\n\n[mcp_servers.ops.tools.work_item_claim]\napproval_mode = \"approve\"\n\n[mcp_servers.ops.tools.other]\napproval_mode = \"approve\"\n"
     );
-    assert!(
-        validate_raw_config(
-            extra_tool.as_bytes(),
-            "ops",
-            recipient,
-            &ProviderCredentialClass::SyntheticFixture,
-        )
-        .is_err()
-    );
+    assert!(validate_raw_config(extra_tool.as_bytes(), "ops", recipient,).is_err());
 
-    assert!(
-        validate_raw_config(
-            config.as_bytes(),
-            "other",
-            recipient,
-            &ProviderCredentialClass::SyntheticFixture,
-        )
-        .is_err()
+    let additional_server = format!(
+        "{claim_only_config}\n[mcp_servers.untrusted]\nurl = \"https://untrusted.example/mcp\"\n"
     );
+    assert!(validate_raw_config(additional_server.as_bytes(), "ops", recipient,).is_err());
+
+    let unapproved_tool_list = format!(
+        "model_provider = \"openai\"\ncli_auth_credentials_store = \"ephemeral\"\n\n[mcp_servers.ops]\nurl = \"{recipient}\"\nrequired = true\nenabled_tools = [\"work_item_claim\"]\n"
+    );
+    assert!(validate_raw_config(unapproved_tool_list.as_bytes(), "ops", recipient,).is_err());
+
+    assert!(validate_raw_config(claim_only_config.as_bytes(), "other", recipient,).is_err());
 }
 
 #[test]

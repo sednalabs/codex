@@ -91,15 +91,20 @@ def action_artifact(
     target: str = TARGET,
     package_files: dict[str, bytes] | None = None,
     host_only: bool = False,
+    runtime_proof: bool = False,
+    preview_version: str | None = None,
 ) -> bytes:
-    preview_version = f"1.2.3-ci.{run_id}+g{source_sha[:8]}"
+    preview_version = preview_version or f"1.2.3-ci.{run_id}+g{source_sha[:8]}"
     version = preview_version.replace("+", "__")
     archive_base = "codex-sedna-preview-host" if host_only else "codex-sedna-preview"
     archive_name = f"{archive_base}-{version}-{target}.tar.gz"
     if host_only:
         binaries = {"codex-code-mode-host": elf()}
     else:
-        binaries = package_files or {name: elf() for name in installer.EXECUTABLES}
+        binaries = dict(package_files or {name: elf() for name in installer.EXECUTABLES})
+    if runtime_proof:
+        binaries["codex-runtime-proof-launcher"] = elf()
+        binaries["systemd/codex-runtime-proof-claim.service"] = b"[Unit]\nDescription=Synthetic fixture\n"
     metadata = {
         "repository": installer.REPOSITORY,
         "commit": source_sha,
@@ -109,6 +114,8 @@ def action_artifact(
     }
     if target == "aarch64-unknown-linux-gnu":
         metadata["target"] = target
+    if runtime_proof:
+        metadata["runtimeProofLauncherSha256"] = sha(binaries["codex-runtime-proof-launcher"])
     if host_only:
         metadata["artifact"] = "codex-code-mode-host"
         metadata["workflowCommit"] = WORKFLOW_SHA
@@ -517,6 +524,78 @@ class BranchArtifactInstallerTests(unittest.TestCase):
         artifact = self.resolve_exact(make_api({41: (1001, bad_package)}))
         with self.assertRaisesRegex(installer.InstallError, "unsafe or unexpected"):
             installer.package_files(artifact, self.root / "unsafe-package")
+
+    def test_runtime_proof_auxiliaries_do_not_change_installed_executables(self) -> None:
+        artifact = self.resolve_exact(
+            make_api({41: (1001, action_artifact(1001, runtime_proof=True))})
+        )
+        files, manifest = installer.package_files(artifact, self.root / "runtime-proof")
+        self.assertEqual(set(files), set(installer.EXECUTABLES))
+        self.assertEqual(set(manifest["binarySha256"]), set(installer.EXECUTABLES))
+        self.assertNotIn("codex-runtime-proof-launcher", files)
+        self.assertFalse((self.root / "runtime-proof" / "payload" / "systemd").exists())
+
+    def test_runtime_proof_auxiliaries_require_declared_digest(self) -> None:
+        files = {name: elf() for name in installer.EXECUTABLES}
+        files["codex-runtime-proof-launcher"] = elf()
+        files["systemd/codex-runtime-proof-claim.service"] = b"[Unit]\n"
+        artifact = self.resolve_exact(
+            make_api({41: (1001, action_artifact(1001, package_files=files))})
+        )
+        with self.assertRaisesRegex(installer.InstallError, "unsafe or unexpected"):
+            installer.package_files(artifact, self.root / "undeclared-runtime-proof")
+
+    def test_runtime_proof_launcher_digest_must_match(self) -> None:
+        payload = action_artifact(1001, runtime_proof=True)
+        with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+            metadata_name = next(name for name in archive.namelist() if name.endswith(".json"))
+        payload = rewrite_json_member(
+            payload,
+            metadata_name,
+            lambda metadata: metadata.update(runtimeProofLauncherSha256="0" * 64),
+        )
+        artifact = self.resolve_exact(make_api({41: (1001, payload)}))
+        with self.assertRaisesRegex(installer.InstallError, "launcher digest"):
+            installer.package_files(artifact, self.root / "wrong-launcher-digest")
+
+    def test_declared_runtime_proof_inputs_are_required(self) -> None:
+        payload = action_artifact(1001)
+        with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+            metadata_name = next(name for name in archive.namelist() if name.endswith(".json"))
+        payload = rewrite_json_member(
+            payload,
+            metadata_name,
+            lambda metadata: metadata.update(runtimeProofLauncherSha256=sha(elf())),
+        )
+        artifact = self.resolve_exact(make_api({41: (1001, payload)}))
+        with self.assertRaisesRegex(installer.InstallError, "missing the declared"):
+            installer.package_files(artifact, self.root / "missing-runtime-proof")
+
+    def test_existing_build_metadata_preserves_source_suffix(self) -> None:
+        payload = action_artifact(
+            1001,
+            preview_version=f"1.2.3+upstream.9.ci.51.g{SOURCE_SHA[:8]}",
+        )
+        artifact = self.resolve_exact(make_api({41: (1001, payload)}))
+        self.assertEqual(artifact.source_sha, SOURCE_SHA)
+
+    def test_runtime_proof_service_symlink_is_rejected(self) -> None:
+        output = io.BytesIO()
+        with tarfile.open(fileobj=output, mode="w:gz") as archive:
+            info = tarfile.TarInfo("./systemd/codex-runtime-proof-claim.service")
+            info.type = tarfile.SYMTYPE
+            info.linkname = "../../outside"
+            archive.addfile(info)
+        archive_path = self.root / "linked-service.tar.gz"
+        archive_path.write_bytes(output.getvalue())
+        with self.assertRaisesRegex(installer.InstallError, "unsafe or duplicate runtime-proof"):
+            installer.safe_tar_extract(
+                archive_path,
+                self.root / "linked-service",
+                set(installer.EXECUTABLES),
+                TARGET,
+                sha(elf()),
+            )
 
     def test_wrong_elf_architecture_is_rejected(self) -> None:
         wrong_machine = 183 if MACHINE == 62 else 62
