@@ -8,6 +8,7 @@ use crate::update_versions::is_source_build_version;
 use crate::updates_cache::VersionInfo;
 use crate::updates_cache::read_version_info;
 use crate::updates_cache::version_filepath;
+use anyhow::Context;
 use chrono::Duration;
 use chrono::Utc;
 use codex_http_client::ClientRouteClass;

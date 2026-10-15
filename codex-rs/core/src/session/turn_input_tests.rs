@@ -265,7 +265,7 @@ async fn redeemed_automatic_turn_cannot_start_or_steer_an_active_turn() {
     let (provider_authority, principal_identity) = session
         .services
         .model_client
-        .current_provider_authority_and_automatic_turn_principal(None)
+        .current_provider_authority_and_automatic_turn_principal(/*expected_auth_epoch*/ None)
         .await
         .expect("resolve provider authority");
     // The public bridge validates and reserves the ticket before constructing this context.

@@ -1381,7 +1381,7 @@ fn standalone_unix_update_available_history_cell_snapshot() {
 
 #[test]
 fn manual_update_notice_points_to_sedna_releases() {
-    let cell = UpdateAvailableHistoryCell::new("9.9.9".to_string(), None);
+    let cell = UpdateAvailableHistoryCell::new("9.9.9".to_string(), /*update_action*/ None);
     let raw = cell
         .raw_lines()
         .iter()

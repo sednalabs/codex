@@ -513,8 +513,8 @@ mod tests {
                     thread_id,
                     &policy_error("stale-manager-a-issue"),
                     principal_a_at_b_epoch.as_deref(),
-                    None,
-                    None,
+                    /*client_user_message_id*/ None,
+                    /*continuation_ref*/ None,
                     expected_epochs_a,
                 )
                 .await
@@ -543,8 +543,8 @@ mod tests {
                 thread_id,
                 &policy_error("manager-b-issue"),
                 Some(&principal_b),
-                None,
-                None,
+                /*client_user_message_id*/ None,
+                /*continuation_ref*/ None,
                 Some(epochs_b),
             )
             .await
@@ -557,7 +557,7 @@ mod tests {
                     &principal_b,
                     "manager-b-client",
                     "start",
-                    None,
+                    /*expected_turn_id*/ None,
                 )
                 .await?
         );
@@ -614,8 +614,8 @@ mod tests {
                 thread_id,
                 &policy_error("manager-a-current-issue"),
                 Some(&principal_a_current),
-                None,
-                None,
+                /*client_user_message_id*/ None,
+                /*continuation_ref*/ None,
                 Some(epochs_a),
             )
             .await
@@ -628,7 +628,7 @@ mod tests {
                     &principal_a_current,
                     "manager-a-client-2",
                     "start",
-                    None,
+                    /*expected_turn_id*/ None,
                 )
                 .await?
         );

@@ -222,7 +222,7 @@ struct FakeInstallerHttp {
 async fn explicit_update_migrates_running_and_stopped_installations() {
     for (running, local) in [(false, false), (true, false), (false, true), (true, true)] {
         let home = TempDir::new().unwrap();
-        let (legacy, release) = sedna_update_daemon(&home);
+        let (mut legacy, release) = sedna_update_daemon(&home);
         let root = home.path().join("packages/standalone");
         if local {
             let package = root.join("releases/local-development");

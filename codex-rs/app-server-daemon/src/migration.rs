@@ -45,9 +45,9 @@ pub(super) async fn run(http: &impl InstallerHttp, legacy: &Daemon) -> Result<Up
         "selected daemon binary does not belong to the selected release"
     );
     let legacy_context = codex_install_context::InstallContext::from_exe_in_codex_home(
-        false,
+        /*is_macos*/ false,
         Some(&legacy_binary),
-        None,
+        /*method_override*/ None,
         home,
     );
     let previous_receipt = legacy_context
@@ -149,9 +149,9 @@ pub(super) async fn run(http: &impl InstallerHttp, legacy: &Daemon) -> Result<Up
     };
     let binary = release.join(entrypoint);
     let context = codex_install_context::InstallContext::from_exe_in_codex_home(
-        false,
+        /*is_macos*/ false,
         Some(&binary),
-        None,
+        /*method_override*/ None,
         home,
     );
     let receipt = context

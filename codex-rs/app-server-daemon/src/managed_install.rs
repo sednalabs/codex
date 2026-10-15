@@ -81,7 +81,7 @@ pub(crate) fn is_sedna_update_eligible(codex_home: &Path, codex_bin: &Path) -> b
     let install_context = codex_install_context::InstallContext::from_exe_in_codex_home(
         cfg!(target_os = "macos"),
         Some(codex_bin),
-        None,
+        /*method_override*/ None,
         codex_home,
     );
     let Some(receipt) = install_context.sedna_release_receipt() else {

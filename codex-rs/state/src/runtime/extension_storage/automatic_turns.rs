@@ -770,23 +770,22 @@ impl StateRuntime {
     ) -> anyhow::Result<Option<String>> {
         match &event.msg {
             EventMsg::ItemCompleted(item_event) => {
-                if let TurnItem::UserMessage(item) = &item_event.item {
-                    if let (Some(client_id), Some(continuation_ref)) =
+                if let TurnItem::UserMessage(item) = &item_event.item
+                    && let (Some(client_id), Some(continuation_ref)) =
                         (item.client_id.as_deref(), continuation_ref)
-                    {
-                        let _ = self
-                            .insert_validated_automatic_turn(
-                                thread_id,
-                                &event.id,
-                                &item_event.turn_id,
-                                client_id,
-                                continuation_ref,
-                                expected_epochs,
-                                item,
-                                principal,
-                            )
-                            .await?;
-                    }
+                {
+                    let _ = self
+                        .insert_validated_automatic_turn(
+                            thread_id,
+                            &event.id,
+                            &item_event.turn_id,
+                            client_id,
+                            continuation_ref,
+                            expected_epochs,
+                            item,
+                            principal,
+                        )
+                        .await?;
                 }
                 Ok(None)
             }

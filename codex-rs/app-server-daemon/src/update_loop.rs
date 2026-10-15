@@ -377,7 +377,7 @@ async fn update_once(
     let install_context = codex_install_context::InstallContext::from_exe_in_codex_home(
         cfg!(target_os = "macos"),
         Some(&managed_codex_bin),
-        None,
+        /*method_override*/ None,
         codex_home,
     );
     let receipt = install_context
