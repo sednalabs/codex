@@ -48,6 +48,8 @@ async fn connection_closure_releases_pending_inputs_and_timeout_pause() -> anyho
                     Box::pin(async move { Ok(rx.await?) })
                 }),
                 pause_state,
+                std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                /*protected_output*/ false,
             );
             let (client_transport, server_transport) =
                 tokio::io::duplex(/*max_buf_size*/ 4096);

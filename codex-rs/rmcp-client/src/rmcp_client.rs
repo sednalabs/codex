@@ -38,7 +38,6 @@ use rmcp::model::ElicitResult;
 use rmcp::model::ElicitationAction;
 use rmcp::model::Extensions;
 use rmcp::model::InitializeRequestParams;
-use rmcp::model::InitializeResult;
 use rmcp::model::ListResourceTemplatesResult;
 use rmcp::model::ListResourcesResult;
 use rmcp::model::ListToolsResult;
@@ -50,6 +49,7 @@ use rmcp::model::ReadResourceResult;
 use rmcp::model::RequestId;
 use rmcp::model::RequestMetaObject;
 use rmcp::model::RequestParamsMeta;
+use rmcp::model::ServerPeerInfo;
 use rmcp::model::ServerResult;
 use rmcp::model::Tool;
 use rmcp::service::ClientCacheConfig;
@@ -697,7 +697,7 @@ impl RmcpClient {
         params: InitializeRequestParams,
         timeout: Option<Duration>,
         send_elicitation: SendElicitation,
-    ) -> Result<InitializeResult> {
+    ) -> Result<ServerPeerInfo> {
         let client_service = ElicitationClientService::new(
             params,
             send_elicitation,
