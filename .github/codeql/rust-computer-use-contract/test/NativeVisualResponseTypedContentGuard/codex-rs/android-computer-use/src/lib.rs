@@ -177,19 +177,31 @@ mod typed_content_helper {
         if let Some(Content::InputText { text }) = items.first_mut() {
             text.push_str(extra);
         } else {
-            items.insert(0, Content::InputText { text: extra.trim().to_string() });
+            items.insert(
+                0,
+                Content::InputText {
+                    text: extra.trim().to_string(),
+                },
+            );
         }
     }
 
     fn require_native_image_for_visual_response(response: &mut Response, message: &str) {
-        if !response.content_items.iter().any(|item| matches!(item, Content::InputImage)) {
+        if !response
+            .content_items
+            .iter()
+            .any(|item| matches!(item, Content::InputImage))
+        {
             append_text(&mut response.content_items, message);
             response.success = false;
         }
     }
 
     fn observe() -> Result<Response, String> {
-        let mut response = Response { content_items: Vec::new(), success: true };
+        let mut response = Response {
+            content_items: Vec::new(),
+            success: true,
+        };
         require_native_image_for_visual_response(&mut response, "missing image");
         Ok(response)
     }
