@@ -2617,6 +2617,10 @@ impl AuthManager {
         Ok(*self.auth_change_tx.borrow())
     }
 
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "the credential transition gate must remain held while loading and publishing auth"
+    )]
     async fn reload_if_account_id_matches(
         &self,
         expected_account_id: Option<&str>,
@@ -2807,6 +2811,10 @@ impl AuthManager {
         self.install_external_auth(external_auth).await
     }
 
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "the credential transition gate must serialize external auth resolution and publication"
+    )]
     async fn install_external_auth(
         &self,
         external_auth: Arc<dyn ExternalAuth>,
@@ -2824,10 +2832,6 @@ impl AuthManager {
         self.commit_external_auth(auth)
     }
 
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "clearing external auth and cached credentials is one provider transition"
-    )]
     pub async fn clear_external_auth(&self) {
         if self.workload_identity_selected {
             return;
@@ -3182,6 +3186,10 @@ impl AuthManager {
         last_refresh < Utc::now() - chrono::Duration::days(TOKEN_REFRESH_INTERVAL)
     }
 
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "the credential transition gate must serialize external refresh and cache publication"
+    )]
     async fn refresh_external_auth(
         &self,
         reason: ExternalAuthRefreshReason,

@@ -498,7 +498,7 @@ fn has_url_userinfo(url: &url::Url) -> bool {
     url.as_str()
         .split_once("://")
         .and_then(|(_, rest)| {
-            rest.split(|character| matches!(character, '/' | '?' | '#'))
+            rest.split(['/', '?', '#'])
                 .next()
         })
         .is_none_or(|authority| authority.contains('@'))
@@ -1390,7 +1390,7 @@ mod tests {
             .is_none()
         );
 
-        let mut mismatched_issuer = metadata_json.clone();
+        let mut mismatched_issuer = metadata_json;
         mismatched_issuer["issuer"] = serde_json::json!("https://other.example");
         let mismatched_issuer: AuthorizationMetadata = serde_json::from_value(mismatched_issuer)
             .expect("mismatched issuer metadata should parse");
