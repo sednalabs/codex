@@ -11,12 +11,23 @@ from tempfile import TemporaryDirectory
 from packaging.version import InvalidVersion, Version
 
 MINIMUM_RUNTIME_VERSION = "0.151.0"
+_SEMVER_PRERELEASE = re.compile(
+    r"(?P<release>(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))-"
+    r"(?P<prerelease>(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
+    r"(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)"
+)
 
 
 def require_runtime_version(version: str | None) -> None:
     """Reject unknown or unsupported versions, including prereleases at the minimum."""
     # CLI alpha hotfixes use 0.154.0-alpha.1.2; PEP 440 spells that a1.post2.
     normalized = re.sub(r"-alpha\.(\d+)\.(\d+)$", r"a\1.post\2", version or "")
+    semver_prerelease = _SEMVER_PRERELEASE.fullmatch(normalized)
+    if semver_prerelease:
+        normalized = (
+            f"{semver_prerelease.group('release')}.dev0+"
+            f"{semver_prerelease.group('prerelease')}"
+        )
     try:
         if Version(normalized) >= Version(MINIMUM_RUNTIME_VERSION):
             return
