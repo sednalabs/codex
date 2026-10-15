@@ -435,9 +435,6 @@ jobs:
                           "stdout_tail": bounded_tail(test_run.stdout),
                           "stderr_tail": bounded_tail(test_run.stderr),
                       }
-          except Exception as error:
-              fail("runner_exception", type(error).__name__)
-
           Path("rust-tests-v1-results.json").write_text(
               json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
           )
