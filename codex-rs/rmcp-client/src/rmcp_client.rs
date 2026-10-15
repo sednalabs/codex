@@ -38,7 +38,6 @@ use rmcp::model::ElicitResult;
 use rmcp::model::ElicitationAction;
 use rmcp::model::Extensions;
 use rmcp::model::InitializeRequestParams;
-use rmcp::model::InitializeResult;
 use rmcp::model::ListResourceTemplatesResult;
 use rmcp::model::ListResourcesResult;
 use rmcp::model::ListToolsResult;
@@ -50,6 +49,7 @@ use rmcp::model::ReadResourceResult;
 use rmcp::model::RequestId;
 use rmcp::model::RequestMetaObject;
 use rmcp::model::RequestParamsMeta;
+use rmcp::model::ServerPeerInfo;
 use rmcp::model::ServerResult;
 use rmcp::model::Tool;
 use rmcp::service::ClientCacheConfig;
@@ -697,7 +697,7 @@ impl RmcpClient {
         params: InitializeRequestParams,
         timeout: Option<Duration>,
         send_elicitation: SendElicitation,
-    ) -> Result<InitializeResult> {
+    ) -> Result<ServerPeerInfo> {
         let client_service = ElicitationClientService::new(
             params,
             send_elicitation,
@@ -729,14 +729,7 @@ impl RmcpClient {
             .peer()
             .peer_info()
             .ok_or_else(|| anyhow!("handshake succeeded but server info was missing"))?;
-        let peer_info = initialize_result_rmcp.as_ref();
-        let mut initialize_result = InitializeResult::new(peer_info.capabilities.clone())
-            .with_protocol_version(peer_info.protocol_version.clone())
-            .with_server_info(peer_info.server_info.clone().ok_or_else(|| {
-                anyhow!("initialization succeeded but server implementation was missing")
-            })?);
-        initialize_result.instructions = peer_info.instructions.clone();
-        initialize_result.meta = peer_info.meta.clone();
+        let initialize_result = initialize_result_rmcp.as_ref().clone();
 
         {
             let mut initialize_context = self.initialize_context.lock().await;

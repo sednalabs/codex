@@ -82,8 +82,8 @@ use rmcp::model::ClientCapabilities;
 use rmcp::model::ElicitationCapability;
 use rmcp::model::Implementation;
 use rmcp::model::InitializeRequestParams;
-use rmcp::model::InitializeResult;
 use rmcp::model::ProtocolVersion;
+use rmcp::model::ServerPeerInfo;
 use rmcp::model::Tool as RmcpTool;
 use tokio::sync::watch;
 use tokio::time::Instant as TokioInstant;
@@ -1077,7 +1077,7 @@ fn record_protocol_discovery_metrics(
     mode: McpProtocolMode,
     is_codex_apps_mcp_server: bool,
     started_at: Instant,
-    result: &Result<InitializeResult>,
+    result: &Result<ServerPeerInfo>,
 ) {
     let Some(metrics) = codex_otel::global() else {
         return;
