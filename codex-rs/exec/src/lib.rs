@@ -66,7 +66,6 @@ use codex_cloud_config::cloud_config_bundle_loader_for_storage;
 use codex_config::AppToolApproval;
 use codex_config::CloudConfigBundleLoader;
 use codex_config::ConfigLayerSource;
-use codex_config::ConfigLayerStackOrdering;
 use codex_config::ConfigLoadError;
 use codex_config::ConfigLoadOptions;
 use codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID;
@@ -76,8 +75,6 @@ use codex_config::McpServerConfig;
 use codex_config::McpServerTransportConfig;
 use codex_config::format_config_error_with_source;
 use codex_config::types::AuthCredentialsStoreMode;
-use codex_core::LMSTUDIO_OSS_PROVIDER_ID;
-use codex_core::OLLAMA_OSS_PROVIDER_ID;
 use codex_core::StateDbHandle;
 use codex_core::check_execpolicy_for_warnings;
 use codex_core::config::Config;
@@ -102,6 +99,8 @@ use codex_login::default_client::set_default_client_residency_requirement;
 use codex_login::default_client::set_default_originator;
 use codex_login::enforce_login_restrictions;
 use codex_login::is_workload_identity_selected;
+use codex_model_provider_info::LMSTUDIO_OSS_PROVIDER_ID;
+use codex_model_provider_info::OLLAMA_OSS_PROVIDER_ID;
 use codex_otel::set_parent_from_context;
 use codex_otel::traceparent_context_from_env;
 use codex_protocol::SessionId;
@@ -317,11 +316,7 @@ fn validate_protected_runtime_config(
         );
     }
     if layers
-        .get_layers(
-            ConfigLayerStackOrdering::LowestPrecedenceFirst,
-            /*include_disabled*/ false,
-        )
-        .iter()
+        .layers_low_to_high()
         .any(|layer| matches!(&layer.name, ConfigLayerSource::Project { .. }))
     {
         anyhow::bail!("protected runtime does not permit project configuration overrides");
