@@ -1062,6 +1062,10 @@ async fn post_install_native_guards_reject_mismatch_and_downgrade_before_restart
         let server = test_control_server(&daemon, home.path()).await;
         let previous_pid_record = std::fs::read(&daemon.pid_file).expect("daemon PID record");
         let root = home.path().join("packages/standalone");
+        let previous_current_target = std::fs::read_link(root.join("current"))
+            .expect("current package selection");
+        let previous_auto_update_version =
+            std::fs::read(root.join("auto-update-version")).expect("auto-update marker");
         let target = format!("{}-unknown-linux-musl", std::env::consts::ARCH);
         let release = format!("{package_version}-{target}");
         let metadata = sedna_fixture_metadata_script_for_package(
@@ -1070,7 +1074,7 @@ async fn post_install_native_guards_reject_mismatch_and_downgrade_before_restart
             &target,
         );
         // The fake installer selects this package to exercise update_loop's
-        // postcondition; production installer selection rollback is tested separately.
+        // postcondition and its guarded selection rollback.
         let installer = FakeInstallerHttp::new(InstallerResponse::Success(
             format!(
                 concat!(
@@ -1118,17 +1122,61 @@ async fn post_install_native_guards_reject_mismatch_and_downgrade_before_restart
             "{case}: daemon restarted before native-version validation"
         );
         assert_eq!(
-            daemon
-                .current_managed_codex_bin()
-                .expect("selected executable")
-                .canonicalize()
-                .expect("selected release"),
-            root.join("releases").join(&release).join("bin/codex"),
-            "{case}: fake installer did not select the candidate under test"
+            std::fs::read_link(root.join("current")).expect("current package selection"),
+            previous_current_target,
+            "{case}: rejected package remained selected"
+        );
+        assert_eq!(
+            std::fs::read(root.join("auto-update-version")).expect("auto-update marker"),
+            previous_auto_update_version,
+            "{case}: rejected package changed the auto-update marker"
         );
 
         backend.stop().await.expect("stop daemon");
         server.abort();
+    }
+}
+
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+#[tokio::test]
+async fn rejected_update_rollback_does_not_overwrite_a_concurrent_selection() {
+    for changed_link in [true, false] {
+        let home = TempDir::new().expect("home");
+        let (_daemon, _) = sedna_update_daemon(&home);
+        let root = home.path().join("packages/standalone");
+        let previous = super::ReleaseSelectionSnapshot::capture(&root)
+            .expect("previous package selection");
+        let rejected = "1.2.3-rejected-x86_64-unknown-linux-musl";
+        let later = "1.2.4-later-x86_64-unknown-linux-musl";
+        std::fs::create_dir_all(root.join("releases").join(rejected)).expect("rejected release");
+        std::fs::create_dir_all(root.join("releases").join(later)).expect("later release");
+
+        let selected = if changed_link { later } else { rejected };
+        std::fs::remove_file(root.join("current")).expect("remove prior selection");
+        std::os::unix::fs::symlink(format!("releases/{selected}"), root.join("current"))
+            .expect("concurrent package selection");
+        std::fs::write(root.join("auto-update-version"), later)
+            .expect("concurrent auto-update marker");
+
+        let error = super::restore_rejected_release_selection(&root, &previous, rejected)
+            .await
+            .expect_err("changed selection must fail the rollback compare-and-swap");
+
+        assert!(
+            error.to_string().contains("changed before rollback"),
+            "{error:#}"
+        );
+        assert_eq!(
+            std::fs::read_link(root.join("current")).expect("current package selection"),
+            std::path::PathBuf::from(format!("releases/{selected}"))
+        );
+        assert_eq!(
+            std::fs::read(root.join("auto-update-version")).expect("auto-update marker"),
+            later.as_bytes()
+        );
     }
 }
 
