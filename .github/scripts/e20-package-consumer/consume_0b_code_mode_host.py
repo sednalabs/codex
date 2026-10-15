@@ -68,6 +68,10 @@ PROBE_FAILURE_CATEGORIES = {
     "Packaged runtime selected an unexpected ripgrep path.": "ripgrep_path_mismatch",
     "Packaged ripgrep did not execute.": "ripgrep_not_executed",
     "Default-instruction fixture did not capture exactly one server.": "fixture_server_count",
+    "Root Responses input was not a message list.": "root_responses_input_shape",
+    "Child Responses input was not a message list.": "child_responses_input_shape",
+    "Root developer instruction text was not captured.": "root_developer_instructions_missing",
+    "Child developer instruction text was not captured.": "child_developer_instructions_missing",
     "Default root model request was not captured.": "root_request_missing",
     "Default child model requests were not captured.": "child_requests_missing",
     "Default child requests did not cover both nested levels.": "nested_child_requests_missing",
@@ -122,7 +126,7 @@ def safe_child_diagnostic(stderr: str) -> str:
     match = re.fullmatch(
         r"code-mode consumer failed: error_type=([A-Za-z_][A-Za-z0-9_]{0,63}); "
         r"category=([a-z0-9_]{1,64})(?:; http_status=([1-5][0-9]{2}))?"
-        r"(?:; rpc_code=(-?[0-9]{1,8}))?",
+        r"(?:; rpc_code=(-?[0-9]{1,8}))?(?:; fixture_line=([0-9]{1,5}))?",
         last_line,
     )
     if match:
@@ -131,6 +135,8 @@ def safe_child_diagnostic(stderr: str) -> str:
             fields.append(f"http_status={match.group(3)}")
         if match.group(4):
             fields.append(f"rpc_code={match.group(4)}")
+        if match.group(5):
+            fields.append(f"fixture_line={match.group(5)}")
         return "; ".join(fields)
     return f"child_failure_unclassified; stderr_bytes={byte_count}"
 
@@ -187,6 +193,82 @@ def safe_exception_codes(error: Exception) -> tuple[str | None, str | None]:
         str(http_status) if http_status is not None else None,
         str(rpc_code) if rpc_code is not None else None,
     )
+
+
+def safe_packaged_probe_failure(message: str) -> list[str] | None:
+    """Keep only the fixed, already-sanitized SDK-child diagnostic fields."""
+    match = re.fullmatch(
+        r"Packaged SDK code-mode probe failed \(entrypoint=(codex|codex-app-server); "
+        r"child_exit=(-?[0-9]{1,4}); trace=(absent|present); "
+        r"entrypoint_execve=([A-Za-z0-9_,=-]{1,64}); "
+        r"helper_execve=([A-Za-z0-9_,=-]{1,64}); (.{1,256})\)",
+        message,
+    )
+    if not match:
+        return None
+
+    child_diagnostic = match.group(6)
+    fields = [
+        f"entrypoint={match.group(1)}",
+        f"child_exit={match.group(2)}",
+        f"trace={match.group(3)}",
+        f"entrypoint_execve={match.group(4)}",
+        f"helper_execve={match.group(5)}",
+    ]
+    child_match = re.fullmatch(
+        r"child_error_type=([A-Za-z_][A-Za-z0-9_]{0,63}); "
+        r"category=([a-z0-9_]{1,64})(?:; http_status=([1-5][0-9]{2}))?"
+        r"(?:; rpc_code=(-?[0-9]{1,8}))?(?:; fixture_line=([0-9]{1,5}))?",
+        child_diagnostic,
+    )
+    if child_match:
+        fields.extend(
+            [
+                f"child_error_type={child_match.group(1)}",
+                f"child_category={child_match.group(2)}",
+            ]
+        )
+        if child_match.group(3):
+            fields.append(f"http_status={child_match.group(3)}")
+        if child_match.group(4):
+            fields.append(f"rpc_code={child_match.group(4)}")
+        if child_match.group(5):
+            fields.append(f"fixture_line={child_match.group(5)}")
+        return fields
+
+    unclassified_match = re.fullmatch(
+        r"child_failure_unclassified; stderr_bytes=([0-9]{1,9})",
+        child_diagnostic,
+    )
+    if unclassified_match:
+        fields.extend(
+            [
+                "child_error=unclassified",
+                f"child_stderr_bytes={unclassified_match.group(1)}",
+            ]
+        )
+        return fields
+    return None
+
+
+def developer_instruction_text(body: dict[str, Any], label: str) -> str:
+    """Read only the developer-role input text used by Responses requests."""
+    input_items = body.get("input")
+    require(isinstance(input_items, list), f"{label} Responses input was not a message list.")
+    texts = [
+        part["text"]
+        for item in input_items
+        if isinstance(item, dict)
+        and item.get("type") == "message"
+        and item.get("role") == "developer"
+        and isinstance(item.get("content"), list)
+        for part in item["content"]
+        if isinstance(part, dict)
+        and part.get("type") == "input_text"
+        and isinstance(part.get("text"), str)
+    ]
+    require(bool(texts), f"{label} developer instruction text was not captured.")
+    return "\n".join(texts)
 
 
 def env(name: str) -> str:
@@ -691,11 +773,7 @@ def run_default_instruction_consumer(
             body.get("model") == ROOT_MODEL,
             "Root request did not use the bundled model slug.",
         )
-        instructions = body.get("instructions")
-        require(
-            isinstance(instructions, str),
-            "Default model instructions were not captured as text.",
-        )
+        instructions = developer_instruction_text(body, "Root")
         require(
             COMMENTARY_SENTENCE not in instructions,
             "Root instructions still include the commentary cadence clause.",
@@ -715,11 +793,7 @@ def run_default_instruction_consumer(
             body.get("model") == CHILD_MODEL,
             "Child request did not use the bundled model slug.",
         )
-        instructions = body.get("instructions")
-        require(
-            isinstance(instructions, str),
-            "Default model instructions were not captured as text.",
-        )
+        instructions = developer_instruction_text(body, "Child")
         require(
             COMMENTARY_SENTENCE not in instructions,
             "Child instructions still include the commentary cadence clause.",
@@ -925,8 +999,12 @@ if __name__ == "__main__":
             error_type = "Exception"
         category = "unclassified_exception"
         fixture_line = None
+        packaged_probe_details: list[str] | None = None
         if isinstance(error, RuntimeError):
             category = PROBE_FAILURE_CATEGORIES.get(str(error), "unclassified_runtime_error")
+            packaged_probe_details = safe_packaged_probe_failure(str(error))
+            if packaged_probe_details is not None:
+                category = "packaged_sdk_probe_failed"
             match = re.fullmatch(
                 r"Default-instruction nested-spawn assertion failed at source line ([0-9]{1,5})\.",
                 str(error),
@@ -942,6 +1020,8 @@ if __name__ == "__main__":
             suffix += f"; rpc_code={rpc_code}"
         if fixture_line is not None:
             suffix += f"; fixture_line={fixture_line}"
+        if packaged_probe_details is not None:
+            suffix += "; " + "; ".join(packaged_probe_details)
         print(
             f"code-mode consumer failed: error_type={error_type}; category={category}{suffix}",
             file=sys.stderr,
