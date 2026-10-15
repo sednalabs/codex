@@ -10,4 +10,5 @@ codex_rust_crate(
         "src/accounting.rs",
         "src/steering.rs",
     ] + glob(["templates/**"]),
+    extra_binaries = ["//codex-rs/cli:codex"],
 )
