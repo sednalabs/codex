@@ -389,11 +389,6 @@ impl StateRuntime {
             .unwrap_or_else(|| Arc::clone(&self.usage_pool))
     }
 
-    pub(crate) fn phase2_attestation_pool(&self) -> Arc<sqlx::SqlitePool> {
-        self.extension_storage_pool(extension_storage::PHASE2_ATTESTATION_STORAGE_ID)
-            .unwrap_or_else(|| Arc::clone(&self.pool))
-    }
-
     /// Close all SQLite pools and wait for outstanding pool workers to exit.
     pub async fn close(&self) {
         self.reclamation.close().await;
@@ -890,7 +885,10 @@ mod tests {
                 .fetch_all(pool.as_ref())
                 .await
                 .expect("usage migrations should be applied");
-        assert_eq!(versions, vec![1, 2, 3, 4, 5, 7, 13, 14, 15, 16, 17, 18, 19]);
+        assert_eq!(
+            versions,
+            vec![1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+        );
         runtime.close().await;
         assert!(pool.is_closed());
 
