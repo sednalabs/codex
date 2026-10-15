@@ -250,6 +250,7 @@ jobs:
           fi
 
           (cd codex-rs && cargo update --workspace)
+          (cd codex-rs && cargo update -p quinn-proto --precise 0.11.18)
           changed_paths="$(git diff --name-only HEAD)"
           if [[ -n "${changed_paths}" && "${changed_paths}" != "codex-rs/Cargo.lock" ]]; then
             echo "The lock refresh changed unexpected paths." >&2
@@ -314,6 +315,7 @@ jobs:
               -- --test-threads=1 --skip status::tests::status_snapshot_shows_chatgpt_plan_without_email
           )
           just write-app-server-schema
+          just write-app-server-schema --experimental
           just bazel-lock-update
 
           python3 scripts/codex_package/test_cargo.py

@@ -495,8 +495,8 @@ crate.annotation(
 # MXC's resource compiler lookup needs an explicit path for Windows GNU targets.
 crate.annotation(
     build_script_deps = [
-        "@crates//:cc-1.2.55",
-        "@crates//:winresource-0.1.31",
+        "@crates//:cc-1.3.0",
+        "@crates//:winresource-0.1.34",
     ],
     build_script_env = {
         "RC_PATH": "$(execpath @llvm//tools:llvm-rc)",
@@ -746,41 +746,23 @@ inject_repo(crate, "alsa_lib")
     )
     for name, version, keys in [
         (
-            "glib-sys",
-            "0.22.8",
-            [
-                "GLIB_2_0",
-                "GOBJECT_2_0",
-            ],
-        ),
-        (
-            "gobject-sys",
-            "0.22.6",
-            ["GOBJECT_2_0"],
-        ),
-        (
-            "gio-sys",
-            "0.22.8",
-            ["GIO_2_0"],
-        ),
-        (
             "gstreamer-sys",
-            "0.25.2",
+            "0.25.4",
             ["GSTREAMER_1_0"],
         ),
         (
             "gstreamer-base-sys",
-            "0.25.3",
+            "0.25.4",
             ["GSTREAMER_BASE_1_0"],
         ),
         (
             "gstreamer-app-sys",
-            "0.25.0",
+            "0.25.4",
             ["GSTREAMER_APP_1_0"],
         ),
         (
             "gstreamer-audio-sys",
-            "0.25.3",
+            "0.25.4",
             ["GSTREAMER_AUDIO_1_0"],
         ),
         (

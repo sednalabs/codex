@@ -103,7 +103,9 @@ async fn authenticated_app_server_input_can_start_and_steer() -> anyhow::Result<
             turn_id,
         }
     );
-    release_initial.send(()).expect("initial response is waiting");
+    release_initial
+        .send(())
+        .expect("initial response is waiting");
     wait_for_event(&thread, |event| matches!(event, EventMsg::TurnComplete(_))).await;
     assert_eq!(server.requests().await.len(), 2);
     thread.shutdown_and_wait().await?;

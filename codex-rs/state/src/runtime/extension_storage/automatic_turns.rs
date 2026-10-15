@@ -1537,7 +1537,7 @@ mod tests {
     use tempfile::TempDir;
     use tempfile::tempdir;
 
-    #[derive(Debug, sqlx::FromRow)]
+    #[derive(Debug, sqlx_macros::FromRow)]
     struct AutomaticTurnRow {
         attempt: i64,
         max_attempts: i64,

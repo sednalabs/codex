@@ -5150,7 +5150,7 @@ fn automatic_turn_continuation_uses_a_typed_control_plane_field() {
         serialized.get("automaticTurnContinuation"),
         Some(&json!("opaque-ticket-reference"))
     );
-    assert!(serialized.get("clientUserMessageId").is_none());
+    assert_eq!(serialized.get("clientUserMessageId"), Some(&json!(null)));
 }
 
 #[test]
