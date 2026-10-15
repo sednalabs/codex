@@ -17,6 +17,20 @@ MISMATCH_VERSION = "0.145.0"
 
 
 class InstallShTest(unittest.TestCase):
+    def test_sedna_self_update_refuses_macos_before_network(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            result, requests = run_installer_in(
+                Path(temp_dir),
+                "latest",
+                force_macos=True,
+                sedna_update=True,
+            )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(requests, [])
+        self.assertIn("only on Linux x86_64 and ARM64", result.stderr)
+        self.assertIn("https://github.com/sednalabs/codex/releases", result.stderr)
+
     def test_metadata_fetch_failure_is_not_reported_as_missing_assets(self) -> None:
         result, requests = run_installer(VERSION, metadata_failure=True)
 
@@ -730,6 +744,7 @@ def run_installer_in(
     fail_ps: bool = False,
     daemon_only: bool = False,
     manual_update: bool = False,
+    sedna_update: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
     bin_dir = root / "bin"
     bin_dir.mkdir(exist_ok=True)
@@ -890,6 +905,9 @@ def run_installer_in(
         }
     )
     env["CODEX_INSTALL_IF_CURRENT"] = "1" if manual_update else "0"
+    if sedna_update:
+        env["CODEX_SEDNA_UPDATE"] = "1"
+        env["CODEX_SEDNA_RELEASE_CHANNEL"] = "stable"
     if update_guard_from_release is None:
         env.pop("CODEX_INSTALL_IF_LATEST", None)
         env.pop("CODEX_UPDATE_FROM_RELEASE", None)

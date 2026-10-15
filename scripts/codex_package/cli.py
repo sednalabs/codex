@@ -235,7 +235,14 @@ def assemble_package(args: argparse.Namespace) -> Path:
         codex_windows_sandbox_setup_bin=source_outputs.codex_windows_sandbox_setup_bin,
     )
     prepare_package_dir(package_dir, force=args.force)
-    build_package_dir(package_dir, args.package_version, variant, spec, inputs)
+    build_package_dir(
+        package_dir,
+        args.package_version,
+        read_workspace_version(),
+        variant,
+        spec,
+        inputs,
+    )
     validate_package_dir(
         package_dir, variant, spec, include_zsh=inputs.zsh_bin is not None
     )

@@ -3,6 +3,8 @@
 set -eu
 
 RELEASE="${CODEX_RELEASE:-latest}"
+SEDNA_UPDATE="${CODEX_SEDNA_UPDATE:-0}"
+SEDNA_SELECTION_CHANNEL="${CODEX_SEDNA_RELEASE_CHANNEL:-stable}"
 NON_INTERACTIVE="${CODEX_NON_INTERACTIVE:-false}"
 DAEMON_ONLY="${CODEX_INSTALL_DAEMON_ONLY:-0}"
 DEFAULT_PREFER_RELEASES_OPENAI_COM="true"
@@ -12,6 +14,11 @@ RELEASES_CONNECT_TIMEOUT=10
 RELEASES_METADATA_TIMEOUT=30
 RELEASES_ASSET_TIMEOUT=300
 release_source="github"
+sedna_metadata_asset=""
+sedna_metadata_path=""
+sedna_metadata_json=""
+sedna_archive_digest=""
+sedna_native_version=""
 
 BIN_DIR="${CODEX_INSTALL_DIR:-$HOME/.local/bin}"
 BIN_PATH="$BIN_DIR/codex"
@@ -78,6 +85,67 @@ validate_version() {
     echo "Invalid Codex release version: $version. Expected latest or x.y.z[-alpha[.N[.M]]|-beta[.N]]." >&2
     return 1
   fi
+}
+
+validate_sedna_version() {
+  if ! printf '%s\n' "$1" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'; then
+    echo "Invalid Sedna package version: $1." >&2
+    return 1
+  fi
+}
+
+sedna_version_compare() {
+  awk -v left="$1" -v right="$2" '
+    function trim_zero(value) {
+      sub(/^0+/, "", value)
+      return value == "" ? "0" : value
+    }
+    function numeric_compare(a, b, aa, bb) {
+      aa = trim_zero(a)
+      bb = trim_zero(b)
+      if (length(aa) != length(bb)) return length(aa) < length(bb) ? -1 : 1
+      if (aa == bb) return 0
+      return aa < bb ? -1 : 1
+    }
+    function parse(value, core, pre, build, parts, count, i, separator) {
+      sub(/\+.*/, "", value)
+      separator = index(value, "-")
+      pre = separator > 0 ? substr(value, separator + 1) : ""
+      core = separator > 0 ? substr(value, 1, separator - 1) : value
+      split(core, parts, ".")
+      for (i = 1; i <= 3; i++) version_core[i] = parts[i]
+      version_pre = pre
+    }
+    function compare_pre(a, b, aa, bb, na, nb, i, common) {
+      if (a == "" && b == "") return 0
+      if (a == "") return 1
+      if (b == "") return -1
+      na = split(a, aa, ".")
+      nb = split(b, bb, ".")
+      common = na < nb ? na : nb
+      for (i = 1; i <= common; i++) {
+        if (aa[i] == bb[i]) continue
+        if (aa[i] ~ /^[0-9]+$/ && bb[i] ~ /^[0-9]+$/)
+          return numeric_compare(aa[i], bb[i])
+        if (aa[i] ~ /^[0-9]+$/) return -1
+        if (bb[i] ~ /^[0-9]+$/) return 1
+        return aa[i] < bb[i] ? -1 : 1
+      }
+      if (na == nb) return 0
+      return na < nb ? -1 : 1
+    }
+    BEGIN {
+      parse(left)
+      for (i = 1; i <= 3; i++) left_core[i] = version_core[i]
+      left_pre = version_pre
+      parse(right)
+      for (i = 1; i <= 3; i++) {
+        comparison = numeric_compare(left_core[i], version_core[i])
+        if (comparison != 0) { print comparison; exit }
+      }
+      print compare_pre(left_pre, version_pre)
+    }
+  '
 }
 
 parse_args() {
@@ -260,6 +328,18 @@ parse_release_metadata() {
           key = pending_key
           pending_key = ""
           expecting_value = 1
+        } else if (expecting_value && object_depth == 1 && key == "prerelease" &&
+                   substr($0, i, 4) == "true") {
+          print "prerelease\ttrue"
+          i += 3
+          expecting_value = 0
+          key = ""
+        } else if (expecting_value && object_depth == 1 && key == "prerelease" &&
+                   substr($0, i, 5) == "false") {
+          print "prerelease\tfalse"
+          i += 4
+          expecting_value = 0
+          key = ""
         } else if (char == "{") {
           object_depth++
           if (assets_array_depth != 0 &&
@@ -318,6 +398,11 @@ parse_release_metadata() {
 release_url_for_asset() {
   asset="$1"
   resolved_version="$2"
+
+  if [ "$release_source" = "sedna" ]; then
+    printf 'https://github.com/sednalabs/codex/releases/download/rust-v%s/%s\n' "$resolved_version" "$asset"
+    return
+  fi
 
   printf 'https://github.com/openai/codex/releases/download/rust-v%s/%s\n' "$resolved_version" "$asset"
 }
@@ -383,6 +468,78 @@ resolve_release_from_github() {
   release_source="github"
 }
 
+resolve_sedna_release() {
+  case "$SEDNA_SELECTION_CHANNEL" in
+    stable)
+      metadata_url="https://api.github.com/repos/sednalabs/codex/releases/latest"
+      ;;
+    prerelease)
+      metadata_url="https://api.github.com/repos/sednalabs/codex/releases?per_page=100"
+      ;;
+    *)
+      echo "Unsupported Sedna release channel: $SEDNA_SELECTION_CHANNEL" >&2
+      return 1
+      ;;
+  esac
+
+  normalized_version="$(normalize_version "$RELEASE")"
+  if [ "$normalized_version" = "latest" ]; then
+    if ! release_json="$(download_text "$metadata_url")"; then
+      echo "Could not fetch Sedna $SEDNA_SELECTION_CHANNEL release metadata." >&2
+      return 1
+    fi
+    if [ "$SEDNA_SELECTION_CHANNEL" = "prerelease" ]; then
+      normalized_version="$(printf '%s\n' "$release_json" | parse_release_metadata | awk -F '\t' '
+        $1 == "tag_name" { if (first == "") first = $2; tag = $2 }
+        $1 == "prerelease" && $2 == "true" && tag ~ /^rust-v/ { print tag; found = 1; exit }
+        END { if (!found && first ~ /^rust-v/) print first }
+      ')"
+      case "$normalized_version" in
+        rust-v*) normalized_version="${normalized_version#rust-v}" ;;
+        *) echo "No Sedna prerelease is currently available." >&2; return 1 ;;
+      esac
+    else
+      if ! release_tag="$(printf '%s\n' "$release_json" | parse_release_metadata | awk -F '\t' '$1 == "tag_name" { print $2; exit }')"; then
+        return 1
+      fi
+      case "$release_tag" in
+        rust-v*) normalized_version="${release_tag#rust-v}" ;;
+        *) echo "Sedna latest release has an invalid tag." >&2; return 1 ;;
+      esac
+    fi
+  fi
+
+  validate_sedna_version "$normalized_version"
+  requested_release="$normalized_version"
+  metadata_url="https://api.github.com/repos/sednalabs/codex/releases/tags/rust-v$normalized_version"
+  if ! release_json="$(download_text "$metadata_url")"; then
+    echo "Could not fetch Sedna release metadata for $normalized_version." >&2
+    return 1
+  fi
+  parse_downloaded_release_metadata "$requested_release" "Sedna GitHub"
+  release_tag="$(printf '%s\n' "$release_metadata" | awk -F '\t' '$1 == "tag_name" { print $2; exit }')"
+  [ "$release_tag" = "rust-v$normalized_version" ] || {
+    echo "Sedna release metadata tag did not match the requested version." >&2
+    return 1
+  }
+  actual_prerelease="$(printf '%s\n' "$release_metadata" | awk -F '\t' '$1 == "prerelease" { print $2; exit }')"
+  if [ "$SEDNA_SELECTION_CHANNEL" = "stable" ] && [ "$actual_prerelease" != "false" ]; then
+    echo "Sedna release channel did not match the selected channel." >&2
+    return 1
+  fi
+  resolved_version="$normalized_version"
+  release_source="sedna"
+  sedna_metadata_asset="RELEASE-METADATA-$vendor_target.json"
+}
+
+select_sedna_release_assets() {
+  if ! release_asset_exists "$sedna_metadata_asset"; then
+    echo "Sedna release metadata asset is missing: $sedna_metadata_asset." >&2
+    return 1
+  fi
+  select_release_assets
+}
+
 resolve_release_from_releases() {
   normalized_version="$1"
 
@@ -413,6 +570,11 @@ resolve_release_from_releases() {
 }
 
 resolve_release() {
+  if [ "$SEDNA_UPDATE" = "1" ]; then
+    resolve_sedna_release
+    select_sedna_release_assets
+    return
+  fi
   normalized_version="$(normalize_version "$RELEASE")"
   validate_version "$normalized_version"
 
@@ -528,6 +690,70 @@ package_archive_digest() {
   fi
 
   printf '%s\n' "$digest"
+}
+
+sedna_metadata_value() {
+  key="$1"
+  values="$(sed -n -E "s/^[[:space:]]*\"$key\":[[:space:]]*(\"([^\"]*)\"|([0-9]+)),?[[:space:]]*$/\\2\\3/p" "$sedna_metadata_path")"
+  count="$(printf '%s\n' "$values" | awk 'NF { count++ } END { print count + 0 }')"
+  [ "$count" = "1" ] || return 1
+  printf '%s\n' "$values"
+}
+
+validate_sedna_release_metadata() {
+  schema_version="$(sedna_metadata_value schemaVersion)" || return 1
+  repository="$(sedna_metadata_value repository)" || return 1
+  release_tag="$(sedna_metadata_value releaseTag)" || return 1
+  package_version="$(sedna_metadata_value packageVersion)" || return 1
+  sedna_native_version="$(sedna_metadata_value nativeVersion)" || return 1
+  metadata_channel="$(sedna_metadata_value channel)" || return 1
+  metadata_target="$(sedna_metadata_value target)" || return 1
+  source_commit="$(sedna_metadata_value sourceCommit)" || return 1
+  source_tree="$(sedna_metadata_value sourceTree)" || return 1
+  workflow_host_commit="$(sedna_metadata_value workflowHostCommit)" || return 1
+  workflow_host_tree="$(sedna_metadata_value workflowHostTree)" || return 1
+  workflow_run_id="$(sedna_metadata_value workflowRunId)" || return 1
+  archive_name="$(sedna_metadata_value name)" || return 1
+  sedna_archive_digest="$(sedna_metadata_value sha256)" || return 1
+
+  [ "$schema_version" = "1" ] &&
+    [ "$repository" = "sednalabs/codex" ] &&
+    [ "$release_tag" = "rust-v$resolved_version" ] &&
+    [ "$package_version" = "$resolved_version" ] &&
+    [ "$metadata_target" = "$vendor_target" ] &&
+    [ "$archive_name" = "codex-package-$vendor_target.tar.gz" ] || return 1
+  validate_sedna_version "$package_version" || return 1
+  validate_sedna_version "$sedna_native_version" || return 1
+  case "$metadata_channel:$actual_prerelease" in
+    stable:false | prerelease:true | prerelease:false) ;;
+    *) return 1 ;;
+  esac
+  printf '%s\n' "$source_commit" "$source_tree" "$workflow_host_commit" "$workflow_host_tree" |
+    awk 'length($0) != 40 || $0 ~ /[^0-9a-f]/ { exit 1 }' || return 1
+  printf '%s\n' "$workflow_run_id" | grep -Eq '^[1-9][0-9]*$' || return 1
+  printf '%s\n' "$sedna_archive_digest" | grep -Eq '^[0-9a-f]{64}$' || return 1
+  [ "$sedna_archive_digest" = "$(release_asset_digest "$archive_name")" ] || return 1
+  [ "$metadata_channel" = "stable" ] || [ "$metadata_channel" = "prerelease" ] || return 1
+  previous_version="${CODEX_SEDNA_PREVIOUS_VERSION:-}"
+  [ -n "$previous_version" ] || return 1
+  validate_sedna_version "$previous_version" || return 1
+  if [ "$(sedna_version_compare "$package_version" "$previous_version")" -le 0 ]; then
+    sedna_no_update="1"
+  fi
+  return 0
+}
+
+write_sedna_release_receipt() {
+  release_dir="$1"
+  receipt_tmp="$release_dir/.sedna-release.json.$$"
+  receipt_path="$release_dir/sedna-release.json"
+  {
+    printf '{"schemaVersion":1,"selectionChannel":"%s","release":' "$SEDNA_SELECTION_CHANNEL"
+    tr -d '\n' <"$sedna_metadata_path"
+    printf '}\n'
+  } >"$receipt_tmp"
+  chmod 0644 "$receipt_tmp"
+  mv "$receipt_tmp" "$receipt_path"
 }
 
 file_sha256() {
@@ -1024,14 +1250,25 @@ release_dir_is_complete() {
       ;;
   esac
 
+  if [ "$SEDNA_UPDATE" = "1" ]; then
+    sedna_metadata_path="$release_dir/codex-package.json"
+    [ "$(sedna_metadata_value version)" = "$expected_version" ] || return 1
+    [ "$(sedna_metadata_value nativeVersion)" = "$sedna_native_version" ] || return 1
+    [ "$(sedna_metadata_value target)" = "$expected_target" ] || return 1
+  fi
+
   case "$layout:$expected_target" in
     package:*linux* | legacy-platform-npm:*linux*)
       [ -x "$release_dir/codex-resources/bwrap" ] || return 1
       ;;
   esac
 
+  expected_binary_version="$expected_version"
+  if [ "$SEDNA_UPDATE" = "1" ]; then
+    expected_binary_version="$sedna_native_version"
+  fi
   installed_version="$(version_from_binary "$release_dir/bin/codex" || version_from_binary "$release_dir/codex" || true)"
-  [ "$installed_version" = "$expected_version" ]
+  [ "$installed_version" = "$expected_binary_version" ]
 }
 
 update_current_link() {
@@ -1114,6 +1351,18 @@ if [ "$os" = "darwin" ] && [ "$arch" = "x86_64" ]; then
   fi
 fi
 
+if [ "$SEDNA_UPDATE" = "1" ]; then
+  if [ "$os" != "linux" ] ||
+    { [ "$arch" != "x86_64" ] && [ "$arch" != "aarch64" ]; }; then
+    echo "Sedna binary updates are supported only on Linux x86_64 and ARM64. Reinstall manually from https://github.com/sednalabs/codex/releases." >&2
+    exit 1
+  fi
+  case "$SEDNA_SELECTION_CHANNEL" in
+    stable | prerelease) ;;
+    *) echo "Invalid Sedna update channel. Reinstall manually from https://github.com/sednalabs/codex/releases." >&2; exit 1 ;;
+  esac
+fi
+
 if [ "$os" = "darwin" ]; then
   if [ "$arch" = "aarch64" ]; then
     npm_tag="darwin-arm64"
@@ -1167,6 +1416,21 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 acquire_install_lock
+if [ "$SEDNA_UPDATE" = "1" ]; then
+  sedna_metadata_path="$tmp_dir/$sedna_metadata_asset"
+  metadata_url="$(release_url_for_asset "$sedna_metadata_asset" "$resolved_version")"
+  metadata_digest="$(release_asset_digest "$sedna_metadata_asset")"
+  download_file "$metadata_url" "$sedna_metadata_path"
+  verify_archive_digest "$sedna_metadata_path" "$metadata_digest"
+  validate_sedna_release_metadata || {
+    echo "Sedna release metadata did not match the selected release." >&2
+    exit 1
+  }
+  if [ "${sedna_no_update:-0}" = "1" ]; then
+    step "No newer Sedna release is available"
+    exit 0
+  fi
+fi
 if [ "${CODEX_INSTALL_DEFER_SELECTION:-0}" = "1" ] &&
   { [ -e "$STANDALONE_ROOT/current" ] || [ -L "$STANDALONE_ROOT/current" ]; }; then
   echo "A dedicated daemon is already selected; retry the update." >&2
@@ -1242,6 +1506,10 @@ if ! release_dir_is_complete "$release_dir" "$resolved_version" "$vendor_target"
     checksum_digest="$(release_asset_digest "$checksum_asset")"
     download_file_with_fallback "$checksum_url" "$checksum_fallback_url" "$checksum_path" "$checksum_digest" "$checksum_asset" "$asset"
     expected_digest="$(package_archive_digest "$asset" "$checksum_path")"
+    if [ "$SEDNA_UPDATE" = "1" ] && [ "$expected_digest" != "$sedna_archive_digest" ]; then
+      echo "Sedna package checksum files disagree about the selected archive." >&2
+      exit 1
+    fi
   else
     expected_digest="$(release_asset_digest "$asset")"
   fi
@@ -1255,8 +1523,19 @@ if ! release_dir_is_complete "$release_dir" "$resolved_version" "$vendor_target"
   fi
 fi
 if ! release_dir_is_complete "$release_dir" "$resolved_version" "$vendor_target" "$install_layout"; then
-  echo "Installed Codex command did not report expected version $resolved_version." >&2
+  expected_binary_version="$resolved_version"
+  if [ "$SEDNA_UPDATE" = "1" ]; then
+    expected_binary_version="$sedna_native_version"
+  fi
+  echo "Installed Codex command did not report expected native version $expected_binary_version." >&2
   exit 1
+fi
+if [ "$SEDNA_UPDATE" = "1" ]; then
+  write_sedna_release_receipt "$release_dir"
+  [ -f "$release_dir/sedna-release.json" ] || {
+    echo "Sedna release receipt was not installed." >&2
+    exit 1
+  }
 fi
 if [ "$DAEMON_ONLY" = "1" ] && [ "${CODEX_INSTALL_DEFER_SELECTION:-0}" != "1" ]; then
   installed_codex="$release_dir/codex"

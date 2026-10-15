@@ -35,6 +35,7 @@ def prepare_package_dir(package_dir: Path, *, force: bool) -> None:
 def build_package_dir(
     package_dir: Path,
     version: str,
+    native_version: str,
     variant: PackageVariant,
     spec: TargetSpec,
     inputs: PackageInputs,
@@ -86,6 +87,7 @@ def build_package_dir(
     metadata = {
         "layoutVersion": LAYOUT_VERSION,
         "version": version,
+        "nativeVersion": native_version,
         "target": spec.target,
         "variant": variant.name,
         "entrypoint": f"bin/{entrypoint_name}",

@@ -109,7 +109,9 @@ class PackageLayoutTest(unittest.TestCase):
                             codex_windows_sandbox_setup_bin=None,
                         )
 
-                        build_package_dir(package_dir, "1.2.3", variant, spec, inputs)
+                        build_package_dir(
+                            package_dir, "1.2.3", "1.2.3", variant, spec, inputs
+                        )
                         validate_package_dir(
                             package_dir, variant, spec, include_zsh=True
                         )
@@ -149,6 +151,7 @@ class PackageLayoutTest(unittest.TestCase):
             build_package_dir(
                 package_dir,
                 "1.2.3",
+                "1.2.3",
                 PACKAGE_VARIANTS["codex-app-server"],
                 TARGET_SPECS["x86_64-unknown-linux-musl"],
                 inputs,
@@ -172,6 +175,7 @@ class PackageLayoutTest(unittest.TestCase):
                 and path.relative_to(package_dir).as_posix() != "codex-package.json"
             }
             self.assertEqual(manifest["payloadSha256"], payload_files)
+            self.assertEqual(manifest["nativeVersion"], "1.2.3")
 
             (package_dir / "codex-path" / "rg").write_bytes(b"modified helper")
             with self.assertRaisesRegex(RuntimeError, "payload SHA-256"):
