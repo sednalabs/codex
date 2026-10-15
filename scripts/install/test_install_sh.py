@@ -831,7 +831,7 @@ class InstallShTest(unittest.TestCase):
                 ],
             )
             self.assertIn(
-                f"did not report expected version {MISMATCH_VERSION}",
+                f"did not report expected native version {MISMATCH_VERSION}",
                 result.stderr,
             )
             self.assertNotIn("installed successfully", result.stdout)
