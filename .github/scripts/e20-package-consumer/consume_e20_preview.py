@@ -396,6 +396,7 @@ def create_pre61_database(db_path: Path, snapshot_path: Path, migrations: list[t
             )
         )
         require(len(before) == 67, "Pre-migration fixture does not have all 67 historical ledger entries.")
+        mark_sqlite_stage("commit pre-migration synthetic database")
         connection.commit()
         return before
     finally:
