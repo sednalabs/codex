@@ -195,10 +195,12 @@ def verify_producer(repo: str) -> None:
         and (pull.get("base") or {}).get("sha") == PRODUCT_BASE_SHA,
         "Product PR base mismatch.",
     )
+    # The immutable run.head_sha above binds the producer source. GitHub may
+    # expose a later live head through this associated PR object, so use it
+    # only for PR identity, branch, and base validation.
     require(
-        (pull.get("head") or {}).get("ref") == PRODUCT_BRANCH
-        and (pull.get("head") or {}).get("sha") == PRODUCT_SOURCE,
-        "Product PR head mismatch.",
+        (pull.get("head") or {}).get("ref") == PRODUCT_BRANCH,
+        "Product PR branch mismatch.",
     )
 
     jobs = github_api(
