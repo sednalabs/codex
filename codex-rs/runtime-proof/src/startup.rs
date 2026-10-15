@@ -76,7 +76,6 @@ fn parse_descriptor_index(descriptor: &std::ffi::OsStr) -> Result<i32> {
         })
 }
 
-#[cfg(any(test, target_os = "linux"))]
 pub(crate) fn verify_runtime_protection() -> Result<()> {
     #[cfg(target_os = "linux")]
     {
