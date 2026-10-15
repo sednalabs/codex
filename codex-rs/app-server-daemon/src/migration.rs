@@ -257,18 +257,17 @@ pub(super) async fn run(http: &impl InstallerHttp, legacy: &Daemon) -> Result<Up
                     "failed to publish the daemon release marker and failed to roll back current: {rollback_error}"
                 ));
             }
-            if running.is_some() {
-                if let Err(restore_error) = async {
+            if running.is_some()
+                && let Err(restore_error) = async {
                     legacy.start_managed_backend(&settings).await?;
                     legacy.wait_until_ready().await?;
                     Ok::<(), anyhow::Error>(())
                 }
                 .await
-                {
-                    return Err(error).context(format!(
-                        "failed to publish the daemon release marker, rolled back current, but failed to restore the legacy daemon: {restore_error}"
-                    ));
-                }
+            {
+                return Err(error).context(format!(
+                    "failed to publish the daemon release marker, rolled back current, but failed to restore the legacy daemon: {restore_error}"
+                ));
             }
             return Err(error).context("failed to publish the daemon release marker; selection rolled back");
         }

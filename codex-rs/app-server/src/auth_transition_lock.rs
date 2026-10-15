@@ -386,7 +386,8 @@ mod tests {
                 "tokens": {
                     "id_token": token,
                     "access_token": access_token,
-                    "refresh_token": refresh_token
+                    "refresh_token": refresh_token,
+                    "account_id": account_id
                 }
             }))?,
         )?;

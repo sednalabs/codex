@@ -145,6 +145,57 @@ jobs:
             # Explicit query labels retain the wildcard's platform filtering.
             bazel_test_args+=(--skip_incompatible_explicit_targets)
           fi
+          if [[ "${TARGET}" == "x86_64-unknown-linux-gnu" ]]; then
+            report_gnu_disk_state() {
+              echo "GNU Bazel disk sample ($1) at $(date -u +%FT%TZ)"
+              for path in "$CI_BUILD_ROOT" "$RUNNER_TEMP" "$GITHUB_WORKSPACE" /tmp; do
+                [[ -e "$path" ]] || continue
+                echo "Filesystem containing $path:"
+                df -B1 --output=size,used,avail,pcent,itotal,iused,iavail,ipcent "$path" 2>&1 | tail -n 1 || true
+              done
+            }
+            report_gnu_directory_sizes() {
+              echo "GNU Bazel directory sizes ($1) at $(date -u +%FT%TZ)"
+              for path in "$BAZEL_OUTPUT_BASE" "$BAZEL_OUTPUT_USER_ROOT" "$BAZEL_REPOSITORY_CACHE" "$BAZEL_REPO_CONTENTS_CACHE" "$CARGO_TARGET_DIR" "$TMP" /tmp "$RUNNER_TEMP" "$GITHUB_WORKSPACE" "$RUNNER_TEMP/bazel-execution-logs" "$HOME"/actions-runner/cached/*/_diag; do
+                [[ -d "$path" ]] || continue
+                echo "Directory $path:"
+                du -x -s -B1 -- "$path" 2>&1 || true
+              done
+            }
+            report_gnu_disk_state before
+            report_gnu_directory_sizes before
+            (
+              sleep_pid=""
+              trap 'if [[ -n "$sleep_pid" ]]; then kill "$sleep_pid" 2>/dev/null || true; fi; exit 0' INT TERM
+              while true; do
+                sleep 30 &
+                sleep_pid=$!
+                wait "$sleep_pid" || exit 0
+                report_gnu_disk_state periodic
+              done
+            ) &
+            disk_sampler_pid=$!
+            trap 'kill -TERM "$disk_sampler_pid" 2>/dev/null || true; wait "$disk_sampler_pid" 2>/dev/null || true' EXIT
+            bazel_status=0
+            if ./.github/scripts/run-bazel-ci.sh \
+              "${bazel_wrapper_args[@]}" \
+              -- \
+              "${bazel_test_args[@]}" \
+              -- \
+              "${bazel_targets[@]}"; then
+              bazel_status=0
+            else
+              bazel_status=$?
+            fi
+            kill -TERM "$disk_sampler_pid" 2>/dev/null || true
+            wait "$disk_sampler_pid" 2>/dev/null || true
+            trap - EXIT
+            report_gnu_disk_state after
+            if [[ "$bazel_status" -ne 0 ]]; then
+              report_gnu_directory_sizes failure-before-artifact-upload
+            fi
+            exit "$bazel_status"
+          fi
           ./.github/scripts/run-bazel-ci.sh \
             "${bazel_wrapper_args[@]}" \
             -- \
@@ -414,6 +465,8 @@ jobs:
           windows-voice-tools: ${{ runner.os == 'Windows' }}
 
       - name: bazel build --config=clippy lint targets
+        env:
+          BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA: ${{ matrix.target != 'aarch64-apple-darwin' && '1' || '' }}
         shell: bash
         run: |
           bazel_clippy_args=(
@@ -423,11 +476,17 @@ jobs:
           )
           bazel_wrapper_args=()
           bazel_target_list_args=()
+          if [[ -n "${BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA}" ]]; then
+            bazel_target_list_args+=(--repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1)
+          fi
           if [[ "${RUNNER_OS}" == "Windows" ]]; then
             bazel_wrapper_args+=(--windows-msvc-host-platform)
             bazel_clippy_args+=(--platforms=//:windows_x86_64_msvc --skip_incompatible_explicit_targets)
           else
             bazel_clippy_args+=(--platforms=@rules_rs//rs/platforms:${{ matrix.target }})
+          fi
+          if [[ -n "${BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA}" ]]; then
+            bazel_clippy_args+=(--repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1)
           fi
 
           bazel_target_lines="$(./scripts/list-bazel-clippy-targets.sh "${bazel_target_list_args[@]}")"
@@ -526,6 +585,9 @@ jobs:
           if [[ "${RUNNER_OS}" != "Windows" ]]; then
             bazel_build_args+=(--platforms=@rules_rs//rs/platforms:${{ matrix.target }})
           fi
+          if [[ "${{ matrix.target }}" != "aarch64-apple-darwin" ]]; then
+            bazel_build_args+=(--repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1)
+          fi
 
           bazel_target_lines="$(bash ./scripts/list-bazel-release-targets.sh)"
           bazel_targets=()
@@ -552,6 +614,7 @@ jobs:
             build \
             --build_metadata=COMMIT_SHA=${GITHUB_SHA} \
             --build_metadata=TAG_job=verify-bwrap \
+            --repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1 \
             -- \
             //codex-rs/bwrap:bwrap
 

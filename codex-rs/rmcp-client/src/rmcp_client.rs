@@ -193,7 +193,8 @@ impl Drop for InitializeDeadlineGuard {
 #[derive(Clone)]
 struct InitializeContext {
     timeout: Option<Duration>,
-    client_service: ElicitationClientService,
+    client_info: InitializeRequestParams,
+    send_elicitation: Arc<SendElicitation>,
 }
 
 #[derive(Clone)]
@@ -698,16 +699,10 @@ impl RmcpClient {
         timeout: Option<Duration>,
         send_elicitation: SendElicitation,
     ) -> Result<ServerPeerInfo> {
-        let client_service = ElicitationClientService::new(
-            params,
-            send_elicitation,
-            self.elicitation_pause_state.clone(),
-            Arc::clone(&self.tool_list_generation),
-            self.protected_output,
-        );
         let context = InitializeContext {
             timeout,
-            client_service,
+            client_info: params,
+            send_elicitation: Arc::new(send_elicitation),
         };
         let pending_transport = {
             let mut guard = self.state.lock().await;
@@ -1370,7 +1365,14 @@ impl RmcpClient {
     )> {
         // Request IDs and remembered cancellations belong to this connection, including
         // when a failed initialization or expired HTTP session creates a new transport.
-        let client_service = initialize_context.client_service.clone();
+        let send_elicitation = Arc::clone(&initialize_context.send_elicitation);
+        let client_service = ElicitationClientService::new(
+            initialize_context.client_info.clone(),
+            Box::new(move |id, request| send_elicitation(id, request)),
+            self.elicitation_pause_state.clone(),
+            Arc::clone(&self.tool_list_generation),
+            self.protected_output,
+        );
         let _initialize_deadline = match &self.transport_recipe {
             TransportRecipe::StreamableHttp {
                 initialize_deadline,

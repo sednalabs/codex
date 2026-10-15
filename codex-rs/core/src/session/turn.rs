@@ -3166,7 +3166,6 @@ async fn try_run_sampling_request(
                                     codex_protocol::items::AgentMessageContent::Text { text } => {
                                         !text.is_empty()
                                     }
-                                    _ => false,
                                 });
                         }
                         if emitted_visible_text {

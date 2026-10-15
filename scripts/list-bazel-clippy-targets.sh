@@ -6,14 +6,19 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${repo_root}"
 
 windows_cross_compile=0
+query_repo_env_args=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --windows-cross-compile)
       windows_cross_compile=1
       shift
       ;;
+    --repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1)
+      query_repo_env_args+=("$1")
+      shift
+      ;;
     *)
-      echo "Usage: $0 [--windows-cross-compile]" >&2
+      echo "Usage: $0 [--windows-cross-compile] [--repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1]" >&2
       exit 1
       ;;
   esac
@@ -24,6 +29,7 @@ done
 # local on all platforms.
 manual_rust_test_targets="$(
   ./.github/scripts/run-bazel-query-ci.sh \
+    "${query_repo_env_args[@]}" \
     --output=label \
     -- 'kind("rust_test rule", attr(tags, "manual", //codex-rs/... except //codex-rs/v8-poc/...))'
 )"
