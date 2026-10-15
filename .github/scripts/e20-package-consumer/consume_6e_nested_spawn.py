@@ -42,7 +42,9 @@ FIXTURE_PATH = (
 )
 FIXTURE_BLOB = "41ca2f33dbb04d18d529d89cb7ecf6d9893b8094"
 CONSUMER_BRANCH = "validation/w14962-e20-packaged-consumer-20261015"
-HARNESS_BASE_SHA = "e135df532669849b682dfac712c3f59aded039ba"
+# Keep this one-use consumer pinned to the reviewed PR950 event context; it is
+# intentionally independent of the 6e product producer's base and live main.
+HARNESS_BASE_SHA = "703389678a1a6c3a9d131245d03d3f1805b9afa1"
 ARCHIVE_FILES = {
     "codex-cli-x86_64-unknown-linux-gnu.tar.gz",
     "codex-app-server-x86_64-unknown-linux-gnu.tar.gz",
@@ -116,7 +118,7 @@ def check_consumer_checkout(workspace: Path, fixture: Path) -> None:
     require(
         (pull.get("base") or {}).get("ref") == "main"
         and (pull.get("base") or {}).get("sha") == HARNESS_BASE_SHA,
-        "Consumer pull-request base differs from the re-anchored harness base.",
+        "Consumer pull-request base differs from the reviewed harness base.",
     )
     head = (pull.get("head") or {}).get("sha")
     require(
