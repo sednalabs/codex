@@ -621,6 +621,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn active_wait_wakes_when_operator_steer_arrives() {
+        let input_queue = InputQueue::new();
+        let turn_state = tokio::sync::Mutex::new(crate::state::TurnState::default());
+        let (mut activity_rx, pending) = input_queue.subscribe_activity(Some(&turn_state)).await;
+        let mut agent_wait = None;
+        let mut wait = Box::pin(wait_for_activity(
+            &mut activity_rx,
+            pending,
+            Instant::now() + Duration::from_secs(60),
+            &mut agent_wait,
+        ));
+        assert!(futures::poll!(wait.as_mut()).is_pending());
+
+        input_queue
+            .enqueue_mailbox_communication(
+                wait_mail("quiet update", /*trigger_turn*/ false),
+                Default::default(),
+            )
+            .await;
+        assert!(futures::poll!(wait.as_mut()).is_pending());
+        assert!(input_queue.has_pending_mailbox_items().await);
+
+        input_queue
+            .notify_operator_steer_for_test(&turn_state)
+            .await;
+        assert!(matches!(wait.await, WaitOutcome::Steered));
+        assert_eq!(input_queue.drain_mailbox().await.len(), 1);
+    }
+
+    #[tokio::test]
     async fn queue_only_mail_does_not_hide_target_terminal() {
         let registry = Arc::new(Mutex::new(AgentWaitRegistry::default()));
         let target = ThreadId::new();

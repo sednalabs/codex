@@ -779,12 +779,7 @@ impl ChatWidget {
                 let (window, is_secondary) = weekly_status_window(snapshot)?;
                 let label = limit_label_for_window(window.window_minutes, is_secondary);
                 if matches_window_label(window, "weekly") {
-                    self.status_line_weekly_limit_display(
-                        Some(window),
-                        snapshot,
-                        pacing_now,
-                        &label,
-                    )
+                    self.status_line_weekly_limit_display(Some(window), pacing_now, &label)
                 } else {
                     self.status_line_limit_display(Some(window), &label)
                 }

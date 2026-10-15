@@ -1234,9 +1234,34 @@ async fn bundled_gpt6_models_build_and_send_expected_responses_requests() -> any
         let model_info = manager
             .get_model_info(slug, &ModelsManagerConfig::default())
             .await;
+        let expected_effort = match slug {
+            "gpt-6.1-sol" => Some("low"),
+            "gpt-6-sol" | "gpt-6-luna" => Some("medium"),
+            "test-only-unbundled-model-fallback" => None,
+            _ => unreachable!("unexpected model fixture"),
+        };
         assert_eq!(
             model_info.used_fallback_model_metadata, !has_catalog_metadata,
             "unexpected bundled metadata resolution for {slug}"
+        );
+        assert_eq!(model_info.use_responses_lite, has_catalog_metadata);
+        assert_eq!(model_info.support_verbosity, has_catalog_metadata);
+        assert_eq!(
+            model_info
+                .default_reasoning_level
+                .as_ref()
+                .map(ReasoningEffort::as_str),
+            expected_effort,
+            "unexpected catalog reasoning default for {slug}"
+        );
+        let default_verbosity = model_info
+            .default_verbosity
+            .as_ref()
+            .map(|verbosity| verbosity.to_string());
+        assert_eq!(
+            default_verbosity.as_deref(),
+            has_catalog_metadata.then_some("low"),
+            "unexpected catalog verbosity default for {slug}"
         );
         model_infos.push(model_info);
     }
@@ -1342,6 +1367,7 @@ async fn bundled_gpt6_models_build_and_send_expected_responses_requests() -> any
 
         let body: serde_json::Value = serde_json::from_slice(&request.body)?;
         assert_eq!(body["model"], slug);
+        assert!(body.get("instructions").is_none());
         assert_eq!(body["parallel_tool_calls"], !use_responses_lite);
         if let Some(default_effort) = &model_info.default_reasoning_level {
             assert_eq!(
@@ -1358,6 +1384,15 @@ async fn bundled_gpt6_models_build_and_send_expected_responses_requests() -> any
         if use_responses_lite {
             assert!(body.get("tools").is_none());
             assert_eq!(input.len(), 3);
+            assert_eq!(
+                body["reasoning"]["effort"],
+                match slug {
+                    "gpt-6.1-sol" => "low",
+                    "gpt-6-sol" | "gpt-6-luna" => "medium",
+                    _ => unreachable!("unexpected Responses Lite model"),
+                }
+            );
+            assert_eq!(body["reasoning"]["context"], "all_turns");
             assert_eq!(input[0]["type"], "additional_tools");
             assert_eq!(input[0]["role"], "developer");
             assert_eq!(input[1]["type"], "message");
@@ -1368,6 +1403,9 @@ async fn bundled_gpt6_models_build_and_send_expected_responses_requests() -> any
             );
             assert_eq!(body["text"]["verbosity"], "low");
         } else {
+            assert_eq!(body["reasoning"].get("effort"), None);
+            assert_eq!(body["reasoning"].get("context"), None);
+            assert!(body.get("text").is_none());
             assert!(body.get("tools").is_some());
             assert_eq!(input.len(), 2);
             assert_eq!(input[0]["type"], "message");

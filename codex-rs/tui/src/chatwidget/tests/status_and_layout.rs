@@ -56,6 +56,21 @@ fn take_workspace_headline_request_id(
     }
 }
 
+fn account_usage_snapshot_with_weekly_window(weekly: Option<RateLimitWindow>) -> RateLimitSnapshot {
+    RateLimitSnapshot {
+        limit_id: Some("codex".to_string()),
+        limit_name: Some("codex".to_string()),
+        normal_model_slug: None,
+        primary: None,
+        secondary: weekly,
+        credits: None,
+        individual_limit: None,
+        plan_type: None,
+        spend_control_reached: None,
+        rate_limit_reached_type: None,
+    }
+}
+
 /// Receiving a token usage update without usage clears the context indicator.
 #[tokio::test]
 async fn token_count_none_resets_context_indicator() {
@@ -965,6 +980,7 @@ async fn weekly_pacing_is_opt_in_deterministic_and_base_only_without_fresh_timin
                 resets_at: None,
                 resets_at_unix_seconds: Some(reset),
                 window_minutes: Some(10_080),
+                captured_at: now,
             }),
             secondary: None,
             credits: None,
@@ -981,25 +997,31 @@ async fn weekly_pacing_is_opt_in_deterministic_and_base_only_without_fresh_timin
         codex_config::types::WeeklyLimitPacingStyle::Ratio;
     assert_eq!(
         chat.status_line_value_for_item_at(item, now),
-        Some("weekly 40% left/50%".to_string())
+        Some("weekly 40%/50%".to_string())
     );
 
     chat.rate_limit_snapshots_by_limit_id
         .get_mut("codex")
         .unwrap()
+        .primary
+        .as_mut()
+        .unwrap()
         .captured_at = now - chrono::Duration::minutes(15);
     assert_eq!(
         chat.status_line_value_for_item_at(item, now),
-        Some("weekly 40% left/50%".to_string()),
+        Some("weekly 40%/50%".to_string()),
         "the exact freshness boundary remains eligible"
     );
     chat.rate_limit_snapshots_by_limit_id
         .get_mut("codex")
         .unwrap()
+        .primary
+        .as_mut()
+        .unwrap()
         .captured_at = now - chrono::Duration::minutes(15) - chrono::Duration::seconds(1);
     assert_eq!(
         chat.status_line_value_for_item_at(item, now),
-        Some("weekly 40% left".to_string()),
+        Some("weekly 40% left (stale)".to_string()),
         "stale data must not show pacing"
     );
     let snapshot = chat
@@ -1007,7 +1029,9 @@ async fn weekly_pacing_is_opt_in_deterministic_and_base_only_without_fresh_timin
         .get_mut("codex")
         .unwrap();
     snapshot.captured_at = now;
-    snapshot.primary.as_mut().unwrap().resets_at_unix_seconds = None;
+    let primary = snapshot.primary.as_mut().unwrap();
+    primary.captured_at = now;
+    primary.resets_at_unix_seconds = None;
     assert_eq!(
         chat.status_line_value_for_item_at(item, now),
         Some("weekly 40% left".to_string()),
@@ -1027,32 +1051,140 @@ async fn weekly_pacing_is_opt_in_deterministic_and_base_only_without_fresh_timin
         Some("weekly 40% left".to_string()),
         "partial timing must leave the usage-only base"
     );
-    let window = chat
+    for style in [
+        codex_config::types::WeeklyLimitPacingStyle::Qualitative,
+        codex_config::types::WeeklyLimitPacingStyle::Ratio,
+    ] {
+        chat.local_settings.tui.weekly_limit_pacing_style = style;
+        for reset in [now.timestamp(), now.timestamp() - 1] {
+            let window = chat
+                .rate_limit_snapshots_by_limit_id
+                .get_mut("codex")
+                .unwrap()
+                .primary
+                .as_mut()
+                .unwrap();
+            window.window_minutes = Some(10_080);
+            window.resets_at_unix_seconds = Some(reset);
+            assert_eq!(
+                chat.status_line_value_for_item_at(item, now),
+                Some("weekly 40% left".to_string()),
+                "expired or capture-time reset should fall back to usage-only detail"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn weekly_pacing_carries_same_cycle_metadata_without_freshening_omitted_windows() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let now = chrono::Local::now();
+    let reset_epoch = now.timestamp() + 10_080 * 30;
+    chat.on_rate_limit_snapshot(Some(account_usage_snapshot_with_weekly_window(Some(
+        RateLimitWindow {
+            used_percent: 40,
+            window_duration_mins: Some(10_080),
+            resets_at: Some(reset_epoch),
+        },
+    ))));
+    let first = chat
         .rate_limit_snapshots_by_limit_id
-        .get_mut("codex")
-        .unwrap()
-        .primary
-        .as_mut()
-        .unwrap();
-    window.window_minutes = Some(10_080);
-    window.resets_at_unix_seconds = Some(now.timestamp());
-    assert_eq!(
-        chat.status_line_value_for_item_at(item, now),
-        Some("weekly 40% left/0%".to_string()),
-        "a reset exactly at capture time has zero time remaining"
-    );
+        .get("codex")
+        .and_then(|display| display.secondary.as_ref())
+        .expect("initial weekly window")
+        .clone();
+
+    chat.on_rate_limit_snapshot(Some(account_usage_snapshot_with_weekly_window(Some(
+        RateLimitWindow {
+            used_percent: 70,
+            window_duration_mins: Some(10_080),
+            resets_at: None,
+        },
+    ))));
+    let updated = chat
+        .rate_limit_snapshots_by_limit_id
+        .get("codex")
+        .and_then(|display| display.secondary.as_ref())
+        .expect("partial weekly window");
+    assert_eq!(updated.used_percent, 70.0);
+    assert_eq!(updated.resets_at_unix_seconds, Some(reset_epoch));
+    assert_eq!(updated.window_minutes, Some(10_080));
+    assert!(updated.captured_at >= first.captured_at);
+
+    let stale_capture = chrono::Local::now() - chrono::Duration::minutes(16);
     chat.rate_limit_snapshots_by_limit_id
         .get_mut("codex")
-        .unwrap()
-        .primary
-        .as_mut()
-        .unwrap()
-        .resets_at_unix_seconds = Some(now.timestamp() - 1);
+        .and_then(|display| display.secondary.as_mut())
+        .expect("weekly window")
+        .captured_at = stale_capture;
+    chat.on_rate_limit_snapshot(Some(account_usage_snapshot_with_weekly_window(None)));
+    let carried = chat
+        .rate_limit_snapshots_by_limit_id
+        .get("codex")
+        .and_then(|display| display.secondary.as_ref())
+        .expect("future-reset window carries through an omitted field");
+    assert_eq!(carried.captured_at, stale_capture);
     assert_eq!(
-        chat.status_line_value_for_item_at(item, now),
-        Some("weekly 40% left".to_string()),
-        "a reset before capture time is invalid and must not show pacing"
+        chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::WeeklyLimit),
+        Some("weekly 30% left (stale)".to_string())
     );
+}
+
+#[tokio::test]
+async fn weekly_pacing_does_not_carry_metadata_across_changed_or_expired_cycles() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let now = chrono::Local::now();
+    let old_reset = now.timestamp() + 10_080 * 30;
+    chat.on_rate_limit_snapshot(Some(account_usage_snapshot_with_weekly_window(Some(
+        RateLimitWindow {
+            used_percent: 10,
+            window_duration_mins: Some(10_080),
+            resets_at: Some(old_reset),
+        },
+    ))));
+
+    let changed_reset = old_reset + 10_080 * 60;
+    chat.on_rate_limit_snapshot(Some(account_usage_snapshot_with_weekly_window(Some(
+        RateLimitWindow {
+            used_percent: 35,
+            window_duration_mins: None,
+            resets_at: Some(changed_reset),
+        },
+    ))));
+    let changed = chat
+        .rate_limit_snapshots_by_limit_id
+        .get("codex")
+        .and_then(|display| display.secondary.as_ref())
+        .expect("new partial cycle");
+    assert_eq!(changed.resets_at_unix_seconds, Some(changed_reset));
+    assert_eq!(changed.window_minutes, None);
+    assert_eq!(
+        chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::WeeklyLimit),
+        Some("secondary usage 65% left".to_string())
+    );
+
+    let expired = now.timestamp() - 1;
+    chat.on_rate_limit_snapshot(Some(account_usage_snapshot_with_weekly_window(Some(
+        RateLimitWindow {
+            used_percent: 20,
+            window_duration_mins: Some(10_080),
+            resets_at: Some(expired),
+        },
+    ))));
+    chat.on_rate_limit_snapshot(Some(account_usage_snapshot_with_weekly_window(Some(
+        RateLimitWindow {
+            used_percent: 30,
+            window_duration_mins: None,
+            resets_at: None,
+        },
+    ))));
+    let expired_cycle = chat
+        .rate_limit_snapshots_by_limit_id
+        .get("codex")
+        .and_then(|display| display.secondary.as_ref())
+        .expect("current partial cycle");
+    assert_eq!(expired_cycle.resets_at_unix_seconds, None);
+    assert_eq!(expired_cycle.window_minutes, None);
 }
 
 #[tokio::test]

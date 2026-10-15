@@ -446,6 +446,19 @@ impl InputQueue {
         self.activity_tx.send_replace(InputQueueActivity::Steer);
     }
 
+    #[cfg(test)]
+    pub(crate) async fn notify_operator_steer_for_test(&self, turn_state: &Mutex<TurnState>) {
+        self.extend_pending_input_and_accept_mailbox_delivery_for_turn_state(
+            turn_state,
+            vec![TurnInput::UserInput {
+                content: Vec::new(),
+                client_id: None,
+                metadata: Default::default(),
+            }],
+        )
+        .await;
+    }
+
     pub(crate) async fn extend_pending_input_for_turn_state(
         &self,
         turn_state: &Mutex<TurnState>,
