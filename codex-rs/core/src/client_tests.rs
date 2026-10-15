@@ -144,6 +144,62 @@ fn test_model_provider() -> SharedModelProvider {
     test_model_client(SessionSource::Cli).state.provider.clone()
 }
 
+#[test]
+fn responses_requests_omit_optional_attribution_preserving_metadata() -> anyhow::Result<()> {
+    let mut client = test_model_client(SessionSource::Cli);
+    Arc::get_mut(&mut client.state)
+        .expect("test client should have unique session state")
+        .provider = create_model_provider(
+        ModelProviderInfo::create_openai_provider(None),
+        /*auth_manager*/ None,
+    );
+    let item: ResponseItem = serde_json::from_value(json!({
+        "type": "message",
+        "role": "user",
+        "content": [{"type": "input_text", "text": "preserve the actual input"}],
+        "internal_chat_message_metadata_passthrough": {
+            "turn_id": "turn-example",
+            "create_time": 123,
+            "content_item_kinds": ["user.input"],
+            "content_item_metadata": [{"provenance": {"type": "user"}}],
+        },
+    }))?;
+    let original_wire = serde_json::to_value(&item)?;
+    let mut expected_wire = original_wire.clone();
+    expected_wire["internal_chat_message_metadata_passthrough"]
+        .as_object_mut()
+        .expect("message metadata should be an object")
+        .remove("content_item_metadata");
+    let prompt = Prompt {
+        input: vec![item.clone()],
+        ..Default::default()
+    };
+    let responses_metadata = test_responses_metadata_for_client(
+        &client,
+        /*turn_id*/ None,
+        format!("{}:0", client.state.thread_id),
+        /*parent_thread_id*/ None,
+        TestCodexResponsesRequestKind::Turn,
+    );
+    for responses_lite in [false, true] {
+        let mut model = test_model_info();
+        model.use_responses_lite = responses_lite;
+        let request = client.build_responses_request(
+            &prompt,
+            &model,
+            /*effort*/ None,
+            codex_protocol::config_types::ReasoningSummary::None,
+            /*service_tier*/ None,
+            &responses_metadata,
+            /*include_internal*/ true,
+        )?;
+        assert_eq!(serde_json::to_value(&request.input[0])?, expected_wire);
+        assert_eq!(prompt.input, vec![item.clone()]);
+        assert_eq!(serde_json::to_value(&prompt.input[0])?, original_wire);
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn workspace_routed_http_rejects_redirects_without_a_routing_header() {
     use codex_client::HttpTransport;
