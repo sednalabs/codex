@@ -1035,6 +1035,105 @@ async fn scheduled_resource_only_update_restarts_daemon() {
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
 #[tokio::test]
+async fn post_install_native_guards_reject_mismatch_and_downgrade_before_restart() {
+    let current_version = env!("CARGO_PKG_VERSION");
+    let package_version = next_sedna_version(current_version);
+    let cases = [
+        (
+            "native version mismatch",
+            current_version,
+            package_version.as_str(),
+            "selected package native version does not match its Sedna receipt",
+        ),
+        (
+            "native version downgrade",
+            "0.146.0",
+            "0.146.0",
+            "installer selected a package with an older native version",
+        ),
+    ];
+
+    for (case, binary_native_version, receipt_native_version, expected_error) in cases {
+        let home = TempDir::new().expect("home");
+        let (daemon, _) = sedna_update_daemon(&home);
+        let settings = crate::settings::DaemonSettings::default();
+        let backend = crate::backend::pid_backend(daemon.backend_paths(&settings));
+        backend.start().await.expect("start daemon");
+        let server = test_control_server(&daemon, home.path()).await;
+        let previous_pid_record = std::fs::read(&daemon.pid_file).expect("daemon PID record");
+        let root = home.path().join("packages/standalone");
+        let target = format!("{}-unknown-linux-musl", std::env::consts::ARCH);
+        let release = format!("{package_version}-{target}");
+        let metadata = sedna_fixture_metadata_script_for_package(
+            &package_version,
+            receipt_native_version,
+            &target,
+        );
+        // The fake installer selects this package to exercise update_loop's
+        // postcondition; production installer selection rollback is tested separately.
+        let installer = FakeInstallerHttp::new(InstallerResponse::Success(
+            format!(
+                concat!(
+                    "#!/bin/sh\n",
+                    "# CODEX_INSTALL_IF_LATEST\n",
+                    "set -eu\n",
+                    "release_dir='{root}/releases/{release}'\n",
+                    "mkdir -p \"$release_dir/bin\"\n",
+                    "{metadata}",
+                    "printf '#!/bin/sh\\nif [ \"$1\" = --version ]; then echo codex {binary_native_version}; else exec sleep 30; fi\\n' > \"$release_dir/bin/codex\"\n",
+                    "chmod +x \"$release_dir/bin/codex\"\n",
+                    "ln -sfn 'releases/{release}' '{root}/current'\n",
+                    "printf '{release}' > '{root}/auto-update-version'\n",
+                ),
+                root = root.display(),
+            )
+            .into_bytes(),
+        ));
+
+        let result = super::update_once(
+            &installer,
+            &daemon,
+            &executable_identity(&daemon.managed_codex_bin)
+                .await
+                .expect("updater identity"),
+            &mut test_terminate(),
+            super::UpdateTrigger::Scheduled,
+        )
+        .await;
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("{case}: invalid native-version selection was accepted"),
+        };
+
+        assert!(
+            format!("{error:#}").contains(expected_error),
+            "{case}: {error:#}"
+        );
+        assert_eq!(
+            std::fs::read(&daemon.pid_file).expect("daemon PID record"),
+            previous_pid_record,
+            "{case}: daemon restarted before native-version validation"
+        );
+        assert_eq!(
+            daemon
+                .current_managed_codex_bin()
+                .expect("selected executable")
+                .canonicalize()
+                .expect("selected release"),
+            root.join("releases").join(&release).join("bin/codex"),
+            "{case}: fake installer did not select the candidate under test"
+        );
+
+        backend.stop().await.expect("stop daemon");
+        server.abort();
+    }
+}
+
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+#[tokio::test]
 async fn manual_update_restarts_managed_daemon_with_automatic_updates_disabled() {
     check_manual_update_restart("standalone").await;
 }
