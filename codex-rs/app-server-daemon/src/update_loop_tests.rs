@@ -278,6 +278,16 @@ async fn explicit_update_migrates_running_and_stopped_installations() {
         } else {
             None
         };
+        let selected_receipt = previous.join("sedna-release.json");
+        let selected_metadata = std::fs::read_to_string(&selected_receipt).unwrap();
+        std::fs::write(
+            &selected_receipt,
+            selected_metadata.replace(
+                "\"selectionChannel\":\"stable\"",
+                "\"selectionChannel\":\"prerelease\"",
+            ),
+        )
+        .unwrap();
         let legacy_bin = std::fs::read(&legacy.managed_codex_bin).unwrap();
         let dedicated = home.path().join("packages/app-server-daemon");
         let old_installer = FakeInstallerHttp::new(InstallerResponse::Success(b"exit 99".to_vec()));
@@ -300,6 +310,7 @@ test "$CODEX_INSTALL_DEFER_SELECTION" = 1
 test "$CODEX_INSTALL_IF_CURRENT" = 0
 test "$CODEX_INSTALL_DAEMON_ONLY" = 1
 test "$CODEX_INSTALL_IF_LATEST" = 0
+test "$CODEX_SEDNA_RELEASE_CHANNEL" = stable
 root="$CODEX_HOME/packages/app-server-daemon"
 mkdir -p "$root/releases/{release}/bin"
 printf '#!/bin/sh\nif [ "$1" = --version ]; then echo codex {version}; else exit 2; fi\n' > "$root/releases/{release}/bin/codex"

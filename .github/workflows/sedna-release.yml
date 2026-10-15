@@ -41,11 +41,17 @@ jobs:
       - name: Validate release identity
         env:
           PACKAGE_VERSION: ${{ inputs.package-version }}
+          CHANNEL: ${{ inputs.channel }}
         run: |
           set -euo pipefail
           cargo_version="$(sed -n -E 's/^version = "([^"]+)"$/\1/p' codex-rs/Cargo.toml | head -n 1)"
           [[ "$PACKAGE_VERSION" == "$cargo_version" ]]
           [[ "$PACKAGE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]
+          case "$CHANNEL" in
+            stable) [[ "${PACKAGE_VERSION%%+*}" != *-* ]] ;;
+            prerelease) [[ "${PACKAGE_VERSION%%+*}" == *-* ]] ;;
+            *) exit 1 ;;
+          esac
       - name: Build and smoke-test canonical package
         uses: ./.github/actions/build-codex-packages
         with:

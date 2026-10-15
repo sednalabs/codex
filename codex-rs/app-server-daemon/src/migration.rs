@@ -158,9 +158,10 @@ pub(super) async fn run(http: &impl InstallerHttp, legacy: &Daemon) -> Result<Up
         .sedna_release_receipt()
         .context("installer did not prepare a verified Sedna package")?;
     anyhow::ensure!(
-        receipt.selection_channel == previous_receipt.selection_channel
+        receipt.selection_channel == "stable"
+            && receipt.release.channel == "stable"
             && receipt.release.target == expected_target,
-        "prepared daemon receipt does not preserve the selected channel and target"
+        "prepared daemon receipt does not match the requested stable channel and target"
     );
     let version = managed_install::managed_codex_version(&binary).await?;
     anyhow::ensure!(

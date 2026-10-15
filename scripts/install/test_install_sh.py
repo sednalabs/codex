@@ -172,6 +172,42 @@ class InstallShTest(unittest.TestCase):
                 standalone / "releases" / f"{version}-{target}",
             )
 
+    @unittest.skipUnless(sys.platform == "linux", "Sedna binary updates are Linux-only")
+    def test_deferred_sedna_install_rejects_older_package_before_staging(self) -> None:
+        target = linux_target()
+        version = "0.146.0"
+        release_json, sedna_metadata = sedna_release_metadata(
+            version,
+            target,
+            native_version="0.162.0-sedna.dev.be2e129",
+            channel="stable",
+            prerelease=False,
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            dedicated = root / "codex-home" / "packages" / "app-server-daemon"
+            dedicated.mkdir(parents=True)
+            marker = dedicated / "auto-update-version"
+            marker.write_text("previous-selection", encoding="utf-8")
+            result, requests = run_installer_in(
+                root,
+                "latest",
+                metadata_json=release_json,
+                sedna_metadata_json=sedna_metadata,
+                daemon_only=True,
+                sedna_update=True,
+                defer_selection=True,
+                previous_package_version="0.147.0",
+                previous_native_version="0.162.0-sedna.dev.be2e129",
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("package version is older", result.stderr)
+            self.assertFalse((dedicated / ".migration-current").exists())
+            self.assertFalse((dedicated / "current").exists())
+            self.assertEqual(marker.read_text(encoding="utf-8"), "previous-selection")
+            self.assertNotIn("codex-package_SHA256SUMS", "\n".join(requests))
+
     def test_metadata_fetch_failure_is_not_reported_as_missing_assets(self) -> None:
         result, requests = run_installer(VERSION, metadata_failure=True)
 

@@ -768,7 +768,13 @@ validate_sedna_release_metadata() {
   previous_native_version="${CODEX_SEDNA_PREVIOUS_NATIVE_VERSION:-}"
   [ -n "$previous_native_version" ] || return 1
   validate_sedna_version "$previous_native_version" || return 1
-  if [ "$(sedna_version_compare "$package_version" "$previous_version")" -le 0 ]; then
+  package_comparison="$(sedna_version_compare "$package_version" "$previous_version")"
+  if [ "$package_comparison" -lt 0 ] &&
+    [ "${CODEX_INSTALL_DEFER_SELECTION:-0}" = "1" ]; then
+    echo "Sedna release package version is older than the installed package version." >&2
+    return 1
+  fi
+  if [ "$package_comparison" -le 0 ]; then
     if [ "${CODEX_INSTALL_DEFER_SELECTION:-0}" != "1" ]; then
       sedna_no_update="1"
     fi
