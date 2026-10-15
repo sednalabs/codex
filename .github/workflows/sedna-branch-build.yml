@@ -4,6 +4,12 @@ run-name: >-
   [target=${{ inputs.ref || github.ref_name }} platform=${{ inputs.platform }} host_only=${{ inputs.host_only }}]
 
 on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/scripts/e20-package-consumer/**
+      - .github/workflows/sedna-branch-build.yml
   workflow_dispatch:
     inputs:
       ref:
@@ -35,6 +41,7 @@ permissions:
 jobs:
   metadata:
     name: Resolve preview metadata
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-24.04
     outputs:
       checkout_ref: ${{ steps.meta.outputs.checkout_ref }}
@@ -516,3 +523,127 @@ jobs:
         with:
           path: ${{ github.workspace }}/.sccache/
           key: sedna-preview-sccache-macos-15-intel-x86_64-apple-darwin-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
+
+  consume-e20-x86_64:
+    name: Consume exact e20 x86_64 preview and historical State snapshot
+    if: >-
+      ${{
+        github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        github.event.pull_request.head.ref == 'validation/w14962-e20-packaged-consumer-20261015' &&
+        github.event.pull_request.base.ref == 'main'
+      }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Check out exact consumer source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out exact e20 product source
+        uses: actions/checkout@v7
+        with:
+          ref: e20b2dc9a96c08b9ae7f38298d098ed01af68e87
+          path: e20-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out public historical migration source
+        uses: actions/checkout@v7
+        with:
+          ref: 38e25e75711d323be7039a81bcf1c31aa1117583
+          path: historical-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Download exact x86_64 preview artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: 11937759243
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: 38654636926
+          path: ${{ runner.temp }}/e20-artifact
+
+      - name: Verify x86_64 artifact and consume packaged state
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARCHITECTURE: x86_64
+          ARTIFACT_DIR: ${{ runner.temp }}/e20-artifact
+          CANDIDATE_SOURCE_DIR: ${{ github.workspace }}/e20-source
+          HISTORICAL_SOURCE_DIR: ${{ github.workspace }}/historical-source
+          PRODUCER_RUN_ID: "38654636926"
+          PRODUCER_JOB_ID: "116161545030"
+          PRODUCER_ARTIFACT_ID: "11937759243"
+          PRODUCER_ARTIFACT_NAME: sedna-branch-e20b2dc9a96c08b9ae7f38298d098ed01af68e87-e20b2dc9-x86_64-unknown-linux-gnu
+          PRODUCER_ARTIFACT_DIGEST: sha256:168b8f6f2ebb51e017c1ab6101c5b248961f6de54cdc0c9c34eae20f5c343094
+        run: python3 .github/scripts/e20-package-consumer/consume_e20_preview.py
+
+  consume-e20-aarch64:
+    name: Consume exact e20 AArch64 preview and historical State snapshot
+    if: >-
+      ${{
+        github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        github.event.pull_request.head.ref == 'validation/w14962-e20-packaged-consumer-20261015' &&
+        github.event.pull_request.base.ref == 'main'
+      }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Check out exact consumer source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out exact e20 product source
+        uses: actions/checkout@v7
+        with:
+          ref: e20b2dc9a96c08b9ae7f38298d098ed01af68e87
+          path: e20-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out public historical migration source
+        uses: actions/checkout@v7
+        with:
+          ref: 38e25e75711d323be7039a81bcf1c31aa1117583
+          path: historical-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Download exact AArch64 preview artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: 11937588937
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: 38654640297
+          path: ${{ runner.temp }}/e20-artifact
+
+      - name: Verify AArch64 artifact and consume packaged state
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARCHITECTURE: aarch64
+          ARTIFACT_DIR: ${{ runner.temp }}/e20-artifact
+          CANDIDATE_SOURCE_DIR: ${{ github.workspace }}/e20-source
+          HISTORICAL_SOURCE_DIR: ${{ github.workspace }}/historical-source
+          PRODUCER_RUN_ID: "38654640297"
+          PRODUCER_JOB_ID: "116161564379"
+          PRODUCER_ARTIFACT_ID: "11937588937"
+          PRODUCER_ARTIFACT_NAME: sedna-branch-e20b2dc9a96c08b9ae7f38298d098ed01af68e87-e20b2dc9-aarch64-unknown-linux-gnu
+          PRODUCER_ARTIFACT_DIGEST: sha256:c4e0aae88e1fd7d726854846e1c6367335259b3215741ad71d40fcdb82fc669a
+        run: python3 .github/scripts/e20-package-consumer/consume_e20_preview.py
