@@ -1592,10 +1592,9 @@ impl ModelClient {
             if self.state.provider.info().auth.is_none()
                 && self.auth_owner_generation() != auth_owner_generation
             {
-                return Err(std::io::Error::other(
-                    "account changed while preparing model request",
-                )
-                .into());
+                return Err(
+                    std::io::Error::other("account changed while preparing model request").into(),
+                );
             }
             let authority = complete_provider_authority(
                 self.state.provider.info(),

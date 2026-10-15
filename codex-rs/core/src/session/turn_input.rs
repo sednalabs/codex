@@ -320,13 +320,7 @@ pub(super) async fn handle_with_automatic_turn_context(
             .await
         }
         TurnInputMode::Steer { expected_turn_id } => {
-            steer(
-                session,
-                request,
-                expected_turn_id,
-                submission_id,
-            )
-            .await
+            steer(session, request, expected_turn_id, submission_id).await
         }
     };
     // Link this request's trace to the accepted turn, which may have an older trace.

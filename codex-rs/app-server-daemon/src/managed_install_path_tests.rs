@@ -101,11 +101,8 @@ fn updater_requires_a_verified_release_on_the_selected_channel() {
     if newer_native_version.pre.is_empty() {
         newer_native_version.patch += 1;
     } else {
-        newer_native_version.pre = semver::Prerelease::new(&format!(
-            "{}.update1",
-            newer_native_version.pre
-        ))
-        .unwrap();
+        newer_native_version.pre =
+            semver::Prerelease::new(&format!("{}.update1", newer_native_version.pre)).unwrap();
     }
     let newer_native_version = newer_native_version.to_string();
     write_sedna_fixture(

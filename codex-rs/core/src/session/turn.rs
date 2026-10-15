@@ -3161,10 +3161,8 @@ async fn try_run_sampling_request(
                             )
                             .await;
                         } else if let TurnItem::AgentMessage(message) = &turn_item {
-                            emitted_visible_text = message
-                                .content
-                                .iter()
-                                .any(|content| match content {
+                            emitted_visible_text =
+                                message.content.iter().any(|content| match content {
                                     codex_protocol::items::AgentMessageContent::Text { text } => {
                                         !text.is_empty()
                                     }
