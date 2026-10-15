@@ -31,7 +31,9 @@ from typing import Any
 
 
 E20_SOURCE = "e20b2dc9a96c08b9ae7f38298d098ed01af68e87"
-E20_REF = "preview/mcp-device-auth-upstream-71923ba-20261015"
+# The producer dispatch passed the exact commit SHA as its `ref` input, so its
+# preview manifest records that SHA rather than the source branch name.
+E20_REF = "e20b2dc9a96c08b9ae7f38298d098ed01af68e87"
 WORKFLOW_HOST = "c753adfb07d05567efd386b4b829d2e53b4583c0"
 WORKFLOW_HOST_REF = "preview/workflow-host-c753adf-20261015"
 BASE_SHA = "703389678a1a6c3a9d131245d03d3f1805b9afa1"
