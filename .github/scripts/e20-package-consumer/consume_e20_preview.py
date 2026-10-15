@@ -166,10 +166,8 @@ def verify_producer(*, repo: str, run_id: str, architecture: str) -> dict[str, A
     }
     for key, value in expected_run.items():
         require(run.get(key) == value, f"Producer run identity mismatch: {key}.")
-    require(
-        (run.get("head_repository") or {}).get("full_name") == repo,
-        "Producer run was not created by the expected repository.",
-    )
+    run_head_repository = run.get("head_repository") or {}
+    require(run_head_repository.get("full_name") == repo, "Producer run was not created by the expected repository.")
     pull_requests = run.get("pull_requests")
     require(isinstance(pull_requests, list) and len(pull_requests) == 1, "Producer run does not bind to exactly one pull request.")
     pull = pull_requests[0]
@@ -178,14 +176,29 @@ def verify_producer(*, repo: str, run_id: str, architecture: str) -> dict[str, A
     require(base.get("ref") == "main" and base.get("sha") == BASE_SHA, "Producer PR base does not match the selected exact main SHA.")
     head = pull.get("head") or {}
     require(head.get("ref") == PRODUCT_SOURCE_BRANCH, "Producer PR head branch mismatch.")
-    head_repository = head.get("repo")
-    # The run-level head_repository was checked above; GitHub can omit the
-    # nested PR head repo, and that association may reflect a later PR head.
-    if head_repository is not None:
-        require(
-            head_repository.get("full_name") == repo,
-            "Producer PR head repository does not match the expected repository.",
-        )
+    pr_head_repository = head.get("repo")
+    # The run-level repository is exact and checked above. GitHub's PR
+    # association can omit the nested repo or omit its full_name; bind partial
+    # nested metadata to the run-level repository ID rather than failing on a
+    # missing redundant field.
+    if pr_head_repository is not None:
+        require(isinstance(pr_head_repository, dict), "Producer PR head repository metadata is malformed.")
+        pr_head_full_name = pr_head_repository.get("full_name")
+        if pr_head_full_name is not None:
+            require(pr_head_full_name == repo, "Producer PR head repository does not match the expected repository.")
+            pr_head_id = pr_head_repository.get("id")
+            require(
+                pr_head_id is None or pr_head_id == run_head_repository.get("id"),
+                "Producer PR head repository ID does not match the exact workflow-run repository.",
+            )
+        else:
+            expected_repository_name = repo.rsplit("/", 1)[-1]
+            require(
+                run_head_repository.get("id") is not None
+                and pr_head_repository.get("id") == run_head_repository.get("id")
+                and pr_head_repository.get("name") == expected_repository_name,
+                "Producer PR head repository ID/name do not match the exact workflow-run repository.",
+            )
 
     jobs = github_api(f"/repos/{repo}/actions/runs/{run_id}/jobs?per_page=100").get("jobs", [])
     expected_failed_ids = {
