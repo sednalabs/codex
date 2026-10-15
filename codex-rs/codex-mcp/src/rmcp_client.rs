@@ -1014,7 +1014,7 @@ async fn start_server_task(
     });
     let list_start = Instant::now();
     let server_info =
-        mcp_server_info_from_implementation(&server_name, Some(initialize_result.server_info));
+        mcp_server_info_from_implementation(&server_name, initialize_result.server_info);
     let fetch_ticket = codex_apps_tools_cache_context
         .as_ref()
         .map(|context| context.begin_fetch(ConnectorRuntimeFetchSource::Startup));
