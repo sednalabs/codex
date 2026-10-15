@@ -497,6 +497,7 @@ def consume() -> None:
         root = Path(temp_dir)
         codex_home = root / "home"
         sqlite_home = root / "sqlite"
+        sqlite_home.mkdir(parents=True, exist_ok=True)
         rollout = root / "synthetic-rollout.jsonl"
         rollout.write_text("\n")
         db_path = sqlite_home / "state_5.sqlite"
