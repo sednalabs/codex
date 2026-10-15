@@ -580,7 +580,6 @@ def run_probe(
         )
         if entrypoint == "codex":
             executable = package.cli
-            package_root = package.cli_root
             package_path_dir = package.cli_path_dir
             config = CodexConfig(
                 codex_bin=str(executable),
@@ -589,7 +588,6 @@ def run_probe(
             )
         else:
             executable = package.app_server
-            package_root = package.app_server_root
             package_path_dir = package.app_server_path_dir
             config = CodexConfig(
                 launch_args_override=(str(executable),),
@@ -597,7 +595,9 @@ def run_probe(
                 env=package.environment,
             )
 
-        host_path = package_root / "codex-resources" / "codex-code-mode-host"
+        # The canonical package layout places the host beside each entrypoint
+        # under bin/, not in codex-resources/.
+        host_path = executable.with_name("codex-code-mode-host")
         require(host_path.is_file() and os.access(host_path, os.X_OK), "Packaged code-mode host is missing or not executable.")
         host_path = host_path.resolve(strict=True)
         entrypoint_path = executable.resolve(strict=True)
