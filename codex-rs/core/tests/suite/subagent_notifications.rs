@@ -2142,12 +2142,13 @@ async fn spawned_agent_uses_summary_support_for_final_model(
 async fn spawned_multi_agent_v2_child_inherits_parent_developer_context() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
+    const WAIT_SENTENCE: &str = "Avoid performing blocking sleep or wait calls longer than 60 seconds, as they may prevent you from communicating with the user for their duration.";
     let server = start_mock_server().await;
     let spawn_args = serde_json::to_string(&json!({
         "message": CHILD_PROMPT,
         "task_name": "worker",
     }))?;
-    mount_sse_once_match(
+    let root_request_log = mount_sse_once_match(
         &server,
         |req: &wiremock::Request| body_contains(req, TURN_1_PROMPT),
         sse(vec![
@@ -2201,12 +2202,15 @@ async fn spawned_multi_agent_v2_child_inherits_parent_developer_context() -> Res
 
     test.submit_turn(TURN_1_PROMPT).await?;
 
+    let root_request = root_request_log.single_request();
+    assert!(!root_request.body_contains_text(WAIT_SENTENCE));
     let child_requests = wait_for_requests(&child_request_log).await?;
     let child_request = child_requests
         .last()
         .expect("child request log should capture at least one request");
     assert!(child_request.body_contains_text("Parent developer instructions."));
     assert!(child_request.body_contains_text(CHILD_PROMPT));
+    assert!(!child_request.body_contains_text(WAIT_SENTENCE));
 
     Ok(())
 }

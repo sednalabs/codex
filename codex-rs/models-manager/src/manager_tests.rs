@@ -1080,8 +1080,14 @@ async fn refresh_available_models_keeps_merging_for_custom_api_auth() {
 
 #[tokio::test]
 async fn authoritative_catalog_preserves_hidden_models_and_matches_exact_ids() {
-    let model =
-        remote_model_with_visibility("gpt-6-sol", "Provider Model", /*priority*/ 0, "hide");
+    const WAIT_SENTENCE: &str = "Avoid performing blocking sleep or wait calls longer than 60 seconds, as they may prevent you from communicating with the user for their duration.";
+    let mut model =
+        remote_model_with_visibility("gpt-6.1-sol", "Provider Model", /*priority*/ 0, "hide");
+    model
+        .model_messages
+        .as_mut()
+        .expect("test model should have model messages")
+        .instructions_template = Some(format!("Provider guidance. {WAIT_SENTENCE}"));
     let endpoint = TestModelsEndpoint::with_command_auth(vec![Ok(vec![model.clone()])]);
     let manager = OpenAiModelsManager::new_without_cache(endpoint, /*auth_manager*/ None)
         .with_provider_catalog();
@@ -1092,7 +1098,14 @@ async fn authoritative_catalog_preserves_hidden_models_and_matches_exact_ids() {
             .models,
         vec![model]
     );
-    for unknown in ["gpt-6-sol-other", "namespace/gpt-6-sol"] {
+    let resolved = manager
+        .get_model_info("gpt-6.1-sol", &ModelsManagerConfig::default())
+        .await;
+    assert_eq!(
+        codex_prompts::render_model_instructions(&resolved),
+        format!("Provider guidance. {WAIT_SENTENCE}")
+    );
+    for unknown in ["gpt-6.1-sol-other", "namespace/gpt-6.1-sol"] {
         assert_eq!(
             manager
                 .get_model_info(unknown, &ModelsManagerConfig::default())
@@ -1100,6 +1113,74 @@ async fn authoritative_catalog_preserves_hidden_models_and_matches_exact_ids() {
             model_info::model_info_from_slug(unknown)
         );
     }
+}
+
+#[test]
+fn default_openai_model_instructions_are_overlaid_before_config_precedence() {
+    const WAIT_SENTENCE: &str = "Avoid performing blocking sleep or wait calls longer than 60 seconds, as they may prevent you from communicating with the user for their duration.";
+
+    let mut candidate = remote_model("gpt-6.1-sol", "Default model", /*priority*/ 0);
+    candidate
+        .model_messages
+        .as_mut()
+        .expect("test model should have model messages")
+        .instructions_template = Some(format!(
+        "Keep this model guidance. {WAIT_SENTENCE} Keep native mailbox waits responsive."
+    ));
+
+    let default_model = construct_openai_model_info_from_candidates(
+        "gpt-6.1-sol",
+        std::slice::from_ref(&candidate),
+        &ModelsManagerConfig::default(),
+    );
+    let default_instructions = default_model
+        .model_messages
+        .as_ref()
+        .and_then(|messages| messages.instructions_template.as_deref())
+        .expect("default model should retain its instruction template");
+    assert!(!default_instructions.contains(WAIT_SENTENCE));
+    assert!(default_instructions.contains("Keep this model guidance."));
+    assert!(default_instructions.contains("Keep native mailbox waits responsive."));
+    let assembled_default_instructions = codex_prompts::render_model_instructions(&default_model);
+    assert_eq!(assembled_default_instructions, default_instructions);
+    assert!(
+        candidate
+            .model_messages
+            .as_ref()
+            .and_then(|messages| messages.instructions_template.as_deref())
+            .is_some_and(|template| template.contains(WAIT_SENTENCE)),
+        "the cached/source candidate must remain unchanged"
+    );
+
+    let explicit_provider_model = construct_model_info_from_candidates(
+        "gpt-6.1-sol",
+        std::slice::from_ref(&candidate),
+        &ModelsManagerConfig::default(),
+    );
+    assert_eq!(
+        explicit_provider_model
+            .model_messages
+            .as_ref()
+            .and_then(|messages| messages.instructions_template.as_deref()),
+        candidate
+            .model_messages
+            .as_ref()
+            .and_then(|messages| messages.instructions_template.as_deref())
+    );
+
+    let configured = construct_openai_model_info_from_candidates(
+        "gpt-6.1-sol",
+        std::slice::from_ref(&candidate),
+        &ModelsManagerConfig {
+            base_instructions: Some(format!("Configured text takes precedence. {WAIT_SENTENCE}")),
+            ..ModelsManagerConfig::default()
+        },
+    );
+    let configured_instructions = format!("Configured text takes precedence. {WAIT_SENTENCE}");
+    assert_eq!(
+        codex_prompts::render_model_instructions(&configured),
+        configured_instructions
+    );
 }
 
 #[tokio::test]
