@@ -416,12 +416,22 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Initialize CodeQL
+        id: codeql_init
         uses: github/codeql-action/init@v4.37.9
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
           config-file: ${{ matrix.config_file }}
           dependency-caching: ${{ github.event_name == 'pull_request' && 'restore' || 'full' }}
+
+      - name: Run native visual query regression cases
+        if: ${{ github.event_name == 'workflow_dispatch' && matrix.language == 'rust' && matrix.scope == 'codex-rs-core' }}
+        shell: bash
+        env:
+          CODEQL: ${{ steps.codeql_init.outputs.codeql-path }}
+        run: |
+          set -euo pipefail
+          "${CODEQL}" test run --threads=2 --ram=4096 -- .github/codeql/rust-computer-use-contract/test
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4.37.9

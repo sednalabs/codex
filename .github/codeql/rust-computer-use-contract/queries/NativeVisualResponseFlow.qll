@@ -3,7 +3,6 @@ import codeql.rust.controlflow.BasicBlocks
 import codeql.rust.controlflow.CfgNodes
 import codeql.rust.controlflow.ControlFlowGraph
 import codeql.rust.dataflow.DataFlow
-import codeql.rust.dataflow.TaintTracking
 
 /**
  * Shared, deliberately bounded response-flow facts for native visual
@@ -286,10 +285,6 @@ predicate responseContentItemsClearAfterGuard(
   )
 }
 
-/**
- * Keep helper recognition body-backed.  The guard must still force a failed
- * response when image output is absent; naming a function alone is not enough.
- */
 /** A bounded, local write of the supplied diagnostic into the supplied content. */
 predicate helperItemsReceiver(Function helper, Expr receiver) {
   exists(Variable items |
@@ -311,11 +306,29 @@ predicate helperTextReceiver(Function helper, Expr receiver) {
   )
 }
 
+/**
+ * Follow the supplied diagnostic through value-preserving local steps and only
+ * the two string conversions used by the current append helper. This does not
+ * treat arbitrary taint propagation or an unrelated string as retained detail.
+ */
+predicate helperDiagnosticValue(Function helper, DataFlow::Node node) {
+  node.asParameter() = helper.getParam(1)
+  or
+  exists(DataFlow::Node previous |
+    helperDiagnosticValue(helper, previous) and DataFlow::localFlowStep(previous, node)
+  )
+  or
+  exists(MethodCallExpr conversion, DataFlow::ExprNode receiver |
+    conversion.getEnclosingCallable() = helper and
+    conversion.getIdentifier().getText() = ["trim", "to_string"] and
+    receiver.asExpr() = conversion.getReceiver() and
+    helperDiagnosticValue(helper, receiver) and
+    node.asExpr() = conversion
+  )
+}
+
 predicate helperDetailMutation(Function helper, MethodCallExpr mutation) {
-  exists(
-    DataFlow::ParameterNode message, DataFlow::ExprNode text
-  |
-    message.isParameterOf(helper, 1) and
+  exists(DataFlow::ExprNode text |
     mutation.getEnclosingCallable() = helper and
     (
       mutation.getIdentifier().getText() = "push_str" and
@@ -337,7 +350,7 @@ predicate helperDetailMutation(Function helper, MethodCallExpr mutation) {
         )
       )
     ) and
-    TaintTracking::localTaint(message, text)
+    helperDiagnosticValue(helper, text)
   )
 }
 
@@ -365,10 +378,9 @@ predicate helperOperationKnown(Function helper, Call call) {
       helperDetailMutation(helper, method) or
       method.getIdentifier().getText() = "first_mut" and
       helperItemsReceiver(helper, method.getReceiver()) or
-      exists(DataFlow::ParameterNode message, DataFlow::ExprNode receiver |
-        message.isParameterOf(helper, 1) and
+      exists(DataFlow::ExprNode receiver |
         receiver.asExpr() = method.getReceiver() and
-        TaintTracking::localTaint(message, receiver) and
+        helperDiagnosticValue(helper, receiver) and
         method.getIdentifier().getText() = ["trim", "to_string"]
       )
     )
