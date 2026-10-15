@@ -171,12 +171,10 @@ async fn credential_bound_last_resort_fallback_never_follows_redirects() {
                 )
                 .await
                 .expect("redirect response should write");
-            let second_connection = tokio::time::timeout(
-                Duration::from_millis(250),
-                listener.accept(),
-            )
-            .await
-            .is_ok();
+            let second_connection =
+                tokio::time::timeout(Duration::from_millis(250), listener.accept())
+                    .await
+                    .is_ok();
             (first, second_connection)
         });
         let client = forced_credential_bound_last_resort_client();

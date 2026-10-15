@@ -345,8 +345,8 @@ impl HttpClientBuilder {
                     "HTTP client fell back to system root certificates"
                 );
                 tracing::warn!(error = %error, "failed to build HTTP client with custom CA");
-                build_fallback(self.clone().reqwest_builder(proxy_routing))
-                    .unwrap_or_else(|fallback_error| {
+                build_fallback(self.clone().reqwest_builder(proxy_routing)).unwrap_or_else(
+                    |fallback_error| {
                         tracing::warn!(
                             error = %fallback_error,
                             "failed to build fallback HTTP client"
@@ -354,7 +354,8 @@ impl HttpClientBuilder {
                         self.last_resort_reqwest_builder()
                             .build()
                             .expect("minimal credential-bound HTTP client policy should build")
-                    })
+                    },
+                )
             }
         };
         TransportClient::new(inner, request_logging, default_headers)
