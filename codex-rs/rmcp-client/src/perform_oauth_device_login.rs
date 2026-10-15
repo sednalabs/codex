@@ -392,7 +392,7 @@ async fn request_device_authorization_with_pkce_fallback(
                 client_id,
                 scopes,
                 resource,
-                None,
+                /*pkce*/ None,
             )
             .await
             .context(

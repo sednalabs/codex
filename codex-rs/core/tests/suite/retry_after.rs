@@ -748,10 +748,10 @@ async fn partial_stream_then_http_availability_suppresses_stable_draft_replay() 
                     streamed_deltas += 1;
                 }
                 EventMsg::ItemCompleted(event) => {
-                    if let codex_protocol::items::TurnItem::AgentMessage(item) = event.item {
-                        if item.id == draft_id {
-                            completed_ids.push(item.id);
-                        }
+                    if let codex_protocol::items::TurnItem::AgentMessage(item) = event.item
+                        && item.id == draft_id
+                    {
+                        completed_ids.push(item.id);
                     }
                 }
                 EventMsg::StreamError(_) => recovery_events += 1,

@@ -1,3 +1,6 @@
+// The combined async safety tests exceed the default compiler query-depth budget.
+#![cfg_attr(test, recursion_limit = "256")]
+
 use std::sync::Arc;
 use std::sync::Weak;
 

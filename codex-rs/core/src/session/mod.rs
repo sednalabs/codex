@@ -1087,7 +1087,7 @@ impl SessionIo {
         request: impl Into<WithTurnExtensionData<TurnInputRequest>>,
         mode: TurnInputMode,
     ) -> CodexResult<TurnInputSubmission> {
-        self.submit_turn_input_with_automatic_turn(request, mode, None)
+        self.submit_turn_input_with_automatic_turn(request, mode, /*automatic_turn*/ None)
             .await
     }
 

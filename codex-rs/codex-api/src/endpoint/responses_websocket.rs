@@ -784,7 +784,7 @@ async fn run_websocket_response_stream(
                     idle_timeout,
                     /*telemetry*/ None,
                     timing_log_context.connection_reused,
-                    None,
+                    /*initiation*/ None,
                 )
                     .await?;
                 continue;

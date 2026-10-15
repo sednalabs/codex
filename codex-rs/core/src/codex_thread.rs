@@ -584,7 +584,7 @@ impl CodexThread {
         request: impl Into<WithTurnExtensionData<TurnInputRequest>>,
         mode: TurnInputMode,
     ) -> CodexResult<TurnInputSubmission> {
-        self.submit_turn_input_with_context(request, mode, None)
+        self.submit_turn_input_with_context(request, mode, /*automatic_turn*/ None)
             .await
     }
 

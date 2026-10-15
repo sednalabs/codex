@@ -249,7 +249,14 @@ pub(super) async fn handle(
     mode: TurnInputMode,
     submission_id: String,
 ) -> CodexResult<TurnInputSubmission> {
-    handle_with_automatic_turn_context(session, request, mode, submission_id, None).await
+    handle_with_automatic_turn_context(
+        session,
+        request,
+        mode,
+        submission_id,
+        /*automatic_turn*/ None,
+    )
+    .await
 }
 
 pub(super) async fn handle_with_automatic_turn_context(
@@ -361,7 +368,7 @@ pub(super) async fn handle_recovery(
         submission_id,
         TurnStartKind::Recovery,
         /*expected_previous_turn_id*/ None,
-        None,
+        /*automatic_turn*/ None,
     )
     .await;
     if let Ok(TurnInputSubmission::Started { turn_id, .. }) = &result {
