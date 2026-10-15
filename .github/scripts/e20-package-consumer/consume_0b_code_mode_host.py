@@ -55,6 +55,19 @@ DEFAULT_INSTRUCTION_SENTINEL = (
     "When the user expresses intent to perform new work or fix an existing issue, "
     "persist until the user's intended goal is complete."
 )
+TRACE_SOURCE_SUFFIXES = (
+    ("/.github/scripts/e20-package-consumer/consume_0b_code_mode_host.py", "consumer"),
+    ("/sdk/python/src/openai_codex/_run.py", "sdk_run"),
+    ("/sdk/python/src/openai_codex/api.py", "sdk_api"),
+    ("/sdk/python/src/openai_codex/client.py", "sdk_client"),
+    ("/scripts/codex_package/smoke_tests/app_server_harness.py", "smoke_harness"),
+    (
+        "/scripts/codex_package/smoke_tests/first_binary/test_agent_control_model_acceptance.py",
+        "nested_spawn_fixture",
+    ),
+)
+TRACE_SOURCE_IDS = frozenset(label for _, label in TRACE_SOURCE_SUFFIXES) | {"unknown"}
+TRACE_SOURCE_ID_PATTERN = "(?:" + "|".join(sorted(TRACE_SOURCE_IDS)) + ")"
 PROBE_FAILURE_CATEGORIES = {
     "Unexpected package entrypoint.": "unexpected_entrypoint",
     "Packaged code-mode host is missing or not executable.": "host_binary_unavailable",
@@ -126,7 +139,9 @@ def safe_child_diagnostic(stderr: str) -> str:
     match = re.fullmatch(
         r"code-mode consumer failed: error_type=([A-Za-z_][A-Za-z0-9_]{0,63}); "
         r"category=([a-z0-9_]{1,64})(?:; http_status=([1-5][0-9]{2}))?"
-        r"(?:; rpc_code=(-?[0-9]{1,8}))?(?:; fixture_line=([0-9]{1,5}))?",
+        r"(?:; rpc_code=(-?[0-9]{1,8}))?(?:; fixture_line=([0-9]{1,5}))?"
+        rf"(?:; origin_source=({TRACE_SOURCE_ID_PATTERN}); "
+        r"origin_function=([A-Za-z_][A-Za-z0-9_]{0,63}); origin_line=([0-9]{1,5}))?",
         last_line,
     )
     if match:
@@ -137,6 +152,14 @@ def safe_child_diagnostic(stderr: str) -> str:
             fields.append(f"rpc_code={match.group(4)}")
         if match.group(5):
             fields.append(f"fixture_line={match.group(5)}")
+        if match.group(6):
+            fields.extend(
+                [
+                    f"origin_source={match.group(6)}",
+                    f"origin_function={match.group(7)}",
+                    f"origin_line={match.group(8)}",
+                ]
+            )
         return "; ".join(fields)
     return f"child_failure_unclassified; stderr_bytes={byte_count}"
 
@@ -195,13 +218,42 @@ def safe_exception_codes(error: Exception) -> tuple[str | None, str | None]:
     )
 
 
+def safe_exception_origin(error: Exception) -> tuple[str, str, int]:
+    """Return one mapped source frame, never paths, source lines, or locals."""
+    origins: list[tuple[str, str, int]] = []
+    current: BaseException | None = error
+    for _ in range(4):
+        if current is None:
+            break
+        traceback_item = current.__traceback__
+        while traceback_item is not None:
+            frame = traceback_item.tb_frame
+            filename = Path(frame.f_code.co_filename).as_posix()
+            source_id = next(
+                (
+                    label
+                    for suffix, label in TRACE_SOURCE_SUFFIXES
+                    if filename.endswith(suffix)
+                ),
+                None,
+            )
+            if source_id is not None:
+                function = frame.f_code.co_name
+                if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", function):
+                    function = "unknown"
+                origins.append((source_id, function, traceback_item.tb_lineno))
+            traceback_item = traceback_item.tb_next
+        current = current.__cause__ or current.__context__
+    return origins[-1] if origins else ("unknown", "unknown", 0)
+
+
 def safe_packaged_probe_failure(message: str) -> list[str] | None:
     """Keep only the fixed, already-sanitized SDK-child diagnostic fields."""
     match = re.fullmatch(
         r"Packaged SDK code-mode probe failed \(entrypoint=(codex|codex-app-server); "
         r"child_exit=(-?[0-9]{1,4}); trace=(absent|present); "
         r"entrypoint_execve=([A-Za-z0-9_,=-]{1,64}); "
-        r"helper_execve=([A-Za-z0-9_,=-]{1,64}); (.{1,256})\)",
+        r"helper_execve=([A-Za-z0-9_,=-]{1,64}); (.{1,256})\)\.",
         message,
     )
     if not match:
@@ -218,7 +270,9 @@ def safe_packaged_probe_failure(message: str) -> list[str] | None:
     child_match = re.fullmatch(
         r"child_error_type=([A-Za-z_][A-Za-z0-9_]{0,63}); "
         r"category=([a-z0-9_]{1,64})(?:; http_status=([1-5][0-9]{2}))?"
-        r"(?:; rpc_code=(-?[0-9]{1,8}))?(?:; fixture_line=([0-9]{1,5}))?",
+        r"(?:; rpc_code=(-?[0-9]{1,8}))?(?:; fixture_line=([0-9]{1,5}))?"
+        rf"(?:; origin_source=({TRACE_SOURCE_ID_PATTERN}); "
+        r"origin_function=([A-Za-z_][A-Za-z0-9_]{0,63}); origin_line=([0-9]{1,5}))?",
         child_diagnostic,
     )
     if child_match:
@@ -234,6 +288,14 @@ def safe_packaged_probe_failure(message: str) -> list[str] | None:
             fields.append(f"rpc_code={child_match.group(4)}")
         if child_match.group(5):
             fields.append(f"fixture_line={child_match.group(5)}")
+        if child_match.group(6):
+            fields.extend(
+                [
+                    f"child_origin_source={child_match.group(6)}",
+                    f"child_origin_function={child_match.group(7)}",
+                    f"child_origin_line={child_match.group(8)}",
+                ]
+            )
         return fields
 
     unclassified_match = re.fullmatch(
@@ -1022,6 +1084,12 @@ if __name__ == "__main__":
             suffix += f"; fixture_line={fixture_line}"
         if packaged_probe_details is not None:
             suffix += "; " + "; ".join(packaged_probe_details)
+        else:
+            source_id, function, line = safe_exception_origin(error)
+            suffix += (
+                f"; origin_source={source_id}; origin_function={function}; "
+                f"origin_line={line}"
+            )
         print(
             f"code-mode consumer failed: error_type={error_type}; category={category}{suffix}",
             file=sys.stderr,
