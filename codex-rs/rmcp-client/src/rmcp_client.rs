@@ -729,14 +729,7 @@ impl RmcpClient {
             .peer()
             .peer_info()
             .ok_or_else(|| anyhow!("handshake succeeded but server info was missing"))?;
-        let peer_info = initialize_result_rmcp.as_ref();
-        let mut initialize_result = InitializeResult::new(peer_info.capabilities.clone())
-            .with_protocol_version(peer_info.protocol_version.clone())
-            .with_server_info(peer_info.server_info.clone().ok_or_else(|| {
-                anyhow!("initialization succeeded but server implementation was missing")
-            })?);
-        initialize_result.instructions = peer_info.instructions.clone();
-        initialize_result.meta = peer_info.meta.clone();
+        let initialize_result = initialize_result_rmcp.as_ref().clone();
 
         {
             let mut initialize_context = self.initialize_context.lock().await;
