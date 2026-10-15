@@ -578,7 +578,8 @@ def test_packaged_model_nested_spawn_recovery_and_list_after_resume(
                     ]
                 ),
             )
-            server.enqueue_sse_for_request(
+            recovery_response_gate = threading.Event()
+            worker_recovery_route = server.enqueue_sse_for_request(
                 lambda request: (
                     _thread_id(request) == worker_id
                     and _contains_input_text(request, "WORKER_AFTER_RELOAD_MARKER")
@@ -592,8 +593,9 @@ def test_packaged_model_nested_spawn_recovery_and_list_after_resume(
                         ev_completed("worker-after-reload"),
                     ]
                 ),
+                gate=recovery_response_gate,
             )
-            server.enqueue_sse_for_request(
+            grandchild_recovery_route = server.enqueue_sse_for_request(
                 lambda request: (
                     _thread_id(request) == grandchild_id
                     and _contains_input_text(request, "GRANDCHILD_AFTER_RELOAD_MARKER")
@@ -607,6 +609,7 @@ def test_packaged_model_nested_spawn_recovery_and_list_after_resume(
                         ev_completed("grandchild-after-reload"),
                     ]
                 ),
+                gate=recovery_response_gate,
             )
             resumed = resumed_root.run(
                 "ROOT_RECOVERY_LIST_MARKER: wake descendants and list them."
@@ -629,6 +632,39 @@ def test_packaged_model_nested_spawn_recovery_and_list_after_resume(
                 grandchild_followup
             )
             assert grandchild_followup.kind.value == "interacted", grandchild_followup
+
+            # Follow-up receipts acknowledge submission, not completion. Keep
+            # this client alive until both cold-restored descendants finish.
+            # Hold their responses until the exact current turns are subscribed,
+            # so neither an old terminal turn nor a fast completion can win.
+            recovery_turn_ids: list[str] = []
+            try:
+                for descendant_id, route in (
+                    (worker_id, worker_recovery_route),
+                    (grandchild_id, grandchild_recovery_route),
+                ):
+                    route.wait_until_selected(timeout_s=10)
+                    descendant = resumed_client._client.thread_read(
+                        descendant_id, include_turns=True
+                    )
+                    active_turns = [
+                        turn
+                        for turn in descendant.thread.turns
+                        if turn.status.value == "inProgress"
+                    ]
+                    assert len(active_turns) == 1, active_turns
+                    turn_id = active_turns[0].id
+                    resumed_client._client.register_turn_notifications(turn_id)
+                    recovery_turn_ids.append(turn_id)
+                recovery_response_gate.set()
+                for turn_id in recovery_turn_ids:
+                    completed = resumed_client._client.wait_for_turn_completed(turn_id)
+                    assert completed.turn.id == turn_id, completed
+                    assert completed.turn.status.value == "completed", completed
+            finally:
+                recovery_response_gate.set()
+                for turn_id in recovery_turn_ids:
+                    resumed_client._client.unregister_turn_notifications(turn_id)
 
         listed_agents = _tool_output(server, root_id, "list-after-reload")["agents"]
         by_name = {agent["agent_name"]: agent for agent in listed_agents}
