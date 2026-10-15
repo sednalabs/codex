@@ -77,7 +77,7 @@ jobs:
         shell: bash
         run: ./scripts/check-module-bazel-lock.sh
 
-      - name: Capture GNU hosted-runner resource baseline
+      - name: Reclaim unused GNU runner trees and capture baseline
         if: matrix.os == 'ubuntu-24.04' && matrix.target == 'x86_64-unknown-linux-gnu'
         continue-on-error: true
         shell: bash
@@ -86,6 +86,48 @@ jobs:
           baseline_dir="${RUNNER_TEMP}/gnu-runner-resource-baseline"
           mkdir -p "${baseline_dir}"
           baseline_file="${baseline_dir}/baseline.txt"
+          : > "${baseline_file}"
+
+          sample_reclaim_state() {
+            local phase="$1"
+            {
+              printf 'phase=%s\n' "${phase}"
+              printf 'filesystem_bytes.root='
+              df -B1 --output=size,used,avail,pcent / | tail -n 1
+              printf 'filesystem_inodes.root='
+              df --output=itotal,iused,iavail,ipcent / | tail -n 1
+              for entry in 'android_sdk:/usr/local/lib/android' 'dotnet_sdk:/usr/share/dotnet'; do
+                local label="${entry%%:*}"
+                local path="${entry#*:}"
+                if [[ -d "${path}" && ! -L "${path}" ]]; then
+                  local bytes
+                  bytes="$(du -s -B1 -- "${path}" | awk 'NR == 1 { print $1 }')"
+                  printf 'directory_bytes.%s=%s\n' "${label}" "${bytes}"
+                else
+                  printf 'directory_bytes.%s=absent_or_not_plain_directory\n' "${label}"
+                fi
+              done
+            } >> "${baseline_file}"
+          }
+
+          sample_reclaim_state before
+          for path in /usr/local/lib/android /usr/share/dotnet; do
+            if [[ -L "${path}" ]]; then
+              echo "Refusing to reclaim symlink at expected hosted tool path: ${path}" >&2
+              exit 1
+            fi
+            if [[ -e "${path}" && ! -d "${path}" ]]; then
+              echo "Refusing to reclaim non-directory at expected hosted tool path: ${path}" >&2
+              exit 1
+            fi
+          done
+
+          for path in /usr/local/lib/android /usr/share/dotnet; do
+            if [[ -d "${path}" ]]; then
+              sudo rm -rf -- "${path}"
+            fi
+          done
+          sample_reclaim_state after
 
           sample_filesystem() {
             local label="$1"
@@ -132,14 +174,14 @@ jobs:
             sample_directory dotnet_sdk /usr/share/dotnet
             sample_directory ghc /opt/ghc
             sample_directory chromium /usr/local/share/chromium
-          } > "${baseline_file}"
+          } >> "${baseline_file}"
 
       - name: Upload GNU hosted-runner resource baseline
         if: always() && !cancelled() && matrix.os == 'ubuntu-24.04' && matrix.target == 'x86_64-unknown-linux-gnu'
         continue-on-error: true
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: gnu-runner-resource-baseline-${{ github.run_id }}-${{ github.run_attempt }}
+          name: gnu-runner-resource-baseline-${{ github.run_id }}-${{ github.run_attempt }}-test
           path: ${{ runner.temp }}/gnu-runner-resource-baseline/baseline.txt
           if-no-files-found: error
           retention-days: 3
@@ -531,6 +573,68 @@ jobs:
           cache-scope: bazel-${{ github.job }}
           windows-voice-tools: ${{ runner.os == 'Windows' }}
 
+      - name: Reclaim unused GNU runner trees and capture baseline
+        if: matrix.os == 'ubuntu-24.04' && matrix.target == 'x86_64-unknown-linux-gnu'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          baseline_dir="${RUNNER_TEMP}/gnu-runner-resource-baseline"
+          mkdir -p "${baseline_dir}"
+          baseline_file="${baseline_dir}/baseline.txt"
+          : > "${baseline_file}"
+
+          sample_state() {
+            local phase="$1"
+            {
+              printf 'phase=%s\n' "${phase}"
+              printf 'filesystem_bytes.root='
+              df -B1 --output=size,used,avail,pcent / | tail -n 1
+              printf 'filesystem_inodes.root='
+              df --output=itotal,iused,iavail,ipcent / | tail -n 1
+              for entry in 'android_sdk:/usr/local/lib/android' 'dotnet_sdk:/usr/share/dotnet'; do
+                local label="${entry%%:*}"
+                local path="${entry#*:}"
+                if [[ -d "${path}" && ! -L "${path}" ]]; then
+                  local bytes
+                  bytes="$(du -s -B1 -- "${path}" | awk 'NR == 1 { print $1 }')"
+                  printf 'directory_bytes.%s=%s\n' "${label}" "${bytes}"
+                else
+                  printf 'directory_bytes.%s=absent_or_not_plain_directory\n' "${label}"
+                fi
+              done
+            } >> "${baseline_file}"
+          }
+
+          sample_state before
+          for path in /usr/local/lib/android /usr/share/dotnet; do
+            if [[ -L "${path}" ]]; then
+              echo "Refusing to reclaim symlink at expected hosted tool path: ${path}" >&2
+              exit 1
+            fi
+            if [[ -e "${path}" && ! -d "${path}" ]]; then
+              echo "Refusing to reclaim non-directory at expected hosted tool path: ${path}" >&2
+              exit 1
+            fi
+          done
+
+          for path in /usr/local/lib/android /usr/share/dotnet; do
+            if [[ -d "${path}" ]]; then
+              sudo rm -rf -- "${path}"
+            fi
+          done
+          sample_state after
+
+      - name: Upload GNU hosted-runner resource baseline
+        if: always() && !cancelled() && matrix.os == 'ubuntu-24.04' && matrix.target == 'x86_64-unknown-linux-gnu'
+        continue-on-error: true
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: gnu-runner-resource-baseline-${{ github.run_id }}-${{ github.run_attempt }}-clippy
+          path: ${{ runner.temp }}/gnu-runner-resource-baseline/baseline.txt
+          if-no-files-found: error
+          retention-days: 3
+
       - name: bazel build --config=clippy lint targets
         env:
           BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA: ${{ matrix.target != 'aarch64-apple-darwin' && '1' || '' }}
@@ -624,6 +728,68 @@ jobs:
           target: ${{ matrix.target }}
           cache-scope: bazel-${{ github.job }}
           windows-voice-tools: ${{ runner.os == 'Windows' }}
+
+      - name: Reclaim unused GNU runner trees and capture baseline
+        if: matrix.os == 'ubuntu-24.04' && matrix.target == 'x86_64-unknown-linux-gnu'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          baseline_dir="${RUNNER_TEMP}/gnu-runner-resource-baseline"
+          mkdir -p "${baseline_dir}"
+          baseline_file="${baseline_dir}/baseline.txt"
+          : > "${baseline_file}"
+
+          sample_state() {
+            local phase="$1"
+            {
+              printf 'phase=%s\n' "${phase}"
+              printf 'filesystem_bytes.root='
+              df -B1 --output=size,used,avail,pcent / | tail -n 1
+              printf 'filesystem_inodes.root='
+              df --output=itotal,iused,iavail,ipcent / | tail -n 1
+              for entry in 'android_sdk:/usr/local/lib/android' 'dotnet_sdk:/usr/share/dotnet'; do
+                local label="${entry%%:*}"
+                local path="${entry#*:}"
+                if [[ -d "${path}" && ! -L "${path}" ]]; then
+                  local bytes
+                  bytes="$(du -s -B1 -- "${path}" | awk 'NR == 1 { print $1 }')"
+                  printf 'directory_bytes.%s=%s\n' "${label}" "${bytes}"
+                else
+                  printf 'directory_bytes.%s=absent_or_not_plain_directory\n' "${label}"
+                fi
+              done
+            } >> "${baseline_file}"
+          }
+
+          sample_state before
+          for path in /usr/local/lib/android /usr/share/dotnet; do
+            if [[ -L "${path}" ]]; then
+              echo "Refusing to reclaim symlink at expected hosted tool path: ${path}" >&2
+              exit 1
+            fi
+            if [[ -e "${path}" && ! -d "${path}" ]]; then
+              echo "Refusing to reclaim non-directory at expected hosted tool path: ${path}" >&2
+              exit 1
+            fi
+          done
+
+          for path in /usr/local/lib/android /usr/share/dotnet; do
+            if [[ -d "${path}" ]]; then
+              sudo rm -rf -- "${path}"
+            fi
+          done
+          sample_state after
+
+      - name: Upload GNU hosted-runner resource baseline
+        if: always() && !cancelled() && matrix.os == 'ubuntu-24.04' && matrix.target == 'x86_64-unknown-linux-gnu'
+        continue-on-error: true
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: gnu-runner-resource-baseline-${{ github.run_id }}-${{ github.run_attempt }}-verify-release-build
+          path: ${{ runner.temp }}/gnu-runner-resource-baseline/baseline.txt
+          if-no-files-found: error
+          retention-days: 3
 
       - name: bazel build verify-release-build targets
         shell: bash
