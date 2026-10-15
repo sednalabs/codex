@@ -11,6 +11,7 @@ use anyhow::bail;
 use http::Method;
 use http::StatusCode;
 use http::header::CONTENT_TYPE;
+use oauth2::PkceCodeChallenge;
 use rmcp::transport::auth::OAuthHttpRedirectPolicy;
 use rmcp::transport::auth::OAuthTokenResponse;
 use serde::Deserialize;
@@ -88,7 +89,7 @@ pub async fn perform_oauth_device_login(
     scopes: &[String],
     oauth_client_id: Option<&str>,
     oauth_resource: Option<&str>,
-    prompt: impl FnOnce(DeviceAuthorizationPrompt),
+    mut prompt: impl FnMut(DeviceAuthorizationPrompt),
 ) -> Result<()> {
     let issuer = authorization.issuer();
     let device_authorization_endpoint = authorization
@@ -134,21 +135,17 @@ pub async fn perform_oauth_device_login(
         }
     };
 
-    let details = request_device_authorization(
+    let mut show_prompt = |details: &DeviceAuthorizationResponse| {
+        prompt(DeviceAuthorizationPrompt::new(server_name, details));
+    };
+    let token_response = authorize_and_poll_device_token(
         &http_client,
         device_authorization_endpoint,
+        token_endpoint,
         &client_id,
         scopes,
         oauth_resource,
-    )
-    .await?;
-    prompt(DeviceAuthorizationPrompt::new(server_name, &details));
-    let token_response = poll_device_token(
-        &http_client,
-        token_endpoint,
-        &client_id,
-        oauth_resource,
-        &details,
+        &mut show_prompt,
     )
     .await?;
     let expires_at = compute_expires_at_millis(&token_response);
@@ -161,6 +158,67 @@ pub async fn perform_oauth_device_login(
         expires_at,
     };
     save_oauth_tokens(server_name, &stored, store_mode, keyring_backend_kind).await
+}
+
+async fn authorize_and_poll_device_token(
+    http_client: &OAuthHttpClientAdapter,
+    device_authorization_endpoint: &str,
+    token_endpoint: &str,
+    client_id: &str,
+    scopes: &[String],
+    oauth_resource: Option<&str>,
+    prompt: &mut impl FnMut(&DeviceAuthorizationResponse),
+) -> Result<OAuthTokenResponse> {
+    let (details, pkce) = request_device_authorization_with_pkce_fallback(
+        http_client,
+        device_authorization_endpoint,
+        client_id,
+        scopes,
+        oauth_resource,
+    )
+    .await?;
+    prompt(&details);
+
+    match poll_device_token(
+        http_client,
+        token_endpoint,
+        client_id,
+        oauth_resource,
+        &details,
+        pkce.as_ref(),
+    )
+    .await
+    {
+        Ok(tokens) => Ok(tokens),
+        Err(error) if pkce.is_some() && is_invalid_request_provider_error(&error) => {
+            let details = request_device_authorization(
+                http_client,
+                device_authorization_endpoint,
+                client_id,
+                scopes,
+                oauth_resource,
+                /*pkce*/ None,
+            )
+            .await
+            .context(
+                "OAuth device token endpoint rejected PKCE verifier, and retry without PKCE failed during device authorization",
+            )?;
+            prompt(&details);
+            poll_device_token(
+                http_client,
+                token_endpoint,
+                client_id,
+                oauth_resource,
+                &details,
+                /*pkce*/ None,
+            )
+            .await
+            .context(
+                "OAuth device token endpoint rejected PKCE verifier, and retry without PKCE failed",
+            )
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn validate_device_endpoints(
@@ -260,6 +318,7 @@ async fn request_device_authorization(
     client_id: &str,
     scopes: &[String],
     resource: Option<&str>,
+    pkce: Option<&DevicePkce>,
 ) -> Result<DeviceAuthorizationResponse> {
     let mut form = vec![("client_id", client_id.to_string())];
     if !scopes.is_empty() {
@@ -267,6 +326,10 @@ async fn request_device_authorization(
     }
     if let Some(resource) = resource.filter(|resource| !resource.trim().is_empty()) {
         form.push(("resource", resource.to_string()));
+    }
+    if let Some(pkce) = pkce {
+        form.push(("code_challenge", pkce.code_challenge.clone()));
+        form.push(("code_challenge_method", "S256".to_string()));
     }
     let response = execute_oauth_request(
         http_client,
@@ -303,6 +366,44 @@ async fn request_device_authorization(
     Ok(details)
 }
 
+async fn request_device_authorization_with_pkce_fallback(
+    http_client: &OAuthHttpClientAdapter,
+    endpoint: &str,
+    client_id: &str,
+    scopes: &[String],
+    resource: Option<&str>,
+) -> Result<(DeviceAuthorizationResponse, Option<DevicePkce>)> {
+    let pkce = DevicePkce::new_random();
+    match request_device_authorization(
+        http_client,
+        endpoint,
+        client_id,
+        scopes,
+        resource,
+        Some(&pkce),
+    )
+    .await
+    {
+        Ok(details) => Ok((details, Some(pkce))),
+        Err(error) if is_invalid_request_provider_error(&error) => {
+            let details = request_device_authorization(
+                http_client,
+                endpoint,
+                client_id,
+                scopes,
+                resource,
+                None,
+            )
+            .await
+            .context(
+                "OAuth device authorization rejected PKCE challenge, and retry without PKCE failed",
+            )?;
+            Ok((details, None))
+        }
+        Err(error) => Err(error),
+    }
+}
+
 fn validate_device_user_code(user_code: &str) -> Result<()> {
     if user_code.chars().any(char::is_control) {
         bail!("OAuth device authorization response included an unsafe user code");
@@ -321,8 +422,18 @@ async fn poll_device_token(
     client_id: &str,
     resource: Option<&str>,
     details: &DeviceAuthorizationResponse,
+    pkce: Option<&DevicePkce>,
 ) -> Result<OAuthTokenResponse> {
-    poll_device_token_with_sleep(http_client, endpoint, client_id, resource, details, sleep).await
+    poll_device_token_with_sleep(
+        http_client,
+        endpoint,
+        client_id,
+        resource,
+        details,
+        pkce,
+        sleep,
+    )
+    .await
 }
 
 async fn poll_device_token_with_sleep<F, Fut>(
@@ -331,6 +442,7 @@ async fn poll_device_token_with_sleep<F, Fut>(
     client_id: &str,
     resource: Option<&str>,
     details: &DeviceAuthorizationResponse,
+    pkce: Option<&DevicePkce>,
     mut sleep: F,
 ) -> Result<OAuthTokenResponse>
 where
@@ -362,6 +474,9 @@ where
         ];
         if let Some(resource) = resource.filter(|resource| !resource.trim().is_empty()) {
             form.push(("resource", resource.to_string()));
+        }
+        if let Some(pkce) = pkce {
+            form.push(("code_verifier", pkce.code_verifier.clone()));
         }
         let timeout =
             DEVICE_HTTP_REQUEST_TIMEOUT.min(deadline.saturating_duration_since(Instant::now()));
@@ -522,6 +637,27 @@ fn safe_provider_error_code(error: &str) -> &'static str {
         "server_error" => "server_error",
         "temporarily_unavailable" => "temporarily_unavailable",
         _ => "unrecognized provider error",
+    }
+}
+
+fn is_invalid_request_provider_error(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<DeviceProviderError>()
+        .is_some_and(|provider_error| provider_error.error_code == "invalid_request")
+}
+
+struct DevicePkce {
+    code_challenge: String,
+    code_verifier: String,
+}
+
+impl DevicePkce {
+    fn new_random() -> Self {
+        let (challenge, verifier) = PkceCodeChallenge::new_random_sha256();
+        Self {
+            code_challenge: challenge.as_str().to_string(),
+            code_verifier: verifier.secret().to_string(),
+        }
     }
 }
 

@@ -1,4 +1,5 @@
 use super::*;
+use axum::Form;
 use axum::Json;
 use axum::Router;
 use axum::extract::State;
@@ -9,11 +10,14 @@ use codex_config::types::OAuthCredentialsStoreMode;
 use codex_exec_server::RouteAwareHttpClient;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::OutboundProxyPolicy;
+use oauth2::PkceCodeChallenge;
+use oauth2::PkceCodeVerifier;
 use oauth2::TokenResponse;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+use std::sync::Mutex;
 use tokio::net::TcpListener;
 
 #[derive(Clone)]
@@ -100,6 +104,90 @@ fn http_client() -> Arc<dyn HttpClient> {
 
 fn prompt(_: DeviceAuthorizationPrompt) {}
 
+#[derive(Clone, Default)]
+struct PkceState {
+    device_forms: Arc<Mutex<Vec<HashMap<String, String>>>>,
+    token_forms: Arc<Mutex<Vec<HashMap<String, String>>>>,
+    device_error: Option<&'static str>,
+    token_error: Option<&'static str>,
+}
+
+async fn pkce_device(
+    State(state): State<PkceState>,
+    Form(form): Form<HashMap<String, String>>,
+) -> (AxumStatusCode, Json<serde_json::Value>) {
+    let index = {
+        let mut forms = state.device_forms.lock().expect("device form lock");
+        forms.push(form);
+        forms.len()
+    };
+    if let Some(error) = state.device_error.filter(|_| index == 1) {
+        return (AxumStatusCode::BAD_REQUEST, Json(json!({"error": error})));
+    }
+    (
+        AxumStatusCode::OK,
+        Json(json!({
+            "device_code": format!("device-{index}"),
+            "user_code": "SYNTHETIC-CODE",
+            "verification_uri": "https://login.example.test/device",
+            "expires_in": 60,
+            "interval": 1
+        })),
+    )
+}
+
+async fn pkce_token(
+    State(state): State<PkceState>,
+    Form(form): Form<HashMap<String, String>>,
+) -> (AxumStatusCode, Json<serde_json::Value>) {
+    let index = {
+        let mut forms = state.token_forms.lock().expect("token form lock");
+        forms.push(form);
+        forms.len()
+    };
+    if let Some(error) = state.token_error.filter(|_| index == 1) {
+        return (AxumStatusCode::BAD_REQUEST, Json(json!({"error": error})));
+    }
+    (
+        AxumStatusCode::OK,
+        Json(json!({
+            "access_token": "synthetic-access-token",
+            "token_type": "Bearer",
+            "expires_in": 3600
+        })),
+    )
+}
+
+async fn spawn_pkce_server(state: PkceState) -> String {
+    let app = Router::new()
+        .route("/device", post(pkce_device))
+        .route("/token", post(pkce_token))
+        .with_state(state);
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind PKCE test server");
+    let address = listener.local_addr().expect("PKCE test server address");
+    tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("serve PKCE test server")
+    });
+    format!("http://{address}")
+}
+
+fn oauth_adapter() -> OAuthHttpClientAdapter {
+    OAuthHttpClientAdapter::new_with_max_timeout_and_redirect_mode(
+        http_client(),
+        build_default_headers(/*http_headers*/ None, /*env_http_headers*/ None)
+            .expect("empty headers"),
+        "https://resource.example.test/mcp",
+        DEVICE_HTTP_REQUEST_TIMEOUT,
+        /*has_configured_headers*/ false,
+        StreamableHttpRedirectMode::Legacy,
+    )
+    .expect("synthetic OAuth client")
+}
+
 fn synthetic_authorization(server: &str) -> VerifiedDeviceAuthorization {
     VerifiedDeviceAuthorization::from_metadata_for_test(json!({
         "issuer": server,
@@ -112,6 +200,178 @@ fn synthetic_authorization(server: &str) -> VerifiedDeviceAuthorization {
             "refresh_token"
         ]
     }))
+}
+
+#[tokio::test]
+async fn device_login_binds_pkce_challenge_to_token_verifier() -> Result<()> {
+    let state = PkceState::default();
+    let server = spawn_pkce_server(state.clone()).await;
+    let scopes = vec!["ops:read".to_string(), "mcp:tools".to_string()];
+    let mut prompt_count = 0;
+    let token = authorize_and_poll_device_token(
+        &oauth_adapter(),
+        &format!("{server}/device"),
+        &format!("{server}/token"),
+        "synthetic-client",
+        &scopes,
+        Some("https://resource.example.test/mcp"),
+        &mut |_| prompt_count += 1,
+    )
+    .await?;
+    assert_eq!(token.access_token().secret(), "synthetic-access-token");
+    assert_eq!(prompt_count, 1);
+    let device_forms = state.device_forms.lock().expect("device forms");
+    let token_forms = state.token_forms.lock().expect("token forms");
+    assert_eq!(device_forms.len(), 1);
+    assert_eq!(token_forms.len(), 1);
+    let device_form = &device_forms[0];
+    let token_form = &token_forms[0];
+    assert_eq!(
+        device_form.get("client_id").map(String::as_str),
+        Some("synthetic-client")
+    );
+    assert_eq!(
+        device_form.get("scope").map(String::as_str),
+        Some("ops:read mcp:tools")
+    );
+    assert_eq!(
+        device_form.get("resource").map(String::as_str),
+        Some("https://resource.example.test/mcp")
+    );
+    assert_eq!(
+        token_form.get("resource").map(String::as_str),
+        Some("https://resource.example.test/mcp")
+    );
+    assert_eq!(
+        device_form.get("code_challenge_method").map(String::as_str),
+        Some("S256")
+    );
+    let verifier = PkceCodeVerifier::new(token_form["code_verifier"].clone());
+    assert_eq!(
+        PkceCodeChallenge::from_code_verifier_sha256(&verifier).as_str(),
+        device_form["code_challenge"]
+    );
+    assert_eq!(
+        token_form.get("device_code").map(String::as_str),
+        Some("device-1")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn device_login_retries_typed_invalid_request_without_pkce_preserving_inputs() -> Result<()> {
+    for (device_error, token_error, expected_prompts) in [
+        (Some("invalid_request"), None, 1),
+        (None, Some("invalid_request"), 2),
+    ] {
+        let state = PkceState {
+            device_error,
+            token_error,
+            ..PkceState::default()
+        };
+        let server = spawn_pkce_server(state.clone()).await;
+        let scopes = vec!["ops:read".to_string()];
+        let mut prompt_count = 0;
+        authorize_and_poll_device_token(
+            &oauth_adapter(),
+            &format!("{server}/device"),
+            &format!("{server}/token"),
+            "synthetic-client",
+            &scopes,
+            Some("https://resource.example.test/mcp"),
+            &mut |_| prompt_count += 1,
+        )
+        .await?;
+        assert_eq!(prompt_count, expected_prompts);
+        let device_forms = state.device_forms.lock().expect("device forms");
+        let token_forms = state.token_forms.lock().expect("token forms");
+        assert_eq!(device_forms.len(), 2);
+        assert_eq!(
+            device_forms[0].get("scope"),
+            device_forms[1].get("scope")
+        );
+        assert_eq!(
+            device_forms[0].get("resource").map(String::as_str),
+            Some("https://resource.example.test/mcp")
+        );
+        assert_eq!(
+            device_forms[1].get("resource"),
+            device_forms[0].get("resource")
+        );
+        assert!(device_forms[0].contains_key("code_challenge"));
+        assert_eq!(device_forms[1].get("code_challenge"), None);
+        assert_eq!(device_forms[1].get("code_challenge_method"), None);
+        assert_eq!(
+            device_forms[0].get("scope").map(String::as_str),
+            Some("ops:read")
+        );
+        assert_eq!(
+            device_forms[1].get("scope").map(String::as_str),
+            Some("ops:read")
+        );
+        assert_eq!(
+            token_forms
+                .last()
+                .and_then(|form| form.get("resource"))
+                .map(String::as_str),
+            Some("https://resource.example.test/mcp")
+        );
+        assert_eq!(
+            token_forms
+                .last()
+                .and_then(|form| form.get("code_verifier")),
+            None
+        );
+        assert_eq!(
+            token_forms
+                .last()
+                .and_then(|form| form.get("device_code"))
+                .map(String::as_str),
+            Some("device-2")
+        );
+        if token_error.is_some() {
+            assert_eq!(token_forms.len(), 2);
+            assert!(token_forms[0].contains_key("code_verifier"));
+            assert_eq!(
+                token_forms[0].get("resource"),
+                token_forms[1].get("resource")
+            );
+            assert_eq!(
+                token_forms[0].get("device_code").map(String::as_str),
+                Some("device-1")
+            );
+        } else {
+            assert_eq!(token_forms.len(), 1);
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn device_login_does_not_fallback_for_other_typed_provider_errors() {
+    for provider_error in ["invalid_scope", "unknown_provider_code"] {
+        let state = PkceState {
+            token_error: Some(provider_error),
+            ..PkceState::default()
+        };
+        let server = spawn_pkce_server(state.clone()).await;
+        let error = authorize_and_poll_device_token(
+            &oauth_adapter(),
+            &format!("{server}/device"),
+            &format!("{server}/token"),
+            "synthetic-client",
+            &["ops:read".to_string()],
+            Some("https://resource.example.test/mcp"),
+            &mut |_| {},
+        )
+        .await
+        .expect_err("only typed invalid_request may trigger fallback");
+        assert!(!is_invalid_request_provider_error(&error));
+        assert_eq!(state.device_forms.lock().expect("device forms").len(), 1);
+        assert_eq!(state.token_forms.lock().expect("token forms").len(), 1);
+    }
+    let raw_error = anyhow::anyhow!("provider returned invalid_request");
+    assert!(!is_invalid_request_provider_error(&raw_error));
 }
 
 #[test]
@@ -241,6 +501,7 @@ async fn device_login_increases_poll_interval_after_slow_down() -> Result<()> {
         "synthetic-client",
         /*resource*/ None,
         &details,
+        /*pkce*/ None,
         |duration| {
             requested_sleeps.push(duration);
             std::future::ready(())
@@ -293,6 +554,7 @@ async fn device_login_fails_closed_on_denial_and_expiry() {
             "synthetic-client",
             /*resource*/ None,
             &details,
+            /*pkce*/ None,
         )
         .await
         .expect_err("terminal provider error must fail");
@@ -357,6 +619,7 @@ async fn device_login_expiry_bounds_an_in_flight_token_response() {
         "synthetic-client",
         /*resource*/ None,
         &details,
+        /*pkce*/ None,
     )
     .await
     .expect_err("a late token response must not outlive device authorization");
@@ -423,6 +686,7 @@ async fn device_login_cancellation_drops_the_in_flight_poll() {
             "synthetic-client",
             /*resource*/ None,
             &details,
+            /*pkce*/ None,
         )
         .await
     });
@@ -470,6 +734,7 @@ async fn device_login_does_not_poll_before_an_extreme_provider_interval() {
         "synthetic-client",
         /*resource*/ None,
         &details,
+        /*pkce*/ None,
     )
     .await
     .expect_err("polling cannot continue past local expiry");
@@ -509,6 +774,7 @@ async fn unknown_provider_error_is_not_echoed_to_terminal() {
         "synthetic-client",
         /*resource*/ None,
         &details,
+        /*pkce*/ None,
     )
     .await
     .expect_err("unknown synthetic provider error must fail");
