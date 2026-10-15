@@ -91,7 +91,19 @@ def _initialized_client(
         ("thread/fork", {"threadId": "thread-1", "excludeTurns": True}),
     ],
 )
-@pytest.mark.parametrize("version", ["0.147.0", "0.149.0", "0.151.0-alpha.6", "unknown", ""])
+@pytest.mark.parametrize(
+    "version",
+    [
+        "0.147.0",
+        "0.149.0",
+        "0.149.0-sedna.dev.be2e129",
+        "0.151.0-alpha.6",
+        "0.151.0-sedna.dev.be2e129",
+        "0.162.0-sedna..dev",
+        "unknown",
+        "",
+    ],
+)
 def test_new_options_reject_unsupported_runtime_before_sending(
     monkeypatch: pytest.MonkeyPatch, method: str, params: JsonObject, version: str
 ) -> None:
@@ -110,6 +122,7 @@ def test_new_options_reject_unsupported_runtime_before_sending(
         {"userAgent": "codex-cli 0.153.0"},
         {"userAgent": "codex-cli/0.154.0-alpha.1"},
         {"userAgent": "codex-cli/0.154.0-alpha.1.2"},
+        {"userAgent": "codex-cli/0.162.0-sedna.dev.be2e129"},
         {"userAgent": "codex-cli/0.151.0.post1"},
         {"userAgent": "unknown", "serverInfo": {"name": "codex", "version": "0.153.0"}},
     ],

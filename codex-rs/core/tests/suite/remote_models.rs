@@ -210,6 +210,62 @@ async fn remote_models_get_model_info_uses_longest_matching_prefix() -> Result<(
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn default_catalog_wait_overlay_reaches_root_client_payload() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    skip_if_sandbox!(Ok(()));
+
+    const WAIT_SENTENCE: &str = "Avoid performing blocking sleep or wait calls longer than 60 seconds, as they may prevent you from communicating with the user for their duration.";
+    let server = MockServer::start().await;
+    let requested_model = "gpt-6.1-sol-wait-overlay-test";
+    let expected_instructions =
+        "Preserve the unrelated model guidance.  Keep the mailbox event-driven and responsive.";
+    let mut model = test_remote_model_with_policy(
+        requested_model,
+        ModelVisibility::List,
+        /*priority*/ 1_000,
+        TruncationPolicyConfig::bytes(/*limit*/ 10_000),
+    );
+    model.model_messages = Some(ModelMessages {
+        instructions_template: Some(format!(
+            "Preserve the unrelated model guidance. {WAIT_SENTENCE} Keep the mailbox event-driven and responsive."
+        )),
+        ..Default::default()
+    });
+    mount_models_once(
+        &server,
+        ModelsResponse {
+            models: vec![model],
+        },
+    )
+    .await;
+    let response_mock = mount_sse_once(
+        &server,
+        sse(vec![ev_response_created("resp-1"), ev_completed("resp-1")]),
+    )
+    .await;
+
+    let TestCodex { codex, .. } = test_codex()
+        .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+        .with_model(requested_model)
+        .build_with_auto_env(&server)
+        .await?;
+    codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "inspect the assembled model instructions".into(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+
+    let request = response_mock.single_request();
+    assert_eq!(request.body_json()["model"].as_str(), Some(requested_model));
+    assert_eq!(request.instructions_text(), expected_instructions);
+    assert!(!request.instructions_text().contains(WAIT_SENTENCE));
+
+    Ok(())
+}
+
 /// Scenario: the model advertises a default 273k context window and a 400k max
 /// context window, and the user explicitly configures 1M. This verifies the
 /// runtime turn clamps the override to the advertised max window.

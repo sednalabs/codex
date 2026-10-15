@@ -468,7 +468,7 @@ impl ModelsManager for OpenAiModelsManager {
             let models = self.get_remote_models().await;
             match &self.catalog_source {
                 CatalogSource::Default => {
-                    construct_model_info_from_candidates(model, &models, config)
+                    construct_openai_model_info_from_candidates(model, &models, config)
                 }
                 CatalogSource::ExplicitProvider(_) => construct_model_info(
                     model,
@@ -911,12 +911,28 @@ pub(crate) fn construct_model_info_from_candidates(
     construct_model_info(model, remote, config)
 }
 
+fn construct_openai_model_info_from_candidates(
+    model: &str,
+    candidates: &[ModelInfo],
+    config: &ModelsManagerConfig,
+) -> ModelInfo {
+    let remote = find_model_by_longest_prefix(model, candidates)
+        .or_else(|| find_model_by_namespaced_suffix(model, candidates));
+    let mut model_info = model_info_from_candidate(model, remote);
+    let _outcome = crate::instruction_overlay::apply(&mut model_info);
+    model_info::with_config_overrides(model_info, config)
+}
+
 fn construct_model_info(
     model: &str,
     remote: Option<ModelInfo>,
     config: &ModelsManagerConfig,
 ) -> ModelInfo {
-    let model_info = if let Some(remote) = remote {
+    model_info::with_config_overrides(model_info_from_candidate(model, remote), config)
+}
+
+fn model_info_from_candidate(model: &str, remote: Option<ModelInfo>) -> ModelInfo {
+    if let Some(remote) = remote {
         ModelInfo {
             slug: model.to_string(),
             used_fallback_model_metadata: false,
@@ -924,8 +940,7 @@ fn construct_model_info(
         }
     } else {
         model_info::model_info_from_slug(model)
-    };
-    model_info::with_config_overrides(model_info, config)
+    }
 }
 
 #[cfg(test)]
