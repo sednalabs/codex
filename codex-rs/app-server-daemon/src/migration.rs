@@ -93,6 +93,17 @@ pub(super) async fn run(http: &impl InstallerHttp, legacy: &Daemon) -> Result<Up
             .any(|window| window == b"CODEX_INSTALL_DEFER_SELECTION"),
         "the published installer does not support daemon migration yet; the legacy installation was left unchanged"
     );
+    for capability in [
+        b"CODEX_SEDNA_UPDATE".as_slice(),
+        b"CODEX_SEDNA_PREVIOUS_NATIVE_VERSION".as_slice(),
+    ] {
+        anyhow::ensure!(
+            script
+                .windows(capability.len())
+                .any(|window| window == capability),
+            "the published installer does not support Sedna package/native validation; the legacy installation was left unchanged"
+        );
+    }
     eprintln!("Preparing the daemon update in {}...", root.display());
     let previous_package_version = previous_receipt.release.package_version.to_string();
     let previous_native_version = previous_receipt.release.native_version.to_string();

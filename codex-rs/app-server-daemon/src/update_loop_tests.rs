@@ -230,7 +230,7 @@ async fn explicit_update_migrates_running_and_stopped_installations() {
         }
         let previous = root.join("current").canonicalize().unwrap();
         let scheduled = FakeInstallerHttp::new(InstallerResponse::Success(
-        b"# CODEX_INSTALL_IF_LATEST\ntest \"$CODEX_INSTALL_DEFER_SELECTION\" = 0 && test \"$CODEX_INSTALL_DAEMON_ONLY\" = 0\n".to_vec(),
+        b"# CODEX_INSTALL_IF_LATEST CODEX_SEDNA_UPDATE CODEX_SEDNA_PREVIOUS_NATIVE_VERSION\ntest \"$CODEX_INSTALL_DEFER_SELECTION\" = 0 && test \"$CODEX_INSTALL_DAEMON_ONLY\" = 0\n".to_vec(),
     ));
         super::update_once(
             &scheduled,
@@ -296,7 +296,7 @@ async fn explicit_update_migrates_running_and_stopped_installations() {
         let release = format!("{package_version}-{target}");
         let metadata = sedna_fixture_metadata_script(package_version, &target);
         let script = format!(
-            r#"# CODEX_INSTALL_DEFER_SELECTION
+            r#"# CODEX_INSTALL_DEFER_SELECTION CODEX_SEDNA_UPDATE CODEX_SEDNA_PREVIOUS_NATIVE_VERSION
 set -eu
 test "$CODEX_INSTALL_DEFER_SELECTION" = 1
 test "$CODEX_INSTALL_IF_CURRENT" = 0
@@ -937,6 +937,39 @@ async fn test_control_server(
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
 #[tokio::test]
+async fn updater_rejects_installer_without_sedna_contract() {
+    let home = TempDir::new().expect("home");
+    let (daemon, _) = sedna_update_daemon(&home);
+    let old_installer = FakeInstallerHttp::new(InstallerResponse::Success(
+        b"# CODEX_INSTALL_IF_LATEST\nexit 0\n".to_vec(),
+    ));
+
+    let error = super::update_once(
+        &old_installer,
+        &daemon,
+        &executable_identity(&daemon.managed_codex_bin)
+            .await
+            .expect("updater identity"),
+        &mut test_terminate(),
+        super::UpdateTrigger::Scheduled,
+    )
+    .await
+    .expect_err("an installer without the Sedna contract must fail closed");
+
+    assert!(
+        error
+            .to_string()
+            .contains("does not support Sedna package/native validation"),
+        "{error:#}"
+    );
+    assert_eq!(old_installer.requested_urls().len(), 1);
+}
+
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+#[tokio::test]
 async fn scheduled_no_op_preserves_daemon_and_hands_off_stale_updater() {
     let home = TempDir::new().expect("home");
     let (daemon, _) = sedna_update_daemon(&home);
@@ -946,7 +979,7 @@ async fn scheduled_no_op_preserves_daemon_and_hands_off_stale_updater() {
     let server = test_control_server(&daemon, home.path()).await;
     let pid_record = std::fs::read(&daemon.pid_file).expect("daemon PID record");
     let no_op = FakeInstallerHttp::new(InstallerResponse::Success(
-        b"# CODEX_INSTALL_IF_LATEST\nexit 0\n".to_vec(),
+        b"# CODEX_INSTALL_IF_LATEST CODEX_SEDNA_UPDATE CODEX_SEDNA_PREVIOUS_NATIVE_VERSION\nexit 0\n".to_vec(),
     ));
 
     let outcome = super::update_once(
@@ -995,7 +1028,7 @@ async fn scheduled_resource_only_update_restarts_daemon() {
     let metadata = sedna_fixture_metadata_script(&next_version, &target);
     let installer = FakeInstallerHttp::new(InstallerResponse::Success(
         format!(
-            "#!/bin/sh\n# CODEX_INSTALL_IF_LATEST\nset -eu\nrelease_dir='{root}/releases/{next_release}'\nmkdir -p \"$release_dir/bin\"\n{metadata}printf '#!/bin/sh\\nif [ \"$1\" = --version ]; then echo codex {next_version}; else exec sleep 30; fi\\n' > \"$release_dir/bin/codex\"\nchmod +x \"$release_dir/bin/codex\"\nln -sfn 'releases/{next_release}' '{root}/current'\nprintf '{next_release}' > '{root}/auto-update-version'\n",
+            "#!/bin/sh\n# CODEX_INSTALL_IF_LATEST CODEX_SEDNA_UPDATE CODEX_SEDNA_PREVIOUS_NATIVE_VERSION\nset -eu\nrelease_dir='{root}/releases/{next_release}'\nmkdir -p \"$release_dir/bin\"\n{metadata}printf '#!/bin/sh\\nif [ \"$1\" = --version ]; then echo codex {next_version}; else exec sleep 30; fi\\n' > \"$release_dir/bin/codex\"\nchmod +x \"$release_dir/bin/codex\"\nln -sfn 'releases/{next_release}' '{root}/current'\nprintf '{next_release}' > '{root}/auto-update-version'\n",
             root = root.display(),
             metadata = metadata,
             next_version = next_version,
@@ -1028,156 +1061,6 @@ async fn scheduled_resource_only_update_restarts_daemon() {
     );
     backend.stop().await.expect("stop daemon");
     server.abort();
-}
-
-#[cfg(all(
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64")
-))]
-#[tokio::test]
-async fn post_install_native_guards_reject_mismatch_and_downgrade_before_restart() {
-    let current_version = env!("CARGO_PKG_VERSION");
-    let package_version = next_sedna_version(current_version);
-    let cases = [
-        (
-            "native version mismatch",
-            current_version,
-            package_version.as_str(),
-            "selected package native version does not match its Sedna receipt",
-        ),
-        (
-            "native version downgrade",
-            "0.146.0",
-            "0.146.0",
-            "installer selected a package with an older native version",
-        ),
-    ];
-
-    for (case, binary_native_version, receipt_native_version, expected_error) in cases {
-        let home = TempDir::new().expect("home");
-        let (daemon, _) = sedna_update_daemon(&home);
-        let settings = crate::settings::DaemonSettings::default();
-        let backend = crate::backend::pid_backend(daemon.backend_paths(&settings));
-        backend.start().await.expect("start daemon");
-        let server = test_control_server(&daemon, home.path()).await;
-        let previous_pid_record = std::fs::read(&daemon.pid_file).expect("daemon PID record");
-        let root = home.path().join("packages/standalone");
-        let previous_current_target = std::fs::read_link(root.join("current"))
-            .expect("current package selection");
-        let previous_auto_update_version =
-            std::fs::read(root.join("auto-update-version")).expect("auto-update marker");
-        let target = format!("{}-unknown-linux-musl", std::env::consts::ARCH);
-        let release = format!("{package_version}-{target}");
-        let metadata = sedna_fixture_metadata_script_for_package(
-            &package_version,
-            receipt_native_version,
-            &target,
-        );
-        // The fake installer selects this package to exercise update_loop's
-        // postcondition and its guarded selection rollback.
-        let installer = FakeInstallerHttp::new(InstallerResponse::Success(
-            format!(
-                concat!(
-                    "#!/bin/sh\n",
-                    "# CODEX_INSTALL_IF_LATEST\n",
-                    "set -eu\n",
-                    "release_dir='{root}/releases/{release}'\n",
-                    "mkdir -p \"$release_dir/bin\"\n",
-                    "{metadata}",
-                    "printf '#!/bin/sh\\nif [ \"$1\" = --version ]; then echo codex {binary_native_version}; else exec sleep 30; fi\\n' > \"$release_dir/bin/codex\"\n",
-                    "chmod +x \"$release_dir/bin/codex\"\n",
-                    "ln -sfn 'releases/{release}' '{root}/current'\n",
-                    "printf '{release}' > '{root}/auto-update-version'\n",
-                ),
-                root = root.display(),
-                release = release,
-                metadata = metadata,
-                binary_native_version = binary_native_version,
-            )
-            .into_bytes(),
-        ));
-
-        let result = super::update_once(
-            &installer,
-            &daemon,
-            &executable_identity(&daemon.managed_codex_bin)
-                .await
-                .expect("updater identity"),
-            &mut test_terminate(),
-            super::UpdateTrigger::Scheduled,
-        )
-        .await;
-        let error = match result {
-            Err(error) => error,
-            Ok(_) => panic!("{case}: invalid native-version selection was accepted"),
-        };
-
-        assert!(
-            format!("{error:#}").contains(expected_error),
-            "{case}: {error:#}"
-        );
-        assert_eq!(
-            std::fs::read(&daemon.pid_file).expect("daemon PID record"),
-            previous_pid_record,
-            "{case}: daemon restarted before native-version validation"
-        );
-        assert_eq!(
-            std::fs::read_link(root.join("current")).expect("current package selection"),
-            previous_current_target,
-            "{case}: rejected package remained selected"
-        );
-        assert_eq!(
-            std::fs::read(root.join("auto-update-version")).expect("auto-update marker"),
-            previous_auto_update_version,
-            "{case}: rejected package changed the auto-update marker"
-        );
-
-        backend.stop().await.expect("stop daemon");
-        server.abort();
-    }
-}
-
-#[cfg(all(
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64")
-))]
-#[tokio::test]
-async fn rejected_update_rollback_does_not_overwrite_a_concurrent_selection() {
-    for changed_link in [true, false] {
-        let home = TempDir::new().expect("home");
-        let (_daemon, _) = sedna_update_daemon(&home);
-        let root = home.path().join("packages/standalone");
-        let previous = super::ReleaseSelectionSnapshot::capture(&root)
-            .expect("previous package selection");
-        let rejected = "1.2.3-rejected-x86_64-unknown-linux-musl";
-        let later = "1.2.4-later-x86_64-unknown-linux-musl";
-        std::fs::create_dir_all(root.join("releases").join(rejected)).expect("rejected release");
-        std::fs::create_dir_all(root.join("releases").join(later)).expect("later release");
-
-        let selected = if changed_link { later } else { rejected };
-        std::fs::remove_file(root.join("current")).expect("remove prior selection");
-        std::os::unix::fs::symlink(format!("releases/{selected}"), root.join("current"))
-            .expect("concurrent package selection");
-        std::fs::write(root.join("auto-update-version"), later)
-            .expect("concurrent auto-update marker");
-
-        let error = super::restore_rejected_release_selection(&root, &previous, rejected)
-            .await
-            .expect_err("changed selection must fail the rollback compare-and-swap");
-
-        assert!(
-            error.to_string().contains("changed before rollback"),
-            "{error:#}"
-        );
-        assert_eq!(
-            std::fs::read_link(root.join("current")).expect("current package selection"),
-            std::path::PathBuf::from(format!("releases/{selected}"))
-        );
-        assert_eq!(
-            std::fs::read(root.join("auto-update-version")).expect("auto-update marker"),
-            later.as_bytes()
-        );
-    }
 }
 
 #[cfg(all(
@@ -1412,7 +1295,7 @@ async fn check_manual_update_restart(package_directory: &str) {
     let ready = home.path().join("installer-ready");
     let proceed = home.path().join("installer-proceed");
     let script = format!(
-        "#!/bin/sh\n# CODEX_INSTALL_IF_LATEST CODEX_INSTALL_IF_CURRENT CODEX_INSTALL_DAEMON_ONLY\nif [ \"$CODEX_UPDATE_FROM_RELEASE\" = '{next}' ]; then exit 0; fi\ntest \"${guard}\" = 1 || exit 4\ntest \"$CODEX_UPDATE_FROM_RELEASE\" = '{release}' || exit 5\ntouch '{ready}'\nwhile [ ! -e '{proceed}' ]; do sleep .05; done\nmkdir -p '{root}/releases/{next}/bin'\n{install_binary}\nchmod +x '{root}/releases/{next}/bin/codex'\nrelease_dir='{root}/releases/{next}'\n{metadata}\nln -sfn 'releases/{next}' '{root}/current'\nprintf '{next}' > '{root}/auto-update-version'\n",
+        "#!/bin/sh\n# CODEX_INSTALL_IF_LATEST CODEX_INSTALL_IF_CURRENT CODEX_INSTALL_DAEMON_ONLY CODEX_SEDNA_UPDATE CODEX_SEDNA_PREVIOUS_NATIVE_VERSION\nif [ \"$CODEX_UPDATE_FROM_RELEASE\" = '{next}' ]; then exit 0; fi\ntest \"${guard}\" = 1 || exit 4\ntest \"$CODEX_UPDATE_FROM_RELEASE\" = '{release}' || exit 5\ntouch '{ready}'\nwhile [ ! -e '{proceed}' ]; do sleep .05; done\nmkdir -p '{root}/releases/{next}/bin'\n{install_binary}\nchmod +x '{root}/releases/{next}/bin/codex'\nrelease_dir='{root}/releases/{next}'\n{metadata}\nln -sfn 'releases/{next}' '{root}/current'\nprintf '{next}' > '{root}/auto-update-version'\n",
         root = standalone.display(),
         ready = ready.display(),
         proceed = proceed.display(),
@@ -1489,7 +1372,7 @@ async fn check_manual_update_restart(package_directory: &str) {
         .expect("updater task")
         .expect("updater loop");
     let no_op = FakeInstallerHttp::new(InstallerResponse::Success(
-        b"#!/bin/sh\n# CODEX_INSTALL_IF_LATEST CODEX_INSTALL_DAEMON_ONLY\nexit 0\n".to_vec(),
+        b"#!/bin/sh\n# CODEX_INSTALL_IF_LATEST CODEX_INSTALL_DAEMON_ONLY CODEX_SEDNA_UPDATE CODEX_SEDNA_PREVIOUS_NATIVE_VERSION\nexit 0\n".to_vec(),
     ));
     let bin = daemon
         .current_managed_codex_bin()
@@ -1622,7 +1505,7 @@ async fn update_rejects_a_package_root_change_during_download() {
                 self.0.join("packages/app-server-daemon"),
             )?;
             Ok(InstallerResponse::Success(
-                b"# CODEX_INSTALL_IF_LATEST\nexit 99\n".to_vec(),
+                b"# CODEX_INSTALL_IF_LATEST CODEX_SEDNA_UPDATE CODEX_SEDNA_PREVIOUS_NATIVE_VERSION\nexit 99\n".to_vec(),
             ))
         }
     }
@@ -1658,7 +1541,7 @@ async fn daemon_owned_updates_require_and_request_an_isolated_installer() {
         .await
         .unwrap();
     let old = FakeInstallerHttp::new(InstallerResponse::Success(
-        b"# CODEX_INSTALL_IF_LATEST\nexit 0\n".to_vec(),
+        b"# CODEX_INSTALL_IF_LATEST CODEX_SEDNA_UPDATE CODEX_SEDNA_PREVIOUS_NATIVE_VERSION\nexit 0\n".to_vec(),
     ));
     let error = manual_update_once(
         &old,
@@ -1675,7 +1558,7 @@ async fn daemon_owned_updates_require_and_request_an_isolated_installer() {
             .contains("does not support daemon-owned packages")
     );
     let current = FakeInstallerHttp::new(InstallerResponse::Success(
-        b"# CODEX_INSTALL_IF_LATEST\ntest \"$CODEX_INSTALL_IF_LATEST\" = 1 && test \"$CODEX_INSTALL_DAEMON_ONLY\" = 1\n".to_vec(),
+        b"# CODEX_INSTALL_IF_LATEST CODEX_SEDNA_UPDATE CODEX_SEDNA_PREVIOUS_NATIVE_VERSION\ntest \"$CODEX_INSTALL_IF_LATEST\" = 1 && test \"$CODEX_INSTALL_DAEMON_ONLY\" = 1\n".to_vec(),
     ));
     let output = manual_update_once(
         &current,

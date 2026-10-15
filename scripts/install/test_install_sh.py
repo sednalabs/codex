@@ -32,7 +32,9 @@ class InstallShTest(unittest.TestCase):
         self.assertIn("only on Linux x86_64 and ARM64", result.stderr)
         self.assertIn("https://github.com/sednalabs/codex/releases", result.stderr)
 
-    @unittest.skipUnless(sys.platform == "linux", "Sedna binary updates are Linux-only")
+    @unittest.skipUnless(
+        sys.platform == "linux", "Sedna binary updates are Linux-only"
+    )
     def test_sedna_metadata_rejects_prerelease_flag_channel_mismatch(self) -> None:
         target = linux_target()
         version = "0.163.0-alpha.1"
@@ -59,7 +61,9 @@ class InstallShTest(unittest.TestCase):
         self.assertTrue(any("RELEASE-METADATA-" in url for url in requests))
         self.assertNotIn("codex-package_SHA256SUMS", "\n".join(requests))
 
-    @unittest.skipUnless(sys.platform == "linux", "Sedna binary updates are Linux-only")
+    @unittest.skipUnless(
+        sys.platform == "linux", "Sedna binary updates are Linux-only"
+    )
     def test_sedna_rejects_package_with_older_native_version_before_selection(
         self,
     ) -> None:
@@ -94,7 +98,9 @@ class InstallShTest(unittest.TestCase):
                 previous_native_version="0.162.0-sedna.dev.be2e129",
             )
 
-            self.assertEqual((standalone / "current").resolve(), current_release)
+            self.assertEqual(
+                os.readlink(standalone / "current"), str(current_release)
+            )
             self.assertEqual(
                 (standalone / "auto-update-version").read_text(encoding="utf-8"),
                 current_release.name,
@@ -104,6 +110,55 @@ class InstallShTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("native version is older", result.stderr)
         self.assertNotIn("codex-package_SHA256SUMS", "\n".join(requests))
+
+    @unittest.skipUnless(
+        sys.platform == "linux", "Sedna binary updates are Linux-only"
+    )
+    def test_sedna_rejects_binary_native_version_mismatch_before_selection(self) -> None:
+        target = linux_target()
+        version = "0.163.0"
+        expected_native_version = "0.162.0-sedna.dev.be2e129"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            archive, checksum, release_json, sedna_metadata = (
+                create_sedna_package_release(
+                    root,
+                    version,
+                    target,
+                    native_version=expected_native_version,
+                    binary_native_version="0.163.0",
+                )
+            )
+            standalone = root / "codex-home" / "packages" / "standalone"
+            current_release = standalone / "releases" / f"0.146.0-{target}"
+            current_release.mkdir(parents=True)
+            standalone.mkdir(parents=True, exist_ok=True)
+            (current_release / "keep").write_text("old", encoding="utf-8")
+            (standalone / "current").symlink_to(current_release)
+            marker = standalone / "auto-update-version"
+            marker.write_text(current_release.name, encoding="utf-8")
+            result, requests = run_installer_in(
+                root,
+                "latest",
+                metadata_json=release_json,
+                sedna_metadata_json=sedna_metadata,
+                archive_path=archive,
+                checksum_path=checksum,
+                sedna_update=True,
+                sedna_selection_channel="stable",
+                previous_package_version="0.146.0",
+                previous_native_version=expected_native_version,
+            )
+
+            self.assertEqual(
+                os.readlink(standalone / "current"), str(current_release)
+            )
+            self.assertEqual(marker.read_text(encoding="utf-8"), current_release.name)
+            self.assertTrue((current_release / "keep").is_file())
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("expected native version", result.stderr)
+        self.assertIn("codex-package_SHA256SUMS", "\n".join(requests))
 
     @unittest.skipUnless(sys.platform == "linux", "Sedna binary updates are Linux-only")
     def test_prerelease_selection_chooses_newer_stable_release(self) -> None:
@@ -1316,7 +1371,12 @@ def sedna_release_metadata(
 
 
 def create_sedna_package_release(
-    root: Path, version: str, target: str, *, native_version: str
+    root: Path,
+    version: str,
+    target: str,
+    *,
+    native_version: str,
+    binary_native_version: str | None = None,
 ) -> tuple[Path, Path, str, str]:
     package_dir = root / "sedna-package"
     (package_dir / "bin").mkdir(parents=True)
@@ -1338,7 +1398,7 @@ def create_sedna_package_release(
     )
     write_executable(
         package_dir / "bin" / "codex",
-        f"#!/bin/sh\nprintf 'codex {native_version}\\n'\n",
+        f"#!/bin/sh\nprintf 'codex {binary_native_version or native_version}\\n'\n",
     )
     write_executable(
         package_dir / "bin" / "codex-code-mode-host", "#!/bin/sh\nexit 0\n"

@@ -1,9 +1,7 @@
 //! Owns scheduled and manual installs, daemon restarts, and updater replacement.
 
 use std::collections::VecDeque;
-use std::io::Write;
 use std::path::Path;
-use std::path::PathBuf;
 #[cfg(unix)]
 use std::process::Command as StdCommand;
 use std::process::Stdio;
@@ -354,7 +352,6 @@ async fn update_once(
         return Ok((UpdateLoopControl::Continue, None));
     }
     let (package_root, _, previous_release) = selected_release(daemon)?;
-    let previous_selection = ReleaseSelectionSnapshot::capture(&package_root)?;
     let codex_home = package_root
         .parent()
         .and_then(Path::parent)
@@ -411,6 +408,17 @@ async fn update_once(
             .any(|window| window == installer_guard.as_bytes()),
         "standalone installer does not support {installer_guard} guarded updates"
     );
+    for capability in [
+        b"CODEX_SEDNA_UPDATE".as_slice(),
+        b"CODEX_SEDNA_PREVIOUS_NATIVE_VERSION".as_slice(),
+    ] {
+        anyhow::ensure!(
+            script
+                .windows(capability.len())
+                .any(|window| window == capability),
+            "standalone installer does not support Sedna package/native validation"
+        );
+    }
     if package_root.ends_with("app-server-daemon") {
         anyhow::ensure!(
             script
@@ -468,50 +476,6 @@ async fn update_once(
         },
         _ = terminate.recv() => return Ok((UpdateLoopControl::Stop, None)),
     }
-    let selected_bin = daemon.current_managed_codex_bin()?;
-    let selected_context = codex_install_context::InstallContext::from_exe_in_codex_home(
-        cfg!(target_os = "macos"),
-        Some(&selected_bin),
-        /*method_override*/ None,
-        codex_home,
-    );
-    let selected_receipt = selected_context
-        .sedna_release_receipt()
-        .context("installer selected a package without a verified Sedna receipt")?;
-    let rejected_release_name = format!(
-        "{}-{}",
-        selected_receipt.release.package_version, selected_receipt.release.target
-    );
-    let selected_native_version =
-        crate::managed_install::managed_codex_version(&selected_bin).await?;
-    if selected_native_version != selected_receipt.release.native_version.to_string() {
-        let error = anyhow::anyhow!(
-            "selected package native version does not match its Sedna receipt"
-        );
-        return Err(reject_installed_release(
-            &package_root,
-            &previous_selection,
-            &rejected_release_name,
-            error,
-        )
-        .await);
-    }
-    let selected_native_version = semver::Version::parse(&selected_native_version)
-        .context("selected package has an invalid native version")?;
-    if selected_native_version < previous_native_version {
-        let error = anyhow::anyhow!("installer selected a package with an older native version");
-        return Err(reject_installed_release(
-            &package_root,
-            &previous_selection,
-            &rejected_release_name,
-            error,
-        )
-        .await);
-    }
-    anyhow::ensure!(
-        trigger == UpdateTrigger::Scheduled || daemon.is_sedna_update_eligible()?,
-        "installer did not select a release on the selected Sedna channel; retry the update"
-    );
     if release_selection_unstable(daemon, trigger)? {
         return Ok((UpdateLoopControl::Continue, None));
     }
@@ -646,161 +610,6 @@ fn selected_release(daemon: &Daemon) -> Result<(std::path::PathBuf, std::path::P
         .to_string_lossy()
         .into_owned();
     Ok((root, release, name))
-}
-
-struct ReleaseSelectionSnapshot {
-    current_target: PathBuf,
-    auto_update_version: Option<Vec<u8>>,
-}
-
-impl ReleaseSelectionSnapshot {
-    fn capture(root: &Path) -> Result<Self> {
-        let current = root.join("current");
-        anyhow::ensure!(
-            std::fs::symlink_metadata(&current)?.file_type().is_symlink(),
-            "selected package path is not a symlink"
-        );
-        let current_target = std::fs::read_link(current)?;
-        let auto_update_version = read_optional_regular_file(&root.join("auto-update-version"))?;
-        Ok(Self {
-            current_target,
-            auto_update_version,
-        })
-    }
-}
-
-fn read_optional_regular_file(path: &Path) -> Result<Option<Vec<u8>>> {
-    match std::fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_file() => std::fs::read(path)
-            .map(Some)
-            .with_context(|| format!("failed to read {}", path.display())),
-        Ok(_) => anyhow::bail!("{} is not a regular file", path.display()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error).with_context(|| format!("failed to inspect {}", path.display())),
-    }
-}
-
-async fn reject_installed_release(
-    package_root: &Path,
-    previous: &ReleaseSelectionSnapshot,
-    candidate_release_name: &str,
-    error: anyhow::Error,
-) -> anyhow::Error {
-    match restore_rejected_release_selection(package_root, previous, candidate_release_name).await {
-        Ok(()) => error,
-        Err(rollback_error) => error.context(format!(
-            "failed to restore the previous package selection: {rollback_error:#}"
-        )),
-    }
-}
-
-#[cfg(target_os = "linux")]
-async fn restore_rejected_release_selection(
-    package_root: &Path,
-    previous: &ReleaseSelectionSnapshot,
-    candidate_release_name: &str,
-) -> Result<()> {
-    // Serialize with installers through their shared lock before checking ownership.
-    let _install_lock = crate::install_lock::acquire_install_lock(package_root).await?;
-    let current = package_root.join("current");
-    let marker = package_root.join("auto-update-version");
-    let releases = std::fs::canonicalize(package_root.join("releases"))?;
-    let candidate_release = std::fs::canonicalize(
-        package_root
-            .join("releases")
-            .join(candidate_release_name),
-    )?;
-    anyhow::ensure!(
-        candidate_release.parent() == Some(releases.as_path()),
-        "candidate package escaped the releases directory"
-    );
-    anyhow::ensure!(
-        std::fs::symlink_metadata(&current)?.file_type().is_symlink()
-            && std::fs::canonicalize(&current)? == candidate_release,
-        "current package selection changed before rollback"
-    );
-    anyhow::ensure!(
-        read_optional_regular_file(&marker)?
-            == Some(candidate_release_name.as_bytes().to_vec()),
-        "auto-update marker changed before rollback"
-    );
-
-    let current_temp = package_root.join(format!(".current.rollback-{}", std::process::id()));
-    std::os::unix::fs::symlink(&previous.current_target, &current_temp)
-        .context("failed to prepare the previous package selection")?;
-    let marker_temp = match &previous.auto_update_version {
-        Some(contents) => match prepare_marker_file(package_root, "rollback", contents) {
-            Ok(path) => Some(path),
-            Err(error) => {
-                let _ = std::fs::remove_file(&current_temp);
-                return Err(error);
-            }
-        },
-        None => None,
-    };
-
-    // Keep the selection ineligible until the prior link is atomically restored.
-    let marker_restore = match marker_temp {
-        Some(temp) => rename_prepared_file(temp, &marker),
-        None => std::fs::remove_file(&marker),
-    };
-    if let Err(error) = marker_restore {
-        let _ = std::fs::remove_file(&current_temp);
-        return Err(error).context("failed to restore the previous auto-update marker");
-    }
-    if let Err(error) = std::fs::rename(&current_temp, &current) {
-        let compensation = prepare_marker_file(
-            package_root,
-            "rollback-compensation",
-            candidate_release_name.as_bytes(),
-        )
-        .and_then(|temp| rename_prepared_file(temp, &marker));
-        let _ = std::fs::remove_file(&current_temp);
-        return match compensation {
-            Ok(()) => Err(error).context("failed to restore the previous package selection"),
-            Err(compensation_error) => Err(error).context(format!(
-                "failed to restore the previous package selection and restore the candidate marker: {}",
-                compensation_error
-            )),
-        };
-    }
-    Ok(())
-}
-
-#[cfg(not(target_os = "linux"))]
-async fn restore_rejected_release_selection(
-    _package_root: &Path,
-    _previous: &ReleaseSelectionSnapshot,
-    _candidate_release_name: &str,
-) -> Result<()> {
-    anyhow::bail!("managed release selection rollback is supported only on Linux")
-}
-
-fn prepare_marker_file(root: &Path, suffix: &str, contents: &[u8]) -> Result<PathBuf> {
-    let path = root.join(format!(
-        ".auto-update-version.{suffix}-{}",
-        std::process::id()
-    ));
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path)
-        .with_context(|| format!("failed to prepare {}", path.display()))?;
-    if let Err(error) = file.write_all(contents) {
-        let _ = std::fs::remove_file(&path);
-        return Err(error).with_context(|| format!("failed to write {}", path.display()));
-    }
-    Ok(path)
-}
-
-fn rename_prepared_file(temp: PathBuf, destination: &Path) -> std::io::Result<()> {
-    match std::fs::rename(&temp, destination) {
-        Ok(()) => Ok(()),
-        Err(error) => {
-            let _ = std::fs::remove_file(temp);
-            Err(error)
-        }
-    }
 }
 
 async fn current_updater_identity() -> Result<ExecutableIdentity> {
