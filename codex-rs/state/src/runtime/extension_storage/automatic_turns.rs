@@ -1596,6 +1596,7 @@ mod tests {
                 thread_id,
                 turn_id: turn_id.to_string(),
                 item: TurnItem::UserMessage(item),
+                started_at_ms: None,
                 completed_at_ms: 0,
             }),
         }
@@ -1700,6 +1701,7 @@ mod tests {
             msg: EventMsg::Error(ErrorEvent {
                 message: "blocked".to_string(),
                 codex_error_info: Some(CodexErrorInfo::CyberPolicy),
+                misalignment: None,
             }),
         }
     }
@@ -1745,14 +1747,11 @@ mod tests {
                 &Event {
                     id: "turn".to_string(),
                     msg: EventMsg::TurnComplete(TurnCompleteEvent {
+                        root_turn_id: None,
                         turn_id: "turn".to_string(),
                         last_agent_message: Some("done".to_string()),
                         error: None,
                         started_at: None,
-                        compaction_events_in_turn: 0,
-                        final_model: None,
-                        model_snapshot: None,
-                        provider_usage: None,
                         completed_at: None,
                         duration_ms: None,
                         time_to_first_token_ms: None,
@@ -2224,9 +2223,10 @@ mod tests {
         let aborted = Event {
             id: "e1".to_string(),
             msg: EventMsg::TurnAborted(codex_protocol::protocol::TurnAbortedEvent {
+                root_turn_id: None,
                 turn_id: Some("turn".to_string()),
                 reason: codex_protocol::protocol::TurnAbortReason::Interrupted,
-                provider_usage: None,
+                error: None,
                 started_at: None,
                 completed_at: None,
                 duration_ms: None,
@@ -2288,17 +2288,15 @@ mod tests {
                 &Event {
                     id: "e1".to_string(),
                     msg: EventMsg::TurnComplete(TurnCompleteEvent {
+                        root_turn_id: None,
                         turn_id: "turn".to_string(),
                         last_agent_message: None,
                         error: Some(ErrorEvent {
                             message: "blocked".to_string(),
                             codex_error_info: Some(CodexErrorInfo::CyberPolicy),
+                            misalignment: None,
                         }),
                         started_at: None,
-                        compaction_events_in_turn: 0,
-                        final_model: None,
-                        model_snapshot: None,
-                        provider_usage: None,
                         completed_at: None,
                         duration_ms: None,
                         time_to_first_token_ms: None,
@@ -2313,17 +2311,15 @@ mod tests {
                 &Event {
                     id: "e2".to_string(),
                     msg: EventMsg::TurnComplete(TurnCompleteEvent {
+                        root_turn_id: None,
                         turn_id: "turn".to_string(),
                         last_agent_message: None,
                         error: Some(ErrorEvent {
                             message: "blocked".to_string(),
                             codex_error_info: Some(CodexErrorInfo::CyberPolicy),
+                            misalignment: None,
                         }),
                         started_at: None,
-                        compaction_events_in_turn: 0,
-                        final_model: None,
-                        model_snapshot: None,
-                        provider_usage: None,
                         completed_at: None,
                         duration_ms: None,
                         time_to_first_token_ms: None,
@@ -2385,9 +2381,10 @@ mod tests {
         let aborted = Event {
             id: "turn-before-item".to_string(),
             msg: EventMsg::TurnAborted(codex_protocol::protocol::TurnAbortedEvent {
+                root_turn_id: None,
                 turn_id: Some("turn-before-item".to_string()),
                 reason: codex_protocol::protocol::TurnAbortReason::Interrupted,
-                provider_usage: None,
+                error: None,
                 started_at: None,
                 completed_at: None,
                 duration_ms: None,
@@ -2488,9 +2485,10 @@ mod tests {
                 &Event {
                     id: "interrupted".to_string(),
                     msg: EventMsg::TurnAborted(codex_protocol::protocol::TurnAbortedEvent {
+                        root_turn_id: None,
                         turn_id: Some("interrupted".to_string()),
                         reason: codex_protocol::protocol::TurnAbortReason::Interrupted,
-                        provider_usage: None,
+                        error: None,
                         started_at: None,
                         completed_at: None,
                         duration_ms: None,
@@ -2512,6 +2510,7 @@ mod tests {
                         thread_id,
                         turn_id: "manual".to_string(),
                         item: TurnItem::UserMessage(manual_item),
+                        started_at_ms: None,
                         completed_at_ms: 0,
                     }),
                 },
@@ -2523,14 +2522,11 @@ mod tests {
                 &Event {
                     id: "manual".to_string(),
                     msg: EventMsg::TurnComplete(TurnCompleteEvent {
+                        root_turn_id: None,
                         turn_id: "manual".to_string(),
                         last_agent_message: Some("done".to_string()),
                         error: None,
                         started_at: None,
-                        compaction_events_in_turn: 0,
-                        final_model: None,
-                        model_snapshot: None,
-                        provider_usage: None,
                         completed_at: None,
                         duration_ms: None,
                         time_to_first_token_ms: None,
@@ -2637,6 +2633,7 @@ mod tests {
                     msg: EventMsg::Error(ErrorEvent {
                         message: "blocked".to_string(),
                         codex_error_info: Some(CodexErrorInfo::CyberPolicy),
+                        misalignment: None,
                     }),
                 },
                 Some("principal:stable-test"),
@@ -2674,17 +2671,15 @@ mod tests {
                 &Event {
                     id: "occurrence-1".to_string(),
                     msg: EventMsg::TurnComplete(TurnCompleteEvent {
+                        root_turn_id: None,
                         turn_id: turn_id.to_string(),
                         last_agent_message: None,
                         error: Some(ErrorEvent {
                             message: "blocked".to_string(),
                             codex_error_info: Some(CodexErrorInfo::CyberPolicy),
+                            misalignment: None,
                         }),
                         started_at: None,
-                        compaction_events_in_turn: 0,
-                        final_model: None,
-                        model_snapshot: None,
-                        provider_usage: None,
                         completed_at: None,
                         duration_ms: None,
                         time_to_first_token_ms: None,
@@ -2731,19 +2726,17 @@ mod tests {
                 &Event {
                     id: "occurrence-1".to_string(),
                     msg: EventMsg::TurnComplete(TurnCompleteEvent {
+                        root_turn_id: None,
                         turn_id: turn_id.to_string(),
                         last_agent_message: None,
                         error: Some(ErrorEvent {
                             message: "blocked".to_string(),
                             codex_error_info: Some(CodexErrorInfo::CyberPolicy),
+                            misalignment: None,
                         }),
                         started_at: None,
-                        compaction_events_in_turn: 0,
                         duration_ms: None,
-                        provider_usage: None,
                         time_to_first_token_ms: None,
-                        final_model: None,
-                        model_snapshot: None,
                         completed_at: None,
                     }),
                 },
