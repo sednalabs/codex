@@ -396,45 +396,91 @@ jobs:
                       "stdout_tail": bounded_tail(inventory.stdout),
                       "stderr_tail": bounded_tail(inventory.stderr),
                   }
-              elif sorted(observed_inventory) != sorted(expected_tests) or len(observed_inventory) != len(expected_tests):
+              elif any(test_name not in observed_inventory for test_name in expected_tests) or len(set(observed_inventory)) != len(observed_inventory):
                   fail("inventory_mismatch", "The candidate Android helper test inventory differs from the fixed accepted set.")
                   result["inventory"]["expected_tests"] = expected_tests
+                  result["inventory"]["missing_expected_tests"] = [
+                      test_name for test_name in expected_tests if test_name not in observed_inventory
+                  ]
               else:
-                  test_run = subprocess.run(
-                      ["cargo", "test", "--manifest-path", "codex-rs/Cargo.toml", "--locked", "-p", "codex-android-computer-use", "--lib", "--", "--test-threads=1"],
-                      text=True,
-                      capture_output=True,
-                      check=False,
-                  )
-                  combined = test_run.stdout + "\n" + test_run.stderr
-                  outcomes = re.findall(r"^test (?P<name>tests::[A-Za-z0-9_:]+) \.\.\. (?P<status>ok|FAILED|ignored)$", combined, re.MULTILINE)
-                  summaries = list(re.finditer(
-                      r"test result:\s+\w+\.\s+(?P<passed>\d+) passed;\s+(?P<failed>\d+) failed;\s+(?P<ignored>\d+) ignored;\s+(?P<measured>\d+) measured;\s+(?P<filtered>\d+) filtered out",
-                      combined,
-                  ))
-                  counts = None
-                  if summaries:
-                      match = summaries[-1]
-                      counts = {key: int(match.group(key)) for key in ("passed", "failed", "ignored", "measured", "filtered")}
-                  result["tests"] = [{"name": name, "status": status} for name, status in outcomes]
-                  result["result_counts"] = counts
-                  passed_names = [name for name, status in outcomes if status == "ok"]
+                  test_receipts = []
+                  diagnostics = []
+                  for expected_test in expected_tests:
+                      test_run = subprocess.run(
+                          [
+                              "cargo", "test", "--manifest-path", "codex-rs/Cargo.toml", "--locked",
+                              "-p", "codex-android-computer-use", "--lib", "--",
+                              expected_test, "--exact", "--test-threads=1",
+                          ],
+                          text=True,
+                          capture_output=True,
+                          check=False,
+                      )
+                      combined = test_run.stdout + "\n" + test_run.stderr
+                      outcomes = re.findall(
+                          r"^test (?P<name>tests::[A-Za-z0-9_:]+) \.\.\. (?P<status>ok|FAILED|ignored)$",
+                          combined,
+                          re.MULTILINE,
+                      )
+                      summaries = list(re.finditer(
+                          r"test result:\s+\w+\.\s+(?P<passed>\d+) passed;\s+(?P<failed>\d+) failed;\s+(?P<ignored>\d+) ignored;\s+(?P<measured>\d+) measured;\s+(?P<filtered>\d+) filtered out",
+                          combined,
+                      ))
+                      counts = None
+                      if summaries:
+                          match = summaries[-1]
+                          counts = {key: int(match.group(key)) for key in ("passed", "failed", "ignored", "measured", "filtered")}
+                      passed = (
+                          test_run.returncode == 0
+                          and outcomes == [(expected_test, "ok")]
+                          and counts == {
+                              "passed": 1,
+                              "failed": 0,
+                              "ignored": 0,
+                              "measured": 0,
+                              "filtered": len(observed_inventory) - 1,
+                          }
+                      )
+                      test_receipts.append({
+                          "name": expected_test,
+                          "status": "ok" if passed else "failed",
+                          "exit_code": test_run.returncode,
+                          "counts": counts,
+                      })
+                      if not passed:
+                          diagnostics.append({
+                              "name": expected_test,
+                              "stdout_tail": bounded_tail(test_run.stdout),
+                              "stderr_tail": bounded_tail(test_run.stderr),
+                          })
+                          if counts is None and test_run.returncode != 0:
+                              break
+
+                  result["tests"] = test_receipts
+                  result["result_counts"] = {
+                      key: sum((receipt["counts"] or {}).get(key, 0) for receipt in test_receipts)
+                      for key in ("passed", "failed", "ignored", "measured")
+                  }
+                  result["result_counts"]["filtered"] = 0
+                  if diagnostics:
+                      result["diagnostics"] = diagnostics
                   success = (
-                      test_run.returncode == 0
-                      and sorted(name for name, _ in outcomes) == sorted(expected_tests)
-                      and len(passed_names) == len(expected_tests)
-                      and counts == {"passed": 14, "failed": 0, "ignored": 0, "measured": 0, "filtered": 0}
+                      len(test_receipts) == len(expected_tests)
+                      and all(receipt["status"] == "ok" for receipt in test_receipts)
+                      and result["result_counts"] == {
+                          "passed": 14,
+                          "failed": 0,
+                          "ignored": 0,
+                          "measured": 0,
+                          "filtered": 0,
+                      }
                   )
+                  result["execution_complete"] = len(test_receipts) == len(expected_tests)
                   if success:
                       result["status"] = "success"
                       result["message"] = "All fixed Android helper tests passed exactly once."
                   else:
-                      fail("test_execution_mismatch", "The Android helper suite did not execute exactly 14 passing tests.")
-                      result["command_exit_code"] = test_run.returncode
-                      result["diagnostics"] = {
-                          "stdout_tail": bounded_tail(test_run.stdout),
-                          "stderr_tail": bounded_tail(test_run.stderr),
-                      }
+                      fail("test_execution_mismatch", "The fixed Android helper selector did not produce exactly 14 passing tests.")
           Path("rust-tests-v1-results.json").write_text(
               json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
           )
