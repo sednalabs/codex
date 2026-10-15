@@ -191,9 +191,8 @@ def verify_producer(repo: str) -> None:
     pull = pull_requests[0]
     require(pull.get("number") == PRODUCT_PR_NUMBER, "Product PR number mismatch.")
     require(
-        (pull.get("base") or {}).get("ref") == "main"
-        and (pull.get("base") or {}).get("sha") == PRODUCT_BASE_SHA,
-        "Product PR base mismatch.",
+        (pull.get("base") or {}).get("ref") == "main",
+        "Product PR base branch mismatch.",
     )
     # The immutable run.head_sha above binds the producer source. GitHub may
     # expose a later live head through this associated PR object, so use it
@@ -201,6 +200,21 @@ def verify_producer(repo: str) -> None:
     require(
         (pull.get("head") or {}).get("ref") == PRODUCT_BRANCH,
         "Product PR branch mismatch.",
+    )
+    workflow_host = github_api(f"/repos/{repo}/commits/{PRODUCT_WORKFLOW_HOST}")
+    require(
+        workflow_host.get("sha") == PRODUCT_WORKFLOW_HOST,
+        "Product workflow-host commit identity mismatch.",
+    )
+    host_commit = workflow_host.get("commit") or {}
+    require(
+        (host_commit.get("tree") or {}).get("sha") == PRODUCT_WORKFLOW_HOST_TREE,
+        "Product workflow-host tree mismatch.",
+    )
+    host_parents = [parent.get("sha") for parent in workflow_host.get("parents", [])]
+    require(
+        host_parents == [PRODUCT_BASE_SHA, PRODUCT_SOURCE],
+        "Product workflow-host parents do not bind the exact historical base and source.",
     )
 
     jobs = github_api(
