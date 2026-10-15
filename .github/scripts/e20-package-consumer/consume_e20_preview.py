@@ -23,6 +23,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -70,6 +71,10 @@ EXPECTED_RUNNERS = {
     "x86_64": "ubuntu-24.04",
     "aarch64": "ubuntu-24.04-arm",
 }
+# ThreadId parsing requires a UUID; keep this deterministic v7-shaped id test-only.
+SYNTHETIC_THREAD_ID = "01900000-0000-7000-8000-000000000061"
+MAX_CHILD_STDERR_BYTES = 16 * 1024
+MAX_DIAGNOSTIC_CHARS = 4096
 SQLITE_STAGE = "consumer startup"
 
 
@@ -254,14 +259,99 @@ class AppServer:
             [str(executable), "app-server", "--listen", "stdio://"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             env=env_allow,
             bufsize=0,
         )
-        require(self.process.stdin is not None and self.process.stdout is not None, "Could not open app-server protocol pipes.")
+        require(
+            self.process.stdin is not None
+            and self.process.stdout is not None
+            and self.process.stderr is not None,
+            "Could not open app-server protocol pipes.",
+        )
         self.inp = self.process.stdin
         self.out = self.process.stdout
+        self._stderr = self.process.stderr
+        self._stderr_tail = bytearray()
+        self._stderr_lock = threading.Lock()
+        self._stderr_reader = threading.Thread(
+            target=self._drain_stderr,
+            args=(self._stderr.fileno(),),
+            daemon=True,
+        )
+        self._stderr_reader.start()
+        self._diagnostic_roots = self._collect_diagnostic_roots(codex_home)
+        self.exit_status: int | None = None
         self.pending = bytearray()
+
+    @staticmethod
+    def _collect_diagnostic_roots(codex_home: Path) -> list[tuple[str, str]]:
+        roots = [
+            (str(codex_home.parent), "<temporary>"),
+            (os.environ.get("GITHUB_WORKSPACE", ""), "<workspace>"),
+            (os.environ.get("RUNNER_TEMP", ""), "<runner-temp>"),
+        ]
+        normalized = [(root.rstrip("/"), replacement) for root, replacement in roots if root.rstrip("/")]
+        return sorted(
+            normalized,
+            key=lambda item: len(item[0]),
+            reverse=True,
+        )
+
+    def _drain_stderr(self, fd: int) -> None:
+        while True:
+            try:
+                chunk = os.read(fd, 4096)
+            except OSError:
+                return
+            if not chunk:
+                return
+            with self._stderr_lock:
+                self._stderr_tail.extend(chunk)
+                overflow = len(self._stderr_tail) - MAX_CHILD_STDERR_BYTES
+                if overflow > 0:
+                    del self._stderr_tail[:overflow]
+
+    def _sanitize_diagnostic(self, value: str, limit: int = MAX_DIAGNOSTIC_CHARS) -> str:
+        text = value
+        for root, replacement in self._diagnostic_roots:
+            text = text.replace(root, replacement)
+        text = re.sub(
+            r"(?i)\b(authorization|proxy-authorization)(\s*[:=]\s*)[^\r\n]*",
+            r"\1\2<redacted>",
+            text,
+        )
+        text = re.sub(
+            r"(?i)\b([a-z0-9_]*token|[a-z0-9_]*secret|[a-z0-9_]*api[_-]?key|"
+            r"[a-z0-9_]*password|[a-z0-9_]*cookie)"
+            r"(\s*(?:[:=]\s*|\s+))(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)",
+            r"\1\2<redacted>",
+            text,
+        )
+        text = re.sub(r"(?i)\bbearer\s+[^\s,;]+", "Bearer <redacted>", text)
+        text = re.sub(r"https?://[^/\s:@]+:[^/\s@]+@", "https://<redacted>@", text)
+        text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "?", text)
+        return text[:limit].strip()
+
+    def _stderr_text(self) -> str:
+        with self._stderr_lock:
+            raw = bytes(self._stderr_tail)
+        return self._sanitize_diagnostic(raw.decode("utf-8", errors="replace"))
+
+    def _rpc_failure_detail(self, error: "AppServerRpcError", migration_check: str) -> str:
+        code = str(error.code) if isinstance(error.code, int) else "nonstandard"
+        message = self._sanitize_diagnostic(error.message, 1024) or "<empty>"
+        details = [
+            f"Packaged app-server rejected {error.method} (rpc_{code}).",
+            f"rpc_message={message}",
+            migration_check,
+        ]
+        if self.exit_status is not None:
+            details.append(f"child_exit_status={self.exit_status}")
+        stderr = self._stderr_text()
+        if stderr:
+            details.append(f"child_stderr_tail={stderr}")
+        return self._sanitize_diagnostic(" ".join(details))
 
     def send(self, value: dict[str, Any]) -> None:
         self.inp.write((json.dumps(value, separators=(",", ":")) + "\n").encode())
@@ -292,11 +382,8 @@ class AppServer:
                 if "error" in response:
                     error = response["error"]
                     code = error.get("code") if isinstance(error, dict) else None
-                    code_label = str(code) if isinstance(code, int) else "nonstandard"
-                    category = rpc_error_category(error)
-                    raise RuntimeError(
-                        f"Packaged app-server rejected {method} (rpc_{code_label}_{category})."
-                    )
+                    message = error.get("message", "") if isinstance(error, dict) else ""
+                    raise AppServerRpcError(method, code, message)
                 require("result" in response, f"Packaged app-server omitted {method} result.")
                 return response["result"]
 
@@ -319,33 +406,33 @@ class AppServer:
     def close(self) -> None:
         if not self.inp.closed:
             self.inp.close()
+        timed_out = False
+        status: int | None = None
         try:
             status = self.process.wait(timeout=60)
         except subprocess.TimeoutExpired:
             self.process.kill()
-            self.process.wait(timeout=10)
+            status = self.process.wait(timeout=10)
+            timed_out = True
+        finally:
+            self._stderr_reader.join(timeout=5)
+            if not self._stderr.closed:
+                self._stderr.close()
+            if not self.out.closed:
+                self.out.close()
+        self.exit_status = status
+        if timed_out:
             raise RuntimeError("Packaged app-server did not exit after stdin EOF.")
+        require(status is not None, "Packaged app-server exit status was unavailable.")
         require(status == 0, f"Packaged app-server exited with status {status}.")
 
 
-def rpc_error_category(error: Any) -> str:
-    message = error.get("message", "") if isinstance(error, dict) else ""
-    if not isinstance(message, str):
-        return "unspecified"
-    lowered = message.lower()
-    categories = (
-        ("no such table", "missing_table"),
-        ("no such column", "missing_column"),
-        ("has no column named", "missing_column"),
-        ("database is locked", "database_locked"),
-        ("database is busy", "database_busy"),
-        ("database or disk is full", "storage_full"),
-        ("readonly database", "database_read_only"),
-        ("database disk image is malformed", "database_malformed"),
-        ("unable to open database file", "database_open_failed"),
-        ("constraint failed", "constraint_failed"),
-    )
-    return next((label for marker, label in categories if marker in lowered), "other")
+class AppServerRpcError(RuntimeError):
+    def __init__(self, method: str, code: Any, message: Any):
+        super().__init__(method)
+        self.method = method
+        self.code = code
+        self.message = message if isinstance(message, str) else ""
 
 
 def source_migrations(source_dir: Path, candidate_dir: Path) -> tuple[list[tuple[int, str, bytes]], bytes]:
@@ -414,7 +501,7 @@ def create_pre61_database(db_path: Path, snapshot_path: Path, migrations: list[t
                 title, sandbox_policy, approval_mode, has_user_event, preview
             ) VALUES (?, ?, 1, 1, 'cli', 'openai', '/', 'Synthetic migration consumer thread',
                       'workspaceWrite', 'on-request', 1, 'Synthetic migration snapshot row')""",
-            ("e20-synthetic-thread", str(rollout_path)),
+            (SYNTHETIC_THREAD_ID, str(rollout_path)),
         )
         mark_sqlite_stage("read pre-migration ledger snapshot")
         before = list(
@@ -432,7 +519,7 @@ def create_pre61_database(db_path: Path, snapshot_path: Path, migrations: list[t
 
 def verify_post_migration(db_path: Path, before: list[tuple[Any, ...]]) -> list[tuple[Any, ...]]:
     mark_sqlite_stage("open migrated database for verification")
-    connection = sqlite3.connect(db_path)
+    connection = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)
     try:
         mark_sqlite_stage("verify migrated ledger")
         after = list(
@@ -465,7 +552,24 @@ def verify_post_migration(db_path: Path, before: list[tuple[Any, ...]]) -> list[
         connection.close()
 
 
-def run_app_server(executable: Path, codex_home: Path, sqlite_home: Path) -> None:
+def migration_check_after_failure(db_path: Path, before: list[tuple[Any, ...]]) -> str:
+    try:
+        rows = verify_post_migration(db_path, before)
+        return f"migration61_check=passed ledger_rows={len(rows)}"
+    except sqlite3.Error as error:
+        sqlite_name = getattr(error, "sqlite_errorname", None) or "UNKNOWN"
+        return f"migration61_check=failed sqlite={sqlite_name} stage={SQLITE_STAGE}"
+    except RuntimeError as error:
+        return f"migration61_check=failed validation={str(error)[:512]}"
+
+
+def run_app_server(
+    executable: Path,
+    codex_home: Path,
+    sqlite_home: Path,
+    db_path: Path,
+    before: list[tuple[Any, ...]],
+) -> None:
     codex_home.mkdir(parents=True, exist_ok=True)
     sqlite_home.mkdir(parents=True, exist_ok=True)
     config = codex_home / "config.toml"
@@ -476,14 +580,17 @@ def run_app_server(executable: Path, codex_home: Path, sqlite_home: Path) -> Non
         )
     server = AppServer(executable, codex_home, sqlite_home)
     try:
-        server.initialize_and_list("e20-synthetic-thread")
-    except Exception:
+        server.initialize_and_list(SYNTHETIC_THREAD_ID)
+    except Exception as error:
         # Preserve the RPC/startup failure if shutdown also reports an error;
         # otherwise the cleanup exception masks the useful fixed diagnostic.
         try:
             server.close()
         except Exception:
             pass
+        if isinstance(error, AppServerRpcError):
+            migration_check = migration_check_after_failure(db_path, before)
+            raise RuntimeError(server._rpc_failure_detail(error, migration_check)) from None
         raise
     else:
         server.close()
@@ -537,7 +644,7 @@ def consume() -> None:
         rollout.write_text("\n")
         db_path = sqlite_home / "state_5.sqlite"
         before = create_pre61_database(db_path, snapshot, migrations, rollout)
-        run_app_server(executable, codex_home, sqlite_home)
+        run_app_server(executable, codex_home, sqlite_home, db_path, before)
         first_open_rows = verify_post_migration(db_path, before)
 
         mark_sqlite_stage("open migrated database to seed receipt")
@@ -546,13 +653,13 @@ def consume() -> None:
             mark_sqlite_stage("write synthetic thread receipt")
             connection.execute(
                 "INSERT INTO thread_read_receipts (thread_id, first_unread_turn, revision, last_published_turn) VALUES (?, ?, ?, ?)",
-                ("e20-synthetic-thread", "synthetic-turn-1", "synthetic-revision-1", "synthetic-turn-0"),
+                (SYNTHETIC_THREAD_ID, "synthetic-turn-1", "synthetic-revision-1", "synthetic-turn-0"),
             )
             connection.commit()
         finally:
             connection.close()
 
-        run_app_server(executable, codex_home, sqlite_home)
+        run_app_server(executable, codex_home, sqlite_home, db_path, before)
         reopened_rows = verify_post_migration(db_path, before)
         require(reopened_rows == first_open_rows, "Migration ledger changed between first open and process reopen.")
         mark_sqlite_stage("open migrated database to verify receipt")
@@ -561,12 +668,12 @@ def consume() -> None:
             mark_sqlite_stage("read synthetic receipt after reopen")
             receipt_row = connection.execute(
                 "SELECT thread_id, first_unread_turn, revision, last_published_turn FROM thread_read_receipts WHERE thread_id = ?",
-                ("e20-synthetic-thread",),
+                (SYNTHETIC_THREAD_ID,),
             ).fetchone()
         finally:
             connection.close()
         require(
-            receipt_row == ("e20-synthetic-thread", "synthetic-turn-1", "synthetic-revision-1", "synthetic-turn-0"),
+            receipt_row == (SYNTHETIC_THREAD_ID, "synthetic-turn-1", "synthetic-revision-1", "synthetic-turn-0"),
             "Migration 61 receipt did not persist across the packaged process reopen.",
         )
 
