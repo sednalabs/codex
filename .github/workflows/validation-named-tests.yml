@@ -23,6 +23,11 @@ on:
           - rust_minimal
           - rust_integration
         default: rust_minimal
+      prepare_codex_cli_for_exact_usage_test:
+        description: Build the CLI for the fixed usage integration selector that resolves codex through CARGO_BIN_EXE_codex
+        required: false
+        type: boolean
+        default: false
       request_json:
         description: JSON rust-tests-v1 typed request (no shell commands or flags)
         required: true
@@ -43,5 +48,6 @@ jobs:
       base_ref: ${{ inputs.base_ref }}
       harness_sha: ${{ github.sha }}
       profile: ${{ inputs.profile }}
+      prepare_codex_cli_for_exact_usage_test: ${{ inputs.prepare_codex_cli_for_exact_usage_test }}
       request_json: ${{ inputs.request_json }}
       artifact_name: validation-named-tests-${{ github.run_id }}

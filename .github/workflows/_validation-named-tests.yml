@@ -19,6 +19,10 @@ on:
       profile:
         required: true
         type: string
+      prepare_codex_cli_for_exact_usage_test:
+        required: false
+        type: boolean
+        default: false
       request_json:
         required: true
         type: string
@@ -140,6 +144,48 @@ jobs:
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
         with:
           targets: x86_64-unknown-linux-gnu
+
+      - name: Prepare CLI binary for the exact usage integration selector
+        if: ${{ inputs.prepare_codex_cli_for_exact_usage_test }}
+        working-directory: validation-target/codex-rs
+        shell: bash
+        env:
+          VALIDATION_TARGET_SHA: ${{ inputs.target_sha }}
+          VALIDATION_BASE_REF: ${{ inputs.base_ref }}
+          VALIDATION_PROFILE: ${{ inputs.profile }}
+          RUST_TEST_REQUEST_JSON: ${{ inputs.request_json }}
+        run: |
+          set -euo pipefail
+          if [[ "${VALIDATION_TARGET_SHA}" != "ae94a802f4ca31130c1f1be5d4703c9062b84560" || "${VALIDATION_BASE_REF}" != "e135df532669849b682dfac712c3f59aded039ba1" || "${VALIDATION_PROFILE}" != "rust_integration" ]]; then
+            echo "CLI preparation is restricted to the fixed usage integration target" >&2
+            exit 1
+          fi
+          python3 - <<'PY'
+          import json
+          import os
+
+          expected = {
+              "schema_version": "rust-tests-v1",
+              "profile": "rust_integration",
+              "package": "codex-core",
+              "target_kind": "integration",
+              "target": "all",
+              "tests": [
+                  "suite::token_usage_rollout::completed_response_usage_reaches_sqlite_lineage_and_credit_views_after_reopen"
+              ],
+              "execution_mode": "exact",
+          }
+          request = json.loads(os.environ["RUST_TEST_REQUEST_JSON"])
+          if request != expected:
+              raise SystemExit("CLI preparation request does not match the fixed exact selector")
+          PY
+          cargo build --locked -p codex-cli --bin codex
+          codex_binary="${GITHUB_WORKSPACE}/validation-target/codex-rs/target/debug/codex"
+          if [[ ! -x "${codex_binary}" ]]; then
+            echo "the fixed CLI build did not produce an executable" >&2
+            exit 1
+          fi
+          echo "CARGO_BIN_EXE_codex=${codex_binary}" >> "${GITHUB_ENV}"
 
       - name: Inventory and run exact named tests
         id: named_tests
