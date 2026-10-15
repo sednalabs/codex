@@ -2143,6 +2143,7 @@ async fn spawned_multi_agent_v2_child_inherits_parent_developer_context() -> Res
     skip_if_no_network!(Ok(()));
 
     const WAIT_SENTENCE: &str = "Avoid performing blocking sleep or wait calls longer than 60 seconds, as they may prevent you from communicating with the user for their duration.";
+    const COMMENTARY_SENTENCE: &str = "The user appreciates consistent, frequent communication during your turn, and should not be left without a commentary update for more than 60 seconds during ongoing work.";
     let server = start_mock_server().await;
     let spawn_args = serde_json::to_string(&json!({
         "message": CHILD_PROMPT,
@@ -2204,6 +2205,7 @@ async fn spawned_multi_agent_v2_child_inherits_parent_developer_context() -> Res
 
     let root_request = root_request_log.single_request();
     assert!(!root_request.body_contains_text(WAIT_SENTENCE));
+    assert!(!root_request.body_contains_text(COMMENTARY_SENTENCE));
     let child_requests = wait_for_requests(&child_request_log).await?;
     let child_request = child_requests
         .last()
@@ -2211,6 +2213,7 @@ async fn spawned_multi_agent_v2_child_inherits_parent_developer_context() -> Res
     assert!(child_request.body_contains_text("Parent developer instructions."));
     assert!(child_request.body_contains_text(CHILD_PROMPT));
     assert!(!child_request.body_contains_text(WAIT_SENTENCE));
+    assert!(!child_request.body_contains_text(COMMENTARY_SENTENCE));
 
     Ok(())
 }

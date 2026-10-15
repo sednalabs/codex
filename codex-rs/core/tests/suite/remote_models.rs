@@ -216,10 +216,10 @@ async fn default_catalog_wait_overlay_reaches_root_client_payload() -> Result<()
     skip_if_sandbox!(Ok(()));
 
     const WAIT_SENTENCE: &str = "Avoid performing blocking sleep or wait calls longer than 60 seconds, as they may prevent you from communicating with the user for their duration.";
+    const COMMENTARY_SENTENCE: &str = "The user appreciates consistent, frequent communication during your turn, and should not be left without a commentary update for more than 60 seconds during ongoing work.";
     let server = MockServer::start().await;
     let requested_model = "gpt-6.1-sol-wait-overlay-test";
-    let expected_instructions =
-        "Preserve the unrelated model guidance.  Keep the mailbox event-driven and responsive.";
+    let expected_instructions = "Preserve the unrelated model guidance.  Keep commentary clear and useful.  Keep the mailbox event-driven and responsive.";
     let mut model = test_remote_model_with_policy(
         requested_model,
         ModelVisibility::List,
@@ -228,7 +228,7 @@ async fn default_catalog_wait_overlay_reaches_root_client_payload() -> Result<()
     );
     model.model_messages = Some(ModelMessages {
         instructions_template: Some(format!(
-            "Preserve the unrelated model guidance. {WAIT_SENTENCE} Keep the mailbox event-driven and responsive."
+            "Preserve the unrelated model guidance. {WAIT_SENTENCE} Keep commentary clear and useful. {COMMENTARY_SENTENCE} Keep the mailbox event-driven and responsive."
         )),
         ..Default::default()
     });
@@ -262,6 +262,7 @@ async fn default_catalog_wait_overlay_reaches_root_client_payload() -> Result<()
     assert_eq!(request.body_json()["model"].as_str(), Some(requested_model));
     assert_eq!(request.instructions_text(), expected_instructions);
     assert!(!request.instructions_text().contains(WAIT_SENTENCE));
+    assert!(!request.instructions_text().contains(COMMENTARY_SENTENCE));
 
     Ok(())
 }

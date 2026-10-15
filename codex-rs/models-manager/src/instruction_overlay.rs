@@ -2,7 +2,9 @@
 
 use codex_protocol::openai_models::ModelInfo;
 
-const BLOCKING_WAIT_SENTENCE: &str = "Avoid performing blocking sleep or wait calls longer than 60 seconds, as they may prevent you from communicating with the user for their duration.";
+const FIXED_WAIT_SENTENCE: &str = "Avoid performing blocking sleep or wait calls longer than 60 seconds, as they may prevent you from communicating with the user for their duration.";
+const FIXED_COMMENTARY_CADENCE_SENTENCE: &str = "The user appreciates consistent, frequent communication during your turn, and should not be left without a commentary update for more than 60 seconds during ongoing work.";
+const TARGETED_SENTENCES: [&str; 2] = [FIXED_WAIT_SENTENCE, FIXED_COMMENTARY_CADENCE_SENTENCE];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OverlayOutcome {
@@ -10,7 +12,7 @@ pub(crate) enum OverlayOutcome {
     SentenceAbsent,
 }
 
-/// Remove only the obsolete fixed wait-duration guidance from a default-catalog model.
+/// Remove only the two fixed 60-second cadence rules from a default-catalog model.
 pub(crate) fn apply(model: &mut ModelInfo) -> OverlayOutcome {
     let Some(template) = model
         .model_messages
@@ -20,9 +22,15 @@ pub(crate) fn apply(model: &mut ModelInfo) -> OverlayOutcome {
         return OverlayOutcome::SentenceAbsent;
     };
 
-    if template.contains(BLOCKING_WAIT_SENTENCE) {
-        *template = template.replace(BLOCKING_WAIT_SENTENCE, "");
-        tracing::debug!(model = %model.slug, "removed fixed wait-duration instruction from default catalog model");
+    let mut removed_any = false;
+    for sentence in TARGETED_SENTENCES {
+        if template.contains(sentence) {
+            *template = template.replace(sentence, "");
+            removed_any = true;
+        }
+    }
+    if removed_any {
+        tracing::debug!(model = %model.slug, "removed fixed 60-second cadence instructions from default catalog model");
         OverlayOutcome::Applied
     } else {
         OverlayOutcome::SentenceAbsent
@@ -34,7 +42,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn removes_only_the_fixed_wait_sentence_and_is_idempotent() {
+    fn removes_only_the_fixed_60_second_rules_and_is_idempotent() {
         let mut model = crate::bundled_models_response()
             .expect("bundled models should parse")
             .models
@@ -42,7 +50,7 @@ mod tests {
             .next()
             .expect("bundled models should contain a model");
         let before = format!(
-            "preserved guidance. {BLOCKING_WAIT_SENTENCE} Native event-driven waits remain allowed."
+            "preserved guidance. {FIXED_WAIT_SENTENCE} Keep commentary useful and concise. {FIXED_COMMENTARY_CADENCE_SENTENCE} Native event-driven waits remain allowed."
         );
         model
             .model_messages
@@ -56,7 +64,9 @@ mod tests {
                 .model_messages
                 .as_ref()
                 .and_then(|messages| messages.instructions_template.as_deref()),
-            Some("preserved guidance.  Native event-driven waits remain allowed.")
+            Some(
+                "preserved guidance.  Keep commentary useful and concise.  Native event-driven waits remain allowed."
+            )
         );
         let transformed = model.clone();
         assert_eq!(apply(&mut model), OverlayOutcome::SentenceAbsent);

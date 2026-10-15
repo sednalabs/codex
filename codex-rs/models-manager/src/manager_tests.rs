@@ -1081,13 +1081,16 @@ async fn refresh_available_models_keeps_merging_for_custom_api_auth() {
 #[tokio::test]
 async fn authoritative_catalog_preserves_hidden_models_and_matches_exact_ids() {
     const WAIT_SENTENCE: &str = "Avoid performing blocking sleep or wait calls longer than 60 seconds, as they may prevent you from communicating with the user for their duration.";
+    const COMMENTARY_SENTENCE: &str = "The user appreciates consistent, frequent communication during your turn, and should not be left without a commentary update for more than 60 seconds during ongoing work.";
     let mut model =
         remote_model_with_visibility("gpt-6.1-sol", "Provider Model", /*priority*/ 0, "hide");
     model
         .model_messages
         .as_mut()
         .expect("test model should have model messages")
-        .instructions_template = Some(format!("Provider guidance. {WAIT_SENTENCE}"));
+        .instructions_template = Some(format!(
+        "Provider guidance. {WAIT_SENTENCE} {COMMENTARY_SENTENCE}"
+    ));
     let endpoint = TestModelsEndpoint::with_command_auth(vec![Ok(vec![model.clone()])]);
     let manager = OpenAiModelsManager::new_without_cache(endpoint, /*auth_manager*/ None)
         .with_provider_catalog();
@@ -1103,7 +1106,7 @@ async fn authoritative_catalog_preserves_hidden_models_and_matches_exact_ids() {
         .await;
     assert_eq!(
         codex_prompts::render_model_instructions(&resolved),
-        format!("Provider guidance. {WAIT_SENTENCE}")
+        format!("Provider guidance. {WAIT_SENTENCE} {COMMENTARY_SENTENCE}")
     );
     for unknown in ["gpt-6.1-sol-other", "namespace/gpt-6.1-sol"] {
         assert_eq!(
@@ -1118,6 +1121,7 @@ async fn authoritative_catalog_preserves_hidden_models_and_matches_exact_ids() {
 #[test]
 fn default_openai_model_instructions_are_overlaid_before_config_precedence() {
     const WAIT_SENTENCE: &str = "Avoid performing blocking sleep or wait calls longer than 60 seconds, as they may prevent you from communicating with the user for their duration.";
+    const COMMENTARY_SENTENCE: &str = "The user appreciates consistent, frequent communication during your turn, and should not be left without a commentary update for more than 60 seconds during ongoing work.";
 
     let mut candidate = remote_model("gpt-6.1-sol", "Default model", /*priority*/ 0);
     candidate
@@ -1125,7 +1129,7 @@ fn default_openai_model_instructions_are_overlaid_before_config_precedence() {
         .as_mut()
         .expect("test model should have model messages")
         .instructions_template = Some(format!(
-        "Keep this model guidance. {WAIT_SENTENCE} Keep native mailbox waits responsive."
+        "Keep this model guidance. {WAIT_SENTENCE} Commentary should remain useful and concise. {COMMENTARY_SENTENCE} Keep native mailbox waits responsive."
     ));
 
     let default_model = construct_openai_model_info_from_candidates(
@@ -1139,7 +1143,9 @@ fn default_openai_model_instructions_are_overlaid_before_config_precedence() {
         .and_then(|messages| messages.instructions_template.as_deref())
         .expect("default model should retain its instruction template");
     assert!(!default_instructions.contains(WAIT_SENTENCE));
+    assert!(!default_instructions.contains(COMMENTARY_SENTENCE));
     assert!(default_instructions.contains("Keep this model guidance."));
+    assert!(default_instructions.contains("Commentary should remain useful and concise."));
     assert!(default_instructions.contains("Keep native mailbox waits responsive."));
     let assembled_default_instructions = codex_prompts::render_model_instructions(&default_model);
     assert_eq!(assembled_default_instructions, default_instructions);
@@ -1172,11 +1178,14 @@ fn default_openai_model_instructions_are_overlaid_before_config_precedence() {
         "gpt-6.1-sol",
         std::slice::from_ref(&candidate),
         &ModelsManagerConfig {
-            base_instructions: Some(format!("Configured text takes precedence. {WAIT_SENTENCE}")),
+            base_instructions: Some(format!(
+                "Configured text takes precedence. {WAIT_SENTENCE} {COMMENTARY_SENTENCE}"
+            )),
             ..ModelsManagerConfig::default()
         },
     );
-    let configured_instructions = format!("Configured text takes precedence. {WAIT_SENTENCE}");
+    let configured_instructions =
+        format!("Configured text takes precedence. {WAIT_SENTENCE} {COMMENTARY_SENTENCE}");
     assert_eq!(
         codex_prompts::render_model_instructions(&configured),
         configured_instructions
