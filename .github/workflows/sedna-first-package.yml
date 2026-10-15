@@ -277,7 +277,7 @@ jobs:
         with:
           version: "0.11.3"
 
-      - name: Generate selected-source locks, schemas, and status snapshots
+      - name: Generate selected-source locks, schemas, and snapshots
         id: generate
         shell: bash
         env:
@@ -312,6 +312,12 @@ jobs:
             cd codex-rs
             INSTA_UPDATE=always cargo test -p codex-tui --lib status::tests \
               -- --test-threads=1 --skip status::tests::status_snapshot_shows_chatgpt_plan_without_email
+          )
+          (
+            cd codex-rs
+            INSTA_UPDATE=always cargo test -p codex-tui --lib \
+              history_cell::tests::standalone_unix_update_available_history_cell_snapshot \
+              -- --exact --nocapture
           )
           just write-app-server-schema
           just write-app-server-schema --experimental
