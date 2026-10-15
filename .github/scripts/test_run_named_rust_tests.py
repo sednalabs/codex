@@ -125,6 +125,97 @@ class NamedRustTests(TestCase):
             ],
         )
 
+    def test_exact_mode_runs_only_inventory_confirmed_selectors(self) -> None:
+        request = {
+            **REQUEST,
+            "execution_mode": "exact",
+            "tests": ["suite::known", "suite::other"],
+        }
+        inventory = self.completed(
+            stdout="suite::known: test\nsuite::other: test\nsuite::unrelated: test\n"
+        )
+        selected = self.completed(
+            stdout=(
+                "test suite::known ... ok\n"
+                "test result: ok. 1 passed; 0 failed; 0 ignored; "
+                "0 measured; 2 filtered out\n"
+            )
+        )
+        selected_again = self.completed(
+            stdout=(
+                "test suite::other ... ok\n"
+                "test result: ok. 1 passed; 0 failed; 0 ignored; "
+                "0 measured; 2 filtered out\n"
+            )
+        )
+        with (
+            mock.patch.object(
+                MODULE.subprocess,
+                "run",
+                side_effect=[inventory, selected, selected_again],
+            ) as run,
+            mock.patch.object(MODULE, "git_sha", return_value="target-sha"),
+            mock.patch.object(MODULE, "load_manifest", return_value=MANIFEST),
+        ):
+            result = MODULE.run_request(request, Path("/validation-target"))
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual([test["name"] for test in result["tests"]], request["tests"])
+        self.assertEqual(run.call_count, 3)
+        self.assertEqual(
+            run.call_args_list[1].args[0],
+            [
+                "cargo",
+                "test",
+                "--locked",
+                "-p",
+                "codex-core",
+                "--lib",
+                "suite::known",
+                "--",
+                "--exact",
+                "--test-threads=1",
+            ],
+        )
+        self.assertEqual(
+            run.call_args_list[2].args[0][6:],
+            ["suite::other", "--", "--exact", "--test-threads=1"],
+        )
+
+    def test_exact_command_rejects_selector_outside_request(self) -> None:
+        with self.assertRaises(ValueError):
+            MODULE.exact_cargo_args(
+                REQUEST,
+                "suite::not_requested",
+                command_record=MANIFEST[("codex-core", "lib", "")],
+            )
+
+    def test_exact_mode_stops_after_command_without_test_summary(self) -> None:
+        request = {
+            **REQUEST,
+            "execution_mode": "exact",
+            "tests": ["suite::known", "suite::other"],
+        }
+        inventory = self.completed(stdout="suite::known: test\nsuite::other: test\n")
+        compile_failure = self.completed(
+            stdout="error: could not compile `codex-core`\n", returncode=101
+        )
+        with (
+            mock.patch.object(
+                MODULE.subprocess,
+                "run",
+                side_effect=[inventory, compile_failure],
+            ) as run,
+            mock.patch.object(MODULE, "git_sha", return_value="target-sha"),
+            mock.patch.object(MODULE, "load_manifest", return_value=MANIFEST),
+        ):
+            result = MODULE.run_request(request, Path("/validation-target"))
+
+        self.assertEqual(result["status"], "failure")
+        self.assertEqual(result["failure_code"], "execution_reconciliation_failed")
+        self.assertEqual(result["unattempted_tests"], ["suite::other"])
+        self.assertEqual(run.call_count, 2)
+
     def test_unknown_target_fails_before_cargo(self) -> None:
         request = {**REQUEST, "package": "not-in-catalog"}
         with (

@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Run a typed, exact Rust test request on a hosted validation runner.
+"""Run a typed Rust test request on a hosted validation runner.
 
 The request is deliberately narrower than a shell command.  It selects a
 Cargo target from the committed command catalog and names fully-qualified
-tests to reconcile.  The runner inventories the target first, refuses to run
-when a requested name is missing or ambiguous, and executes only the
-catalog-owned target argv.  This prevents request data from reaching Cargo.
+tests to reconcile.  The runner inventories the target first and refuses to
+run when a requested name is missing or ambiguous.  Requests normally execute
+the catalog-owned target command; the explicit ``exact`` mode runs each
+inventory-confirmed selector separately with libtest's exact-match flag.
+Request selectors are validated and passed as argv elements, never shell text.
 """
 
 from __future__ import annotations
@@ -216,6 +218,7 @@ def load_request() -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     target = payload.get("target", "")
     profile = payload.get("profile")
     tests = payload.get("tests")
+    execution_mode = payload.get("execution_mode", "target")
     if not isinstance(package, str) or not PACKAGE_RE.fullmatch(package):
         return None, fail("package_invalid", "package must be a safe Cargo package name")
     if target_kind not in ALLOWED_TARGET_KINDS:
@@ -227,6 +230,8 @@ def load_request() -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
         return None, fail("target_invalid", "lib requests must not name an integration target")
     if profile not in ALLOWED_PROFILES:
         return None, fail("profile_invalid", "profile is not in the hosted allowlist")
+    if not isinstance(execution_mode, str) or execution_mode not in {"target", "exact"}:
+        return None, fail("execution_mode_invalid", "execution_mode must be target or exact")
     expected_profile = os.environ.get("VALIDATION_PROFILE", "")
     if expected_profile and profile != expected_profile:
         return None, fail("profile_mismatch", "request profile does not match workflow profile")
@@ -244,6 +249,8 @@ def load_request() -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
         "target": "" if target in (None, "lib") else target,
         "tests": tests,
     }
+    if execution_mode == "exact":
+        normalized["execution_mode"] = "exact"
     return normalized, None
 
 
@@ -254,12 +261,14 @@ def cargo_args(
     test_name: str = "",
     command_record: dict[str, Any] | None = None,
 ) -> list[str]:
-    """Return a complete argv tuple from the closed target command catalog.
+    """Return the catalog-owned command argv for one target.
 
     A test name is a reconciliation selector, not an argv fragment.  The
-    runner executes the immutable target command once and matches requested
-    names against its exact per-test output.  Rejecting ``test_name`` here
-    prevents callers from accidentally reintroducing a request-derived sink.
+    default target mode executes this immutable command once and matches
+    requested names against its exact per-test output.  Exact mode adds one
+    validated selector around this command separately.  Rejecting ``test_name``
+    here prevents callers from accidentally reintroducing a request-derived
+    sink.
     """
 
     if test_name:
@@ -273,6 +282,34 @@ def cargo_args(
     if not isinstance(command, tuple) or not all(isinstance(value, str) for value in command):
         raise ValueError("command catalog entry is not a complete argv tuple")
     return list(command)
+
+
+def exact_cargo_args(
+    request: dict[str, Any],
+    test_name: str,
+    *,
+    command_record: dict[str, Any],
+) -> list[str]:
+    """Build an exact-filter command for one inventory-confirmed selector."""
+
+    if (
+        not isinstance(test_name, str)
+        or not TEST_RE.fullmatch(test_name)
+        or test_name not in request.get("tests", [])
+    ):
+        raise ValueError("exact test selector is not one of the validated request names")
+    command = cargo_args(request, list_only=False, command_record=command_record)
+    try:
+        separator = command.index("--")
+    except ValueError as exc:
+        raise ValueError("catalog command is missing the test-argument separator") from exc
+    return [
+        *command[:separator],
+        test_name,
+        "--",
+        "--exact",
+        *command[separator + 1 :],
+    ]
 
 
 def listed_tests(stdout: str) -> list[str]:
@@ -360,63 +397,93 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
             }
         )
         return result
-    # Run the complete immutable target command.  This keeps the command
-    # surface closed while the requested names remain exact post-run selectors.
-    test_command = cargo_args(
-        request, list_only=False, command_record=command_record
-    )
-    completed = subprocess.run(
-        test_command,
-        cwd=manifest_root,
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-        shell=False,
-    )
-    output = "\n".join(
-        value for value in (completed.stdout, completed.stderr) if value
-    )
-    counts = test_result_counts(output)
-    outcomes = test_outcomes(output)
-    for name in request["tests"]:
-        observed = outcomes.get(name, [])
-        outcome = observed[0] if len(observed) == 1 else ""
-        execution_reconciled = (
-            completed.returncode == 0
-            and counts is not None
-            and len(observed) == 1
-            and outcome == "ok"
-        )
-        status = "success" if execution_reconciled else "failure"
-        failure_code = ""
-        if len(observed) != 1:
-            failure_code = "execution_reconciliation_failed"
-        elif outcome == "ignored":
-            failure_code = "named_test_ignored"
-        elif completed.returncode != 0 or outcome == "FAILED":
-            failure_code = "named_test_failed"
-        elif counts is None:
-            failure_code = "execution_reconciliation_failed"
-        result["tests"].append(
-            {
-                "name": name,
-                "status": status,
-                "exit_code": completed.returncode,
-                "execution_reconciled": execution_reconciled,
-                "observed_outcomes": observed,
-                "result_counts": counts,
-                "diagnostics": command_diagnostics(completed),
-            }
-        )
-        if status != "success":
-            result["status"] = "failure"
-            result["failure_code"] = failure_code
-            result["message"] = (
-                "named test did not produce exactly one non-ignored passing result; "
-                "see bounded diagnostics and the hosted job log"
+    execution_mode = request.get("execution_mode", "target")
+    if execution_mode == "exact":
+        test_commands = [
+            (name, exact_cargo_args(request, name, command_record=command_record))
+            for name in request["tests"]
+        ]
+    else:
+        test_commands = [
+            (
+                "",
+                cargo_args(request, list_only=False, command_record=command_record),
             )
-            break
+        ]
+
+    for test_index, (exact_name, test_command) in enumerate(test_commands):
+        completed = subprocess.run(
+            test_command,
+            cwd=manifest_root,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+            shell=False,
+        )
+        output = "\n".join(
+            value for value in (completed.stdout, completed.stderr) if value
+        )
+        counts = test_result_counts(output)
+        outcomes = test_outcomes(output)
+        selected_names = [exact_name] if exact_name else request["tests"]
+        for name in selected_names:
+            observed = outcomes.get(name, [])
+            outcome = observed[0] if len(observed) == 1 else ""
+            exact_count_matches = (
+                execution_mode != "exact"
+                or (
+                    counts is not None
+                    and counts["passed"] == 1
+                    and counts["failed"] == 0
+                    and counts["ignored"] == 0
+                    and counts["filtered"] == len(names) - 1
+                )
+            )
+            execution_reconciled = (
+                completed.returncode == 0
+                and counts is not None
+                and len(observed) == 1
+                and outcome == "ok"
+                and exact_count_matches
+            )
+            status = "success" if execution_reconciled else "failure"
+            if len(observed) != 1 or counts is None or not exact_count_matches:
+                failure_code = "execution_reconciliation_failed"
+            elif outcome == "ignored":
+                failure_code = "named_test_ignored"
+            elif completed.returncode != 0 or outcome == "FAILED":
+                failure_code = "named_test_failed"
+            else:
+                failure_code = ""
+            result["tests"].append(
+                {
+                    "name": name,
+                    "status": status,
+                    "exit_code": completed.returncode,
+                    "execution_reconciled": execution_reconciled,
+                    "observed_outcomes": observed,
+                    "result_counts": counts,
+                    "diagnostics": command_diagnostics(completed),
+                }
+            )
+            if status != "success":
+                result["status"] = "failure"
+                result["failure_code"] = failure_code
+                result["message"] = (
+                    "named test did not produce exactly one non-ignored passing result; "
+                    "see bounded diagnostics and the hosted job log"
+                )
+                if execution_mode != "exact":
+                    break
+                if counts is None:
+                    # A command that produced no libtest summary usually failed
+                    # before executing the selected test (for example, a
+                    # compile error). Repeating that failure for every selector
+                    # would waste hosted time without producing additional test
+                    # evidence.
+                    result["unattempted_tests"] = request["tests"][test_index + 1 :]
+                    break
     return result
 
 
