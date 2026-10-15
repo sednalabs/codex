@@ -221,24 +221,6 @@ impl SessionServices {
             });
     }
 
-    pub(crate) async fn remove_automatic_turn_principal_if_matches(
-        &self,
-        event_occurrence_id: &str,
-        principal_identity: Option<&str>,
-        client_user_message_id: Option<&str>,
-    ) {
-        let mut principals = self.automatic_turn_principals.lock().await;
-        if principals
-            .get(event_occurrence_id)
-            .is_some_and(|operation| {
-                operation.principal_identity.as_deref() == principal_identity
-                    && operation.client_user_message_id.as_deref() == client_user_message_id
-            })
-        {
-            principals.remove(event_occurrence_id);
-        }
-    }
-
     pub(crate) async fn automatic_turn_provider_authority(
         &self,
         event_occurrence_id: &str,

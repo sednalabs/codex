@@ -658,6 +658,12 @@ fn validate_protected_api_route(api_provider: &ApiProvider, endpoint: &str) -> R
     validate_api_route(api_provider, endpoint, recipient.as_deref())
 }
 
+// Keep each authority input explicit so the fingerprint cannot omit a routing or credential
+// identity dimension when its definition changes.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "all provider-authority fingerprint inputs stay explicit"
+)]
 fn hash_provider_authority<H: Hasher>(
     provider: &ModelProviderInfo,
     api_provider: &ApiProvider,
@@ -824,7 +830,7 @@ fn stable_automatic_turn_principal(
 }
 
 fn stable_endpoint_identity(value: &str) -> Option<String> {
-    let mut endpoint = Url::parse(value).ok()?;
+    let endpoint = Url::parse(value).ok()?;
     if !matches!(endpoint.scheme(), "http" | "https")
         || !endpoint.username().is_empty()
         || endpoint.password().is_some()
@@ -1583,13 +1589,13 @@ impl ModelClient {
             };
             // Command-backed bearer refreshes cannot change workspace routing. Keep the captured
             // revisions so a refresh during setup still invalidates cached WebSocket state.
-            if self.state.provider.info().auth.is_none() {
-                if self.auth_owner_generation() != auth_owner_generation {
-                    return Err(std::io::Error::other(
-                        "account changed while preparing model request",
-                    )
-                    .into());
-                }
+            if self.state.provider.info().auth.is_none()
+                && self.auth_owner_generation() != auth_owner_generation
+            {
+                return Err(std::io::Error::other(
+                    "account changed while preparing model request",
+                )
+                .into());
             }
             let authority = complete_provider_authority(
                 self.state.provider.info(),

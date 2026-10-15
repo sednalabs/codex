@@ -59,6 +59,11 @@ pub(crate) struct ExhaustedResponseRetry {
 
 /// Returns `Ok(())` when the caller should retry the request loop, or the original error when
 /// it is terminal or the retry budget is exhausted.
+// Keep retry provenance and replay-safety inputs explicit at this decision boundary.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "retry safety and request provenance remain explicit"
+)]
 pub(crate) async fn handle_response_stream_error(
     retry_state: &mut ResponsesStreamRetryState,
     max_retries: u64,

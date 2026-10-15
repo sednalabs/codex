@@ -81,6 +81,11 @@ const MAX_RETAINED_AGENT_MESSAGE_TOKENS: i64 = 10_000;
 // retry budget smaller than the general Responses stream retry budget.
 const MAX_REMOTE_COMPACTION_V2_STREAM_RETRIES: u64 = 2;
 
+// Keep session, replacement-step, analytics, and cancellation context explicit across compaction.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "compaction lifecycle inputs remain explicit"
+)]
 pub(crate) async fn run_inline_remote_auto_compact_task(
     sess: Arc<Session>,
     step_context: Arc<StepContext>,
@@ -223,6 +228,11 @@ async fn run_remote_compact_task_inner(
     }
 }
 
+// Keep cancellation and analytics lifecycle context explicit through the compaction operation.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "compaction lifecycle inputs remain explicit"
+)]
 async fn run_remote_compact_task_inner_impl(
     sess: &Arc<Session>,
     step_context: &Arc<StepContext>,
