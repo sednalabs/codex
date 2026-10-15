@@ -150,12 +150,16 @@ mod tests {
             .iter()
             .find(|migration| migration.version == version)
             .expect("migration should be embedded");
+        // Reconstruct the shipped LF bytes independently of the checkout's line endings.
         let sql = match version {
-            1 => include_str!("../../usage_migrations/0001_usage_tables.sql").replace(
-                ");\nCREATE TABLE IF NOT EXISTS usage_spawn_requests",
-                ");\n\nCREATE TABLE IF NOT EXISTS usage_spawn_requests",
-            ),
+            1 => include_str!("../../usage_migrations/0001_usage_tables.sql")
+                .replace("\r\n", "\n")
+                .replace(
+                    ");\nCREATE TABLE IF NOT EXISTS usage_spawn_requests",
+                    ");\n\nCREATE TABLE IF NOT EXISTS usage_spawn_requests",
+                ),
             5 => include_str!("../../usage_migrations/0005_usage_codex_credits.sql")
+                .replace("\r\n", "\n")
                 .replace("CASE WHEN p.status = 'ok'\n                  AND", "CASE WHEN")
                 .replace(
                     "        WHEN status IS NULL\n          OR status <> 'ok'\n          OR total_tokens",
