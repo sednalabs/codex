@@ -706,7 +706,7 @@ mod tests {
             Some(CodexPackageManifest {
                 version: Version::new(1, 2, 3),
                 native_version: None,
-                target: None,
+                target: Some("x86_64-unknown-linux-musl".to_string()),
             })
         );
         assert_eq!(

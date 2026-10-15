@@ -1,11 +1,17 @@
 use anyhow::Result;
 use anyhow::bail;
+#[cfg(target_os = "linux")]
 use serde::Deserialize;
+#[cfg(target_os = "linux")]
 use serde::Deserializer;
+#[cfg(target_os = "linux")]
 use serde::Serialize;
+#[cfg(target_os = "linux")]
 use serde::Serializer;
+#[cfg(target_os = "linux")]
 use zeroize::Zeroize;
 
+#[cfg(target_os = "linux")]
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ProviderAuth {
@@ -16,6 +22,7 @@ pub(crate) struct ProviderAuth {
     pub(crate) plan_type: Option<String>,
 }
 
+#[cfg(target_os = "linux")]
 #[derive(Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ProviderCredentialClass {
@@ -23,8 +30,10 @@ pub(crate) enum ProviderCredentialClass {
     SyntheticFixture,
 }
 
+#[cfg(target_os = "linux")]
 pub(crate) struct SecretString(pub(crate) String);
 
+#[cfg(target_os = "linux")]
 impl<'de> Deserialize<'de> for SecretString {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where
@@ -34,6 +43,7 @@ impl<'de> Deserialize<'de> for SecretString {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl Serialize for SecretString {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
@@ -43,12 +53,14 @@ impl Serialize for SecretString {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl Drop for SecretString {
     fn drop(&mut self) {
         self.0.zeroize();
     }
 }
 
+#[cfg(target_os = "linux")]
 pub(crate) fn valid_provider_recipient(recipient: &str, class: &ProviderCredentialClass) -> bool {
     const LIVE_PROVIDER: &str = "https://chatgpt.com/backend-api/codex";
     match class {
@@ -92,6 +104,7 @@ pub(crate) fn ensure_protected_cloud_config_ineligible(plan_type: Option<&str>) 
     }
 }
 
+#[cfg(target_os = "linux")]
 pub(crate) fn validate_provider_credential(
     provider: &ProviderAuth,
     recipient: &str,
@@ -118,6 +131,7 @@ pub(crate) fn validate_provider_credential(
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 fn synthetic_access_token(expires_at: i64) -> Result<String> {
     let header = serde_json::json!({
         "alg": "HS256",

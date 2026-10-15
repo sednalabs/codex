@@ -9,6 +9,7 @@ use crate::provider_auth::valid_provider_recipient;
 #[cfg(target_os = "linux")]
 use crate::provider_auth::validate_provider_credential;
 use crate::signer;
+#[cfg(target_os = "linux")]
 use crate::wire;
 use anyhow::Context;
 use anyhow::Result;
@@ -121,14 +122,6 @@ pub(crate) fn initialize_from_environment(
     validate_and_import(frame, claims, certificate_sha256)
 }
 
-#[cfg(not(target_os = "linux"))]
-pub(crate) fn initialize_from_environment(
-    _claims: &wire::CertificateClaims,
-    _certificate_sha256: &str,
-) -> Result<()> {
-    bail!("protected runtime authentication requires Linux")
-}
-
 #[cfg(target_os = "linux")]
 fn validate_and_import(
     mut frame: AuthFrame,
@@ -220,6 +213,7 @@ fn validate_and_import(
     Ok(())
 }
 
+#[cfg(any(test, target_os = "linux"))]
 pub(crate) fn validate_raw_config(config: &[u8], server: &str, recipient: &str) -> Result<()> {
     let config: toml::Value =
         toml::from_str(std::str::from_utf8(config)?).context("parse immutable runtime config")?;
@@ -385,6 +379,7 @@ pub fn bearer_for_mcp(server: &str, recipient: &str) -> Result<Option<Zeroizing<
     Ok(None)
 }
 
+#[cfg(target_os = "linux")]
 pub(crate) fn erase_auth_authority() -> Result<()> {
     let Some(store) = BOOTSTRAP_AUTH.get() else {
         return Ok(());

@@ -1,22 +1,33 @@
+#[cfg(any(test, target_os = "linux"))]
 use crate::startup;
+#[cfg(any(test, target_os = "linux"))]
 use crate::wire;
+#[cfg(any(test, target_os = "linux"))]
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
+#[cfg(any(test, target_os = "linux"))]
 use base64::Engine;
+#[cfg(any(test, target_os = "linux"))]
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+#[cfg(any(test, target_os = "linux"))]
 use ed25519_dalek::Signer;
+#[cfg(any(test, target_os = "linux"))]
 use ed25519_dalek::SigningKey;
 use serde_json::Value;
 use std::sync::Mutex;
 use std::sync::OnceLock;
+#[cfg(any(test, target_os = "linux"))]
 use std::time::SystemTime;
+#[cfg(any(test, target_os = "linux"))]
 use std::time::UNIX_EPOCH;
 use uuid::Uuid;
+#[cfg(any(test, target_os = "linux"))]
 use zeroize::Zeroizing;
 
 pub type ExecutionNonce = Uuid;
 
+#[cfg(any(test, target_os = "linux"))]
 struct RuntimeProofSigner {
     certificate: String,
     claims: wire::CertificateClaims,
@@ -28,6 +39,7 @@ enum SignerState {
     #[default]
     Uninitialized,
     Unconfigured,
+    #[cfg(any(test, target_os = "linux"))]
     Ready(Box<RuntimeProofSigner>),
 }
 
@@ -37,6 +49,7 @@ fn signer_state() -> &'static Mutex<SignerState> {
     SIGNER.get_or_init(|| Mutex::new(SignerState::Uninitialized))
 }
 
+#[cfg(any(test, target_os = "linux"))]
 pub(crate) fn install_bootstrap(certificate: String, seed: Zeroizing<[u8; 32]>) -> Result<()> {
     let artifact_sha256 = startup::current_artifact_sha256()?;
     let (header, claims) = wire::parse_certificate(&certificate)?;
@@ -74,6 +87,7 @@ pub(crate) fn erase_signer_authority() -> Result<()> {
     Ok(())
 }
 
+#[cfg(any(test, target_os = "linux"))]
 pub(crate) fn certificate_for_auth() -> Result<(wire::CertificateClaims, String)> {
     let state = signer_state()
         .lock()
@@ -87,6 +101,7 @@ pub(crate) fn certificate_for_auth() -> Result<(wire::CertificateClaims, String)
     ))
 }
 
+#[cfg(any(test, target_os = "linux"))]
 pub fn sign_claim_proof(
     execution_nonce: &ExecutionNonce,
     provider_thread_id: &str,
@@ -119,6 +134,19 @@ pub fn sign_claim_proof(
     signer.create_claim_proof(execution_nonce, provider_thread_id, parameters)
 }
 
+#[cfg(all(not(target_os = "linux"), not(test)))]
+pub fn sign_claim_proof(
+    _execution_nonce: &ExecutionNonce,
+    _provider_thread_id: &str,
+    _server: &str,
+    _transport_url: Option<&str>,
+    _tool: &str,
+    _parameters: &Value,
+) -> Result<Option<Value>> {
+    Ok(None)
+}
+
+#[cfg(any(test, target_os = "linux"))]
 impl RuntimeProofSigner {
     fn matches_target(
         &self,
@@ -210,6 +238,7 @@ impl RuntimeProofSigner {
     }
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn validate_claim_precondition(parameters: &Value) -> Result<()> {
     let precondition = parameters
         .as_object()
@@ -237,6 +266,7 @@ fn validate_claim_precondition(parameters: &Value) -> Result<()> {
     Ok(())
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn erase_on_protection_failure(state: &mut SignerState, protection: Result<()>) -> Result<()> {
     if let Err(error) = protection {
         *state = SignerState::Unconfigured;
@@ -245,6 +275,7 @@ fn erase_on_protection_failure(state: &mut SignerState, protection: Result<()>) 
     Ok(())
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn validate_certificate(
     header: &wire::CertificateHeader,
     claims: &wire::CertificateClaims,
@@ -286,6 +317,7 @@ fn validate_certificate(
     Ok(())
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn unix_seconds() -> Result<i64> {
     Ok(SystemTime::now()
         .duration_since(UNIX_EPOCH)
