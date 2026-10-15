@@ -1,4 +1,4 @@
--- Declarative, data-free pre-61 schema snapshot for the e20 migration consumer.
+-- Declarative, data-free historical schema snapshot for the integrated package consumer.
 -- Folded from the public codex-rs/state/migrations at 38e25e75711d323be7039a81bcf1c31aa1117583.
 -- This is intentionally not a sequential replay: the seven 800000000000000x
 -- SQLx ledger rows are retained, while 8000000000000002 and 8000000000000004/5

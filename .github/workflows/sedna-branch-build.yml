@@ -525,7 +525,7 @@ jobs:
           key: sedna-preview-sccache-macos-15-intel-x86_64-apple-darwin-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
 
   consume-e20-x86_64:
-    name: Consume exact 82f3bef4 x86_64 repair successor and historical State snapshot
+    name: Consume exact d99ff264 x86_64 package and historical State snapshot
     if: >-
       ${{
         github.event_name == 'pull_request' &&
@@ -546,10 +546,10 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Check out exact repair-successor product source
+      - name: Check out exact integrated product source
         uses: actions/checkout@v7
         with:
-          ref: 82f3bef4826a0552f5070ec7431f670443b60bec
+          ref: d99ff264d5e3b1c7bef1dce4d07324913cfe5c1f
           path: product-source
           fetch-depth: 1
           persist-credentials: false
@@ -562,16 +562,16 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Download exact x86_64 repair-successor artifact
+      - name: Download exact x86_64 package artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          artifact-ids: 11943777510
+          artifact-ids: 11948435472
           github-token: ${{ github.token }}
           repository: ${{ github.repository }}
-          run-id: 38667463865
+          run-id: 38675534571
           path: ${{ runner.temp }}/product-artifact
 
-      - name: Verify x86_64 repair successor and consume packaged state
+      - name: Verify x86_64 package provenance and consume historical state
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -579,15 +579,11 @@ jobs:
           ARTIFACT_DIR: ${{ runner.temp }}/product-artifact
           CANDIDATE_SOURCE_DIR: ${{ github.workspace }}/product-source
           HISTORICAL_SOURCE_DIR: ${{ github.workspace }}/historical-source
-          PRODUCER_RUN_ID: "38667463865"
-          PRODUCER_JOB_ID: "116202699285"
-          PRODUCER_ARTIFACT_ID: "11943777510"
-          PRODUCER_ARTIFACT_NAME: sedna-branch-82f3bef4826a0552f5070ec7431f670443b60bec-82f3bef4-x86_64-unknown-linux-gnu
-          PRODUCER_ARTIFACT_DIGEST: sha256:294d6da1413fada60e1337fbc353ed3ef571418b465f699ce99aae79c86e2fc6
+          PRODUCER_RUN_ID: "38675534571"
         run: python3 .github/scripts/e20-package-consumer/consume_e20_preview.py
 
   consume-e20-aarch64:
-    name: Consume exact 82f3bef4 AArch64 repair successor and historical State snapshot
+    name: Consume exact d99ff264 AArch64 package and historical State snapshot
     if: >-
       ${{
         github.event_name == 'pull_request' &&
@@ -608,10 +604,10 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Check out exact repair-successor product source
+      - name: Check out exact integrated product source
         uses: actions/checkout@v7
         with:
-          ref: 82f3bef4826a0552f5070ec7431f670443b60bec
+          ref: d99ff264d5e3b1c7bef1dce4d07324913cfe5c1f
           path: product-source
           fetch-depth: 1
           persist-credentials: false
@@ -624,16 +620,16 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Download exact AArch64 repair-successor artifact
+      - name: Download exact AArch64 package artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          artifact-ids: 11944626146
+          artifact-ids: 11948285961
           github-token: ${{ github.token }}
           repository: ${{ github.repository }}
-          run-id: 38667463399
+          run-id: 38675534571
           path: ${{ runner.temp }}/product-artifact
 
-      - name: Verify AArch64 repair successor and consume packaged state
+      - name: Verify AArch64 package provenance and consume historical state
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -641,9 +637,5 @@ jobs:
           ARTIFACT_DIR: ${{ runner.temp }}/product-artifact
           CANDIDATE_SOURCE_DIR: ${{ github.workspace }}/product-source
           HISTORICAL_SOURCE_DIR: ${{ github.workspace }}/historical-source
-          PRODUCER_RUN_ID: "38667463399"
-          PRODUCER_JOB_ID: "116202732805"
-          PRODUCER_ARTIFACT_ID: "11944626146"
-          PRODUCER_ARTIFACT_NAME: sedna-branch-82f3bef4826a0552f5070ec7431f670443b60bec-82f3bef4-aarch64-unknown-linux-gnu
-          PRODUCER_ARTIFACT_DIGEST: sha256:67a860984150b77f44ca87263f7486f9f4d96541c54b7904905fd5704beccd55
+          PRODUCER_RUN_ID: "38675534571"
         run: python3 .github/scripts/e20-package-consumer/consume_e20_preview.py
