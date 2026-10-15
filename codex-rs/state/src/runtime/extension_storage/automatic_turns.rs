@@ -771,16 +771,22 @@ impl StateRuntime {
         match &event.msg {
             EventMsg::ItemCompleted(item_event) => {
                 if let TurnItem::UserMessage(item) = &item_event.item {
-                    self.record_user_message(
-                        thread_id,
-                        &event.id,
-                        &item_event.turn_id,
-                        item,
-                        principal,
-                        continuation_ref,
-                        expected_epochs,
-                    )
-                    .await?;
+                    if let (Some(client_id), Some(continuation_ref)) =
+                        (item.client_id.as_deref(), continuation_ref)
+                    {
+                        let _ = self
+                            .insert_validated_automatic_turn(
+                                thread_id,
+                                &event.id,
+                                &item_event.turn_id,
+                                client_id,
+                                continuation_ref,
+                                expected_epochs,
+                                item,
+                                principal,
+                            )
+                            .await?;
+                    }
                 }
                 Ok(None)
             }
@@ -865,37 +871,6 @@ impl StateRuntime {
             }
             _ => Ok(None),
         }
-    }
-
-    async fn record_user_message(
-        &self,
-        thread_id: ThreadId,
-        event_occurrence_id: &str,
-        turn_id: &str,
-        item: &codex_protocol::items::UserMessageItem,
-        principal: Option<&str>,
-        continuation_ref: Option<&str>,
-        expected_epochs: Option<(i64, i64)>,
-    ) -> anyhow::Result<()> {
-        let Some(client_id) = item.client_id.as_deref() else {
-            return Ok(());
-        };
-        let Some(continuation_ref) = continuation_ref else {
-            return Ok(());
-        };
-        let _ = self
-            .insert_validated_automatic_turn(
-                thread_id,
-                event_occurrence_id,
-                turn_id,
-                client_id,
-                continuation_ref,
-                expected_epochs,
-                item,
-                principal,
-            )
-            .await?;
-        Ok(())
     }
 
     // Keep persistence, provenance, authorization, and replay identities explicit and separate.
@@ -1561,29 +1536,6 @@ mod tests {
             .expect("policy trigger should issue capability")
     }
 
-    async fn bind_contract(
-        runtime: &StateRuntime,
-        thread_id: ThreadId,
-        trigger: &str,
-        capability: &str,
-        operation_kind: &str,
-        expected_turn_id: Option<&str>,
-    ) -> Result<()> {
-        assert!(
-            runtime
-                .bind_automatic_turn_capability_contract(
-                    thread_id,
-                    trigger,
-                    capability,
-                    operation_kind,
-                    expected_turn_id,
-                    "test-context",
-                )
-                .await?
-        );
-        Ok(())
-    }
-
     fn automatic_user_message(thread_id: ThreadId, turn_id: &str, client_id: &str) -> Event {
         let mut item = UserMessageItem::new(&[UserInput::Text {
             text: EXPECTED_POLICY_RETRY_TEXT.to_string(),
@@ -1626,8 +1578,8 @@ mod tests {
                 thread_id,
                 &policy_error(trigger_turn_id),
                 Some(principal),
-                None,
-                None,
+                /*client_user_message_id*/ None,
+                /*continuation_ref*/ None,
                 Some(expected_epochs),
             )
             .await
@@ -1642,7 +1594,7 @@ mod tests {
         client_id: &str,
         principal: &str,
     ) -> Result<bool> {
-        Ok(runtime
+        runtime
             .reserve_automatic_turn_continuation(
                 thread_id,
                 reference.as_str(),
@@ -1651,7 +1603,7 @@ mod tests {
                 "start",
                 /*expected_turn_id*/ None,
             )
-            .await?)
+            .await
     }
 
     async fn record_retry(
@@ -1889,7 +1841,7 @@ mod tests {
                     "principal:account-1",
                     "wrong-thread-message",
                     "start",
-                    None,
+                    /*expected_turn_id*/ None,
                 )
                 .await?,
             "a ticket cannot move to another thread"
@@ -1902,7 +1854,7 @@ mod tests {
                     "principal:account-2",
                     "wrong-principal-message",
                     "start",
-                    None,
+                    /*expected_turn_id*/ None,
                 )
                 .await?,
             "a changed authenticated identity cannot redeem the ticket"
@@ -1915,7 +1867,7 @@ mod tests {
                     "principal:account-1",
                     "reopened-message",
                     "start",
-                    None,
+                    /*expected_turn_id*/ None,
                 )
                 .await?,
             "the same stable identity may redeem once after reopen"
@@ -1928,7 +1880,7 @@ mod tests {
                     "principal:account-1",
                     "replay-message",
                     "start",
-                    None,
+                    /*expected_turn_id*/ None,
                 )
                 .await?,
             "redemption remains one-time across reopen"
@@ -1986,7 +1938,7 @@ mod tests {
                     &capability,
                     "start",
                     /*expected_turn_id*/ None,
-                    "context-v1",
+                    EXPECTED_TRIGGER_CONTEXT_FINGERPRINT,
                 )
                 .await?
         );
@@ -1998,7 +1950,7 @@ mod tests {
                 Some("principal:account-1".to_string()),
                 Some("start".to_string()),
                 None,
-                Some("context-v1".to_string()),
+                Some(EXPECTED_TRIGGER_CONTEXT_FINGERPRINT.to_string()),
             ))
         );
         assert!(
@@ -2020,9 +1972,7 @@ mod tests {
     async fn automatic_turn_ticket_epochs_invalidate_settings_and_auth_transitions() -> Result<()> {
         let (runtime, _tmp_dir) = init_runtime().await?;
         let thread_id = ThreadId::new();
-        runtime
-            .record_automatic_turn_event(thread_id, &policy_error("trigger"))
-            .await;
+        let _old_reference = issue_ticket(runtime.as_ref(), thread_id, "trigger").await;
         let capability = capability(runtime.as_ref(), thread_id, "trigger").await;
         assert_eq!(
             runtime
@@ -2045,9 +1995,7 @@ mod tests {
             Some((1, 0))
         );
 
-        runtime
-            .record_automatic_turn_event(thread_id, &policy_error("trigger-2"))
-            .await;
+        let _replacement_reference = issue_ticket(runtime.as_ref(), thread_id, "trigger-2").await;
         let replacement = self::capability(runtime.as_ref(), thread_id, "trigger-2").await;
         assert_eq!(
             runtime
@@ -2098,8 +2046,8 @@ mod tests {
                     thread_id,
                     &policy_error("during-transition"),
                     Some("principal:stable-test"),
-                    None,
-                    None,
+                    /*client_user_message_id*/ None,
+                    /*continuation_ref*/ None,
                     /*expected_epochs*/ None,
                 )
                 .await
@@ -2182,8 +2130,8 @@ mod tests {
                     thread_id,
                     &policy_error("stale-cross-process-epoch"),
                     Some("principal:stable-test"),
-                    None,
-                    None,
+                    /*client_user_message_id*/ None,
+                    /*continuation_ref*/ None,
                     Some(first_epochs),
                 )
                 .await
@@ -2395,7 +2343,7 @@ mod tests {
                 thread_id,
                 &aborted,
                 Some("principal:account-1"),
-                Some(&client_id),
+                Some(client_id),
                 Some(reference.as_str()),
                 runtime.automatic_turn_current_epochs(thread_id).await,
             )
@@ -2474,9 +2422,7 @@ mod tests {
     async fn successful_manual_turn_resets_interrupted_pending_chain() -> Result<()> {
         let (runtime, _tmp_dir) = init_runtime().await?;
         let thread_id = ThreadId::new();
-        runtime
-            .record_automatic_turn_event(thread_id, &policy_error("trigger"))
-            .await;
+        let _old_reference = issue_ticket(runtime.as_ref(), thread_id, "trigger").await;
         let old_capability = capability(runtime.as_ref(), thread_id, "trigger").await;
 
         runtime
@@ -2637,8 +2583,8 @@ mod tests {
                     }),
                 },
                 Some("principal:stable-test"),
-                None,
-                None,
+                /*client_user_message_id*/ None,
+                /*continuation_ref*/ None,
                 runtime.automatic_turn_current_epochs(thread_id).await,
             )
             .await
@@ -2751,17 +2697,25 @@ mod tests {
         assert_eq!(projected.len(), 2);
         assert_eq!(projected[0].outcome, OUTCOME_REBLOCKED);
         assert_eq!(projected[1].outcome, OUTCOME_STARTED);
-        let second_trigger = runtime
-            .automatic_turn_trigger_for_continuation_ref(thread_id, second_reference.as_str())
-            .await
-            .expect("later ticket remains pending");
         assert!(
             runtime
-                .automatic_turn_continuation_reference(thread_id, &second_trigger)
+                .automatic_turn_trigger_for_continuation_ref(
+                    thread_id,
+                    second_reference.as_str(),
+                )
                 .await
-                .as_ref()
-                == Some(&second_reference),
-            "a late completion must not replace the later pending ticket"
+                .is_none(),
+            "the consumed second ticket must not become eligible again"
+        );
+        let pending_tickets: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM usage_automatic_turn_eligibility WHERE thread_id = ?",
+        )
+        .bind(thread_id.to_string())
+        .fetch_one(runtime.usage_ledger_pool().as_ref())
+        .await?;
+        assert_eq!(
+            pending_tickets, 0,
+            "a late completion must not mint a third ticket"
         );
         Ok(())
     }

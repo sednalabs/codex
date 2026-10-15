@@ -545,16 +545,18 @@ mod tests {
             .execute(&pool)
             .await
             .expect("old-main 0005 checksum should be recorded");
-        for version in [6_i64, 8, 9, 10, 11, 12] {
+        // Use absent versions to model retained newer ledger rows without colliding with the
+        // embedded migrations already applied to this synthetic fixture.
+        for version in [6_i64, 20, 21, 22, 23, 24] {
             sqlx::query(
                 "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES (?, ?, 1, ?, 0)",
             )
             .bind(version)
-            .bind(format!("old-main-usage-{version}"))
+            .bind(format!("synthetic-future-usage-{version}"))
             .bind(vec![version as u8; 32])
             .execute(&pool)
             .await
-            .expect("unknown old-main migration should be retained");
+            .expect("synthetic unknown migration row should be inserted");
         }
         sqlx::query(
             "INSERT INTO usage_threads (thread_id, root_thread_id, source) VALUES (?, ?, ?)",
@@ -595,7 +597,18 @@ mod tests {
         migrator
             .run(&pool)
             .await
-            .expect("old-main usage history should upgrade");
+            .expect("synthetic old-main views with newer ledger rows should upgrade");
+
+        for version in [6_i64, 20, 21, 22, 23, 24] {
+            let checksum = sqlx::query_scalar::<_, Vec<u8>>(
+                "SELECT checksum FROM _sqlx_migrations WHERE version = ?",
+            )
+            .bind(version)
+            .fetch_one(&pool)
+            .await
+            .expect("unknown newer migration history should be retained");
+            assert_eq!(checksum, vec![version as u8; 32]);
+        }
 
         let pricing = sqlx::query_as::<_, (String, Option<f64>, Option<String>)>(
             "SELECT pricing_status, estimated_total_credits, credit_source FROM usage_provider_call_credit_estimates WHERE provider_call_id = ?",
