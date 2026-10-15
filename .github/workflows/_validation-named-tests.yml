@@ -31,9 +31,6 @@ on:
         type: string
         default: validation-named-tests
 
-permissions:
-  contents: read
-
 jobs:
   run:
     name: Run exact named Rust tests
@@ -145,9 +142,8 @@ jobs:
         with:
           targets: x86_64-unknown-linux-gnu
 
-      - name: Prepare CLI binary for the exact usage integration selector
+      - name: Validate the fixed usage integration selector
         if: ${{ inputs.prepare_codex_cli_for_exact_usage_test }}
-        working-directory: validation-target/codex-rs
         shell: bash
         env:
           VALIDATION_TARGET_SHA: ${{ inputs.target_sha }}
@@ -179,13 +175,98 @@ jobs:
           if request != expected:
               raise SystemExit("CLI preparation request does not match the fixed exact selector")
           PY
-          cargo build --locked -p codex-cli --bin codex
-          codex_binary="${GITHUB_WORKSPACE}/validation-target/codex-rs/target/debug/codex"
-          if [[ ! -x "${codex_binary}" ]]; then
-            echo "the fixed CLI build did not produce an executable" >&2
+
+      - name: Download the exact ae94 x86 package artifact
+        if: ${{ inputs.prepare_codex_cli_for_exact_usage_test }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: "11999628346"
+          repository: sednalabs/codex
+          run-id: "38781467847"
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/ae94-package
+          digest-mismatch: error
+
+      - name: Verify package identity and stage exact binaries
+        if: ${{ inputs.prepare_codex_cli_for_exact_usage_test }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DIST_DIR: ${{ runner.temp }}/ae94-package
+          CLI_DIR: ${{ runner.temp }}/ae94-cli
+        run: |
+          set -euo pipefail
+          artifact_metadata="$(gh api repos/sednalabs/codex/actions/artifacts/11999628346)"
+          ARTIFACT_METADATA_JSON="${artifact_metadata}" python3 - <<'PY'
+          import json
+          import os
+
+          artifact = json.loads(os.environ["ARTIFACT_METADATA_JSON"])
+          expected = {
+              "id": 11999628346,
+              "name": "sedna-first-package-ae94a802-x86_64-38781467847",
+              "size_in_bytes": 1199519158,
+              "digest": "sha256:c4bfb932235433f5e22de038295fbf272dfd9a05a66eff7b54450309734c8097",
+              "expired": False,
+          }
+          for key, value in expected.items():
+              if artifact.get(key) != value:
+                  raise SystemExit(f"Exact package artifact metadata mismatch for {key}.")
+          workflow_run = artifact.get("workflow_run") or {}
+          if workflow_run.get("id") != 38781467847 or workflow_run.get("head_sha") != "ae94a802f4ca31130c1f1be5d4703c9062b84560":
+              raise SystemExit("Package artifact is not bound to the exact ae94 producer run and source.")
+          PY
+
+          (cd "${DIST_DIR}" && sha256sum -c SHA256SUMS.txt)
+          DIST_DIR="${DIST_DIR}" python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          dist = Path(os.environ["DIST_DIR"])
+          expected_files = {
+              "SHA256SUMS.txt",
+              "codex-app-server-x86_64-unknown-linux-gnu.tar.gz",
+              "codex-cli-x86_64-unknown-linux-gnu.tar.gz",
+              "codex-responses-api-proxy",
+              "release-manifest.json",
+              "symbols.tar.gz",
+          }
+          actual_entries = list(dist.iterdir())
+          if any(not path.is_file() for path in actual_entries) or {path.name for path in actual_entries} != expected_files:
+              raise SystemExit("Exact package artifact file set does not match the expected x86 package.")
+
+          manifest = json.loads((dist / "release-manifest.json").read_text(encoding="utf-8"))
+          expected_manifest = {
+              "repository": "sednalabs/codex",
+              "sourceCommit": "ae94a802f4ca31130c1f1be5d4703c9062b84560",
+              "sourceTree": "6ed7a1d116bba4ba082b67b78f6d981dc92fafc0",
+              "workflowRunId": "38781467847",
+              "target": "x86_64-unknown-linux-gnu",
+          }
+          for key, value in expected_manifest.items():
+              if manifest.get(key) != value:
+                  raise SystemExit(f"Exact package manifest mismatch for {key}.")
+
+          checksum_artifacts = {}
+          for line in (dist / "SHA256SUMS.txt").read_text(encoding="utf-8").splitlines():
+              digest, filename = line.split("  ", 1)
+              if filename != "release-manifest.json":
+                  checksum_artifacts[filename] = digest
+          if manifest.get("artifacts") != checksum_artifacts:
+              raise SystemExit("Package manifest digests do not match the checksum file.")
+          PY
+
+          mkdir -p "${CLI_DIR}"
+          tar -xzf "${DIST_DIR}/codex-cli-x86_64-unknown-linux-gnu.tar.gz" -C "${CLI_DIR}"
+          codex_binary="${CLI_DIR}/bin/codex"
+          code_mode_host_binary="${CLI_DIR}/bin/codex-code-mode-host"
+          if [[ ! -x "${codex_binary}" || ! -x "${code_mode_host_binary}" || ! -d "${CLI_DIR}/codex-resources" || ! -d "${CLI_DIR}/codex-path" ]]; then
+            echo "Exact package is missing a required executable or resource directory." >&2
             exit 1
           fi
-          echo "CARGO_BIN_EXE_codex=${codex_binary}" >> "${GITHUB_ENV}"
+          printf 'CARGO_BIN_EXE_codex=%s\n' "${codex_binary}" >> "${GITHUB_ENV}"
+          printf 'CARGO_BIN_EXE_codex-code-mode-host=%s\n' "${code_mode_host_binary}" >> "${GITHUB_ENV}"
 
       - name: Inventory and run exact named tests
         id: named_tests
