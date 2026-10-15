@@ -944,7 +944,7 @@ async fn updater_rejects_installer_without_sedna_contract() {
         b"# CODEX_INSTALL_IF_LATEST\nexit 0\n".to_vec(),
     ));
 
-    let error = super::update_once(
+    let result = super::update_once(
         &old_installer,
         &daemon,
         &executable_identity(&daemon.managed_codex_bin)
@@ -953,8 +953,11 @@ async fn updater_rejects_installer_without_sedna_contract() {
         &mut test_terminate(),
         super::UpdateTrigger::Scheduled,
     )
-    .await
-    .expect_err("an installer without the Sedna contract must fail closed");
+    .await;
+    let error = match result {
+        Err(error) => error,
+        Ok(_) => panic!("an installer without the Sedna contract must fail closed"),
+    };
 
     assert!(
         error

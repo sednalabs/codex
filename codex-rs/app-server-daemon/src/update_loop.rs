@@ -476,6 +476,10 @@ async fn update_once(
         },
         _ = terminate.recv() => return Ok((UpdateLoopControl::Stop, None)),
     }
+    anyhow::ensure!(
+        trigger == UpdateTrigger::Scheduled || daemon.is_sedna_update_eligible()?,
+        "installer did not select a release on the selected Sedna channel; retry the update"
+    );
     if release_selection_unstable(daemon, trigger)? {
         return Ok((UpdateLoopControl::Continue, None));
     }
