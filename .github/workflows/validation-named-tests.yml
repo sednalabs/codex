@@ -86,8 +86,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo test --locked -p codex-core --test all suite::responses_lite::base_instructions_use_input_items -- --test-threads=1 2>&1 | tee ../evidence/request-formats.log
+          test -z "${CODEX_SANDBOX_NETWORK_DISABLED+x}"
+          cargo test --locked -p codex-core --test all suite::responses_lite::base_instructions_use_input_items -- --nocapture --test-threads=1 2>&1 | tee ../evidence/request-formats.log
           grep -F 'test result: ok. 2 passed; 0 failed;' ../evidence/request-formats.log
+          if grep -F 'Skipping test because' ../evidence/request-formats.log; then
+            exit 1
+          fi
           git diff --exit-code
       - name: Upload bounded regression evidence
         if: always()
