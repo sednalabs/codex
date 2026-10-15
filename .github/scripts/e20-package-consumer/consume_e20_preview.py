@@ -671,9 +671,13 @@ def verify_historical_ledger(db_path: Path, before: list[tuple[Any, ...]]) -> li
             row[0]
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
         }
+        expected_table_names = EXPECTED_APP_TABLES | {"_sqlx_migrations"}
+        missing_tables = sorted(expected_table_names - table_names)
+        unexpected_tables = sorted(table_names - expected_table_names)
         require(
-            table_names == EXPECTED_APP_TABLES | {"_sqlx_migrations"},
-            "Packaged first-open/reopen changed the source-derived schema table set or migration ledger table.",
+            not missing_tables and not unexpected_tables,
+            "Packaged first-open/reopen changed the source-derived schema table set "
+            f"(missing={missing_tables}, unexpected={unexpected_tables}).",
         )
         return after
     finally:
