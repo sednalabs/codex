@@ -12,12 +12,14 @@ it is never uploaded or printed.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 import re
 import subprocess
 import sys
 import tempfile
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +40,47 @@ HARNESS_BASE_SHA = "703389678a1a6c3a9d131245d03d3f1805b9afa1"
 ENV_WITNESS_NAME = "CODE_MODE_W17122_SYNTHETIC_WITNESS"
 ENV_WITNESS_VALUE = "synthetic-0b-packaged-code-mode"
 CALL_ID = "w17122-packaged-code-mode"
+ROOT_MODEL = "gpt-6.1-sol"
+CHILD_MODEL = "gpt-6-luna"
+COMMENTARY_SENTENCE = (
+    "The user appreciates consistent, frequent communication during your turn, "
+    "and should not be left without a commentary update for more than 60 seconds "
+    "during ongoing work."
+)
+WAIT_SENTENCE = (
+    "Avoid performing blocking sleep or wait calls longer than 60 seconds, as "
+    "they may prevent you from communicating with the user for their duration."
+)
+DEFAULT_INSTRUCTION_SENTINEL = (
+    "When the user expresses intent to perform new work or fix an existing issue, "
+    "persist until the user's intended goal is complete."
+)
+PROBE_FAILURE_CATEGORIES = {
+    "Unexpected package entrypoint.": "unexpected_entrypoint",
+    "Packaged code-mode host is missing or not executable.": "host_binary_unavailable",
+    "Packaged code-mode turn did not complete.": "turn_not_completed",
+    "Packaged code-mode tool output was not returned exactly once.": "tool_output_cardinality",
+    "Packaged code-mode command failed.": "command_nonzero",
+    "Standard-output witness was not returned.": "stdout_witness_missing",
+    "Standard-error redirection witness was not returned.": "stderr_witness_missing",
+    "Packaged command ran from an unexpected working path.": "cwd_witness_mismatch",
+    "Synthetic environment was not propagated to the packaged command.": "environment_witness_missing",
+    "Packaged runtime selected an unexpected ripgrep path.": "ripgrep_path_mismatch",
+    "Packaged ripgrep did not execute.": "ripgrep_not_executed",
+    "Default-instruction fixture did not capture exactly one server.": "fixture_server_count",
+    "Default root model request was not captured.": "root_request_missing",
+    "Default child model requests were not captured.": "child_requests_missing",
+    "Default child requests did not cover both nested levels.": "nested_child_requests_missing",
+    "Root request did not use the bundled model slug.": "root_model_mismatch",
+    "Child request did not use the bundled model slug.": "child_model_mismatch",
+    "Default model instructions were not captured as text.": "instructions_missing",
+    "Root instructions still include the commentary cadence clause.": "root_commentary_clause_present",
+    "Root instructions still include the wait cadence clause.": "root_wait_clause_present",
+    "Child instructions still include the commentary cadence clause.": "child_commentary_clause_present",
+    "Child instructions still include the wait cadence clause.": "child_wait_clause_present",
+    "Root default instruction sentinel was not retained.": "root_default_sentinel_missing",
+    "Child default instruction sentinel was not retained.": "child_default_sentinel_missing",
+}
 
 ARCHITECTURES: dict[str, dict[str, Any]] = {
     "x86_64": {
@@ -70,6 +113,80 @@ ARCHITECTURES: dict[str, dict[str, Any]] = {
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise RuntimeError(message)
+
+
+def safe_child_diagnostic(stderr: str) -> str:
+    """Accept only the child's fixed type/category record; never log raw stderr."""
+    byte_count = len(stderr.encode("utf-8", errors="replace"))
+    last_line = next((line.strip() for line in reversed(stderr.splitlines()) if line.strip()), "")
+    match = re.fullmatch(
+        r"code-mode consumer failed: error_type=([A-Za-z_][A-Za-z0-9_]{0,63}); "
+        r"category=([a-z0-9_]{1,64})(?:; http_status=([1-5][0-9]{2}))?"
+        r"(?:; rpc_code=(-?[0-9]{1,8}))?",
+        last_line,
+    )
+    if match:
+        fields = [f"child_error_type={match.group(1)}", f"category={match.group(2)}"]
+        if match.group(3):
+            fields.append(f"http_status={match.group(3)}")
+        if match.group(4):
+            fields.append(f"rpc_code={match.group(4)}")
+        return "; ".join(fields)
+    return f"child_failure_unclassified; stderr_bytes={byte_count}"
+
+
+def safe_trace_summary(trace_path: Path, entrypoint: str) -> str:
+    """Summarize only fixed executable basenames and syscall outcomes."""
+    if not trace_path.is_file():
+        return "trace=absent; entrypoint_execve=unknown; helper_execve=unknown"
+    lines = trace_path.read_text(encoding="utf-8", errors="replace").splitlines()
+
+    def status_for(basename: str) -> str:
+        matches = [
+            line
+            for line in lines
+            if re.match(r"^(?:\[pid\s+\d+\]\s+|\d+\s+)?execve\(", line)
+            and f'/{basename}"' in line
+        ]
+        if not matches:
+            return "not_seen"
+        if any(line.rstrip().endswith("= 0") for line in matches):
+            return "started"
+        errors = re.findall(r"= -1 ([A-Z0-9]+)", "\n".join(matches))
+        if errors:
+            allowed = {error for error in errors if re.fullmatch(r"[A-Z][A-Z0-9_]{0,31}", error)}
+            if allowed:
+                return "failed_" + ",".join(sorted(allowed))
+        return "attempted"
+
+    return (
+        f"trace=present; entrypoint_execve={status_for(entrypoint)}; "
+        f"helper_execve={status_for('codex-code-mode-host')}"
+    )
+
+
+def safe_exception_codes(error: Exception) -> tuple[str | None, str | None]:
+    """Expose only numeric HTTP/JSON-RPC codes from the synthetic child."""
+    http_status: int | None = None
+    rpc_code: int | None = None
+    current: BaseException | None = error
+    for _ in range(4):
+        if current is None:
+            break
+        value = getattr(current, "status_code", None)
+        response = getattr(current, "response", None)
+        if value is None and response is not None:
+            value = getattr(response, "status_code", None)
+        if type(value) is int and 100 <= value <= 599:
+            http_status = value
+        code = getattr(current, "code", None)
+        if type(code) is int and -99_999_999 <= code <= 99_999_999:
+            rpc_code = code
+        current = current.__cause__ or current.__context__
+    return (
+        str(http_status) if http_status is not None else None,
+        str(rpc_code) if rpc_code is not None else None,
+    )
 
 
 def env(name: str) -> str:
@@ -460,6 +577,174 @@ def verify_trace(trace_path: Path, expected_entrypoint: str, expected_host: str)
     require(entrypoint_found, "The expected packaged entrypoint was not executed with its real argv.")
 
 
+def run_default_instruction_consumer(
+    *,
+    source_directory: Path,
+    target: str,
+    cli_archive: Path,
+    app_server_archive: Path,
+) -> dict[str, Any]:
+    """Run the pinned nested-spawn smoke test with bundled root and child models."""
+    smoke_directory = source_directory / "scripts" / "codex_package" / "smoke_tests"
+    test_path = (
+        smoke_directory
+        / "first_binary"
+        / "test_agent_control_model_acceptance.py"
+    )
+    require(test_path.is_file(), "Pinned nested-spawn smoke test is absent.")
+
+    import_paths = (
+        smoke_directory,
+        source_directory / "sdk" / "python" / "src",
+        source_directory / "sdk" / "python" / "tests",
+    )
+    for import_path in reversed(import_paths):
+        sys.path.insert(0, str(import_path))
+
+    spec = importlib.util.spec_from_file_location(
+        "codex_0b_nested_spawn_acceptance", test_path
+    )
+    require(spec is not None and spec.loader is not None, "Pinned smoke test could not be loaded.")
+    test_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(test_module)
+
+    captured_servers: list[Any] = []
+    original_server = test_module.MockResponsesServer
+
+    class CapturedMockResponsesServer(original_server):
+        def __enter__(self):
+            server = super().__enter__()
+            captured_servers.append(self)
+            return server
+
+    original_mock_config = test_module._mock_config
+
+    def use_bundled_root_model(home: Path, server: Any, *, agent_tools: bool = False) -> None:
+        original_mock_config(home, server, agent_tools=agent_tools)
+        config_path = home / "config.toml"
+        config = config_path.read_text(encoding="utf-8")
+        placeholder = 'model = "package-smoke"'
+        require(
+            config.count(placeholder) == 1,
+            "Nested-spawn fixture root model input was not unique.",
+        )
+        config_path.write_text(
+            config.replace(placeholder, f'model = "{ROOT_MODEL}"', 1),
+            encoding="utf-8",
+        )
+
+    test_module.MockResponsesServer = CapturedMockResponsesServer
+    test_module._mock_config = use_bundled_root_model
+
+    from fixtures import SmokePackage
+
+    with tempfile.TemporaryDirectory(prefix="w17122-default-instructions-") as temp:
+        package = SmokePackage.from_archives(
+            Path(temp), target, cli_archive, app_server_archive, "gzip"
+        )
+        try:
+            test_module.test_packaged_model_nested_spawn_recovery_and_list_after_resume(
+                package
+            )
+        except AssertionError as error:
+            frames = traceback.extract_tb(error.__traceback__)
+            test_line = next(
+                (frame.lineno for frame in reversed(frames) if frame.filename == str(test_path)),
+                0,
+            )
+            raise RuntimeError(
+                f"Default-instruction nested-spawn assertion failed at source line {test_line}."
+            ) from error
+
+    require(
+        len(captured_servers) == 1,
+        "Default-instruction fixture did not capture exactly one server.",
+    )
+    requests = [
+        request
+        for request in captured_servers[0].requests()
+        if request.path == "/v1/responses"
+    ]
+    root_requests = [
+        request
+        for request in requests
+        if request.header("x-codex-parent-thread-id") is None
+    ]
+    child_requests = [
+        request
+        for request in requests
+        if request.header("x-codex-parent-thread-id") is not None
+    ]
+    require(bool(root_requests), "Default root model request was not captured.")
+    require(bool(child_requests), "Default child model requests were not captured.")
+    child_parent_ids = {
+        request.header("x-codex-parent-thread-id") for request in child_requests
+    }
+    require(
+        len(child_parent_ids) >= 2,
+        "Default child requests did not cover both nested levels.",
+    )
+
+    for request in root_requests:
+        body = request.body_json()
+        require(
+            body.get("model") == ROOT_MODEL,
+            "Root request did not use the bundled model slug.",
+        )
+        instructions = body.get("instructions")
+        require(
+            isinstance(instructions, str),
+            "Default model instructions were not captured as text.",
+        )
+        require(
+            COMMENTARY_SENTENCE not in instructions,
+            "Root instructions still include the commentary cadence clause.",
+        )
+        require(
+            WAIT_SENTENCE not in instructions,
+            "Root instructions still include the wait cadence clause.",
+        )
+        require(
+            DEFAULT_INSTRUCTION_SENTINEL in instructions,
+            "Root default instruction sentinel was not retained.",
+        )
+
+    for request in child_requests:
+        body = request.body_json()
+        require(
+            body.get("model") == CHILD_MODEL,
+            "Child request did not use the bundled model slug.",
+        )
+        instructions = body.get("instructions")
+        require(
+            isinstance(instructions, str),
+            "Default model instructions were not captured as text.",
+        )
+        require(
+            COMMENTARY_SENTENCE not in instructions,
+            "Child instructions still include the commentary cadence clause.",
+        )
+        require(
+            WAIT_SENTENCE not in instructions,
+            "Child instructions still include the wait cadence clause.",
+        )
+        require(
+            DEFAULT_INSTRUCTION_SENTINEL in instructions,
+            "Child default instruction sentinel was not retained.",
+        )
+
+    return {
+        "test": "test_packaged_model_nested_spawn_recovery_and_list_after_resume",
+        "root_model": ROOT_MODEL,
+        "child_model": CHILD_MODEL,
+        "root_requests_checked": len(root_requests),
+        "child_requests_checked": len(child_requests),
+        "nested_parent_ids_checked": len(child_parent_ids),
+        "cadence_clauses_absent": True,
+        "unrelated_default_instruction_retained": True,
+    }
+
+
 def main() -> None:
     if len(sys.argv) == 2 and sys.argv[1] == "--probe":
         run_probe(
@@ -468,6 +753,57 @@ def main() -> None:
             cli_archive=Path(env("CLI_ARCHIVE")),
             app_server_archive=Path(env("APP_SERVER_ARCHIVE")),
             result_file=Path(env("PROBE_RESULT_FILE")),
+        )
+        return
+
+    if len(sys.argv) == 2 and sys.argv[1] == "--default-instructions":
+        architecture = env("PRODUCT_ARCHITECTURE")
+        require(architecture in ARCHITECTURES, "Unsupported package architecture.")
+        expected = ARCHITECTURES[architecture]
+        repo, harness_sha, harness_tree = verify_consumer_checkout()
+        verify_producer(repo, architecture)
+        artifacts = verify_downloaded_artifact(
+            Path(env("PRODUCT_ARTIFACT_DIR")), expected
+        )
+        os.environ.pop("GH_TOKEN", None)
+        source_directory = Path(env("PRODUCT_SOURCE_DIR"))
+        require(
+            subprocess.check_output(
+                ["git", "-C", str(source_directory), "rev-parse", "HEAD"],
+                text=True,
+            ).strip()
+            == PRODUCT_SOURCE,
+            "Pinned product source checkout does not match the package source SHA.",
+        )
+        require(
+            subprocess.check_output(
+                ["git", "-C", str(source_directory), "rev-parse", "HEAD^{tree}"],
+                text=True,
+            ).strip()
+            == PRODUCT_TREE,
+            "Pinned product source checkout does not match the package source tree.",
+        )
+        result = run_default_instruction_consumer(
+            source_directory=source_directory,
+            target=expected["target"],
+            cli_archive=artifacts["cli"],
+            app_server_archive=artifacts["app_server"],
+        )
+        print(
+            json.dumps(
+                {
+                    "architecture": architecture,
+                    "harness_sha": harness_sha,
+                    "harness_tree": harness_tree,
+                    "product_source": PRODUCT_SOURCE,
+                    "product_tree": PRODUCT_TREE,
+                    "producer_run": PRODUCT_RUN_ID,
+                    "artifact_id": expected["artifact_id"],
+                    "artifact_digest": expected["artifact_digest"],
+                    **result,
+                },
+                sort_keys=True,
+            )
         )
         return
 
@@ -540,7 +876,13 @@ def main() -> None:
                 timeout=180,
                 check=False,
             )
-            require(completed.returncode == 0, f"Packaged {entrypoint} code-mode probe failed.")
+            require(
+                completed.returncode == 0,
+                f"Packaged SDK code-mode probe failed "
+                f"(entrypoint={entrypoint}; child_exit={completed.returncode}; "
+                f"{safe_trace_summary(trace_path, entrypoint)}; "
+                f"{safe_child_diagnostic(completed.stderr)}).",
+            )
             require(result_path.is_file(), f"Packaged {entrypoint} probe result is absent.")
             result = json.loads(result_path.read_text(encoding="utf-8"))
             require(
@@ -576,9 +918,32 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as error:
-        # Keep runner-temporary paths, request data, environment and raw trace
-        # out of the public log. The error category and fixed assertion message
-        # are enough to identify the bounded failed contract.
-        message = str(error) if isinstance(error, RuntimeError) else type(error).__name__
-        print(f"code-mode consumer failed: {message or type(error).__name__}", file=sys.stderr)
+        # Never log arbitrary exception text, which can contain request data,
+        # credentials, environment values, or runner paths.
+        error_type = type(error).__name__
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", error_type):
+            error_type = "Exception"
+        category = "unclassified_exception"
+        fixture_line = None
+        if isinstance(error, RuntimeError):
+            category = PROBE_FAILURE_CATEGORIES.get(str(error), "unclassified_runtime_error")
+            match = re.fullmatch(
+                r"Default-instruction nested-spawn assertion failed at source line ([0-9]{1,5})\.",
+                str(error),
+            )
+            if match:
+                category = "nested_spawn_fixture_assertion"
+                fixture_line = match.group(1)
+        http_status, rpc_code = safe_exception_codes(error)
+        suffix = ""
+        if http_status is not None:
+            suffix += f"; http_status={http_status}"
+        if rpc_code is not None:
+            suffix += f"; rpc_code={rpc_code}"
+        if fixture_line is not None:
+            suffix += f"; fixture_line={fixture_line}"
+        print(
+            f"code-mode consumer failed: error_type={error_type}; category={category}{suffix}",
+            file=sys.stderr,
+        )
         raise SystemExit(1)

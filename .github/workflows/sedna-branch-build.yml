@@ -748,3 +748,73 @@ jobs:
         run: |
           uv run --project product-source/scripts/codex_package/smoke_tests --frozen --no-sync \
             python harness-source/.github/scripts/e20-package-consumer/consume_0b_code_mode_host.py
+
+  consume-0b-default-instructions-x86_64:
+    name: Verify bundled root and child instructions on exact 0b x86_64 package
+    if: >-
+      ${{
+        github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        github.event.pull_request.head.ref == 'validation/w14962-e20-packaged-consumer-20261015' &&
+        github.event.pull_request.base.ref == 'main'
+      }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Check out the exact consumer source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: harness-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out the immutable product source
+        uses: actions/checkout@v7
+        with:
+          ref: 0b9133a342b463511794d16226d25bb91f72d793
+          path: product-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Download the exact 0b x86_64 package artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: 11981081138
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: 38738124997
+          path: ${{ runner.temp }}/0b-product-artifact
+
+      - name: Enable the hosted Linux sandbox namespace prerequisite
+        shell: bash
+        run: |
+          sudo sysctl -w kernel.unprivileged_userns_clone=1
+          if sudo sysctl -a 2>/dev/null | grep -q '^kernel.apparmor_restrict_unprivileged_userns'; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
+      - name: Install the pinned uv version
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.11.3"
+
+      - name: Sync the immutable product smoke-test environment
+        shell: bash
+        run: uv sync --project product-source/scripts/codex_package/smoke_tests --frozen
+
+      - name: Verify exact artifact and nested default-model requests
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRODUCT_ARCHITECTURE: x86_64
+          PRODUCT_ARTIFACT_DIR: ${{ runner.temp }}/0b-product-artifact
+          PRODUCT_SOURCE_DIR: ${{ github.workspace }}/product-source
+          HARNESS_SOURCE_DIR: ${{ github.workspace }}/harness-source
+          PYTHONPATH: ${{ github.workspace }}/product-source/scripts/codex_package/smoke_tests:${{ github.workspace }}/product-source/sdk/python/src:${{ github.workspace }}/product-source/sdk/python/tests
+        run: |
+          uv run --project product-source/scripts/codex_package/smoke_tests --frozen --no-sync \
+            python harness-source/.github/scripts/e20-package-consumer/consume_0b_code_mode_host.py --default-instructions
