@@ -70,6 +70,12 @@ EXPECTED_RUNNERS = {
     "x86_64": "ubuntu-24.04",
     "aarch64": "ubuntu-24.04-arm",
 }
+SQLITE_STAGE = "consumer startup"
+
+
+def mark_sqlite_stage(stage: str) -> None:
+    global SQLITE_STAGE
+    SQLITE_STAGE = stage
 
 
 def require(condition: bool, message: str) -> None:
@@ -344,12 +350,15 @@ def schema_snapshot_path() -> Path:
 def create_pre61_database(db_path: Path, snapshot_path: Path, migrations: list[tuple[int, str, bytes]], rollout_path: Path) -> list[tuple[Any, ...]]:
     connection = sqlite3.connect(db_path)
     try:
+        mark_sqlite_stage("create source-derived pre-61 schema")
         connection.executescript(snapshot_path.read_text())
+        mark_sqlite_stage("verify source-derived schema table set")
         table_names = {
             row[0]
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
         }
         require(table_names == EXPECTED_APP_TABLES, "Data-free historical schema snapshot has an unexpected table set.")
+        mark_sqlite_stage("create migration ledger")
         connection.execute(
             """CREATE TABLE _sqlx_migrations (
                 version BIGINT PRIMARY KEY,
@@ -360,14 +369,17 @@ def create_pre61_database(db_path: Path, snapshot_path: Path, migrations: list[t
                 execution_time BIGINT NOT NULL
             )"""
         )
+        mark_sqlite_stage("seed historical migration identities")
         for version, description, raw_sql in migrations:
             connection.execute(
                 "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES (?, ?, 1, ?, 0)",
                 (version, description, hashlib.sha384(raw_sql).digest()),
             )
+        mark_sqlite_stage("seed synthetic backfill state")
         connection.execute(
             "INSERT INTO backfill_state (id, status, last_watermark, last_success_at, updated_at) VALUES (1, 'complete', NULL, 1, 1)"
         )
+        mark_sqlite_stage("seed synthetic thread row")
         connection.execute(
             """INSERT INTO threads (
                 id, rollout_path, created_at, updated_at, source, model_provider, cwd,
@@ -376,6 +388,7 @@ def create_pre61_database(db_path: Path, snapshot_path: Path, migrations: list[t
                       'workspaceWrite', 'on-request', 1, 'Synthetic migration snapshot row')""",
             ("e20-synthetic-thread", str(rollout_path)),
         )
+        mark_sqlite_stage("read pre-migration ledger snapshot")
         before = list(
             connection.execute(
                 "SELECT version, description, success, checksum FROM _sqlx_migrations ORDER BY version"
@@ -391,6 +404,7 @@ def create_pre61_database(db_path: Path, snapshot_path: Path, migrations: list[t
 def verify_post_migration(db_path: Path, before: list[tuple[Any, ...]]) -> list[tuple[Any, ...]]:
     connection = sqlite3.connect(db_path)
     try:
+        mark_sqlite_stage("verify migrated ledger")
         after = list(
             connection.execute(
                 "SELECT version, description, success, checksum FROM _sqlx_migrations ORDER BY version"
@@ -405,6 +419,7 @@ def verify_post_migration(db_path: Path, before: list[tuple[Any, ...]]) -> list[
         migration61 = current[61]
         require(migration61[1] == "thread_read_state" and migration61[2] == 1 and migration61[3] == bytes.fromhex(MIGRATION_61_SHA384), "Migration 61 ledger identity is incorrect.")
 
+        mark_sqlite_stage("verify migration-61 schema")
         columns = list(connection.execute("PRAGMA table_info(thread_read_receipts)"))
         expected_columns = [
             ("thread_id", "TEXT", 1, 1),
@@ -488,6 +503,7 @@ def consume() -> None:
 
         connection = sqlite3.connect(db_path)
         try:
+            mark_sqlite_stage("write synthetic thread receipt")
             connection.execute(
                 "INSERT INTO thread_read_receipts (thread_id, first_unread_turn, revision, last_published_turn) VALUES (?, ?, ?, ?)",
                 ("e20-synthetic-thread", "synthetic-turn-1", "synthetic-revision-1", "synthetic-turn-0"),
@@ -546,6 +562,12 @@ if __name__ == "__main__":
     except Exception as error:
         # Keep logs value-free: exception text here is restricted to fixed
         # validation messages and never includes environment values/tokens.
-        detail = str(error) if isinstance(error, RuntimeError) else type(error).__name__
+        if isinstance(error, RuntimeError):
+            detail = str(error)
+        elif isinstance(error, sqlite3.Error):
+            sqlite_name = getattr(error, "sqlite_errorname", None) or "UNKNOWN"
+            detail = f"SQLite {sqlite_name} during {SQLITE_STAGE}"
+        else:
+            detail = type(error).__name__
         print(f"e20 packaged consumer failed: {detail}", file=sys.stderr)
         raise SystemExit(1)
