@@ -476,14 +476,13 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
                 )
                 if execution_mode != "exact":
                     break
-                if counts is None:
-                    # A command that produced no libtest summary usually failed
-                    # before executing the selected test (for example, a
-                    # compile error). Repeating that failure for every selector
-                    # would waste hosted time without producing additional test
-                    # evidence.
-                    result["unattempted_tests"] = request["tests"][test_index + 1 :]
-                    break
+        if execution_mode == "exact" and counts is None:
+            # A command that produced no libtest summary usually failed before
+            # executing the selected test (for example, a compile error).
+            # Repeating that failure for every selector would waste hosted
+            # time without producing additional test evidence.
+            result["unattempted_tests"] = request["tests"][test_index + 1 :]
+            break
     return result
 
 
