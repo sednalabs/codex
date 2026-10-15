@@ -325,7 +325,6 @@ pub(super) async fn handle_with_automatic_turn_context(
                 request,
                 expected_turn_id,
                 submission_id,
-                automatic_turn,
             )
             .await
         }
@@ -689,7 +688,6 @@ async fn steer(
     request: WithTurnExtensionData<TurnInputRequest>,
     expected_turn_id: String,
     submission_id: String,
-    automatic_turn: Option<AutomaticTurnContext>,
 ) -> CodexResult<TurnInputSubmission> {
     let WithTurnExtensionData {
         request,

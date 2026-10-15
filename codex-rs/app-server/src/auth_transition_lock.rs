@@ -68,16 +68,14 @@ impl AuthTransition {
                     .pending_automatic_turn_auth_transition()
                     .await
                     .map_err(io::Error::other)?
-                {
-                    if !state_db
+                    && !state_db
                         .complete_automatic_turn_auth_transition(pending_generation)
                         .await
                         .map_err(io::Error::other)?
-                    {
-                        return Err(io::Error::other(
-                            "automatic-turn auth transition changed during recovery",
-                        ));
-                    }
+                {
+                    return Err(io::Error::other(
+                        "automatic-turn auth transition changed during recovery",
+                    ));
                 }
                 mark_auth_manager_reconciled(state_db, &auth_manager, auth_revision).await?;
                 let generation = state_db
@@ -147,16 +145,14 @@ pub(crate) async fn recover_pending_auth_transition(
         .pending_automatic_turn_auth_transition()
         .await
         .map_err(io::Error::other)?
-    {
-        if !state_db
+        && !state_db
             .complete_automatic_turn_auth_transition(generation)
             .await
             .map_err(io::Error::other)?
-        {
-            return Err(io::Error::other(
-                "automatic-turn auth transition changed during startup recovery",
-            ));
-        }
+    {
+        return Err(io::Error::other(
+            "automatic-turn auth transition changed during startup recovery",
+        ));
     }
     mark_auth_manager_reconciled(state_db, auth_manager, auth_revision).await?;
     Ok(())

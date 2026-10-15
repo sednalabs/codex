@@ -3160,18 +3160,16 @@ async fn try_run_sampling_request(
                                 parsed,
                             )
                             .await;
-                        } else if matches!(turn_item, TurnItem::AgentMessage(_)) {
-                            emitted_visible_text = match &turn_item {
-                                TurnItem::AgentMessage(message) => {
-                                    message.content.iter().any(|content| match content {
-                                        codex_protocol::items::AgentMessageContent::Text {
-                                            text,
-                                        } => !text.is_empty(),
-                                        _ => false,
-                                    })
-                                }
-                                _ => false,
-                            };
+                        } else if let TurnItem::AgentMessage(message) = &turn_item {
+                            emitted_visible_text = message
+                                .content
+                                .iter()
+                                .any(|content| match content {
+                                    codex_protocol::items::AgentMessageContent::Text { text } => {
+                                        !text.is_empty()
+                                    }
+                                    _ => false,
+                                });
                         }
                         if emitted_visible_text {
                             accepted_retry_items.record_streamed_draft_emission_for_provider(

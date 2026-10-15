@@ -462,31 +462,6 @@ impl SamplingExecution {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::LunaSamplerError;
-    use super::is_terminal_automatic_turn_context_change;
-    use codex_api::ApiError;
-    use codex_api::TransportError;
-
-    #[test]
-    fn automatic_turn_context_change_is_terminal_for_both_api_wrappers() {
-        assert!(is_terminal_automatic_turn_context_change(
-            &LunaSamplerError::Api(ApiError::Transport(
-                TransportError::AutomaticTurnContextChanged
-            ))
-        ));
-        assert!(is_terminal_automatic_turn_context_change(
-            &LunaSamplerError::Api(ApiError::TransientAvailability(
-                TransportError::AutomaticTurnContextChanged
-            ))
-        ));
-        assert!(!is_terminal_automatic_turn_context_change(
-            &LunaSamplerError::Api(ApiError::Transport(TransportError::Timeout))
-        ));
-    }
-}
-
 fn record_token_usage(metrics: Option<&dyn ExtensionMetrics>, token_usage: Option<&TokenUsage>) {
     let (Some(metrics), Some(token_usage)) = (metrics, token_usage) else {
         return;
@@ -512,5 +487,30 @@ fn record_token_usage(metrics: Option<&dyn ExtensionMetrics>, token_usage: Optio
             value,
             &[("token_type", token_type)],
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LunaSamplerError;
+    use super::is_terminal_automatic_turn_context_change;
+    use codex_api::ApiError;
+    use codex_api::TransportError;
+
+    #[test]
+    fn automatic_turn_context_change_is_terminal_for_both_api_wrappers() {
+        assert!(is_terminal_automatic_turn_context_change(
+            &LunaSamplerError::Api(ApiError::Transport(
+                TransportError::AutomaticTurnContextChanged
+            ))
+        ));
+        assert!(is_terminal_automatic_turn_context_change(
+            &LunaSamplerError::Api(ApiError::TransientAvailability(
+                TransportError::AutomaticTurnContextChanged
+            ))
+        ));
+        assert!(!is_terminal_automatic_turn_context_change(
+            &LunaSamplerError::Api(ApiError::Transport(TransportError::Timeout))
+        ));
     }
 }

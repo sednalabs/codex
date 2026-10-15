@@ -90,7 +90,10 @@ pub(crate) fn is_sedna_update_eligible(codex_home: &Path, codex_bin: &Path) -> b
     if receipt.selection_channel == "stable" && receipt.release.channel != "stable" {
         return false;
     }
-    if receipt.release.native_version.to_string() != env!("CARGO_PKG_VERSION") {
+    let Ok(updater_native_version) = semver::Version::parse(env!("CARGO_PKG_VERSION")) else {
+        return false;
+    };
+    if receipt.release.native_version < updater_native_version {
         return false;
     }
     let expected_target = format!("{}-unknown-linux-musl", std::env::consts::ARCH);

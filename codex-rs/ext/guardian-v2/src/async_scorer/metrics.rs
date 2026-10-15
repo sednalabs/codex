@@ -67,30 +67,6 @@ pub(super) fn sampler_failure_reason(error: &LunaSamplerError) -> &'static str {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::LunaSamplerError;
-    use super::sampler_failure_reason;
-    use codex_api::ApiError;
-    use codex_api::TransportError;
-
-    #[test]
-    fn automatic_turn_context_change_has_fixed_low_cardinality_reason() {
-        assert_eq!(
-            sampler_failure_reason(&LunaSamplerError::Api(ApiError::Transport(
-                TransportError::AutomaticTurnContextChanged
-            ))),
-            "automatic_turn_context_changed"
-        );
-        assert_eq!(
-            sampler_failure_reason(&LunaSamplerError::Api(ApiError::TransientAvailability(
-                TransportError::AutomaticTurnContextChanged
-            ))),
-            "automatic_turn_context_changed"
-        );
-    }
-}
-
 pub(super) fn record_classification(
     metrics: Option<&dyn ExtensionMetrics>,
     context_mode: GuardianContextMode,
@@ -292,6 +268,30 @@ pub(super) fn record_decisions_comparison(
                 ("responses", responses_risk.unwrap_or("unavailable")),
                 ("decisions", decisions_risk.unwrap_or("unavailable")),
             ],
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LunaSamplerError;
+    use super::sampler_failure_reason;
+    use codex_api::ApiError;
+    use codex_api::TransportError;
+
+    #[test]
+    fn automatic_turn_context_change_has_fixed_low_cardinality_reason() {
+        assert_eq!(
+            sampler_failure_reason(&LunaSamplerError::Api(ApiError::Transport(
+                TransportError::AutomaticTurnContextChanged
+            ))),
+            "automatic_turn_context_changed"
+        );
+        assert_eq!(
+            sampler_failure_reason(&LunaSamplerError::Api(ApiError::TransientAvailability(
+                TransportError::AutomaticTurnContextChanged
+            ))),
+            "automatic_turn_context_changed"
         );
     }
 }

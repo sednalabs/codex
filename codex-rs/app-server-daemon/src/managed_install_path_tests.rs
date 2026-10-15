@@ -85,6 +85,8 @@ fn updater_requires_a_verified_release_on_the_selected_channel() {
     std::fs::write(&managed, b"stable").expect("managed bin");
     write_sedna_fixture(&release, package_version, native_version, &target, "stable");
     std::os::unix::fs::symlink(&release, &current).expect("current release");
+    // A verified old package can still carry the current native daemon, but it
+    // remains ineligible while pinned because no latest-selection marker exists.
     assert!(!super::is_sedna_update_eligible(home.path(), &managed));
     let marker = standalone.join("auto-update-version");
     let release_name = release.file_name().expect("release name");
@@ -93,6 +95,30 @@ fn updater_requires_a_verified_release_on_the_selected_channel() {
     std::fs::write(&marker, b"0.145.0-x86_64-unknown-linux-musl").expect("stale selection");
     assert!(!super::is_sedna_update_eligible(home.path(), &managed));
     std::fs::remove_file(&marker).expect("pinned selection");
+    assert!(!super::is_sedna_update_eligible(home.path(), &managed));
+
+    let mut newer_native_version = semver::Version::parse(native_version).unwrap();
+    if newer_native_version.pre.is_empty() {
+        newer_native_version.patch += 1;
+    } else {
+        newer_native_version.pre = semver::Prerelease::new(&format!(
+            "{}.update1",
+            newer_native_version.pre
+        ))
+        .unwrap();
+    }
+    let newer_native_version = newer_native_version.to_string();
+    write_sedna_fixture(
+        &release,
+        package_version,
+        &newer_native_version,
+        &target,
+        "stable",
+    );
+    std::fs::write(&marker, release_name.as_encoded_bytes()).expect("latest selection");
+    assert!(super::is_sedna_update_eligible(home.path(), &managed));
+
+    write_sedna_fixture(&release, package_version, "0.146.0", &target, "stable");
     assert!(!super::is_sedna_update_eligible(home.path(), &managed));
 
     let mut alpha_semver = semver::Version::parse(native_version).unwrap();

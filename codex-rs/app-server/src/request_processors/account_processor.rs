@@ -249,9 +249,10 @@ impl AccountRequestProcessor {
     pub(crate) async fn cancel_active_login(&self) {
         self.cancel_gateway_login().await;
         self.enterprise_login.cancel(/*login_id*/ None).await;
-        let mut guard = self.active_login.lock().await;
-        let active_login = guard.take();
-        drop(guard);
+        let active_login = {
+            let mut guard = self.active_login.lock().await;
+            guard.take()
+        };
         if let Some(active_login) = active_login {
             active_login.cancel_and_wait().await;
         }
@@ -365,7 +366,7 @@ impl AccountRequestProcessor {
                 use_hosted_login_success_page: true,
                 ..
             } => {
-                let app_brand = match app_brand.clone().unwrap_or_default() {
+                let app_brand = match app_brand.unwrap_or_default() {
                     LoginAppBrand::Codex => LoginSuccessPageBrand::Codex,
                     LoginAppBrand::Chatgpt => LoginSuccessPageBrand::Chatgpt,
                 };
@@ -396,7 +397,9 @@ impl AccountRequestProcessor {
                 self.login_chatgpt_v2(
                     request_id,
                     codex_streamlined_login,
-                    chatgpt_login_success_page.expect("ChatGPT login success page was precomputed"),
+                    chatgpt_login_success_page.ok_or_else(|| {
+                        internal_error("ChatGPT login success page was not precomputed")
+                    })?,
                     &mut transition,
                 )
                 .await;
@@ -863,13 +866,14 @@ impl AccountRequestProcessor {
         &self,
         login_id: Uuid,
     ) -> std::result::Result<(), CancelLoginError> {
-        let mut guard = self.active_login.lock().await;
-        let active = if guard.as_ref().map(ActiveLogin::login_id) == Some(login_id) {
-            guard.take()
-        } else {
-            None
+        let active = {
+            let mut guard = self.active_login.lock().await;
+            if guard.as_ref().map(ActiveLogin::login_id) == Some(login_id) {
+                guard.take()
+            } else {
+                None
+            }
         };
-        drop(guard);
         if let Some(active) = active {
             active.cancel_and_wait().await;
             Ok(())

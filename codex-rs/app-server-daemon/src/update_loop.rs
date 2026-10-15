@@ -394,7 +394,8 @@ async fn update_once(
         receipt.release.source_commit
     );
     let previous_version = receipt.release.package_version.to_string();
-    let previous_native_version = receipt.release.native_version.to_string();
+    let previous_native_version = receipt.release.native_version.clone();
+    let previous_native_version_text = previous_native_version.to_string();
     let script = tokio::select! {
         result = fetch_installer_script(http, &installer_url) => {
             crate::diagnostics::result("installer_fetch", started, result)?
@@ -441,7 +442,7 @@ async fn update_once(
                 &package_root,
                 installer_selection_channel(&receipt.selection_channel, trigger),
                 &previous_version,
-                &previous_native_version,
+                &previous_native_version_text,
                 terminate.recv(),
             )
             .await
@@ -458,12 +459,34 @@ async fn update_once(
             &package_root,
             installer_selection_channel(&receipt.selection_channel, trigger),
             &previous_version,
-            &previous_native_version,
+            &previous_native_version_text,
         ) => {
             crate::diagnostics::result("installer_run", started, result)?;
         },
         _ = terminate.recv() => return Ok((UpdateLoopControl::Stop, None)),
     }
+    let selected_bin = daemon.current_managed_codex_bin()?;
+    let selected_context = codex_install_context::InstallContext::from_exe_in_codex_home(
+        cfg!(target_os = "macos"),
+        Some(&selected_bin),
+        /*method_override*/ None,
+        codex_home,
+    );
+    let selected_receipt = selected_context
+        .sedna_release_receipt()
+        .context("installer selected a package without a verified Sedna receipt")?;
+    let selected_native_version =
+        crate::managed_install::managed_codex_version(&selected_bin).await?;
+    anyhow::ensure!(
+        selected_native_version == selected_receipt.release.native_version.to_string(),
+        "selected package native version does not match its Sedna receipt"
+    );
+    let selected_native_version = semver::Version::parse(&selected_native_version)
+        .context("selected package has an invalid native version")?;
+    anyhow::ensure!(
+        selected_native_version >= previous_native_version,
+        "installer selected a package with an older native version"
+    );
     anyhow::ensure!(
         trigger == UpdateTrigger::Scheduled || daemon.is_sedna_update_eligible()?,
         "installer did not select a release on the selected Sedna channel; retry the update"

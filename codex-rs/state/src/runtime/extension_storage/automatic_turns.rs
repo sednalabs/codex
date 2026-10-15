@@ -2509,9 +2509,7 @@ mod tests {
                 .await
                 .is_none()
         );
-        runtime
-            .record_automatic_turn_event(thread_id, &policy_error("trigger-new"))
-            .await;
+        let _replacement_reference = issue_ticket(runtime.as_ref(), thread_id, "trigger-new").await;
         let new_capability = capability(runtime.as_ref(), thread_id, "trigger-new").await;
         assert_ne!(old_capability, new_capability);
         Ok(())

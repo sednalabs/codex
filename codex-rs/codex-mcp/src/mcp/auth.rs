@@ -39,7 +39,7 @@ pub struct McpOAuthLoginConfig {
 
 #[derive(Debug)]
 pub enum McpOAuthLoginSupport {
-    Supported(McpOAuthLoginConfig),
+    Supported(Box<McpOAuthLoginConfig>),
     Unsupported,
     Unknown(anyhow::Error),
 }
@@ -116,7 +116,7 @@ pub async fn oauth_login_support(
             config.discovered_scopes = discovery.scopes_supported;
             config.callback_mode = discovery.callback_mode;
             config.device_authorization = discovery.device_authorization;
-            McpOAuthLoginSupport::Supported(config)
+            McpOAuthLoginSupport::Supported(Box::new(config))
         }
         Ok(None) => McpOAuthLoginSupport::Unsupported,
         Err(err) => McpOAuthLoginSupport::Unknown(err),
