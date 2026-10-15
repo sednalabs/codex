@@ -25,8 +25,7 @@ def require_runtime_version(version: str | None) -> None:
     semver_prerelease = _SEMVER_PRERELEASE.fullmatch(normalized)
     if semver_prerelease:
         normalized = (
-            f"{semver_prerelease.group('release')}.dev0+"
-            f"{semver_prerelease.group('prerelease')}"
+            f"{semver_prerelease.group('release')}.dev0+{semver_prerelease.group('prerelease')}"
         )
     try:
         if Version(normalized) >= Version(MINIMUM_RUNTIME_VERSION):
