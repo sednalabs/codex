@@ -450,7 +450,15 @@ def run_app_server(executable: Path, codex_home: Path, sqlite_home: Path) -> Non
     server = AppServer(executable, codex_home, sqlite_home)
     try:
         server.initialize_and_list("e20-synthetic-thread")
-    finally:
+    except Exception:
+        # Preserve the RPC/startup failure if shutdown also reports an error;
+        # otherwise the cleanup exception masks the useful fixed diagnostic.
+        try:
+            server.close()
+        except Exception:
+            pass
+        raise
+    else:
         server.close()
 
 
