@@ -525,7 +525,7 @@ jobs:
           key: sedna-preview-sccache-macos-15-intel-x86_64-apple-darwin-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
 
   consume-e20-x86_64:
-    name: Consume exact d99ff264 x86_64 package and historical State snapshot
+    name: Consume exact d99 historical state and 6e nested-spawn x86_64 package
     if: >-
       ${{
         github.event_name == 'pull_request' &&
@@ -581,6 +581,55 @@ jobs:
           HISTORICAL_SOURCE_DIR: ${{ github.workspace }}/historical-source
           PRODUCER_RUN_ID: "38675534571"
         run: python3 .github/scripts/e20-package-consumer/consume_e20_preview.py
+
+      - name: Check out the reviewed nested-spawn fixture
+        uses: actions/checkout@v7
+        with:
+          ref: 58d392e66ef61a7d195f2155a84b1d56d36224ec
+          path: nested-spawn-source
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Download the exact 6e1c30c8 x86_64 package artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: 11951945717
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: 38682165848
+          path: ${{ runner.temp }}/6e-product-artifact
+
+      - name: Set up Python for the exact packaged nested-spawn consumer
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Enable the existing Linux sandbox namespace prerequisite
+        shell: bash
+        run: |
+          sudo sysctl -w kernel.unprivileged_userns_clone=1
+          if sudo sysctl -a 2>/dev/null | grep -q '^kernel.apparmor_restrict_unprivileged_userns'; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
+      - name: Install pinned uv for the package smoke-test project
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.11.3"
+
+      - name: Sync the pinned package smoke-test dependencies
+        shell: bash
+        working-directory: nested-spawn-source
+        run: uv sync --project scripts/codex_package/smoke_tests --frozen
+
+      - name: Run only the nested-spawn recovery test against the exact 6e package
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRODUCT_ARTIFACT_DIR: ${{ runner.temp }}/6e-product-artifact
+          FIXTURE_SOURCE_DIR: ${{ github.workspace }}/nested-spawn-source
+          PYTHONPATH: nested-spawn-source/sdk/python/src:nested-spawn-source/sdk/python/tests
+        run: python3 .github/scripts/e20-package-consumer/consume_6e_nested_spawn.py
 
   consume-e20-aarch64:
     name: Consume exact d99ff264 AArch64 package and historical State snapshot
