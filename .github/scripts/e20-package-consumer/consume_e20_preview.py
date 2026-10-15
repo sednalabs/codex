@@ -178,7 +178,14 @@ def verify_producer(*, repo: str, run_id: str, architecture: str) -> dict[str, A
     require(base.get("ref") == "main" and base.get("sha") == BASE_SHA, "Producer PR base does not match the selected exact main SHA.")
     head = pull.get("head") or {}
     require(head.get("ref") == PRODUCT_SOURCE_BRANCH, "Producer PR head branch mismatch.")
-    require((head.get("repo") or {}).get("full_name") == repo, "Producer PR was not opened from the expected repository.")
+    head_repository = head.get("repo")
+    # The run-level head_repository was checked above; GitHub can omit the
+    # nested PR head repo, and that association may reflect a later PR head.
+    if head_repository is not None:
+        require(
+            head_repository.get("full_name") == repo,
+            "Producer PR head repository does not match the expected repository.",
+        )
 
     jobs = github_api(f"/repos/{repo}/actions/runs/{run_id}/jobs?per_page=100").get("jobs", [])
     expected_failed_ids = {
