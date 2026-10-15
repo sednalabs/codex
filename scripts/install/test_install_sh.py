@@ -32,9 +32,7 @@ class InstallShTest(unittest.TestCase):
         self.assertIn("only on Linux x86_64 and ARM64", result.stderr)
         self.assertIn("https://github.com/sednalabs/codex/releases", result.stderr)
 
-    @unittest.skipUnless(
-        sys.platform == "linux", "Sedna binary updates are Linux-only"
-    )
+    @unittest.skipUnless(sys.platform == "linux", "Sedna binary updates are Linux-only")
     def test_sedna_metadata_rejects_prerelease_flag_channel_mismatch(self) -> None:
         target = linux_target()
         version = "0.163.0-alpha.1"
@@ -61,9 +59,7 @@ class InstallShTest(unittest.TestCase):
         self.assertTrue(any("RELEASE-METADATA-" in url for url in requests))
         self.assertNotIn("codex-package_SHA256SUMS", "\n".join(requests))
 
-    @unittest.skipUnless(
-        sys.platform == "linux", "Sedna binary updates are Linux-only"
-    )
+    @unittest.skipUnless(sys.platform == "linux", "Sedna binary updates are Linux-only")
     def test_sedna_rejects_package_with_older_native_version_before_selection(
         self,
     ) -> None:
@@ -98,9 +94,7 @@ class InstallShTest(unittest.TestCase):
                 previous_native_version="0.162.0-sedna.dev.be2e129",
             )
 
-            self.assertEqual(
-                os.readlink(standalone / "current"), str(current_release)
-            )
+            self.assertEqual(os.readlink(standalone / "current"), str(current_release))
             self.assertEqual(
                 (standalone / "auto-update-version").read_text(encoding="utf-8"),
                 current_release.name,
@@ -111,10 +105,10 @@ class InstallShTest(unittest.TestCase):
         self.assertIn("native version is older", result.stderr)
         self.assertNotIn("codex-package_SHA256SUMS", "\n".join(requests))
 
-    @unittest.skipUnless(
-        sys.platform == "linux", "Sedna binary updates are Linux-only"
-    )
-    def test_sedna_rejects_binary_native_version_mismatch_before_selection(self) -> None:
+    @unittest.skipUnless(sys.platform == "linux", "Sedna binary updates are Linux-only")
+    def test_sedna_rejects_binary_native_version_mismatch_before_selection(
+        self,
+    ) -> None:
         target = linux_target()
         version = "0.163.0"
         expected_native_version = "0.162.0-sedna.dev.be2e129"
@@ -150,9 +144,7 @@ class InstallShTest(unittest.TestCase):
                 previous_native_version=expected_native_version,
             )
 
-            self.assertEqual(
-                os.readlink(standalone / "current"), str(current_release)
-            )
+            self.assertEqual(os.readlink(standalone / "current"), str(current_release))
             self.assertEqual(marker.read_text(encoding="utf-8"), current_release.name)
             self.assertTrue((current_release / "keep").is_file())
 
