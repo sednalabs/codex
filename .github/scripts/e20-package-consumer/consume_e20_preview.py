@@ -41,7 +41,7 @@ WORKFLOW_HOST_TREE = "cbd495babf5b31f7aaffe081236c0e3892e0194f"
 # The package manifest version is selected from the latest source tag by the
 # producer workflow. It is distinct from the CLI's Cargo workspace version.
 PACKAGE_MANIFEST_VERSION_BASE = "0.146.0-alpha.8-sedna.10+upstream.8593"
-CLI_WORKSPACE_VERSION = "0.163.0-dev.sedna.1"
+CLI_WORKSPACE_VERSION = "0.162.0-sedna.dev.be2e129"
 BASE_SHA = "703389678a1a6c3a9d131245d03d3f1805b9afa1"
 PULL_REQUEST_BRANCH = "validation/w14962-e20-packaged-consumer-20261015"
 MIGRATION_38E25 = "38e25e75711d323be7039a81bcf1c31aa1117583"
