@@ -42,7 +42,8 @@ WORKFLOW_HOST_TREE = "cbd495babf5b31f7aaffe081236c0e3892e0194f"
 # producer workflow. It is distinct from the CLI's Cargo workspace version.
 PACKAGE_MANIFEST_VERSION_BASE = "0.146.0-alpha.8-sedna.10+upstream.8593"
 CLI_WORKSPACE_VERSION = "0.162.0-sedna.dev.be2e129"
-BASE_SHA = "703389678a1a6c3a9d131245d03d3f1805b9afa1"
+PRODUCT_BASE_SHA = "703389678a1a6c3a9d131245d03d3f1805b9afa1"
+HARNESS_BASE_SHA = "703389678a1a6c3a9d131245d03d3f1805b9afa1"
 PULL_REQUEST_BRANCH = "validation/w14962-e20-packaged-consumer-20261015"
 MIGRATION_38E25 = "38e25e75711d323be7039a81bcf1c31aa1117583"
 EXPECTED_APP_TABLES = {
@@ -144,7 +145,7 @@ def validate_pull_request_checkout() -> tuple[str, str]:
     head_repo = ((pull.get("head") or {}).get("repo") or {}).get("full_name")
     require(head_repo == repo, "The consumer requires a same-repository pull request.")
     require((pull.get("base") or {}).get("ref") == "main", "Unexpected pull-request base ref.")
-    require((pull.get("base") or {}).get("sha") == BASE_SHA, "Protected main moved from the bound fixture base.")
+    require((pull.get("base") or {}).get("sha") == HARNESS_BASE_SHA, "Protected main moved from the bound fixture base.")
     require((pull.get("head") or {}).get("ref") == PULL_REQUEST_BRANCH, "Unexpected consumer branch.")
     head_sha = (pull.get("head") or {}).get("sha")
     require(re.fullmatch(r"[0-9a-f]{40}", str(head_sha)) is not None, "Malformed PR source SHA.")
@@ -180,7 +181,7 @@ def verify_producer(*, repo: str, run_id: str, architecture: str) -> dict[str, A
     pull = pull_requests[0]
     require(pull.get("number") == 937, "Producer run is not associated with PR #937.")
     base = pull.get("base") or {}
-    require(base.get("ref") == "main" and base.get("sha") == BASE_SHA, "Producer PR base does not match the selected exact main SHA.")
+    require(base.get("ref") == "main", "Producer PR base branch mismatch.")
     head = pull.get("head") or {}
     require(head.get("ref") == PRODUCT_SOURCE_BRANCH, "Producer PR head branch mismatch.")
     pr_head_repository = head.get("repo")
@@ -206,6 +207,22 @@ def verify_producer(*, repo: str, run_id: str, architecture: str) -> dict[str, A
                 and pr_head_repository.get("name") == expected_repository_name,
                 "Producer PR head repository ID/name do not match the exact workflow-run repository.",
             )
+
+    # The run's head_sha binds the immutable product source. GitHub's linked
+    # PR fields are mutable, so bind the producer base through the workflow
+    # host's exact tree and ordered parents instead.
+    workflow_host = github_api(f"/repos/{repo}/commits/{WORKFLOW_HOST}")
+    require(workflow_host.get("sha") == WORKFLOW_HOST, "Producer workflow-host commit identity mismatch.")
+    host_commit = workflow_host.get("commit") or {}
+    require(
+        (host_commit.get("tree") or {}).get("sha") == WORKFLOW_HOST_TREE,
+        "Producer workflow-host tree mismatch.",
+    )
+    host_parents = [parent.get("sha") for parent in workflow_host.get("parents", [])]
+    require(
+        host_parents == [PRODUCT_BASE_SHA, PRODUCT_SOURCE],
+        "Producer workflow-host parents do not bind the exact historical base and source.",
+    )
 
     jobs = github_api(f"/repos/{repo}/actions/runs/{run_id}/jobs?per_page=100").get("jobs", [])
     expected_failed_ids = {
@@ -710,6 +727,16 @@ def normalize_sql(sql: str) -> str:
     return " ".join(sql.strip().rstrip(";").split()).casefold()
 
 
+def extension_migration_checksum(sql: bytes) -> str:
+    offset = 0xCBF29CE484222325
+    prime = 0x100000001B3
+    value = offset
+    for byte in sql:
+        value ^= byte
+        value = (value * prime) & 0xFFFFFFFFFFFFFFFF
+    return f"fnv1a64:{value:016x}"
+
+
 def verify_historical_ledger(
     db_path: Path,
     before: list[tuple[Any, ...]],
@@ -769,6 +796,35 @@ def verify_historical_ledger(
             f"(missing={missing_tables}, unexpected={unexpected_tables}).",
         )
         migrations_by_version = {version: raw_sql.decode("utf-8") for version, _, raw_sql in migrations}
+        extension_migration_sources = {
+            1: (8000000000000003, "phase2_attestation_roots"),
+            2: (8000000000000000, "phase2_attested_baselines"),
+        }
+        expected_extension_migrations = [
+            (
+                "memories.phase2-attestation",
+                version,
+                description,
+                extension_migration_checksum(
+                    migrations_by_version[source_version].encode("utf-8")
+                ),
+            )
+            for version, (source_version, description) in extension_migration_sources.items()
+        ]
+        extension_migrations = list(
+            connection.execute(
+                "SELECT namespace, version, description, checksum, applied_at "
+                "FROM extension_migrations ORDER BY namespace, version"
+            )
+        )
+        require(
+            [tuple(row[:4]) for row in extension_migrations] == expected_extension_migrations,
+            "Packaged extension-migration metadata differs from the exact public source migrations.",
+        )
+        require(
+            all(isinstance(row[4], int) and row[4] > 0 for row in extension_migrations),
+            "Packaged extension-migration metadata has an invalid applied_at value.",
+        )
         index_sql = connection.execute(
             "SELECT sql FROM sqlite_master WHERE type='index' "
             "AND name='idx_thread_attachments_identity_thread'"
@@ -960,6 +1016,7 @@ def consume() -> None:
                 "syntheticThreadVisibleOnFirstOpenAndReopen": True,
                 "syntheticAttachmentPreservedOnFirstOpenAndReopen": True,
                 "migrationEffectsPresentOnFirstOpenAndReopen": True,
+                "extensionMigrationMetadataVerified": True,
                 "migrationLedgerUnchangedAcrossFirstOpenAndReopen": True,
                 "producer": receipt,
                 "producerWorkflowConclusion": receipt["producer_run_conclusion"],
