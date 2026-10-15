@@ -551,7 +551,7 @@ mod tests {
             .expect("old-main 0005 checksum should be recorded");
         // Use absent versions to model retained newer ledger rows without colliding with the
         // embedded migrations already applied to this synthetic fixture.
-        for version in [6_i64, 20, 21, 22, 23, 24] {
+        for version in [6_i64, 22, 23, 24, 25, 26] {
             sqlx::query(
                 "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES (?, ?, 1, ?, 0)",
             )
@@ -603,7 +603,7 @@ mod tests {
             .await
             .expect("synthetic old-main views with newer ledger rows should upgrade");
 
-        for version in [6_i64, 20, 21, 22, 23, 24] {
+        for version in [6_i64, 22, 23, 24, 25, 26] {
             let checksum = sqlx::query_scalar::<_, Vec<u8>>(
                 "SELECT checksum FROM _sqlx_migrations WHERE version = ?",
             )
