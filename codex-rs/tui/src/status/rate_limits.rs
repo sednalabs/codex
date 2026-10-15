@@ -81,6 +81,11 @@ pub(crate) struct RateLimitWindowDisplay {
 }
 
 impl RateLimitWindowDisplay {
+    pub(crate) fn is_stale_at(&self, now: DateTime<Local>) -> bool {
+        now.signed_duration_since(self.captured_at)
+            > ChronoDuration::minutes(RATE_LIMIT_STALE_THRESHOLD_MINUTES)
+    }
+
     fn from_window(
         window: &RateLimitWindow,
         captured_at: DateTime<Local>,
@@ -318,10 +323,7 @@ pub(crate) fn compose_rate_limit_data_many(
         stale |= [&snapshot.primary, &snapshot.secondary]
             .into_iter()
             .flatten()
-            .any(|window| {
-                now.signed_duration_since(window.captured_at)
-                    > ChronoDuration::minutes(RATE_LIMIT_STALE_THRESHOLD_MINUTES)
-            });
+            .any(|window| window.is_stale_at(now));
         stale |= snapshot
             .individual_limit
             .as_ref()

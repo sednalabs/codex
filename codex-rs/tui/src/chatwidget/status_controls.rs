@@ -459,9 +459,7 @@ impl ChatWidget {
     ) -> Option<String> {
         let base = self.status_line_limit_display(window, label)?;
         let window = window?;
-        if now.signed_duration_since(window.captured_at)
-            > chrono::Duration::minutes(crate::status::RATE_LIMIT_STALE_THRESHOLD_MINUTES)
-        {
+        if window.is_stale_at(now) {
             return Some(format!("{base} (stale)"));
         }
         let Some(reset_seconds) = window.resets_at_unix_seconds else {
