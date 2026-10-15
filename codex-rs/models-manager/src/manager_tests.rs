@@ -1201,6 +1201,85 @@ fn default_openai_model_instructions_are_overlaid_before_config_precedence() {
 }
 
 #[tokio::test]
+async fn refreshed_bundled_default_catalog_overlays_root_and_child_instructions() {
+    const WAIT_SENTENCE: &str = "Avoid performing blocking sleep or wait calls longer than 60 seconds, as they may prevent you from communicating with the user for their duration.";
+    const COMMENTARY_SENTENCE: &str = "The user appreciates consistent, frequent communication during your turn, and should not be left without a commentary update for more than 60 seconds during ongoing work.";
+    const PRESERVED_SENTENCE: &str = "When the user expresses intent to perform new work or fix an existing issue, persist until the user's intended goal is complete.";
+    const AFFECTED_MODELS: [&str; 2] = ["gpt-6.1-sol", "gpt-6-luna"];
+
+    let bundled_models = crate::bundled_models_response()
+        .expect("bundled default catalog should parse")
+        .models;
+    for slug in AFFECTED_MODELS {
+        let bundled = bundled_models
+            .iter()
+            .find(|candidate| candidate.slug == slug)
+            .expect("bundled catalog should contain affected root and child models");
+        let template = bundled
+            .model_messages
+            .as_ref()
+            .and_then(|messages| messages.instructions_template.as_deref())
+            .expect("bundled model should contain an instruction template");
+        assert!(
+            template.contains(WAIT_SENTENCE),
+            "bundled source for {slug} must contain the targeted wait sentence before overlay"
+        );
+        assert!(template.contains(COMMENTARY_SENTENCE));
+        assert!(template.contains(PRESERVED_SENTENCE));
+    }
+
+    let endpoint = TestModelsEndpoint::new(vec![bundled_models.clone()]);
+    let manager = OpenAiModelsManager::new_without_cache(
+        endpoint.clone(),
+        Some(AuthManager::from_auth_for_testing(
+            CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+        )),
+    );
+    let refreshed_catalog = manager
+        .raw_model_catalog(RefreshStrategy::Online, DEFAULT_HTTP_CLIENT_FACTORY)
+        .await;
+    assert_eq!(
+        endpoint.fetch_count(),
+        1,
+        "test must consume a refreshed catalog"
+    );
+
+    for slug in AFFECTED_MODELS {
+        assert!(
+            refreshed_catalog
+                .models
+                .iter()
+                .any(|model| model.slug == slug)
+        );
+        let model = manager
+            .get_model_info(slug, &ModelsManagerConfig::default())
+            .await;
+        let instructions = codex_prompts::render_model_instructions(&model);
+        assert!(
+            !instructions.contains(WAIT_SENTENCE),
+            "{slug} retained the wait clause"
+        );
+        assert!(!instructions.contains(COMMENTARY_SENTENCE));
+        assert!(instructions.contains(PRESERVED_SENTENCE));
+    }
+
+    for bundled in bundled_models
+        .iter()
+        .filter(|candidate| AFFECTED_MODELS.contains(&candidate.slug.as_str()))
+    {
+        assert!(
+            bundled
+                .model_messages
+                .as_ref()
+                .and_then(|messages| messages.instructions_template.as_deref())
+                .is_some_and(|template| template.contains(WAIT_SENTENCE)),
+            "overlay must not mutate bundled source model {}",
+            bundled.slug
+        );
+    }
+}
+
+#[tokio::test]
 async fn authoritative_catalog_failure_invalidates_cache_until_refresh_succeeds() {
     // Like a native TTL backend, this cache may return an invalidated stored entry.
     let cache = Arc::new(TestModelsCache::default());
