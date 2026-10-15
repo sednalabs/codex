@@ -1035,7 +1035,7 @@ mod tests {
         let context = InstallContext::from_exe_in_codex_home(
             /*is_macos*/ false,
             Some(&executable),
-            None,
+            /*method_override*/ None,
             codex_home.path(),
         );
 
