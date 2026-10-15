@@ -1,8 +1,9 @@
--- Declarative, data-free historical schema snapshot for the integrated package consumer.
--- Folded from the public codex-rs/state/migrations at 38e25e75711d323be7039a81bcf1c31aa1117583.
--- This is intentionally not a sequential replay: the seven 800000000000000x
--- SQLx ledger rows are retained, while 8000000000000002 and 8000000000000004/5
--- contain duplicate ALTERs in the historical directory.
+-- Declarative pre-59/60 historical schema snapshot for the integrated package consumer.
+-- Folded from public codex-rs/state/migrations at 38e25e75711d323be7039a81bcf1c31aa1117583.
+-- The initial profile fixture has 65 exact ledger rows and omits only the
+-- version 59 index and version 60 table so packaged startup must add them.
+-- This is not a sequential replay: historical high-ID migrations contain
+-- duplicate ALTERs in the migration directory.
 
 PRAGMA foreign_keys = ON;
 
@@ -262,14 +263,6 @@ CREATE TABLE thread_attachments (
 );
 CREATE INDEX idx_thread_attachments_thread_created_id
     ON thread_attachments(thread_id, created_at, id);
-CREATE INDEX idx_thread_attachments_identity_thread
-    ON thread_attachments(attachment_type, identity_key, thread_id);
-
-CREATE TABLE guardian_review_feedback (
-    id TEXT PRIMARY KEY NOT NULL,
-    thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
-    record BLOB NOT NULL
-);
 
 CREATE TABLE phase2_attested_baselines (
     memory_root_key TEXT NOT NULL,

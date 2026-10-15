@@ -596,7 +596,7 @@ jobs:
         run: python3 .github/scripts/e20-package-consumer/consume_6e_nested_spawn.py
 
   consume-e20-aarch64:
-    name: Consume exact d99ff264 AArch64 package and historical State snapshot
+    name: Consume exact 6e1c30c8 AArch64 package and 65-entry historical State snapshot
     if: >-
       ${{
         github.event_name == 'pull_request' &&
@@ -620,7 +620,7 @@ jobs:
       - name: Check out exact integrated product source
         uses: actions/checkout@v7
         with:
-          ref: d99ff264d5e3b1c7bef1dce4d07324913cfe5c1f
+          ref: 6e1c30c85d5e0e4f6f147d3509868c9821d4bcba
           path: product-source
           fetch-depth: 1
           persist-credentials: false
@@ -636,13 +636,13 @@ jobs:
       - name: Download exact AArch64 package artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          artifact-ids: 11948285961
+          artifact-ids: 11950528503
           github-token: ${{ github.token }}
           repository: ${{ github.repository }}
-          run-id: 38675534571
+          run-id: 38682165848
           path: ${{ runner.temp }}/product-artifact
 
-      - name: Verify AArch64 package provenance and consume historical state
+      - name: Verify AArch64 provenance and consume 65-to-67 historical State
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -650,5 +650,5 @@ jobs:
           ARTIFACT_DIR: ${{ runner.temp }}/product-artifact
           CANDIDATE_SOURCE_DIR: ${{ github.workspace }}/product-source
           HISTORICAL_SOURCE_DIR: ${{ github.workspace }}/historical-source
-          PRODUCER_RUN_ID: "38675534571"
+          PRODUCER_RUN_ID: "38682165848"
         run: python3 .github/scripts/e20-package-consumer/consume_e20_preview.py

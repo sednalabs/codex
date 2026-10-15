@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Verify exact first-package artifacts and exercise their packaged CLI.
+"""Verify an exact first-package artifact against a source-derived State snapshot.
 
-This is a hosted-only, data-free compatibility consumer. It constructs a
-declarative schema snapshot from public source, seeds a synthetic thread and
-the 67 source-verified historical migration identities, then proves first-open
-and a second-process reopen of the packaged app-server without changing the
-historical ledger. It does not replay the duplicate historical SQL directory
-and never reads or uploads a user database.
+This hosted-only, data-free consumer starts from 65 source-verified migration
+identities and a declarative schema snapshot that omits only migrations 59 and
+60. It proves the packaged app-server applies both migrations on first open,
+preserves synthetic rows, and reopens in a second process with the exact 67-row
+ledger. It does not replay duplicate historical SQL or read/upload user data.
 """
 
 from __future__ import annotations
@@ -32,17 +31,17 @@ from pathlib import Path
 from typing import Any
 
 
-PRODUCT_SOURCE = "d99ff264d5e3b1c7bef1dce4d07324913cfe5c1f"
-PRODUCT_TREE = "d03153e8d382c4825e2804a49b43b72811b869e7"
+PRODUCT_SOURCE = "6e1c30c85d5e0e4f6f147d3509868c9821d4bcba"
+PRODUCT_TREE = "cbd495babf5b31f7aaffe081236c0e3892e0194f"
 PRODUCT_SOURCE_BRANCH = "integration/be2e-e926-20261009"
-PRODUCT_RUN_ID = "38675534571"
+PRODUCT_RUN_ID = "38682165848"
 PRODUCT_WORKFLOW = ".github/workflows/sedna-first-package.yml"
-WORKFLOW_HOST = "66e627b883f0c6cdf691c8b50ff5ac0fee14851e"
-WORKFLOW_HOST_TREE = "d03153e8d382c4825e2804a49b43b72811b869e7"
+WORKFLOW_HOST = "4d1a32337baab1a6745a45003f6c2d96f0cc925f"
+WORKFLOW_HOST_TREE = "cbd495babf5b31f7aaffe081236c0e3892e0194f"
 # The package manifest version is selected from the latest source tag by the
 # producer workflow. It is distinct from the CLI's Cargo workspace version.
 PACKAGE_MANIFEST_VERSION_BASE = "0.146.0-alpha.8-sedna.10+upstream.8593"
-CLI_WORKSPACE_VERSION = "0.162.0-sedna.dev.be2e129"
+CLI_WORKSPACE_VERSION = "0.163.0-dev.sedna.1"
 BASE_SHA = "703389678a1a6c3a9d131245d03d3f1805b9afa1"
 PULL_REQUEST_BRANCH = "validation/w14962-e20-packaged-consumer-20261015"
 MIGRATION_38E25 = "38e25e75711d323be7039a81bcf1c31aa1117583"
@@ -64,33 +63,38 @@ EXPECTED_APP_TABLES = {
     "phase2_attested_baselines",
     "phase2_attestation_roots",
 }
+INITIAL_APP_TABLES = EXPECTED_APP_TABLES - {"guardian_review_feedback"}
+MISSING_INITIAL_MIGRATIONS = {59, 60}
 PRODUCER_JOBS = {
     "x86_64": {
-        "build_job_id": "116231434617",
+        "build_job_id": "116251970393",
         "build_job_name": "Build exact Linux package pair (x86_64-unknown-linux-gnu)",
-        "consumer_job_id": "116245283101",
+        "consumer_job_id": "116270432173",
         "consumer_job_name": "Consume exact downloaded packages (x86_64-unknown-linux-gnu)",
-        "artifact_id": "11948435472",
-        "artifact_name": "sedna-first-package-d99ff264-x86_64-38675534571",
-        "artifact_digest": "sha256:9f50a3522a5636cdb6a41f9fca06ca9d27d0a980686c185ab883af9ff795befe",
+        "consumer_conclusion": "failure",
+        "artifact_id": "11951945717",
+        "artifact_name": "sedna-first-package-6e1c30c8-x86_64-38682165848",
+        "artifact_digest": "sha256:90372839e35e400d0bc81f760d2748cb969a9e253651aba926cfcda4bf5b1aa6",
     },
     "aarch64": {
-        "build_job_id": "116231434574",
+        "build_job_id": "116251970444",
         "build_job_name": "Build exact Linux package pair (aarch64-unknown-linux-gnu)",
-        "consumer_job_id": "116245283179",
+        "consumer_job_id": "116270432109",
         "consumer_job_name": "Consume exact downloaded packages (aarch64-unknown-linux-gnu)",
-        "artifact_id": "11948285961",
-        "artifact_name": "sedna-first-package-d99ff264-aarch64-38675534571",
-        "artifact_digest": "sha256:e3b89a594c0073a4dd2f96c4fd5e227cb8040af46f3217fa3fef15dcb66f2c25",
+        "consumer_conclusion": "success",
+        "artifact_id": "11950528503",
+        "artifact_name": "sedna-first-package-6e1c30c8-aarch64-38682165848",
+        "artifact_digest": "sha256:a05b59fa474aa4aec65bcd4f9f423b33f5a2f7283b8afba71520faa70e067077",
     },
 }
-EXPECTED_PACKAGE_RUN_NUMBER = 176
+EXPECTED_PACKAGE_RUN_NUMBER = 179
 EXPECTED_RUNNERS = {
     "x86_64": "ubuntu-24.04",
     "aarch64": "ubuntu-24.04-arm",
 }
 # ThreadId parsing requires a UUID; keep this deterministic v7-shaped id test-only.
 SYNTHETIC_THREAD_ID = "01900000-0000-7000-8000-000000000061"
+SYNTHETIC_ATTACHMENT_ID = "01900000-0000-7000-8000-000000000062"
 MAX_CHILD_STDERR_BYTES = 16 * 1024
 MAX_DIAGNOSTIC_CHARS = 4096
 SQLITE_STAGE = "consumer startup"
@@ -161,8 +165,8 @@ def verify_producer(*, repo: str, run_id: str, architecture: str) -> dict[str, A
         "head_sha": PRODUCT_SOURCE,
         "event": "pull_request",
         "status": "completed",
-        # The package builds succeeded. The run is red only because its two
-        # same-run rich consumers fail at the separately owned turn-start seam.
+        # Both package builds succeeded. The run is red because its x86
+        # same-run consumer still reports the separately fixed fixture teardown.
         "conclusion": "failure",
         "run_attempt": 1,
         "run_number": EXPECTED_PACKAGE_RUN_NUMBER,
@@ -205,7 +209,9 @@ def verify_producer(*, repo: str, run_id: str, architecture: str) -> dict[str, A
 
     jobs = github_api(f"/repos/{repo}/actions/runs/{run_id}/jobs?per_page=100").get("jobs", [])
     expected_failed_ids = {
-        int(PRODUCER_JOBS[arch]["consumer_job_id"]) for arch in EXPECTED_RUNNERS
+        int(expected["consumer_job_id"])
+        for expected in PRODUCER_JOBS.values()
+        if expected["consumer_conclusion"] == "failure"
     }
     failed_ids = {candidate.get("id") for candidate in jobs if candidate.get("conclusion") == "failure"}
     require(failed_ids == expected_failed_ids, "Producer run has an unexpected failed-job set.")
@@ -224,7 +230,11 @@ def verify_producer(*, repo: str, run_id: str, architecture: str) -> dict[str, A
         require(consumer_job is not None, f"Exact same-run {arch} package consumer receipt is absent.")
         require(consumer_job.get("name") == expected["consumer_job_name"], f"Same-run {arch} package consumer job name mismatch.")
         require(consumer_job.get("run_id") == int(run_id), f"Same-run {arch} package consumer belongs to a different run.")
-        require(consumer_job.get("status") == "completed" and consumer_job.get("conclusion") == "failure", f"Expected same-run {arch} consumer failure is no longer present.")
+        require(
+            consumer_job.get("status") == "completed"
+            and consumer_job.get("conclusion") == expected["consumer_conclusion"],
+            f"Same-run {arch} consumer conclusion differs from the exact producer receipt.",
+        )
         require(consumer_job.get("runner_group_name") == "GitHub Actions", f"Same-run {arch} consumer did not use the standard hosted runner group.")
         require(consumer_job.get("labels") == [EXPECTED_RUNNERS[arch]], f"Same-run {arch} consumer runner label mismatch.")
         job_receipts[arch] = {
@@ -264,7 +274,7 @@ def verify_producer(*, repo: str, run_id: str, architecture: str) -> dict[str, A
         "artifact_name": producer["artifact_name"],
         "artifact_digest": producer["artifact_digest"],
         "consumer_job_id": producer["consumer_job_id"],
-        "consumer_conclusion": "failure",
+        "consumer_conclusion": producer["consumer_conclusion"],
     }
 
 
@@ -586,28 +596,44 @@ def source_migrations(source_dir: Path) -> list[tuple[int, str, bytes]]:
             migrations.append((version, match.group(2).replace("_", " "), path.read_bytes()))
     require(len(migrations) == 67, "Historical public source does not contain exactly the 67 recorded migrations.")
     require(len({version for version, _, _ in migrations}) == 67, "Historical migration versions are not unique.")
-    require(not any(version == 61 for version, _, _ in migrations), "Historical pre-61 source unexpectedly includes migration 61.")
+    require(
+        not any(version == 61 for version, _, _ in migrations),
+        "Pinned historical source unexpectedly includes migration 61.",
+    )
     return migrations
 
 
 def schema_snapshot_path() -> Path:
-    path = Path(__file__).with_name("38e25-pre61-snapshot.sql")
-    require(path.is_file(), "Public pre-61 schema snapshot is missing.")
+    path = Path(__file__).with_name("38e25-pre59-60-snapshot.sql")
+    require(path.is_file(), "Public pre-59/60 schema snapshot is missing.")
     return path
 
 
-def create_pre61_database(db_path: Path, snapshot_path: Path, migrations: list[tuple[int, str, bytes]], rollout_path: Path) -> list[tuple[Any, ...]]:
-    mark_sqlite_stage("open synthetic pre-61 database")
+def create_pre59_60_database(
+    db_path: Path,
+    snapshot_path: Path,
+    migrations: list[tuple[int, str, bytes]],
+    rollout_path: Path,
+) -> list[tuple[Any, ...]]:
+    mark_sqlite_stage("open synthetic pre-59/60 database")
     connection = sqlite3.connect(db_path)
     try:
-        mark_sqlite_stage("create source-derived pre-61 schema")
+        mark_sqlite_stage("create source-derived pre-59/60 schema")
         connection.executescript(snapshot_path.read_text())
         mark_sqlite_stage("verify source-derived schema table set")
         table_names = {
             row[0]
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
         }
-        require(table_names == EXPECTED_APP_TABLES, "Data-free historical schema snapshot has an unexpected table set.")
+        require(
+            table_names == INITIAL_APP_TABLES,
+            "Data-free historical schema snapshot has an unexpected initial table set.",
+        )
+        initial_index = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='index' "
+            "AND name='idx_thread_attachments_identity_thread'"
+        ).fetchone()
+        require(initial_index is None, "Initial schema already contains the migration 59 index.")
         mark_sqlite_stage("create migration ledger")
         connection.execute(
             """CREATE TABLE _sqlx_migrations (
@@ -619,8 +645,22 @@ def create_pre61_database(db_path: Path, snapshot_path: Path, migrations: list[t
                 execution_time BIGINT NOT NULL
             )"""
         )
-        mark_sqlite_stage("seed historical migration identities")
-        for version, description, raw_sql in migrations:
+        initial_migrations = [
+            migration for migration in migrations if migration[0] not in MISSING_INITIAL_MIGRATIONS
+        ]
+        missing_versions = {version for version, _, _ in migrations} - {
+            version for version, _, _ in initial_migrations
+        }
+        require(
+            missing_versions == MISSING_INITIAL_MIGRATIONS,
+            "Initial fixture migration gap differs from exact versions 59 and 60.",
+        )
+        require(
+            len(initial_migrations) == 65,
+            "Initial fixture does not contain the exact 65 recorded migration identities.",
+        )
+        mark_sqlite_stage("seed initial 65 migration identities")
+        for version, description, raw_sql in initial_migrations:
             connection.execute(
                 "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES (?, ?, 1, ?, 0)",
                 (version, description, hashlib.sha384(raw_sql).digest()),
@@ -638,13 +678,27 @@ def create_pre61_database(db_path: Path, snapshot_path: Path, migrations: list[t
                       'workspaceWrite', 'on-request', 1, 'Synthetic migration snapshot row')""",
             (SYNTHETIC_THREAD_ID, str(rollout_path)),
         )
+        mark_sqlite_stage("seed synthetic thread attachment")
+        connection.execute(
+            """INSERT INTO thread_attachments (
+                id, thread_id, attachment_type, identity_key, payload, created_at
+            ) VALUES (?, ?, 'synthetic', 'migration-consumer', '{"source":"fixture"}', 1)""",
+            (SYNTHETIC_ATTACHMENT_ID, SYNTHETIC_THREAD_ID),
+        )
         mark_sqlite_stage("read pre-migration ledger snapshot")
         before = list(
             connection.execute(
                 "SELECT version, description, success, checksum FROM _sqlx_migrations ORDER BY version"
             )
         )
-        require(len(before) == 67, "Pre-migration fixture does not have all 67 historical ledger entries.")
+        require(
+            len(before) == 65,
+            "Pre-migration fixture does not have the exact 65 historical ledger entries.",
+        )
+        require(
+            [row[0] for row in before] == [version for version, _, _ in initial_migrations],
+            "Initial fixture migration versions differ from the exact 65-entry profile lineage.",
+        )
         mark_sqlite_stage("commit pre-migration synthetic database")
         connection.commit()
         return before
@@ -652,21 +706,52 @@ def create_pre61_database(db_path: Path, snapshot_path: Path, migrations: list[t
         connection.close()
 
 
-def verify_historical_ledger(db_path: Path, before: list[tuple[Any, ...]]) -> list[tuple[Any, ...]]:
+def normalize_sql(sql: str) -> str:
+    return " ".join(sql.strip().rstrip(";").split()).casefold()
+
+
+def verify_historical_ledger(
+    db_path: Path,
+    before: list[tuple[Any, ...]],
+    migrations: list[tuple[int, str, bytes]],
+) -> list[tuple[Any, ...]]:
     mark_sqlite_stage("open database for historical ledger verification")
     connection = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)
     try:
-        mark_sqlite_stage("verify unchanged historical ledger")
+        mark_sqlite_stage("verify 65-to-67 migration ledger")
         after = list(
             connection.execute(
                 "SELECT version, description, success, checksum FROM _sqlx_migrations ORDER BY version"
             )
         )
-        require(len(after) == 67, "Packaged first-open/reopen changed the 67-entry historical migration ledger size.")
+        expected = [
+            (version, description, 1, hashlib.sha384(raw_sql).digest())
+            for version, description, raw_sql in migrations
+        ]
+        require(len(before) == 65, "Initial ledger snapshot is not the exact 65-entry profile lineage.")
+        require(
+            len(after) == 67,
+            "Packaged first-open/reopen did not produce the exact 67-entry migration ledger.",
+        )
         previous = {row[0]: row for row in before}
         current = {row[0]: row for row in after}
-        require(set(current) == set(previous), "Packaged first-open/reopen changed the historical migration versions.")
-        require(after == before, "Packaged first-open/reopen changed a historical migration identity.")
+        expected_by_version = {row[0]: row for row in expected}
+        require(
+            set(current) == set(expected_by_version),
+            "Packaged first-open/reopen produced unexpected migration versions.",
+        )
+        require(
+            after == expected,
+            "Packaged first-open/reopen migration identities/checksums differ from exact source.",
+        )
+        require(
+            {version for version in current if version not in previous} == MISSING_INITIAL_MIGRATIONS,
+            "Packaged first-open/reopen did not add exactly migrations 59 and 60.",
+        )
+        require(
+            all(current[version] == row for version, row in previous.items()),
+            "Packaged first-open/reopen changed one of the initial 65 migration identities.",
+        )
         table_names = {
             row[0]
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
@@ -683,14 +768,73 @@ def verify_historical_ledger(db_path: Path, before: list[tuple[Any, ...]]) -> li
             "Packaged first-open/reopen changed the expected schema table set "
             f"(missing={missing_tables}, unexpected={unexpected_tables}).",
         )
+        migrations_by_version = {version: raw_sql.decode("utf-8") for version, _, raw_sql in migrations}
+        index_sql = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type='index' "
+            "AND name='idx_thread_attachments_identity_thread'"
+        ).fetchone()
+        require(index_sql is not None, "Migration 59 did not create its expected attachment index.")
+        require(
+            normalize_sql(index_sql[0]) == normalize_sql(migrations_by_version[59]),
+            "Migration 59 index definition differs from its exact public source SQL.",
+        )
+        index_columns = [
+            row[2]
+            for row in connection.execute(
+                "PRAGMA index_info(idx_thread_attachments_identity_thread)"
+            )
+        ]
+        require(
+            index_columns == ["attachment_type", "identity_key", "thread_id"],
+            "Migration 59 index columns differ from its exact public source definition.",
+        )
+        table_sql = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='guardian_review_feedback'"
+        ).fetchone()
+        require(table_sql is not None, "Migration 60 did not create guardian_review_feedback.")
+        require(
+            normalize_sql(table_sql[0]) == normalize_sql(migrations_by_version[60]),
+            "Migration 60 table definition differs from its exact public source SQL.",
+        )
+        attachment = connection.execute(
+            "SELECT id, thread_id, attachment_type, identity_key, payload, created_at "
+            "FROM thread_attachments WHERE id=?",
+            (SYNTHETIC_ATTACHMENT_ID,),
+        ).fetchone()
+        require(
+            attachment == (
+                SYNTHETIC_ATTACHMENT_ID,
+                SYNTHETIC_THREAD_ID,
+                "synthetic",
+                "migration-consumer",
+                '{"source":"fixture"}',
+                1,
+            ),
+            "Packaged first-open/reopen did not preserve the synthetic attachment row.",
+        )
+        thread = connection.execute(
+            "SELECT id, title, preview FROM threads WHERE id=?", (SYNTHETIC_THREAD_ID,)
+        ).fetchone()
+        require(
+            thread == (
+                SYNTHETIC_THREAD_ID,
+                "Synthetic migration consumer thread",
+                "Synthetic migration snapshot row",
+            ),
+            "Packaged first-open/reopen did not preserve the synthetic thread row.",
+        )
         return after
     finally:
         connection.close()
 
 
-def historical_state_check_after_failure(db_path: Path, before: list[tuple[Any, ...]]) -> str:
+def historical_state_check_after_failure(
+    db_path: Path,
+    before: list[tuple[Any, ...]],
+    migrations: list[tuple[int, str, bytes]],
+) -> str:
     try:
-        rows = verify_historical_ledger(db_path, before)
+        rows = verify_historical_ledger(db_path, before, migrations)
         return f"historical_state_check=passed ledger_rows={len(rows)}"
     except sqlite3.Error as error:
         sqlite_name = getattr(error, "sqlite_errorname", None) or "UNKNOWN"
@@ -705,6 +849,7 @@ def run_app_server(
     sqlite_home: Path,
     db_path: Path,
     before: list[tuple[Any, ...]],
+    migrations: list[tuple[int, str, bytes]],
 ) -> None:
     codex_home.mkdir(parents=True, exist_ok=True)
     sqlite_home.mkdir(parents=True, exist_ok=True)
@@ -725,7 +870,7 @@ def run_app_server(
         except Exception:
             pass
         if isinstance(error, AppServerRpcError):
-            historical_check = historical_state_check_after_failure(db_path, before)
+            historical_check = historical_state_check_after_failure(db_path, before, migrations)
             raise RuntimeError(server._rpc_failure_detail(error, historical_check)) from None
         raise
     else:
@@ -782,18 +927,21 @@ def consume() -> None:
         rollout = root / "synthetic-rollout.jsonl"
         rollout.write_text("\n")
         db_path = sqlite_home / "state_5.sqlite"
-        before = create_pre61_database(db_path, snapshot, migrations, rollout)
-        run_app_server(executable, codex_home, sqlite_home, db_path, before)
-        first_open_rows = verify_historical_ledger(db_path, before)
+        before = create_pre59_60_database(db_path, snapshot, migrations, rollout)
+        run_app_server(executable, codex_home, sqlite_home, db_path, before, migrations)
+        first_open_rows = verify_historical_ledger(db_path, before, migrations)
 
-        run_app_server(executable, codex_home, sqlite_home, db_path, before)
-        reopened_rows = verify_historical_ledger(db_path, before)
-        require(reopened_rows == first_open_rows, "Historical migration ledger changed between first open and process reopen.")
+        run_app_server(executable, codex_home, sqlite_home, db_path, before, migrations)
+        reopened_rows = verify_historical_ledger(db_path, before, migrations)
+        require(
+            reopened_rows == first_open_rows,
+            "Migration ledger changed between first open and process reopen.",
+        )
 
     print(
         json.dumps(
             {
-                "consumer": "exact-package-cli-and-historical-state-reopen",
+                "consumer": "exact-package-cli-and-65-to-67-state-reopen",
                 "repository": repo,
                 "pullRequestHead": pr_head,
                 "workflowMergeSha": workflow_merge_sha,
@@ -804,11 +952,15 @@ def consume() -> None:
                 "arch": architecture,
                 "codexVersion": version,
                 "deviceAuthHelpFlag": "present (help output only; not login/provider acceptance)",
-                "migrationLedgerBefore": len(migrations),
+                "migrationLedgerBefore": len(before),
                 "migrationLedgerAfter": len(reopened_rows),
-                "historicalMigrationLedgerEntriesUnchanged": True,
+                "historical65MigrationEntriesUnchanged": True,
+                "migrationsAppliedOnFirstOpen": sorted(MISSING_INITIAL_MIGRATIONS),
+                "migrationsAddedWithExactSourceChecksums": True,
                 "syntheticThreadVisibleOnFirstOpenAndReopen": True,
-                "historicalLedgerUnchangedAcrossFirstOpenAndReopen": True,
+                "syntheticAttachmentPreservedOnFirstOpenAndReopen": True,
+                "migrationEffectsPresentOnFirstOpenAndReopen": True,
+                "migrationLedgerUnchangedAcrossFirstOpenAndReopen": True,
                 "producer": receipt,
                 "producerWorkflowConclusion": receipt["producer_run_conclusion"],
                 "packageVersion": manifest_details["package_version"],
@@ -816,7 +968,12 @@ def consume() -> None:
                 "packageArtifactHashes": manifest_details["package_artifact_hashes"],
                 "workflowHostSha": manifest_details["workflow_host_sha"],
                 "workflowHostTree": manifest_details["workflow_host_tree"],
-                "qualificationScope": "data-free source-derived historical schema snapshot with 67 unchanged migration identities through first open and reopen; not populated user-database equivalence or full TUI/provider acceptance",
+                "qualificationScope": (
+                    "data-free 65-entry source-derived profile snapshot; exact migrations "
+                    "59 and 60 added on first open with source checksums, synthetic rows "
+                    "preserved, and 67-entry ledger/schema verified on independent reopen; "
+                    "not populated user-database equivalence or full TUI/provider acceptance"
+                ),
             },
             sort_keys=True,
         )
