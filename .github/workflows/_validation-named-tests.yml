@@ -23,6 +23,10 @@ on:
         required: false
         type: boolean
         default: false
+      run_ae94_android_helper_tests:
+        required: false
+        type: boolean
+        default: false
       request_json:
         required: true
         type: string
@@ -270,12 +274,183 @@ jobs:
 
       - name: Inventory and run exact named tests
         id: named_tests
+        if: ${{ inputs.run_ae94_android_helper_tests != true }}
         continue-on-error: true
         working-directory: validation-target
         shell: bash
         run: |
           set -euo pipefail
           python3 ../.workflow-src/.github/scripts/run_named_rust_tests.py
+
+      - name: Run the fixed ae94 Android helper test set
+        id: android_helper_tests
+        if: ${{ inputs.run_ae94_android_helper_tests == true }}
+        continue-on-error: true
+        working-directory: validation-target
+        shell: bash
+        env:
+          VALIDATION_TARGET_SHA: ${{ inputs.target_sha }}
+          VALIDATION_BASE_REF: ${{ inputs.base_ref }}
+          VALIDATION_PROFILE: ${{ inputs.profile }}
+          RUST_TEST_REQUEST_JSON: ${{ inputs.request_json }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          expected_target = "ae94a802f4ca31130c1f1be5d4703c9062b84560"
+          expected_base = "e135df532669849b682dfac712c3f59aded039ba"
+          expected_profile = "rust_integration"
+          expected_tests = [
+              "tests::canonical_actions_prefers_actions_array",
+              "tests::action_failure_summary_lists_completed_actions_without_payload_echo",
+              "tests::mutation_transport_failures_never_recommend_replaying_uncertain_requests",
+              "tests::install_build_from_run_gets_extended_provider_timeout",
+              "tests::install_args_applies_default_serial",
+              "tests::summarize_install_result_keeps_large_provider_payloads_out_of_transcript",
+              "tests::tool_result_preserves_images_when_structured_content_exists",
+              "tests::tool_result_parses_json_text_without_dropping_mcp_image_content",
+              "tests::visual_response_without_native_image_is_failed_loudly",
+              "tests::visual_response_without_text_retains_missing_image_diagnostic",
+              "tests::append_text_preserves_empty_and_native_image_content",
+              "tests::visual_response_with_native_image_remains_successful",
+              "tests::multi_touch_args_preserves_the_atomic_provider_contract",
+              "tests::multi_touch_args_rejects_invalid_pointer_shapes_and_duration",
+          ]
+          identity = {
+              "harness_sha": os.environ.get("VALIDATION_HARNESS_SHA", ""),
+              "base_ref": os.environ.get("VALIDATION_BASE_REF", ""),
+              "base_sha": os.environ.get("VALIDATION_BASE_SHA", ""),
+              "target_sha": os.environ.get("VALIDATION_TARGET_SHA", ""),
+              "run_id": os.environ.get("GITHUB_RUN_ID", ""),
+          }
+          request_text = os.environ.get("RUST_TEST_REQUEST_JSON", "")
+          result = {
+              "schema_version": "rust-tests-v1",
+              "status": "failure",
+              "failure_code": "",
+              "message": "",
+              "request_fingerprint": hashlib.sha256(request_text.encode()).hexdigest(),
+              "identity": identity,
+              "inventory": {"status": "not-run", "tests": []},
+              "tests": [],
+          }
+
+          def fail(code, message):
+              result["failure_code"] = code
+              result["message"] = message
+
+          def bounded_tail(value):
+              text = str(value or "")
+              for variable, replacement in (("GITHUB_WORKSPACE", "<workspace>"), ("HOME", "<runner-home>")):
+                  prefix = os.environ.get(variable)
+                  if prefix:
+                      text = text.replace(prefix, replacement)
+              return text[-4096:]
+
+          expected_request = {
+              "schema_version": "rust-tests-v1",
+              "profile": expected_profile,
+              "package": "codex-android-computer-use",
+              "target_kind": "lib",
+              "target": "",
+              "tests": expected_tests,
+              "execution_mode": "exact",
+          }
+
+          try:
+              request = json.loads(request_text)
+          except (json.JSONDecodeError, TypeError):
+              request = None
+
+          if (
+              identity["target_sha"] != expected_target
+              or identity["base_ref"] != expected_base
+              or identity["base_sha"] != expected_base
+              or os.environ.get("VALIDATION_PROFILE") != expected_profile
+          ):
+              fail("fixed_identity_mismatch", "The Android helper route is restricted to its exact candidate, base, and profile.")
+          elif request != expected_request:
+              fail("fixed_selector_mismatch", "The Android helper request does not match the fixed 14-test selector set.")
+          else:
+              inventory = subprocess.run(
+                  ["cargo", "test", "--manifest-path", "codex-rs/Cargo.toml", "--locked", "-p", "codex-android-computer-use", "--lib", "--", "--list"],
+                  text=True,
+                  capture_output=True,
+                  check=False,
+              )
+              observed_inventory = re.findall(r"^(tests::[A-Za-z0-9_:]+): test$", inventory.stdout, re.MULTILINE)
+              result["inventory"] = {
+                  "status": "success" if inventory.returncode == 0 else "failure",
+                  "tests": observed_inventory,
+                  "exit_code": inventory.returncode,
+              }
+              if inventory.returncode != 0:
+                  fail("inventory_command_failed", "Cargo could not inventory the fixed Android helper library tests.")
+                  result["diagnostics"] = {
+                      "stdout_tail": bounded_tail(inventory.stdout),
+                      "stderr_tail": bounded_tail(inventory.stderr),
+                  }
+              elif sorted(observed_inventory) != sorted(expected_tests) or len(observed_inventory) != len(expected_tests):
+                  fail("inventory_mismatch", "The candidate Android helper test inventory differs from the fixed accepted set.")
+                  result["inventory"]["expected_tests"] = expected_tests
+              else:
+                  test_run = subprocess.run(
+                      ["cargo", "test", "--manifest-path", "codex-rs/Cargo.toml", "--locked", "-p", "codex-android-computer-use", "--lib", "--", "--test-threads=1"],
+                      text=True,
+                      capture_output=True,
+                      check=False,
+                  )
+                  combined = test_run.stdout + "\n" + test_run.stderr
+                  outcomes = re.findall(r"^test (?P<name>tests::[A-Za-z0-9_:]+) \.\.\. (?P<status>ok|FAILED|ignored)$", combined, re.MULTILINE)
+                  summaries = list(re.finditer(
+                      r"test result:\s+\w+\.\s+(?P<passed>\d+) passed;\s+(?P<failed>\d+) failed;\s+(?P<ignored>\d+) ignored;\s+(?P<measured>\d+) measured;\s+(?P<filtered>\d+) filtered out",
+                      combined,
+                  ))
+                  counts = None
+                  if summaries:
+                      match = summaries[-1]
+                      counts = {key: int(match.group(key)) for key in ("passed", "failed", "ignored", "measured", "filtered")}
+                  result["tests"] = [{"name": name, "status": status} for name, status in outcomes]
+                  result["result_counts"] = counts
+                  passed_names = [name for name, status in outcomes if status == "ok"]
+                  success = (
+                      test_run.returncode == 0
+                      and sorted(name for name, _ in outcomes) == sorted(expected_tests)
+                      and len(passed_names) == len(expected_tests)
+                      and counts == {"passed": 14, "failed": 0, "ignored": 0, "measured": 0, "filtered": 0}
+                  )
+                  if success:
+                      result["status"] = "success"
+                      result["message"] = "All fixed Android helper tests passed exactly once."
+                  else:
+                      fail("test_execution_mismatch", "The Android helper suite did not execute exactly 14 passing tests.")
+                      result["command_exit_code"] = test_run.returncode
+                      result["diagnostics"] = {
+                          "stdout_tail": bounded_tail(test_run.stdout),
+                          "stderr_tail": bounded_tail(test_run.stderr),
+                      }
+          except Exception as error:
+              fail("runner_exception", type(error).__name__)
+
+          Path("rust-tests-v1-results.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+          )
+          print(json.dumps({
+              "status": result["status"],
+              "failure_code": result["failure_code"],
+              "inventory_count": len(result["inventory"].get("tests", [])),
+              "test_count": len(result["tests"]),
+              "result_counts": result.get("result_counts"),
+          }, sort_keys=True))
+          if result["status"] != "success":
+              raise SystemExit(1)
+          PY
 
       - name: Append named-test evidence
         if: ${{ always() }}
@@ -316,6 +491,6 @@ jobs:
           retention-days: 3
 
       - name: Preserve failed exact-test result
-        if: ${{ steps.named_tests.outcome == 'failure' }}
+        if: ${{ steps.named_tests.outcome == 'failure' || steps.android_helper_tests.outcome == 'failure' }}
         shell: bash
         run: exit 1

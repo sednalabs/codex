@@ -28,6 +28,11 @@ on:
         required: false
         type: boolean
         default: false
+      run_ae94_android_helper_tests:
+        description: Run the fixed ae94 Android helper library test set
+        required: false
+        type: boolean
+        default: false
       request_json:
         description: JSON rust-tests-v1 typed request (no shell commands or flags)
         required: true
@@ -41,8 +46,20 @@ permissions:
   contents: read
 
 jobs:
+  reject_conflicting_modes:
+    if: ${{ inputs.prepare_codex_cli_for_exact_usage_test == true && inputs.run_ae94_android_helper_tests == true }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: none
+    steps:
+      - name: Reject conflicting special modes
+        shell: bash
+        run: |
+          echo "Usage-package preparation and Android helper validation are mutually exclusive." >&2
+          exit 1
+
   named_tests:
-    if: ${{ inputs.prepare_codex_cli_for_exact_usage_test != true }}
+    if: ${{ inputs.prepare_codex_cli_for_exact_usage_test != true && inputs.run_ae94_android_helper_tests != true }}
     permissions:
       contents: read
     uses: ./.github/workflows/_validation-named-tests.yml
@@ -52,11 +69,12 @@ jobs:
       harness_sha: ${{ github.sha }}
       profile: ${{ inputs.profile }}
       prepare_codex_cli_for_exact_usage_test: ${{ inputs.prepare_codex_cli_for_exact_usage_test }}
+      run_ae94_android_helper_tests: ${{ inputs.run_ae94_android_helper_tests }}
       request_json: ${{ inputs.request_json }}
       artifact_name: validation-named-tests-${{ github.run_id }}
 
   named_tests_with_exact_package:
-    if: ${{ inputs.prepare_codex_cli_for_exact_usage_test == true }}
+    if: ${{ inputs.prepare_codex_cli_for_exact_usage_test == true && inputs.run_ae94_android_helper_tests != true }}
     permissions:
       contents: read
       actions: read
@@ -67,5 +85,21 @@ jobs:
       harness_sha: ${{ github.sha }}
       profile: ${{ inputs.profile }}
       prepare_codex_cli_for_exact_usage_test: ${{ inputs.prepare_codex_cli_for_exact_usage_test }}
+      run_ae94_android_helper_tests: ${{ inputs.run_ae94_android_helper_tests }}
+      request_json: ${{ inputs.request_json }}
+      artifact_name: validation-named-tests-${{ github.run_id }}
+
+  named_tests_for_ae94_android:
+    if: ${{ inputs.run_ae94_android_helper_tests == true && inputs.prepare_codex_cli_for_exact_usage_test != true }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/_validation-named-tests.yml
+    with:
+      target_sha: ${{ inputs.target_sha }}
+      base_ref: ${{ inputs.base_ref }}
+      harness_sha: ${{ github.sha }}
+      profile: ${{ inputs.profile }}
+      prepare_codex_cli_for_exact_usage_test: ${{ inputs.prepare_codex_cli_for_exact_usage_test }}
+      run_ae94_android_helper_tests: ${{ inputs.run_ae94_android_helper_tests }}
       request_json: ${{ inputs.request_json }}
       artifact_name: validation-named-tests-${{ github.run_id }}
