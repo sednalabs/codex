@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify two immutable e20 preview artifacts and exercise their packaged CLI.
+"""Verify two immutable repair-successor preview artifacts and exercise their packaged CLI.
 
 This is a hosted-only, data-free compatibility consumer. It constructs a
 declarative pre-migration-61 schema from public source, seeds synthetic thread
@@ -31,10 +31,10 @@ from pathlib import Path
 from typing import Any
 
 
-E20_SOURCE = "e20b2dc9a96c08b9ae7f38298d098ed01af68e87"
+PRODUCT_SOURCE = "82f3bef4826a0552f5070ec7431f670443b60bec"
 # The producer dispatch passed the exact commit SHA as its `ref` input, so its
 # preview manifest records that SHA rather than the source branch name.
-E20_REF = "e20b2dc9a96c08b9ae7f38298d098ed01af68e87"
+PRODUCT_REF = "82f3bef4826a0552f5070ec7431f670443b60bec"
 WORKFLOW_HOST = "c753adfb07d05567efd386b4b829d2e53b4583c0"
 WORKFLOW_HOST_REF = "preview/workflow-host-c753adf-20261015"
 BASE_SHA = "703389678a1a6c3a9d131245d03d3f1805b9afa1"
@@ -175,7 +175,7 @@ def verify_producer(
         "job_id": job_id,
         "producer_head_sha": run["head_sha"],
         "producer_run_number": run["run_number"],
-        "source_sha": E20_SOURCE,
+        "source_sha": PRODUCT_SOURCE,
         "runner_label": job["labels"][0],
         "artifact_id": artifact_id,
         "artifact_name": artifact_name,
@@ -191,14 +191,14 @@ def read_bundle(artifact_dir: Path, producer_run_number: int) -> tuple[Path, dic
     require(len(entries) == 2 and len(archives) == 1 and len(manifests) == 1, "Artifact bundle shape is not the exact preview package pair.")
     manifest = json.loads(manifests[0].read_text())
     require(manifest.get("repository") == env("GITHUB_REPOSITORY"), "Preview manifest repository mismatch.")
-    require(manifest.get("commit") == E20_SOURCE, "Preview manifest source commit mismatch.")
-    require(manifest.get("ref") == E20_REF, "Preview manifest source ref mismatch.")
+    require(manifest.get("commit") == PRODUCT_SOURCE, "Preview manifest source commit mismatch.")
+    require(manifest.get("ref") == PRODUCT_REF, "Preview manifest source ref mismatch.")
     workflow_url = manifest.get("workflow", "")
     run_id = env("PRODUCER_RUN_ID")
     require(workflow_url.endswith(f"/actions/runs/{run_id}"), "Preview manifest does not bind to its exact producer run.")
     version = manifest.get("previewVersion", "")
     require(
-        re.search(rf"-ci\.{producer_run_number}\+g{E20_SOURCE[:8]}$", version) is not None,
+        re.search(rf"-ci\.{producer_run_number}\+g{PRODUCT_SOURCE[:8]}$", version) is not None,
         "Preview metadata version does not match the exact producer run and source SHA.",
     )
     if architecture := os.environ.get("ARCHITECTURE"):
@@ -451,7 +451,7 @@ def source_migrations(source_dir: Path, candidate_dir: Path) -> tuple[list[tuple
     require(not any(version == 61 for version, _, _ in migrations), "Historical pre-61 source unexpectedly includes migration 61.")
     migration61_path = candidate_dir / "codex-rs/state/migrations/0061_thread_read_state.sql"
     migration61 = migration61_path.read_bytes()
-    require(hashlib.sha384(migration61).hexdigest() == MIGRATION_61_SHA384, "e20 migration-61 bytes do not match the reviewed source identity.")
+    require(hashlib.sha384(migration61).hexdigest() == MIGRATION_61_SHA384, "Migration-61 bytes do not match the reviewed source identity.")
     return migrations, migration61
 
 
@@ -617,8 +617,8 @@ def consume() -> None:
     migration_source_dir = Path(env("HISTORICAL_SOURCE_DIR"))
     require(
         subprocess.check_output(["git", "-C", str(candidate_dir), "rev-parse", "HEAD"], text=True).strip()
-        == E20_SOURCE,
-        "Candidate-source checkout does not match the exact e20 product SHA.",
+        == PRODUCT_SOURCE,
+        "Candidate-source checkout does not match the exact product SHA.",
     )
     require(
         subprocess.check_output(["git", "-C", str(migration_source_dir), "rev-parse", "HEAD"], text=True).strip()
@@ -631,7 +631,7 @@ def consume() -> None:
     executable = extract_codex(archive, Path(env("RUNNER_TEMP")), architecture)
 
     version = subprocess.run([str(executable), "--version"], check=True, text=True, capture_output=True, timeout=60).stdout.strip()
-    require("0.163.0-dev.sedna.1" in version and "-dirty" not in version, "Packaged CLI version does not match the immutable e20 product source.")
+    require("0.163.0-dev.sedna.1" in version and "-dirty" not in version, "Packaged CLI version does not match the immutable product source.")
     help_text = subprocess.run([str(executable), "mcp", "login", "--help"], check=True, text=True, capture_output=True, timeout=60).stdout
     require("--device-auth" in help_text, "Packaged CLI does not expose MCP device authentication.")
 
@@ -680,11 +680,11 @@ def consume() -> None:
     print(
         json.dumps(
             {
-                "consumer": "e20-packaged-cli-and-state-migration61",
+                "consumer": "packaged-cli-and-state-migration61",
                 "repository": repo,
                 "pullRequestHead": pr_head,
                 "workflowMergeSha": workflow_merge_sha,
-                "productSource": E20_SOURCE,
+                "productSource": PRODUCT_SOURCE,
                 "historicalSchemaSource": MIGRATION_38E25,
                 "schemaSnapshotSha256": snapshot_sha256,
                 "arch": architecture,
@@ -718,5 +718,5 @@ if __name__ == "__main__":
             detail = f"SQLite {sqlite_name} during {SQLITE_STAGE}"
         else:
             detail = type(error).__name__
-        print(f"e20 packaged consumer failed: {detail}", file=sys.stderr)
+        print(f"packaged consumer failed: {detail}", file=sys.stderr)
         raise SystemExit(1)
