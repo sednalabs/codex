@@ -455,6 +455,16 @@ async fn restates_the_current_remainder_after_rollback() -> Result<()> {
     .await
     .expect("timed out waiting for thread rollback")?;
     test.submit_turn("turn after rollback").await?;
+    timeout(default_event_wait_floor(), async {
+        loop {
+            if responses.requests().len() >= 2 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("timed out waiting for the post-rollback Responses API request");
 
     let requests = responses.requests();
     assert_eq!(
