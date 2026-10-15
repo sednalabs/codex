@@ -204,21 +204,6 @@ impl<T: HttpTransport> EndpointSession<T> {
             .map(|(response, _auth)| response)
     }
 
-    pub(crate) async fn execute_with_auth<C>(
-        &self,
-        method: Method,
-        path: &str,
-        extra_headers: HeaderMap,
-        body: Option<Value>,
-        configure: C,
-    ) -> Result<(Response, SharedAuthProvider), ApiError>
-    where
-        C: Fn(&mut Request),
-    {
-        self.execute_with_auth_inner(method, path, extra_headers, body, configure)
-            .await
-    }
-
     async fn execute_with_auth_inner<C>(
         &self,
         method: Method,

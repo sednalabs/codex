@@ -79,7 +79,7 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<AutomaticTurnContinuationRef>("\"opaque-reference-123\"")
                 .expect("deserialize ref"),
-            reference.clone()
+            reference
         );
         assert_eq!(
             AutomaticTurnContinuationRef::from_error_details(Some(&reference.to_error_details())),
