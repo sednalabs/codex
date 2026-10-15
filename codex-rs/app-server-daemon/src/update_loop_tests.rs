@@ -1086,6 +1086,9 @@ async fn post_install_native_guards_reject_mismatch_and_downgrade_before_restart
                     "printf '{release}' > '{root}/auto-update-version'\n",
                 ),
                 root = root.display(),
+                release = release,
+                metadata = metadata,
+                binary_native_version = binary_native_version,
             )
             .into_bytes(),
         ));
