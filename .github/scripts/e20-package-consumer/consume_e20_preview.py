@@ -289,7 +289,14 @@ class AppServer:
         while True:
             response = self.read_line(60)
             if response.get("id") == request_id:
-                require("error" not in response, f"Packaged app-server rejected {method}.")
+                if "error" in response:
+                    error = response["error"]
+                    code = error.get("code") if isinstance(error, dict) else None
+                    code_label = str(code) if isinstance(code, int) else "nonstandard"
+                    category = rpc_error_category(error)
+                    raise RuntimeError(
+                        f"Packaged app-server rejected {method} (rpc_{code_label}_{category})."
+                    )
                 require("result" in response, f"Packaged app-server omitted {method} result.")
                 return response["result"]
 
@@ -319,6 +326,26 @@ class AppServer:
             self.process.wait(timeout=10)
             raise RuntimeError("Packaged app-server did not exit after stdin EOF.")
         require(status == 0, f"Packaged app-server exited with status {status}.")
+
+
+def rpc_error_category(error: Any) -> str:
+    message = error.get("message", "") if isinstance(error, dict) else ""
+    if not isinstance(message, str):
+        return "unspecified"
+    lowered = message.lower()
+    categories = (
+        ("no such table", "missing_table"),
+        ("no such column", "missing_column"),
+        ("has no column named", "missing_column"),
+        ("database is locked", "database_locked"),
+        ("database is busy", "database_busy"),
+        ("database or disk is full", "storage_full"),
+        ("readonly database", "database_read_only"),
+        ("database disk image is malformed", "database_malformed"),
+        ("unable to open database file", "database_open_failed"),
+        ("constraint failed", "constraint_failed"),
+    )
+    return next((label for marker, label in categories if marker in lowered), "other")
 
 
 def source_migrations(source_dir: Path, candidate_dir: Path) -> tuple[list[tuple[int, str, bytes]], bytes]:
