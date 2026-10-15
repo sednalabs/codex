@@ -497,10 +497,7 @@ fn is_https_url(value: &str) -> bool {
 fn has_url_userinfo(url: &url::Url) -> bool {
     url.as_str()
         .split_once("://")
-        .and_then(|(_, rest)| {
-            rest.split(['/', '?', '#'])
-                .next()
-        })
+        .and_then(|(_, rest)| rest.split(['/', '?', '#']).next())
         .is_none_or(|authority| authority.contains('@'))
 }
 

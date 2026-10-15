@@ -2699,10 +2699,7 @@ mod tests {
         assert_eq!(projected[1].outcome, OUTCOME_STARTED);
         assert!(
             runtime
-                .automatic_turn_trigger_for_continuation_ref(
-                    thread_id,
-                    second_reference.as_str(),
-                )
+                .automatic_turn_trigger_for_continuation_ref(thread_id, second_reference.as_str())
                 .await
                 .is_none(),
             "the consumed second ticket must not become eligible again"
