@@ -671,12 +671,16 @@ def verify_historical_ledger(db_path: Path, before: list[tuple[Any, ...]]) -> li
             row[0]
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
         }
-        expected_table_names = EXPECTED_APP_TABLES | {"_sqlx_migrations"}
+        # The historical SQLx snapshot predates State's extension-migration
+        # bookkeeping. The packaged runtime creates this table while applying
+        # its existing phase2 extension migrations; it is the only expected
+        # target-added table.
+        expected_table_names = EXPECTED_APP_TABLES | {"_sqlx_migrations", "extension_migrations"}
         missing_tables = sorted(expected_table_names - table_names)
         unexpected_tables = sorted(table_names - expected_table_names)
         require(
             not missing_tables and not unexpected_tables,
-            "Packaged first-open/reopen changed the source-derived schema table set "
+            "Packaged first-open/reopen changed the expected schema table set "
             f"(missing={missing_tables}, unexpected={unexpected_tables}).",
         )
         return after
