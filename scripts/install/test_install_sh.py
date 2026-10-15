@@ -37,7 +37,11 @@ class InstallShTest(unittest.TestCase):
         target = linux_target()
         version = "0.163.0-alpha.1"
         release_json, sedna_metadata = sedna_release_metadata(
-            version, target, native_version="0.162.0", channel="prerelease", prerelease=False
+            version,
+            target,
+            native_version="0.162.0",
+            channel="prerelease",
+            prerelease=False,
         )
         with tempfile.TemporaryDirectory() as temp_dir:
             result, requests = run_installer_in(
@@ -56,7 +60,9 @@ class InstallShTest(unittest.TestCase):
         self.assertNotIn("codex-package_SHA256SUMS", "\n".join(requests))
 
     @unittest.skipUnless(sys.platform == "linux", "Sedna binary updates are Linux-only")
-    def test_sedna_rejects_package_with_older_native_version_before_selection(self) -> None:
+    def test_sedna_rejects_package_with_older_native_version_before_selection(
+        self,
+    ) -> None:
         target = linux_target()
         version = "0.163.0"
         release_json, sedna_metadata = sedna_release_metadata(
@@ -143,8 +149,10 @@ class InstallShTest(unittest.TestCase):
         version = "0.146.0"
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            archive, checksum, release_json, sedna_metadata = create_sedna_package_release(
-                root, version, target, native_version="0.162.0-sedna.dev.be2e129"
+            archive, checksum, release_json, sedna_metadata = (
+                create_sedna_package_release(
+                    root, version, target, native_version="0.162.0-sedna.dev.be2e129"
+                )
             )
             standalone = root / "codex-home" / "packages" / "app-server-daemon"
             standalone.mkdir(parents=True)
