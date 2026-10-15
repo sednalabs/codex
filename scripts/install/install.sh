@@ -489,15 +489,36 @@ resolve_sedna_release() {
       return 1
     fi
     if [ "$SEDNA_SELECTION_CHANNEL" = "prerelease" ]; then
-      normalized_version="$(printf '%s\n' "$release_json" | parse_release_metadata | awk -F '\t' '
-        $1 == "tag_name" { if (first == "") first = $2; tag = $2 }
-        $1 == "prerelease" && $2 == "true" && tag ~ /^rust-v/ { print tag; found = 1; exit }
-        END { if (!found && first ~ /^rust-v/) print first }
+      release_candidates="$(printf '%s\n' "$release_json" | parse_release_metadata | awk -F '\t' '
+        $1 == "tag_name" { tag = $2 }
+        $1 == "prerelease" { if (tag != "") print tag "," $2; tag = "" }
       ')"
-      case "$normalized_version" in
-        rust-v*) normalized_version="${normalized_version#rust-v}" ;;
-        *) echo "No Sedna prerelease is currently available." >&2; return 1 ;;
-      esac
+      normalized_version=""
+      for candidate in $release_candidates; do
+        candidate_tag="${candidate%,*}"
+        candidate_channel="${candidate##*,}"
+        case "$candidate_tag:$candidate_channel" in
+          rust-v*:true|rust-v*:false) ;;
+          *) continue ;;
+        esac
+        candidate_version="${candidate_tag#rust-v}"
+        validate_sedna_version "$candidate_version" || continue
+        candidate_semver="${candidate_version%%+*}"
+        case "$candidate_channel:$candidate_semver" in
+          true:*-*) ;;
+          false:*-*) continue ;;
+          true:*) continue ;;
+          false:*) ;;
+        esac
+        if [ -z "$normalized_version" ] ||
+          [ "$(sedna_version_compare "$candidate_version" "$normalized_version")" -gt 0 ]; then
+          normalized_version="$candidate_version"
+        fi
+      done
+      [ -n "$normalized_version" ] || {
+        echo "No valid Sedna release is currently available." >&2
+        return 1
+      }
     else
       if ! release_tag="$(printf '%s\n' "$release_json" | parse_release_metadata | awk -F '\t' '$1 == "tag_name" { print $2; exit }')"; then
         return 1
@@ -725,9 +746,15 @@ validate_sedna_release_metadata() {
     [ "$archive_name" = "codex-package-$vendor_target.tar.gz" ] || return 1
   validate_sedna_version "$package_version" || return 1
   validate_sedna_version "$sedna_native_version" || return 1
+  package_semver="${package_version%%+*}"
   case "$metadata_channel:$actual_prerelease" in
-    stable:false | prerelease:true | prerelease:false) ;;
+    stable:false | prerelease:true) ;;
     *) return 1 ;;
+  esac
+  case "$metadata_channel:$package_semver" in
+    stable:*-*) return 1 ;;
+    prerelease:*-*) ;;
+    prerelease:*) return 1 ;;
   esac
   printf '%s\n' "$source_commit" "$source_tree" "$workflow_host_commit" "$workflow_host_tree" |
     awk 'length($0) != 40 || $0 ~ /[^0-9a-f]/ { exit 1 }' || return 1
@@ -738,8 +765,15 @@ validate_sedna_release_metadata() {
   previous_version="${CODEX_SEDNA_PREVIOUS_VERSION:-}"
   [ -n "$previous_version" ] || return 1
   validate_sedna_version "$previous_version" || return 1
+  previous_native_version="${CODEX_SEDNA_PREVIOUS_NATIVE_VERSION:-}"
+  [ -n "$previous_native_version" ] || return 1
+  validate_sedna_version "$previous_native_version" || return 1
   if [ "$(sedna_version_compare "$package_version" "$previous_version")" -le 0 ]; then
     sedna_no_update="1"
+  fi
+  if [ "$(sedna_version_compare "$sedna_native_version" "$previous_native_version")" -lt 0 ]; then
+    echo "Sedna release native version is older than the installed native version." >&2
+    return 1
   fi
   return 0
 }
@@ -1549,11 +1583,13 @@ if [ "$DAEMON_ONLY" = "1" ] && [ "${CODEX_INSTALL_DEFER_SELECTION:-0}" != "1" ];
   fi
 fi
 update_current_link "$release_dir"
-if [ "$RELEASE" = "latest" ]; then
-  printf '%s' "$release_name" > "$AUTO_UPDATE_VERSION.tmp.$$"
-  mv -f "$AUTO_UPDATE_VERSION.tmp.$$" "$AUTO_UPDATE_VERSION"
-else
-  rm -f "$AUTO_UPDATE_VERSION"
+if [ "${CODEX_INSTALL_DEFER_SELECTION:-0}" != "1" ]; then
+  if [ "$RELEASE" = "latest" ]; then
+    printf '%s' "$release_name" > "$AUTO_UPDATE_VERSION.tmp.$$"
+    mv -f "$AUTO_UPDATE_VERSION.tmp.$$" "$AUTO_UPDATE_VERSION"
+  else
+    rm -f "$AUTO_UPDATE_VERSION"
+  fi
 fi
 if [ "$DAEMON_ONLY" = "1" ]; then
   release_install_lock

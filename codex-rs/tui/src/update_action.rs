@@ -35,6 +35,8 @@ impl UpdateAction {
                         receipt.release.target == expected_target
                             && receipt.release.native_version.to_string()
                                 == crate::version::CODEX_CLI_VERSION
+                            && (receipt.selection_channel == "prerelease"
+                                || receipt.release.channel == "stable")
                     })
                     .map(|_| UpdateAction::SednaStandalone)
             }
@@ -47,7 +49,10 @@ impl UpdateAction {
             UpdateAction::Daemon(source) => ("codex".into(), strings(source.command_args())),
             UpdateAction::SednaStandalone => {
                 let receipt = InstallContext::current().sedna_release_receipt();
-                let Some(receipt) = receipt else {
+                let Some(receipt) = receipt.filter(|receipt| {
+                    receipt.selection_channel == "prerelease"
+                        || receipt.release.channel == "stable"
+                }) else {
                     return (
                         "sh".into(),
                         strings(&[
@@ -56,13 +61,12 @@ impl UpdateAction {
                         ]),
                     );
                 };
-                let command = format!(
-                    "curl -fsSL https://raw.githubusercontent.com/sednalabs/codex/{}/scripts/install/install.sh | CODEX_SEDNA_UPDATE=1 CODEX_SEDNA_RELEASE_CHANNEL={} CODEX_SEDNA_PREVIOUS_VERSION={} CODEX_RELEASE=latest CODEX_NON_INTERACTIVE=1 sh",
-                    receipt.release.source_commit,
-                    receipt.selection_channel,
-                    receipt.release.package_version
-                );
-                ("sh".into(), vec!["-c".into(), command])
+                sedna_standalone_command_args(
+                    &receipt.release.source_commit,
+                    &receipt.selection_channel,
+                    &receipt.release.package_version.to_string(),
+                    &receipt.release.native_version.to_string(),
+                )
             }
         }
     }
@@ -73,6 +77,21 @@ impl UpdateAction {
         shlex::try_join(std::iter::once(command.as_str()).chain(args.iter().map(String::as_str)))
             .unwrap_or_else(|_| format!("{command} {}", args.join(" ")))
     }
+}
+
+fn sedna_standalone_command_args(
+    source_commit: &str,
+    selection_channel: &str,
+    previous_package_version: &str,
+    previous_native_version: &str,
+) -> (String, Vec<String>) {
+    let url = format!(
+        "https://raw.githubusercontent.com/sednalabs/codex/{source_commit}/scripts/install/install.sh"
+    );
+    let command = format!(
+        "installer=$(curl -fsSL {url}) && printf '%s\\n' \"$installer\" | env CODEX_SEDNA_UPDATE=1 CODEX_SEDNA_RELEASE_CHANNEL={selection_channel} CODEX_SEDNA_PREVIOUS_VERSION={previous_package_version} CODEX_SEDNA_PREVIOUS_NATIVE_VERSION={previous_native_version} CODEX_RELEASE=latest CODEX_NON_INTERACTIVE=1 sh"
+    );
+    ("sh".into(), vec!["-c".into(), command])
 }
 
 fn strings(values: &[&str]) -> Vec<String> {
@@ -129,6 +148,36 @@ mod tests {
             }),
             None
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sedna_update_does_not_run_an_empty_shell_when_script_fetch_fails() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let curl = temp.path().join("curl");
+        std::fs::write(&curl, "#!/bin/sh\nexit 22\n").expect("mock curl");
+        std::fs::set_permissions(&curl, std::fs::Permissions::from_mode(0o755))
+            .expect("make mock curl executable");
+        let marker = temp.path().join("selected-version");
+        std::fs::write(&marker, "current").expect("selection marker");
+        let (shell, args) = sedna_standalone_command_args(
+            "1111111111111111111111111111111111111111",
+            "stable",
+            "0.146.0",
+            "0.162.0-sedna.dev.be2e129",
+        );
+
+        assert_eq!(shell, "sh");
+        let status = std::process::Command::new("/bin/sh")
+            .args(args)
+            .env("PATH", temp.path())
+            .status()
+            .expect("run mocked update shell");
+
+        assert!(!status.success());
+        assert_eq!(std::fs::read_to_string(marker).unwrap(), "current");
     }
 }
 

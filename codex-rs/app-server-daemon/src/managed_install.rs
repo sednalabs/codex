@@ -70,8 +70,8 @@ pub(crate) fn managed_codex_bin(codex_home: &Path) -> PathBuf {
     }
 }
 
-/// Only latest-channel stable releases may run the public latest-version updater.
-pub(crate) fn is_stable_standalone_release(codex_home: &Path, codex_bin: &Path) -> bool {
+/// Only verified Sedna releases on the user's selected channel may update.
+pub(crate) fn is_sedna_update_eligible(codex_home: &Path, codex_bin: &Path) -> bool {
     if !cfg!(all(
         target_os = "linux",
         any(target_arch = "x86_64", target_arch = "aarch64")
@@ -87,7 +87,7 @@ pub(crate) fn is_stable_standalone_release(codex_home: &Path, codex_bin: &Path) 
     let Some(receipt) = install_context.sedna_release_receipt() else {
         return false;
     };
-    if receipt.selection_channel != "stable" || receipt.release.channel != "stable" {
+    if receipt.selection_channel == "stable" && receipt.release.channel != "stable" {
         return false;
     }
     if receipt.release.native_version.to_string() != env!("CARGO_PKG_VERSION") {

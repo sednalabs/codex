@@ -529,8 +529,8 @@ impl Daemon {
             };
             // The installer can retarget `current` while the updater waits for
             // this lock or probes the running server. Never restart from a
-            // release that is no longer the selected latest-channel binary.
-            if !self.is_stable_standalone_release()?
+            // release that is no longer the selected Sedna-channel binary.
+            if !self.is_sedna_update_eligible()?
                 || managed_install::resolved_managed_codex_bin(&self.current_managed_codex_bin()?)
                     .await
                     .ok()
@@ -600,7 +600,7 @@ impl Daemon {
             RestartIfRunningOutcome::NotRunning
         };
 
-        if !self.is_stable_standalone_release()?
+        if !self.is_sedna_update_eligible()?
             || managed_install::resolved_managed_codex_bin(&self.current_managed_codex_bin()?)
                 .await
                 .ok()
@@ -896,7 +896,7 @@ impl Daemon {
             updater.stop().await?;
             return Ok(false);
         }
-        if !self.is_stable_standalone_release()? {
+        if !self.is_sedna_update_eligible()? {
             // An installer publishes current and the latest marker separately.
             // Keep its updater alive while that publication may be in progress.
             if !self.has_latest_selection_marker() {
@@ -913,7 +913,7 @@ impl Daemon {
             return Ok(false);
         };
         if !managed_install::supports_daemon_update_loop(&codex_bin).await
-            || !self.is_stable_standalone_release()?
+            || !self.is_sedna_update_eligible()?
             || !managed_install::resolved_managed_codex_bin(&self.managed_codex_bin)
                 .await
                 .is_ok_and(|selected| selected == codex_bin)
@@ -929,13 +929,13 @@ impl Daemon {
         Ok(true)
     }
 
-    fn is_stable_standalone_release(&self) -> Result<bool> {
+    fn is_sedna_update_eligible(&self) -> Result<bool> {
         let codex_home = self
             .settings_file
             .parent()
             .and_then(Path::parent)
             .context("daemon settings path has no Codex home")?;
-        Ok(managed_install::is_stable_standalone_release(
+        Ok(managed_install::is_sedna_update_eligible(
             codex_home,
             &self.current_managed_codex_bin()?,
         ))
@@ -964,7 +964,7 @@ impl Daemon {
 
     async fn is_bootstrapped(&self, settings: &DaemonSettings) -> Result<bool> {
         if !settings.auto_update_enabled
-            || !self.is_stable_standalone_release()?
+            || !self.is_sedna_update_eligible()?
             || !managed_install::supports_daemon_update_loop(&self.managed_codex_bin).await
         {
             return Ok(self.running_backend_instance(settings).await?.is_some());

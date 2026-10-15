@@ -73,7 +73,7 @@ pub(crate) async fn request(daemon: &Daemon) -> Result<UpdateOutput> {
                             .await?;
                         let current_exe = std::env::current_exe()?;
                         let paths = daemon.backend_paths_with_bin(&settings, &current_exe);
-                        let restore_release = if daemon.is_stable_standalone_release()? {
+                        let restore_release = if daemon.is_sedna_update_eligible()? {
                             None
                         } else {
                             Some(selected_release(daemon)?.2)
@@ -137,7 +137,7 @@ pub(crate) async fn request(daemon: &Daemon) -> Result<UpdateOutput> {
             let _operation_lock = daemon.acquire_operation_lock().await?;
             let settings = daemon.load_settings().await?;
             let worker = crate::backend::pid_update_loop_backend(daemon.backend_paths(&settings));
-            if !daemon.is_stable_standalone_release()? {
+            if !daemon.is_sedna_update_eligible()? {
                 worker.stop().await?;
                 continue 'request;
             }
@@ -147,7 +147,13 @@ pub(crate) async fn request(daemon: &Daemon) -> Result<UpdateOutput> {
 }
 
 pub(super) fn supported(daemon: &Daemon) -> Result<bool> {
-    if daemon.is_stable_standalone_release()? {
+    if !cfg!(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    )) {
+        return Ok(false);
+    }
+    if daemon.is_sedna_update_eligible()? {
         return Ok(true);
     }
     let Ok((root, release, _)) = selected_release(daemon) else {
@@ -165,6 +171,14 @@ const UNSUPPORTED_MESSAGE: &str =
 
 pub(super) async fn unsupported(daemon: &Daemon) -> Result<UpdateOutput> {
     let managed_codex_path = daemon.current_managed_codex_bin()?;
+    let message = if cfg!(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    )) {
+        UNSUPPORTED_MESSAGE
+    } else {
+        "Sedna binary updates are supported only on Linux x86_64 and ARM64. Reinstall manually from https://github.com/sednalabs/codex/releases."
+    };
     Ok(UpdateOutput {
         status: UpdateStatus::Unsupported,
         installed_version: managed_codex_version(&managed_codex_path).await.ok(),
@@ -173,7 +187,7 @@ pub(super) async fn unsupported(daemon: &Daemon) -> Result<UpdateOutput> {
             .ok()
             .map(|info| info.app_server_version),
         managed_codex_path,
-        message: UNSUPPORTED_MESSAGE.to_string(),
+        message: message.to_string(),
     })
 }
 
@@ -234,7 +248,7 @@ pub(super) async fn run(
 ) -> Result<UpdateOutput> {
     let settings = daemon.load_settings().await?;
     let managed_running = daemon.running_backend_instance(&settings).await?.is_some();
-    if !(daemon.is_stable_standalone_release()?
+    if !(daemon.is_sedna_update_eligible()?
         || matches!(trigger, UpdateTrigger::RestoreProduction(_)) && supported(daemon)?)
         || (!managed_running && client::probe(&daemon.socket_path).await.is_ok())
     {

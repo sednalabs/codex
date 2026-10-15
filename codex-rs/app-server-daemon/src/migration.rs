@@ -1,6 +1,7 @@
 //! Moves a legacy daemon to its dedicated package only during an explicit update.
 //! Preparation leaves the legacy selection intact; publishing current is the cutover.
 
+use std::io::Write;
 use std::path::Path;
 
 use anyhow::Context;
@@ -20,6 +21,10 @@ use crate::client;
 use crate::install_lock::acquire_install_lock;
 use crate::managed_install;
 
+const SEDNA_INSTALL_URL_PREFIX: &str =
+    "https://raw.githubusercontent.com/sednalabs/codex/";
+const SEDNA_INSTALL_URL_SUFFIX: &str = "/scripts/install/install.sh";
+
 pub(super) async fn run(http: &impl InstallerHttp, legacy: &Daemon) -> Result<UpdateOutput> {
     let _operation_lock = legacy.acquire_operation_lock().await?;
     let previous = selected_release(legacy)?;
@@ -33,6 +38,31 @@ pub(super) async fn run(http: &impl InstallerHttp, legacy: &Daemon) -> Result<Up
         .and_then(Path::parent)
         .context("package root has no Codex home")?;
     let root = home.join("packages/app-server-daemon");
+    let legacy_binary = legacy.current_managed_codex_bin()?;
+    let resolved_legacy_binary = managed_install::resolved_managed_codex_bin(&legacy_binary).await?;
+    anyhow::ensure!(
+        resolved_legacy_binary.starts_with(&previous.1),
+        "selected daemon binary does not belong to the selected release"
+    );
+    let legacy_context = codex_install_context::InstallContext::from_exe_in_codex_home(
+        false,
+        Some(&legacy_binary),
+        None,
+        home,
+    );
+    let previous_receipt = legacy_context
+        .sedna_release_receipt()
+        .context("legacy package is not eligible for Sedna migration; reinstall manually")?;
+    let previous_native_version = managed_install::managed_codex_version(&legacy_binary).await?;
+    anyhow::ensure!(
+        previous_native_version == previous_receipt.release.native_version.to_string(),
+        "legacy package native version does not match its Sedna receipt; reinstall manually"
+    );
+    let expected_target = format!("{}-unknown-linux-musl", std::env::consts::ARCH);
+    anyhow::ensure!(
+        previous_receipt.release.target == expected_target,
+        "legacy package target is not supported for Sedna migration; reinstall manually"
+    );
     let settings = legacy.load_settings().await?;
     let running = legacy.running_backend_instance(&settings).await?;
     if running.is_none() && client::probe(&legacy.socket_path).await.is_ok() {
@@ -52,7 +82,11 @@ pub(super) async fn run(http: &impl InstallerHttp, legacy: &Daemon) -> Result<Up
     };
     let mut cancellation = std::pin::pin!(cancellation);
 
-    let script = fetch_installer_script(http).await?;
+    let installer_url = format!(
+        "{SEDNA_INSTALL_URL_PREFIX}{}{SEDNA_INSTALL_URL_SUFFIX}",
+        previous_receipt.release.source_commit
+    );
+    let script = fetch_installer_script(http, &installer_url).await?;
     anyhow::ensure!(
         script
             .windows(b"CODEX_INSTALL_DEFER_SELECTION".len())
@@ -67,6 +101,9 @@ pub(super) async fn run(http: &impl InstallerHttp, legacy: &Daemon) -> Result<Up
                 &script,
                 InstallerMode::Migration,
                 &root,
+                &previous_receipt.selection_channel,
+                &previous_receipt.release.package_version.to_string(),
+                &previous_receipt.release.native_version.to_string(),
                 cancellation.as_mut()
             )
             .await?,
@@ -77,7 +114,14 @@ pub(super) async fn run(http: &impl InstallerHttp, legacy: &Daemon) -> Result<Up
     }
     #[cfg(windows)]
     tokio::select! {
-        result = run_installer_script(&script, InstallerMode::Migration, &root) => { result?; },
+        result = run_installer_script(
+            &script,
+            InstallerMode::Migration,
+            &root,
+            &previous_receipt.selection_channel,
+            &previous_receipt.release.package_version.to_string(),
+            &previous_receipt.release.native_version.to_string(),
+        ) => { result?; },
         _ = &mut cancellation => return Err(std::io::Error::from(std::io::ErrorKind::Interrupted).into()),
     }
 
@@ -89,10 +133,14 @@ pub(super) async fn run(http: &impl InstallerHttp, legacy: &Daemon) -> Result<Up
     let name = release
         .file_name()
         .context("prepared release has no name")?;
+    let releases = root.join("releases").canonicalize()?;
     anyhow::ensure!(
-        release.parent() == Some(root.join("releases").canonicalize()?.as_path())
-            && std::fs::read_to_string(root.join("auto-update-version"))? == name.to_string_lossy(),
-        "installer did not prepare a latest-channel daemon package"
+        release.parent() == Some(releases.as_path())
+            && matches!(
+                root.join("current").symlink_metadata(),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound
+            ),
+        "installer did not prepare a deferred daemon package"
     );
     let entrypoint = if cfg!(windows) {
         "bin/codex.exe"
@@ -100,10 +148,37 @@ pub(super) async fn run(http: &impl InstallerHttp, legacy: &Daemon) -> Result<Up
         "bin/codex"
     };
     let binary = release.join(entrypoint);
+    let context = codex_install_context::InstallContext::from_exe_in_codex_home(
+        false,
+        Some(&binary),
+        None,
+        home,
+    );
+    let receipt = context
+        .sedna_release_receipt()
+        .context("installer did not prepare a verified Sedna package")?;
+    anyhow::ensure!(
+        receipt.selection_channel == previous_receipt.selection_channel
+            && receipt.release.target == expected_target,
+        "prepared daemon receipt does not preserve the selected channel and target"
+    );
     let version = managed_install::managed_codex_version(&binary).await?;
     anyhow::ensure!(
-        name.to_string_lossy().starts_with(&format!("{version}-")),
-        "prepared daemon version does not match its release"
+        version == receipt.release.native_version.to_string(),
+        "prepared daemon native version does not match its Sedna receipt"
+    );
+    let previous_native = semver::Version::parse(&previous_native_version)
+        .context("installed daemon native version was invalid")?;
+    let prepared_native = semver::Version::parse(&version)
+        .context("prepared daemon native version was invalid")?;
+    anyhow::ensure!(
+        prepared_native >= previous_native,
+        "prepared daemon native version is older than the installed daemon"
+    );
+    anyhow::ensure!(
+        name.to_string_lossy()
+            == format!("{}-{expected_target}", receipt.release.package_version),
+        "prepared daemon package version does not match its release directory"
     );
     // An older production updater understands only the legacy package/PID paths.
     anyhow::ensure!(
@@ -120,7 +195,30 @@ pub(super) async fn run(http: &impl InstallerHttp, legacy: &Daemon) -> Result<Up
         selected_release(legacy)? == previous,
         "daemon selection changed; retry the update"
     );
+    let marker = root.join("auto-update-version");
+    anyhow::ensure!(
+        matches!(
+            marker.symlink_metadata(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound
+        ),
+        "daemon release marker already exists; migration was left unchanged"
+    );
+    let marker_temp = root.join(format!(
+        ".auto-update-version.migration-{}",
+        std::process::id()
+    ));
+    let mut marker_file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&marker_temp)
+        .context("failed to prepare the daemon release marker")?;
+    if let Err(error) = marker_file.write_all(name.to_string_lossy().as_bytes()) {
+        let _ = std::fs::remove_file(&marker_temp);
+        return Err(error).context("failed to prepare the daemon release marker");
+    }
+    drop(marker_file);
     if cancellation.as_mut().now_or_never().is_some() {
+        let _ = std::fs::remove_file(&marker_temp);
         return Err(std::io::Error::from(std::io::ErrorKind::Interrupted).into());
     }
     let cutover = async {
@@ -137,11 +235,35 @@ pub(super) async fn run(http: &impl InstallerHttp, legacy: &Daemon) -> Result<Up
                 .stop_with_grace(settings.shutdown_grace_seconds)
                 .await?;
         }
-        std::fs::rename(&pending, root.join("current"))
-            .context("failed to select the new daemon package; retry the update")
+        let current = root.join("current");
+        std::fs::rename(&pending, &current)
+            .context("failed to select the new daemon package; retry the update")?;
+        if let Err(error) = std::fs::rename(&marker_temp, &marker) {
+            if let Err(rollback_error) = std::fs::rename(&current, &pending) {
+                return Err(error).context(format!(
+                    "failed to publish the daemon release marker and failed to roll back current: {rollback_error}"
+                ));
+            }
+            if running.is_some() {
+                if let Err(restore_error) = async {
+                    legacy.start_managed_backend(&settings).await?;
+                    legacy.wait_until_ready().await?;
+                    Ok::<(), anyhow::Error>(())
+                }
+                .await
+                {
+                    return Err(error).context(format!(
+                        "failed to publish the daemon release marker, rolled back current, but failed to restore the legacy daemon: {restore_error}"
+                    ));
+                }
+            }
+            return Err(error).context("failed to publish the daemon release marker; selection rolled back");
+        }
+        Ok(())
     }
     .await;
     if let Err(error) = cutover {
+        let _ = std::fs::remove_file(&marker_temp);
         if let Err(restore_error) = async {
             legacy
                 .current_installation()?
@@ -185,7 +307,7 @@ pub(super) async fn run(http: &impl InstallerHttp, legacy: &Daemon) -> Result<Up
     }
     Ok(UpdateOutput {
         status: UpdateStatus::Updated,
-        installed_version: Some(version),
+        installed_version: Some(receipt.release.package_version.to_string()),
         running_version,
         managed_codex_path: selected.managed_codex_bin,
         message: "The daemon was updated and moved to its dedicated package. The legacy CLI package was left unchanged.".to_string(),

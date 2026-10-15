@@ -4,7 +4,6 @@ use crate::legacy_core::config::Config;
 use crate::update_action;
 use crate::update_action::UpdateAction;
 use crate::update_versions::extract_version_from_latest_tag;
-use crate::update_versions::is_newer;
 use crate::update_versions::is_source_build_version;
 use crate::updates_cache::VersionInfo;
 use crate::updates_cache::read_version_info;
@@ -53,7 +52,11 @@ pub fn get_upgrade_version(config: &Config) -> Option<String> {
     }
 
     info.and_then(|info| {
-        if is_newer(&info.latest_version, &installed_version).unwrap_or(false) {
+        if semver::Version::parse(&info.latest_version)
+            .ok()
+            .zip(semver::Version::parse(&installed_version).ok())
+            .is_some_and(|(latest, installed)| latest > installed)
+        {
             Some(info.latest_version)
         } else {
             None
@@ -68,6 +71,19 @@ const SEDNA_RELEASES_URL: &str = "https://api.github.com/repos/sednalabs/codex/r
 struct SednaReleaseInfo {
     tag_name: String,
     prerelease: bool,
+}
+
+fn sedna_release_version(release: &SednaReleaseInfo) -> Option<semver::Version> {
+    let version = release.tag_name.strip_prefix("rust-v")?;
+    let version = semver::Version::parse(version).ok()?;
+    (release.prerelease == !version.pre.is_empty()).then_some(version)
+}
+
+fn newest_sedna_release(releases: &[SednaReleaseInfo]) -> Option<&SednaReleaseInfo> {
+    releases
+        .iter()
+        .filter(|release| sedna_release_version(release).is_some())
+        .max_by_key(|release| sedna_release_version(release))
 }
 
 async fn check_for_update(
@@ -99,16 +115,16 @@ async fn check_for_update(
                 .error_for_status()?;
             let latest_tag = if receipt.selection_channel == "prerelease" {
                 let releases = releases.json::<Vec<SednaReleaseInfo>>().await?;
-                releases
-                    .iter()
-                    .find(|release| release.prerelease)
-                    .or_else(|| releases.first())
+                newest_sedna_release(&releases)
                     .context("no Sedna release is currently published")?
                     .tag_name
                     .clone()
             } else {
                 let release = releases.json::<SednaReleaseInfo>().await?;
-                anyhow::ensure!(!release.prerelease, "Sedna latest release is not stable");
+                anyhow::ensure!(
+                    !release.prerelease && sedna_release_version(&release).is_some(),
+                    "Sedna latest release is not a valid stable release"
+                );
                 release.tag_name
             };
             extract_version_from_latest_tag(&latest_tag)?
@@ -130,6 +146,37 @@ async fn check_for_update(
     }
     tokio::fs::write(version_file, json_line).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SednaReleaseInfo, newest_sedna_release};
+
+    #[test]
+    fn prerelease_selection_includes_newer_stable_releases() {
+        let releases = [
+            SednaReleaseInfo {
+                tag_name: "rust-v0.162.0-alpha.2".into(),
+                prerelease: true,
+            },
+            SednaReleaseInfo {
+                tag_name: "rust-v0.161.0".into(),
+                prerelease: false,
+            },
+            SednaReleaseInfo {
+                tag_name: "rust-v0.162.0".into(),
+                prerelease: false,
+            },
+            SednaReleaseInfo {
+                tag_name: "v99.0.0".into(),
+                prerelease: true,
+            },
+        ];
+        assert_eq!(
+            newest_sedna_release(&releases).map(|release| release.tag_name.as_str()),
+            Some("rust-v0.162.0")
+        );
+    }
 }
 
 /// Returns the latest version to show in a popup, if it should be shown.

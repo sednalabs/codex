@@ -53,8 +53,14 @@ pub(crate) async fn request_manual_update(
         .pid_file
         .file_name()
         .is_some_and(|name| name == crate::LEGACY_PID_FILE_NAME)
-        && manual_update::supported(daemon)?
     {
+        if !cfg!(all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )) || !manual_update::supported(daemon)?
+        {
+            return manual_update::unsupported(daemon).await;
+        }
         let http = RouteAwareClientPool::new_without_request_logging(
             http_client_factory,
             ClientRouteClass::Other,
@@ -200,7 +206,7 @@ async fn run_with_http(
                 #[cfg(windows)]
                 updater.wait_for_ownership().await?;
                 if manual_handoff_pending {
-                    if !daemon.is_stable_standalone_release()? {
+                    if !daemon.is_sedna_update_eligible()? {
                         if !daemon.has_latest_selection_marker() {
                             return Ok(());
                         }
@@ -343,7 +349,7 @@ async fn update_once(
     }
     if release_selection_unstable(daemon, trigger)? {
         // An installer can be between changing current and publishing its
-        // latest-channel marker. Retry after the interval instead of exiting.
+        // selection marker. Retry after the interval instead of exiting.
         return Ok((UpdateLoopControl::Continue, None));
     }
     let (package_root, _, previous_release) = selected_release(daemon)?;
@@ -378,11 +384,18 @@ async fn update_once(
     let receipt = install_context
         .sedna_release_receipt()
         .context("installed package is not eligible for Sedna automatic updates")?;
+    let actual_native_version =
+        crate::managed_install::managed_codex_version(&managed_codex_bin).await?;
+    anyhow::ensure!(
+        actual_native_version == receipt.release.native_version.to_string(),
+        "selected package native version does not match its Sedna receipt"
+    );
     let installer_url = format!(
         "{SEDNA_INSTALL_URL_PREFIX}{}{SEDNA_INSTALL_URL_SUFFIX}",
         receipt.release.source_commit
     );
     let previous_version = receipt.release.package_version.to_string();
+    let previous_native_version = receipt.release.native_version.to_string();
     let script = tokio::select! {
         result = fetch_installer_script(http, &installer_url) => {
             crate::diagnostics::result("installer_fetch", started, result)?
@@ -429,6 +442,7 @@ async fn update_once(
                 &package_root,
                 &receipt.selection_channel,
                 &previous_version,
+                &previous_native_version,
                 terminate.recv(),
             )
             .await
@@ -445,14 +459,15 @@ async fn update_once(
             &package_root,
             &receipt.selection_channel,
             &previous_version,
+            &previous_native_version,
         ) => {
             crate::diagnostics::result("installer_run", started, result)?;
         },
         _ = terminate.recv() => return Ok((UpdateLoopControl::Stop, None)),
     }
     anyhow::ensure!(
-        trigger == UpdateTrigger::Scheduled || daemon.is_stable_standalone_release()?,
-        "installer did not select a stable latest release; retry the update"
+        trigger == UpdateTrigger::Scheduled || daemon.is_sedna_update_eligible()?,
+        "installer did not select a release on the selected Sedna channel; retry the update"
     );
     if release_selection_unstable(daemon, trigger)? {
         return Ok((UpdateLoopControl::Continue, None));
@@ -509,7 +524,7 @@ async fn update_once(
                 if restart_mode == RestartMode::IfBinaryOrVersionChanged =>
             {
                 anyhow::ensure!(
-                    daemon.is_stable_standalone_release()?
+                    daemon.is_sedna_update_eligible()?
                         && resolved_managed_codex_bin(&daemon.current_managed_codex_bin()?).await?
                             == managed_codex_bin,
                     "managed daemon changed during the update; retry"
@@ -534,7 +549,7 @@ async fn update_once(
                     "managed daemon could not restart; retry when it is ready"
                 );
                 return Ok((
-                    if daemon.is_stable_standalone_release()? {
+                    if daemon.is_sedna_update_eligible()? {
                         UpdateLoopControl::Continue
                     } else {
                         UpdateLoopControl::Stop
@@ -547,7 +562,7 @@ async fn update_once(
 }
 
 fn release_selection_unstable(daemon: &Daemon, trigger: UpdateTrigger<'_>) -> Result<bool> {
-    if daemon.is_stable_standalone_release()?
+    if daemon.is_sedna_update_eligible()?
         || matches!(trigger, UpdateTrigger::RestoreProduction(_))
             && manual_update::supported(daemon)?
     {
@@ -608,6 +623,7 @@ async fn run_installer_script(
     package_root: &Path,
     channel: &str,
     previous_version: &str,
+    previous_native_version: &str,
     #[cfg(unix)] terminate: impl std::future::Future<Output = Option<()>>,
 ) -> Result<UpdateLoopControl> {
     #[cfg(unix)]
@@ -642,6 +658,10 @@ async fn run_installer_script(
         .env("CODEX_SEDNA_UPDATE", "1")
         .env("CODEX_SEDNA_RELEASE_CHANNEL", channel)
         .env("CODEX_SEDNA_PREVIOUS_VERSION", previous_version)
+        .env(
+            "CODEX_SEDNA_PREVIOUS_NATIVE_VERSION",
+            previous_native_version,
+        )
         .env(
             "CODEX_INSTALL_DAEMON_ONLY",
             if package_root.ends_with("app-server-daemon") {

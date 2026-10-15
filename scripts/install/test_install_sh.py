@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tarfile
 import tempfile
 import textwrap
@@ -30,6 +31,146 @@ class InstallShTest(unittest.TestCase):
         self.assertEqual(requests, [])
         self.assertIn("only on Linux x86_64 and ARM64", result.stderr)
         self.assertIn("https://github.com/sednalabs/codex/releases", result.stderr)
+
+    @unittest.skipUnless(sys.platform == "linux", "Sedna binary updates are Linux-only")
+    def test_sedna_metadata_rejects_prerelease_flag_channel_mismatch(self) -> None:
+        target = linux_target()
+        version = "0.163.0-alpha.1"
+        release_json, sedna_metadata = sedna_release_metadata(
+            version, target, native_version="0.162.0", channel="prerelease", prerelease=False
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            result, requests = run_installer_in(
+                Path(temp_dir),
+                version,
+                metadata_json=release_json,
+                sedna_metadata_json=sedna_metadata,
+                sedna_update=True,
+                sedna_selection_channel="prerelease",
+                previous_package_version="0.146.0",
+                previous_native_version="0.162.0-sedna.dev.be2e129",
+            )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(any("RELEASE-METADATA-" in url for url in requests))
+        self.assertNotIn("codex-package_SHA256SUMS", "\n".join(requests))
+
+    @unittest.skipUnless(sys.platform == "linux", "Sedna binary updates are Linux-only")
+    def test_sedna_rejects_package_with_older_native_version_before_selection(self) -> None:
+        target = linux_target()
+        version = "0.163.0"
+        release_json, sedna_metadata = sedna_release_metadata(
+            version,
+            target,
+            native_version="0.161.9",
+            channel="stable",
+            prerelease=False,
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            standalone = root / "codex-home" / "packages" / "standalone"
+            current_release = standalone / "releases" / f"0.146.0-{target}"
+            current_release.mkdir(parents=True)
+            standalone.mkdir(parents=True, exist_ok=True)
+            (current_release / "keep").write_text("old", encoding="utf-8")
+            (standalone / "current").symlink_to(current_release)
+            (standalone / "auto-update-version").write_text(
+                current_release.name, encoding="utf-8"
+            )
+            result, requests = run_installer_in(
+                root,
+                "latest",
+                metadata_json=release_json,
+                sedna_metadata_json=sedna_metadata,
+                sedna_update=True,
+                sedna_selection_channel="stable",
+                previous_package_version="0.146.0",
+                previous_native_version="0.162.0-sedna.dev.be2e129",
+            )
+
+            self.assertEqual((standalone / "current").resolve(), current_release)
+            self.assertEqual(
+                (standalone / "auto-update-version").read_text(encoding="utf-8"),
+                current_release.name,
+            )
+            self.assertTrue((current_release / "keep").is_file())
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("native version is older", result.stderr)
+        self.assertNotIn("codex-package_SHA256SUMS", "\n".join(requests))
+
+    @unittest.skipUnless(sys.platform == "linux", "Sedna binary updates are Linux-only")
+    def test_prerelease_selection_chooses_newer_stable_release(self) -> None:
+        target = linux_target()
+        version = "0.163.0"
+        tag_metadata, sedna_metadata = sedna_release_metadata(
+            version,
+            target,
+            native_version="0.162.0-sedna.dev.be2e129",
+            channel="stable",
+            prerelease=False,
+        )
+        releases_json = json.dumps(
+            [
+                {"tag_name": "rust-v0.162.0-alpha.9", "prerelease": True},
+                {"tag_name": "rust-v0.162.0", "prerelease": False},
+                {"tag_name": "rust-v0.163.0", "prerelease": False},
+            ]
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            result, requests = run_installer_in(
+                Path(temp_dir),
+                "latest",
+                metadata_json=tag_metadata,
+                sedna_releases_json=releases_json,
+                sedna_metadata_json=sedna_metadata,
+                sedna_update=True,
+                sedna_selection_channel="prerelease",
+                previous_package_version="0.146.0",
+                previous_native_version="0.162.0-sedna.dev.be2e129",
+            )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "https://api.github.com/repos/sednalabs/codex/releases/tags/rust-v0.163.0",
+            requests,
+        )
+        self.assertNotIn("rust-v0.162.0-alpha.9", "\n".join(requests))
+
+    @unittest.skipUnless(sys.platform == "linux", "Sedna binary updates are Linux-only")
+    def test_deferred_sedna_install_preserves_live_selection_until_cutover(self) -> None:
+        target = linux_target()
+        version = "0.163.0"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            archive, checksum, release_json, sedna_metadata = create_sedna_package_release(
+                root, version, target, native_version=version
+            )
+            standalone = root / "codex-home" / "packages" / "app-server-daemon"
+            standalone.mkdir(parents=True)
+            marker = standalone / "auto-update-version"
+            marker.write_text("previous-selection", encoding="utf-8")
+            result, _requests = run_installer_in(
+                root,
+                "latest",
+                metadata_json=release_json,
+                sedna_metadata_json=sedna_metadata,
+                archive_path=archive,
+                checksum_path=checksum,
+                daemon_only=True,
+                sedna_update=True,
+                defer_selection=True,
+                previous_package_version="0.146.0",
+                previous_native_version="0.162.0-sedna.dev.be2e129",
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse((standalone / "current").exists())
+            self.assertEqual(marker.read_text(encoding="utf-8"), "previous-selection")
+            self.assertEqual(
+                (standalone / ".migration-current").resolve(),
+                standalone / "releases" / f"{version}-{target}",
+            )
 
     def test_metadata_fetch_failure_is_not_reported_as_missing_assets(self) -> None:
         result, requests = run_installer(VERSION, metadata_failure=True)
@@ -745,6 +886,12 @@ def run_installer_in(
     daemon_only: bool = False,
     manual_update: bool = False,
     sedna_update: bool = False,
+    defer_selection: bool = False,
+    sedna_metadata_json: str | None = None,
+    sedna_releases_json: str | None = None,
+    sedna_selection_channel: str = "stable",
+    previous_package_version: str = VERSION,
+    previous_native_version: str = VERSION,
 ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
     bin_dir = root / "bin"
     bin_dir.mkdir(exist_ok=True)
@@ -769,12 +916,27 @@ def run_installer_in(
             printf '%s\n' "$url" >>"$CODEX_TEST_REQUEST_LOG"
 
             case "$url" in
+              https://api.github.com/repos/sednalabs/codex/releases?per_page=100)
+                printf '%s\n' "$CODEX_TEST_SEDNA_RELEASES_JSON"
+                ;;
+              https://api.github.com/repos/sednalabs/codex/releases/tags/*)
+                printf '%s\n' "$CODEX_TEST_METADATA_JSON"
+                ;;
               https://api.github.com/*)
                 if [ "$CODEX_TEST_METADATA_FAILURE" = "1" ]; then
                   echo "curl: (22) The requested URL returned error: 403" >&2
                   exit 22
                 fi
                 printf '%s\n' "$CODEX_TEST_METADATA_JSON"
+                ;;
+              https://github.com/sednalabs/codex/releases/download/*/RELEASE-METADATA-*.json)
+                printf '%s\n' "$CODEX_TEST_SEDNA_METADATA_JSON" >"$output"
+                ;;
+              https://github.com/sednalabs/codex/releases/download/*/codex-package_SHA256SUMS)
+                cp "$CODEX_TEST_CHECKSUM_PATH" "$output"
+                ;;
+              https://github.com/sednalabs/codex/releases/download/*/codex-package-*.tar.gz)
+                cp "$CODEX_TEST_ARCHIVE_PATH" "$output"
                 ;;
               https://releases.openai.com/codex/channels/latest|https://releases.openai.com/codex/releases/*/release.json)
                 if [ "$CODEX_TEST_RELEASES_MODE" = "channel_failure" ]; then
@@ -880,6 +1042,7 @@ def run_installer_in(
             "CODEX_NON_INTERACTIVE": "1",
             "CODEX_RELEASE": release,
             "CODEX_INSTALL_DAEMON_ONLY": "1" if daemon_only else "0",
+            "CODEX_INSTALL_DEFER_SELECTION": "1" if defer_selection else "0",
             "CODEX_TEST_ARCHIVE_PATH": str(archive_path or ""),
             "CODEX_TEST_CHECKSUM_PATH": str(checksum_path or ""),
             "CODEX_TEST_RELEASES_CHECKSUM_PATH": str(
@@ -887,6 +1050,8 @@ def run_installer_in(
             ),
             "CODEX_TEST_LEGACY_ARCHIVE_PATH": str(legacy_archive_path or ""),
             "CODEX_TEST_METADATA_FAILURE": "1" if metadata_failure else "0",
+            "CODEX_TEST_SEDNA_METADATA_JSON": sedna_metadata_json or "{}",
+            "CODEX_TEST_SEDNA_RELEASES_JSON": sedna_releases_json or "[]",
             "CODEX_TEST_METADATA_JSON": (
                 metadata_json if metadata_json is not None else release_metadata()
             ),
@@ -907,7 +1072,9 @@ def run_installer_in(
     env["CODEX_INSTALL_IF_CURRENT"] = "1" if manual_update else "0"
     if sedna_update:
         env["CODEX_SEDNA_UPDATE"] = "1"
-        env["CODEX_SEDNA_RELEASE_CHANNEL"] = "stable"
+        env["CODEX_SEDNA_RELEASE_CHANNEL"] = sedna_selection_channel
+        env["CODEX_SEDNA_PREVIOUS_VERSION"] = previous_package_version
+        env["CODEX_SEDNA_PREVIOUS_NATIVE_VERSION"] = previous_native_version
     if update_guard_from_release is None:
         env.pop("CODEX_INSTALL_IF_LATEST", None)
         env.pop("CODEX_UPDATE_FROM_RELEASE", None)
@@ -1049,6 +1216,109 @@ def release_metadata(*, compact: bool = False, reorder: bool = False) -> str:
         indent=None if compact else 2,
         separators=separators,
     )
+
+
+def linux_target() -> str:
+    machine = os.uname().machine
+    return f"{machine}-unknown-linux-musl"
+
+
+def sedna_release_metadata(
+    version: str,
+    target: str,
+    *,
+    native_version: str,
+    channel: str,
+    prerelease: bool,
+    archive_digest: str = "b" * 64,
+    checksum_digest: str = "c" * 64,
+) -> tuple[str, str]:
+    archive_name = f"codex-package-{target}.tar.gz"
+    metadata_name = f"RELEASE-METADATA-{target}.json"
+    metadata = json.dumps(
+        {
+            "schemaVersion": 1,
+            "repository": "sednalabs/codex",
+            "releaseTag": f"rust-v{version}",
+            "packageVersion": version,
+            "nativeVersion": native_version,
+            "channel": channel,
+            "target": target,
+            "sourceCommit": "1" * 40,
+            "sourceTree": "2" * 40,
+            "workflowHostCommit": "3" * 40,
+            "workflowHostTree": "4" * 40,
+            "workflowRunId": "123",
+            "archive": {"name": archive_name, "sha256": archive_digest},
+        },
+        indent=2,
+    )
+    metadata_digest = hashlib.sha256(f"{metadata}\n".encode()).hexdigest()
+    api_metadata = json.dumps(
+        {
+            "tag_name": f"rust-v{version}",
+            "prerelease": prerelease,
+            "assets": [
+                {"name": metadata_name, "digest": f"sha256:{metadata_digest}"},
+                {"name": archive_name, "digest": f"sha256:{archive_digest}"},
+                {
+                    "name": "codex-package_SHA256SUMS",
+                    "digest": f"sha256:{checksum_digest}",
+                },
+            ],
+        }
+    )
+    return api_metadata, metadata
+
+
+def create_sedna_package_release(
+    root: Path, version: str, target: str, *, native_version: str
+) -> tuple[Path, Path, str, str]:
+    package_dir = root / "sedna-package"
+    (package_dir / "bin").mkdir(parents=True)
+    (package_dir / "codex-path").mkdir()
+    (package_dir / "codex-resources").mkdir()
+    (package_dir / "codex-package.json").write_text(
+        json.dumps(
+            {
+                "layoutVersion": 1,
+                "version": version,
+                "nativeVersion": native_version,
+                "target": target,
+                "variant": "codex",
+                "entrypoint": "bin/codex",
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    write_executable(
+        package_dir / "bin" / "codex",
+        f"#!/bin/sh\nprintf 'codex {native_version}\\n'\n",
+    )
+    write_executable(
+        package_dir / "bin" / "codex-code-mode-host", "#!/bin/sh\nexit 0\n"
+    )
+    write_executable(package_dir / "codex-path" / "rg", "#!/bin/sh\nexit 0\n")
+    asset_name = f"codex-package-{target}.tar.gz"
+    archive_path = root / asset_name
+    with tarfile.open(archive_path, "w:gz") as archive:
+        for path in package_dir.iterdir():
+            archive.add(path, arcname=path.name)
+    archive_digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+    checksum_path = root / "codex-package_SHA256SUMS"
+    checksum_path.write_text(f"{archive_digest}  {asset_name}\n", encoding="utf-8")
+    checksum_digest = hashlib.sha256(checksum_path.read_bytes()).hexdigest()
+    release_json, metadata_json = sedna_release_metadata(
+        version,
+        target,
+        native_version=native_version,
+        channel="stable",
+        prerelease=False,
+        archive_digest=archive_digest,
+        checksum_digest=checksum_digest,
+    )
+    return archive_path, checksum_path, release_json, metadata_json
 
 
 def asset_metadata(name: str, digest: str, *, reorder: bool) -> dict[str, str]:

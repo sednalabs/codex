@@ -288,7 +288,6 @@ chmod +x "$root/releases/{release}/bin/codex"
 release_dir="$root/releases/{release}"
 {metadata}
 ln -sfn 'releases/{release}' "$root/.migration-current"
-printf '{release}' > "$root/auto-update-version"
 "#,
             version = env!("CARGO_PKG_VERSION"),
             metadata = metadata,
@@ -326,6 +325,10 @@ printf '{release}' > "$root/auto-update-version"
             dedicated.clone()
         );
         assert!(!dedicated.join(".migration-current").exists());
+        assert_eq!(
+            std::fs::read_to_string(dedicated.join("auto-update-version")).unwrap(),
+            release
+        );
         assert_eq!(root.join("current").canonicalize().unwrap(), previous);
         assert_eq!(
             std::fs::read(&legacy.managed_codex_bin).unwrap(),
@@ -356,6 +359,27 @@ printf '{release}' > "$root/auto-update-version"
             server.abort();
         }
     }
+}
+
+#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[tokio::test]
+async fn migration_refuses_legacy_package_without_sedna_receipt_before_fetch() {
+    let home = TempDir::new().unwrap();
+    let (legacy, _) = sedna_update_daemon(&home);
+    let standalone = home.path().join("packages/standalone");
+    let selected_before = standalone.join("current").canonicalize().unwrap();
+    let marker_before = std::fs::read(standalone.join("auto-update-version")).unwrap();
+    let package = selected_before;
+    std::fs::remove_file(package.join("sedna-release.json")).unwrap();
+    let http = FakeInstallerHttp::new(InstallerResponse::Success(b"exit 0".to_vec()));
+
+    let error = super::migration::run(&http, &legacy).await.unwrap_err();
+
+    assert!(error.to_string().contains("reinstall manually"));
+    assert!(http.requested_urls().is_empty());
+    assert_eq!(standalone.join("current").canonicalize().unwrap(), package);
+    assert_eq!(std::fs::read(standalone.join("auto-update-version")).unwrap(), marker_before);
+    assert!(!home.path().join("packages/app-server-daemon/current").exists());
 }
 
 impl FakeInstallerHttp {
@@ -417,6 +441,7 @@ async fn cancelling_installer_stops_children_and_releases_fallback_lock() {
             super::InstallerMode::Update("0.150.0-test"),
             &home.path().join("packages/standalone"),
             "stable",
+            "0.149.0",
             "0.149.0",
             async { cancelled.await.ok() },
         ),
@@ -1298,6 +1323,7 @@ Test-Installer
         std::path::Path::new("packages/app-server-daemon"),
         "stable",
         "0.149.0",
+        "0.149.0",
     )
     .await
     .expect("installer succeeds");
@@ -1312,6 +1338,7 @@ Test-Installer
         super::InstallerMode::RestoreProduction("0.150.0-x86_64-pc-windows-msvc"),
         std::path::Path::new("packages/app-server-daemon"),
         "stable",
+        "0.149.0",
         "0.149.0",
     )
     .await
@@ -1333,6 +1360,7 @@ async fn installer_failure_includes_stderr() {
         std::path::Path::new("packages/app-server-daemon"),
         "stable",
         "0.149.0",
+        "0.149.0",
         futures::future::pending(),
     )
     .await
@@ -1353,6 +1381,7 @@ async fn installer_failure_preserves_stderr_before_drain_timeout() {
             super::InstallerMode::Update("0.150.0-x86_64-unknown-linux-gnu"),
             std::path::Path::new("packages/app-server-daemon"),
             "stable",
+            "0.149.0",
             "0.149.0",
             futures::future::pending(),
         ),
@@ -1473,7 +1502,7 @@ printf '%s' '{release}' > '{marker}'
         assert!(
             error
                 .to_string()
-                .contains("did not select a stable latest release")
+                .contains("did not select a release on the selected Sedna channel")
         );
         assert!(!marker.exists());
         let restored = manual_update_once(
@@ -1488,7 +1517,7 @@ printf '%s' '{release}' > '{marker}'
         // Restoring eligibility for the same package still reports noUpdate.
         assert_eq!(restored, output);
         assert!(!daemon.pid_file.exists());
-        assert!(daemon.is_stable_standalone_release().unwrap());
+        assert!(daemon.is_sedna_update_eligible().unwrap());
         assert_eq!(
             std::fs::read_to_string(&daemon.settings_file).unwrap(),
             settings
