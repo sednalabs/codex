@@ -101,7 +101,7 @@ pub(super) async fn run(http: &impl InstallerHttp, legacy: &Daemon) -> Result<Up
                 &script,
                 InstallerMode::Migration,
                 &root,
-                &previous_receipt.selection_channel,
+                "stable",
                 &previous_receipt.release.package_version.to_string(),
                 &previous_receipt.release.native_version.to_string(),
                 cancellation.as_mut()
@@ -118,7 +118,7 @@ pub(super) async fn run(http: &impl InstallerHttp, legacy: &Daemon) -> Result<Up
             &script,
             InstallerMode::Migration,
             &root,
-            &previous_receipt.selection_channel,
+            "stable",
             &previous_receipt.release.package_version.to_string(),
             &previous_receipt.release.native_version.to_string(),
         ) => { result?; },

@@ -10,6 +10,25 @@ use super::InstallerHttp;
 use super::InstallerResponse;
 use super::fetch_installer_script;
 
+#[test]
+fn scheduled_updates_keep_selected_channel_but_manual_updates_use_stable() {
+    assert_eq!(
+        super::installer_selection_channel("prerelease", super::UpdateTrigger::Scheduled),
+        "prerelease"
+    );
+    assert_eq!(
+        super::installer_selection_channel("prerelease", super::UpdateTrigger::Manual),
+        "stable"
+    );
+    assert_eq!(
+        super::installer_selection_channel(
+            "prerelease",
+            super::UpdateTrigger::RestoreProduction("current-release")
+        ),
+        "stable"
+    );
+}
+
 const TEST_INSTALL_URL: &str = "https://raw.githubusercontent.com/sednalabs/codex/1111111111111111111111111111111111111111/scripts/install/install.sh";
 #[cfg(unix)]
 use super::manual_update::run as manual_update_once;

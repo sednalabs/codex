@@ -440,7 +440,7 @@ async fn update_once(
                 &script,
                 installer_mode,
                 &package_root,
-                &receipt.selection_channel,
+                installer_selection_channel(&receipt.selection_channel, trigger),
                 &previous_version,
                 &previous_native_version,
                 terminate.recv(),
@@ -457,7 +457,7 @@ async fn update_once(
             &script,
             installer_mode,
             &package_root,
-            &receipt.selection_channel,
+            installer_selection_channel(&receipt.selection_channel, trigger),
             &previous_version,
             &previous_native_version,
         ) => {
@@ -573,6 +573,23 @@ fn release_selection_unstable(daemon: &Daemon, trigger: UpdateTrigger<'_>) -> Re
         "standalone install selection changed during the update"
     );
     Ok(true)
+}
+
+fn installer_selection_channel(
+    selected_channel: &str,
+    trigger: UpdateTrigger<'_>,
+) -> &'static str {
+    if trigger == UpdateTrigger::Scheduled {
+        // Scheduled updates follow the user's selected channel. Explicit manual
+        // and restore-production actions retain their stable-channel contract.
+        if selected_channel == "prerelease" {
+            "prerelease"
+        } else {
+            "stable"
+        }
+    } else {
+        "stable"
+    }
 }
 
 fn selected_release(daemon: &Daemon) -> Result<(std::path::PathBuf, std::path::PathBuf, String)> {

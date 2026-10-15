@@ -138,13 +138,13 @@ class InstallShTest(unittest.TestCase):
         self.assertNotIn("rust-v0.162.0-alpha.9", "\n".join(requests))
 
     @unittest.skipUnless(sys.platform == "linux", "Sedna binary updates are Linux-only")
-    def test_deferred_sedna_install_preserves_live_selection_until_cutover(self) -> None:
+    def test_deferred_same_version_sedna_install_stages_without_selecting(self) -> None:
         target = linux_target()
-        version = "0.163.0"
+        version = "0.146.0"
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             archive, checksum, release_json, sedna_metadata = create_sedna_package_release(
-                root, version, target, native_version=version
+                root, version, target, native_version="0.162.0-sedna.dev.be2e129"
             )
             standalone = root / "codex-home" / "packages" / "app-server-daemon"
             standalone.mkdir(parents=True)
@@ -1300,6 +1300,7 @@ def create_sedna_package_release(
         package_dir / "bin" / "codex-code-mode-host", "#!/bin/sh\nexit 0\n"
     )
     write_executable(package_dir / "codex-path" / "rg", "#!/bin/sh\nexit 0\n")
+    write_executable(package_dir / "codex-resources" / "bwrap", "#!/bin/sh\nexit 0\n")
     asset_name = f"codex-package-{target}.tar.gz"
     archive_path = root / asset_name
     with tarfile.open(archive_path, "w:gz") as archive:

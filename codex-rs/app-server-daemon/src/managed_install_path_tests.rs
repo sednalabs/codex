@@ -104,7 +104,7 @@ fn updater_requires_a_verified_release_on_the_selected_channel() {
     std::fs::write(&alpha_managed, b"alpha").expect("alpha bin");
     write_sedna_fixture(&alpha, &alpha_version, native_version, &target, "prerelease");
     std::fs::remove_file(&current).expect("remove current");
-    std::os::unix::fs::symlink(alpha, &current).expect("current alpha");
+    std::os::unix::fs::symlink(&alpha, &current).expect("current alpha");
     std::fs::write(&marker, alpha.file_name().unwrap().as_encoded_bytes()).unwrap();
     assert!(super::is_sedna_update_eligible(
         home.path(),

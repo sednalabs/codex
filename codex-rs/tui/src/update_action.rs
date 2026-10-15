@@ -89,7 +89,7 @@ fn sedna_standalone_command_args(
         "https://raw.githubusercontent.com/sednalabs/codex/{source_commit}/scripts/install/install.sh"
     );
     let command = format!(
-        "installer=$(curl -fsSL {url}) && printf '%s\\n' \"$installer\" | env CODEX_SEDNA_UPDATE=1 CODEX_SEDNA_RELEASE_CHANNEL={selection_channel} CODEX_SEDNA_PREVIOUS_VERSION={previous_package_version} CODEX_SEDNA_PREVIOUS_NATIVE_VERSION={previous_native_version} CODEX_RELEASE=latest CODEX_NON_INTERACTIVE=1 sh"
+        "installer=$(curl -fsSL {url}) && [ -n \"$installer\" ] && printf '%s\\n' \"$installer\" | env CODEX_SEDNA_UPDATE=1 CODEX_SEDNA_RELEASE_CHANNEL={selection_channel} CODEX_SEDNA_PREVIOUS_VERSION={previous_package_version} CODEX_SEDNA_PREVIOUS_NATIVE_VERSION={previous_native_version} CODEX_RELEASE=latest CODEX_NON_INTERACTIVE=1 sh"
     );
     ("sh".into(), vec!["-c".into(), command])
 }
@@ -152,12 +152,16 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn sedna_update_does_not_run_an_empty_shell_when_script_fetch_fails() {
+    fn sedna_update_rejects_failed_or_empty_script_fetches() {
         use std::os::unix::fs::PermissionsExt;
 
         let temp = tempfile::tempdir().expect("temporary directory");
         let curl = temp.path().join("curl");
-        std::fs::write(&curl, "#!/bin/sh\nexit 22\n").expect("mock curl");
+        std::fs::write(
+            &curl,
+            "#!/bin/sh\nif [ \"$CODEX_TEST_CURL_EMPTY\" = 1 ]; then exit 0; fi\nexit 22\n",
+        )
+        .expect("mock curl");
         std::fs::set_permissions(&curl, std::fs::Permissions::from_mode(0o755))
             .expect("make mock curl executable");
         let marker = temp.path().join("selected-version");
@@ -170,14 +174,17 @@ mod tests {
         );
 
         assert_eq!(shell, "sh");
-        let status = std::process::Command::new("/bin/sh")
-            .args(args)
-            .env("PATH", temp.path())
-            .status()
-            .expect("run mocked update shell");
+        for empty_response in [false, true] {
+            let status = std::process::Command::new("/bin/sh")
+                .args(&args)
+                .env("PATH", temp.path())
+                .env("CODEX_TEST_CURL_EMPTY", if empty_response { "1" } else { "0" })
+                .status()
+                .expect("run mocked update shell");
 
-        assert!(!status.success());
-        assert_eq!(std::fs::read_to_string(marker).unwrap(), "current");
+            assert!(!status.success(), "empty_response={empty_response}");
+            assert_eq!(std::fs::read_to_string(&marker).unwrap(), "current");
+        }
     }
 }
 
