@@ -150,7 +150,7 @@ fn protected_model_provider_is_checked_before_auth_resolution() {
     assert!(super::validate_protected_model_provider_info(&changed_url, recipient).is_err());
 
     let mut injected_auth = expected;
-    injected_auth.experimental_bearer_token = Some("fixture-only-invalid-auth".to_string());
+    injected_auth.experimental_bearer_token = Some("fixture-only-invalid-auth".into());
     assert!(super::validate_protected_model_provider_info(&injected_auth, recipient).is_err());
 }
 

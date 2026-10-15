@@ -981,7 +981,7 @@ impl AccountRequestProcessor {
                 error: None,
                 onboarding_entrypoint: None,
             },
-            None,
+            /*transition*/ None,
         )
         .await;
     }

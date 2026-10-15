@@ -438,6 +438,7 @@ mod tests {
             msg: EventMsg::Error(ErrorEvent {
                 message: "blocked".to_string(),
                 codex_error_info: Some(CodexErrorInfo::CyberPolicy),
+                misalignment: None,
             }),
         }
     }

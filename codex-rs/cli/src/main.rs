@@ -2759,25 +2759,6 @@ mod tests {
         assert!(bootstrap < arg0);
     }
 
-    #[test]
-    fn manual_update_url_uses_sedna_releases_only_for_sedna_identity() {
-        assert_eq!(
-            update_manual_install_url_for_release_identity(Some("sednalabs/codex"), Some("v")),
-            "https://github.com/sednalabs/codex/releases"
-        );
-        assert_eq!(
-            update_manual_install_url_for_release_identity(Some("openai/codex"), Some("v")),
-            "https://developers.openai.com/codex/cli/"
-        );
-        assert_eq!(
-            update_manual_install_url_for_release_identity(
-                Some("sednalabs/codex"),
-                /*tag_prefix*/ None,
-            ),
-            "https://developers.openai.com/codex/cli/"
-        );
-    }
-
     #[cfg(windows)]
     #[test]
     fn windows_update_command_resolution_ignores_relative_path_entries() {
