@@ -694,7 +694,8 @@ package_archive_digest() {
 
 sedna_metadata_value() {
   key="$1"
-  values="$(sed -n -E "s/^[[:space:]]*\"$key\":[[:space:]]*(\"([^\"]*)\"|([0-9]+)),?[[:space:]]*$/\\2\\3/p" "$sedna_metadata_path")"
+  metadata_file="${2:-$sedna_metadata_path}"
+  values="$(sed -n -E "s/^[[:space:]]*\"$key\":[[:space:]]*(\"([^\"]*)\"|([0-9]+)),?[[:space:]]*$/\\2\\3/p" "$metadata_file")"
   count="$(printf '%s\n' "$values" | awk 'NF { count++ } END { print count + 0 }')"
   [ "$count" = "1" ] || return 1
   printf '%s\n' "$values"
@@ -1251,10 +1252,10 @@ release_dir_is_complete() {
   esac
 
   if [ "$SEDNA_UPDATE" = "1" ]; then
-    sedna_metadata_path="$release_dir/codex-package.json"
-    [ "$(sedna_metadata_value version)" = "$expected_version" ] || return 1
-    [ "$(sedna_metadata_value nativeVersion)" = "$sedna_native_version" ] || return 1
-    [ "$(sedna_metadata_value target)" = "$expected_target" ] || return 1
+    package_manifest="$release_dir/codex-package.json"
+    [ "$(sedna_metadata_value version "$package_manifest")" = "$expected_version" ] || return 1
+    [ "$(sedna_metadata_value nativeVersion "$package_manifest")" = "$sedna_native_version" ] || return 1
+    [ "$(sedna_metadata_value target "$package_manifest")" = "$expected_target" ] || return 1
   fi
 
   case "$layout:$expected_target" in
