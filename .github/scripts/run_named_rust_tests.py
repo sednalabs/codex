@@ -41,6 +41,7 @@ TEST_RESULT_RE = re.compile(
     r"(?P<filtered>\d+) filtered out"
 )
 TEST_OUTCOME_RE = re.compile(r"^test (?P<name>.+?) \.\.\. (?P<status>ok|FAILED|ignored)$")
+ANSI_CSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
 def bounded_diagnostic(value: str | None) -> str:
@@ -327,7 +328,7 @@ def test_outcomes(output: str) -> dict[str, list[str]]:
     """Index each exact Cargo test result without trusting a summary count."""
 
     outcomes: dict[str, list[str]] = {}
-    for line in output.splitlines():
+    for line in ANSI_CSI_RE.sub("", output).splitlines():
         match = TEST_OUTCOME_RE.match(line.strip())
         if match:
             outcomes.setdefault(match.group("name"), []).append(match.group("status"))

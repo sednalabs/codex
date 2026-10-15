@@ -77,6 +77,13 @@ class NamedRustTests(TestCase):
         self.assertEqual(result["failure_code"], "execution_reconciliation_failed")
         self.assertIn("hosted job log", result["message"])
 
+    def test_named_outcome_parser_ignores_terminal_control_sequences(self) -> None:
+        output = "test suite::known ... \x1b[0 qok\n"
+        self.assertEqual(
+            MODULE.test_outcomes(output),
+            {"suite::known": ["ok"]},
+        )
+
     def test_inventory_failure_preserves_actionable_bounded_diagnostics(self) -> None:
         inventory = self.completed(stderr="manifest could not be loaded", code=101)
         with (
