@@ -1,8 +1,6 @@
 #![cfg(not(debug_assertions))]
 
 use crate::legacy_core::config::Config;
-use crate::npm_registry;
-use crate::npm_registry::NpmPackageInfo;
 use crate::update_action;
 use crate::update_action::UpdateAction;
 use crate::update_versions::extract_version_from_latest_tag;
@@ -11,6 +9,7 @@ use crate::update_versions::is_source_build_version;
 use crate::updates_cache::VersionInfo;
 use crate::updates_cache::read_version_info;
 use crate::updates_cache::version_filepath;
+use codex_install_context::InstallContext;
 use chrono::Duration;
 use chrono::Utc;
 use codex_http_client::ClientRouteClass;
@@ -30,6 +29,11 @@ pub fn get_upgrade_version(config: &Config) -> Option<String> {
     }
 
     let action = update_action::get_update_action();
+    let action = action?;
+    let install_context = InstallContext::current();
+    let installed_version = install_context
+        .sedna_release_receipt()
+        .map(|receipt| receipt.release.package_version.to_string())?;
     let version_file = version_filepath(config);
     let info = read_version_info(&version_file).ok();
 
@@ -42,14 +46,14 @@ pub fn get_upgrade_version(config: &Config) -> Option<String> {
         // isn’t blocked by a network call. The UI reads the previously cached
         // value (if any) for this run; the next run shows the banner if needed.
         tokio::spawn(async move {
-            check_for_update(&version_file, action, http_client_factory)
+            check_for_update(&version_file, Some(action), http_client_factory)
                 .await
                 .inspect_err(|e| tracing::error!("Failed to update version: {e}"))
         });
     }
 
     info.and_then(|info| {
-        if is_newer(&info.latest_version, CODEX_CLI_VERSION).unwrap_or(false) {
+        if is_newer(&info.latest_version, &installed_version).unwrap_or(false) {
             Some(info.latest_version)
         } else {
             None
@@ -57,18 +61,13 @@ pub fn get_upgrade_version(config: &Config) -> Option<String> {
     })
 }
 
-// We use the latest version from the cask if installation is via homebrew - homebrew does not immediately pick up the latest release and can lag behind.
-const HOMEBREW_CASK_API_URL: &str = "https://formulae.brew.sh/api/cask/codex.json";
-const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/openai/codex/releases/latest";
+const SEDNA_LATEST_RELEASE_URL: &str = "https://api.github.com/repos/sednalabs/codex/releases/latest";
+const SEDNA_RELEASES_URL: &str = "https://api.github.com/repos/sednalabs/codex/releases?per_page=100";
 
 #[derive(Deserialize, Debug, Clone)]
-struct ReleaseInfo {
+struct SednaReleaseInfo {
     tag_name: String,
-}
-
-#[derive(Deserialize, Debug, Clone)]
-struct HomebrewCaskInfo {
-    version: String,
+    prerelease: bool,
 }
 
 async fn check_for_update(
@@ -83,36 +82,38 @@ async fn check_for_update(
     .with_legacy_custom_ca_fallback();
     let latest_version = match action {
         Some(UpdateAction::Daemon(_)) => return Ok(()),
-        Some(UpdateAction::BrewUpgrade) => {
-            let HomebrewCaskInfo { version } = client_pool
-                .get(HOMEBREW_CASK_API_URL)
+        Some(UpdateAction::SednaStandalone) => {
+            let receipt = InstallContext::current()
+                .sedna_release_receipt()
+                .context("installed package is not eligible for Sedna updates")?;
+            let url = if receipt.selection_channel == "prerelease" {
+                SEDNA_RELEASES_URL
+            } else {
+                SEDNA_LATEST_RELEASE_URL
+            };
+            let releases = client_pool
+                .get(url)
                 .headers(default_headers())
                 .send()
                 .await?
-                .error_for_status()?
-                .json::<HomebrewCaskInfo>()
-                .await?;
-            version
+                .error_for_status()?;
+            let latest_tag = if receipt.selection_channel == "prerelease" {
+                let releases = releases.json::<Vec<SednaReleaseInfo>>().await?;
+                releases
+                    .iter()
+                    .find(|release| release.prerelease)
+                    .or_else(|| releases.first())
+                    .context("no Sedna release is currently published")?
+                    .tag_name
+                    .clone()
+            } else {
+                let release = releases.json::<SednaReleaseInfo>().await?;
+                anyhow::ensure!(!release.prerelease, "Sedna latest release is not stable");
+                release.tag_name
+            };
+            extract_version_from_latest_tag(&latest_tag)?
         }
-        Some(UpdateAction::NpmGlobalLatest)
-        | Some(UpdateAction::BunGlobalLatest)
-        | Some(UpdateAction::VitePlusGlobalLatest)
-        | Some(UpdateAction::PnpmGlobalLatest) => {
-            let latest_version = fetch_latest_github_release_version(&client_pool).await?;
-            let package_info = client_pool
-                .get(npm_registry::PACKAGE_URL)
-                .headers(default_headers())
-                .send()
-                .await?
-                .error_for_status()?
-                .json::<NpmPackageInfo>()
-                .await?;
-            npm_registry::ensure_version_ready(&package_info, &latest_version)?;
-            latest_version
-        }
-        Some(UpdateAction::StandaloneUnix) | Some(UpdateAction::StandaloneWindows) | None => {
-            fetch_latest_github_release_version(&client_pool).await?
-        }
+        None => return Ok(()),
     };
 
     // Preserve any previously dismissed version if present.
@@ -129,22 +130,6 @@ async fn check_for_update(
     }
     tokio::fs::write(version_file, json_line).await?;
     Ok(())
-}
-
-async fn fetch_latest_github_release_version(
-    client_pool: &RouteAwareClientPool,
-) -> anyhow::Result<String> {
-    let ReleaseInfo {
-        tag_name: latest_tag_name,
-    } = client_pool
-        .get(LATEST_RELEASE_URL)
-        .headers(default_headers())
-        .send()
-        .await?
-        .error_for_status()?
-        .json::<ReleaseInfo>()
-        .await?;
-    extract_version_from_latest_tag(&latest_tag_name)
 }
 
 /// Returns the latest version to show in a popup, if it should be shown.

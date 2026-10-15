@@ -1372,29 +1372,27 @@ fn web_search_history_cell_snapshot() {
 
 #[test]
 fn standalone_unix_update_available_history_cell_snapshot() {
-    let cell =
-        UpdateAvailableHistoryCell::new("9.9.9".to_string(), Some(UpdateAction::StandaloneUnix));
+    let cell = UpdateAvailableHistoryCell::new(
+        "9.9.9".to_string(),
+        Some(UpdateAction::SednaStandalone),
+    );
     let rendered = render_lines(&cell.display_lines(/*width*/ 110)).join("\n");
 
     insta::assert_snapshot!(rendered);
 }
 
 #[test]
-fn standalone_windows_update_available_history_cell_snapshot() {
-    let cell =
-        UpdateAvailableHistoryCell::new("9.9.9".to_string(), Some(UpdateAction::StandaloneWindows));
-    let rendered = render_lines(&cell.display_lines(/*width*/ 110)).join("\n");
+fn manual_update_notice_points_to_sedna_releases() {
+    let cell = UpdateAvailableHistoryCell::new("9.9.9".to_string(), None);
+    let raw = cell
+        .raw_lines()
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
 
-    insta::assert_snapshot!(rendered);
-}
-
-#[test]
-fn pnpm_update_available_history_cell_snapshot() {
-    let cell =
-        UpdateAvailableHistoryCell::new("9.9.9".to_string(), Some(UpdateAction::PnpmGlobalLatest));
-    let rendered = render_lines(&cell.display_lines(/*width*/ 110)).join("\n");
-
-    insta::assert_snapshot!(rendered);
+    assert!(raw.contains("https://github.com/sednalabs/codex/releases"));
+    assert!(!raw.contains("github.com/openai/codex"));
 }
 
 #[test]

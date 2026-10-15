@@ -813,16 +813,9 @@ fn run_update_action(
         #[cfg(windows)]
         {
             let (cmd, args) = action.command_args();
-            let cmd = if action == UpdateAction::StandaloneWindows {
-                // These args contain PowerShell metacharacters, so do not let
-                // PATHEXT select a batch shim for this action.
-                "powershell.exe"
-            } else {
-                cmd
-            };
             let path_env =
                 std::env::var_os("PATH").ok_or_else(|| anyhow::anyhow!("PATH is not set"))?;
-            let command_path = resolve_windows_update_command_from_path(cmd, &path_env)?;
+            let command_path = resolve_windows_update_command_from_path(&cmd, &path_env)?;
             // Do not let a project-local command or package-manager config
             // influence the updater after the user accepts the update prompt.
             let update_cwd = tempfile::tempdir()?;
@@ -837,10 +830,10 @@ fn run_update_action(
         #[cfg(not(windows))]
         {
             let (cmd, args) = action.command_args();
-            let command_path = crate::wsl_paths::normalize_for_wsl(cmd);
+            let command_path = crate::wsl_paths::normalize_for_wsl(&cmd);
             let normalized_args: Vec<String> = args
                 .iter()
-                .map(crate::wsl_paths::normalize_for_wsl)
+                .map(|arg| crate::wsl_paths::normalize_for_wsl(arg.as_str()))
                 .collect();
             std::process::Command::new(&command_path)
                 .args(&normalized_args)
@@ -883,7 +876,7 @@ fn run_update_command() -> anyhow::Result<()> {
     {
         let Some(action) = codex_tui::get_update_action() else {
             anyhow::bail!(
-                "Could not detect the Codex installation method. Please update manually: https://developers.openai.com/codex/cli/"
+                "This installation is not eligible for automatic Sedna updates. Reinstall manually from https://github.com/sednalabs/codex/releases."
             );
         };
         run_update_action(action, /*cli_executable*/ None)

@@ -1,4 +1,5 @@
 use crate::legacy_core::config::Config;
+use codex_install_context::InstallContext;
 use chrono::DateTime;
 use chrono::Utc;
 use serde::Deserialize;
@@ -15,10 +16,15 @@ pub(crate) struct VersionInfo {
     pub(crate) dismissed_version: Option<String>,
 }
 
-const VERSION_FILENAME: &str = "version.json";
-
 pub(crate) fn version_filepath(config: &Config) -> PathBuf {
-    config.codex_home.join(VERSION_FILENAME).into_path_buf()
+    let channel = InstallContext::current()
+        .sedna_release_receipt()
+        .map(|receipt| receipt.selection_channel)
+        .unwrap_or_else(|| "stable".to_string());
+    config
+        .codex_home
+        .join(format!("sedna-version-{channel}.json"))
+        .into_path_buf()
 }
 
 pub(crate) fn read_version_info(version_file: &Path) -> anyhow::Result<VersionInfo> {

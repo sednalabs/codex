@@ -6,10 +6,11 @@ use pretty_assertions::assert_eq;
 #[cfg(unix)]
 use tempfile::TempDir;
 
-use super::INSTALL_URL;
 use super::InstallerHttp;
 use super::InstallerResponse;
 use super::fetch_installer_script;
+
+const TEST_INSTALL_URL: &str = "https://raw.githubusercontent.com/sednalabs/codex/1111111111111111111111111111111111111111/scripts/install/install.sh";
 #[cfg(unix)]
 use super::manual_update::run as manual_update_once;
 #[cfg(unix)]
@@ -31,24 +32,24 @@ async fn installer_fetch_uses_exact_url_and_preserves_bytes() {
     let http = FakeInstallerHttp::new(InstallerResponse::Success(script.clone()));
 
     assert_eq!(
-        fetch_installer_script(&http)
+        fetch_installer_script(&http, TEST_INSTALL_URL)
             .await
             .expect("installer fetch should succeed"),
         script
     );
-    assert_eq!(http.requested_urls(), vec![INSTALL_URL.to_string()]);
+    assert_eq!(http.requested_urls(), vec![TEST_INSTALL_URL.to_string()]);
 }
 
 #[tokio::test]
 async fn installer_fetch_rejects_non_success_status() {
     let http = FakeInstallerHttp::new(InstallerResponse::Unsuccessful { status: 503 });
 
-    let error = fetch_installer_script(&http)
+    let error = fetch_installer_script(&http, TEST_INSTALL_URL)
         .await
         .expect_err("non-success response should fail");
 
     assert!(error.to_string().contains("503"));
-    assert_eq!(http.requested_urls(), vec![INSTALL_URL.to_string()]);
+    assert_eq!(http.requested_urls(), vec![TEST_INSTALL_URL.to_string()]);
 }
 
 #[cfg(unix)]
@@ -194,24 +195,27 @@ struct FakeInstallerHttp {
     requested_urls: Mutex<Vec<String>>,
 }
 
-#[cfg(unix)]
+#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
 #[tokio::test]
 async fn explicit_update_migrates_running_and_stopped_installations() {
     for (running, local) in [(false, false), (true, false), (false, true), (true, true)] {
         let home = TempDir::new().unwrap();
-        let (legacy, release) = manual_update_daemon(&home);
+        let (legacy, release) = sedna_update_daemon(&home);
         let root = home.path().join("packages/standalone");
         if local {
             let package = root.join("releases/local-development");
-            std::fs::create_dir(&package).unwrap();
+            std::fs::create_dir_all(package.join("bin")).unwrap();
             codex_utils_cargo_bin::copy_executable(
                 &legacy.managed_codex_bin,
-                &package.join("codex"),
+                &package.join("bin/codex"),
             )
             .unwrap();
+            let target = format!("{}-unknown-linux-musl", std::env::consts::ARCH);
+            write_sedna_fixture_metadata(&package, env!("CARGO_PKG_VERSION"), &target);
             std::fs::remove_file(root.join("current")).unwrap();
             std::os::unix::fs::symlink(&package, root.join("current")).unwrap();
             std::fs::remove_file(root.join("auto-update-version")).unwrap();
+            legacy.managed_codex_bin = root.join("current/bin/codex");
         }
         let previous = root.join("current").canonicalize().unwrap();
         let scheduled = FakeInstallerHttp::new(InstallerResponse::Success(
@@ -233,7 +237,7 @@ async fn explicit_update_migrates_running_and_stopped_installations() {
             if local {
                 vec![]
             } else {
-                vec![INSTALL_URL.to_string()]
+                vec![TEST_INSTALL_URL.to_string()]
             }
         );
         assert_eq!(
@@ -266,6 +270,10 @@ async fn explicit_update_migrates_running_and_stopped_installations() {
                 .contains("does not support daemon migration")
         );
 
+        let package_version = env!("CARGO_PKG_VERSION");
+        let target = format!("{}-unknown-linux-musl", std::env::consts::ARCH);
+        let release = format!("{package_version}-{target}");
+        let metadata = sedna_fixture_metadata_script(package_version, &target);
         let script = format!(
             r#"# CODEX_INSTALL_DEFER_SELECTION
 set -eu
@@ -275,11 +283,15 @@ test "$CODEX_INSTALL_DAEMON_ONLY" = 1
 test "$CODEX_INSTALL_IF_LATEST" = 0
 root="$CODEX_HOME/packages/app-server-daemon"
 mkdir -p "$root/releases/{release}/bin"
-printf '#!/bin/sh\nif [ "$1" = --version ]; then echo codex 1.0.0; else exit 2; fi\n' > "$root/releases/{release}/bin/codex"
+printf '#!/bin/sh\nif [ "$1" = --version ]; then echo codex {version}; else exit 2; fi\n' > "$root/releases/{release}/bin/codex"
 chmod +x "$root/releases/{release}/bin/codex"
+release_dir="$root/releases/{release}"
+{metadata}
 ln -sfn 'releases/{release}' "$root/.migration-current"
 printf '{release}' > "$root/auto-update-version"
-"#
+"#,
+            version = env!("CARGO_PKG_VERSION"),
+            metadata = metadata,
         );
         let http = FakeInstallerHttp::new(InstallerResponse::Success(script.as_bytes().to_vec()));
         let error = super::migration::run(&http, &legacy).await.unwrap_err();
@@ -304,8 +316,8 @@ printf '{release}' > "$root/auto-update-version"
         let output = super::migration::run(&compatible, &legacy).await.unwrap();
         assert_eq!(output, UpdateOutput {
         status: UpdateStatus::Updated,
-        installed_version: Some("1.0.0".to_string()),
-        running_version: (running).then(|| "1.0.0".to_string()),
+        installed_version: Some(package_version.to_string()),
+        running_version: (running).then(|| package_version.to_string()),
         managed_codex_path: dedicated.join("current/bin/codex"),
         message: "The daemon was updated and moved to its dedicated package. The legacy CLI package was left unchanged.".to_string(),
     });
@@ -404,6 +416,8 @@ async fn cancelling_installer_stops_children_and_releases_fallback_lock() {
             script.as_bytes(),
             super::InstallerMode::Update("0.150.0-test"),
             &home.path().join("packages/standalone"),
+            "stable",
+            "0.149.0",
             async { cancelled.await.ok() },
         ),
     )
@@ -451,6 +465,121 @@ fn manual_update_daemon(home: &TempDir) -> (Daemon, String) {
         },
         release,
     )
+}
+
+#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+fn sedna_update_daemon(home: &TempDir) -> (Daemon, String) {
+    let target = format!("{}-unknown-linux-musl", std::env::consts::ARCH);
+    let version = env!("CARGO_PKG_VERSION");
+    let release = format!("{version}-{target}");
+    let standalone = home.path().join("packages/standalone");
+    let release_dir = standalone.join("releases").join(&release);
+    let bin_dir = release_dir.join("bin");
+    std::fs::create_dir_all(&bin_dir).expect("release directory");
+    let bin = bin_dir.join("codex");
+    codex_utils_cargo_bin::write_executable(
+        &bin,
+        &format!(
+            "#!/bin/sh\nif [ \"$1\" = '--version' ]; then echo codex {version}; else exec sleep 30; fi\n"
+        ),
+    )
+    .expect("managed binary");
+    write_sedna_fixture_metadata(&release_dir, version, &target);
+    std::os::unix::fs::symlink(format!("releases/{release}"), standalone.join("current"))
+        .expect("current release");
+    std::fs::write(standalone.join("auto-update-version"), &release)
+        .expect("latest marker");
+    let state = home.path().join("app-server-daemon");
+    std::fs::create_dir_all(&state).expect("daemon state");
+    std::fs::write(state.join("app-server.stderr.log"), b"").expect("legacy daemon state");
+    (
+        Daemon {
+            log_diagnostics: false,
+            socket_path: home.path().join("app-server-control/server.sock"),
+            pid_file: state.join("app-server.pid"),
+            update_pid_file: state.join("app-server-updater.pid"),
+            operation_lock_file: state.join("daemon.lock"),
+            settings_file: state.join("settings.json"),
+            managed_codex_bin: standalone.join("current/bin/codex"),
+        },
+        release,
+    )
+}
+
+#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+fn write_sedna_fixture_metadata(release_dir: &std::path::Path, version: &str, target: &str) {
+    std::fs::write(
+        release_dir.join("codex-package.json"),
+        sedna_package_manifest_json(version, target),
+    )
+    .expect("package manifest");
+    std::fs::write(
+        release_dir.join("sedna-release.json"),
+        sedna_receipt_json(version, target),
+    )
+    .expect("Sedna release receipt");
+}
+
+#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+fn sedna_package_manifest_json(version: &str, target: &str) -> String {
+    sedna_package_manifest_json_with_native(version, version, target)
+}
+
+#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+fn sedna_package_manifest_json_with_native(
+    package_version: &str,
+    native_version: &str,
+    target: &str,
+) -> String {
+    format!(
+        r#"{{"layoutVersion":1,"version":"{package_version}","nativeVersion":"{native_version}","target":"{target}","variant":"codex","entrypoint":"bin/codex"}}"#
+    )
+}
+
+#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+fn sedna_receipt_json(version: &str, target: &str) -> String {
+    sedna_receipt_json_with_native(version, version, target)
+}
+
+#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+fn sedna_receipt_json_with_native(
+    package_version: &str,
+    native_version: &str,
+    target: &str,
+) -> String {
+    format!(
+        r#"{{"schemaVersion":1,"selectionChannel":"stable","release":{{"schemaVersion":1,"repository":"sednalabs/codex","releaseTag":"rust-v{package_version}","packageVersion":"{package_version}","nativeVersion":"{native_version}","channel":"stable","target":"{target}","sourceCommit":"1111111111111111111111111111111111111111","sourceTree":"2222222222222222222222222222222222222222","workflowHostCommit":"3333333333333333333333333333333333333333","workflowHostTree":"4444444444444444444444444444444444444444","workflowRunId":"123","archive":{{"name":"codex-package-{target}.tar.gz","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}}}}"#
+    )
+}
+
+#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+fn sedna_fixture_metadata_script(version: &str, target: &str) -> String {
+    sedna_fixture_metadata_script_for_package(version, version, target)
+}
+
+#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+fn sedna_fixture_metadata_script_for_package(
+    package_version: &str,
+    native_version: &str,
+    target: &str,
+) -> String {
+    format!(
+        "printf '%s\\n' '{}' > \"$release_dir/codex-package.json\"\nprintf '%s\\n' '{}' > \"$release_dir/sedna-release.json\"\n",
+        sedna_package_manifest_json_with_native(package_version, native_version, target),
+        sedna_receipt_json_with_native(package_version, native_version, target),
+    )
+}
+
+#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+fn next_sedna_version(version: &str) -> String {
+    let mut next = semver::Version::parse(version).expect("valid test version");
+    if next.pre.is_empty() {
+        next.patch += 1;
+    } else {
+        next.pre = semver::Prerelease::new(&format!("{}.update1", next.pre))
+            .expect("valid test prerelease");
+    }
+    next.to_string()
 }
 
 #[cfg(unix)]
@@ -691,16 +820,19 @@ async fn test_control_server(
                 .await
                 .expect("initialize request")
                 .expect("frame");
-            let version = if std::fs::read_to_string(
-                crate::managed_install::package_root(&codex_home).join("auto-update-version"),
+            let version = std::fs::read(
+                crate::managed_install::package_root(&codex_home)
+                    .join("current/codex-package.json"),
             )
-            .unwrap_or_default()
-            .starts_with("1.1.0")
-            {
-                "1.1.0"
-            } else {
-                "1.0.0"
-            };
+            .ok()
+            .and_then(|contents| {
+                serde_json::from_slice::<serde_json::Value>(&contents)
+                    .ok()?
+                    .get("nativeVersion")?
+                    .as_str()
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| "1.0.0".to_string());
             websocket.send(tokio_tungstenite::tungstenite::Message::Text(
                 serde_json::json!({"id": 1, "result": {
                     "userAgent": format!("codex_app_server_daemon/{version}"),
@@ -716,11 +848,11 @@ async fn test_control_server(
     })
 }
 
-#[cfg(unix)]
+#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
 #[tokio::test]
 async fn scheduled_no_op_preserves_daemon_and_hands_off_stale_updater() {
     let home = TempDir::new().expect("home");
-    let (daemon, _) = manual_update_daemon(&home);
+    let (daemon, _) = sedna_update_daemon(&home);
     let settings = crate::settings::DaemonSettings::default();
     let backend = crate::backend::pid_backend(daemon.backend_paths(&settings));
     backend.start().await.expect("start daemon");
@@ -755,22 +887,28 @@ async fn scheduled_no_op_preserves_daemon_and_hands_off_stale_updater() {
     server.abort();
 }
 
-#[cfg(unix)]
+#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
 #[tokio::test]
 async fn scheduled_resource_only_update_restarts_daemon() {
     let home = TempDir::new().expect("home");
-    let (daemon, release) = manual_update_daemon(&home);
+    let (daemon, release) = sedna_update_daemon(&home);
     let settings = crate::settings::DaemonSettings::default();
     let backend = crate::backend::pid_backend(daemon.backend_paths(&settings));
     backend.start().await.expect("start daemon");
     let server = test_control_server(&daemon, home.path()).await;
     let previous_pid_record = std::fs::read(&daemon.pid_file).expect("daemon PID record");
     let root = home.path().join("packages/standalone");
-    let next_release = release.replacen("1.0.0", "1.0.1", 1);
+    let current_version = env!("CARGO_PKG_VERSION");
+    let next_version = next_sedna_version(current_version);
+    let next_release = release.replacen(current_version, &next_version, 1);
+    let target = format!("{}-unknown-linux-musl", std::env::consts::ARCH);
+    let metadata = sedna_fixture_metadata_script(&next_version, &target);
     let installer = FakeInstallerHttp::new(InstallerResponse::Success(
         format!(
-            "#!/bin/sh\n# CODEX_INSTALL_IF_LATEST\nmkdir -p '{root}/releases/{next_release}'\ncp '{root}/releases/{release}/codex' '{root}/releases/{next_release}/codex'\nln -sfn 'releases/{next_release}' '{root}/current'\nprintf '{next_release}' > '{root}/auto-update-version'\n",
+            "#!/bin/sh\n# CODEX_INSTALL_IF_LATEST\nset -eu\nrelease_dir='{root}/releases/{next_release}'\nmkdir -p \"$release_dir/bin\"\n{metadata}printf '#!/bin/sh\\nif [ \"$1\" = --version ]; then echo codex {next_version}; else exec sleep 30; fi\\n' > \"$release_dir/bin/codex\"\nchmod +x \"$release_dir/bin/codex\"\nln -sfn 'releases/{next_release}' '{root}/current'\nprintf '{next_release}' > '{root}/auto-update-version'\n",
             root = root.display(),
+            metadata = metadata,
+            next_version = next_version,
         )
         .into_bytes(),
     ));
@@ -802,7 +940,7 @@ async fn scheduled_resource_only_update_restarts_daemon() {
     server.abort();
 }
 
-#[cfg(unix)]
+#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
 #[tokio::test]
 async fn manual_update_restarts_managed_daemon_with_automatic_updates_disabled() {
     check_manual_update_restart("standalone").await;
@@ -952,20 +1090,20 @@ async fn confirmed_feature_restart_preserves_ownership_and_skips_matching_settin
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
 #[tokio::test]
 async fn manual_update_restarts_local_daemon_with_automatic_updates_disabled() {
     check_manual_update_restart("app-server-daemon").await;
 }
 
-#[cfg(unix)]
+#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
 async fn check_manual_update_restart(package_directory: &str) {
     use tokio::io::AsyncReadExt;
     use tokio::io::AsyncWriteExt;
 
     let local_package = package_directory == "app-server-daemon";
     let home = TempDir::new().expect("home");
-    let (mut daemon, mut release) = manual_update_daemon(&home);
+    let (mut daemon, mut release) = sedna_update_daemon(&home);
     let standalone = home.path().join("packages").join(package_directory);
     if local_package {
         std::fs::rename(home.path().join("packages/standalone"), &standalone).unwrap();
@@ -979,7 +1117,7 @@ async fn check_manual_update_restart(package_directory: &str) {
         std::os::unix::fs::symlink(format!("releases/{local}"), standalone.join("current"))
             .unwrap();
         std::fs::remove_file(standalone.join("auto-update-version")).unwrap();
-        daemon.managed_codex_bin = standalone.join("current/codex");
+        daemon.managed_codex_bin = standalone.join("current/bin/codex");
         release = local;
     }
     let daemon = std::sync::Arc::new(daemon);
@@ -1003,10 +1141,16 @@ async fn check_manual_update_restart(package_directory: &str) {
             .expect("PID")
     };
     let before = current_pid();
-    let version = if local_package { "1.0.0" } else { "1.1.0" };
-    let next = release
-        .trim_start_matches("local-development-")
-        .replacen("1.0.0", version, 1);
+    let package_version = next_sedna_version(env!("CARGO_PKG_VERSION"));
+    let target = format!("{}-unknown-linux-musl", std::env::consts::ARCH);
+    let next_release = format!("{package_version}-{target}");
+    let next = if local_package {
+        format!("local-development-{next_release}")
+    } else {
+        next_release
+    };
+    let native_version = env!("CARGO_PKG_VERSION");
+    let version = package_version.as_str();
     let guard = if local_package {
         "CODEX_INSTALL_IF_CURRENT"
     } else {
@@ -1015,22 +1159,27 @@ async fn check_manual_update_restart(package_directory: &str) {
     let install_binary = if local_package {
         // Same binary and version, but a different package: it must still restart.
         format!(
-            "cp '{root}/releases/{release}/codex' '{root}/releases/{next}/bin/codex'",
+            "cp '{root}/releases/{release}/bin/codex' '{root}/releases/{next}/bin/codex'",
             root = standalone.display()
         )
     } else {
         format!(
-            r#"printf '#!/bin/sh\nif [ "$1" = --version ]; then echo codex 1.1.0; else exec sleep 30; fi\n' > '{root}/releases/{next}/bin/codex'"#,
+            r#"printf '#!/bin/sh\nif [ "$1" = --version ]; then echo codex {native_version}; else exec sleep 30; fi\n' > '{root}/releases/{next}/bin/codex'"#,
             root = standalone.display()
         )
     };
     let ready = home.path().join("installer-ready");
     let proceed = home.path().join("installer-proceed");
     let script = format!(
-        "#!/bin/sh\n# CODEX_INSTALL_IF_LATEST CODEX_INSTALL_IF_CURRENT CODEX_INSTALL_DAEMON_ONLY\nif [ \"$CODEX_UPDATE_FROM_RELEASE\" = '{next}' ]; then exit 0; fi\ntest \"${guard}\" = 1 || exit 4\ntest \"$CODEX_UPDATE_FROM_RELEASE\" = '{release}' || exit 5\ntouch '{ready}'\nwhile [ ! -e '{proceed}' ]; do sleep .05; done\nmkdir -p '{root}/releases/{next}/bin'\n{install_binary}\nchmod +x '{root}/releases/{next}/bin/codex'\nln -sfn 'releases/{next}' '{root}/current'\nprintf '{next}' > '{root}/auto-update-version'\n",
+        "#!/bin/sh\n# CODEX_INSTALL_IF_LATEST CODEX_INSTALL_IF_CURRENT CODEX_INSTALL_DAEMON_ONLY\nif [ \"$CODEX_UPDATE_FROM_RELEASE\" = '{next}' ]; then exit 0; fi\ntest \"${guard}\" = 1 || exit 4\ntest \"$CODEX_UPDATE_FROM_RELEASE\" = '{release}' || exit 5\ntouch '{ready}'\nwhile [ ! -e '{proceed}' ]; do sleep .05; done\nmkdir -p '{root}/releases/{next}/bin'\n{install_binary}\nchmod +x '{root}/releases/{next}/bin/codex'\nrelease_dir='{root}/releases/{next}'\n{metadata}\nln -sfn 'releases/{next}' '{root}/current'\nprintf '{next}' > '{root}/auto-update-version'\n",
         root = standalone.display(),
         ready = ready.display(),
         proceed = proceed.display(),
+        metadata = sedna_fixture_metadata_script_for_package(
+            version,
+            native_version,
+            &target,
+        ),
     );
     let http = FakeInstallerHttp::new(InstallerResponse::Success(script.into_bytes()));
     let updater_daemon = std::sync::Arc::clone(&daemon);
@@ -1075,7 +1224,7 @@ async fn check_manual_update_restart(package_directory: &str) {
         .expect("manual update");
     assert_eq!(output.status, UpdateStatus::Updated);
     assert_eq!(output.installed_version.as_deref(), Some(version));
-    assert_eq!(output.running_version.as_deref(), Some(version));
+    assert_eq!(output.running_version.as_deref(), Some(native_version));
     assert_eq!(
         output.managed_codex_path,
         standalone.join("current/bin/codex")
@@ -1140,26 +1289,30 @@ Test-Installer
 "#
         .to_vec(),
     ));
-    let script = super::fetch_installer_script(&valid)
+    let script = super::fetch_installer_script(&valid, TEST_INSTALL_URL)
         .await
         .expect("fetch installer");
     super::run_installer_script(
         &script,
         super::InstallerMode::RestoreProduction("0.150.0-x86_64-pc-windows-msvc"),
         std::path::Path::new("packages/app-server-daemon"),
+        "stable",
+        "0.149.0",
     )
     .await
     .expect("installer succeeds");
     let failing = FakeInstallerHttp::new(InstallerResponse::Success(
         b"throw ([string][char]0x00E9 + 'chec installation')".to_vec(),
     ));
-    let script = super::fetch_installer_script(&failing)
+    let script = super::fetch_installer_script(&failing, TEST_INSTALL_URL)
         .await
         .expect("fetch failing installer");
     let error = super::run_installer_script(
         &script,
         super::InstallerMode::RestoreProduction("0.150.0-x86_64-pc-windows-msvc"),
         std::path::Path::new("packages/app-server-daemon"),
+        "stable",
+        "0.149.0",
     )
     .await
     .err()
@@ -1178,6 +1331,8 @@ async fn installer_failure_includes_stderr() {
         script.as_bytes(),
         super::InstallerMode::Update("0.150.0-x86_64-unknown-linux-gnu"),
         std::path::Path::new("packages/app-server-daemon"),
+        "stable",
+        "0.149.0",
         futures::future::pending(),
     )
     .await
@@ -1197,6 +1352,8 @@ async fn installer_failure_preserves_stderr_before_drain_timeout() {
             b"printf 'installer failed' >&2\nsleep 5 &\nexit 1\n",
             super::InstallerMode::Update("0.150.0-x86_64-unknown-linux-gnu"),
             std::path::Path::new("packages/app-server-daemon"),
+            "stable",
+            "0.149.0",
             futures::future::pending(),
         ),
     )
@@ -1207,7 +1364,7 @@ async fn installer_failure_preserves_stderr_before_drain_timeout() {
     assert!(error.to_string().contains("installer failed"));
 }
 
-#[cfg(unix)]
+#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
 #[tokio::test]
 async fn update_rejects_a_package_root_change_during_download() {
     struct ChangingRoot<'a>(&'a std::path::Path);
@@ -1223,7 +1380,7 @@ async fn update_rejects_a_package_root_change_during_download() {
         }
     }
     let home = TempDir::new().unwrap();
-    let (daemon, _) = manual_update_daemon(&home);
+    let (daemon, _) = sedna_update_daemon(&home);
     let identity = executable_identity(&daemon.managed_codex_bin)
         .await
         .unwrap();
@@ -1239,14 +1396,14 @@ async fn update_rejects_a_package_root_change_during_download() {
     assert!(error.to_string().contains("package root changed"));
 }
 
-#[cfg(unix)]
+#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
 #[tokio::test]
 async fn daemon_owned_updates_require_and_request_an_isolated_installer() {
     let home = TempDir::new().unwrap();
-    let (mut daemon, release) = manual_update_daemon(&home);
+    let (mut daemon, release) = sedna_update_daemon(&home);
     let root = home.path().join("packages/app-server-daemon");
     std::fs::rename(home.path().join("packages/standalone"), &root).unwrap();
-    daemon.managed_codex_bin = root.join("current/codex");
+    daemon.managed_codex_bin = root.join("current/bin/codex");
     let identity = executable_identity(&daemon.managed_codex_bin)
         .await
         .unwrap();

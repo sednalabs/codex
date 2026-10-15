@@ -72,6 +72,31 @@ pub(crate) fn managed_codex_bin(codex_home: &Path) -> PathBuf {
 
 /// Only latest-channel stable releases may run the public latest-version updater.
 pub(crate) fn is_stable_standalone_release(codex_home: &Path, codex_bin: &Path) -> bool {
+    if !cfg!(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    )) {
+        return false;
+    }
+    let install_context = codex_install_context::InstallContext::from_exe_in_codex_home(
+        cfg!(target_os = "macos"),
+        Some(codex_bin),
+        None,
+        codex_home,
+    );
+    let Some(receipt) = install_context.sedna_release_receipt() else {
+        return false;
+    };
+    if receipt.selection_channel != "stable" || receipt.release.channel != "stable" {
+        return false;
+    }
+    if receipt.release.native_version.to_string() != env!("CARGO_PKG_VERSION") {
+        return false;
+    }
+    let expected_target = format!("{}-unknown-linux-musl", std::env::consts::ARCH);
+    if receipt.release.target != expected_target {
+        return false;
+    }
     let standalone = package_root(codex_home);
     let Ok(releases) = std::fs::canonicalize(standalone.join("releases")) else {
         return false;
@@ -85,19 +110,9 @@ pub(crate) fn is_stable_standalone_release(codex_home: &Path, codex_bin: &Path) 
     let Some(release_name) = release.file_name().and_then(|name| name.to_str()) else {
         return false;
     };
-    // GNU packages can seed the new directory; retain legacy updater eligibility.
-    if standalone.ends_with("standalone") && release_name.ends_with("-gnu") {
-        return false;
-    }
     let targets = [
-        "aarch64-apple-darwin",
-        "x86_64-apple-darwin",
-        "aarch64-unknown-linux-gnu",
-        "x86_64-unknown-linux-gnu",
         "aarch64-unknown-linux-musl",
         "x86_64-unknown-linux-musl",
-        "aarch64-pc-windows-msvc",
-        "x86_64-pc-windows-msvc",
     ];
     let Some(version) = targets
         .iter()
@@ -105,11 +120,7 @@ pub(crate) fn is_stable_standalone_release(codex_home: &Path, codex_bin: &Path) 
     else {
         return false;
     };
-    let components: Vec<_> = version.split('.').collect();
-    components.len() == 3
-        && components.iter().all(|component| {
-            !component.is_empty() && component.bytes().all(|byte| byte.is_ascii_digit())
-        })
+    receipt.release.package_version.to_string() == version
         && std::fs::read_to_string(standalone.join("auto-update-version"))
             .is_ok_and(|selected| selected == release_name)
         && std::fs::canonicalize(codex_bin).is_ok_and(|bin| bin.starts_with(&release))

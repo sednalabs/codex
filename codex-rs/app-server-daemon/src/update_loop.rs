@@ -70,10 +70,9 @@ const RESTART_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 // envelope, and the worst-case six-byte JSON escape for every captured byte.
 const INSTALLER_STDERR_TAIL_BYTES: usize = 2 * 1024;
 const INSTALLER_STDERR_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
-#[cfg(unix)]
-const INSTALL_URL: &str = "https://chatgpt.com/codex/install.sh";
-#[cfg(windows)]
-const INSTALL_URL: &str = "https://chatgpt.com/codex/install.ps1";
+const SEDNA_INSTALL_URL_PREFIX: &str =
+    "https://raw.githubusercontent.com/sednalabs/codex/";
+const SEDNA_INSTALL_URL_SUFFIX: &str = "/scripts/install/install.sh";
 
 pub(crate) async fn run(
     http_client_factory: HttpClientFactory,
@@ -328,6 +327,13 @@ async fn update_once(
     terminate: &mut Signal,
     trigger: UpdateTrigger<'_>,
 ) -> Result<(UpdateLoopControl, Option<RestartIfRunningOutcome>)> {
+    anyhow::ensure!(
+        cfg!(all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )),
+        "automatic Sedna updates are supported only on Linux x86_64 and ARM64"
+    );
     if trigger == UpdateTrigger::Scheduled
         && !UpdaterSettings::load(&daemon.settings_file)
             .await?
@@ -362,8 +368,25 @@ async fn update_once(
             )
         };
     let started = std::time::Instant::now();
+    let managed_codex_bin = crate::managed_install::managed_codex_bin(codex_home);
+    let install_context = codex_install_context::InstallContext::from_exe_in_codex_home(
+        cfg!(target_os = "macos"),
+        Some(&managed_codex_bin),
+        None,
+        codex_home,
+    );
+    let receipt = install_context
+        .sedna_release_receipt()
+        .context("installed package is not eligible for Sedna automatic updates")?;
+    let installer_url = format!(
+        "{SEDNA_INSTALL_URL_PREFIX}{}{SEDNA_INSTALL_URL_SUFFIX}",
+        receipt.release.source_commit
+    );
+    let previous_version = receipt.release.package_version.to_string();
     let script = tokio::select! {
-        result = fetch_installer_script(http) => crate::diagnostics::result("installer_fetch", started, result)?,
+        result = fetch_installer_script(http, &installer_url) => {
+            crate::diagnostics::result("installer_fetch", started, result)?
+        },
         _ = terminate.recv() => return Ok((UpdateLoopControl::Stop, None)),
     };
     anyhow::ensure!(
@@ -400,7 +423,15 @@ async fn update_once(
         crate::diagnostics::result(
             "installer_run",
             started,
-            run_installer_script(&script, installer_mode, &package_root, terminate.recv()).await
+            run_installer_script(
+                &script,
+                installer_mode,
+                &package_root,
+                &receipt.selection_channel,
+                &previous_version,
+                terminate.recv(),
+            )
+            .await
         )?,
         UpdateLoopControl::Stop
     ) {
@@ -408,7 +439,15 @@ async fn update_once(
     }
     #[cfg(windows)]
     tokio::select! {
-        result = run_installer_script(&script, installer_mode, &package_root) => { crate::diagnostics::result("installer_run", started, result)?; },
+        result = run_installer_script(
+            &script,
+            installer_mode,
+            &package_root,
+            &receipt.selection_channel,
+            &previous_version,
+        ) => {
+            crate::diagnostics::result("installer_run", started, result)?;
+        },
         _ = terminate.recv() => return Ok((UpdateLoopControl::Stop, None)),
     }
     anyhow::ensure!(
@@ -567,6 +606,8 @@ async fn run_installer_script(
     script: &[u8],
     mode: InstallerMode<'_>,
     package_root: &Path,
+    channel: &str,
+    previous_version: &str,
     #[cfg(unix)] terminate: impl std::future::Future<Output = Option<()>>,
 ) -> Result<UpdateLoopControl> {
     #[cfg(unix)]
@@ -598,6 +639,9 @@ async fn run_installer_script(
                 .context("package root has no Codex home")?,
         )
         .env("CODEX_INSTALL_DEFER_SELECTION", defer_selection)
+        .env("CODEX_SEDNA_UPDATE", "1")
+        .env("CODEX_SEDNA_RELEASE_CHANNEL", channel)
+        .env("CODEX_SEDNA_PREVIOUS_VERSION", previous_version)
         .env(
             "CODEX_INSTALL_DAEMON_ONLY",
             if package_root.ends_with("app-server-daemon") {
@@ -736,8 +780,8 @@ async fn cancel_installer(child: &mut tokio::process::Child, package_root: &Path
     let _ = child.wait().await;
 }
 
-async fn fetch_installer_script(http: &impl InstallerHttp) -> Result<Vec<u8>> {
-    match http.get(INSTALL_URL).await? {
+async fn fetch_installer_script(http: &impl InstallerHttp, url: &str) -> Result<Vec<u8>> {
+    match http.get(url).await? {
         InstallerResponse::Success(body) => Ok(body),
         InstallerResponse::Unsuccessful { status } => {
             anyhow::bail!("standalone Codex updater request failed with status {status}")

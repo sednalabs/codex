@@ -14,6 +14,7 @@ const CODE_MODE_HOST_EXECUTABLE_NAME: &str = if cfg!(windows) {
     "codex-code-mode-host"
 };
 const PACKAGE_METADATA_FILENAME: &str = "codex-package.json";
+const SEDNA_RELEASE_RECEIPT_FILENAME: &str = "sedna-release.json";
 const PATH_DIRNAME: &str = "codex-path";
 const RELEASES_DIRNAME: &str = "releases";
 const RESOURCES_DIRNAME: &str = "codex-resources";
@@ -43,6 +44,42 @@ pub struct CodexPackageLayout {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 pub struct CodexPackageManifest {
     pub version: Version,
+    #[serde(default, rename = "nativeVersion")]
+    pub native_version: Option<Version>,
+    #[serde(default)]
+    pub target: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SednaReleaseReceipt {
+    pub schema_version: u32,
+    pub selection_channel: String,
+    pub release: SednaReleaseMetadata,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SednaReleaseMetadata {
+    pub schema_version: u32,
+    pub repository: String,
+    pub release_tag: String,
+    pub package_version: Version,
+    pub native_version: Version,
+    pub channel: String,
+    pub target: String,
+    pub source_commit: String,
+    pub source_tree: String,
+    pub workflow_host_commit: String,
+    pub workflow_host_tree: String,
+    pub workflow_run_id: String,
+    pub archive: SednaReleaseArchive,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub struct SednaReleaseArchive {
+    pub name: String,
+    pub sha256: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -97,6 +134,21 @@ impl InstallContext {
         )
     }
 
+    /// Resolve an executable using the Codex home already established by its owner.
+    pub fn from_exe_in_codex_home(
+        is_macos: bool,
+        current_exe: Option<&Path>,
+        method_override: Option<InstallMethod>,
+        codex_home: &Path,
+    ) -> Self {
+        Self::from_exe_with_codex_home(
+            is_macos,
+            current_exe,
+            method_override,
+            Some(codex_home),
+        )
+    }
+
     fn from_exe_with_codex_home(
         is_macos: bool,
         current_exe: Option<&Path>,
@@ -147,6 +199,57 @@ impl InstallContext {
             std::fs::read_to_string(package_layout.package_dir.join(PACKAGE_METADATA_FILENAME))
                 .ok()?;
         serde_json::from_str(&manifest).ok()
+    }
+
+    /// Read and cross-check installer provenance for a Sedna-managed package.
+    pub fn sedna_release_receipt(&self) -> Option<SednaReleaseReceipt> {
+        let InstallMethod::Standalone { release_dir, .. } = &self.method else {
+            return None;
+        };
+        let receipt = std::fs::read_to_string(release_dir.join(SEDNA_RELEASE_RECEIPT_FILENAME))
+            .ok()
+            .and_then(|contents| serde_json::from_str::<SednaReleaseReceipt>(&contents).ok())?;
+        let manifest = self.package_manifest()?;
+        let metadata = &receipt.release;
+        let target = manifest.target.as_deref()?;
+        let valid_hex = |value: &str| {
+            value.len() == 40
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        };
+        let valid_digest = |value: &str| {
+            value.len() == 64
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        };
+        (receipt.schema_version == 1
+            && metadata.schema_version == 1
+            && metadata.repository == "sednalabs/codex"
+            && manifest.version == metadata.package_version
+            && manifest.native_version.as_ref() == Some(&metadata.native_version)
+            && target == metadata.target
+            && matches!(receipt.selection_channel.as_str(), "stable" | "prerelease")
+            && matches!(metadata.channel.as_str(), "stable" | "prerelease")
+            && matches!(
+                metadata.target.as_str(),
+                "x86_64-unknown-linux-musl" | "aarch64-unknown-linux-musl"
+            )
+            && metadata.release_tag == format!("rust-v{}", metadata.package_version)
+            && !metadata.workflow_run_id.is_empty()
+            && metadata
+                .workflow_run_id
+                .bytes()
+                .all(|byte| byte.is_ascii_digit())
+            && metadata.workflow_run_id.bytes().any(|byte| byte != b'0')
+            && valid_hex(&metadata.source_commit)
+            && valid_hex(&metadata.source_tree)
+            && valid_hex(&metadata.workflow_host_commit)
+            && valid_hex(&metadata.workflow_host_tree)
+            && metadata.archive.name == format!("codex-package-{}.tar.gz", metadata.target)
+            && valid_digest(&metadata.archive.sha256))
+        .then_some(receipt)
     }
 
     pub fn rg_command(&self) -> PathBuf {
@@ -472,7 +575,7 @@ mod tests {
         let codex_home = tempfile::tempdir()?;
         let release_dir = codex_home
             .path()
-            .join("packages/standalone/releases/1.2.3-x86_64-unknown-linux-musl");
+            .join("packages/standalone/releases/1.2.4-x86_64-unknown-linux-musl");
         let resources_dir = release_dir.join(RESOURCES_DIRNAME);
         fs::create_dir_all(&resources_dir)?;
         let exe_path = release_dir.join(if cfg!(windows) { "codex.exe" } else { "codex" });
@@ -607,6 +710,8 @@ mod tests {
             context.package_manifest(),
             Some(CodexPackageManifest {
                 version: Version::new(1, 2, 3),
+                native_version: None,
+                target: None,
             })
         );
         assert_eq!(
@@ -911,5 +1016,41 @@ mod tests {
                 package_layout: None,
             }
         );
+    }
+
+    #[test]
+    fn explicit_codex_home_resolves_selected_package_receipt() -> std::io::Result<()> {
+        let codex_home = tempfile::tempdir()?;
+        let release_dir = codex_home
+            .path()
+            .join("packages/standalone/releases/1.2.3-x86_64-unknown-linux-musl");
+        let bin_dir = release_dir.join(BIN_DIRNAME);
+        fs::create_dir_all(&bin_dir)?;
+        let executable = bin_dir.join("codex");
+        fs::write(&executable, "")?;
+        fs::write(
+            release_dir.join(PACKAGE_METADATA_FILENAME),
+            r#"{"layoutVersion":1,"version":"1.2.4","nativeVersion":"1.2.3","target":"x86_64-unknown-linux-musl","variant":"codex","entrypoint":"bin/codex"}"#,
+        )?;
+        fs::write(
+            release_dir.join(SEDNA_RELEASE_RECEIPT_FILENAME),
+            r#"{"schemaVersion":1,"selectionChannel":"stable","release":{"schemaVersion":1,"repository":"sednalabs/codex","releaseTag":"rust-v1.2.4","packageVersion":"1.2.4","nativeVersion":"1.2.3","channel":"stable","target":"x86_64-unknown-linux-musl","sourceCommit":"1111111111111111111111111111111111111111","sourceTree":"2222222222222222222222222222222222222222","workflowHostCommit":"3333333333333333333333333333333333333333","workflowHostTree":"4444444444444444444444444444444444444444","workflowRunId":"123","archive":{"name":"codex-package-x86_64-unknown-linux-musl.tar.gz","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}"#,
+        )?;
+
+        let context = InstallContext::from_exe_in_codex_home(
+            /*is_macos*/ false,
+            Some(&executable),
+            None,
+            codex_home.path(),
+        );
+
+        assert!(matches!(context.method, InstallMethod::Standalone { .. }));
+        assert_eq!(
+            context
+                .sedna_release_receipt()
+                .map(|receipt| receipt.release.package_version),
+            Some(Version::new(1, 2, 4))
+        );
+        Ok(())
     }
 }

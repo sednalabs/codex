@@ -39,7 +39,7 @@ use ratatui::widgets::Wrap;
 #[cfg(not(debug_assertions))]
 use tokio_stream::StreamExt;
 
-const RELEASE_NOTES_URL: &str = "https://github.com/openai/codex/releases/latest";
+const RELEASE_NOTES_URL: &str = "https://github.com/sednalabs/codex/releases";
 
 #[cfg(not(debug_assertions))]
 pub(crate) enum UpdatePromptOutcome {
@@ -286,7 +286,7 @@ mod tests {
         UpdatePromptScreen::new(
             FrameRequester::test_dummy(),
             "9.9.9".into(),
-            UpdateAction::NpmGlobalLatest,
+            UpdateAction::SednaStandalone,
         )
     }
 
@@ -348,7 +348,7 @@ mod tests {
     #[test]
     fn long_update_command_keeps_selected_skip_visible_in_a_short_viewport() {
         let mut screen = new_prompt();
-        screen.update_action = UpdateAction::StandaloneWindows;
+        screen.update_action = UpdateAction::SednaStandalone;
         screen.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
         let (width, height) = (28, 12);
         let mut terminal = Terminal::new(VT100Backend::new(width, height)).expect("terminal");

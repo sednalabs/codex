@@ -1,82 +1,82 @@
-#[cfg(any(not(debug_assertions), test))]
 use codex_install_context::InstallContext;
 #[cfg(any(not(debug_assertions), test))]
 use codex_install_context::InstallMethod;
-#[cfg(any(not(debug_assertions), test))]
-use codex_install_context::StandalonePlatform;
 
 /// Update action the CLI should perform after the TUI exits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdateAction {
     /// Replace the local daemon after restoring the terminal.
     Daemon(DaemonUpdateSource),
-    /// Update via `npm install -g @openai/codex@latest`.
-    NpmGlobalLatest,
-    /// Update via `bun install -g @openai/codex@latest`.
-    BunGlobalLatest,
-    /// Update via `vp install -g @openai/codex@latest`.
-    VitePlusGlobalLatest,
-    /// Update via `pnpm add -g @openai/codex@latest`.
-    PnpmGlobalLatest,
-    /// Update via `brew upgrade codex`.
-    BrewUpgrade,
-    /// Update via `curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh`.
-    StandaloneUnix,
-    /// Update via `$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex`.
-    StandaloneWindows,
+    /// Update a verified Sedna standalone Linux package.
+    SednaStandalone,
 }
 
 impl UpdateAction {
     #[cfg(any(not(debug_assertions), test))]
     pub(crate) fn from_install_context(context: &InstallContext) -> Option<Self> {
         match &context.method {
-            InstallMethod::Npm => Some(UpdateAction::NpmGlobalLatest),
-            InstallMethod::Bun => Some(UpdateAction::BunGlobalLatest),
-            InstallMethod::VitePlus => Some(UpdateAction::VitePlusGlobalLatest),
-            InstallMethod::Pnpm => Some(UpdateAction::PnpmGlobalLatest),
-            InstallMethod::Brew => Some(UpdateAction::BrewUpgrade),
-            InstallMethod::Standalone { platform, .. } => Some(match platform {
-                StandalonePlatform::Unix => UpdateAction::StandaloneUnix,
-                StandalonePlatform::Windows => UpdateAction::StandaloneWindows,
-            }),
-            InstallMethod::Other => None,
+            InstallMethod::Npm
+            | InstallMethod::Bun
+            | InstallMethod::VitePlus
+            | InstallMethod::Pnpm
+            | InstallMethod::Brew
+            | InstallMethod::Other => None,
+            InstallMethod::Standalone { .. } => {
+                if !cfg!(all(
+                    target_os = "linux",
+                    any(target_arch = "x86_64", target_arch = "aarch64")
+                )) {
+                    return None;
+                }
+                let expected_target = format!("{}-unknown-linux-musl", std::env::consts::ARCH);
+                context
+                    .sedna_release_receipt()
+                    .filter(|receipt| {
+                        receipt.release.target == expected_target
+                            && receipt.release.native_version.to_string()
+                                == crate::version::CODEX_CLI_VERSION
+                    })
+                    .map(|_| UpdateAction::SednaStandalone)
+            }
         }
     }
 
     /// Returns the list of command-line arguments for invoking the update.
-    pub fn command_args(self) -> (&'static str, &'static [&'static str]) {
+    pub fn command_args(self) -> (String, Vec<String>) {
         match self {
-            UpdateAction::Daemon(source) => ("codex", source.command_args()),
-            UpdateAction::NpmGlobalLatest => ("npm", &["install", "-g", "@openai/codex"]),
-            UpdateAction::BunGlobalLatest => ("bun", &["install", "-g", "@openai/codex"]),
-            UpdateAction::VitePlusGlobalLatest => ("vp", &["install", "-g", "@openai/codex"]),
-            UpdateAction::PnpmGlobalLatest => ("pnpm", &["add", "-g", "@openai/codex"]),
-            UpdateAction::BrewUpgrade => ("brew", &["upgrade", "--cask", "codex"]),
-            UpdateAction::StandaloneUnix => (
-                "sh",
-                &[
-                    "-c",
-                    "curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh",
-                ],
-            ),
-            UpdateAction::StandaloneWindows => (
-                "powershell",
-                &[
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-c",
-                    "$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex",
-                ],
-            ),
+            UpdateAction::Daemon(source) => ("codex".into(), strings(source.command_args())),
+            UpdateAction::SednaStandalone => {
+                let receipt = InstallContext::current().sedna_release_receipt();
+                let Some(receipt) = receipt else {
+                    return (
+                        "sh".into(),
+                        strings(&[
+                            "-c",
+                            "echo 'Manual reinstall from https://github.com/sednalabs/codex/releases'; exit 1",
+                        ]),
+                    );
+                };
+                let command = format!(
+                    "curl -fsSL https://raw.githubusercontent.com/sednalabs/codex/{}/scripts/install/install.sh | CODEX_SEDNA_UPDATE=1 CODEX_SEDNA_RELEASE_CHANNEL={} CODEX_SEDNA_PREVIOUS_VERSION={} CODEX_RELEASE=latest CODEX_NON_INTERACTIVE=1 sh",
+                    receipt.release.source_commit,
+                    receipt.selection_channel,
+                    receipt.release.package_version
+                );
+                ("sh".into(), vec!["-c".into(), command])
+            }
         }
     }
 
     /// Returns string representation of the command-line arguments for invoking the update.
     pub fn command_str(self) -> String {
         let (command, args) = self.command_args();
-        shlex::try_join(std::iter::once(command).chain(args.iter().copied()))
+        shlex::try_join(std::iter::once(command.as_str()).chain(args.iter().map(String::as_str)))
             .unwrap_or_else(|_| format!("{command} {}", args.join(" ")))
     }
+}
+
+fn strings(values: &[&str]) -> Vec<String> {
+    values.iter().map(|value| (*value).to_string()).collect()
 }
 
 #[cfg(not(debug_assertions))]
@@ -103,81 +103,31 @@ mod tests {
             }),
             None
         );
-        assert_eq!(
-            UpdateAction::from_install_context(&InstallContext {
-                method: InstallMethod::Npm,
-                package_layout: None,
-            }),
-            Some(UpdateAction::NpmGlobalLatest)
-        );
-        assert_eq!(
-            UpdateAction::from_install_context(&InstallContext {
-                method: InstallMethod::Bun,
-                package_layout: None,
-            }),
-            Some(UpdateAction::BunGlobalLatest)
-        );
-        assert_eq!(
-            UpdateAction::from_install_context(&InstallContext {
-                method: InstallMethod::Pnpm,
-                package_layout: None,
-            }),
-            Some(UpdateAction::PnpmGlobalLatest)
-        );
-        assert_eq!(
-            UpdateAction::from_install_context(&InstallContext {
-                method: InstallMethod::Brew,
-                package_layout: None,
-            }),
-            Some(UpdateAction::BrewUpgrade)
-        );
+        for method in [
+            InstallMethod::Npm,
+            InstallMethod::Bun,
+            InstallMethod::Pnpm,
+            InstallMethod::VitePlus,
+            InstallMethod::Brew,
+        ] {
+            assert_eq!(
+                UpdateAction::from_install_context(&InstallContext {
+                    method,
+                    package_layout: None,
+                }),
+                None
+            );
+        }
         assert_eq!(
             UpdateAction::from_install_context(&InstallContext {
                 method: InstallMethod::Standalone {
-                    platform: StandalonePlatform::Unix,
+                    platform: codex_install_context::StandalonePlatform::Unix,
                     release_dir: native_release_dir.clone(),
                     resources_dir: Some(native_release_dir.join("codex-resources")),
                 },
                 package_layout: None,
             }),
-            Some(UpdateAction::StandaloneUnix)
-        );
-        assert_eq!(
-            UpdateAction::from_install_context(&InstallContext {
-                method: InstallMethod::Standalone {
-                    platform: StandalonePlatform::Windows,
-                    release_dir: native_release_dir.clone(),
-                    resources_dir: Some(native_release_dir.join("codex-resources")),
-                },
-                package_layout: None,
-            }),
-            Some(UpdateAction::StandaloneWindows)
-        );
-    }
-
-    #[test]
-    fn standalone_update_commands_rerun_latest_installer() {
-        assert_eq!(
-            UpdateAction::StandaloneUnix.command_args(),
-            (
-                "sh",
-                &[
-                    "-c",
-                    "curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh"
-                ][..],
-            )
-        );
-        assert_eq!(
-            UpdateAction::StandaloneWindows.command_args(),
-            (
-                "powershell",
-                &[
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-c",
-                    "$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex"
-                ][..],
-            )
+            None
         );
     }
 }
