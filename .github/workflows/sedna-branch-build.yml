@@ -592,7 +592,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PRODUCT_ARTIFACT_DIR: ${{ runner.temp }}/6e-product-artifact
           FIXTURE_SOURCE_DIR: ${{ github.workspace }}/nested-spawn-source
-          PYTHONPATH: nested-spawn-source/sdk/python/src:nested-spawn-source/sdk/python/tests
+          PYTHONPATH: ${{ github.workspace }}/nested-spawn-source/sdk/python/src:${{ github.workspace }}/nested-spawn-source/sdk/python/tests
         run: python3 .github/scripts/e20-package-consumer/consume_6e_nested_spawn.py
 
   consume-e20-aarch64:
