@@ -39,7 +39,10 @@ PRODUCT_RUN_ID = "38675534571"
 PRODUCT_WORKFLOW = ".github/workflows/sedna-first-package.yml"
 WORKFLOW_HOST = "66e627b883f0c6cdf691c8b50ff5ac0fee14851e"
 WORKFLOW_HOST_TREE = "d03153e8d382c4825e2804a49b43b72811b869e7"
-PACKAGE_VERSION_BASE = "0.163.0-dev.sedna.1"
+# The package manifest version is selected from the latest source tag by the
+# producer workflow. It is distinct from the CLI's Cargo workspace version.
+PACKAGE_MANIFEST_VERSION_BASE = "0.146.0-alpha.8-sedna.10+upstream.8593"
+CLI_WORKSPACE_VERSION = "0.162.0-sedna.dev.be2e129"
 BASE_SHA = "703389678a1a6c3a9d131245d03d3f1805b9afa1"
 PULL_REQUEST_BRANCH = "validation/w14962-e20-packaged-consumer-20261015"
 MIGRATION_38E25 = "38e25e75711d323be7039a81bcf1c31aa1117583"
@@ -293,7 +296,7 @@ def read_bundle(artifact_dir: Path, producer_run_number: int, architecture: str)
     require(manifest.get("target") == target, "Package manifest target mismatch.")
     version = manifest.get("packageVersion", "")
     require(
-        version == f"{PACKAGE_VERSION_BASE}-ci.{producer_run_number}+g{PRODUCT_SOURCE[:8]}",
+        version == f"{PACKAGE_MANIFEST_VERSION_BASE}.ci.{producer_run_number}.g{PRODUCT_SOURCE[:8]}",
         "Package version does not match the exact producer run and source SHA.",
     )
     artifacts = manifest.get("artifacts")
@@ -759,7 +762,7 @@ def consume() -> None:
     executable = extract_codex(archive, Path(env("RUNNER_TEMP")), architecture)
 
     version = subprocess.run([str(executable), "--version"], check=True, text=True, capture_output=True, timeout=60).stdout.strip()
-    require("0.163.0-dev.sedna.1" in version and "-dirty" not in version, "Packaged CLI version does not match the immutable product source.")
+    require(CLI_WORKSPACE_VERSION in version and "-dirty" not in version, "Packaged CLI version does not match the immutable product source.")
     help_text = subprocess.run([str(executable), "mcp", "login", "--help"], check=True, text=True, capture_output=True, timeout=60).stdout
     require("--device-auth" in help_text, "Packaged CLI does not expose MCP device authentication.")
 
