@@ -453,7 +453,7 @@ async fn restates_the_current_remainder_after_rollback() -> Result<()> {
         }
     })
     .await
-        .expect("timed out waiting for thread rollback")?;
+    .expect("timed out waiting for thread rollback")?;
     test.submit_turn("turn after rollback").await?;
     timeout(default_event_wait_floor(), async {
         loop {
