@@ -51,10 +51,12 @@ async fn old_openai_cache_is_not_used_or_overwritten_as_sedna_cache() {
         .await
         .expect("write Sedna dismissal");
 
-    assert!(read_version_info(&old_openai_cache)
-        .expect("old cache remains untouched")
-        .dismissed_version
-        .is_none());
+    assert!(
+        read_version_info(&old_openai_cache)
+            .expect("old cache remains untouched")
+            .dismissed_version
+            .is_none()
+    );
     assert_eq!(
         read_version_info(&sedna_cache)
             .expect("read Sedna cache")

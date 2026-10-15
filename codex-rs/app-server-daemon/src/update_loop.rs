@@ -76,8 +76,7 @@ const RESTART_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 // envelope, and the worst-case six-byte JSON escape for every captured byte.
 const INSTALLER_STDERR_TAIL_BYTES: usize = 2 * 1024;
 const INSTALLER_STDERR_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
-const SEDNA_INSTALL_URL_PREFIX: &str =
-    "https://raw.githubusercontent.com/sednalabs/codex/";
+const SEDNA_INSTALL_URL_PREFIX: &str = "https://raw.githubusercontent.com/sednalabs/codex/";
 const SEDNA_INSTALL_URL_SUFFIX: &str = "/scripts/install/install.sh";
 
 pub(crate) async fn run(
@@ -575,10 +574,7 @@ fn release_selection_unstable(daemon: &Daemon, trigger: UpdateTrigger<'_>) -> Re
     Ok(true)
 }
 
-fn installer_selection_channel(
-    selected_channel: &str,
-    trigger: UpdateTrigger<'_>,
-) -> &'static str {
+fn installer_selection_channel(selected_channel: &str, trigger: UpdateTrigger<'_>) -> &'static str {
     if trigger == UpdateTrigger::Scheduled {
         // Scheduled updates follow the user's selected channel. Explicit manual
         // and restore-production actions retain their stable-channel contract.

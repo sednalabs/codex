@@ -50,8 +50,7 @@ impl UpdateAction {
             UpdateAction::SednaStandalone => {
                 let receipt = InstallContext::current().sedna_release_receipt();
                 let Some(receipt) = receipt.filter(|receipt| {
-                    receipt.selection_channel == "prerelease"
-                        || receipt.release.channel == "stable"
+                    receipt.selection_channel == "prerelease" || receipt.release.channel == "stable"
                 }) else {
                     return (
                         "sh".into(),
@@ -178,7 +177,10 @@ mod tests {
             let status = std::process::Command::new("/bin/sh")
                 .args(&args)
                 .env("PATH", temp.path())
-                .env("CODEX_TEST_CURL_EMPTY", if empty_response { "1" } else { "0" })
+                .env(
+                    "CODEX_TEST_CURL_EMPTY",
+                    if empty_response { "1" } else { "0" },
+                )
                 .status()
                 .expect("run mocked update shell");
 

@@ -214,7 +214,10 @@ struct FakeInstallerHttp {
     requested_urls: Mutex<Vec<String>>,
 }
 
-#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 #[tokio::test]
 async fn explicit_update_migrates_running_and_stopped_installations() {
     for (running, local) in [(false, false), (true, false), (false, true), (true, true)] {
@@ -391,7 +394,10 @@ ln -sfn 'releases/{release}' "$root/.migration-current"
     }
 }
 
-#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 #[tokio::test]
 async fn migration_refuses_legacy_package_without_sedna_receipt_before_fetch() {
     let home = TempDir::new().unwrap();
@@ -408,8 +414,16 @@ async fn migration_refuses_legacy_package_without_sedna_receipt_before_fetch() {
     assert!(error.to_string().contains("reinstall manually"));
     assert!(http.requested_urls().is_empty());
     assert_eq!(standalone.join("current").canonicalize().unwrap(), package);
-    assert_eq!(std::fs::read(standalone.join("auto-update-version")).unwrap(), marker_before);
-    assert!(!home.path().join("packages/app-server-daemon/current").exists());
+    assert_eq!(
+        std::fs::read(standalone.join("auto-update-version")).unwrap(),
+        marker_before
+    );
+    assert!(
+        !home
+            .path()
+            .join("packages/app-server-daemon/current")
+            .exists()
+    );
 }
 
 impl FakeInstallerHttp {
@@ -522,7 +536,10 @@ fn manual_update_daemon(home: &TempDir) -> (Daemon, String) {
     )
 }
 
-#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 fn sedna_update_daemon(home: &TempDir) -> (Daemon, String) {
     let target = format!("{}-unknown-linux-musl", std::env::consts::ARCH);
     let version = env!("CARGO_PKG_VERSION");
@@ -542,8 +559,7 @@ fn sedna_update_daemon(home: &TempDir) -> (Daemon, String) {
     write_sedna_fixture_metadata(&release_dir, version, &target);
     std::os::unix::fs::symlink(format!("releases/{release}"), standalone.join("current"))
         .expect("current release");
-    std::fs::write(standalone.join("auto-update-version"), &release)
-        .expect("latest marker");
+    std::fs::write(standalone.join("auto-update-version"), &release).expect("latest marker");
     let state = home.path().join("app-server-daemon");
     std::fs::create_dir_all(&state).expect("daemon state");
     std::fs::write(state.join("app-server.stderr.log"), b"").expect("legacy daemon state");
@@ -561,7 +577,10 @@ fn sedna_update_daemon(home: &TempDir) -> (Daemon, String) {
     )
 }
 
-#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 fn write_sedna_fixture_metadata(release_dir: &std::path::Path, version: &str, target: &str) {
     std::fs::write(
         release_dir.join("codex-package.json"),
@@ -575,12 +594,18 @@ fn write_sedna_fixture_metadata(release_dir: &std::path::Path, version: &str, ta
     .expect("Sedna release receipt");
 }
 
-#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 fn sedna_package_manifest_json(version: &str, target: &str) -> String {
     sedna_package_manifest_json_with_native(version, version, target)
 }
 
-#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 fn sedna_package_manifest_json_with_native(
     package_version: &str,
     native_version: &str,
@@ -591,12 +616,18 @@ fn sedna_package_manifest_json_with_native(
     )
 }
 
-#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 fn sedna_receipt_json(version: &str, target: &str) -> String {
     sedna_receipt_json_with_native(version, version, target)
 }
 
-#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 fn sedna_receipt_json_with_native(
     package_version: &str,
     native_version: &str,
@@ -607,12 +638,18 @@ fn sedna_receipt_json_with_native(
     )
 }
 
-#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 fn sedna_fixture_metadata_script(version: &str, target: &str) -> String {
     sedna_fixture_metadata_script_for_package(version, version, target)
 }
 
-#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 fn sedna_fixture_metadata_script_for_package(
     package_version: &str,
     native_version: &str,
@@ -625,7 +662,10 @@ fn sedna_fixture_metadata_script_for_package(
     )
 }
 
-#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 fn next_sedna_version(version: &str) -> String {
     let mut next = semver::Version::parse(version).expect("valid test version");
     if next.pre.is_empty() {
@@ -903,7 +943,10 @@ async fn test_control_server(
     })
 }
 
-#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 #[tokio::test]
 async fn scheduled_no_op_preserves_daemon_and_hands_off_stale_updater() {
     let home = TempDir::new().expect("home");
@@ -942,7 +985,10 @@ async fn scheduled_no_op_preserves_daemon_and_hands_off_stale_updater() {
     server.abort();
 }
 
-#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 #[tokio::test]
 async fn scheduled_resource_only_update_restarts_daemon() {
     let home = TempDir::new().expect("home");
@@ -1151,7 +1197,10 @@ async fn manual_update_restarts_local_daemon_with_automatic_updates_disabled() {
     check_manual_update_restart("app-server-daemon").await;
 }
 
-#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 async fn check_manual_update_restart(package_directory: &str) {
     use tokio::io::AsyncReadExt;
     use tokio::io::AsyncWriteExt;
@@ -1230,11 +1279,7 @@ async fn check_manual_update_restart(package_directory: &str) {
         root = standalone.display(),
         ready = ready.display(),
         proceed = proceed.display(),
-        metadata = sedna_fixture_metadata_script_for_package(
-            version,
-            native_version,
-            &target,
-        ),
+        metadata = sedna_fixture_metadata_script_for_package(version, native_version, &target,),
     );
     let http = FakeInstallerHttp::new(InstallerResponse::Success(script.into_bytes()));
     let updater_daemon = std::sync::Arc::clone(&daemon);
@@ -1423,7 +1468,10 @@ async fn installer_failure_preserves_stderr_before_drain_timeout() {
     assert!(error.to_string().contains("installer failed"));
 }
 
-#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 #[tokio::test]
 async fn update_rejects_a_package_root_change_during_download() {
     struct ChangingRoot<'a>(&'a std::path::Path);
@@ -1455,7 +1503,10 @@ async fn update_rejects_a_package_root_change_during_download() {
     assert!(error.to_string().contains("package root changed"));
 }
 
-#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 #[tokio::test]
 async fn daemon_owned_updates_require_and_request_an_isolated_installer() {
     let home = TempDir::new().unwrap();

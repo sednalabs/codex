@@ -141,12 +141,7 @@ impl InstallContext {
         method_override: Option<InstallMethod>,
         codex_home: &Path,
     ) -> Self {
-        Self::from_exe_with_codex_home(
-            is_macos,
-            current_exe,
-            method_override,
-            Some(codex_home),
-        )
+        Self::from_exe_with_codex_home(is_macos, current_exe, method_override, Some(codex_home))
     }
 
     fn from_exe_with_codex_home(
