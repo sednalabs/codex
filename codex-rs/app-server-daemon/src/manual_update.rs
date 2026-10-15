@@ -264,7 +264,21 @@ pub(super) async fn run(
         return Err(std::io::Error::from(std::io::ErrorKind::Interrupted).into());
     }
     let current_managed_codex_path = daemon.current_managed_codex_bin()?;
-    let installed_version = Some(managed_codex_version(&current_managed_codex_path).await?);
+    let codex_home = daemon
+        .settings_file
+        .parent()
+        .and_then(std::path::Path::parent)
+        .context("daemon settings path has no Codex home")?;
+    let install_context = codex_install_context::InstallContext::from_exe_in_codex_home(
+        cfg!(target_os = "macos"),
+        Some(&current_managed_codex_path),
+        /*method_override*/ None,
+        codex_home,
+    );
+    let receipt = install_context
+        .sedna_release_receipt()
+        .context("selected managed package has no verified Sedna receipt")?;
+    let installed_version = Some(receipt.release.package_version.to_string());
     let updated = previous_release != selected_release(daemon)?.1
         || !previous_identity
             .same_contents(&executable_identity(&current_managed_codex_path).await?);

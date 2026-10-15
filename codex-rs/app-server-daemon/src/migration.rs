@@ -94,6 +94,8 @@ pub(super) async fn run(http: &impl InstallerHttp, legacy: &Daemon) -> Result<Up
         "the published installer does not support daemon migration yet; the legacy installation was left unchanged"
     );
     eprintln!("Preparing the daemon update in {}...", root.display());
+    let previous_package_version = previous_receipt.release.package_version.to_string();
+    let previous_native_version = previous_receipt.release.native_version.to_string();
     #[cfg(unix)]
     {
         if matches!(
@@ -102,8 +104,8 @@ pub(super) async fn run(http: &impl InstallerHttp, legacy: &Daemon) -> Result<Up
                 InstallerMode::Migration,
                 &root,
                 "stable",
-                &previous_receipt.release.package_version.to_string(),
-                &previous_receipt.release.native_version.to_string(),
+                &previous_package_version,
+                &previous_native_version,
                 cancellation.as_mut()
             )
             .await?,
@@ -119,8 +121,8 @@ pub(super) async fn run(http: &impl InstallerHttp, legacy: &Daemon) -> Result<Up
             InstallerMode::Migration,
             &root,
             "stable",
-            &previous_receipt.release.package_version.to_string(),
-            &previous_receipt.release.native_version.to_string(),
+            &previous_package_version,
+            &previous_native_version,
         ) => { result?; },
         _ = &mut cancellation => return Err(std::io::Error::from(std::io::ErrorKind::Interrupted).into()),
     }

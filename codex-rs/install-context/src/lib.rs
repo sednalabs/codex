@@ -19,6 +19,7 @@ const PATH_DIRNAME: &str = "codex-path";
 const RELEASES_DIRNAME: &str = "releases";
 const RESOURCES_DIRNAME: &str = "codex-resources";
 const STANDALONE_PACKAGES_DIRNAME: &str = "standalone";
+const APP_SERVER_DAEMON_PACKAGES_DIRNAME: &str = "app-server-daemon";
 const ZSH_DIRNAME: &str = "zsh";
 static INSTALL_CONTEXT: OnceLock<InstallContext> = OnceLock::new();
 
@@ -91,11 +92,11 @@ pub struct InstallContext {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum InstallMethod {
     Standalone {
-        /// The managed standalone release directory. Legacy installs use paths
+        /// The managed package release directory. Legacy installs use paths
         /// such as
         /// `~/.codex/packages/standalone/releases/0.111.0-x86_64-unknown-linux-musl`.
-        /// Package-layout installs use the package root that contains `bin/`,
-        /// `codex-resources/`, and `codex-path/`.
+        /// Package-layout installs use the selected package root that contains
+        /// `bin/`, `codex-resources/`, and `codex-path/`.
         release_dir: AbsolutePathBuf,
         /// The bundled resource directory for managed dependencies.
         resources_dir: Option<AbsolutePathBuf>,
@@ -428,11 +429,19 @@ fn standalone_install_method(
     } else {
         canonical_absolute_path(exe_path)?.parent()?
     };
-    let releases_root = canonical_codex_home
-        .join("packages")
-        .join(STANDALONE_PACKAGES_DIRNAME)
-        .join(RELEASES_DIRNAME);
-    if !release_dir.starts_with(releases_root.as_path()) {
+    let packages_root = canonical_codex_home.join("packages");
+    let releases_roots = [
+        packages_root
+            .join(STANDALONE_PACKAGES_DIRNAME)
+            .join(RELEASES_DIRNAME),
+        packages_root
+            .join(APP_SERVER_DAEMON_PACKAGES_DIRNAME)
+            .join(RELEASES_DIRNAME),
+    ];
+    if !releases_roots
+        .iter()
+        .any(|releases_root| release_dir.starts_with(releases_root))
+    {
         return None;
     }
 
@@ -1015,37 +1024,44 @@ mod tests {
 
     #[test]
     fn explicit_codex_home_resolves_selected_package_receipt() -> std::io::Result<()> {
-        let codex_home = tempfile::tempdir()?;
-        let release_dir = codex_home
-            .path()
-            .join("packages/standalone/releases/1.2.3-x86_64-unknown-linux-musl");
-        let bin_dir = release_dir.join(BIN_DIRNAME);
-        fs::create_dir_all(&bin_dir)?;
-        let executable = bin_dir.join("codex");
-        fs::write(&executable, "")?;
-        fs::write(
-            release_dir.join(PACKAGE_METADATA_FILENAME),
-            r#"{"layoutVersion":1,"version":"1.2.4","nativeVersion":"1.2.3","target":"x86_64-unknown-linux-musl","variant":"codex","entrypoint":"bin/codex"}"#,
-        )?;
-        fs::write(
-            release_dir.join(SEDNA_RELEASE_RECEIPT_FILENAME),
-            r#"{"schemaVersion":1,"selectionChannel":"stable","release":{"schemaVersion":1,"repository":"sednalabs/codex","releaseTag":"rust-v1.2.4","packageVersion":"1.2.4","nativeVersion":"1.2.3","channel":"stable","target":"x86_64-unknown-linux-musl","sourceCommit":"1111111111111111111111111111111111111111","sourceTree":"2222222222222222222222222222222222222222","workflowHostCommit":"3333333333333333333333333333333333333333","workflowHostTree":"4444444444444444444444444444444444444444","workflowRunId":"123","archive":{"name":"codex-package-x86_64-unknown-linux-musl.tar.gz","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}"#,
-        )?;
+        for package in [
+            STANDALONE_PACKAGES_DIRNAME,
+            APP_SERVER_DAEMON_PACKAGES_DIRNAME,
+        ] {
+            let codex_home = tempfile::tempdir()?;
+            let release_dir = codex_home
+                .path()
+                .join("packages")
+                .join(package)
+                .join("releases/1.2.3-x86_64-unknown-linux-musl");
+            let bin_dir = release_dir.join(BIN_DIRNAME);
+            fs::create_dir_all(&bin_dir)?;
+            let executable = bin_dir.join("codex");
+            fs::write(&executable, "")?;
+            fs::write(
+                release_dir.join(PACKAGE_METADATA_FILENAME),
+                r#"{"layoutVersion":1,"version":"1.2.4","nativeVersion":"1.2.3","target":"x86_64-unknown-linux-musl","variant":"codex","entrypoint":"bin/codex"}"#,
+            )?;
+            fs::write(
+                release_dir.join(SEDNA_RELEASE_RECEIPT_FILENAME),
+                r#"{"schemaVersion":1,"selectionChannel":"stable","release":{"schemaVersion":1,"repository":"sednalabs/codex","releaseTag":"rust-v1.2.4","packageVersion":"1.2.4","nativeVersion":"1.2.3","channel":"stable","target":"x86_64-unknown-linux-musl","sourceCommit":"1111111111111111111111111111111111111111","sourceTree":"2222222222222222222222222222222222222222","workflowHostCommit":"3333333333333333333333333333333333333333","workflowHostTree":"4444444444444444444444444444444444444444","workflowRunId":"123","archive":{"name":"codex-package-x86_64-unknown-linux-musl.tar.gz","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}"#,
+            )?;
 
-        let context = InstallContext::from_exe_in_codex_home(
-            /*is_macos*/ false,
-            Some(&executable),
-            /*method_override*/ None,
-            codex_home.path(),
-        );
+            let context = InstallContext::from_exe_in_codex_home(
+                /*is_macos*/ false,
+                Some(&executable),
+                /*method_override*/ None,
+                codex_home.path(),
+            );
 
-        assert!(matches!(context.method, InstallMethod::Standalone { .. }));
-        assert_eq!(
-            context
-                .sedna_release_receipt()
-                .map(|receipt| receipt.release.package_version),
-            Some(Version::new(1, 2, 4))
-        );
+            assert!(matches!(context.method, InstallMethod::Standalone { .. }));
+            assert_eq!(
+                context
+                    .sedna_release_receipt()
+                    .map(|receipt| receipt.release.package_version),
+                Some(Version::new(1, 2, 4))
+            );
+        }
         Ok(())
     }
 }

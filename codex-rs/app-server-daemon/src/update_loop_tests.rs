@@ -222,22 +222,11 @@ struct FakeInstallerHttp {
 async fn explicit_update_migrates_running_and_stopped_installations() {
     for (running, local) in [(false, false), (true, false), (false, true), (true, true)] {
         let home = TempDir::new().unwrap();
-        let (mut legacy, release) = sedna_update_daemon(&home);
+        let (legacy, release) = sedna_update_daemon(&home);
         let root = home.path().join("packages/standalone");
         if local {
-            let package = root.join("releases/local-development");
-            std::fs::create_dir_all(package.join("bin")).unwrap();
-            codex_utils_cargo_bin::copy_executable(
-                &legacy.managed_codex_bin,
-                &package.join("bin/codex"),
-            )
-            .unwrap();
-            let target = format!("{}-unknown-linux-musl", std::env::consts::ARCH);
-            write_sedna_fixture_metadata(&package, env!("CARGO_PKG_VERSION"), &target);
-            std::fs::remove_file(root.join("current")).unwrap();
-            std::os::unix::fs::symlink(&package, root.join("current")).unwrap();
+            // A canonical selected release without the latest marker models a pin.
             std::fs::remove_file(root.join("auto-update-version")).unwrap();
-            legacy.managed_codex_bin = root.join("current/bin/codex");
         }
         let previous = root.join("current").canonicalize().unwrap();
         let scheduled = FakeInstallerHttp::new(InstallerResponse::Success(
@@ -1213,22 +1202,14 @@ async fn check_manual_update_restart(package_directory: &str) {
 
     let local_package = package_directory == "app-server-daemon";
     let home = TempDir::new().expect("home");
-    let (mut daemon, mut release) = sedna_update_daemon(&home);
+    let (mut daemon, release) = sedna_update_daemon(&home);
     let standalone = home.path().join("packages").join(package_directory);
     if local_package {
         std::fs::rename(home.path().join("packages/standalone"), &standalone).unwrap();
-        let local = format!("local-development-{release}");
-        std::fs::rename(
-            standalone.join("releases").join(&release),
-            standalone.join("releases").join(&local),
-        )
-        .unwrap();
-        std::fs::remove_file(standalone.join("current")).unwrap();
-        std::os::unix::fs::symlink(format!("releases/{local}"), standalone.join("current"))
-            .unwrap();
+        // Keep the canonical release name and represent pinning only by the
+        // absence of auto-update-version.
         std::fs::remove_file(standalone.join("auto-update-version")).unwrap();
         daemon.managed_codex_bin = standalone.join("current/bin/codex");
-        release = local;
     }
     let daemon = std::sync::Arc::new(daemon);
     std::fs::create_dir_all(daemon.settings_file.parent().expect("state directory"))
@@ -1254,12 +1235,12 @@ async fn check_manual_update_restart(package_directory: &str) {
     let package_version = next_sedna_version(env!("CARGO_PKG_VERSION"));
     let target = format!("{}-unknown-linux-musl", std::env::consts::ARCH);
     let next_release = format!("{package_version}-{target}");
-    let next = if local_package {
-        format!("local-development-{next_release}")
+    let next = next_release;
+    let native_version = if local_package {
+        env!("CARGO_PKG_VERSION").to_string()
     } else {
-        next_release
+        next_sedna_version(&package_version)
     };
-    let native_version = env!("CARGO_PKG_VERSION");
     let version = package_version.as_str();
     let guard = if local_package {
         "CODEX_INSTALL_IF_CURRENT"
@@ -1285,7 +1266,7 @@ async fn check_manual_update_restart(package_directory: &str) {
         root = standalone.display(),
         ready = ready.display(),
         proceed = proceed.display(),
-        metadata = sedna_fixture_metadata_script_for_package(version, native_version, &target,),
+        metadata = sedna_fixture_metadata_script_for_package(version, &native_version, &target,),
     );
     let http = FakeInstallerHttp::new(InstallerResponse::Success(script.into_bytes()));
     let updater_daemon = std::sync::Arc::clone(&daemon);
@@ -1330,7 +1311,10 @@ async fn check_manual_update_restart(package_directory: &str) {
         .expect("manual update");
     assert_eq!(output.status, UpdateStatus::Updated);
     assert_eq!(output.installed_version.as_deref(), Some(version));
-    assert_eq!(output.running_version.as_deref(), Some(native_version));
+    assert_eq!(
+        output.running_version.as_deref(),
+        Some(native_version.as_str())
+    );
     assert_eq!(
         output.managed_codex_path,
         standalone.join("current/bin/codex")
