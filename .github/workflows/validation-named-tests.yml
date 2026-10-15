@@ -1,47 +1,99 @@
-name: validation-named-tests
-
-run-name: >-
-  validation-named-tests/${{ inputs.profile }}
+name: validation-responses-attribution-compat
 
 on:
   workflow_dispatch:
-    inputs:
-      target_sha:
-        description: Exact 40-character candidate commit SHA to validate
-        required: true
-        type: string
-      base_ref:
-        description: Comparison base ref recorded in the H/B/T receipt
-        required: true
-        default: main
-        type: string
-      profile:
-        description: Hosted environment profile
-        required: true
-        type: choice
-        options:
-          - rust_minimal
-          - rust_integration
-        default: rust_minimal
-      request_json:
-        description: JSON rust-tests-v1 typed request (no shell commands or flags)
-        required: true
-        type: string
-
-concurrency:
-  group: validation-named-tests/${{ inputs.target_sha }}/${{ inputs.base_ref }}/${{ inputs.profile }}
-  cancel-in-progress: false
 
 permissions:
   contents: read
 
+concurrency:
+  group: validation-responses-attribution-compat-82f3bef4
+  cancel-in-progress: false
+
 jobs:
-  named_tests:
-    uses: ./.github/workflows/_validation-named-tests.yml
-    with:
-      target_sha: ${{ inputs.target_sha }}
-      base_ref: ${{ inputs.base_ref }}
-      harness_sha: ${{ github.sha }}
-      profile: ${{ inputs.profile }}
-      request_json: ${{ inputs.request_json }}
-      artifact_name: validation-named-tests-${{ github.run_id }}
+  regression:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      RUST_MIN_STACK: "8388608"
+      SOURCE_SHA: 82f3bef4826a0552f5070ec7431f670443b60bec
+      BASE_SHA: e20b2dc9a96c08b9ae7f38298d098ed01af68e87
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: 82f3bef4826a0552f5070ec7431f670443b60bec
+          persist-credentials: false
+      - name: Verify exact source and fetch comparison runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          test "$(git rev-parse FETCH_HEAD)" = "$BASE_SHA"
+          mkdir evidence
+          printf 'source=%s\nbase=%s\nworkflow=%s\n' "$SOURCE_SHA" "$BASE_SHA" "$GITHUB_SHA" > evidence/identity.txt
+      - uses: ./.github/actions/setup-ci
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 22
+      - name: Bind Node runtime
+        shell: bash
+        run: echo "CODEX_JS_REPL_NODE_PATH=$(command -v node)" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+      - name: Install native build prerequisites
+        shell: bash
+        run: |
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
+      - name: Build the required Code Mode host
+        working-directory: codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked -p codex-code-mode-host --bin codex-code-mode-host
+          test -x "$CARGO_TARGET_DIR/debug/codex-code-mode-host"
+          echo "CARGO_BIN_EXE_codex_code_mode_host=$CARGO_TARGET_DIR/debug/codex-code-mode-host" >> "$GITHUB_ENV"
+      - name: Prove regression against the comparison runtime
+        working-directory: codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Keep the exact new regression fixture; replace only its runtime subject.
+          git show "$BASE_SHA:codex-rs/core/src/client.rs" > core/src/client.rs
+          set +e
+          cargo test --locked -p codex-core --lib client::tests::responses_requests_omit_optional_attribution_preserving_metadata -- --exact --test-threads=1 2>&1 | tee ../evidence/base-unit.log
+          status=${PIPESTATUS[0]}
+          set -e
+          test "$status" -ne 0
+          grep -F 'test client::tests::responses_requests_omit_optional_attribution_preserving_metadata ... FAILED' ../evidence/base-unit.log
+          grep -F 'test result: FAILED. 0 passed; 1 failed;' ../evidence/base-unit.log
+          grep -F 'content_item_metadata' ../evidence/base-unit.log
+          git show "$SOURCE_SHA:codex-rs/core/src/client.rs" > core/src/client.rs
+          git diff --exit-code -- core/src/client.rs
+      - name: Prove fixed serialization and unchanged local input
+        working-directory: codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p codex-core --lib client::tests::responses_requests_omit_optional_attribution_preserving_metadata -- --exact --test-threads=1 2>&1 | tee ../evidence/fixed-unit.log
+          grep -F 'test result: ok. 1 passed; 0 failed;' ../evidence/fixed-unit.log
+      - name: Exercise both complete request formats
+        working-directory: codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p codex-core --test all suite::responses_lite::base_instructions_use_input_items -- --test-threads=1 2>&1 | tee ../evidence/request-formats.log
+          grep -F 'test result: ok. 2 passed; 0 failed;' ../evidence/request-formats.log
+          git diff --exit-code
+      - name: Upload bounded regression evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: responses-attribution-regression-${{ github.run_id }}
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 3
