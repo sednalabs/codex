@@ -723,7 +723,7 @@ mod tests {
             StatusCode::OK.as_u16(),
             &body,
         );
-        let mut changed = metadata.clone();
+        let mut changed = metadata;
         changed.token_endpoint = "https://other.example/token".to_string();
         assert!(
             collector
