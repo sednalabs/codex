@@ -534,7 +534,7 @@ def verify_post_migration(db_path: Path, before: list[tuple[Any, ...]]) -> list[
         for version, row in previous.items():
             require(current[version] == row, f"Historical migration identity changed at version {version}.")
         migration61 = current[61]
-        require(migration61[1] == "thread_read_state" and migration61[2] == 1 and migration61[3] == bytes.fromhex(MIGRATION_61_SHA384), "Migration 61 ledger identity is incorrect.")
+        require(migration61[1] == "thread read state" and migration61[2] == 1 and migration61[3] == bytes.fromhex(MIGRATION_61_SHA384), "Migration 61 ledger identity is incorrect.")
 
         mark_sqlite_stage("verify migration-61 schema")
         columns = list(connection.execute("PRAGMA table_info(thread_read_receipts)"))
