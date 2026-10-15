@@ -348,6 +348,7 @@ def schema_snapshot_path() -> Path:
 
 
 def create_pre61_database(db_path: Path, snapshot_path: Path, migrations: list[tuple[int, str, bytes]], rollout_path: Path) -> list[tuple[Any, ...]]:
+    mark_sqlite_stage("open synthetic pre-61 database")
     connection = sqlite3.connect(db_path)
     try:
         mark_sqlite_stage("create source-derived pre-61 schema")
@@ -402,6 +403,7 @@ def create_pre61_database(db_path: Path, snapshot_path: Path, migrations: list[t
 
 
 def verify_post_migration(db_path: Path, before: list[tuple[Any, ...]]) -> list[tuple[Any, ...]]:
+    mark_sqlite_stage("open migrated database for verification")
     connection = sqlite3.connect(db_path)
     try:
         mark_sqlite_stage("verify migrated ledger")
@@ -501,6 +503,7 @@ def consume() -> None:
         run_app_server(executable, codex_home, sqlite_home)
         first_open_rows = verify_post_migration(db_path, before)
 
+        mark_sqlite_stage("open migrated database to seed receipt")
         connection = sqlite3.connect(db_path)
         try:
             mark_sqlite_stage("write synthetic thread receipt")
@@ -515,8 +518,10 @@ def consume() -> None:
         run_app_server(executable, codex_home, sqlite_home)
         reopened_rows = verify_post_migration(db_path, before)
         require(reopened_rows == first_open_rows, "Migration ledger changed between first open and process reopen.")
+        mark_sqlite_stage("open migrated database to verify receipt")
         connection = sqlite3.connect(db_path)
         try:
+            mark_sqlite_stage("read synthetic receipt after reopen")
             receipt_row = connection.execute(
                 "SELECT thread_id, first_unread_turn, revision, last_published_turn FROM thread_read_receipts WHERE thread_id = ?",
                 ("e20-synthetic-thread",),
