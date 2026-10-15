@@ -251,7 +251,7 @@ class AppServer:
             "CODEX_APP_SERVER_DISABLE_MANAGED_CONFIG": "1",
         }
         self.process = subprocess.Popen(
-            [str(executable), "app-server", "--listen", "stdio://", "--session-source", "cli"],
+            [str(executable), "app-server", "--listen", "stdio://"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
