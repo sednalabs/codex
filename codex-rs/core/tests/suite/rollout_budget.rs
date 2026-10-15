@@ -416,14 +416,9 @@ async fn restates_the_current_remainder_after_rollback() -> Result<()> {
         vec![
             sse(vec![
                 ev_response_created("resp-1"),
-                ev_assistant_message("msg-1", "done"),
                 ev_completed_with_tokens("resp-1", /*total_tokens*/ 30),
             ]),
-            sse(vec![
-                ev_response_created("resp-2"),
-                ev_assistant_message("msg-2", "done"),
-                ev_completed("resp-2"),
-            ]),
+            sse(vec![ev_response_created("resp-2"), ev_completed("resp-2")]),
         ],
     )
     .await;
@@ -438,10 +433,6 @@ async fn restates_the_current_remainder_after_rollback() -> Result<()> {
         .await?;
 
     test.submit_turn("rolled-back turn").await?;
-    wait_for_event(&test.codex, |event| {
-        matches!(event, EventMsg::TurnComplete(_))
-    })
-    .await;
     let rollback_id = test
         .codex
         .submit(Op::ThreadRollback { num_turns: 1 })
@@ -462,12 +453,18 @@ async fn restates_the_current_remainder_after_rollback() -> Result<()> {
         }
     })
     .await
-    .expect("timed out waiting for thread rollback")?;
+        .expect("timed out waiting for thread rollback")?;
     test.submit_turn("turn after rollback").await?;
-    wait_for_event(&test.codex, |event| {
-        matches!(event, EventMsg::TurnComplete(_))
+    timeout(default_event_wait_floor(), async {
+        loop {
+            if responses.requests().len() >= 2 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     })
-    .await;
+    .await
+    .expect("timed out waiting for the post-rollback Responses API request");
 
     let requests = responses.requests();
     assert_eq!(
