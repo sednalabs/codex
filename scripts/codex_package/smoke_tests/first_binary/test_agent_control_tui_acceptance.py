@@ -214,6 +214,7 @@ def _selected_subagent_details(
         tui.send("\x1b[B")
         tui.until_output()
         tui.resize(111 + index)
+        detail_deadline = time.monotonic() + 30
         frame = tui.until_all(
             (
                 expected_id,
@@ -222,6 +223,28 @@ def _selected_subagent_details(
                 "Status: ",
             )
         )
+        selected_detail = re.compile(
+            rf"Path: {re.escape(expected_path)}\s*•\s*"
+            rf"Parent: {re.escape(expected_parent)}\s*•\s*"
+            r"Status:\s+(running|not running|not loaded)(?=\s|$)"
+        )
+        # An earlier selection's Status can satisfy until_all before the new
+        # detail arrives in full. Require the selected Path/Parent/Status block
+        # in order, within the same deadline, before applying the assertions.
+        while not selected_detail.search(
+            frame[frame.rfind(f"Path: {expected_path}") :]
+        ):
+            remaining = detail_deadline - time.monotonic()
+            if remaining <= 0:
+                raise AssertionError(
+                    f"selected subagent detail did not finish rendering: {frame!r}"
+                )
+            try:
+                frame += plain(tui.until_output(timeout=remaining))
+            except AssertionError as error:
+                raise AssertionError(
+                    f"selected subagent detail did not finish rendering: {frame!r}"
+                ) from error
         # PTY reads are incremental terminal deltas, not reconstructed frames.
         # A resize can therefore leave the previous selection's detail in this
         # stream before the latest redraw. Bind to the final selected-only
