@@ -1,14 +1,20 @@
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
+#[cfg(any(test, target_os = "linux"))]
 use std::fs::File;
+#[cfg(any(test, target_os = "linux"))]
 use std::io::Read;
+#[cfg(target_os = "linux")]
 use zeroize::Zeroizing;
 
 const DESCRIPTOR_ENV: &str = "OPS_RUNTIME_BOOTSTRAP_FD";
 const AUTH_DESCRIPTOR_ENV: &str = "OPS_RUNTIME_AUTH_FD";
+#[cfg(target_os = "linux")]
 const MAX_FRAME_BYTES: usize = 20 * 1024;
+#[cfg(target_os = "linux")]
 const SEED_BYTES: usize = 32;
+#[cfg(target_os = "linux")]
 const BOOTSTRAP_ACK: &[u8; 4] = b"ACK1";
 
 pub fn initialize_from_environment() -> Result<()> {
@@ -70,6 +76,7 @@ fn parse_descriptor_index(descriptor: &std::ffi::OsStr) -> Result<i32> {
         })
 }
 
+#[cfg(any(test, target_os = "linux"))]
 pub(crate) fn verify_runtime_protection() -> Result<()> {
     #[cfg(target_os = "linux")]
     {
@@ -85,6 +92,7 @@ pub(crate) fn verify_runtime_protection() -> Result<()> {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn verify_inherited_protection() -> Result<()> {
     #[cfg(target_os = "linux")]
     {
@@ -196,11 +204,6 @@ fn set_non_dumpable() -> Result<()> {
         bail!("cannot set and verify non-dumpable runtime state");
     }
     Ok(())
-}
-
-#[cfg(not(target_os = "linux"))]
-fn set_non_dumpable() -> Result<()> {
-    bail!("protected runtime proof requires Linux")
 }
 
 #[cfg(target_os = "linux")]
@@ -325,26 +328,7 @@ fn complete_bootstrap_ack(file: &File) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(target_os = "linux"))]
-fn verify_bootstrap_socket(_file: &File) -> Result<()> {
-    bail!("protected runtime proof requires Linux")
-}
-
-#[cfg(not(target_os = "linux"))]
-fn read_bootstrap_frame(_file: &File) -> Result<(String, Zeroizing<[u8; SEED_BYTES]>)> {
-    bail!("protected runtime proof requires Linux")
-}
-
-#[cfg(not(target_os = "linux"))]
-fn send_bootstrap_ack(_file: &File) -> Result<()> {
-    bail!("protected runtime proof requires Linux")
-}
-
-#[cfg(not(target_os = "linux"))]
-fn complete_bootstrap_ack(_file: &File) -> Result<()> {
-    bail!("protected runtime proof requires Linux")
-}
-
+#[cfg(any(test, target_os = "linux"))]
 pub(crate) fn current_artifact_sha256() -> Result<String> {
     let executable = std::env::current_exe().context("cannot locate runtime executable")?;
     let mut file = File::open(executable).context("cannot open runtime executable")?;

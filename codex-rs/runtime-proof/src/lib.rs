@@ -5,6 +5,7 @@ mod auth;
 pub mod launcher;
 #[cfg(target_os = "linux")]
 mod mcp_oauth;
+#[cfg(any(test, target_os = "linux"))]
 mod provider_auth;
 mod signer;
 pub mod startup;
