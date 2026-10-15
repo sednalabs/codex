@@ -21,8 +21,7 @@ use crate::client;
 use crate::install_lock::acquire_install_lock;
 use crate::managed_install;
 
-const SEDNA_INSTALL_URL_PREFIX: &str =
-    "https://raw.githubusercontent.com/sednalabs/codex/";
+const SEDNA_INSTALL_URL_PREFIX: &str = "https://raw.githubusercontent.com/sednalabs/codex/";
 const SEDNA_INSTALL_URL_SUFFIX: &str = "/scripts/install/install.sh";
 
 pub(super) async fn run(http: &impl InstallerHttp, legacy: &Daemon) -> Result<UpdateOutput> {
@@ -39,7 +38,8 @@ pub(super) async fn run(http: &impl InstallerHttp, legacy: &Daemon) -> Result<Up
         .context("package root has no Codex home")?;
     let root = home.join("packages/app-server-daemon");
     let legacy_binary = legacy.current_managed_codex_bin()?;
-    let resolved_legacy_binary = managed_install::resolved_managed_codex_bin(&legacy_binary).await?;
+    let resolved_legacy_binary =
+        managed_install::resolved_managed_codex_bin(&legacy_binary).await?;
     anyhow::ensure!(
         resolved_legacy_binary.starts_with(&previous.1),
         "selected daemon binary does not belong to the selected release"
@@ -170,15 +170,14 @@ pub(super) async fn run(http: &impl InstallerHttp, legacy: &Daemon) -> Result<Up
     );
     let previous_native = semver::Version::parse(&previous_native_version)
         .context("installed daemon native version was invalid")?;
-    let prepared_native = semver::Version::parse(&version)
-        .context("prepared daemon native version was invalid")?;
+    let prepared_native =
+        semver::Version::parse(&version).context("prepared daemon native version was invalid")?;
     anyhow::ensure!(
         prepared_native >= previous_native,
         "prepared daemon native version is older than the installed daemon"
     );
     anyhow::ensure!(
-        name.to_string_lossy()
-            == format!("{}-{expected_target}", receipt.release.package_version),
+        name.to_string_lossy() == format!("{}-{expected_target}", receipt.release.package_version),
         "prepared daemon package version does not match its release directory"
     );
     // An older production updater understands only the legacy package/PID paths.

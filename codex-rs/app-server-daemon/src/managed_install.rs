@@ -110,10 +110,7 @@ pub(crate) fn is_sedna_update_eligible(codex_home: &Path, codex_bin: &Path) -> b
     let Some(release_name) = release.file_name().and_then(|name| name.to_str()) else {
         return false;
     };
-    let targets = [
-        "aarch64-unknown-linux-musl",
-        "x86_64-unknown-linux-musl",
-    ];
+    let targets = ["aarch64-unknown-linux-musl", "x86_64-unknown-linux-musl"];
     let Some(version) = targets
         .iter()
         .find_map(|target| release_name.strip_suffix(&format!("-{target}")))

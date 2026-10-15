@@ -62,7 +62,10 @@ fn discovers_package_and_legacy_installs() {
     }
 }
 
-#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 #[test]
 fn updater_requires_a_verified_release_on_the_selected_channel() {
     let home = tempfile::TempDir::new().expect("home");
@@ -102,14 +105,17 @@ fn updater_requires_a_verified_release_on_the_selected_channel() {
     std::fs::create_dir_all(alpha_managed.parent().expect("alpha bin parent"))
         .expect("alpha release");
     std::fs::write(&alpha_managed, b"alpha").expect("alpha bin");
-    write_sedna_fixture(&alpha, &alpha_version, native_version, &target, "prerelease");
+    write_sedna_fixture(
+        &alpha,
+        &alpha_version,
+        native_version,
+        &target,
+        "prerelease",
+    );
     std::fs::remove_file(&current).expect("remove current");
     std::os::unix::fs::symlink(&alpha, &current).expect("current alpha");
     std::fs::write(&marker, alpha.file_name().unwrap().as_encoded_bytes()).unwrap();
-    assert!(super::is_sedna_update_eligible(
-        home.path(),
-        &alpha_managed
-    ));
+    assert!(super::is_sedna_update_eligible(home.path(), &alpha_managed));
 
     let local = standalone.join("local-main");
     let local_managed = local.join("bin/codex");
@@ -124,7 +130,10 @@ fn updater_requires_a_verified_release_on_the_selected_channel() {
     ));
 }
 
-#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 fn write_sedna_fixture(
     release: &std::path::Path,
     package_version: &str,

@@ -8,12 +8,12 @@ use crate::update_versions::is_source_build_version;
 use crate::updates_cache::VersionInfo;
 use crate::updates_cache::read_version_info;
 use crate::updates_cache::version_filepath;
-use codex_install_context::InstallContext;
 use chrono::Duration;
 use chrono::Utc;
 use codex_http_client::ClientRouteClass;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::RouteAwareClientPool;
+use codex_install_context::InstallContext;
 use codex_login::default_client::default_headers;
 use serde::Deserialize;
 use std::path::Path;
@@ -64,8 +64,10 @@ pub fn get_upgrade_version(config: &Config) -> Option<String> {
     })
 }
 
-const SEDNA_LATEST_RELEASE_URL: &str = "https://api.github.com/repos/sednalabs/codex/releases/latest";
-const SEDNA_RELEASES_URL: &str = "https://api.github.com/repos/sednalabs/codex/releases?per_page=100";
+const SEDNA_LATEST_RELEASE_URL: &str =
+    "https://api.github.com/repos/sednalabs/codex/releases/latest";
+const SEDNA_RELEASES_URL: &str =
+    "https://api.github.com/repos/sednalabs/codex/releases?per_page=100";
 
 #[derive(Deserialize, Debug, Clone)]
 struct SednaReleaseInfo {
@@ -150,7 +152,8 @@ async fn check_for_update(
 
 #[cfg(test)]
 mod tests {
-    use super::{SednaReleaseInfo, newest_sedna_release};
+    use super::SednaReleaseInfo;
+    use super::newest_sedna_release;
 
     #[test]
     fn prerelease_selection_includes_newer_stable_releases() {
