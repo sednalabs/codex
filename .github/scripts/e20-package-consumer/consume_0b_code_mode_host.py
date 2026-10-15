@@ -219,7 +219,7 @@ def safe_exception_codes(error: Exception) -> tuple[str | None, str | None]:
 
 
 def safe_exception_origin(error: Exception) -> tuple[str, str, int]:
-    """Return one mapped source frame, never paths, source lines, or locals."""
+    """Return the nearest mapped caller, never paths, source lines, or locals."""
     origins: list[tuple[str, str, int]] = []
     current: BaseException | None = error
     for _ in range(4):
@@ -244,7 +244,10 @@ def safe_exception_origin(error: Exception) -> tuple[str, str, int]:
                 origins.append((source_id, function, traceback_item.tb_lineno))
             traceback_item = traceback_item.tb_next
         current = current.__cause__ or current.__context__
-    return origins[-1] if origins else ("unknown", "unknown", 0)
+    return next(
+        (origin for origin in reversed(origins) if origin[1] != "require"),
+        ("unknown", "unknown", 0),
+    )
 
 
 def safe_packaged_probe_failure(message: str) -> list[str] | None:
