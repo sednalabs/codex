@@ -193,7 +193,12 @@ fn responses_requests_omit_optional_attribution_preserving_metadata() -> anyhow:
             &responses_metadata,
             /*include_internal*/ true,
         )?;
-        assert_eq!(serde_json::to_value(&request.input[0])?, expected_wire);
+        let user_item = request
+            .input
+            .iter()
+            .find(|item| matches!(item, ResponseItem::Message { role, .. } if role == "user"))
+            .expect("the user input must remain in the request");
+        assert_eq!(serde_json::to_value(user_item)?, expected_wire);
         assert_eq!(prompt.input, vec![item.clone()]);
         assert_eq!(serde_json::to_value(&prompt.input[0])?, original_wire);
     }
