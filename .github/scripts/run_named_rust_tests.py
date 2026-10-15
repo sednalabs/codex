@@ -83,10 +83,14 @@ def fail(code: str, message: str) -> dict[str, Any]:
     }
 
 
-def manifest_path(repo_root: Path) -> Path:
-    """Return the candidate-owned closed command catalog."""
+def manifest_path() -> Path:
+    """Return the closed command catalog from the pinned workflow host."""
 
-    return repo_root / ".github" / MANIFEST_NAME
+    # The workflow invokes this script from its separately pinned helper
+    # checkout while executing Cargo in the exact target worktree. Keep the
+    # command allowlist attached to that helper SHA; older targets need not
+    # carry the newer catalog file themselves.
+    return Path(__file__).resolve().parents[1] / MANIFEST_NAME
 
 
 def target_key(package: str, target_kind: str, target: str) -> tuple[str, str, str]:
@@ -117,7 +121,7 @@ def load_manifest(repo_root: Path) -> dict[tuple[str, str, str], dict[str, Any]]
     """Load and validate the closed target/argv manifest before any Cargo call."""
 
     try:
-        payload = json.loads(manifest_path(repo_root).read_text(encoding="utf-8"))
+        payload = json.loads(manifest_path().read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"named-test command manifest is unavailable: {exc}") from exc
     if not isinstance(payload, dict) or payload.get("schema_version") != MANIFEST_SCHEMA_VERSION:
