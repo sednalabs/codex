@@ -198,7 +198,7 @@ class NamedRustTests(TestCase):
         }
         inventory = self.completed(stdout="suite::known: test\nsuite::other: test\n")
         compile_failure = self.completed(
-            stdout="error: could not compile `codex-core`\n", returncode=101
+            stdout="error: could not compile `codex-core`\n", code=101
         )
         with (
             mock.patch.object(
