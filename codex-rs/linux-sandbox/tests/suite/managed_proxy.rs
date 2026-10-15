@@ -191,6 +191,56 @@ fn linux_sandbox_command(
     cmd
 }
 
+fn sandbox_helper_failure_diagnostic(
+    helper_path: &Path,
+    helper_dir: &Path,
+    cwd: &Path,
+    permission_profile: &PermissionProfile,
+    command: &[&str],
+    allow_network_for_proxy: bool,
+    env: &HashMap<String, String>,
+) -> String {
+    let metadata = std::fs::metadata(helper_path)
+        .map(|metadata| format!("len={} mode={:#o}", metadata.len(), metadata.mode()))
+        .unwrap_or_else(|err| format!("unavailable: {err}"));
+    let canonical_path = std::fs::canonicalize(helper_path)
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|err| format!("unavailable: {err}"));
+    let readelf = std::process::Command::new("readelf")
+        .arg("-l")
+        .arg(helper_path)
+        .output()
+        .map(|output| {
+            format!(
+                "status={:?} stdout={} stderr={}",
+                output.status.code(),
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+        })
+        .unwrap_or_else(|err| format!("unavailable: {err}"));
+    let mut outer_argv = vec![
+        helper_path.display().to_string(),
+        "--sandbox-policy-cwd".to_string(),
+        cwd.display().to_string(),
+        "--permission-profile".to_string(),
+        serde_json::to_string(permission_profile)
+            .unwrap_or_else(|err| format!("<serialization failed: {err}>")),
+    ];
+    if allow_network_for_proxy {
+        outer_argv.extend(["--managed-network".to_string(), "{}".to_string()]);
+    }
+    outer_argv.push("--".to_string());
+    outer_argv.extend(command.iter().map(|arg| (*arg).to_string()));
+    format!(
+        "helper_path={} exists={} metadata={metadata} canonical_path={canonical_path} readelf={readelf}; intended_read_root={} permission_profile={permission_profile:?}; outer_argv={outer_argv:?}; inherited_env_keys={:?}",
+        helper_path.display(),
+        helper_path.exists(),
+        helper_dir.display(),
+        env.keys().collect::<Vec<_>>(),
+    )
+}
+
 #[tokio::test]
 async fn sandboxed_commands_have_a_seccomp_filtered_namespace_reaper() {
     if should_skip_bwrap_tests().await {
@@ -817,23 +867,37 @@ async fn managed_proxy_mode_routes_through_bridge_and_blocks_direct_egress() {
         NetworkSandboxPolicy::Restricted,
     );
 
+    let routed_command = [
+        "bash",
+        "-c",
+        "proxy=\"${WSS_PROXY#*://}\"; host=\"${proxy%%:*}\"; port=\"${proxy##*:}\"; exec 3<>/dev/tcp/${host}/${port}; printf 'GET http://example.com/ HTTP/1.1\\r\\nHost: example.com\\r\\n\\r\\n' >&3; IFS= read -r line <&3; printf '%s\\n' \"$line\"",
+    ];
     let routed_output = run_linux_sandbox_direct(
-        &[
-            "bash",
-            "-c",
-            "proxy=\"${WSS_PROXY#*://}\"; host=\"${proxy%%:*}\"; port=\"${proxy##*:}\"; exec 3<>/dev/tcp/${host}/${port}; printf 'GET http://example.com/ HTTP/1.1\\r\\nHost: example.com\\r\\n\\r\\n' >&3; IFS= read -r line <&3; printf '%s\\n' \"$line\"",
-        ],
+        &routed_command,
         &permission_profile,
         /*allow_network_for_proxy*/ true,
         env.clone(),
         NETWORK_TIMEOUT_MS,
     )
     .await;
+    let failure_diagnostic = if routed_output.status.success() {
+        String::new()
+    } else {
+        sandbox_helper_failure_diagnostic(
+            Path::new(env!("CARGO_BIN_EXE_codex-linux-sandbox")),
+            sandbox_helper_dir,
+            &std::env::current_dir().expect("current directory should exist"),
+            &permission_profile,
+            &routed_command,
+            /*allow_network_for_proxy*/ true,
+            &env,
+        )
+    };
 
     assert_eq!(
         routed_output.status.success(),
         true,
-        "expected routed command to execute successfully; status={:?}; stdout={}; stderr={}",
+        "expected routed command to execute successfully; status={:?}; stdout={}; stderr={}; helper_diagnostic={failure_diagnostic}",
         routed_output.status.code(),
         String::from_utf8_lossy(&routed_output.stdout),
         String::from_utf8_lossy(&routed_output.stderr)
