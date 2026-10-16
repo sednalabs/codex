@@ -599,6 +599,19 @@ jobs:
           )
           panic_re = re.compile(r"panicked at .*?([^/\\\s]+\.rs):(\d+):(\d+)")
 
+          def bounded_diagnostic(stdout, stderr):
+              text = ansi_csi.sub("", (stderr or "") + "\n" + (stdout or ""))
+              for key in ("GITHUB_WORKSPACE", "RUNNER_TEMP", "HOME"):
+                  value = os.environ.get(key, "")
+                  if value:
+                      text = text.replace(value, f"<{key.lower()}>")
+              text = re.sub(r"/home/runner/work/[^\s:]+", "<runner-path>", text)
+              text = re.sub(r"/tmp/[^\s:]+", "<temporary-path>", text)
+              text = re.sub(r"https?://[^\s/@:]+:[^\s/@]+@", "https://<redacted>@", text)
+              text = re.sub(r"(?i)(authorization:\s*bearer\s+)[^\s]+", r"\1<redacted>", text)
+              text = re.sub(r"\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,})\b", "<redacted-token>", text)
+              return text[-4000:].strip()
+
           if (
               identity["target_sha"] != expected_target
               or identity["base_ref"] != "main"
@@ -633,6 +646,19 @@ jobs:
               ambiguous = [name for name, count in inventory_counts.items() if count != 1]
               if inventory.returncode != 0:
                   fail("inventory_command_failed", "Cargo could not inventory the fixed TUI provider library tests.")
+                  inventory_output = inventory.stderr + "\n" + inventory.stdout
+                  inventory_lower = inventory_output.lower()
+                  if "could not compile" in inventory_lower or "error[e" in inventory_lower:
+                      result["inventory"]["failure_class"] = "compile_failure"
+                  elif "no space left on device" in inventory_lower:
+                      result["inventory"]["failure_class"] = "runner_storage_failure"
+                  elif "timed out" in inventory_lower or "timeout" in inventory_lower:
+                      result["inventory"]["failure_class"] = "inventory_timeout"
+                  else:
+                      result["inventory"]["failure_class"] = "cargo_inventory_failure"
+                  result["inventory"]["diagnostic_tail"] = bounded_diagnostic(
+                      inventory.stdout, inventory.stderr
+                  )
               elif missing or ambiguous:
                   fail("inventory_reconciliation_failed", "The candidate does not contain each fixed TUI selector exactly once.")
                   result["inventory"]["missing_tests"] = missing
@@ -715,6 +741,8 @@ jobs:
               "status": result["status"],
               "failure_code": result["failure_code"],
               "inventory_count": result["inventory"]["test_count"],
+              "inventory_failure_class": result["inventory"].get("failure_class", ""),
+              "inventory_diagnostic_tail": result["inventory"].get("diagnostic_tail", ""),
               "test_count": len(result["tests"]),
               "result_counts": result["result_counts"],
           }, sort_keys=True))
