@@ -798,7 +798,7 @@ async fn enqueue_pending_explicit_admissions(
         .union(&represented_update_ids)
         .cloned()
         .collect::<HashSet<_>>();
-    recipient_session
+    let removed_pending_update_ids = recipient_session
         .input_queue
         .remove_pending_explicit_updates(&unavailable_update_ids)
         .await;
@@ -807,7 +807,11 @@ async fn enqueue_pending_explicit_admissions(
             .delivered_explicit_inter_agent_updates
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        delivered.retain(|update_id| !unavailable_update_ids.contains(update_id));
+        delivered.retain(|update_id| {
+            !represented_update_ids.contains(update_id)
+                && !(superseded_update_ids.contains(update_id)
+                    && removed_pending_update_ids.contains(update_id))
+        });
         index
             .ordered
             .iter()

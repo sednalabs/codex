@@ -1814,6 +1814,23 @@ async fn multi_agent_v2_explicit_root_updates_are_durable_and_idempotent() {
         "superseding a queued progress message retains only the actionable result"
     );
     let root_turn = root_thread.session.new_default_turn().await;
+    let unavailable_rollout_path = root_rollout_path.with_extension("temporarily-unavailable");
+    std::fs::rename(&root_rollout_path, &unavailable_rollout_path)
+        .expect("test should make the retained admission stream unavailable");
+    let failed_readback = root_thread
+        .session
+        .record_inter_agent_communication(
+            root_turn.as_ref(),
+            root_turn.model_info(),
+            drained_pending_progress.communication.clone(),
+        )
+        .await;
+    std::fs::rename(&unavailable_rollout_path, &root_rollout_path)
+        .expect("test should restore the retained admission stream");
+    assert!(
+        failed_readback.is_err(),
+        "a drained update keeps admitted provenance and must fail closed when its index is unavailable"
+    );
     root_thread
         .session
         .record_inter_agent_communication(
