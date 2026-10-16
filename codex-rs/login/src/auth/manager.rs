@@ -3244,7 +3244,7 @@ impl AuthManager {
     }
 
     async fn refresh_token_from_authority_impl(&self) -> Result<(), RefreshTokenError> {
-        self.refresh_token_from_authority_impl_with_expected_state(None)
+        self.refresh_token_from_authority_impl_with_expected_state(/*expected_state*/ None)
             .await
             .map(|_| ())
     }

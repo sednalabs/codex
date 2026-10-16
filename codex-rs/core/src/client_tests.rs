@@ -342,7 +342,11 @@ async fn ordinary_401_rebind_rejects_changed_route_before_successor_request() {
         .await;
     // The rejected setup never returns a route/client configuration to the caller, so a
     // successor request cannot be constructed or sent.
-    assert!(matches!(setup, Err(CodexErr::AutomaticTurnContextChanged)));
+    let error = setup.err().expect("changed route must be rejected");
+    assert!(matches!(
+        error.details(),
+        CodexErrorDetails::AutomaticTurnContextChanged
+    ));
 }
 
 #[tokio::test]
