@@ -146,8 +146,10 @@ wire_api = "responses"
             .env_remove("ZELLIJ_SESSION_NAME")
             .env_remove("TERM_PROGRAM")
             .env("TERM", "dumb")
-            .env("ZELLIJ", "0")
-            .timeout(Duration::from_secs(/*secs*/ 45));
+            .env("ZELLIJ", "0");
+        #[cfg(windows)]
+        command.env("PATHEXT", ".COM;.EXE;.BAT;.CMD");
+        command.timeout(Duration::from_secs(/*secs*/ 45));
         Ok(command)
     }
 }
