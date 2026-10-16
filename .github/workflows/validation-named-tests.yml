@@ -48,6 +48,20 @@ on:
         required: false
         type: boolean
         default: false
+      windows_validation_mode:
+        description: One fixed native Windows receiver validation
+        required: true
+        type: choice
+        options:
+          - none
+          - delete_diagnostic
+          - voice_runtime
+        default: none
+      expected_workflow_host_sha:
+        description: Exact workflow-host commit SHA required by fixed Windows validation modes
+        required: false
+        type: string
+        default: ""
       request_json:
         description: JSON rust-tests-v1 typed request (no shell commands or flags)
         required: true
@@ -73,7 +87,14 @@ jobs:
         (inputs.run_ae94_android_helper_tests == true && inputs.run_d0_android_protocol_test == true) ||
         (inputs.run_ae94_tui_provider_tests == true && inputs.run_d0_active_wait_test == true) ||
         (inputs.run_ae94_tui_provider_tests == true && inputs.run_d0_android_protocol_test == true) ||
-        (inputs.run_d0_active_wait_test == true && inputs.run_d0_android_protocol_test == true)
+        (inputs.run_d0_active_wait_test == true && inputs.run_d0_android_protocol_test == true) ||
+        (inputs.windows_validation_mode != 'none' && (
+          inputs.prepare_codex_cli_for_exact_usage_test == true ||
+          inputs.run_ae94_android_helper_tests == true ||
+          inputs.run_ae94_tui_provider_tests == true ||
+          inputs.run_d0_active_wait_test == true ||
+          inputs.run_d0_android_protocol_test == true
+        ))
       }}
     runs-on: ubuntu-24.04
     permissions:
@@ -87,7 +108,7 @@ jobs:
 
   named_tests:
     if: >-
-      ${{ inputs.prepare_codex_cli_for_exact_usage_test != true && inputs.run_ae94_android_helper_tests != true && inputs.run_ae94_tui_provider_tests != true && inputs.run_d0_active_wait_test != true && inputs.run_d0_android_protocol_test != true }}
+      ${{ inputs.windows_validation_mode == 'none' && inputs.prepare_codex_cli_for_exact_usage_test != true && inputs.run_ae94_android_helper_tests != true && inputs.run_ae94_tui_provider_tests != true && inputs.run_d0_active_wait_test != true && inputs.run_d0_android_protocol_test != true }}
     permissions:
       contents: read
     uses: ./.github/workflows/_validation-named-tests.yml
@@ -106,7 +127,7 @@ jobs:
 
   named_tests_with_exact_package:
     if: >-
-      ${{ inputs.prepare_codex_cli_for_exact_usage_test == true && inputs.run_ae94_android_helper_tests != true && inputs.run_ae94_tui_provider_tests != true && inputs.run_d0_active_wait_test != true && inputs.run_d0_android_protocol_test != true }}
+      ${{ inputs.windows_validation_mode == 'none' && inputs.prepare_codex_cli_for_exact_usage_test == true && inputs.run_ae94_android_helper_tests != true && inputs.run_ae94_tui_provider_tests != true && inputs.run_d0_active_wait_test != true && inputs.run_d0_android_protocol_test != true }}
     permissions:
       contents: read
       actions: read
@@ -126,7 +147,7 @@ jobs:
 
   named_tests_for_ae94_android:
     if: >-
-      ${{ inputs.run_ae94_android_helper_tests == true && inputs.prepare_codex_cli_for_exact_usage_test != true && inputs.run_ae94_tui_provider_tests != true && inputs.run_d0_active_wait_test != true && inputs.run_d0_android_protocol_test != true }}
+      ${{ inputs.windows_validation_mode == 'none' && inputs.run_ae94_android_helper_tests == true && inputs.prepare_codex_cli_for_exact_usage_test != true && inputs.run_ae94_tui_provider_tests != true && inputs.run_d0_active_wait_test != true && inputs.run_d0_android_protocol_test != true }}
     permissions:
       contents: read
     uses: ./.github/workflows/_validation-named-tests.yml
@@ -145,7 +166,7 @@ jobs:
 
   named_tests_for_ae94_tui_providers:
     if: >-
-      ${{ inputs.run_ae94_tui_provider_tests == true && inputs.prepare_codex_cli_for_exact_usage_test != true && inputs.run_ae94_android_helper_tests != true && inputs.run_d0_active_wait_test != true && inputs.run_d0_android_protocol_test != true }}
+      ${{ inputs.windows_validation_mode == 'none' && inputs.run_ae94_tui_provider_tests == true && inputs.prepare_codex_cli_for_exact_usage_test != true && inputs.run_ae94_android_helper_tests != true && inputs.run_d0_active_wait_test != true && inputs.run_d0_android_protocol_test != true }}
     permissions:
       contents: read
     uses: ./.github/workflows/_validation-named-tests.yml
@@ -164,7 +185,7 @@ jobs:
 
   named_tests_for_d0_active_wait:
     if: >-
-      ${{ inputs.run_d0_active_wait_test == true && inputs.prepare_codex_cli_for_exact_usage_test != true && inputs.run_ae94_android_helper_tests != true && inputs.run_ae94_tui_provider_tests != true && inputs.run_d0_android_protocol_test != true }}
+      ${{ inputs.windows_validation_mode == 'none' && inputs.run_d0_active_wait_test == true && inputs.prepare_codex_cli_for_exact_usage_test != true && inputs.run_ae94_android_helper_tests != true && inputs.run_ae94_tui_provider_tests != true && inputs.run_d0_android_protocol_test != true }}
     permissions:
       contents: read
     uses: ./.github/workflows/_validation-named-tests.yml
@@ -183,7 +204,7 @@ jobs:
 
   named_tests_for_d0_android_protocol:
     if: >-
-      ${{ inputs.run_d0_android_protocol_test == true && inputs.prepare_codex_cli_for_exact_usage_test != true && inputs.run_ae94_android_helper_tests != true && inputs.run_ae94_tui_provider_tests != true && inputs.run_d0_active_wait_test != true }}
+      ${{ inputs.windows_validation_mode == 'none' && inputs.run_d0_android_protocol_test == true && inputs.prepare_codex_cli_for_exact_usage_test != true && inputs.run_ae94_android_helper_tests != true && inputs.run_ae94_tui_provider_tests != true && inputs.run_d0_active_wait_test != true }}
     permissions:
       contents: read
       actions: read
@@ -200,3 +221,147 @@ jobs:
       run_d0_android_protocol_test: ${{ inputs.run_d0_android_protocol_test }}
       request_json: ${{ inputs.request_json }}
       artifact_name: validation-named-tests-${{ github.run_id }}
+
+  windows_exact_receiver_validation:
+    name: Native Windows exact receiver validation (${{ inputs.windows_validation_mode }})
+    if: >-
+      ${{ inputs.windows_validation_mode != 'none' &&
+          inputs.prepare_codex_cli_for_exact_usage_test != true &&
+          inputs.run_ae94_android_helper_tests != true &&
+          inputs.run_ae94_tui_provider_tests != true &&
+          inputs.run_d0_active_wait_test != true &&
+          inputs.run_d0_android_protocol_test != true }}
+    runs-on: windows-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    env:
+      CODEX_BAZEL_LOCAL_ONLY: "1"
+    steps:
+      - name: Check out exact validation target
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.target_sha }}
+          fetch-depth: 3
+          persist-credentials: false
+
+      - name: Verify fixed source, base, and workflow-host identity
+        shell: bash
+        env:
+          WINDOWS_VALIDATION_MODE: ${{ inputs.windows_validation_mode }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+          BASE_REF: ${{ inputs.base_ref }}
+          WORKFLOW_HOST_SHA: ${{ github.sha }}
+          WORKFLOW_HOST_REF: ${{ github.ref }}
+          EXPECTED_WORKFLOW_HOST_SHA: ${{ inputs.expected_workflow_host_sha }}
+        run: |
+          set -euo pipefail
+          expected_base="a89b02855334af7c0521882271cb97b818981d1a"
+          case "${WINDOWS_VALIDATION_MODE}" in
+            delete_diagnostic)
+              expected_target="adedc72e4759572ed69791f685613aeeb047a0c1"
+              expected_tree="3c32927bd9d13dff961ce5caf0592d41031d2cb7"
+              expected_parent="d028e536a6d67c148a0a9a69e81cf431563a93b8"
+              ;;
+            voice_runtime)
+              expected_target="1f769231c112a57a67800431aa472256a7e11697"
+              expected_tree="94ba4af639460c414bc0d93f5b17dccabef3fd29"
+              expected_parent="1d85af37b85157729f6fd9d7e5f0bc3301012f9f"
+              ;;
+            *)
+              echo "Windows receiver validation mode is unsupported." >&2
+              exit 1
+              ;;
+          esac
+          actual_target="$(git rev-parse HEAD)"
+          actual_tree="$(git rev-parse 'HEAD^{tree}')"
+          actual_parent="$(git rev-parse 'HEAD^')"
+          actual_base="$(git rev-parse 'HEAD~2')"
+          if [[ "${WORKFLOW_HOST_REF}" != "refs/heads/validation/receiver-exact-cargo-20261016" ]]; then
+            echo "Windows receiver validation must run from the fixed validation-host ref." >&2
+            exit 1
+          fi
+          if [[ ! "${WORKFLOW_HOST_SHA}" =~ ^[0-9a-f]{40}$ || "${EXPECTED_WORKFLOW_HOST_SHA}" != "${WORKFLOW_HOST_SHA}" ]]; then
+            echo "workflow host SHA does not match the exact expected host commit." >&2
+            exit 1
+          fi
+          if [[ "${TARGET_SHA}" != "${expected_target}" || "${actual_target}" != "${expected_target}" ]]; then
+            echo "Windows receiver target does not match the fixed source commit." >&2
+            exit 1
+          fi
+          if [[ "${BASE_REF}" != "${expected_base}" || "${actual_base}" != "${expected_base}" ]]; then
+            echo "Windows receiver comparison base does not match the fixed source base." >&2
+            exit 1
+          fi
+          if [[ "${actual_tree}" != "${expected_tree}" || "${actual_parent}" != "${expected_parent}" ]]; then
+            echo "Windows receiver target tree or direct parent does not match the reviewed source." >&2
+            exit 1
+          fi
+          echo "workflow_host_sha=${WORKFLOW_HOST_SHA}"
+          echo "target_sha=${actual_target}"
+          echo "target_tree=${actual_tree}"
+          echo "base_sha=${actual_base}"
+          echo "mode=${WINDOWS_VALIDATION_MODE}"
+
+      - name: Set up native MSVC Rust toolchain
+        if: ${{ inputs.windows_validation_mode == 'delete_diagnostic' }}
+        uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Inventory the exact DELETE diagnostic test
+        if: ${{ inputs.windows_validation_mode == 'delete_diagnostic' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          selector="unified_exec::tests::legacy_workspace_write_delete_is_limited_to_writable_roots"
+          inventory="${RUNNER_TEMP}/windows-delete-diagnostic-inventory.txt"
+          cargo test --locked -p codex-windows-sandbox --lib -- --list | tee "${inventory}"
+          matches="$(grep -Fxc "${selector}: test" "${inventory}" || true)"
+          if [[ "${matches}" != "1" ]]; then
+            echo "Expected exactly one matching DELETE diagnostic test; observed ${matches}." >&2
+            exit 1
+          fi
+
+      - name: Run the exact DELETE diagnostic without waiving its assertion
+        if: ${{ inputs.windows_validation_mode == 'delete_diagnostic' }}
+        shell: bash
+        run: >-
+          cargo test --locked -p codex-windows-sandbox --lib
+          unified_exec::tests::legacy_workspace_write_delete_is_limited_to_writable_roots
+          -- --exact --test-threads=1
+
+      - name: Prepare native Windows Bazel environment
+        if: ${{ inputs.windows_validation_mode == 'voice_runtime' }}
+        id: prepare_voice_bazel
+        uses: ./.github/actions/prepare-bazel-ci
+        with:
+          target: x86_64-pc-windows-msvc
+          cache-scope: validation-windows-voice-runtime
+
+      - name: Run fixed voice-host Windows DLL runtime selectors
+        if: ${{ inputs.windows_validation_mode == 'voice_runtime' }}
+        shell: bash
+        env:
+          VALIDATION_TARGET_SHA: ${{ inputs.target_sha }}
+        run: |
+          set -euo pipefail
+          ./.github/scripts/run-bazel-ci.sh \
+            --print-failed-action-summary \
+            --print-failed-test-logs \
+            --windows-msvc-host-platform \
+            --remote-download-toplevel \
+            -- \
+            test \
+            --repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1 \
+            --workspace_status_command=./scripts/workspace-status.cmd \
+            --skip_incompatible_explicit_targets \
+            --test_tag_filters=-argument-comment-lint \
+            --test_verbose_timeout_warnings \
+            --local_test_jobs=1 \
+            --test_env=CODEX_BAZEL_LOCAL_ONLY=1 \
+            "--build_metadata=COMMIT_SHA=${VALIDATION_TARGET_SHA}" \
+            -- \
+            //codex-rs/voice-host:codex-voice-host-bin-unit-tests \
+            //codex-rs/voice-host:voice-host-installed_client-test \
+            //codex-rs/voice-host:voice-host-lifecycle-test
