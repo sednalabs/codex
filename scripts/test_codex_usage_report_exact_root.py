@@ -975,6 +975,116 @@ def _check_multi_ledger_partial_selection(temporary: Path) -> None:
     )
 
 
+def _check_requested_subtree_without_recorded_root(temporary: Path) -> None:
+    database = temporary / "subtree-without-recorded-root.sqlite"
+    _create_database(database, current_indexes=True)
+    connection = sqlite3.connect(database)
+    try:
+        connection.execute("UPDATE usage_threads SET root_thread_id = NULL")
+        connection.execute(
+            "UPDATE usage_threads SET root_thread_id = ? WHERE thread_id = ?",
+            (ROOT_THREAD, "synthetic-root-tagged-detached-child"),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    result = report._run_multi_ledger_report(
+        SimpleNamespace(
+            database=database,
+            historical_database=None,
+            all_time=True,
+            start=report.parse_utc(START),
+            end=report.parse_utc(END),
+            timezone="UTC",
+            timezone_value=report.UTC,
+            scope="subtree",
+            thread_id=ROOT_THREAD,
+            credit_mode="none",
+            diagnostics=False,
+        )
+    )
+    _assert(
+        result["status"] == "incomplete"
+        and "lineage_incomplete" in result["incomplete_reasons"],
+        "relative attribution does not hide missing recorded-root lineage",
+    )
+    _assert(
+        result["scope_totals"]["requested_root"]["provider_call_count"] == 1,
+        "the requested anchor remains separate without a stored self-root",
+    )
+    _assert(
+        result["scope_totals"]["all_descendants"]["provider_call_count"] == 4,
+        "parent/fork reachability attributes nested descendants to the anchor",
+    )
+    _assert(
+        result["scope_totals"]["unresolved_lineage"]["provider_call_count"] == 0,
+        "unrecorded reachable descendants are separated from resolved role buckets",
+    )
+    _assert(
+        result["scope_totals"]["conflicting_root"]["provider_call_count"] == 1,
+        "a disconnected root-tagged record is not misattributed as a descendant",
+    )
+    serialized = json.dumps(result, sort_keys=True)
+    for call_id in (
+        "root-alpha",
+        "child-beta",
+        "child-sentinel-literal",
+        "grandchild-alpha",
+        "grandchild-unavailable",
+    ):
+        _assert(call_id not in serialized, "private provider-call identifiers stay omitted")
+
+
+def _check_large_subtree_uses_compact_projection(temporary: Path) -> None:
+    database = temporary / "large-subtree-compact-projection.sqlite"
+    _create_database(database, current_indexes=True)
+    connection = sqlite3.connect(database)
+    try:
+        connection.executemany(
+            "INSERT INTO usage_threads(thread_id, root_thread_id) VALUES (?, ?)",
+            (
+                (f"synthetic-detached-{index:04d}", ROOT_THREAD)
+                for index in range(report.MAX_OUTPUT_GROUPS + 1)
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    result = report._run_multi_ledger_report(
+        SimpleNamespace(
+            database=database,
+            historical_database=None,
+            all_time=True,
+            start=report.parse_utc(START),
+            end=report.parse_utc(END),
+            timezone="UTC",
+            timezone_value=report.UTC,
+            scope="subtree",
+            thread_id=ROOT_THREAD,
+            credit_mode="none",
+            diagnostics=False,
+        )
+    )
+    source = result["source_coverage"]["ledger_sources"][0]
+    _assert(
+        source["thread_count"] > report.MAX_OUTPUT_GROUPS
+        and source["lineage_snapshot_complete"] is True,
+        "bounded token projection accepts more participants than output-group limit",
+    )
+    _assert(
+        "output_group_limit_exceeded" not in result["incomplete_reasons"],
+        "compact root/subagent aggregation does not fail on omitted per-thread rows",
+    )
+    serialized = json.dumps(result, sort_keys=True)
+    _assert(
+        "synthetic-detached-0000" not in serialized
+        and "synthetic-detached-1000" not in serialized,
+        "large subtree output does not serialize participant identifiers",
+    )
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory(prefix="codex-usage-exact-root-") as directory:
         temporary = Path(directory)
@@ -988,7 +1098,9 @@ def main() -> int:
         _check_multi_ledger_reconciliation(temporary)
         _check_multi_ledger_postprocessing_deadline()
         _check_multi_ledger_partial_selection(temporary)
-    print(json.dumps({"status": "passed", "cases": 8}, separators=(",", ":")))
+        _check_requested_subtree_without_recorded_root(temporary)
+        _check_large_subtree_uses_compact_projection(temporary)
+    print(json.dumps({"status": "passed", "cases": 10}, separators=(",", ":")))
     return 0
 
 

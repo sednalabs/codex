@@ -1655,15 +1655,20 @@ class UsageReporter:
             self.spawn_request_metadata = self._fetch_spawn_requests(calls)
             if self.scope in {"thread", "subtree"} and not scope_nodes and not calls:
                 raise ReportProblem("unavailable", "unknown_thread_id")
-            if len(scope_nodes) > MAX_OUTPUT_GROUPS:
+            if len(scope_nodes) > MAX_OUTPUT_GROUPS and not self.token_only_projection:
                 raise WorkLimitReached("output_group_limit_exceeded")
+            participant_limit = (
+                MAX_LINEAGE_NODES
+                if self.token_only_projection
+                else MAX_OUTPUT_GROUPS
+            )
             participating = set(scope_nodes) if self.scope == "subtree" else set()
             if (
                 self.scope == "thread"
                 and self.thread_id
                 and self.thread_id not in participating
             ):
-                if len(participating) >= MAX_OUTPUT_GROUPS:
+                if len(participating) >= participant_limit:
                     raise WorkLimitReached("output_group_limit_exceeded")
                 participating.add(self.thread_id)
             call_thread_ids: set[str] = set()
@@ -1672,7 +1677,7 @@ class UsageReporter:
                 if thread_id in call_thread_ids:
                     continue
                 if thread_id not in participating:
-                    if len(participating) >= MAX_OUTPUT_GROUPS:
+                    if len(participating) >= participant_limit:
                         raise WorkLimitReached("output_group_limit_exceeded")
                     participating.add(thread_id)
                 call_thread_ids.add(thread_id)
@@ -1705,6 +1710,21 @@ class UsageReporter:
             call_parent: dict[str, str | None] = {}
             for thread_id, row in metadata.items():
                 call_parent[thread_id] = self._effective_parent(row)[0]
+            requested_subtree_nodes: set[str] = set()
+            if self.scope == "subtree" and self.thread_id:
+                children_by_parent: dict[str, list[str]] = defaultdict(list)
+                for thread_id in scope_nodes:
+                    parent = call_parent.get(thread_id)
+                    if parent in scope_nodes:
+                        children_by_parent[parent].append(thread_id)
+                frontier = [self.thread_id]
+                while frontier:
+                    self.check_deadline()
+                    parent = frontier.pop()
+                    if parent in requested_subtree_nodes:
+                        continue
+                    requested_subtree_nodes.add(parent)
+                    frontier.extend(children_by_parent.get(parent, ()))
             for call in calls:
                 self.check_deadline()
                 at = call["_started_at_parsed"]
@@ -1760,6 +1780,9 @@ class UsageReporter:
                             column: call.get(column)
                             for column in self.call_columns.split(", ")
                         },
+                        "_requested_subtree_member": (
+                            thread_id in requested_subtree_nodes
+                        ),
                         "_resolved_root_thread_id": thread_lineage.get(
                             "resolved_root_thread_id"
                         ),
@@ -1781,7 +1804,7 @@ class UsageReporter:
                 if thread_id not in thread_metrics:
                     if (
                         thread_id not in participating
-                        and len(participating) >= MAX_OUTPUT_GROUPS
+                        and len(participating) >= participant_limit
                     ):
                         raise WorkLimitReached("output_group_limit_exceeded")
                     thread_metrics[thread_id] = _new_metrics()
@@ -1804,7 +1827,9 @@ class UsageReporter:
             )
 
             thread_rows: list[dict[str, Any]] = []
-            for thread_id in sorted(participating):
+            for thread_id in (
+                sorted(participating) if self.scope != "subtree" else ()
+            ):
                 row = metadata.get(thread_id)
                 thread_lineage = lineage.get(thread_id) or self._resolve_lineage(
                     thread_id, metadata, missing_metadata
@@ -1860,10 +1885,14 @@ class UsageReporter:
                     root_buckets[root_id].append(
                         thread_metrics.get(thread_id, _new_metrics())
                     )
-            disjoint_roots = {
-                root: self._serialize_metric(_merge_metrics(items))
-                for root, items in sorted(root_buckets.items())
-            }
+            disjoint_roots = (
+                {
+                    root: self._serialize_metric(_merge_metrics(items))
+                    for root, items in sorted(root_buckets.items())
+                }
+                if self.scope != "subtree"
+                else {}
+            )
             if self.scope == "subtree":
                 safe_root_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
                 safe_root_buckets: dict[str, dict[str, Any]] = {}
@@ -1895,7 +1924,11 @@ class UsageReporter:
             else:
                 safe_root_buckets = disjoint_roots
                 safe_thread_rows = thread_rows
-            if self.scope in {"thread", "subtree"} and self.thread_id:
+            if (
+                self.scope in {"thread", "subtree"}
+                and self.thread_id
+                and not self.token_only_projection
+            ):
                 anchor_id = self.thread_id
                 direct_ids = [
                     thread_id
@@ -2507,14 +2540,30 @@ def _merge_exact_root_ledgers(
         actual = _blank_to_none(row.get("actual_model_used"))
         _add_token_row(model_metrics[actual], row)
         resolved_root = _blank_to_none(row.get("_resolved_root_thread_id"))
-        if resolved_root is None:
-            role = "unresolved_lineage"
-        elif resolved_root != root_thread_id:
+        lineage_status = row.get("_lineage_status")
+        thread_id = _blank_to_none(row.get("thread_id"))
+        if resolved_root is not None and resolved_root != root_thread_id:
             role = "conflicting_root"
-        elif row.get("thread_id") == root_thread_id:
+        elif lineage_status in {
+            "conflicting_recorded_roots",
+            "recorded_root_unverified",
+        }:
+            role = "conflicting_root"
+        elif thread_id == root_thread_id:
             role = "requested_root"
-        else:
+        elif resolved_root == root_thread_id:
             role = "all_descendants"
+        elif (
+            row.get("_requested_subtree_member")
+            and lineage_status == "root_unrecorded"
+        ):
+            # The exact subtree walk establishes membership relative to the
+            # requested anchor even when legacy rows lack a recorded self-root.
+            role = "all_descendants"
+        elif resolved_root is None:
+            role = "unresolved_lineage"
+        else:
+            role = "conflicting_root"
         _add_token_row(roles[role], row)
         _add_token_row(role_model_metrics[role][actual], row)
         try:
