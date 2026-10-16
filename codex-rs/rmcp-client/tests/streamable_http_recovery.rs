@@ -374,11 +374,12 @@ async fn streamable_http_404_tool_call_is_uncertain_and_next_call_recovers() -> 
     .await?;
 
     let uncertain = call_echo_tool(&client, "uncertain").await.unwrap_err();
-    assert!(
-        uncertain
-            .to_string()
-            .contains("MCP request outcome is uncertain")
-    );
+    let uncertain_message = uncertain.to_string();
+    assert!(uncertain_message.contains("MCP session expired during tools/call"));
+    assert!(uncertain_message.contains("this invocation was not retried"));
+    assert!(uncertain_message.contains("result is unknown"));
+    assert!(uncertain_message.contains("separate independent call"));
+    assert!(uncertain_message.contains("read-only"));
     assert_eq!(http_client.initialize_attempts(), 1);
     assert_eq!(http_client.tool_call_attempts(), 2);
 
@@ -440,7 +441,7 @@ async fn late_expired_session_failure_does_not_retire_replacement() -> anyhow::R
     assert!(
         first_expiry
             .to_string()
-            .contains("MCP request outcome is uncertain")
+            .contains("MCP session expired during tools/call")
     );
     assert_eq!(
         http_client.initialize_attempts(),
@@ -469,7 +470,7 @@ async fn late_expired_session_failure_does_not_retire_replacement() -> anyhow::R
     assert!(
         late_error
             .to_string()
-            .contains("MCP request outcome is uncertain")
+            .contains("MCP session expired during tools/call")
     );
 
     let after_late_failure = call_echo_tool(&client, "replacement-remains-current").await?;
@@ -512,7 +513,7 @@ async fn streamable_http_session_recovery_retries_initialize_failure() -> anyhow
     assert!(
         uncertain
             .to_string()
-            .contains("MCP request outcome is uncertain")
+            .contains("MCP session expired during tools/call")
     );
     assert_eq!(http_client.initialize_attempts(), 1);
 
@@ -667,7 +668,7 @@ async fn streamable_http_expired_session_reconnects_once_per_operation() -> anyh
     assert!(
         first_error
             .to_string()
-            .contains("MCP request outcome is uncertain")
+            .contains("MCP session expired during tools/call")
     );
     assert_eq!(http_client.initialize_attempts(), 1);
     assert_eq!(http_client.tool_call_attempts(), 2);
@@ -676,7 +677,7 @@ async fn streamable_http_expired_session_reconnects_once_per_operation() -> anyh
     assert!(
         second_error
             .to_string()
-            .contains("MCP request outcome is uncertain")
+            .contains("MCP session expired during tools/call")
     );
     assert_eq!(http_client.initialize_attempts(), 2);
     assert_eq!(http_client.tool_call_attempts(), 3);
