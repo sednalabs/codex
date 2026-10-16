@@ -609,11 +609,13 @@ async fn amazon_bedrock_aws_auth_refresh_resigns() -> anyhow::Result<()> {
         .await?;
 
     let mut recovery_events = Vec::new();
+    let mut saw_error_event = false;
     loop {
         match core_test_support::wait_for_event(&test.codex, |_| true).await {
             EventMsg::AuthRecoveryStarted(event) => recovery_events.push(("started", event)),
             EventMsg::AuthRecoveryCompleted(event) => recovery_events.push(("completed", event)),
             EventMsg::TurnComplete(_) => break,
+            EventMsg::Error(_) => saw_error_event = true,
             _ => {}
         }
     }
@@ -635,7 +637,19 @@ async fn amazon_bedrock_aws_auth_refresh_resigns() -> anyhow::Result<()> {
                     message: "Signed in with AWS.".to_string(),
                 },
             ),
-        ]
+        ],
+        "safe failure context: responses_request_count={:?}, refresh_invocation_count={:?}, export_invocation_count={:?}, saw_error_event={}",
+        server
+            .received_requests()
+            .await
+            .map(|requests| requests.len()),
+        std::fs::read_to_string(&refresh_invocations)
+            .ok()
+            .map(|contents| contents.lines().count()),
+        std::fs::read_to_string(&export_invocations)
+            .ok()
+            .map(|contents| contents.lines().count()),
+        saw_error_event,
     );
     server.verify().await;
     assert_eq!(std::fs::read_to_string(&refresh_invocations)?, "refresh\n");

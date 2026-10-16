@@ -2641,7 +2641,7 @@ fs.writeFile = async (file, ...args) => {
             TOOL_BROWSER_STEP,
             json!({
                 "url": visual_url.clone(),
-                "action": {"type": "click", "selector": "#focus-control"},
+                "actions": [{"type": "click", "selector": "#focus-control"}],
                 "scope": "viewport_and_page"
             }),
         )
@@ -2976,8 +2976,8 @@ fs.writeFile = async (file, ...args) => {
             .expect("provider-created thread profiles")
             .count();
         assert_eq!(
-            profiles, 3,
-            "each thread, including the visual capture thread, receives its own profile"
+            profiles, 5,
+            "each successful distinct thread receives its own profile"
         );
     }
 
