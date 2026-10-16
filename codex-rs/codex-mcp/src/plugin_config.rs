@@ -11,6 +11,8 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use tracing::warn;
 
+const HOST_ONLY_STDIO_CLOSE_POLICY_ENV: &str = "CODEX_INTERNAL_MCP_STDIO_CLOSE_POLICY";
+
 #[path = "agent_plugin_config.rs"]
 mod agent_plugin_config;
 
@@ -156,6 +158,7 @@ fn normalize_plugin_mcp_server(
 
     let mut config = serde_json::from_value::<McpServerConfig>(JsonValue::Object(object))
         .map_err(|err| err.to_string())?;
+    reject_host_only_stdio_close_policy(&config)?;
     if matches!(config.auth, McpServerAuth::EmaAuth) {
         return Err(
             "plugin MCP declarations cannot select ema_auth; configure enterprise authentication in host policy"
@@ -166,6 +169,25 @@ fn normalize_plugin_mcp_server(
         bind_environment_env_vars(&mut config)?;
     }
     Ok(config)
+}
+
+fn reject_host_only_stdio_close_policy(config: &McpServerConfig) -> Result<(), String> {
+    let McpServerTransportConfig::Stdio { env, env_vars, .. } = &config.transport else {
+        return Ok(());
+    };
+    let declared_in_env = env.as_ref().is_some_and(|env| {
+        env.keys()
+            .any(|name| name.eq_ignore_ascii_case(HOST_ONLY_STDIO_CLOSE_POLICY_ENV))
+    });
+    let declared_in_env_vars = env_vars.iter().any(|env_var| {
+        env_var
+            .name()
+            .eq_ignore_ascii_case(HOST_ONLY_STDIO_CLOSE_POLICY_ENV)
+    });
+    if declared_in_env || declared_in_env_vars {
+        return Err("plugin MCP declarations cannot select the host-only stdio close policy".into());
+    }
+    Ok(())
 }
 
 fn environment_cwd(

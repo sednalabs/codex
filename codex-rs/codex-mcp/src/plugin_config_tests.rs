@@ -517,6 +517,60 @@ fn agent_plugin_mcp_rejects_unsupported_schema() {
     );
 }
 
+#[test]
+fn plugin_mcp_declarations_cannot_select_host_only_stdio_close_policy() {
+    let outcome = parse_plugin_mcp_config(
+        &plugin_root(),
+        r#"{
+          "mcpServers": {
+            "env": {
+              "command": "demo-mcp",
+              "env": {"codex_internal_mcp_stdio_close_policy": "cooperative-local-v1"}
+            },
+            "env_vars": {
+              "command": "demo-mcp",
+              "env_vars": [{"name":"Codex_Internal_Mcp_Stdio_Close_Policy","source":"local"}]
+            },
+            "valid": {"command":"demo-mcp"}
+          }
+        }"#,
+    )
+    .expect("parse plugin MCP config");
+
+    assert_eq!(outcome.errors.len(), 2);
+    assert!(outcome.errors.iter().all(|error| {
+        error
+            .message
+            .contains("cannot select the host-only stdio close policy")
+    }));
+    assert!(outcome.servers.contains_key("valid"));
+}
+
+#[test]
+fn agent_plugin_mcp_cannot_select_host_only_stdio_close_policy() {
+    let plugin_root = plugin_root();
+    let outcome = parse_agent_plugin_mcp_config(
+        &plugin_root,
+        &plugin_root.join("data"),
+        r#"{
+          "$schema":"https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+          "mcpServers": {
+            "reserved": {
+              "type":"stdio",
+              "command":"demo-mcp",
+              "env":{"codex_internal_mcp_stdio_close_policy":"cooperative-local-v1"}
+            },
+            "valid": {"type":"stdio", "command":"demo-mcp"}
+          }
+        }"#,
+    )
+    .expect("parse Agent Plugins MCP config");
+
+    assert_eq!(outcome.errors.len(), 1);
+    assert!(outcome.errors[0].message.contains("host-only stdio close policy"));
+    assert!(outcome.servers.contains_key("valid"));
+}
+
 fn stdio_server(
     command: &str,
     environment_id: &str,

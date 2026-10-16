@@ -16,6 +16,7 @@ const AGENT_PLUGIN_MCP_SCHEMA_URI: &str = "https://agent-plugins.org/schemas/1.0
 const SUPPORTED_AGENT_PLUGIN_MCP_SCHEMA_URIS: &[&str] = &[AGENT_PLUGIN_MCP_SCHEMA_URI];
 const PLUGIN_ROOT_VARIABLE: &str = "PLUGIN_ROOT";
 const PLUGIN_DATA_VARIABLE: &str = "PLUGIN_DATA";
+const HOST_ONLY_STDIO_CLOSE_POLICY_ENV: &str = "CODEX_INTERNAL_MCP_STDIO_CLOSE_POLICY";
 const CLIENT_OWNED_HTTP_HEADERS: &[&str] = &[
     "accept",
     "authorization",
@@ -183,6 +184,14 @@ fn normalize_agent_plugin_stdio_server(
                 "Agent Plugins stdio `env` cannot override reserved variable `{reserved}`"
             ));
         }
+    }
+    if env
+        .keys()
+        .any(|name| name.eq_ignore_ascii_case(HOST_ONLY_STDIO_CLOSE_POLICY_ENV))
+    {
+        return Err(
+            "Agent Plugins stdio `env` cannot select the host-only stdio close policy".to_string(),
+        );
     }
     #[cfg(windows)]
     {

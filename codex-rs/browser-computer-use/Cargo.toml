@@ -23,4 +23,19 @@ tempfile = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "process", "time"] }
 
 [dev-dependencies]
+anyhow = { workspace = true }
+codex-android-computer-use = { workspace = true }
+codex-code-mode-protocol = { workspace = true }
+codex-code-mode-runtime = { workspace = true }
+codex-core = { workspace = true }
+codex-core-plugins = { workspace = true }
+codex-exec-server = { workspace = true }
+codex-extension-api = { workspace = true }
+codex-features = { workspace = true }
+codex-login = { workspace = true }
+codex-mcp-extension = { workspace = true }
+core_test_support = { workspace = true }
 pretty_assertions = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
+tokio-util = { workspace = true }
+wiremock = { workspace = true }
