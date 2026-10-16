@@ -445,7 +445,9 @@ async fn late_expired_session_failure_does_not_retire_replacement() -> anyhow::R
         Environment::default_for_tests().get_http_client(),
         "late",
     );
-    let client = create_client_with_http_client(&base_url, Arc::new(http_client.clone())).await?;
+    let client = Arc::new(
+        create_client_with_http_client(&base_url, Arc::new(http_client.clone())).await?,
+    );
 
     assert_eq!(
         call_echo_tool(&client, "warmup").await?,
