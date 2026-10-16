@@ -130,7 +130,9 @@ async fn recovered_connections_accept_elicitations_with_previously_cancelled_ids
         .await?;
 
         let previous = client.service().await?;
-        client.reinitialize_after_session_expiry(&previous).await?;
+        client.retire_expired_service_if_current(&previous).await;
+        let recovered = client.service().await?;
+        assert!(!Arc::ptr_eq(&previous, &recovered));
         let recovered_server = timeout(Duration::from_secs(/*secs*/ 5), server_rx.recv())
             .await?
             .unwrap()?;
