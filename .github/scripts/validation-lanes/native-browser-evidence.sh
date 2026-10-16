@@ -68,27 +68,53 @@ run_rust_selector() {
   shift 2
   log_path="$(mktemp "$runner_temp/native-browser-rust-test.XXXXXX")"
 
-  local cargo_status=0
-  env "$@" CARGO_TERM_COLOR=never \
-    cargo test --manifest-path codex-rs/Cargo.toml --locked -p "$package" --lib "$test_name" -- --exact --test-threads=1 >"$log_path" 2>&1 || cargo_status=$?
-  if [[ "$cargo_status" -ne 0 ]]; then
-    local rustc_error_codes
-    local cargo_usage_error
-    local source_locations
-    local test_summary
-    local failed_selector_count
-    rustc_error_codes="$(LC_ALL=C grep -oE 'error\[E[0-9]{4}\]' "$log_path" | LC_ALL=C sort -u | tr '\n' ',' | sed 's/,$//' || true)"
-    cargo_usage_error=none
-    if LC_ALL=C grep -Fq -- "unexpected argument '--manifest-path' found" "$log_path"; then
-      cargo_usage_error=manifest_path_option_rejected
+  local cargo_status
+  if env "$@" CARGO_TERM_COLOR=never \
+    cargo test --manifest-path codex-rs/Cargo.toml --locked -p "$package" --lib "$test_name" -- --exact --test-threads=1 >"$log_path" 2>&1; then
+    cargo_status=0
+  else
+    cargo_status=$?
+  fi
+
+  if [[ "$cargo_status" != "0" ]]; then
+    echo "native-browser-evidence: Rust selector failed: ${package}::${test_name} (test output redacted)" >&2
+    printf 'native-browser-evidence: cargo_exit=%s\n' "$cargo_status" >&2
+    if LC_ALL=C grep -Eq "^error: unexpected argument .* found$" "$log_path"; then
+      echo "native-browser-evidence: cargo_usage_error=unexpected_argument" >&2
+    else
+      echo "native-browser-evidence: cargo_usage_error=none" >&2
     fi
-    source_locations="$(LC_ALL=C grep -oE 'codex-rs/[A-Za-z0-9_./-]+:[0-9]+:[0-9]+' "$log_path" | LC_ALL=C sort -u | head -n 3 | tr '\n' ',' | sed 's/,$//' || true)"
-    test_summary="$(LC_ALL=C grep -E '^test result: (ok|FAILED)\. [0-9]{1,10} passed; [0-9]{1,10} failed; [0-9]{1,10} ignored; [0-9]{1,10} measured; [0-9]{1,10} filtered out; finished in [0-9]{1,8}(\.[0-9]{1,6})?s$' "$log_path" | tail -n 1 || true)"
-    failed_selector_count="$(LC_ALL=C grep -Fxc -- "test ${test_name} ... FAILED" "$log_path" || true)"
-    [[ -n "$rustc_error_codes" ]] || rustc_error_codes=none
-    [[ -n "$source_locations" ]] || source_locations=none
-    [[ -n "$test_summary" ]] || test_summary=none
-    echo "native-browser-evidence: Rust selector failed: ${package}::${test_name}; cargo_exit=${cargo_status}; cargo_usage_error=${cargo_usage_error}; rustc_error_codes=${rustc_error_codes}; source_locations=${source_locations}; failed_selector_count=${failed_selector_count}; test_summary=${test_summary}" >&2
+
+    local libtest_summary
+    libtest_summary="$(LC_ALL=C grep -E '^test result: (ok|FAILED)\. [0-9]+ passed; [0-9]+ failed; [0-9]+ ignored; [0-9]+ measured; [0-9]+ filtered out;$' "$log_path" | tail -n 1 || true)"
+    if [[ -n "$libtest_summary" ]]; then
+      printf 'native-browser-evidence: libtest_summary=%s\n' "${libtest_summary#test result: }" >&2
+    else
+      echo "native-browser-evidence: libtest_summary=none" >&2
+    fi
+
+    if [[ "$package" == "codex-browser-computer-use" && "$test_name" == "tests::hosted_native_browser_tool_flow" ]]; then
+      local browser_panic_line
+      browser_panic_line="$(LC_ALL=C awk '
+        /panicked at / {
+          location = $0
+          sub(/^.*panicked at /, "", location)
+          if (location ~ /(^|\/)codex-rs\/browser-computer-use\/src\/lib\.rs:[0-9]+:[0-9]+:/) {
+            sub(/^.*codex-rs\/browser-computer-use\/src\/lib\.rs:/, "", location)
+            sub(/:.*/, "", location)
+            print location
+            exit
+          }
+        }
+      ' "$log_path")"
+      if [[ "$browser_panic_line" =~ ^[0-9]+$ ]] && (( browser_panic_line >= 2407 && browser_panic_line <= 2981 )); then
+        printf 'native-browser-evidence: browser_test_panic_line=%s\n' "$browser_panic_line" >&2
+      elif [[ -n "$browser_panic_line" ]]; then
+        echo "native-browser-evidence: browser_test_panic_line=unmatched" >&2
+      else
+        echo "native-browser-evidence: browser_test_panic_line=none" >&2
+      fi
+    fi
     return 1
   fi
 
