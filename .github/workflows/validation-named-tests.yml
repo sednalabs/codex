@@ -53,6 +53,11 @@ on:
         required: false
         type: boolean
         default: false
+      run_native_browser_source_validation:
+        description: Run the fixed Browser Chromium, TUI registration/forwarding, and exec dispatch source selectors
+        required: false
+        type: boolean
+        default: false
       windows_validation_mode:
         description: One fixed native Windows receiver validation
         required: true
@@ -63,7 +68,7 @@ on:
           - voice_runtime
         default: none
       expected_workflow_host_sha:
-        description: Exact workflow-host commit SHA required by fixed Windows validation modes
+        description: Exact workflow-host commit SHA required by fixed validation modes
         required: false
         type: string
         default: ""
@@ -100,6 +105,15 @@ jobs:
           inputs.run_d0_active_wait_test == true ||
           inputs.run_ac392_android_protocol_test == true
         )) ||
+        (inputs.run_native_browser_source_validation == true && (
+          inputs.prepare_codex_cli_for_exact_usage_test == true ||
+          inputs.run_ae94_android_helper_tests == true ||
+          inputs.run_ae94_tui_provider_tests == true ||
+          inputs.run_d0_active_wait_test == true ||
+          inputs.run_ac392_android_protocol_test == true ||
+          inputs.run_a89_android_png_fixture_preflight == true ||
+          inputs.windows_validation_mode != 'none'
+        )) ||
         (inputs.windows_validation_mode != 'none' && (
           inputs.prepare_codex_cli_for_exact_usage_test == true ||
           inputs.run_ae94_android_helper_tests == true ||
@@ -121,7 +135,7 @@ jobs:
 
   named_tests:
     if: >-
-      ${{ inputs.windows_validation_mode == 'none' && inputs.prepare_codex_cli_for_exact_usage_test != true && inputs.run_ae94_android_helper_tests != true && inputs.run_ae94_tui_provider_tests != true && inputs.run_d0_active_wait_test != true && inputs.run_ac392_android_protocol_test != true && inputs.run_a89_android_png_fixture_preflight != true }}
+      ${{ inputs.windows_validation_mode == 'none' && inputs.prepare_codex_cli_for_exact_usage_test != true && inputs.run_ae94_android_helper_tests != true && inputs.run_ae94_tui_provider_tests != true && inputs.run_d0_active_wait_test != true && inputs.run_ac392_android_protocol_test != true && inputs.run_a89_android_png_fixture_preflight != true && inputs.run_native_browser_source_validation != true }}
     permissions:
       contents: read
     uses: ./.github/workflows/_validation-named-tests.yml
@@ -141,7 +155,7 @@ jobs:
 
   named_tests_with_exact_package:
     if: >-
-      ${{ inputs.windows_validation_mode == 'none' && inputs.prepare_codex_cli_for_exact_usage_test == true && inputs.run_ae94_android_helper_tests != true && inputs.run_ae94_tui_provider_tests != true && inputs.run_d0_active_wait_test != true && inputs.run_ac392_android_protocol_test != true && inputs.run_a89_android_png_fixture_preflight != true }}
+      ${{ inputs.windows_validation_mode == 'none' && inputs.prepare_codex_cli_for_exact_usage_test == true && inputs.run_ae94_android_helper_tests != true && inputs.run_ae94_tui_provider_tests != true && inputs.run_d0_active_wait_test != true && inputs.run_ac392_android_protocol_test != true && inputs.run_a89_android_png_fixture_preflight != true && inputs.run_native_browser_source_validation != true }}
     permissions:
       contents: read
       actions: read
@@ -162,7 +176,7 @@ jobs:
 
   named_tests_for_ae94_android:
     if: >-
-      ${{ inputs.windows_validation_mode == 'none' && inputs.run_ae94_android_helper_tests == true && inputs.prepare_codex_cli_for_exact_usage_test != true && inputs.run_ae94_tui_provider_tests != true && inputs.run_d0_active_wait_test != true && inputs.run_ac392_android_protocol_test != true && inputs.run_a89_android_png_fixture_preflight != true }}
+      ${{ inputs.windows_validation_mode == 'none' && inputs.run_ae94_android_helper_tests == true && inputs.prepare_codex_cli_for_exact_usage_test != true && inputs.run_ae94_tui_provider_tests != true && inputs.run_d0_active_wait_test != true && inputs.run_ac392_android_protocol_test != true && inputs.run_a89_android_png_fixture_preflight != true && inputs.run_native_browser_source_validation != true }}
     permissions:
       contents: read
     uses: ./.github/workflows/_validation-named-tests.yml
@@ -182,7 +196,7 @@ jobs:
 
   named_tests_for_ae94_tui_providers:
     if: >-
-      ${{ inputs.windows_validation_mode == 'none' && inputs.run_ae94_tui_provider_tests == true && inputs.prepare_codex_cli_for_exact_usage_test != true && inputs.run_ae94_android_helper_tests != true && inputs.run_d0_active_wait_test != true && inputs.run_ac392_android_protocol_test != true && inputs.run_a89_android_png_fixture_preflight != true }}
+      ${{ inputs.windows_validation_mode == 'none' && inputs.run_ae94_tui_provider_tests == true && inputs.prepare_codex_cli_for_exact_usage_test != true && inputs.run_ae94_android_helper_tests != true && inputs.run_d0_active_wait_test != true && inputs.run_ac392_android_protocol_test != true && inputs.run_a89_android_png_fixture_preflight != true && inputs.run_native_browser_source_validation != true }}
     permissions:
       contents: read
     uses: ./.github/workflows/_validation-named-tests.yml
@@ -202,7 +216,7 @@ jobs:
 
   named_tests_for_d0_active_wait:
     if: >-
-      ${{ inputs.windows_validation_mode == 'none' && inputs.run_d0_active_wait_test == true && inputs.prepare_codex_cli_for_exact_usage_test != true && inputs.run_ae94_android_helper_tests != true && inputs.run_ae94_tui_provider_tests != true && inputs.run_ac392_android_protocol_test != true && inputs.run_a89_android_png_fixture_preflight != true }}
+      ${{ inputs.windows_validation_mode == 'none' && inputs.run_d0_active_wait_test == true && inputs.prepare_codex_cli_for_exact_usage_test != true && inputs.run_ae94_android_helper_tests != true && inputs.run_ae94_tui_provider_tests != true && inputs.run_ac392_android_protocol_test != true && inputs.run_a89_android_png_fixture_preflight != true && inputs.run_native_browser_source_validation != true }}
     permissions:
       contents: read
     uses: ./.github/workflows/_validation-named-tests.yml
@@ -222,7 +236,7 @@ jobs:
 
   named_tests_for_ac392_android_protocol:
     if: >-
-      ${{ inputs.windows_validation_mode == 'none' && inputs.run_ac392_android_protocol_test == true && inputs.prepare_codex_cli_for_exact_usage_test != true && inputs.run_ae94_android_helper_tests != true && inputs.run_ae94_tui_provider_tests != true && inputs.run_d0_active_wait_test != true && inputs.run_a89_android_png_fixture_preflight != true }}
+      ${{ inputs.windows_validation_mode == 'none' && inputs.run_ac392_android_protocol_test == true && inputs.prepare_codex_cli_for_exact_usage_test != true && inputs.run_ae94_android_helper_tests != true && inputs.run_ae94_tui_provider_tests != true && inputs.run_d0_active_wait_test != true && inputs.run_a89_android_png_fixture_preflight != true && inputs.run_native_browser_source_validation != true }}
     permissions:
       contents: read
       actions: read
@@ -249,7 +263,8 @@ jobs:
           inputs.run_ae94_android_helper_tests != true &&
           inputs.run_ae94_tui_provider_tests != true &&
           inputs.run_d0_active_wait_test != true &&
-          inputs.run_ac392_android_protocol_test != true }}
+          inputs.run_ac392_android_protocol_test != true &&
+          inputs.run_native_browser_source_validation != true }}
     permissions:
       contents: read
     uses: ./.github/workflows/_validation-named-tests.yml
@@ -262,6 +277,120 @@ jobs:
       request_json: ${{ inputs.request_json }}
       artifact_name: validation-named-tests-${{ github.run_id }}
 
+  native_browser_source_validation:
+    name: Native Browser exact source selectors
+    if: >-
+      ${{ inputs.run_native_browser_source_validation == true &&
+          inputs.windows_validation_mode == 'none' &&
+          inputs.prepare_codex_cli_for_exact_usage_test != true &&
+          inputs.run_ae94_android_helper_tests != true &&
+          inputs.run_ae94_tui_provider_tests != true &&
+          inputs.run_d0_active_wait_test != true &&
+          inputs.run_ac392_android_protocol_test != true &&
+          inputs.run_a89_android_png_fixture_preflight != true }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    env:
+      CARGO_INCREMENTAL: "0"
+      RUSTUP_TOOLCHAIN: 1.96.0
+    steps:
+      - name: Check out exact Browser source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.target_sha }}
+          fetch-depth: 2
+          persist-credentials: false
+          path: validation-target
+
+      - name: Check out exact trusted workflow host
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: validation-host
+
+      - name: Verify fixed Browser source, base, and workflow-host identity
+        shell: bash
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+          BASE_REF: ${{ inputs.base_ref }}
+          PROFILE: ${{ inputs.profile }}
+          WORKFLOW_HOST_SHA: ${{ github.sha }}
+          WORKFLOW_HOST_REF: ${{ github.ref }}
+          EXPECTED_WORKFLOW_HOST_SHA: ${{ inputs.expected_workflow_host_sha }}
+        run: |
+          set -euo pipefail
+          expected_target="32e2c6d3add1bc5e11ed3094354965c539848dd1"
+          expected_tree="b3e5802fe245a0c5d2b599cc7d8552e1fedaf838"
+          expected_parent="c29bb3aeb2bb8ad5d608c23193e43ab3a829e462"
+          expected_base="a8778ccc83d615b403e4c01370ff8cb5f47677d0"
+          expected_source_ref="refs/heads/validation/ci-repair-32e2c6d3"
+          expected_host_ref="refs/heads/validation/receiver-exact-cargo-20261016"
+          actual_target="$(git -C validation-target rev-parse HEAD)"
+          actual_tree="$(git -C validation-target rev-parse 'HEAD^{tree}')"
+          actual_parent="$(git -C validation-target rev-parse 'HEAD^')"
+          actual_host="$(git -C validation-host rev-parse HEAD)"
+          actual_source_ref="$(git -C validation-target ls-remote --refs origin "${expected_source_ref}" | awk 'NR == 1 { print $1 }')"
+          if [[ "${WORKFLOW_HOST_REF}" != "${expected_host_ref}" ]]; then
+            echo "Browser validation must run from the fixed validation-host ref." >&2
+            exit 1
+          fi
+          if [[ ! "${WORKFLOW_HOST_SHA}" =~ ^[0-9a-f]{40}$ || "${EXPECTED_WORKFLOW_HOST_SHA}" != "${WORKFLOW_HOST_SHA}" || "${actual_host}" != "${WORKFLOW_HOST_SHA}" ]]; then
+            echo "workflow host SHA does not match the exact expected host commit." >&2
+            exit 1
+          fi
+          if [[ "${PROFILE}" != "rust_integration" || "${BASE_REF}" != "${expected_base}" ]]; then
+            echo "Browser validation profile or comparison base does not match the fixed source contract." >&2
+            exit 1
+          fi
+          if [[ "${actual_source_ref}" != "${expected_target}" ]]; then
+            echo "Browser validation source ref does not resolve to the fixed candidate." >&2
+            exit 1
+          fi
+          if [[ "${TARGET_SHA}" != "${expected_target}" || "${actual_target}" != "${expected_target}" ]]; then
+            echo "Browser validation target does not match the fixed source commit." >&2
+            exit 1
+          fi
+          if [[ "${actual_tree}" != "${expected_tree}" || "${actual_parent}" != "${expected_parent}" ]]; then
+            echo "Browser validation target tree or direct parent does not match the reviewed source." >&2
+            exit 1
+          fi
+          {
+            echo "VALIDATION_TARGET_SHA=${actual_target}"
+            echo "VALIDATION_HARNESS_SHA=${actual_host}"
+          } >> "${GITHUB_ENV}"
+          echo "workflow_host_sha=${actual_host}"
+          echo "target_sha=${actual_target}"
+          echo "target_tree=${actual_tree}"
+          echo "target_parent=${actual_parent}"
+          echo "base_sha=${expected_base}"
+
+      - name: Set up pinned Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - name: Install Linux build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
+
+      - name: Set up pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # pinned action revision
+        with:
+          toolchain: 1.96.0
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Run fixed Playwright and Browser source selectors
+        shell: bash
+        working-directory: validation-target
+        run: bash ../validation-host/.github/scripts/validation-lanes/native-browser-evidence.sh
+
   windows_exact_receiver_validation:
     name: Native Windows exact receiver validation (${{ inputs.windows_validation_mode }})
     if: >-
@@ -271,7 +400,8 @@ jobs:
           inputs.run_ae94_tui_provider_tests != true &&
           inputs.run_d0_active_wait_test != true &&
           inputs.run_ac392_android_protocol_test != true &&
-          inputs.run_a89_android_png_fixture_preflight != true }}
+          inputs.run_a89_android_png_fixture_preflight != true &&
+          inputs.run_native_browser_source_validation != true }}
     runs-on: windows-latest
     timeout-minutes: 120
     permissions:
