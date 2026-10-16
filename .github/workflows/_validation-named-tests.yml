@@ -1194,6 +1194,145 @@ jobs:
             exit 1
           fi
 
+      - name: Run the exact a89 Android install-timeout selector
+        id: a89_android_timeout_test
+        if: ${{ inputs.run_a89_android_protocol_test == true && steps.a89_android_protocol_test.outcome == 'success' }}
+        continue-on-error: true
+        working-directory: validation-target
+        shell: bash
+        env:
+          VALIDATION_TARGET_SHA: ${{ inputs.target_sha }}
+          VALIDATION_BASE_REF: ${{ inputs.base_ref }}
+          VALIDATION_HARNESS_SHA: ${{ inputs.harness_sha }}
+          VALIDATION_PROFILE: ${{ inputs.profile }}
+          RUST_TEST_REQUEST_JSON: ${{ inputs.request_json }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          expected_target = "a89b02855334af7c0521882271cb97b818981d1a"
+          expected_base = "e135df532669849b682dfac712c3f59aded039ba"
+          expected_profile = "rust_integration"
+          package = "codex-android-computer-use"
+          test_name = "tests::install_build_from_run_gets_extended_provider_timeout"
+          expected_request = {
+              "schema_version": "a89-android-protocol-v1",
+              "profile": expected_profile,
+              "target": "x86_64-unknown-linux-gnu",
+              "package_run_id": 38867176145,
+              "artifact_id": 12035327373,
+              "consumer": "packaged-android-step-install-protocol",
+          }
+          try:
+              request = json.loads(os.environ.get("RUST_TEST_REQUEST_JSON", ""))
+          except (json.JSONDecodeError, TypeError):
+              request = None
+
+          identity = {
+              "harness_sha": os.environ.get("VALIDATION_HARNESS_SHA", ""),
+              "base_ref": os.environ.get("VALIDATION_BASE_REF", ""),
+              "base_sha": os.environ.get("VALIDATION_BASE_SHA", ""),
+              "target_sha": os.environ.get("VALIDATION_TARGET_SHA", ""),
+              "run_id": os.environ.get("GITHUB_RUN_ID", ""),
+          }
+          request_fingerprint = hashlib.sha256(
+              json.dumps(request, sort_keys=True, separators=(",", ":")).encode("utf-8")
+          ).hexdigest() if isinstance(request, dict) else ""
+          result = {
+              "schema_version": "a89-android-timeout-test-v1",
+              "status": "failure",
+              "failure_code": "",
+              "identity": identity,
+              "package": package,
+              "test": test_name,
+              "expected_timeout_seconds": 300,
+              "request_fingerprint": request_fingerprint,
+              "inventory": {"status": "not_run", "test_count": 0, "selected_count": 0},
+              "execution": {"status": "not_run", "exit_code": None, "passed": 0, "failed": 0, "ignored": 0, "measured": 0, "filtered": 0},
+          }
+
+          def bounded_tail(value):
+              text = str(value or "")
+              for variable, replacement in (("GITHUB_WORKSPACE", "<workspace>"), ("RUNNER_TEMP", "<runner-temp>"), ("HOME", "<runner-home>")):
+                  prefix = os.environ.get(variable, "")
+                  if prefix:
+                      text = text.replace(prefix, replacement)
+              text = re.sub(r"/home/runner/work/[^\s:]+", "<runner-path>", text)
+              text = re.sub(r"/tmp/[^\s:]+", "<temporary-path>", text)
+              return text[-3000:]
+
+          if (
+              identity["target_sha"] != expected_target
+              or identity["base_ref"] != expected_base
+              or identity["base_sha"] != expected_base
+              or os.environ.get("VALIDATION_PROFILE") != expected_profile
+              or request != expected_request
+          ):
+              result["failure_code"] = "fixed_identity_or_request_mismatch"
+          else:
+              inventory = subprocess.run(
+                  ["cargo", "test", "--manifest-path", "codex-rs/Cargo.toml", "--locked", "-p", package, "--lib", "--", "--list"],
+                  text=True,
+                  capture_output=True,
+                  check=False,
+              )
+              inventory_names = re.findall(r"^(tests::[A-Za-z0-9_:]+): test$", inventory.stdout, re.MULTILINE)
+              selected_count = inventory_names.count(test_name)
+              result["inventory"] = {
+                  "status": "success" if inventory.returncode == 0 and selected_count == 1 and len(set(inventory_names)) == len(inventory_names) else "failure",
+                  "test_count": len(inventory_names),
+                  "selected_count": selected_count,
+                  "exit_code": inventory.returncode,
+              }
+              if inventory.returncode != 0:
+                  result["failure_code"] = "fixed_test_inventory_failed"
+                  result["diagnostic_tail"] = bounded_tail(inventory.stderr or inventory.stdout)
+              elif selected_count != 1 or len(set(inventory_names)) != len(inventory_names):
+                  result["failure_code"] = "fixed_test_inventory_mismatch"
+              else:
+                  completed = subprocess.run(
+                      ["cargo", "test", "--manifest-path", "codex-rs/Cargo.toml", "--locked", "-p", package, "--lib", "--", test_name, "--exact", "--test-threads=1"],
+                      text=True,
+                      capture_output=True,
+                      check=False,
+                  )
+                  combined = completed.stdout + "\n" + completed.stderr
+                  matched = re.findall(r"^test (tests::[A-Za-z0-9_:]+) \.\.\. (ok|FAILED|ignored)$", combined, re.MULTILINE)
+                  summaries = list(re.finditer(r"test result:\s+\w+\.\s+(?P<passed>\d+) passed;\s+(?P<failed>\d+) failed;\s+(?P<ignored>\d+) ignored;\s+(?P<measured>\d+) measured;\s+(?P<filtered>\d+) filtered out", combined))
+                  counts = None
+                  if summaries:
+                      summary = summaries[-1]
+                      counts = {key: int(summary.group(key)) for key in ("passed", "failed", "ignored", "measured", "filtered")}
+                  passed = (
+                      completed.returncode == 0
+                      and matched == [(test_name, "ok")]
+                      and counts == {"passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered": len(inventory_names) - 1}
+                  )
+                  result["execution"] = {
+                      "status": "success" if passed else "failure",
+                      "exit_code": completed.returncode,
+                      **(counts or {"passed": 0, "failed": 0, "ignored": 0, "measured": 0, "filtered": 0}),
+                  }
+                  if passed:
+                      result["status"] = "success"
+                      result["failure_code"] = ""
+                  else:
+                      result["failure_code"] = "exact_test_did_not_pass_once"
+                      result["diagnostic_tail"] = bounded_tail(completed.stdout or completed.stderr)
+
+          result_path = Path("android-timeout-selector-results.json")
+          result_path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          print(json.dumps({"status": result["status"], "failure_code": result["failure_code"], "test": result["test"], "inventory": result["inventory"], "execution": result["execution"]}, sort_keys=True))
+          if result["status"] != "success":
+              raise SystemExit(1)
+          PY
+
       - name: Append named-test evidence
         if: ${{ always() }}
         shell: bash
@@ -1232,8 +1371,17 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+      - name: Upload a89 Android install-timeout test evidence
+        if: ${{ always() && inputs.run_a89_android_protocol_test == true && hashFiles('validation-target/android-timeout-selector-results.json') != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: a89-android-timeout-test-${{ github.run_id }}
+          path: validation-target/android-timeout-selector-results.json
+          if-no-files-found: error
+          retention-days: 3
+
       - name: Preserve failed exact-test result
-        if: ${{ steps.named_tests.outcome == 'failure' || steps.android_helper_tests.outcome == 'failure' || steps.tui_provider_tests.outcome == 'failure' || steps.d0_active_wait_test.outcome == 'failure' || steps.a89_android_protocol_test.outcome == 'failure' }}
+        if: ${{ steps.named_tests.outcome == 'failure' || steps.android_helper_tests.outcome == 'failure' || steps.tui_provider_tests.outcome == 'failure' || steps.d0_active_wait_test.outcome == 'failure' || steps.a89_android_protocol_test.outcome == 'failure' || steps.a89_android_timeout_test.outcome == 'failure' }}
         shell: bash
         run: exit 1
 
