@@ -122,7 +122,10 @@ mod tests {
             NativeComputerUseProvider::for_call(&request(Some("codex_desktop"))),
             Some(NativeComputerUseProvider::Desktop)
         );
-        assert_eq!(NativeComputerUseProvider::for_call(&request(None)), None);
+        assert_eq!(
+            NativeComputerUseProvider::for_call(&request(/*namespace*/ None)),
+            None
+        );
         assert_eq!(
             NativeComputerUseProvider::for_call(&request(Some("other_namespace"))),
             None

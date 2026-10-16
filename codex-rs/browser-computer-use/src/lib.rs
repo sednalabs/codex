@@ -2656,18 +2656,98 @@ fs.writeFile = async (file, ...args) => {
             "#focus-control"
         ));
 
-        let inspection_response = run_visual(
-            temp.path().join("inspection-state"),
+        let inspection_requests = (0..20)
+            .map(|index| {
+                format!(
+                    "<script defer src=\"/inspection/request/{index}?DO_NOT_EXPOSE_NETWORK_SECRET\"></script>"
+                )
+            })
+            .collect::<String>();
+        let inspection_console = (0..21)
+            .map(|_| "console.error('DO_NOT_EXPOSE_CONSOLE_SECRET');")
+            .collect::<String>();
+        let inspection_html = format!(
+            r#"<!doctype html>
+            <html><head><title>Inspection fixture</title><link rel="icon" href="data:,">{inspection_requests}</head>
+            <body>
+              <iframe style="width:40px;height:50px;border:0" srcdoc="&lt;title&gt;DO_NOT_EXPOSE_FRAME_SECRET&lt;/title&gt;&lt;body&gt;frame&lt;/body&gt;"></iframe>
+              <script>{inspection_console}</script>
+            </body></html>"#
+        );
+        let inspection_listener = std::net::TcpListener::bind(("127.0.0.1", 0))
+            .expect("bind disposable inspection fixture");
+        inspection_listener
+            .set_nonblocking(true)
+            .expect("make disposable inspection fixture nonblocking");
+        let inspection_origin = format!("http://{}", inspection_listener.local_addr().unwrap());
+        let response_html = inspection_html.to_string();
+        let (inspection_shutdown, inspection_shutdown_rx) = std::sync::mpsc::channel();
+        let inspection_server = std::thread::spawn(move || {
+            use std::io::{Read as _, Write as _};
+
+            loop {
+                match inspection_shutdown_rx.try_recv() {
+                    Ok(()) | Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                }
+                let (mut stream, _) = match inspection_listener.accept() {
+                    Ok(connection) => connection,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                        continue;
+                    }
+                    Err(_) => break,
+                };
+                let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+                let mut request = Vec::with_capacity(1024);
+                let mut chunk = [0_u8; 1024];
+                loop {
+                    let Ok(read) = stream.read(&mut chunk) else {
+                        break;
+                    };
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&chunk[..read]);
+                    if request.windows(4).any(|window| window == b"\r\n\r\n")
+                        || request.len() >= 4096
+                    {
+                        break;
+                    }
+                }
+                let request = String::from_utf8_lossy(&request);
+                let path = request
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .unwrap_or("/");
+                let (body, content_type) = if path.starts_with("/inspection/page") {
+                    (response_html.clone(), "text/html; charset=utf-8")
+                } else if path.starts_with("/inspection/request/") {
+                    ("void 0;".to_string(), "text/javascript; charset=utf-8")
+                } else {
+                    ("".to_string(), "text/plain; charset=utf-8")
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        let inspection_response = invoke(
+            codex_home.path(),
             "inspection-thread",
+            TOOL_BROWSER_OBSERVE,
             json!({
-                "url": "https://example.test/page?DO_NOT_EXPOSE_PAGE_SECRET",
+                "url": format!("{inspection_origin}/inspection/page?DO_NOT_EXPOSE_PAGE_SECRET"),
                 "inspection": {"sections": ["runtime", "frames", "console", "network"]}
             }),
-            configured_node_path.clone(),
         )
-        .await
-        .expect("call-local value-free browser inspection");
-        assert!(inspection_response.success, "{inspection_response:?}");
+        .await;
+        assert!(inspection_response.success);
+        assert!(response_includes_native_image(&inspection_response));
         let inspection_text = inspection_response
             .content_items
             .iter()
@@ -2683,8 +2763,9 @@ fs.writeFile = async (file, ...args) => {
         let inspection: Value = serde_json::from_str(inspection_json).expect("inspection JSON");
         assert_eq!(inspection["scope"], "call");
         assert_eq!(inspection["runtime"]["userAgent"], "present");
-        assert_eq!(inspection["frames"][1]["url"], "https://frame.example");
+        assert_eq!(inspection["frames"][1]["url"], "opaque");
         assert_eq!(inspection["frames"][1]["geometry"]["width"], 40);
+        assert_eq!(inspection["frames"][1]["geometry"]["height"], 50);
         assert_eq!(inspection["observed"]["frames"], 2);
         assert_eq!(inspection["console"][0]["type"], "error");
         assert_eq!(inspection["console"][0]["severity"], "error");
@@ -2693,10 +2774,7 @@ fs.writeFile = async (file, ...args) => {
         assert_eq!(inspection["omitted"]["console"], 1);
         assert_eq!(inspection["network"][0]["method"], "GET");
         assert_eq!(inspection["network"][0]["status"], 200);
-        assert_eq!(
-            inspection["network"][0]["destination"],
-            "https://example.test"
-        );
+        assert_eq!(inspection["network"][0]["destination"], inspection_origin);
         assert_eq!(inspection["network"].as_array().unwrap().len(), 20);
         assert_eq!(inspection["observed"]["network"], 21);
         assert_eq!(inspection["omitted"]["network"], 1);
@@ -2708,6 +2786,10 @@ fs.writeFile = async (file, ...args) => {
         ] {
             assert!(!inspection_json.contains(private_value));
         }
+        let _ = inspection_shutdown.send(());
+        inspection_server
+            .join()
+            .expect("inspection fixture server thread");
 
         let visual_profile = std::fs::read_dir(state_root.join("profiles"))
             .expect("provider profile directories")
