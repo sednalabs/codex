@@ -963,8 +963,12 @@ def _check_multi_ledger_reconciliation(temporary: Path) -> None:
         "only lineage-resolved nested descendants are included",
     )
     _assert(
-        result["scope_totals"]["unresolved_lineage"]["provider_call_count"] == 1,
-        "a root-tagged record without a parent edge remains unresolved",
+        result["scope_totals"]["conflicting_root"]["provider_call_count"] == 1,
+        "a root-tagged record without a parent edge remains conflicting",
+    )
+    _assert(
+        result["scope_totals"]["unresolved_lineage"]["provider_call_count"] == 0,
+        "recorded-root conflicts are distinct from missing lineage",
     )
     by_model = {
         item["actual_model_used"]: item for item in result["by_actual_model"]
