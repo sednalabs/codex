@@ -1609,7 +1609,8 @@ printf '%s' '{release}' > '{marker}'
         assert!(
             error
                 .to_string()
-                .contains("did not select a release on the selected Sedna channel")
+                .contains("did not select a release on the selected Sedna channel"),
+            "expected the release-selection guard error, got error chain: {error:#}"
         );
         assert!(!marker.exists());
         let restored = manual_update_once(

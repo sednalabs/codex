@@ -210,8 +210,20 @@ impl ChatWidget {
 
         let mut segments = Vec::new();
         let pacing_now = chrono::Local::now();
+        let title_progress_now = Instant::now();
         for item in &selections.status_line_items {
-            if let Some(value) = self.status_line_value_for_item_at(*item, pacing_now) {
+            let value = self.status_line_value_for_item_at(*item, pacing_now);
+            let value = if matches!(
+                item,
+                StatusLineItem::ThreadName
+                    | StatusLineItem::ThreadTitle
+                    | StatusLineItem::SessionId
+            ) {
+                self.with_thread_title_progress(value, title_progress_now)
+            } else {
+                value
+            };
+            if let Some(value) = value {
                 segments.push((*item, value));
             }
         }
