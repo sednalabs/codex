@@ -53,6 +53,7 @@ def _workspace_root_test_impl(ctx):
     workspace_root_marker = ctx.file.workspace_root_marker
     launcher_template = ctx.file._windows_launcher_template if is_windows else ctx.file._bash_launcher_template
     runfile_env_exports = _windows_runfile_env_exports(ctx) if is_windows else _bash_runfile_env_exports(ctx)
+    path_runfile_env_exports = _windows_path_runfile_env_exports(ctx) if is_windows else ""
     workspace_root_setup = _windows_workspace_root_setup(ctx) if is_windows else _bash_workspace_root_setup(ctx)
     ctx.actions.expand_template(
         template = launcher_template,
@@ -60,6 +61,7 @@ def _workspace_root_test_impl(ctx):
         is_executable = True,
         substitutions = {
             "__RUNFILE_ENV_EXPORTS__": runfile_env_exports,
+            "__PATH_RUNFILE_ENV_EXPORTS__": path_runfile_env_exports,
             "__TEST_BIN__": test_bin.short_path,
             "__WORKSPACE_ROOT_SETUP__": workspace_root_setup,
             "__WORKSPACE_ROOT_MARKER__": workspace_root_marker.short_path,
@@ -71,6 +73,10 @@ def _workspace_root_test_impl(ctx):
         runfiles = runfiles.merge(ctx.runfiles(files = data_dep[DefaultInfo].files.to_list()))
         runfiles = runfiles.merge(data_dep[DefaultInfo].default_runfiles)
     for runfile_dep in ctx.attr.runfile_env:
+        runfile = _runfile_env_file(runfile_dep)
+        runfiles = runfiles.merge(ctx.runfiles(files = [runfile]))
+        runfiles = runfiles.merge(runfile_dep[DefaultInfo].default_runfiles)
+    for runfile_dep in ctx.attr.path_runfile_env:
         runfile = _runfile_env_file(runfile_dep)
         runfiles = runfiles.merge(ctx.runfiles(files = [runfile]))
         runfiles = runfiles.merge(runfile_dep[DefaultInfo].default_runfiles)
@@ -117,6 +123,15 @@ def _windows_runfile_env_exports(ctx):
         lines.append('set "{}=!resolve_runfile_result!"'.format(env_var))
     return "\n".join(lines)
 
+def _windows_path_runfile_env_exports(ctx):
+    lines = []
+    for runfile_dep, suffix in ctx.attr.path_runfile_env.items():
+        runfile = _runfile_env_file(runfile_dep)
+        lines.append('call :resolve_runfile "{}"'.format(_runfile_logical_path(runfile)))
+        lines.append("if errorlevel 1 exit /b 1")
+        lines.append('for %%I in ("!resolve_runfile_result!{}") do set "PATH=%%~fI;%PATH%"'.format(suffix))
+    return "\n".join(lines)
+
 def _runfile_env_file(target):
     executable = target[DefaultInfo].files_to_run.executable
     if executable != None:
@@ -155,6 +170,12 @@ workspace_root_test = rule(
         "env": attr.string_dict(),
         "env_inherit": attr.string_list(),
         "runfile_env": attr.label_keyed_string_dict(
+            cfg = "target",
+        ),
+        # Resolve a runfile and prepend its path plus the configured relative
+        # suffix to PATH before launching the test binary. This is for runtime
+        # DLL directories that must be available before Rust test code runs.
+        "path_runfile_env": attr.label_keyed_string_dict(
             cfg = "target",
         ),
         "test_bin": attr.label(
@@ -206,6 +227,7 @@ def codex_rust_crate(
         binary_test_target_compatible_with = [],
         integration_test_timeout = None,
         test_data_extra = [],
+        test_path_runfile_env = {},
         test_shard_counts = {},
         test_tags = [],
         test_threads = 0,
@@ -255,6 +277,8 @@ def codex_rust_crate(
         integration_test_timeout: Optional Bazel timeout for integration test
             targets generated from `tests/*.rs`.
         test_data_extra: Extra runtime data for tests.
+        test_path_runfile_env: Optional map from runtime labels to relative
+            subdirectories that must be prepended to PATH before tests launch.
         test_shard_counts: Mapping from generated test target name to Bazel
             shard count. Matching tests use native Bazel sharding on the outer
             workspace-root launcher, not rules_rust's inner sharding wrapper.
@@ -387,6 +411,7 @@ def codex_rust_crate(
         workspace_root_test(
             name = unit_test_name,
             env = test_env,
+            path_runfile_env = test_path_runfile_env,
             runfile_env = {
                 binary: "CARGO_BIN_EXE_" + Label(binary).name
                 for binary in extra_binaries
@@ -532,7 +557,7 @@ def codex_rust_crate(
         test_kwargs = {}
         test_kwargs.update(integration_test_kwargs)
         test_shard_count = _test_shard_count(test_shard_counts, test_name)
-        if test_shard_count:
+        if test_shard_count or test_path_runfile_env:
             # Put Bazel sharding on the label users/CI invoke. Do not set
             # rules_rust's experimental_enable_sharding on the Rust test
             # binary: that creates an intermediate wrapper that expects a
@@ -546,7 +571,8 @@ def codex_rust_crate(
         # There are four generated integration-test shapes:
         #
         # 1. Unsharded native tests keep the plain rust_test label for minimal
-        #    churn and the usual rules_rust Cargo-like environment.
+        #    churn and the usual rules_rust Cargo-like environment, unless a
+        #    runfile-backed PATH entry must be established before launch.
         # 2. Sharded native tests split into a manual rust_test binary plus an
         #    outer workspace_root_test. The outer test action receives Bazel's
         #    sharding environment, resolves the real binary through the
@@ -593,6 +619,7 @@ def codex_rust_crate(
                 # time so tests keep working after chdir_workspace_root and on
                 # manifest-only platforms.
                 runfile_env = integration_test_cargo_env_runfiles,
+                path_runfile_env = test_path_runfile_env,
                 test_bin = ":" + integration_test_binary,
                 test_threads = test_threads,
                 workspace_root_marker = "//codex-rs/utils/cargo-bin:repo_root.marker",

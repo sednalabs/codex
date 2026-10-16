@@ -13,6 +13,7 @@ if errorlevel 1 exit /b 1
 set "test_bin=!resolve_runfile_result!"
 
 __RUNFILE_ENV_EXPORTS__
+__PATH_RUNFILE_ENV_EXPORTS__
 
 if not defined test_bin (
   >&2 echo resolved test binary was lost while exporting runfile environment variables
