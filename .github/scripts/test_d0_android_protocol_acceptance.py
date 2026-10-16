@@ -206,18 +206,53 @@ def _safe_stage_diagnostics(path: Path, call_id: str) -> dict[str, Any]:
         ):
             continue
         stage = record.get("stage")
-        if stage not in {"app_server_response", "core_function_output"}:
+        if stage not in {
+            "app_server_response",
+            "core_function_output",
+            "history_image_normalization",
+        }:
             continue
         safe_record: dict[str, Any] = {"stage": stage, "call_id_matches_fixture": True}
-        for key in (
-            "app_server_response_accepted",
-            "app_server_response_submitted",
-            "core_response_received",
-            "core_function_output_constructed",
-        ):
+        boolean_fields = {
+            "app_server_response": (
+                "app_server_response_accepted",
+                "app_server_response_submitted",
+            ),
+            "core_function_output": (
+                "core_response_received",
+                "core_function_output_constructed",
+            ),
+            "history_image_normalization": ("history_model_accepts_image",),
+        }[stage]
+        count_fields = {
+            "app_server_response": (
+                "app_server_accepted_item_count",
+                "app_server_accepted_input_text_count",
+                "app_server_accepted_input_image_count",
+                "app_server_accepted_input_audio_count",
+                "app_server_accepted_other_item_count",
+            ),
+            "core_function_output": (
+                "core_output_item_count",
+                "core_response_input_text_count",
+                "core_response_input_image_count",
+                "core_response_input_audio_count",
+                "core_response_other_item_count",
+                "core_output_input_text_count",
+                "core_output_input_image_count",
+                "core_output_input_audio_count",
+                "core_output_other_item_count",
+            ),
+            "history_image_normalization": (
+                "history_matched_function_output_count",
+                "history_image_count_before",
+                "history_image_count_after",
+            ),
+        }[stage]
+        for key in boolean_fields:
             if isinstance(record.get(key), bool):
                 safe_record[key] = record[key]
-        for key in ("app_server_accepted_item_count", "core_output_item_count"):
+        for key in count_fields:
             if isinstance(record.get(key), int) and record[key] >= 0:
                 safe_record[key] = record[key]
         matched.append(safe_record)
