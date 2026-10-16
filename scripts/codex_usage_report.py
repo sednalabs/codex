@@ -416,9 +416,7 @@ def _merge_metrics(
                 merged[mode]["uncovered_reasons"][reason] += count
     if include_model_breakdown:
         model_keys = {
-            model
-            for item in items
-            for model in item.get("by_actual_model", {})
+            model for item in items for model in item.get("by_actual_model", {})
         }
         if len(model_keys) > MAX_OUTPUT_GROUPS:
             raise WorkLimitReached("output_group_limit_exceeded")
@@ -932,10 +930,9 @@ class UsageReporter:
                 # The original thread-only index remains a safe access path for
                 # exact thread IDs when the optional composite time index has not
                 # been installed. Never broaden this fallback to an all-call scan.
-                if (
-                    "no such index" not in str(exc).lower()
-                    or THREAD_STARTED_INDEX not in str(exc)
-                ):
+                if "no such index" not in str(
+                    exc
+                ).lower() or THREAD_STARTED_INDEX not in str(exc):
                     raise
                 fallback_sql = (
                     f"SELECT {CALL_COLUMNS} FROM usage_provider_calls INDEXED BY usage_provider_calls_thread_idx "

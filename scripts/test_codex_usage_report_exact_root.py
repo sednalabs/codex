@@ -70,41 +70,124 @@ def _create_database(path: Path, *, current_indexes: bool) -> None:
             """,
             (
                 (
-                    "root-alpha", ROOT_THREAD, "openai", "request-alpha",
-                    "synthetic-alpha", "default", "fixture", 0,
-                    "chatgpt_credits", "test", "2026-09-30T00:01:00Z",
-                    "2026-09-30T00:01:01Z", 7, 3, 2, 5, 17, "ok",
+                    "root-alpha",
+                    ROOT_THREAD,
+                    "openai",
+                    "request-alpha",
+                    "synthetic-alpha",
+                    "default",
+                    "fixture",
+                    0,
+                    "chatgpt_credits",
+                    "test",
+                    "2026-09-30T00:01:00Z",
+                    "2026-09-30T00:01:01Z",
+                    7,
+                    3,
+                    2,
+                    5,
+                    17,
+                    "ok",
                 ),
                 (
-                    "child-beta", "synthetic-child", "openai", "request-beta",
-                    "synthetic-beta", "default", "fixture", 0,
-                    "chatgpt_credits", "test", "2026-09-30T00:02:00Z",
-                    "2026-09-30T00:02:01Z", 11, 2, 0, 4, 17, "ok",
+                    "child-beta",
+                    "synthetic-child",
+                    "openai",
+                    "request-beta",
+                    "synthetic-beta",
+                    "default",
+                    "fixture",
+                    0,
+                    "chatgpt_credits",
+                    "test",
+                    "2026-09-30T00:02:00Z",
+                    "2026-09-30T00:02:01Z",
+                    11,
+                    2,
+                    0,
+                    4,
+                    17,
+                    "ok",
                 ),
                 (
-                    "child-sentinel-literal", "synthetic-child", "openai",
-                    "request-sentinel", "<unavailable>", "default", "fixture", 0,
-                    "chatgpt_credits", "test", "2026-09-30T00:02:30Z",
-                    "2026-09-30T00:02:31Z", 1, 0, 0, 1, 2, "ok",
+                    "child-sentinel-literal",
+                    "synthetic-child",
+                    "openai",
+                    "request-sentinel",
+                    "<unavailable>",
+                    "default",
+                    "fixture",
+                    0,
+                    "chatgpt_credits",
+                    "test",
+                    "2026-09-30T00:02:30Z",
+                    "2026-09-30T00:02:31Z",
+                    1,
+                    0,
+                    0,
+                    1,
+                    2,
+                    "ok",
                 ),
                 (
-                    "grandchild-alpha", "synthetic-grandchild", "openai",
-                    "request-alpha", "synthetic-alpha", "default", "fixture", 0,
-                    "chatgpt_credits", "test", "2026-09-30T00:03:00Z",
-                    "2026-09-30T00:03:01Z", 13, 1, 0, 6, 20, "ok",
+                    "grandchild-alpha",
+                    "synthetic-grandchild",
+                    "openai",
+                    "request-alpha",
+                    "synthetic-alpha",
+                    "default",
+                    "fixture",
+                    0,
+                    "chatgpt_credits",
+                    "test",
+                    "2026-09-30T00:03:00Z",
+                    "2026-09-30T00:03:01Z",
+                    13,
+                    1,
+                    0,
+                    6,
+                    20,
+                    "ok",
                 ),
                 (
-                    "grandchild-unavailable", "synthetic-grandchild", "openai",
-                    "request-unknown", None, "default", "fixture", 0,
-                    "chatgpt_credits", "test", "2026-09-30T00:04:00Z",
-                    "2026-09-30T00:04:01Z", 2, 0, 0, 1, 3, "ok",
+                    "grandchild-unavailable",
+                    "synthetic-grandchild",
+                    "openai",
+                    "request-unknown",
+                    None,
+                    "default",
+                    "fixture",
+                    0,
+                    "chatgpt_credits",
+                    "test",
+                    "2026-09-30T00:04:00Z",
+                    "2026-09-30T00:04:01Z",
+                    2,
+                    0,
+                    0,
+                    1,
+                    3,
+                    "ok",
                 ),
                 (
-                    "root-tagged-alpha", "synthetic-root-tagged-detached-child",
-                    "openai", "request-alpha", "synthetic-alpha", "default",
-                    "fixture", 0, "chatgpt_credits", "test",
-                    "2026-09-30T00:05:00Z", "2026-09-30T00:05:01Z", 3, 0, 0, 2,
-                    5, "ok",
+                    "root-tagged-alpha",
+                    "synthetic-root-tagged-detached-child",
+                    "openai",
+                    "request-alpha",
+                    "synthetic-alpha",
+                    "default",
+                    "fixture",
+                    0,
+                    "chatgpt_credits",
+                    "test",
+                    "2026-09-30T00:05:00Z",
+                    "2026-09-30T00:05:01Z",
+                    3,
+                    0,
+                    0,
+                    2,
+                    5,
+                    "ok",
                 ),
             ),
         )
@@ -161,7 +244,10 @@ def _run_report(
         text=True,
         timeout=8,
     )
-    _assert(completed.returncode == 2, "expected incomplete only for missing actual-model rate")
+    _assert(
+        completed.returncode == 2,
+        "expected incomplete only for missing actual-model rate",
+    )
     parsed = json.loads(completed.stdout)
     diagnostic: dict[str, Any] = {}
     for line in completed.stderr.splitlines():
@@ -182,7 +268,10 @@ def _check_report_shape(database: Path) -> dict[str, Any]:
     _assert(before == after, "read-only report changed its selected ledger")
     _assert(result["status"] == "incomplete", "unknown actual model remains explicit")
     _assert(result["summary"]["provider_call_count"] == 6, "all six calls are included")
-    _assert(result["scope_contributions"]["own"]["provider_call_count"] == 1, "root own-call count")
+    _assert(
+        result["scope_contributions"]["own"]["provider_call_count"] == 1,
+        "root own-call count",
+    )
     _assert(
         result["scope_contributions"]["descendants_excluding_anchor"][
             "provider_call_count"
@@ -226,8 +315,7 @@ def _check_report_shape(database: Path) -> dict[str, Any]:
         "beta model tokens",
     )
     _assert(
-        summary_models[None]["token_sums_known_subtotal"]["uncached_input_tokens"]
-        == 2,
+        summary_models[None]["token_sums_known_subtotal"]["uncached_input_tokens"] == 2,
         "missing actual model has its own bucket",
     )
     _assert(
@@ -250,7 +338,9 @@ def _check_report_shape(database: Path) -> dict[str, Any]:
         "literal model names are not folded into a missing bucket",
     )
     own_models = _by_model(result["scope_contributions"]["own"])
-    descendant_models = _by_model(result["scope_contributions"]["descendants_excluding_anchor"])
+    descendant_models = _by_model(
+        result["scope_contributions"]["descendants_excluding_anchor"]
+    )
     _assert(
         own_models["synthetic-alpha"]["token_sums_known_subtotal"][
             "uncached_input_tokens"
@@ -270,9 +360,7 @@ def _check_report_shape(database: Path) -> dict[str, Any]:
             item["token_sums_known_subtotal"]["uncached_input_tokens"]
             for item in summary_models.values()
         )
-        == result["summary"]["token_sums_known_subtotal"][
-            "uncached_input_tokens"
-        ],
+        == result["summary"]["token_sums_known_subtotal"]["uncached_input_tokens"],
         "per-model token totals reconcile",
     )
 
@@ -282,8 +370,8 @@ def _check_report_shape(database: Path) -> dict[str, Any]:
         "older ledgers are not silently claimed",
     )
     _assert(
-        "cross-ledger" in coverage["physical_call_deduplication"]
-        and "not attempted" in coverage["physical_call_deduplication"],
+        coverage["physical_call_deduplication"]
+        == "rows in the selected ledger are counted as stored; no content-based or cross-ledger mirror reconciliation is attempted",
         "dedupe boundary is explicit",
     )
     _assert(
@@ -296,27 +384,29 @@ def _check_report_shape(database: Path) -> dict[str, Any]:
         "requested report start is explicit",
     )
     _assert(
-        coverage["selected_window_provider_call_bounds_utc"][
-            "earliest_started_at_utc"
-        ]
+        coverage["selected_window_provider_call_bounds_utc"]["earliest_started_at_utc"]
         == "2026-09-30T00:01:00.000000Z",
         "observed lower date bound in selected window",
     )
     _assert(
-        coverage["selected_window_provider_call_bounds_utc"][
-            "latest_started_at_utc"
-        ]
+        coverage["selected_window_provider_call_bounds_utc"]["latest_started_at_utc"]
         == "2026-09-30T00:05:00.000000Z",
         "observed upper date bound in selected window",
     )
-    _assert(diagnostic.get("selected_call_rows") == 6, "diagnostics report selected row count")
+    _assert(
+        diagnostic.get("selected_call_rows") == 6,
+        "diagnostics report selected row count",
+    )
     indexed_plans = [
         detail
         for query in diagnostic.get("query_plans", [])
         for detail in query.get("details", [])
     ]
     _assert(
-        any("USING INDEX usage_threads_root_thread_idx" in detail for detail in indexed_plans),
+        any(
+            "USING INDEX usage_threads_root_thread_idx" in detail
+            for detail in indexed_plans
+        ),
         "normal family membership uses the exact root index",
     )
     return result
@@ -349,7 +439,9 @@ def _check_bounded_fallback(temporary: Path) -> None:
         "fallback scan is visible and bounded by the report cap",
     )
     _assert(
-        any("USING INDEX usage_provider_calls_thread_idx" in detail for detail in plans),
+        any(
+            "USING INDEX usage_provider_calls_thread_idx" in detail for detail in plans
+        ),
         "exact-thread call fallback uses the existing thread index",
     )
 
