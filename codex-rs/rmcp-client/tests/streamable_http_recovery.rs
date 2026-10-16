@@ -15,6 +15,7 @@ use futures::FutureExt as _;
 use futures::future::BoxFuture;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
+use tokio::sync::Notify;
 
 use streamable_http_test_support::arm_initialize_post_failure;
 use streamable_http_test_support::arm_initialize_post_json_rpc_failure;
@@ -37,6 +38,7 @@ struct FailFirstInitializeHttpClient {
     inner: Arc<dyn HttpClient>,
     failures_remaining: Arc<AtomicUsize>,
     initialize_attempts: Arc<AtomicUsize>,
+    tool_call_attempts: Arc<AtomicUsize>,
 }
 
 impl FailFirstInitializeHttpClient {
@@ -45,11 +47,16 @@ impl FailFirstInitializeHttpClient {
             inner,
             failures_remaining: Arc::new(AtomicUsize::new(failures_remaining)),
             initialize_attempts: Arc::new(AtomicUsize::new(0)),
+            tool_call_attempts: Arc::new(AtomicUsize::new(0)),
         }
     }
 
     fn initialize_attempts(&self) -> usize {
         self.initialize_attempts.load(Ordering::SeqCst)
+    }
+
+    fn tool_call_attempts(&self) -> usize {
+        self.tool_call_attempts.load(Ordering::SeqCst)
     }
 
     fn fail_next_initialize(&self) {
@@ -72,6 +79,7 @@ impl HttpClient for FailFirstInitializeHttpClient {
         let inner = Arc::clone(&self.inner);
         let failures_remaining = Arc::clone(&self.failures_remaining);
         let initialize_attempts = Arc::clone(&self.initialize_attempts);
+        let tool_call_attempts = Arc::clone(&self.tool_call_attempts);
 
         async move {
             if is_initialize_post(&params) {
@@ -83,8 +91,81 @@ impl HttpClient for FailFirstInitializeHttpClient {
                     });
                 }
             }
+            if is_tools_call_post(&params) {
+                tool_call_attempts.fetch_add(1, Ordering::SeqCst);
+            }
 
             inner.http_request_stream(params).await
+        }
+        .boxed()
+    }
+}
+
+#[derive(Clone)]
+struct DelayedToolCallResponseHttpClient {
+    inner: Arc<dyn HttpClient>,
+    initialize_attempts: Arc<AtomicUsize>,
+    tool_call_attempts: Arc<AtomicUsize>,
+    delayed_tool_call: String,
+    response_started: Arc<Notify>,
+    release_response: Arc<Notify>,
+}
+
+impl DelayedToolCallResponseHttpClient {
+    fn new(inner: Arc<dyn HttpClient>, delayed_tool_call: &str) -> Self {
+        Self {
+            inner,
+            initialize_attempts: Arc::new(AtomicUsize::new(0)),
+            tool_call_attempts: Arc::new(AtomicUsize::new(0)),
+            delayed_tool_call: delayed_tool_call.to_string(),
+            response_started: Arc::new(Notify::new()),
+            release_response: Arc::new(Notify::new()),
+        }
+    }
+
+    fn initialize_attempts(&self) -> usize {
+        self.initialize_attempts.load(Ordering::SeqCst)
+    }
+
+    fn tool_call_attempts(&self) -> usize {
+        self.tool_call_attempts.load(Ordering::SeqCst)
+    }
+}
+
+impl HttpClient for DelayedToolCallResponseHttpClient {
+    fn http_request(
+        &self,
+        params: HttpRequestParams,
+    ) -> BoxFuture<'_, Result<HttpRequestResponse, ExecServerError>> {
+        self.inner.http_request(params)
+    }
+
+    fn http_request_stream(
+        &self,
+        params: HttpRequestParams,
+    ) -> BoxFuture<'_, Result<(HttpRequestResponse, HttpResponseBodyStream), ExecServerError>> {
+        let inner = Arc::clone(&self.inner);
+        let initialize_attempts = Arc::clone(&self.initialize_attempts);
+        let tool_call_attempts = Arc::clone(&self.tool_call_attempts);
+        let delayed_tool_call = self.delayed_tool_call.clone();
+        let response_started = Arc::clone(&self.response_started);
+        let release_response = Arc::clone(&self.release_response);
+
+        async move {
+            if is_initialize_post(&params) {
+                initialize_attempts.fetch_add(1, Ordering::SeqCst);
+            }
+            let tool_name = request_tool_name(&params);
+            if tool_name.is_some() {
+                tool_call_attempts.fetch_add(1, Ordering::SeqCst);
+            }
+
+            let response = inner.http_request_stream(params).await;
+            if tool_name.as_deref() == Some(delayed_tool_call.as_str()) {
+                response_started.notify_one();
+                release_response.notified().await;
+            }
+            response
         }
         .boxed()
     }
@@ -102,6 +183,28 @@ fn is_initialize_post(params: &HttpRequestParams) -> bool {
                     .map(|method| method == "initialize")
             })
             .unwrap_or(false)
+}
+
+fn is_tools_call_post(params: &HttpRequestParams) -> bool {
+    request_tool_name(params).is_some()
+}
+
+fn request_tool_name(params: &HttpRequestParams) -> Option<String> {
+    if !params.method.eq_ignore_ascii_case("POST") {
+        return None;
+    }
+    params
+        .body
+        .as_ref()
+        .and_then(|body| serde_json::from_slice::<Value>(&body.0).ok())
+        .and_then(|body| {
+            if body.get("method").and_then(Value::as_str) != Some("tools/call") {
+                return None;
+            }
+            body.pointer("/params/name")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -298,12 +401,17 @@ async fn streamable_http_tools_list_retries_json_rpc_transient_status() -> anyho
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn streamable_http_404_session_expiry_recovers_and_retries_once() -> anyhow::Result<()> {
+async fn streamable_http_404_tool_call_is_uncertain_and_next_call_recovers() -> anyhow::Result<()> {
     let (_server, base_url) = spawn_streamable_http_server().await?;
-    let client = create_client(&base_url).await?;
+    let http_client = FailFirstInitializeHttpClient::new(
+        Environment::default_for_tests().get_http_client(),
+        /*failures_remaining*/ 0,
+    );
+    let client = create_client_with_http_client(&base_url, Arc::new(http_client.clone())).await?;
 
     let warmup = call_echo_tool(&client, "warmup").await?;
     assert_eq!(warmup, expected_echo_result("warmup"));
+    assert_eq!(http_client.initialize_attempts(), 1);
 
     arm_session_post_failure(
         &base_url,
@@ -313,8 +421,74 @@ async fn streamable_http_404_session_expiry_recovers_and_retries_once() -> anyho
     )
     .await?;
 
-    let recovered = call_echo_tool(&client, "recovered").await?;
-    assert_eq!(recovered, expected_echo_result("recovered"));
+    let uncertain = call_echo_tool(&client, "uncertain").await.unwrap_err();
+    assert!(uncertain
+        .to_string()
+        .contains("MCP request outcome is uncertain"));
+    assert_eq!(http_client.initialize_attempts(), 1);
+    assert_eq!(http_client.tool_call_attempts(), 2);
+
+    let recovered = call_echo_tool(&client, "distinct-follow-up").await?;
+    assert_eq!(recovered, expected_echo_result("distinct-follow-up"));
+    assert_eq!(http_client.initialize_attempts(), 2);
+    assert_eq!(http_client.tool_call_attempts(), 3);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn late_expired_session_failure_does_not_retire_replacement() -> anyhow::Result<()> {
+    let (_server, base_url) = spawn_streamable_http_server().await?;
+    let http_client = DelayedToolCallResponseHttpClient::new(
+        Environment::default_for_tests().get_http_client(),
+        "late",
+    );
+    let client = create_client_with_http_client(&base_url, Arc::new(http_client.clone())).await?;
+
+    assert_eq!(call_echo_tool(&client, "warmup").await?, expected_echo_result("warmup"));
+    assert_eq!(http_client.initialize_attempts(), 1);
+
+    arm_session_post_failure(
+        &base_url,
+        /*status*/ 404,
+        /*remaining*/ 2,
+        /*www_authenticate_headers*/ &[],
+    )
+    .await?;
+
+    let late_client = Arc::clone(&client);
+    let late_call = tokio::spawn(async move { call_echo_tool(&late_client, "late").await });
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        http_client.response_started.notified(),
+    )
+    .await?;
+
+    let first_expiry = call_echo_tool(&client, "expire-current-session")
+        .await
+        .unwrap_err();
+    assert!(first_expiry
+        .to_string()
+        .contains("MCP request outcome is uncertain"));
+    assert_eq!(http_client.initialize_attempts(), 1);
+
+    let replacement_result = call_echo_tool(&client, "replacement-session").await?;
+    assert_eq!(replacement_result, expected_echo_result("replacement-session"));
+    assert_eq!(http_client.initialize_attempts(), 2);
+
+    http_client.release_response.notify_one();
+    let late_error = late_call.await?.unwrap_err();
+    assert!(late_error
+        .to_string()
+        .contains("MCP request outcome is uncertain"));
+
+    let after_late_failure = call_echo_tool(&client, "replacement-remains-current").await?;
+    assert_eq!(
+        after_late_failure,
+        expected_echo_result("replacement-remains-current")
+    );
+    assert_eq!(http_client.initialize_attempts(), 2);
+    assert_eq!(http_client.tool_call_attempts(), 5);
 
     Ok(())
 }
@@ -330,6 +504,7 @@ async fn streamable_http_session_recovery_retries_initialize_failure() -> anyhow
 
     let warmup = call_echo_tool(&client, "warmup").await?;
     assert_eq!(warmup, expected_echo_result("warmup"));
+    assert_eq!(http_client.initialize_attempts(), 1);
 
     arm_session_post_failure(
         &base_url,
@@ -338,11 +513,19 @@ async fn streamable_http_session_recovery_retries_initialize_failure() -> anyhow
         /*www_authenticate_headers*/ &[],
     )
     .await?;
-    http_client.fail_next_initialize();
+    let uncertain = call_echo_tool(&client, "uncertain-before-retry").await.unwrap_err();
+    assert!(uncertain
+        .to_string()
+        .contains("MCP request outcome is uncertain"));
+    assert_eq!(http_client.initialize_attempts(), 1);
 
-    let recovered = call_echo_tool(&client, "recovered-after-retry").await?;
+    http_client.fail_next_initialize();
+    let recovered = call_echo_tool(&client, "distinct-call-after-retry").await?;
     assert_eq!(http_client.initialize_attempts(), 3);
-    assert_eq!(recovered, expected_echo_result("recovered-after-retry"));
+    assert_eq!(
+        recovered,
+        expected_echo_result("distinct-call-after-retry")
+    );
 
     Ok(())
 }
