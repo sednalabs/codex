@@ -11,6 +11,10 @@ use codex_login::AuthDotJson;
 use codex_login::AuthKeyringBackendKind;
 use codex_login::AuthManager;
 use codex_login::CLIENT_ID_OVERRIDE_ENV_VAR;
+use codex_login::CodexAuth;
+use codex_login::ExternalAuth;
+use codex_login::ExternalAuthFuture;
+use codex_login::ExternalAuthRefreshContext;
 use codex_login::REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR;
 use codex_login::RefreshTokenError;
 use codex_login::load_auth_dot_json;
@@ -1346,8 +1350,19 @@ async fn unauthorized_recovery_reloads_then_refreshes_tokens() -> Result<()> {
 
     let mut recovery = ctx.auth_manager.unauthorized_recovery();
     assert!(recovery.has_next());
+    let mut auth_state = ctx.auth_manager.auth_change_state_receiver();
+    let state_before_reload = *auth_state.borrow();
 
-    recovery.next().await?;
+    let mut reload = recovery
+        .next_for_unauthorized_request(state_before_reload)
+        .await?;
+    assert!(reload.request_state_matches());
+    let reload_witness = reload
+        .take_commit_witness()
+        .expect("changed reload returns its atomic commit witness");
+    let state_after_reload = *auth_state.borrow();
+    assert!(reload_witness.matches_same_owner_successor(state_before_reload, state_after_reload));
+    assert!(reload.take_commit_witness().is_none());
 
     let cached_after = ctx
         .auth_manager
@@ -1361,7 +1376,19 @@ async fn unauthorized_recovery_reloads_then_refreshes_tokens() -> Result<()> {
     let requests = server.received_requests().await.unwrap_or_default();
     assert!(requests.is_empty(), "expected no refresh token requests");
 
-    recovery.next().await?;
+    let mut stale_recovery = ctx.auth_manager.unauthorized_recovery();
+    let mut stale = stale_recovery
+        .next_for_unauthorized_request(state_before_reload)
+        .await?;
+    assert!(!stale.request_state_matches());
+    assert!(stale.take_commit_witness().is_none());
+    assert_eq!(*auth_state.borrow(), state_after_reload);
+
+    let mut refresh = recovery
+        .next_for_unauthorized_request(state_after_reload)
+        .await?;
+    assert!(refresh.request_state_matches());
+    assert!(refresh.take_commit_witness().is_some());
 
     let refreshed_tokens = TokenData {
         access_token: "recovered-access-token".to_string(),
@@ -1384,6 +1411,51 @@ async fn unauthorized_recovery_reloads_then_refreshes_tokens() -> Result<()> {
     assert!(!recovery.has_next());
 
     server.verify().await;
+    Ok(())
+}
+
+struct SameAuthExternalSource(CodexAuth);
+
+impl ExternalAuth for SameAuthExternalSource {
+    fn resolve(&self) -> ExternalAuthFuture<'_, CodexAuth> {
+        let auth = self.0.clone();
+        Box::pin(async move { Ok(auth) })
+    }
+
+    fn refresh(&self, _context: ExternalAuthRefreshContext) -> ExternalAuthFuture<'_, CodexAuth> {
+        let auth = self.0.clone();
+        Box::pin(async move { Ok(auth) })
+    }
+}
+
+#[tokio::test]
+async fn unauthorized_recovery_noop_does_not_return_a_commit_witness() -> Result<()> {
+    let claims = json!({
+        "jti": "unchanged-token",
+        "https://api.openai.com/auth": {"chatgpt_user_id": "user-123"},
+    });
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(claims.to_string());
+    let auth = CodexAuth::from_external_chatgpt_tokens(
+        &format!("header.{payload}.signature"),
+        "workspace-123",
+        /*chatgpt_plan_type*/ None,
+    )?;
+    let manager = AuthManager::from_auth_for_testing(auth.clone());
+    manager
+        .set_external_auth(Arc::new(SameAuthExternalSource(auth)))
+        .await?;
+    let expected_state = *manager.auth_change_state_receiver().borrow();
+    let mut recovery = manager.unauthorized_recovery();
+
+    let mut result = recovery
+        .next_for_unauthorized_request(expected_state)
+        .await?;
+    assert!(result.request_state_matches());
+    assert!(result.take_commit_witness().is_none());
+    assert_eq!(
+        *manager.auth_change_state_receiver().borrow(),
+        expected_state
+    );
     Ok(())
 }
 

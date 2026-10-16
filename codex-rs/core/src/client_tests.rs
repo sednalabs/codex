@@ -27,6 +27,12 @@ use codex_http_client::HttpClientFactory;
 use codex_http_client::OutboundProxyPolicy;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
+use codex_login::ExternalAuth;
+use codex_login::ExternalAuthFuture;
+use codex_login::ExternalAuthRefreshContext;
+use codex_login::WorkspaceRouting;
+use codex_login::WorkspaceRoutingRequest;
+use codex_login::WorkspaceRoutingResolver;
 use codex_login::auth::AgentIdentityAuthPolicy;
 use codex_model_provider::BearerAuthProvider;
 use codex_model_provider::ModelProvider;
@@ -207,6 +213,136 @@ fn test_model_client_with_thread_id(
 
 fn test_model_provider() -> SharedModelProvider {
     test_model_client(SessionSource::Cli).state.provider.clone()
+}
+
+fn external_chatgpt_auth(user: &str, workspace: &str, token: &str) -> CodexAuth {
+    let claims = json!({
+        "jti": token,
+        "https://api.openai.com/auth": {"chatgpt_user_id": user},
+    });
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(claims.to_string());
+    CodexAuth::from_external_chatgpt_tokens(
+        &format!("header.{payload}.signature"),
+        workspace,
+        /*chatgpt_plan_type*/ None,
+    )
+    .expect("fixture ChatGPT auth")
+}
+
+struct RefreshingExternalAuth {
+    current: Arc<Mutex<CodexAuth>>,
+    refreshed: CodexAuth,
+}
+
+impl ExternalAuth for RefreshingExternalAuth {
+    fn resolve(&self) -> ExternalAuthFuture<'_, CodexAuth> {
+        let auth = self.current.lock().expect("auth lock").clone();
+        Box::pin(async move { Ok(auth) })
+    }
+
+    fn refresh(&self, _context: ExternalAuthRefreshContext) -> ExternalAuthFuture<'_, CodexAuth> {
+        let current = Arc::clone(&self.current);
+        let auth = self.refreshed.clone();
+        Box::pin(async move {
+            *current.lock().expect("auth lock") = auth.clone();
+            Ok(auth)
+        })
+    }
+}
+
+struct MutableWorkspaceRouting(Arc<Mutex<String>>);
+
+impl WorkspaceRoutingResolver for MutableWorkspaceRouting {
+    fn resolve(
+        &self,
+        _request: WorkspaceRoutingRequest,
+    ) -> Pin<
+        Box<
+            dyn std::future::Future<Output = std::io::Result<Option<WorkspaceRouting>>> + Send + '_,
+        >,
+    > {
+        let backend_origin = self.0.lock().expect("routing lock").clone();
+        Box::pin(async move {
+            Ok(Some(WorkspaceRouting {
+                chatgpt_account_id: "workspace-a".to_string(),
+                backend_origin,
+                account_routing_override: "NO_CONSTRAINT".to_string(),
+            }))
+        })
+    }
+}
+
+#[tokio::test]
+async fn ordinary_401_rebind_rejects_changed_route_before_successor_request() {
+    let manager =
+        AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
+    let route = Arc::new(Mutex::new("https://route-a.example.com".to_string()));
+    let resolver: Arc<dyn WorkspaceRoutingResolver> =
+        Arc::new(MutableWorkspaceRouting(Arc::clone(&route)));
+    manager.set_workspace_routing_resolver(Arc::downgrade(&resolver));
+    manager
+        .set_external_auth(Arc::new(RefreshingExternalAuth {
+            current: Arc::new(Mutex::new(external_chatgpt_auth(
+                "user-a",
+                "workspace-a",
+                "token-1",
+            ))),
+            refreshed: external_chatgpt_auth("user-a", "workspace-a", "token-2"),
+        }))
+        .await
+        .expect("external auth fixture installs");
+
+    let mut client = test_model_client(SessionSource::Exec);
+    Arc::get_mut(&mut client.state)
+        .expect("test client has unique state")
+        .provider = create_model_provider(
+        ModelProviderInfo::create_openai_provider(/*base_url*/ None),
+        Some(Arc::clone(&manager)),
+    );
+    let initial_setup = client
+        .current_client_setup(
+            super::ClientRouting::Workspace,
+            /*expected_authority*/ None,
+        )
+        .await
+        .expect("initial route setup");
+    assert_eq!(
+        initial_setup.api_provider.base_url,
+        "https://route-a.example.com/backend-api/codex"
+    );
+    let original_authority = initial_setup.authority;
+    let expected_state = initial_setup
+        .auth_change_state
+        .expect("manager generation is captured");
+    drop(initial_setup);
+
+    let mut session = client
+        .new_session_with_authority(Some(original_authority), /*ordinary_401_rebind*/ true);
+    let mut recovery = manager.unauthorized_recovery();
+    let mut result = recovery
+        .next_for_unauthorized_request(expected_state)
+        .await
+        .expect("manager refresh runs");
+    assert!(result.request_state_matches());
+    let witness = result
+        .take_commit_witness()
+        .expect("manager commit witness");
+    let observed_after = *manager.auth_change_state_receiver().borrow();
+    assert!(witness.matches_same_owner_successor(expected_state, observed_after));
+
+    *route.lock().expect("routing lock") = "https://route-b.example.com".to_string();
+    let mut retry = PendingUnauthorizedRetry::from_recovery(UnauthorizedRecoveryExecution {
+        mode: "external",
+        phase: "external_refresh",
+        expected_state: Some(expected_state),
+        commit_witness: Some(witness),
+    });
+    let setup = session
+        .current_client_setup_for_retry(super::ClientRouting::Workspace, &mut retry)
+        .await;
+    // The rejected setup never returns a route/client configuration to the caller, so a
+    // successor request cannot be constructed or sent.
+    assert!(matches!(setup, Err(CodexErr::AutomaticTurnContextChanged)));
 }
 
 #[tokio::test]
@@ -2052,6 +2188,8 @@ async fn bedrock_unauthorized_error_uses_provider_mapping() {
             ),
         },
         &mut auth_recovery,
+        /*expected_state*/ None,
+        /*request_is_ordinary_app_server_turn*/ false,
         &mut provider_auth_recovery_attempted,
         &test_session_telemetry(),
         &provider,
@@ -2149,6 +2287,8 @@ async fn provider_owned_auth_recovery_is_bounded_and_preserves_unauthorized_fail
         let result = super::handle_unauthorized(
             unauthorized(),
             &mut auth_recovery,
+            /*expected_state*/ None,
+            /*request_is_ordinary_app_server_turn*/ false,
             &mut provider_auth_recovery_attempted,
             &telemetry,
             &provider,
@@ -2168,6 +2308,8 @@ async fn provider_owned_auth_recovery_is_bounded_and_preserves_unauthorized_fail
             super::handle_unauthorized(
                 unauthorized(),
                 &mut auth_recovery,
+                /*expected_state*/ None,
+                /*request_is_ordinary_app_server_turn*/ false,
                 &mut provider_auth_recovery_attempted,
                 &telemetry,
                 &provider,
@@ -2268,9 +2410,11 @@ fn auth_request_telemetry_context_tracks_attached_auth_and_retry_phase() {
         Some(AuthMode::Chatgpt),
         &BearerAuthProvider::for_test(Some("access-token"), Some("workspace-123")),
         /*agent_identity_telemetry*/ None,
-        PendingUnauthorizedRetry::from_recovery(UnauthorizedRecoveryExecution {
+        &PendingUnauthorizedRetry::from_recovery(UnauthorizedRecoveryExecution {
             mode: "managed",
             phase: "refresh_token",
+            expected_state: None,
+            commit_witness: None,
         }),
     );
 
@@ -2291,7 +2435,7 @@ fn auth_request_telemetry_context_tracks_agent_identity_ids() {
             agent_id: "agent-runtime-context".to_string(),
             task_id: "task-run-context".to_string(),
         }),
-        PendingUnauthorizedRetry::default(),
+        &PendingUnauthorizedRetry::default(),
     );
 
     assert_eq!(

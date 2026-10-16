@@ -180,10 +180,10 @@ pub(crate) async fn run_turn(
         .get()
         .copied()
     {
-        Some(authority) => sess
-            .services
-            .model_client
-            .new_session_with_authority(Some(authority)),
+        Some(authority) => sess.services.model_client.new_session_with_authority(
+            Some(authority),
+            turn_context.ordinary_401_rebind_allowed.get().is_some(),
+        ),
         None => {
             prewarmed_client_session.unwrap_or_else(|| sess.services.model_client.new_session())
         }

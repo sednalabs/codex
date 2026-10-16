@@ -326,6 +326,9 @@ pub struct TurnContext {
     pub(crate) sub_id: String,
     /// Opaque authority captured for a capability-validated automatic turn. Process-local only.
     pub(crate) automatic_turn_provider_authority: OnceLock<ProviderAuthority>,
+    /// Ordinary app-server turns may accept one manager-witnessed same-owner 401 credential
+    /// successor. Ticket-redemption and internal turns leave this unset.
+    pub(crate) ordinary_401_rebind_allowed: OnceLock<()>,
     pub(crate) trace_id: Option<String>,
     /// Call state at turn creation; model requests use the `StepContext` snapshot.
     pub(crate) realtime_active: bool,
@@ -445,6 +448,7 @@ impl TurnContext {
                 }
                 authority
             },
+            ordinary_401_rebind_allowed: OnceLock::new(),
             initial_settings: Arc::clone(&step_settings),
             disabled_plugin_ids: self.disabled_plugin_ids.clone(),
             active_host_plugin_identities: None,
@@ -854,6 +858,13 @@ impl TurnContext {
                 }
                 authority
             },
+            ordinary_401_rebind_allowed: {
+                let allowed = OnceLock::new();
+                if self.ordinary_401_rebind_allowed.get().is_some() {
+                    let _ = allowed.set(());
+                }
+                allowed
+            },
             initial_settings: Arc::clone(&step_settings),
             disabled_plugin_ids: self.disabled_plugin_ids.clone(),
             active_host_plugin_identities: self.active_host_plugin_identities.clone(),
@@ -1129,6 +1140,7 @@ impl Session {
         TurnContext {
             sub_id,
             automatic_turn_provider_authority: OnceLock::new(),
+            ordinary_401_rebind_allowed: OnceLock::new(),
             trace_id: current_span_trace_id(),
             realtime_active: false,
             code_mode_available: true,

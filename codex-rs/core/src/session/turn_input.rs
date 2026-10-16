@@ -970,6 +970,9 @@ async fn attach_automatic_turn_context(
         let _ = turn_context
             .automatic_turn_provider_authority
             .set(provider_authority);
+        if automatic_turn.continuation_ref.is_none() {
+            let _ = turn_context.ordinary_401_rebind_allowed.set(());
+        }
     }
     session
         .services

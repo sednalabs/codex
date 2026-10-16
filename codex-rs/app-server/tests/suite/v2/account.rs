@@ -919,14 +919,13 @@ async fn external_auth_refresh_error_fails_turn() -> Result<()> {
 }
 
 #[tokio::test]
-// Refresh returns tokens for the wrong workspace; turn fails.
+// A manager refresh changing the complete workspace identity fails before a successor request.
 async fn external_auth_refresh_mismatched_workspace_fails_turn() -> Result<()> {
     let codex_home = TempDir::new()?;
     let mock_server = MockServer::start().await;
     create_config_toml(
         codex_home.path(),
         CreateConfigTomlParams {
-            forced_workspace_id: Some(WORKSPACE_ID_ALLOWED.to_string()),
             requires_openai_auth: Some(true),
             base_url: Some(format!("{}/v1", mock_server.uri())),
             chatgpt_base_url: Some(format!("{}/backend-api", mock_server.uri())),
@@ -938,19 +937,20 @@ async fn external_auth_refresh_mismatched_workspace_fails_turn() -> Result<()> {
     let unauthorized = ResponseTemplate::new(401).set_body_json(json!({
         "error": { "message": "unauthorized" }
     }));
-    let _responses_mock =
-        responses::mount_response_sequence(&mock_server, vec![unauthorized]).await;
+    let responses_mock = responses::mount_response_sequence(&mock_server, vec![unauthorized]).await;
     mount_disabled_attribution_settings(&mock_server).await;
 
     let initial_access_token = encode_id_token(
         &ChatGptIdTokenClaims::new()
             .email("initial@example.com")
+            .chatgpt_user_id("same-user")
             .plan_type("pro")
             .chatgpt_account_id(WORKSPACE_ID_ALLOWED),
     )?;
     let refreshed_access_token = encode_id_token(
         &ChatGptIdTokenClaims::new()
             .email("refreshed@example.com")
+            .chatgpt_user_id("same-user")
             .plan_type("pro")
             .chatgpt_account_id(WORKSPACE_ID_DISALLOWED),
     )?;
@@ -1033,6 +1033,7 @@ async fn external_auth_refresh_mismatched_workspace_fails_turn() -> Result<()> {
     )?;
     assert_eq!(completed.turn.status, TurnStatus::Failed);
     assert!(completed.turn.error.is_some());
+    assert_eq!(responses_mock.requests().len(), 1);
 
     Ok(())
 }

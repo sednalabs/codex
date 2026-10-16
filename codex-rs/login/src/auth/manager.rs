@@ -1843,6 +1843,13 @@ enum ReloadOutcome {
     Skipped,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct UnauthorizedRecoveryCommit {
+    request_state_matches: bool,
+    auth_state_changed: Option<bool>,
+    witness: Option<UnauthorizedRecoveryCommitWitness>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum UnauthorizedRecoveryMode {
     Managed,
@@ -1869,6 +1876,28 @@ pub struct UnauthorizedRecovery {
     mode: UnauthorizedRecoveryMode,
 }
 
+/// Opaque evidence that one unauthorized-recovery step committed exactly one credential change.
+/// The witness is process-local and carries no credential or owner values.
+#[derive(Debug, PartialEq, Eq)]
+pub struct UnauthorizedRecoveryCommitWitness {
+    before: AuthChangeState,
+    after: AuthChangeState,
+}
+
+impl UnauthorizedRecoveryCommitWitness {
+    /// Returns true only for this request's immediate, same-owner credential successor.
+    pub fn matches_same_owner_successor(
+        &self,
+        expected_before: AuthChangeState,
+        observed_after: AuthChangeState,
+    ) -> bool {
+        self.before == expected_before
+            && self.before.owner_generation == self.after.owner_generation
+            && self.before.generation.checked_add(1) == Some(self.after.generation)
+            && self.after == observed_after
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct UnauthorizedRecoveryStepResult {
     auth_state_changed: Option<bool>,
@@ -1877,6 +1906,32 @@ pub struct UnauthorizedRecoveryStepResult {
 impl UnauthorizedRecoveryStepResult {
     pub fn auth_state_changed(&self) -> Option<bool> {
         self.auth_state_changed
+    }
+}
+
+/// A request-bound recovery result. Its commit witness is consumed once so it cannot be replayed
+/// to authorize another ordinary-turn rebind.
+#[derive(Debug, PartialEq, Eq)]
+pub struct UnauthorizedRecoveryRequestStepResult {
+    auth_state_changed: Option<bool>,
+    request_state_matches: bool,
+    commit_witness: Option<UnauthorizedRecoveryCommitWitness>,
+}
+
+impl UnauthorizedRecoveryRequestStepResult {
+    pub fn auth_state_changed(&self) -> Option<bool> {
+        self.auth_state_changed
+    }
+
+    /// Whether the manager still had the exact credential and owner generations captured for
+    /// the request that received the 401 when the recovery step began.
+    pub fn request_state_matches(&self) -> bool {
+        self.request_state_matches
+    }
+
+    /// Opaque proof of the manager's atomic credential commit, when this step committed one.
+    pub fn take_commit_witness(&mut self) -> Option<UnauthorizedRecoveryCommitWitness> {
+        self.commit_witness.take()
     }
 }
 
@@ -2031,6 +2086,85 @@ impl UnauthorizedRecovery {
         Ok(UnauthorizedRecoveryStepResult {
             auth_state_changed: None,
         })
+    }
+
+    /// Performs one unauthorized-recovery step only if the manager still owns the exact auth
+    /// generations captured for the failed request. A witness is returned only for the atomic
+    /// manager commit performed by that step.
+    #[doc(hidden)]
+    pub async fn next_for_unauthorized_request(
+        &mut self,
+        expected_state: AuthChangeState,
+    ) -> Result<UnauthorizedRecoveryRequestStepResult, RefreshTokenError> {
+        if !self.has_next() {
+            return Err(RefreshTokenError::Permanent(RefreshTokenFailedError::new(
+                RefreshTokenFailedReason::Other,
+                "No more recovery steps available.",
+            )));
+        }
+
+        match self.step {
+            UnauthorizedRecoveryStep::Reload => {
+                let (request_state_matches, outcome, witness) = self
+                    .manager
+                    .reload_if_account_id_matches_for_unauthorized_request(
+                        self.expected_account_id.as_deref(),
+                        Some(expected_state),
+                    )
+                    .await;
+                if !request_state_matches {
+                    self.step = UnauthorizedRecoveryStep::Done;
+                    return Ok(UnauthorizedRecoveryRequestStepResult {
+                        auth_state_changed: None,
+                        request_state_matches: false,
+                        commit_witness: None,
+                    });
+                }
+                match outcome {
+                    ReloadOutcome::ReloadedChanged => {
+                        self.step = UnauthorizedRecoveryStep::RefreshToken;
+                        Ok(UnauthorizedRecoveryRequestStepResult {
+                            auth_state_changed: Some(true),
+                            request_state_matches: true,
+                            commit_witness: witness,
+                        })
+                    }
+                    ReloadOutcome::ReloadedNoChange => {
+                        self.step = UnauthorizedRecoveryStep::RefreshToken;
+                        Ok(UnauthorizedRecoveryRequestStepResult {
+                            auth_state_changed: Some(false),
+                            request_state_matches: true,
+                            commit_witness: None,
+                        })
+                    }
+                    ReloadOutcome::Skipped => {
+                        self.step = UnauthorizedRecoveryStep::Done;
+                        Err(RefreshTokenError::Permanent(RefreshTokenFailedError::new(
+                            RefreshTokenFailedReason::Other,
+                            REFRESH_TOKEN_ACCOUNT_MISMATCH_MESSAGE.to_string(),
+                        )))
+                    }
+                }
+            }
+            UnauthorizedRecoveryStep::RefreshToken | UnauthorizedRecoveryStep::ExternalRefresh => {
+                let result = self
+                    .manager
+                    .refresh_token_from_authority_for_unauthorized_request(expected_state)
+                    .await?;
+                self.step = UnauthorizedRecoveryStep::Done;
+                Ok(UnauthorizedRecoveryRequestStepResult {
+                    auth_state_changed: result.auth_state_changed,
+                    request_state_matches: result.request_state_matches,
+                    commit_witness: result.witness,
+                })
+            }
+            UnauthorizedRecoveryStep::Done => {
+                Err(RefreshTokenError::Permanent(RefreshTokenFailedError::new(
+                    RefreshTokenFailedReason::Other,
+                    "No more recovery steps available.",
+                )))
+            }
+        }
     }
 }
 
@@ -2625,12 +2759,36 @@ impl AuthManager {
         &self,
         expected_account_id: Option<&str>,
     ) -> ReloadOutcome {
+        self.reload_if_account_id_matches_for_unauthorized_request(
+            expected_account_id,
+            /*expected_state*/ None,
+        )
+        .await
+        .1
+    }
+
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "the credential transition gate must remain held while loading and publishing auth"
+    )]
+    async fn reload_if_account_id_matches_for_unauthorized_request(
+        &self,
+        expected_account_id: Option<&str>,
+        expected_state: Option<AuthChangeState>,
+    ) -> (
+        bool,
+        ReloadOutcome,
+        Option<UnauthorizedRecoveryCommitWitness>,
+    ) {
         let _transition = self.provider_request_gate.write().await;
+        if expected_state.is_some_and(|expected| self.current_auth_change_state() != expected) {
+            return (false, ReloadOutcome::Skipped, None);
+        }
         let expected_account_id = match expected_account_id {
             Some(account_id) => account_id,
             None => {
                 tracing::info!("Skipping auth reload because no account id is available.");
-                return ReloadOutcome::Skipped;
+                return (true, ReloadOutcome::Skipped, None);
             }
         };
 
@@ -2642,18 +2800,21 @@ impl AuthManager {
             tracing::info!(
                 "Skipping auth reload due to account id mismatch (expected: {expected_account_id}, found: {found_account_id})"
             );
-            return ReloadOutcome::Skipped;
+            return (true, ReloadOutcome::Skipped, None);
         }
 
         tracing::info!("Reloading auth for account {expected_account_id}");
+        let before = self.current_auth_change_state();
         let cached_before_reload = self.auth_cached();
         let auth_changed =
             !Self::auths_equal_for_refresh(cached_before_reload.as_ref(), new_auth.as_ref());
         self.set_cached_auth(new_auth);
+        let witness =
+            expected_state.and_then(|_| self.unauthorized_recovery_commit_witness(before));
         if auth_changed {
-            ReloadOutcome::ReloadedChanged
+            (true, ReloadOutcome::ReloadedChanged, witness)
         } else {
-            ReloadOutcome::ReloadedNoChange
+            (true, ReloadOutcome::ReloadedNoChange, None)
         }
     }
 
@@ -2766,6 +2927,31 @@ impl AuthManager {
 
     fn set_cached_auth(&self, new_auth: Option<CodexAuth>) -> bool {
         self.set_cached_auth_inner(new_auth).unwrap_or(false)
+    }
+
+    fn current_auth_change_state(&self) -> AuthChangeState {
+        *self.auth_change_state_tx.borrow()
+    }
+
+    fn unauthorized_recovery_commit_witness(
+        &self,
+        before: AuthChangeState,
+    ) -> Option<UnauthorizedRecoveryCommitWitness> {
+        let after = self.current_auth_change_state();
+        (before.generation.checked_add(1) == Some(after.generation))
+            .then_some(UnauthorizedRecoveryCommitWitness { before, after })
+    }
+
+    fn unauthorized_recovery_commit(
+        &self,
+        before: AuthChangeState,
+        auth_state_changed: Option<bool>,
+    ) -> UnauthorizedRecoveryCommit {
+        UnauthorizedRecoveryCommit {
+            request_state_matches: true,
+            auth_state_changed,
+            witness: self.unauthorized_recovery_commit_witness(before),
+        }
     }
 
     fn set_cached_auth_inner(&self, new_auth: Option<CodexAuth>) -> std::io::Result<bool> {
@@ -3043,7 +3229,30 @@ impl AuthManager {
         self.refresh_token_from_authority_impl().await
     }
 
+    async fn refresh_token_from_authority_for_unauthorized_request(
+        &self,
+        expected_state: AuthChangeState,
+    ) -> Result<UnauthorizedRecoveryCommit, RefreshTokenError> {
+        let _refresh_guard = self.refresh_lock.acquire().await.map_err(|_| {
+            RefreshTokenError::Permanent(RefreshTokenFailedError::new(
+                RefreshTokenFailedReason::Other,
+                REFRESH_TOKEN_UNKNOWN_MESSAGE.to_string(),
+            ))
+        })?;
+        self.refresh_token_from_authority_impl_with_expected_state(Some(expected_state))
+            .await
+    }
+
     async fn refresh_token_from_authority_impl(&self) -> Result<(), RefreshTokenError> {
+        self.refresh_token_from_authority_impl_with_expected_state(None)
+            .await
+            .map(|_| ())
+    }
+
+    async fn refresh_token_from_authority_impl_with_expected_state(
+        &self,
+        expected_state: Option<AuthChangeState>,
+    ) -> Result<UnauthorizedRecoveryCommit, RefreshTokenError> {
         tracing::info!("Refreshing token");
 
         let attempted_auth = self.auth_cached();
@@ -3055,7 +3264,7 @@ impl AuthManager {
         }
 
         let result = if self.has_external_auth() {
-            self.refresh_external_auth(ExternalAuthRefreshReason::Unauthorized)
+            self.refresh_external_auth(ExternalAuthRefreshReason::Unauthorized, expected_state)
                 .await
         } else {
             match attempted_auth.as_ref() {
@@ -3065,8 +3274,12 @@ impl AuthManager {
                             "Token data is not available.",
                         ))
                     })?;
-                    self.refresh_and_persist_chatgpt_token(chatgpt_auth, token_data.refresh_token)
-                        .await
+                    self.refresh_and_persist_chatgpt_token(
+                        chatgpt_auth,
+                        token_data.refresh_token,
+                        expected_state,
+                    )
+                    .await
                 }
                 Some(
                     CodexAuth::ApiKey(_)
@@ -3077,7 +3290,12 @@ impl AuthManager {
                     | CodexAuth::BedrockApiKey(_)
                     | CodexAuth::BedrockAccessKeys(_),
                 )
-                | None => Ok(()),
+                | None => Ok(UnauthorizedRecoveryCommit {
+                    request_state_matches: expected_state
+                        .is_none_or(|expected| self.current_auth_change_state() == expected),
+                    auth_state_changed: None,
+                    witness: None,
+                }),
             }
         };
         if let Some(attempted_auth) = attempted_auth.as_ref()
@@ -3193,8 +3411,17 @@ impl AuthManager {
     async fn refresh_external_auth(
         &self,
         reason: ExternalAuthRefreshReason,
-    ) -> Result<(), RefreshTokenError> {
+        expected_state: Option<AuthChangeState>,
+    ) -> Result<UnauthorizedRecoveryCommit, RefreshTokenError> {
         let _transition = self.provider_request_gate.write().await;
+        let before = self.current_auth_change_state();
+        if expected_state.is_some_and(|expected| expected != before) {
+            return Ok(UnauthorizedRecoveryCommit {
+                request_state_matches: false,
+                auth_state_changed: None,
+                witness: None,
+            });
+        }
         let Some(external_auth) = self.external_auth_provider() else {
             return Err(RefreshTokenError::Transient(std::io::Error::other(
                 "external auth is not configured",
@@ -3215,7 +3442,15 @@ impl AuthManager {
             .map_err(|error| external_auth.classify_error(error))?;
         self.validate_external_auth(&refreshed, external_auth.as_ref())?;
         self.commit_external_auth(refreshed)?;
-        Ok(())
+        Ok(if expected_state.is_some() {
+            self.unauthorized_recovery_commit(before, Some(true))
+        } else {
+            UnauthorizedRecoveryCommit {
+                request_state_matches: true,
+                auth_state_changed: Some(true),
+                witness: None,
+            }
+        })
     }
 
     fn commit_external_auth(&self, auth: CodexAuth) -> Result<(), RefreshTokenError> {
@@ -3263,8 +3498,17 @@ impl AuthManager {
         &self,
         auth: &ChatgptAuth,
         refresh_token: String,
-    ) -> Result<(), RefreshTokenError> {
+        expected_state: Option<AuthChangeState>,
+    ) -> Result<UnauthorizedRecoveryCommit, RefreshTokenError> {
         let _transition = self.provider_request_gate.write().await;
+        let before = self.current_auth_change_state();
+        if expected_state.is_some_and(|expected| expected != before) {
+            return Ok(UnauthorizedRecoveryCommit {
+                request_state_matches: false,
+                auth_state_changed: None,
+                witness: None,
+            });
+        }
         let refresh_response = request_chatgpt_token_refresh(refresh_token, auth.client()).await?;
 
         persist_tokens(
@@ -3277,7 +3521,15 @@ impl AuthManager {
         let new_auth = self.load_auth().await;
         self.set_cached_auth(new_auth);
 
-        Ok(())
+        Ok(if expected_state.is_some() {
+            self.unauthorized_recovery_commit(before, Some(true))
+        } else {
+            UnauthorizedRecoveryCommit {
+                request_state_matches: true,
+                auth_state_changed: Some(true),
+                witness: None,
+            }
+        })
     }
 }
 

@@ -81,10 +81,12 @@ use codex_api::create_text_param_for_request;
 use codex_api::response_create_client_metadata;
 use codex_http_client::ClientRouteClass;
 use codex_http_client::HttpClientFactory;
+use codex_login::AuthChangeState;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_login::RefreshTokenError;
 use codex_login::UnauthorizedRecovery;
+use codex_login::auth::UnauthorizedRecoveryCommitWitness;
 use codex_login::default_client::ClientRedirectPolicy;
 use codex_login::default_client::add_originator_header;
 use codex_login::default_client::create_client_for_route;
@@ -247,6 +249,7 @@ enum ClientRouting {
 struct CurrentClientSetup {
     auth: Option<CodexAuth>,
     auth_owner_generation: Option<u64>,
+    auth_change_state: Option<AuthChangeState>,
     auth_manager: Option<Arc<AuthManager>>,
     auth_revision: Option<u64>,
     api_provider: ApiProvider,
@@ -267,6 +270,8 @@ struct CurrentClientSetup {
 pub(crate) struct ProviderAuthority {
     revision: Option<u64>,
     fingerprint: [u64; 2],
+    /// Full keyed provider/config/route binding, independent of the manager's credential revision.
+    binding_fingerprint: [u64; 2],
 }
 
 impl std::fmt::Debug for ProviderAuthority {
@@ -274,6 +279,7 @@ impl std::fmt::Debug for ProviderAuthority {
         f.debug_struct("ProviderAuthority")
             .field("revision", &self.revision)
             .field("fingerprint", &"<redacted>")
+            .field("binding_fingerprint", &"<redacted>")
             .finish()
     }
 }
@@ -333,6 +339,9 @@ pub struct ModelClientSession {
     websocket_session: WebsocketSession,
     /// Complete authority admitted for a trusted automatic operation, when applicable.
     expected_authority: Option<ProviderAuthority>,
+    /// Only ordinary app-server turns may accept one manager-witnessed same-owner refresh.
+    allow_same_owner_401_rebind: bool,
+    same_owner_401_rebind_consumed: bool,
     /// Turn state for sticky routing.
     ///
     /// This is an `OnceLock` that stores the turn state value received from the server
@@ -727,6 +736,71 @@ fn hash_provider_authority<H: Hasher>(
     auth_identity.hash(state);
 }
 
+fn hash_provider_request_binding<H: Hasher>(
+    provider: &ModelProviderInfo,
+    api_provider: &ApiProvider,
+    account_auth: Option<&CodexAuth>,
+    routing: ClientRouting,
+    reject_redirects: bool,
+    state: &mut H,
+) {
+    // The serialized provider configuration is included only in a keyed, process-local hash;
+    // its values are never retained, persisted, or rendered. This binds configured credentials
+    // and routing knobs without binding the per-request auth material that an authorized manager
+    // refresh is allowed to rotate.
+    b"provider-request-binding-v1".hash(state);
+    serde_json::to_vec(provider)
+        .expect("ModelProviderInfo configuration must be serializable")
+        .hash(state);
+    provider.include_internal_metadata.hash(state);
+
+    match routing {
+        ClientRouting::Workspace => "workspace".hash(state),
+        ClientRouting::ConfiguredProvider => "configured-provider".hash(state),
+    }
+    reject_redirects.hash(state);
+    api_provider.name.hash(state);
+    api_provider.base_url.hash(state);
+
+    let mut query_params = api_provider
+        .query_params
+        .as_ref()
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    query_params.sort_unstable_by(|(left_name, left_value), (right_name, right_value)| {
+        left_name.cmp(right_name).then(left_value.cmp(right_value))
+    });
+    query_params.hash(state);
+
+    let mut headers = api_provider
+        .headers
+        .iter()
+        .map(|(name, value)| (name.as_str(), value.as_bytes()))
+        .collect::<Vec<_>>();
+    headers.sort_unstable();
+    headers.hash(state);
+
+    api_provider.retry.max_attempts.hash(state);
+    api_provider.retry.base_delay.hash(state);
+    api_provider.retry.retry_429.hash(state);
+    api_provider.retry.retry_5xx.hash(state);
+    api_provider.retry.retry_transport.hash(state);
+    api_provider.stream_idle_timeout.hash(state);
+
+    account_auth
+        .map(CodexAuth::api_auth_mode)
+        .map(|mode| mode.to_string())
+        .hash(state);
+    account_auth.and_then(CodexAuth::get_account_id).hash(state);
+    account_auth
+        .and_then(CodexAuth::get_chatgpt_user_id)
+        .hash(state);
+    account_auth
+        .map(CodexAuth::is_workspace_account)
+        .hash(state);
+}
+
 fn stable_automatic_turn_principal(
     provider: &ModelProviderInfo,
     api_provider: &ApiProvider,
@@ -861,6 +935,7 @@ fn complete_provider_authority(
     static KEYS: OnceLock<[RandomState; 2]> = OnceLock::new();
     let keys = KEYS.get_or_init(|| [RandomState::new(), RandomState::new()]);
     let mut fingerprint = [0; 2];
+    let mut binding_fingerprint = [0; 2];
     for (index, key) in keys.iter().enumerate() {
         let mut state = key.build_hasher();
         hash_provider_authority(
@@ -874,10 +949,22 @@ fn complete_provider_authority(
             &mut state,
         );
         fingerprint[index] = state.finish();
+
+        let mut binding_state = key.build_hasher();
+        hash_provider_request_binding(
+            provider,
+            api_provider,
+            account_auth,
+            routing,
+            reject_redirects,
+            &mut binding_state,
+        );
+        binding_fingerprint[index] = binding_state.finish();
     }
     ProviderAuthority {
         revision,
         fingerprint,
+        binding_fingerprint,
     }
 }
 impl ModelClient {
@@ -1019,12 +1106,15 @@ impl ModelClient {
     /// This constructor does not perform network I/O itself; the session opens a websocket lazily
     /// when the first stream request is issued.
     pub fn new_session(&self) -> ModelClientSession {
-        self.new_session_with_authority(/*expected_authority*/ None)
+        self.new_session_with_authority(
+            /*expected_authority*/ None, /*ordinary_401_rebind*/ false,
+        )
     }
 
     pub(crate) fn new_session_with_authority(
         &self,
         expected_authority: Option<ProviderAuthority>,
+        ordinary_401_rebind: bool,
     ) -> ModelClientSession {
         let auth_owner_generation = self.auth_owner_generation();
         let mut websocket_session = self.take_cached_websocket_session();
@@ -1040,6 +1130,8 @@ impl ModelClient {
             websocket_session,
             turn_state: Arc::new(OnceLock::new()),
             expected_authority,
+            allow_same_owner_401_rebind: ordinary_401_rebind && expected_authority.is_some(),
+            same_owner_401_rebind_consumed: false,
         }
     }
 
@@ -1201,7 +1293,7 @@ impl ModelClient {
                 client_setup.auth.as_ref().map(CodexAuth::auth_mode),
                 client_setup.api_auth.as_ref(),
                 client_setup.agent_identity_telemetry.clone(),
-                PendingUnauthorizedRetry::default(),
+                &PendingUnauthorizedRetry::default(),
             ),
             RequestRouteTelemetry::for_endpoint(MEMORIES_SUMMARIZE_ENDPOINT),
             self.state.auth_env_telemetry.clone(),
@@ -1524,7 +1616,7 @@ impl ModelClient {
         if let Some(recipient) = protected_provider_recipient()? {
             validate_protected_model_provider_info(self.state.provider.info(), &recipient)?;
         }
-        let auth_owner_generation = self.auth_owner_generation();
+        let mut auth_owner_generation = self.auth_owner_generation();
         let auth_changes = auth_manager
             .as_ref()
             .map(|manager| manager.auth_change_receiver());
@@ -1572,9 +1664,11 @@ impl ModelClient {
             }
             let resolved_auth = request_auth.resolved.freeze();
 
-            let (auth_revision, request_authority) = match auth_manager.as_ref() {
+            let (auth_revision, request_authority, auth_change_state) = match auth_manager.as_ref()
+            {
                 Some(manager) => {
                     let (revision, guard) = manager.current_provider_request_guard().await;
+                    let auth_change_state = *manager.auth_change_state_receiver().borrow();
                     if revision_before_resolution != Some(revision)
                         || auth_changes
                             .as_ref()
@@ -1583,9 +1677,17 @@ impl ModelClient {
                         drop(guard);
                         continue;
                     }
-                    (Some(revision), Some(guard))
+                    if auth_change_state.generation != revision {
+                        drop(guard);
+                        return Err(std::io::Error::other(
+                            "authentication generations diverged while preparing model request",
+                        )
+                        .into());
+                    }
+                    auth_owner_generation = Some(auth_change_state.owner_generation);
+                    (Some(revision), Some(guard), Some(auth_change_state))
                 }
-                None => (None, None),
+                None => (None, None, None),
             };
             // Command-backed bearer refreshes cannot change workspace routing. Keep the captured
             // revisions so a refresh during setup still invalidates cached WebSocket state.
@@ -1618,6 +1720,7 @@ impl ModelClient {
             return Ok(CurrentClientSetup {
                 auth,
                 auth_owner_generation,
+                auth_change_state,
                 auth_manager: auth_manager.clone(),
                 auth_revision,
                 api_provider,
@@ -1974,6 +2077,46 @@ impl Drop for ModelClientSession {
 }
 
 impl ModelClientSession {
+    async fn current_client_setup_for_retry(
+        &mut self,
+        routing: ClientRouting,
+        pending_retry: &mut PendingUnauthorizedRetry,
+    ) -> Result<CurrentClientSetup> {
+        let Some(witness) = pending_retry.commit_witness.take() else {
+            return self
+                .client
+                .current_client_setup(routing, self.expected_authority)
+                .await;
+        };
+        if !self.allow_same_owner_401_rebind || self.same_owner_401_rebind_consumed {
+            return Err(CodexErr::AutomaticTurnContextChanged.into());
+        }
+        let expected_before = pending_retry
+            .expected_state
+            .take()
+            .ok_or(CodexErr::AutomaticTurnContextChanged)?;
+        let expected_authority = self
+            .expected_authority
+            .ok_or(CodexErr::AutomaticTurnContextChanged)?;
+        let setup = self
+            .client
+            .current_client_setup(routing, /*expected_authority*/ None)
+            .await?;
+        let observed_after = setup
+            .auth_change_state
+            .ok_or(CodexErr::AutomaticTurnContextChanged)?;
+        if !witness.matches_same_owner_successor(expected_before, observed_after)
+            || setup.auth_owner_generation != Some(expected_before.owner_generation)
+            || setup.authority.binding_fingerprint != expected_authority.binding_fingerprint
+        {
+            return Err(CodexErr::AutomaticTurnContextChanged.into());
+        }
+
+        self.expected_authority = Some(setup.authority);
+        self.same_owner_401_rebind_consumed = true;
+        Ok(setup)
+    }
+
     pub(crate) fn inference_tools_changed(&self, tools: &Arc<[ToolSpec]>) -> bool {
         let previous = self
             .client
@@ -2110,14 +2253,15 @@ impl ModelClientSession {
         let mut pending_retry = PendingUnauthorizedRetry::default();
         loop {
             let client_setup = self
-                .client
-                .current_client_setup(ClientRouting::Workspace, self.expected_authority)
+                .current_client_setup_for_retry(ClientRouting::Workspace, &mut pending_retry)
                 .await?;
+            let request_auth_change_state = client_setup.auth_change_state;
+            let request_is_ordinary_app_server_turn = self.allow_same_owner_401_rebind;
             let auth_context = AuthRequestTelemetryContext::new(
                 client_setup.auth.as_ref().map(CodexAuth::auth_mode),
                 client_setup.api_auth.as_ref(),
                 client_setup.agent_identity_telemetry.clone(),
-                pending_retry,
+                &pending_retry,
             );
             let responses_headers = self
                 .client
@@ -2161,6 +2305,8 @@ impl ModelClientSession {
                         handle_unauthorized(
                             unauthorized_transport,
                             &mut auth_recovery,
+                            request_auth_change_state,
+                            request_is_ordinary_app_server_turn,
                             &mut provider_auth_recovery_attempted,
                             session_telemetry,
                             &provider,
@@ -2288,7 +2434,7 @@ impl ModelClientSession {
         )
     )]
     async fn stream_responses_api(
-        &self,
+        &mut self,
         prompt: &Prompt,
         model_info: &ModelInfo,
         session_telemetry: &SessionTelemetry,
@@ -2306,9 +2452,10 @@ impl ModelClientSession {
         let mut pending_retry = PendingUnauthorizedRetry::default();
         loop {
             let client_setup = self
-                .client
-                .current_client_setup(ClientRouting::Workspace, self.expected_authority)
+                .current_client_setup_for_retry(ClientRouting::Workspace, &mut pending_retry)
                 .await?;
+            let request_auth_change_state = client_setup.auth_change_state;
+            let request_is_ordinary_app_server_turn = self.allow_same_owner_401_rebind;
             let include_internal = self
                 .client
                 .state
@@ -2327,7 +2474,7 @@ impl ModelClientSession {
                 client_setup.auth.as_ref().map(CodexAuth::auth_mode),
                 client_setup.api_auth.as_ref(),
                 client_setup.agent_identity_telemetry.clone(),
-                pending_retry,
+                &pending_retry,
             );
             let (request_telemetry, sse_telemetry) = Self::build_streaming_telemetry(
                 session_telemetry,
@@ -2452,6 +2599,8 @@ impl ModelClientSession {
                         handle_unauthorized(
                             unauthorized_transport,
                             &mut auth_recovery,
+                            request_auth_change_state,
+                            request_is_ordinary_app_server_turn,
                             &mut provider_auth_recovery_attempted,
                             session_telemetry,
                             &self.client.state.provider,
@@ -2516,9 +2665,10 @@ impl ModelClientSession {
         let mut pending_retry = PendingUnauthorizedRetry::default();
         loop {
             let client_setup = self
-                .client
-                .current_client_setup(ClientRouting::Workspace, self.expected_authority)
+                .current_client_setup_for_retry(ClientRouting::Workspace, &mut pending_retry)
                 .await?;
+            let request_auth_change_state = client_setup.auth_change_state;
+            let request_is_ordinary_app_server_turn = self.allow_same_owner_401_rebind;
             let include_internal = self
                 .client
                 .state
@@ -2532,7 +2682,7 @@ impl ModelClientSession {
                 client_setup.auth.as_ref().map(CodexAuth::auth_mode),
                 client_setup.api_auth.as_ref(),
                 client_setup.agent_identity_telemetry.clone(),
-                pending_retry,
+                &pending_retry,
             );
             let mut request = self.client.build_responses_request(
                 prompt,
@@ -2602,6 +2752,8 @@ impl ModelClientSession {
                         handle_unauthorized(
                             unauthorized_transport,
                             &mut auth_recovery,
+                            request_auth_change_state,
+                            request_is_ordinary_app_server_turn,
                             &mut provider_auth_recovery_attempted,
                             session_telemetry,
                             &provider,
@@ -3214,17 +3366,21 @@ where
 ///
 /// When refresh succeeds, the caller should retry the API call; otherwise
 /// the mapped `CodexErr` is returned to the caller.
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 struct UnauthorizedRecoveryExecution {
     mode: &'static str,
     phase: &'static str,
+    expected_state: Option<AuthChangeState>,
+    commit_witness: Option<UnauthorizedRecoveryCommitWitness>,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Debug, Default)]
 struct PendingUnauthorizedRetry {
     retry_after_unauthorized: bool,
     recovery_mode: Option<&'static str>,
     recovery_phase: Option<&'static str>,
+    expected_state: Option<AuthChangeState>,
+    commit_witness: Option<UnauthorizedRecoveryCommitWitness>,
 }
 
 impl PendingUnauthorizedRetry {
@@ -3233,6 +3389,8 @@ impl PendingUnauthorizedRetry {
             retry_after_unauthorized: true,
             recovery_mode: Some(recovery.mode),
             recovery_phase: Some(recovery.phase),
+            expected_state: recovery.expected_state,
+            commit_witness: recovery.commit_witness,
         }
     }
 }
@@ -3253,7 +3411,7 @@ impl AuthRequestTelemetryContext {
         auth_mode: Option<AuthMode>,
         api_auth: &dyn AuthProvider,
         agent_identity_telemetry: Option<AgentIdentityTelemetry>,
-        retry: PendingUnauthorizedRetry,
+        retry: &PendingUnauthorizedRetry,
     ) -> Self {
         let auth_telemetry = auth_header_telemetry(api_auth);
         Self {
@@ -3316,6 +3474,8 @@ fn emit_auth_recovery_event(
 async fn handle_unauthorized(
     transport: TransportError,
     auth_recovery: &mut Option<UnauthorizedRecovery>,
+    expected_state: Option<AuthChangeState>,
+    request_is_ordinary_app_server_turn: bool,
     provider_auth_recovery_attempted: &mut bool,
     session_telemetry: &SessionTelemetry,
     provider: &SharedModelProvider,
@@ -3349,6 +3509,8 @@ async fn handle_unauthorized(
                 return Ok(UnauthorizedRecoveryExecution {
                     mode: "provider",
                     phase: "provider_refresh",
+                    expected_state: None,
+                    commit_witness: None,
                 });
             }
             Ok(ProviderUnauthorizedRecovery::NotConfigured) => {}
@@ -3373,8 +3535,38 @@ async fn handle_unauthorized(
     {
         let mode = recovery.mode_name();
         let phase = recovery.step_name();
-        return match recovery.next().await {
-            Ok(step_result) => {
+        let step: Result<
+            (
+                bool,
+                Option<bool>,
+                Option<UnauthorizedRecoveryCommitWitness>,
+            ),
+            RefreshTokenError,
+        > = if request_is_ordinary_app_server_turn {
+            let Some(expected_state) = expected_state else {
+                return Err(CodexErr::AutomaticTurnContextChanged.into());
+            };
+            recovery
+                .next_for_unauthorized_request(expected_state)
+                .await
+                .map(|mut result| {
+                    (
+                        result.request_state_matches(),
+                        result.auth_state_changed(),
+                        result.take_commit_witness(),
+                    )
+                })
+        } else {
+            recovery
+                .next()
+                .await
+                .map(|result| (true, result.auth_state_changed(), None))
+        };
+        return match step {
+            Ok((request_state_matches, auth_state_changed, commit_witness)) => {
+                if !request_state_matches {
+                    return Err(CodexErr::AutomaticTurnContextChanged.into());
+                }
                 session_telemetry.record_auth_recovery(
                     mode,
                     phase,
@@ -3384,7 +3576,7 @@ async fn handle_unauthorized(
                     debug.auth_error.as_deref(),
                     debug.auth_error_code.as_deref(),
                     /*recovery_reason*/ None,
-                    step_result.auth_state_changed(),
+                    auth_state_changed,
                 );
                 emit_feedback_auth_recovery_tags(
                     mode,
@@ -3395,7 +3587,16 @@ async fn handle_unauthorized(
                     debug.auth_error.as_deref(),
                     debug.auth_error_code.as_deref(),
                 );
-                Ok(UnauthorizedRecoveryExecution { mode, phase })
+                Ok(UnauthorizedRecoveryExecution {
+                    mode,
+                    phase,
+                    expected_state: if commit_witness.is_some() {
+                        expected_state
+                    } else {
+                        None
+                    },
+                    commit_witness,
+                })
             }
             Err(RefreshTokenError::Policy(error)) => Err(CodexErr::Fatal(error.to_string())),
             Err(RefreshTokenError::Permanent(failed)) => {
