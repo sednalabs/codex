@@ -1454,7 +1454,8 @@ impl RmcpClient {
     fn is_unauthorized_operation_error(error: &ClientOperationError) -> bool {
         let service_error = match error {
             ClientOperationError::Service(source)
-            | ClientOperationError::UncertainService { source } => source,
+            | ClientOperationError::UncertainService { source }
+            | ClientOperationError::ExpiredSessionUncertain { source } => source,
             ClientOperationError::Timeout { .. } => return false,
         };
         let rmcp::service::ServiceError::TransportSend(error) = service_error else {
