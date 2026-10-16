@@ -324,3 +324,86 @@ async fn cooperative_drop_closes_stdin_before_owned_child_fallback() -> Result<(
     wait_for_file(&close_ack_file).await?;
     wait_for_process_exit(server_pid).await
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn cooperative_close_times_out_reaps_owned_child_and_prevents_reuse() -> Result<()> {
+    let temp_dir = tempfile::tempdir()?;
+    let server_pid_file = temp_dir.path().join("server.pid");
+    let server = temp_dir.path().join("unresponsive-server");
+    codex_utils_cargo_bin::write_executable(
+        &server,
+        "#!/usr/bin/env python3\n\
+         import json\n\
+         import os\n\
+         import sys\n\
+         import time\n\
+         with open(os.environ['SERVER_PID_FILE'], 'w') as pid_file:\n\
+             pid_file.write(str(os.getpid()))\n\
+         request = json.loads(sys.stdin.readline())\n\
+         print(json.dumps({\n\
+             'jsonrpc': '2.0',\n\
+             'id': request['id'],\n\
+             'result': {\n\
+                 'protocolVersion': '2025-06-18',\n\
+                 'capabilities': {},\n\
+                 'serverInfo': {'name': 'unresponsive-test-server', 'version': '1'},\n\
+             },\n\
+         }), flush=True)\n\
+         time.sleep(300)\n",
+    )?;
+
+    let client = RmcpClient::new_stdio_client(
+        OsString::from("./unresponsive-server"),
+        Vec::<OsString>::new(),
+        Some(HashMap::from([
+            (
+                OsString::from("CODEX_INTERNAL_MCP_STDIO_CLOSE_POLICY"),
+                OsString::from("cooperative-local-v1"),
+            ),
+            (
+                OsString::from("SERVER_PID_FILE"),
+                OsString::from(server_pid_file.to_string_lossy().into_owned()),
+            ),
+        ])),
+        &[],
+        Some(temp_dir.path().to_string_lossy().into_owned()),
+        Arc::new(LocalStdioServerLauncher::new(std::env::current_dir()?)),
+    )
+    .await?;
+
+    client
+        .initialize(
+            init_params(),
+            Some(Duration::from_secs(5)),
+            Box::new(|_, _| {
+                async {
+                    Ok(ElicitationResponse {
+                        action: ElicitationAction::Accept,
+                        content: Some(json!({})),
+                        meta: None,
+                    })
+                }
+                .boxed()
+            }),
+        )
+        .await?;
+
+    let server_pid = wait_for_pid_file(&server_pid_file).await?;
+    assert!(process_exists(server_pid));
+    let started_at = Instant::now();
+    client.shutdown().await;
+    assert!(
+        started_at.elapsed() >= Duration::from_secs(25),
+        "unresponsive local stdio server should use the bounded close fallback"
+    );
+    wait_for_process_exit(server_pid).await?;
+    assert!(client.is_closed().await);
+    assert!(
+        client
+            .list_tools(None, Some(Duration::from_secs(1)))
+            .await
+            .is_err(),
+        "a client with an unconfirmed cooperative close must not be reused"
+    );
+    Ok(())
+}
