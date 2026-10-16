@@ -1653,6 +1653,15 @@ class UsageReporter:
                     "disjoint_call_counts_reconcile": tree["provider_call_count"]
                     == all_calls_metrics["provider_call_count"],
                 }
+                if self.scope == "subtree":
+                    scope_contributions["root_vs_descendants_by_actual_model"] = {
+                        "requested_root": self._serialize_metric(own)[
+                            "by_actual_model"
+                        ],
+                        "all_descendants": self._serialize_metric(descendants)[
+                            "by_actual_model"
+                        ],
+                    }
             else:
                 scope_contributions = None
 

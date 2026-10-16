@@ -313,6 +313,33 @@ def _check_report_shape(database: Path) -> dict[str, Any]:
         result["resolved_root_buckets"]["requested_root"]["provider_call_count"] == 5,
         "resolved root and descendant totals retain their safe aggregate",
     )
+    model_split = result["scope_contributions"]["root_vs_descendants_by_actual_model"]
+    root_by_model = _by_model(model_split["requested_root"])
+    descendants_by_model = _by_model(model_split["all_descendants"])
+    _assert(
+        root_by_model["synthetic-alpha"]["provider_call_count"] == 1
+        and root_by_model["synthetic-alpha"]["token_sums_known_subtotal"][
+            "uncached_input_tokens"
+        ]
+        == 7,
+        "requested root usage remains separated by actual model",
+    )
+    _assert(
+        descendants_by_model["synthetic-alpha"]["provider_call_count"] == 2
+        and descendants_by_model["synthetic-alpha"]["token_sums_known_subtotal"][
+            "uncached_input_tokens"
+        ]
+        == 16,
+        "all nested descendants aggregate by actual model",
+    )
+    _assert(
+        descendants_by_model["synthetic-beta"]["token_sums_known_subtotal"][
+            "uncached_input_tokens"
+        ]
+        == 11
+        and descendants_by_model[None]["provider_call_count"] == 1,
+        "descendant model partitions preserve distinct and unavailable identities",
+    )
 
     summary_models = _by_model(result["summary"])
     _assert(
