@@ -132,6 +132,16 @@ Focused targeted lanes for iterative work on the current carry seams:
 - `codex.shell-tool-mcp-ci`
 - `codex.build-policy-sanity`
 - `codex.core-persisted-subagent-descendants-targeted`
+  - Recovery coverage spans the `codex-core` and `codex-agent-graph-store`
+    library targets. Bounded traversal excludes the root, terminates cycles,
+    filters edge status, and distinguishes an exact limit from overflow.
+    Restoration preflights all stored identities and commits registry metadata
+    atomically; a late path conflict must not consume slots or nicknames.
+    Cold V2 root resume retains descendant identities without eagerly reopening
+    their runtimes, and a later follow-up reloads the same child ID. Ordinary
+    failed-spawn and released-nickname history controls remain separate.
+    Source-library qualification and the packaged nested-recovery consumer are
+    complementary evidence, not substitutes for protected landing or live use.
 - `codex.code-mode-declaration-targeted`
 - `codex.core-context-serialization-targeted`
 - `codex.core-attestation-targeted`

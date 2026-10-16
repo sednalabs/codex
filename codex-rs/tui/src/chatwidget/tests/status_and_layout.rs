@@ -1046,10 +1046,24 @@ async fn weekly_pacing_is_opt_in_deterministic_and_base_only_without_fresh_timin
         .unwrap();
     window.resets_at_unix_seconds = Some(reset);
     window.window_minutes = None;
+    // The public selector cannot classify a window with no duration as weekly.
     assert_eq!(
         chat.status_line_value_for_item_at(item, now),
+        None,
+        "unknown window duration must not be labeled weekly"
+    );
+    let window = chat
+        .rate_limit_snapshots_by_limit_id
+        .get("codex")
+        .unwrap()
+        .primary
+        .as_ref()
+        .unwrap();
+    // The formatter still preserves an explicitly classified base when timing is partial.
+    assert_eq!(
+        chat.status_line_weekly_limit_display(Some(window), now, "weekly"),
         Some("weekly 40% left".to_string()),
-        "partial timing must leave the usage-only base"
+        "partial timing must leave the explicit weekly usage-only base"
     );
     for style in [
         codex_config::types::WeeklyLimitPacingStyle::Qualitative,
