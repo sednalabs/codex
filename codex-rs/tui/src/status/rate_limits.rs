@@ -172,7 +172,7 @@ pub(crate) fn rate_limit_snapshot_display(
         "codex".to_string(),
         captured_at,
         ClockFormat::TwentyFourHour,
-        None,
+        /*previous*/ None,
     )
 }
 

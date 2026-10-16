@@ -319,7 +319,7 @@ async fn status_snapshot_includes_reasoning_details() {
         "codex".to_string(),
         captured_at,
         ClockFormat::TwelveHour,
-        None,
+        /*previous*/ None,
     );
 
     let model_slug = get_model_offline_for_tests(config.model.as_deref());

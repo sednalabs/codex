@@ -1257,7 +1257,7 @@ async fn bundled_gpt6_models_build_and_send_expected_responses_requests() -> any
         let default_verbosity = model_info
             .default_verbosity
             .as_ref()
-            .map(|verbosity| verbosity.to_string());
+            .map(ToString::to_string);
         assert_eq!(
             default_verbosity.as_deref(),
             has_catalog_metadata.then_some("low"),

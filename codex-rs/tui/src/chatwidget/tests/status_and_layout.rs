@@ -1117,7 +1117,9 @@ async fn weekly_pacing_carries_same_cycle_metadata_without_freshening_omitted_wi
         .and_then(|display| display.secondary.as_mut())
         .expect("weekly window")
         .captured_at = stale_capture;
-    chat.on_rate_limit_snapshot(Some(account_usage_snapshot_with_weekly_window(None)));
+    chat.on_rate_limit_snapshot(Some(account_usage_snapshot_with_weekly_window(
+        /*weekly*/ None,
+    )));
     let carried = chat
         .rate_limit_snapshots_by_limit_id
         .get("codex")
