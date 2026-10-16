@@ -49,6 +49,11 @@ def _contains_marker(request: CapturedResponsesRequest, marker: str) -> bool:
     return marker in json.dumps(request.input(), sort_keys=True)
 
 
+def _last_user_message_is(request: CapturedResponsesRequest, marker: str) -> bool:
+    messages = request.message_input_texts("user")
+    return bool(messages) and messages[-1] == marker
+
+
 def _has_call_output(request: CapturedResponsesRequest, call_id: str) -> bool:
     return any(
         item.get("type") == "function_call_output" and item.get("call_id") == call_id
@@ -80,7 +85,7 @@ def _queue_tui_turn(
     server.enqueue_sse_for_request(
         lambda request: (
             request.path == "/v1/responses"
-            and _contains_marker(request, marker)
+            and _last_user_message_is(request, marker)
             and not _has_call_output(request, call_id)
         ),
         _function_response(f"response-{call_id}", call_id, name, args),
@@ -88,6 +93,7 @@ def _queue_tui_turn(
     server.enqueue_sse_for_request(
         lambda request: (
             request.path == "/v1/responses"
+            and _last_user_message_is(request, marker)
             and _has_call_output(request, call_id)
         ),
         sse(
