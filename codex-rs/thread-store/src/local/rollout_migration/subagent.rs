@@ -29,6 +29,22 @@ use super::line_parser;
 use super::migration_error;
 use crate::ThreadStoreResult;
 
+pub(super) type AdmissionIdempotencyScope = (ThreadId, ThreadId, ThreadId, String);
+
+pub(super) fn admission_idempotency_scope(
+    root_thread_id: &ThreadId,
+    sender_thread_id: &ThreadId,
+    recipient_thread_id: &ThreadId,
+    idempotency_key: &str,
+) -> AdmissionIdempotencyScope {
+    (
+        root_thread_id.clone(),
+        sender_thread_id.clone(),
+        recipient_thread_id.clone(),
+        idempotency_key.to_string(),
+    )
+}
+
 /// Returns the suffix starting at the newest usable compaction, if one exists.
 pub(super) async fn select_bounded_context(
     rollout_path: PathBuf,
@@ -42,6 +58,7 @@ pub(super) async fn select_bounded_context(
         let mut bounded_context = None;
         let mut admissions_by_id = HashMap::new();
         let mut admission_ids_newest_first = Vec::new();
+        let mut admission_idempotency_scopes = HashSet::new();
         let mut represented_response_ids = HashMap::new();
         let mut represented_update_ids = HashSet::new();
 
@@ -81,6 +98,16 @@ pub(super) async fn select_bounded_context(
                     &admission.root_thread_id,
                     &admission.recipient_thread_id,
                 )?;
+                if !admission_idempotency_scopes.insert(admission_idempotency_scope(
+                    &admission.root_thread_id,
+                    &admission.sender_thread_id,
+                    &admission.recipient_thread_id,
+                    &admission.idempotency_key,
+                )) {
+                    return Err(migration_error(
+                        "legacy rollout contains duplicate explicit inter-agent idempotency keys in scope",
+                    ));
+                }
                 if admissions_by_id
                     .insert(admission.update_id.clone(), line.item.clone())
                     .is_some()
@@ -115,32 +142,39 @@ pub(super) async fn select_bounded_context(
             ));
         }
 
-        let mut context_admission_ids = HashSet::new();
         for item in &mut items {
             fold_representation_id(item, &represented_response_ids)?;
-            if let RolloutItem::InterAgentCommunicationMetadata {
-                admission: Some(admission),
-                ..
-            } = item
-            {
-                context_admission_ids.insert(admission.update_id.clone());
-            }
         }
 
-        // Receipt rows stay after the bounded context so reverse model-context readers retain
-        // them, while reconstruction continues to ignore metadata and does not replay originals.
-        let mut retained_receipts = Vec::new();
+        items.retain(|item| {
+            !matches!(
+                item,
+                RolloutItem::InterAgentCommunicationMetadata {
+                    admission: Some(_),
+                    ..
+                }
+            )
+        });
+        let newest_compaction_index = items
+            .iter()
+            .rposition(|item| matches!(item, RolloutItem::Compacted(_)))
+            .ok_or_else(|| {
+                migration_error("bounded subagent context is missing its retained compaction")
+            })?;
+
+        // Keep one source-ordered admission block after the selected compaction. This preserves
+        // supersession order even when an earlier admission predates the compaction and a later
+        // one appears in its retained suffix. Model-context readers continue to ignore metadata.
+        let mut admission_ledger = Vec::new();
         for update_id in admission_ids_newest_first.into_iter().rev() {
-            if context_admission_ids.contains(&update_id) {
-                continue;
-            }
             let mut item = admissions_by_id
                 .remove(&update_id)
                 .expect("indexed admission has a rollout record");
             fold_representation_id(&mut item, &represented_response_ids)?;
-            retained_receipts.push(item);
+            admission_ledger.push(item);
         }
-        items.extend(retained_receipts);
+        let insertion_index = newest_compaction_index + 1;
+        items.splice(insertion_index..insertion_index, admission_ledger);
         Ok(Some(items))
     })
     .await

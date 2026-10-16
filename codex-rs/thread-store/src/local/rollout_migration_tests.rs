@@ -256,35 +256,56 @@ fn compacted(replacement_history: Vec<ResponseItem>) -> RolloutItem {
 }
 
 fn explicit_admission_metadata(update_id: &str) -> RolloutItem {
+    let idempotency_key = format!("key-{update_id}");
+    let supersedes = vec![format!("prior-{update_id}")];
+    explicit_admission_metadata_with(
+        update_id,
+        &idempotency_key,
+        2,
+        "Please review the bounded result.",
+        "action_required",
+        supersedes,
+    )
+}
+
+fn explicit_admission_metadata_with(
+    update_id: &str,
+    idempotency_key: &str,
+    sender_thread_number: u128,
+    content: &str,
+    intent: &str,
+    supersedes: Vec<String>,
+) -> RolloutItem {
     let sender_path = AgentPath::root().join("worker").expect("worker path");
     let recipient_path = AgentPath::root();
     let mut original_communication = InterAgentCommunication::new(
         sender_path.clone(),
         recipient_path.clone(),
         Vec::new(),
-        "Please review the bounded result.".to_string(),
+        content.to_string(),
         /*trigger_turn*/ false,
     );
     original_communication.id = Some(ResponseItemId::from_server(update_id.to_string()));
     let root_thread_id =
         serde_json::to_value(ThreadId::from_u128(1)).expect("serialize root thread ID");
     let sender_thread_id =
-        serde_json::to_value(ThreadId::from_u128(2)).expect("serialize sender thread ID");
+        serde_json::to_value(ThreadId::from_u128(sender_thread_number))
+            .expect("serialize sender thread ID");
     serde_json::from_value(json!({
         "type": "inter_agent_communication_metadata",
         "payload": {
             "trigger_turn": false,
             "admission": {
                 "update_id": update_id,
-                "idempotency_key": format!("key-{update_id}"),
-                "intent": "action_required",
+                "idempotency_key": idempotency_key,
+                "intent": intent,
                 "original_communication": original_communication,
                 "root_thread_id": root_thread_id,
                 "sender_thread_id": sender_thread_id,
                 "recipient_thread_id": root_thread_id,
                 "sender_path": sender_path,
                 "recipient_path": recipient_path,
-                "supersedes": [format!("prior-{update_id}")],
+                "supersedes": supersedes,
                 "represented_response_id": null,
             }
         }
@@ -1321,6 +1342,128 @@ async fn migration_retains_explicit_admission_and_response_identity_when_rollbac
         RolloutItem::ResponseItem(response)
             if matches!(&response.item, ResponseItem::AgentMessage { id: Some(id), .. } if id.as_str() == "response_1")
     )));
+}
+
+#[tokio::test]
+async fn rollback_migration_rejects_duplicate_scoped_idempotency_keys() {
+    let home = TempDir::new().expect("create Codex home");
+    let thread_id = ThreadId::new();
+    let path = write_rollout(
+        home.path(),
+        thread_id,
+        SessionSource::Cli,
+        vec![
+            explicit_admission_metadata_with(
+                "update_a",
+                "shared-key",
+                2,
+                "First request.",
+                "action_required",
+                Vec::new(),
+            ),
+            explicit_admission_metadata_with(
+                "update_b",
+                "shared-key",
+                2,
+                "First request.",
+                "action_required",
+                Vec::new(),
+            ),
+            started("turn-before-delivery"),
+            explicit_agent_response("update_a", "response_a"),
+            RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
+                num_turns: 1,
+            })),
+            user_message("replacement question"),
+        ],
+    );
+    let store = indexed_store(home.path()).await;
+
+    let report = store
+        .migrate_rollouts(apply_options())
+        .await
+        .expect("inspect rollback rollout");
+
+    assert_failed_with_reason(
+        &report.outcomes[0],
+        RolloutMigrationFailureReason::LegacyRolloutConversionFailed,
+    );
+    assert_eq!(
+        read_rollout(&path)
+            .iter()
+            .filter(|line| matches!(
+                &line.item,
+                RolloutItem::InterAgentCommunicationMetadata {
+                    admission: Some(_),
+                    ..
+                }
+            ))
+            .count(),
+        2,
+        "rejected duplicate keys leave the source ledger untouched"
+    );
+}
+
+#[tokio::test]
+async fn rollback_migration_allows_same_key_in_distinct_thread_scopes() {
+    let home = TempDir::new().expect("create Codex home");
+    let thread_id = ThreadId::new();
+    let path = write_rollout(
+        home.path(),
+        thread_id,
+        SessionSource::Cli,
+        vec![
+            explicit_admission_metadata_with(
+                "update_a",
+                "shared-key",
+                2,
+                "First request.",
+                "action_required",
+                Vec::new(),
+            ),
+            explicit_admission_metadata_with(
+                "update_b",
+                "shared-key",
+                3,
+                "Second sender scope.",
+                "result_ready",
+                Vec::new(),
+            ),
+            started("turn-before-delivery"),
+            explicit_agent_response("update_a", "response_a"),
+            RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
+                num_turns: 1,
+            })),
+            user_message("replacement question"),
+        ],
+    );
+    let store = indexed_store(home.path()).await;
+
+    store
+        .migrate_rollouts(apply_options())
+        .await
+        .expect("migrate distinct sender scopes with a reused key");
+
+    let admissions = read_rollout(&path)
+        .into_iter()
+        .filter_map(|line| match line.item {
+            RolloutItem::InterAgentCommunicationMetadata {
+                admission: Some(admission),
+                ..
+            } => Some(admission),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(admissions.len(), 2);
+    assert!(
+        admissions
+            .iter()
+            .all(|admission| admission.idempotency_key == "shared-key")
+    );
+    assert_ne!(
+        admissions[0].sender_thread_id,
+        admissions[1].sender_thread_id
+    );
 }
 
 #[tokio::test]
@@ -2479,6 +2622,190 @@ async fn migration_keeps_admission_ledger_outside_bounded_subagent_context() {
             .items
             .iter()
             .any(|item| matches!(item, RolloutItem::InterAgentCommunication(_)))
+    );
+}
+
+#[tokio::test]
+async fn migration_keeps_cross_compaction_admissions_in_source_supersession_order() {
+    let home = TempDir::new().expect("create Codex home");
+    let thread_id = ThreadId::new();
+    let path = write_rollout(
+        home.path(),
+        thread_id,
+        SessionSource::SubAgent(SubAgentSource::Other("test".to_string())),
+        vec![
+            explicit_admission_metadata_with(
+                "update_a",
+                "key-a",
+                2,
+                "First actionable update.",
+                "action_required",
+                Vec::new(),
+            ),
+            compacted(vec![input_response_message("user", "bounded model context")]),
+            explicit_admission_metadata_with(
+                "update_b",
+                "key-b",
+                2,
+                "Replacement actionable update.",
+                "action_required",
+                vec!["update_a".to_string()],
+            ),
+            started("child-turn"),
+            user_message("child question"),
+            agent_message("child answer"),
+            completed("child-turn"),
+        ],
+    );
+    let store = indexed_store(home.path()).await;
+
+    store
+        .migrate_rollouts(apply_options())
+        .await
+        .expect("migrate subagent with cross-compaction admissions");
+
+    let lines = read_rollout(&path);
+    let compacted_index = lines
+        .iter()
+        .position(|line| matches!(&line.item, RolloutItem::Compacted(_)))
+        .expect("bounded compaction remains");
+    let admission_rows = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| match &line.item {
+            RolloutItem::InterAgentCommunicationMetadata {
+                admission: Some(admission),
+                ..
+            } => Some((index, admission)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(admission_rows.len(), 2);
+    assert_eq!(admission_rows[0].0, compacted_index + 1);
+    assert_eq!(admission_rows[1].0, compacted_index + 2);
+    assert_eq!(admission_rows[0].1.update_id.as_str(), "update_a");
+    assert_eq!(admission_rows[1].1.update_id.as_str(), "update_b");
+    assert_eq!(admission_rows[1].1.supersedes[0].as_str(), "update_a");
+}
+
+#[tokio::test]
+async fn bounded_subagent_migration_rejects_duplicate_scoped_idempotency_keys() {
+    let home = TempDir::new().expect("create Codex home");
+    let thread_id = ThreadId::new();
+    let path = write_rollout(
+        home.path(),
+        thread_id,
+        SessionSource::SubAgent(SubAgentSource::Other("test".to_string())),
+        vec![
+            explicit_admission_metadata_with(
+                "update_a",
+                "shared-key",
+                2,
+                "First request.",
+                "action_required",
+                Vec::new(),
+            ),
+            compacted(vec![input_response_message("user", "bounded model context")]),
+            explicit_admission_metadata_with(
+                "update_b",
+                "shared-key",
+                2,
+                "Changed request.",
+                "result_ready",
+                vec!["update_a".to_string()],
+            ),
+            started("child-turn"),
+            user_message("child question"),
+            agent_message("child answer"),
+            completed("child-turn"),
+        ],
+    );
+    let store = indexed_store(home.path()).await;
+
+    let report = store
+        .migrate_rollouts(apply_options())
+        .await
+        .expect("inspect bounded subagent rollout");
+
+    assert_failed_with_reason(
+        &report.outcomes[0],
+        RolloutMigrationFailureReason::LegacyRolloutConversionFailed,
+    );
+    assert_eq!(
+        read_rollout(&path)
+            .iter()
+            .filter(|line| matches!(
+                &line.item,
+                RolloutItem::InterAgentCommunicationMetadata {
+                    admission: Some(_),
+                    ..
+                }
+            ))
+            .count(),
+        2,
+        "rejected duplicate keys leave the source ledger untouched"
+    );
+}
+
+#[tokio::test]
+async fn bounded_subagent_migration_allows_same_key_in_distinct_thread_scopes() {
+    let home = TempDir::new().expect("create Codex home");
+    let thread_id = ThreadId::new();
+    let path = write_rollout(
+        home.path(),
+        thread_id,
+        SessionSource::SubAgent(SubAgentSource::Other("test".to_string())),
+        vec![
+            explicit_admission_metadata_with(
+                "update_a",
+                "shared-key",
+                2,
+                "First request.",
+                "action_required",
+                Vec::new(),
+            ),
+            compacted(vec![input_response_message("user", "bounded model context")]),
+            explicit_admission_metadata_with(
+                "update_b",
+                "shared-key",
+                3,
+                "Second sender scope.",
+                "result_ready",
+                Vec::new(),
+            ),
+            started("child-turn"),
+            user_message("child question"),
+            agent_message("child answer"),
+            completed("child-turn"),
+        ],
+    );
+    let store = indexed_store(home.path()).await;
+
+    store
+        .migrate_rollouts(apply_options())
+        .await
+        .expect("migrate distinct sender scopes with a reused key");
+
+    let admissions = read_rollout(&path)
+        .into_iter()
+        .filter_map(|line| match line.item {
+            RolloutItem::InterAgentCommunicationMetadata {
+                admission: Some(admission),
+                ..
+            } => Some(admission),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(admissions.len(), 2);
+    assert!(
+        admissions
+            .iter()
+            .all(|admission| admission.idempotency_key == "shared-key")
+    );
+    assert_ne!(
+        admissions[0].sender_thread_id,
+        admissions[1].sender_thread_id
     );
 }
 

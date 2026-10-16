@@ -26,6 +26,8 @@ use codex_rollout::RolloutLine;
 use super::migration_error;
 use super::rollback;
 use super::rollback_replay::ModelReplayPlanner;
+use super::subagent::admission_idempotency_scope;
+use super::subagent::AdmissionIdempotencyScope;
 use crate::ThreadStoreResult;
 
 #[derive(Clone)]
@@ -131,6 +133,7 @@ pub(super) struct RollbackPlanner {
     compactions: Vec<CompactionFrame>,
     model_replay: ModelReplayPlanner,
     admission_indexes: HashMap<ResponseItemId, usize>,
+    admission_idempotency_scopes: HashSet<AdmissionIdempotencyScope>,
     admission_recorded_response_ids: HashMap<ResponseItemId, ResponseItemId>,
     response_representation_ids: HashMap<ResponseItemId, ResponseItemId>,
 }
@@ -153,6 +156,7 @@ impl RollbackPlanner {
             compactions: Vec::new(),
             model_replay: ModelReplayPlanner::new(),
             admission_indexes: HashMap::new(),
+            admission_idempotency_scopes: HashSet::new(),
             admission_recorded_response_ids: HashMap::new(),
             response_representation_ids: HashMap::new(),
         }
@@ -298,6 +302,21 @@ impl RollbackPlanner {
                     ));
                 }
                 self.record_boundaries[index] = None;
+                if admission.idempotency_key.trim().is_empty() {
+                    return Err(migration_error(
+                        "explicit inter-agent admission has an empty idempotency key",
+                    ));
+                }
+                if !self.admission_idempotency_scopes.insert(admission_idempotency_scope(
+                    &admission.root_thread_id,
+                    &admission.sender_thread_id,
+                    &admission.recipient_thread_id,
+                    &admission.idempotency_key,
+                )) {
+                    return Err(migration_error(
+                        "legacy rollout contains duplicate explicit inter-agent idempotency keys in scope",
+                    ));
+                }
                 if self
                     .admission_indexes
                     .insert(admission.update_id.clone(), index)
