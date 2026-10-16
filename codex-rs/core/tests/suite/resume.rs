@@ -129,7 +129,13 @@ async fn resume_switches_models_preserves_base_instructions() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
-    let legacy_instructions = "Legacy model instructions\n# Personality\nBe pragmatic.";
+    let legacy_instructions = concat!(
+        "Legacy model instructions\n",
+        "Unrelated legacy sentinel remains intact.\n",
+        "The user appreciates consistent, frequent communication during your turn, and should not be left without a commentary update for more than 60 seconds during ongoing work.\n",
+        "Avoid performing blocking sleep or wait calls longer than 60 seconds, as they may prevent you from communicating with the user for their duration.\n",
+        "# Personality\nBe pragmatic."
+    );
     let mut builder = test_codex()
         .with_model_info_override("gpt-5.2", move |model| {
             model
@@ -159,6 +165,9 @@ async fn resume_switches_models_preserves_base_instructions() -> Result<()> {
     wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
     let initial_instructions = initial_mock.single_request().instructions_text();
     assert_eq!(initial_instructions, legacy_instructions);
+    assert!(initial_instructions.contains("Unrelated legacy sentinel remains intact."));
+    assert!(initial_instructions.contains("more than 60 seconds during ongoing work."));
+    assert!(initial_instructions.contains("for their duration."));
 
     let resumed_mock = mount_sse_sequence(
         &server,
