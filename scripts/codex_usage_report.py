@@ -665,6 +665,8 @@ class UsageReporter:
         self.lineage_strategy = "indexed_root_and_parent_lookup"
         self.lineage_scan_rows = 0
         self.lineage_scan_text_chars = 0
+        self.lineage_snapshot_truncated = False
+        self.call_selection_truncated = False
         self.output_text_chars = 0
         self.selected_call_rows: list[dict[str, Any]] = []
         self.spawn_request_metadata: dict[str, dict[str, Any]] = {}
@@ -912,7 +914,11 @@ class UsageReporter:
         for row in cursor:
             self.check_deadline()
             if self.lineage_scan_rows >= MAX_LINEAGE_SCAN_ROWS:
-                raise WorkLimitReached("lineage_scan_row_limit_exceeded")
+                # Keep the bounded prefix useful, but never present it as a
+                # complete lineage snapshot. The caller carries this explicit
+                # incomplete reason into the report.
+                self.lineage_snapshot_truncated = True
+                break
             source_row = (
                 self._account_output_text(row)
                 if self.shared_text_pool is not None
@@ -956,7 +962,15 @@ class UsageReporter:
             self.lineage_scan_rows += 1
 
         if root_id not in rows_by_id:
-            return {}, False
+            # The exact anchor was fetched through the thread primary key
+            # before the bounded snapshot. Retain it even when the scan cap
+            # lands before that row in the table.
+            rows_by_id[root_id] = {
+                "thread_id": root_id,
+                "parent_thread_id": anchor.get("parent_thread_id"),
+                "root_thread_id": anchor.get("root_thread_id"),
+                "fork_parent_thread_id": anchor.get("fork_parent_thread_id"),
+            }
 
         # Start with the anchor and all rows explicitly tagged to it. This keeps
         # disconnected-but-tagged records visible as unresolved instead of
@@ -1006,9 +1020,10 @@ class UsageReporter:
                 "window_calls", sql, (seek_start, seek_end, self.max_calls + 1)
             )
             for row in cursor:
-                values = self._account_output_text(row)
                 if len(calls) >= self.max_calls:
-                    raise WorkLimitReached("call_limit_exceeded")
+                    self.call_selection_truncated = True
+                    break
+                values = self._account_output_text(row)
                 calls.append(values)
                 self.selected_rows = len(calls)
             self.selected_rows = len(calls)
@@ -1056,11 +1071,14 @@ class UsageReporter:
                     "thread_window_calls_by_thread_index", fallback_sql, params
                 )
             for row in cursor:
-                values = self._account_output_text(row)
                 if len(calls) >= self.max_calls:
-                    raise WorkLimitReached("call_limit_exceeded")
+                    self.call_selection_truncated = True
+                    break
+                values = self._account_output_text(row)
                 calls.append(values)
                 self.selected_rows = len(calls)
+            if self.call_selection_truncated:
+                break
         self.selected_rows = len(calls)
         return calls
 
@@ -1947,6 +1965,12 @@ class UsageReporter:
             if cycle_seen:
                 report_status = "incomplete"
                 reasons.append("lineage_cycle")
+            if self.lineage_snapshot_truncated:
+                report_status = "incomplete"
+                reasons.append("lineage_scan_row_limit_exceeded")
+            if self.call_selection_truncated:
+                report_status = "incomplete"
+                reasons.append("call_limit_exceeded")
             if any(
                 metrics["actual_mode"]["uncovered_call_count"] > 0
                 for metrics in [all_calls_metrics]
@@ -2008,6 +2032,9 @@ class UsageReporter:
                 "recorder_completeness": "unknown; report covers recorded ledger rows only",
                 "source_coverage": {
                     "selected_ledger_scope": "only the exact --database input",
+                    "selected_provider_call_rows": self.selected_rows,
+                    "call_selection_complete": not self.call_selection_truncated,
+                    "lineage_snapshot_complete": not self.lineage_snapshot_truncated,
                     "requested_window_utc": {
                         "kind": "all_time" if self.all_time else "bounded",
                         "start_inclusive": (
@@ -2573,8 +2600,12 @@ def _run_multi_ledger_report(
     remaining_vm = MAX_VM_INSTRUCTIONS
     shared_text_pool: dict[str, str] = {}
     shared_attribution_text: set[str] = set()
-    for source_name, database in ledger_inputs:
+    for source_index, (source_name, database) in enumerate(ledger_inputs):
         check_deadline()
+        remaining_sources = len(ledger_inputs) - source_index
+        source_call_budget = (
+            remaining_calls + remaining_sources - 1
+        ) // remaining_sources
         reporter = UsageReporter(
             database=database,
             start=args.start,
@@ -2588,7 +2619,7 @@ def _run_multi_ledger_report(
             all_time=args.all_time,
             token_only_projection=True,
             deadline=deadline,
-            max_calls=remaining_calls,
+            max_calls=source_call_budget,
             max_selected_text_chars=remaining_text,
             max_vm_instructions=remaining_vm,
             shared_text_pool=shared_text_pool,
@@ -2606,6 +2637,8 @@ def _run_multi_ledger_report(
                     "thread_count": report["lineage_coverage"][
                         "participating_thread_count"
                     ],
+                    "call_selection_complete": not reporter.call_selection_truncated,
+                    "lineage_snapshot_complete": not reporter.lineage_snapshot_truncated,
                     "descendant_thread_count": report["lineage_coverage"][
                         "descendant_thread_count"
                     ],
@@ -2631,6 +2664,8 @@ def _run_multi_ledger_report(
                     "status": exc.status,
                     "incomplete_reasons": [exc.reason],
                     "selected_provider_call_rows": reporter.selected_rows,
+                    "call_selection_complete": not reporter.call_selection_truncated,
+                    "lineage_snapshot_complete": not reporter.lineage_snapshot_truncated,
                     "thread_count": reporter.lineage_nodes,
                     "descendant_thread_count": None,
                     "unresolved_thread_count": None,
@@ -2661,6 +2696,14 @@ def _run_multi_ledger_report(
         status = "incomplete"
     else:
         status = "complete"
+    source_selection_complete = all(
+        ledger.get("call_selection_complete", False)
+        and ledger.get("lineage_snapshot_complete", False)
+        for ledger in ledgers
+    )
+    if not source_selection_complete:
+        status = "incomplete"
+        reasons.append("cross_ledger_reconciliation_limited_by_source_coverage")
     if merged["conflicting_call_id_count"] or merged["rows_excluded_for_missing_call_id"]:
         status = "incomplete"
         reasons.append("physical_call_deduplication_incomplete")
@@ -2720,6 +2763,7 @@ def _run_multi_ledger_report(
         ],
         "scope_totals": merged["scope_totals"],
         "deduplication": {
+            "source_selection_complete": source_selection_complete,
             key: merged[key]
             for key in (
                 "selected_provider_call_rows",

@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import codex_usage_report as report
@@ -635,25 +636,58 @@ def _check_bounded_fallback(temporary: Path) -> None:
         "UTC",
         "subtree",
         ROOT_THREAD,
-        "supplied_standard_scenario",
+        "none",
         False,
     )
-    connection = reporter.open()
     try:
-        anchor = reporter._fetch_anchor(ROOT_THREAD)
-        try:
-            reporter._walk_subtree(anchor or {})
-        except report.WorkLimitReached as exc:
-            _assert(
-                exc.reason == "lineage_scan_row_limit_exceeded",
-                "oversized lineage fails closed at the fixed scan cap",
-            )
-        else:
-            raise AssertionError("lineage snapshot exceeded its cap without stopping")
+        partial = reporter.run()
+        _assert(
+            partial["status"] == "incomplete"
+            and "lineage_scan_row_limit_exceeded" in partial["incomplete_reasons"],
+            "oversized lineage remains explicitly incomplete at the fixed scan cap",
+        )
+        _assert(
+            partial["lineage_coverage"]["metadata_snapshot_rows"] == 3,
+            "partial lineage retains only the bounded metadata prefix",
+        )
+        _assert(
+            partial["summary"]["provider_call_count"] > 0,
+            "bounded lineage failure still returns an identified partial subtotal",
+        )
     finally:
-        connection.rollback()
-        connection.close()
         report.MAX_LINEAGE_SCAN_ROWS = original_row_cap
+
+
+def _check_call_limit_partial(temporary: Path) -> None:
+    database = temporary / "call-limit-partial.sqlite"
+    _create_database(database, current_indexes=True)
+    reporter = report.UsageReporter(
+        database,
+        report.parse_utc(START),
+        report.parse_utc(END),
+        report.UTC,
+        "UTC",
+        "subtree",
+        ROOT_THREAD,
+        "none",
+        False,
+        max_calls=2,
+    )
+    result = reporter.run()
+    _assert(
+        result["status"] == "incomplete"
+        and "call_limit_exceeded" in result["incomplete_reasons"],
+        "selected-call cap is visible without discarding its bounded subtotal",
+    )
+    _assert(
+        reporter.selected_rows == 2
+        and result["summary"]["provider_call_count"] == 2,
+        "only rows below the fixed call limit contribute to a partial report",
+    )
+    _assert(
+        result["source_coverage"]["call_selection_complete"] is False,
+        "single-ledger output distinguishes partial rows from complete selection",
+    )
 
 
 def _check_cycle_is_incomplete(temporary: Path) -> None:
@@ -785,6 +819,10 @@ def _check_multi_ledger_reconciliation(temporary: Path) -> None:
         "conflicting spawn configuration is counted without selecting either value",
     )
     _assert(
+        dedupe["source_selection_complete"] is True,
+        "cross-ledger reconciliation is complete when both bounded sources are complete",
+    )
+    _assert(
         all(
             "source_text_field_limit_exceeded" not in source["incomplete_reasons"]
             for source in result["source_coverage"]["ledger_sources"]
@@ -887,6 +925,56 @@ def _check_multi_ledger_postprocessing_deadline() -> None:
         raise AssertionError("multi-ledger serialization ignored its shared deadline")
 
 
+def _check_multi_ledger_partial_selection(temporary: Path) -> None:
+    current = temporary / "current-partial.sqlite"
+    historical = temporary / "historical-partial.sqlite"
+    _create_database(current, current_indexes=True)
+    _create_database(historical, current_indexes=False)
+    original_call_limit = report.MAX_CALLS
+    report.MAX_CALLS = 4
+    try:
+        result = report._run_multi_ledger_report(
+            SimpleNamespace(
+                database=current,
+                historical_database=historical,
+                all_time=True,
+                start=report.parse_utc(START),
+                end=report.parse_utc(END),
+                timezone="UTC",
+                timezone_value=report.UTC,
+                scope="subtree",
+                thread_id=ROOT_THREAD,
+                credit_mode="none",
+                diagnostics=False,
+            )
+        )
+    finally:
+        report.MAX_CALLS = original_call_limit
+    sources = result["source_coverage"]["ledger_sources"]
+    _assert(
+        result["status"] == "incomplete"
+        and "cross_ledger_reconciliation_limited_by_source_coverage"
+        in result["incomplete_reasons"],
+        "partial source selections cannot be presented as reconciled totals",
+    )
+    _assert(
+        [source["selected_provider_call_rows"] for source in sources] == [2, 2],
+        "the strict aggregate call ceiling is split across explicit ledger sources",
+    )
+    _assert(
+        all(
+            source["call_selection_complete"] is False
+            and source["status"] == "incomplete"
+            for source in sources
+        ),
+        "each truncated source exposes its own incomplete selection",
+    )
+    _assert(
+        result["deduplication"]["source_selection_complete"] is False,
+        "cross-ledger deduplication completeness is explicit",
+    )
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory(prefix="codex-usage-exact-root-") as directory:
         temporary = Path(directory)
@@ -894,11 +982,13 @@ def main() -> int:
         _create_database(current, current_indexes=True)
         _check_report_shape(current)
         _check_bounded_fallback(temporary)
+        _check_call_limit_partial(temporary)
         _check_cycle_is_incomplete(temporary)
         _check_shared_text_pool()
         _check_multi_ledger_reconciliation(temporary)
         _check_multi_ledger_postprocessing_deadline()
-    print(json.dumps({"status": "passed", "cases": 6}, separators=(",", ":")))
+        _check_multi_ledger_partial_selection(temporary)
+    print(json.dumps({"status": "passed", "cases": 8}, separators=(",", ":")))
     return 0
 
 
