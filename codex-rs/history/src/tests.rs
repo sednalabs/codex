@@ -517,10 +517,16 @@ fn explicit_inter_agent_admission_round_trips_on_existing_metadata_record() -> R
         serialized["payload"]["admission"]["intent"],
         "action_required"
     );
-    assert_eq!(
-        serde_json::from_value::<RolloutItem>(serialized.clone())?,
-        item
-    );
+    let restored = serde_json::from_value::<RolloutItem>(serialized.clone())?;
+    let RolloutItem::InterAgentCommunicationMetadata {
+        trigger_turn,
+        admission: restored_admission,
+    } = restored
+    else {
+        panic!("expected explicit inter-agent admission metadata");
+    };
+    assert!(!trigger_turn);
+    assert_eq!(restored_admission, Some(admission));
 
     #[derive(serde::Deserialize)]
     #[serde(tag = "type", rename_all = "snake_case")]
@@ -532,10 +538,7 @@ fn explicit_inter_agent_admission_round_trips_on_existing_metadata_record() -> R
         trigger_turn: bool,
     }
     let LegacyRolloutItem::InterAgentCommunicationMetadata { payload } =
-        serde_json::from_value(serialized)?
-    else {
-        panic!("expected legacy metadata record");
-    };
+        serde_json::from_value(serialized)?;
     assert!(!payload.trigger_turn);
 
     // Existing quiet records retain their original serialized shape and still decode.
