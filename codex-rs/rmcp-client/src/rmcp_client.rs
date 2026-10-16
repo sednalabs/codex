@@ -1269,18 +1269,19 @@ impl RmcpClient {
         }
 
         if result.as_ref().is_err_and(Self::is_session_expired_404) {
-            let mut guard = self.state.lock().await;
-            let expired_oauth = match &*guard {
-                ClientState::Ready {
-                    service: current,
-                    oauth,
-                } if Arc::ptr_eq(current, &service) => Some(oauth.clone()),
-                _ => None,
-            };
-            if let Some(oauth) = expired_oauth {
-                *guard = ClientState::Expired { oauth };
+            {
+                let mut guard = self.state.lock().await;
+                let expired_oauth = match &*guard {
+                    ClientState::Ready {
+                        service: current,
+                        oauth,
+                    } if Arc::ptr_eq(current, &service) => Some(oauth.clone()),
+                    _ => None,
+                };
+                if let Some(oauth) = expired_oauth {
+                    *guard = ClientState::Expired { oauth };
+                }
             }
-            drop(guard);
 
             if label == "tools/call" {
                 return result.map_err(Into::into);
