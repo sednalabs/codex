@@ -174,13 +174,22 @@ impl DynamicToolHandler {
             content_items,
             success,
         } = response;
-        let response_item_kinds = dynamic_tool_response_item_kind_counts(&content_items);
+        let diagnostic_enabled = browser_output_diagnostic_enabled_for_call(&diagnostic_call_id);
+        let response_item_kinds = if diagnostic_enabled {
+            dynamic_tool_response_item_kind_counts(&content_items)
+        } else {
+            (0, 0, 0, 0)
+        };
         let body = content_items
             .into_iter()
             .map(FunctionCallOutputContentItem::from)
             .collect::<Vec<_>>();
         let output_item_count = body.len();
-        let output_item_kinds = function_output_item_kind_counts(&body);
+        let output_item_kinds = if diagnostic_enabled {
+            function_output_item_kind_counts(&body)
+        } else {
+            (0, 0, 0, 0)
+        };
         let output = dynamic_tool_output(&self.tool_name, body, success);
         record_browser_core_output_stage(
             &diagnostic_call_id,
@@ -246,6 +255,17 @@ impl ToolOutput for NativeVisualDynamicToolOutput {
     }
 }
 
+fn browser_output_diagnostic_enabled_for_call(call_id: &str) -> bool {
+    env::var("CODEX_TEST_BROWSER_OUTPUT_DIAGNOSTIC")
+        .ok()
+        .as_deref()
+        == Some("1")
+        && env::var("CODEX_TEST_BROWSER_OUTPUT_DIAGNOSTIC_CALL_ID")
+            .ok()
+            .as_deref()
+            == Some(call_id)
+}
+
 fn record_browser_core_output_stage(
     call_id: &str,
     response_received: bool,
@@ -254,17 +274,10 @@ fn record_browser_core_output_stage(
     response_item_kinds: (usize, usize, usize, usize),
     output_item_kinds: (usize, usize, usize, usize),
 ) {
-    if env::var("CODEX_TEST_BROWSER_OUTPUT_DIAGNOSTIC")
-        .ok()
-        .as_deref()
-        != Some("1")
-    {
+    if !browser_output_diagnostic_enabled_for_call(call_id) {
         return;
     }
-    let (Ok(expected_call_id), Some(codex_home)) = (
-        env::var("CODEX_TEST_BROWSER_OUTPUT_DIAGNOSTIC_CALL_ID"),
-        env::var_os("CODEX_HOME"),
-    ) else {
+    let Some(codex_home) = env::var_os("CODEX_HOME") else {
         return;
     };
     let path = PathBuf::from(codex_home).join("browser-output-stage-diagnostic.jsonl");
@@ -273,7 +286,7 @@ fn record_browser_core_output_stage(
     };
     let observation = serde_json::json!({
         "stage": "core_function_output",
-        "call_id_matches_fixture": call_id == expected_call_id.as_str(),
+        "call_id_matches_fixture": true,
         "core_response_received": response_received,
         "core_function_output_constructed": function_output_constructed,
         "core_output_item_count": output_item_count,

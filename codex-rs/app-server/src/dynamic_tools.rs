@@ -55,11 +55,12 @@ pub(crate) async fn on_call_response(
     } else {
         0
     };
-    let accepted_item_kinds = if response_accepted {
-        dynamic_tool_item_kind_counts(&response.content_items)
-    } else {
-        (0, 0, 0, 0)
-    };
+    let accepted_item_kinds =
+        if response_accepted && browser_output_diagnostic_enabled_for_call(&call_id) {
+            dynamic_tool_item_kind_counts(&response.content_items)
+        } else {
+            (0, 0, 0, 0)
+        };
     let DynamicToolCallResponse {
         content_items,
         success,
@@ -90,6 +91,17 @@ pub(crate) async fn on_call_response(
     );
 }
 
+fn browser_output_diagnostic_enabled_for_call(call_id: &str) -> bool {
+    env::var("CODEX_TEST_BROWSER_OUTPUT_DIAGNOSTIC")
+        .ok()
+        .as_deref()
+        == Some("1")
+        && env::var("CODEX_TEST_BROWSER_OUTPUT_DIAGNOSTIC_CALL_ID")
+            .ok()
+            .as_deref()
+            == Some(call_id)
+}
+
 fn record_browser_app_server_stage(
     call_id: &str,
     response_accepted: bool,
@@ -97,17 +109,10 @@ fn record_browser_app_server_stage(
     accepted_item_count: usize,
     accepted_item_kinds: (usize, usize, usize, usize),
 ) {
-    if env::var("CODEX_TEST_BROWSER_OUTPUT_DIAGNOSTIC")
-        .ok()
-        .as_deref()
-        != Some("1")
-    {
+    if !browser_output_diagnostic_enabled_for_call(call_id) {
         return;
     }
-    let (Ok(expected_call_id), Some(codex_home)) = (
-        env::var("CODEX_TEST_BROWSER_OUTPUT_DIAGNOSTIC_CALL_ID"),
-        env::var_os("CODEX_HOME"),
-    ) else {
+    let Some(codex_home) = env::var_os("CODEX_HOME") else {
         return;
     };
     let path = PathBuf::from(codex_home).join("browser-output-stage-diagnostic.jsonl");
@@ -116,7 +121,7 @@ fn record_browser_app_server_stage(
     };
     let observation = serde_json::json!({
         "stage": "app_server_response",
-        "call_id_matches_fixture": call_id == expected_call_id.as_str(),
+        "call_id_matches_fixture": true,
         "app_server_response_accepted": response_accepted,
         "app_server_response_submitted": response_submitted,
         "app_server_accepted_item_count": accepted_item_count,

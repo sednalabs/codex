@@ -768,6 +768,7 @@ async fn any_new_input_interrupts_sleep() {
     const SLEEP_DURATION_MS: u64 = 3_600_000;
     const INITIAL_PROMPT: &str = "sleep for a while";
     const STEER_PROMPT: &str = "stop sleeping and continue";
+    const MAIL_MESSAGE: &str = "new mailbox input";
     let sleep_arguments = json!({ "duration_ms": SLEEP_DURATION_MS }).to_string();
 
     let first_chunks = vec![
@@ -820,8 +821,19 @@ async fn any_new_input_interrupts_sleep() {
     wait_for_sleep_item_completed(&codex, FIRST_SLEEP_CALL_ID, SLEEP_DURATION_MS).await;
     wait_for_sleep_item_started(&codex, SECOND_SLEEP_CALL_ID, SLEEP_DURATION_MS).await;
 
-    // The list-voices barrier can consume the sleep completion that we need to observe next.
-    enqueue_queue_only_agent_mail(&codex, "new mailbox input").await;
+    codex
+        .submit(Op::InterAgentCommunication {
+            communication: InterAgentCommunication::new(
+                AgentPath::try_from("/root/worker").expect("worker path should parse"),
+                AgentPath::root(),
+                Vec::new(),
+                MAIL_MESSAGE.to_string(),
+                /*trigger_turn*/ true,
+            ),
+            start_options: Default::default(),
+        })
+        .await
+        .expect("submit triggering agent mail");
     wait_for_sleep_item_completed(&codex, SECOND_SLEEP_CALL_ID, SLEEP_DURATION_MS).await;
     wait_for_turn_complete(&codex).await;
 
@@ -840,6 +852,16 @@ async fn any_new_input_interrupts_sleep() {
 
     let third: Value = from_slice(&requests[2]).expect("parse third request");
     assert_interrupted_sleep_output(function_call_output_text(&third, SECOND_SLEEP_CALL_ID));
+    let agent_message = third["input"]
+        .as_array()
+        .expect("request input")
+        .iter()
+        .find(|item| item.get("type").and_then(Value::as_str) == Some("agent_message"))
+        .expect("triggering mailbox input should be included in the follow-up request");
+    assert_eq!(
+        agent_message["content"],
+        json!([{"type": "input_text", "text": MAIL_MESSAGE}])
+    );
 
     codex.submit(Op::Shutdown).await.expect("shutdown session");
     wait_for_event(&codex, |event| matches!(event, EventMsg::ShutdownComplete)).await;
