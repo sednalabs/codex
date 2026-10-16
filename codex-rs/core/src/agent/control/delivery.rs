@@ -180,6 +180,7 @@ impl ExplicitAdmissionIndex {
                     "stored inter-agent representation has no admission".to_string(),
                 )
             })?;
+            validate_admission_response_id(admission)?;
             if admission
                 .represented_response_id
                 .as_ref()
@@ -194,7 +195,22 @@ impl ExplicitAdmissionIndex {
                 .insert(update_id, response_id);
         }
 
+        for item in items {
+            match item {
+                RolloutItem::ResponseItem(response) => {
+                    validate_explicit_representation(response, &index.by_update_id)?;
+                }
+                RolloutItem::Compacted(compacted) => {
+                    for response in compacted.replacement_history.iter().flatten() {
+                        validate_explicit_representation(response, &index.by_update_id)?;
+                    }
+                }
+                _ => {}
+            }
+        }
+
         for admission in &index.ordered {
+            validate_admission_response_id(admission)?;
             if let Some(response_id) = &admission.represented_response_id {
                 if index
                     .represented_response_ids
@@ -294,6 +310,77 @@ fn record_explicit_representation(
     {
         return Err(CodexErr::InvalidRequest(
             "inter-agent update has conflicting response identities".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_explicit_representation(
+    response: &ResponseItemEnvelope,
+    admissions: &HashMap<ResponseItemId, InterAgentCommunicationAdmission>,
+) -> CodexResult<()> {
+    let Some(update_id) = response
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.inter_agent_update_id.as_ref())
+    else {
+        return Ok(());
+    };
+    let admission = admissions.get(update_id).ok_or_else(|| {
+        CodexErr::InvalidRequest("stored inter-agent representation has no admission".to_string())
+    })?;
+    if !explicit_response_matches_communication(&response.item, &admission.original_communication) {
+        return Err(CodexErr::InvalidRequest(
+            "stored inter-agent representation conflicts with its admitted message".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn explicit_response_matches_communication(
+    response: &ResponseItem,
+    communication: &InterAgentCommunication,
+) -> bool {
+    let expected = communication.to_model_input_item();
+    let (
+        ResponseItem::AgentMessage {
+            id: expected_id,
+            author: expected_author,
+            recipient: expected_recipient,
+            content: expected_content,
+            ..
+        },
+        ResponseItem::AgentMessage {
+            id,
+            author,
+            recipient,
+            content,
+            ..
+        },
+    ) = (&expected, response)
+    else {
+        return false;
+    };
+    expected_id.as_ref() == id.as_ref()
+        && expected_author == author
+        && expected_recipient == recipient
+        && expected_content == content
+}
+
+fn validate_admission_response_id(admission: &InterAgentCommunicationAdmission) -> CodexResult<()> {
+    let expected_response_id = admission
+        .original_communication
+        .to_model_input_item()
+        .id()
+        .cloned();
+    if expected_response_id.as_ref() != Some(&admission.update_id)
+        || admission
+            .represented_response_id
+            .as_ref()
+            .is_some_and(|response_id| Some(response_id) != expected_response_id.as_ref())
+    {
+        return Err(CodexErr::InvalidRequest(
+            "stored inter-agent receipt conflicts with its admitted message identity".to_string(),
         ));
     }
     Ok(())

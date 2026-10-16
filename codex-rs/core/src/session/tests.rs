@@ -3296,6 +3296,191 @@ async fn explicit_retry_does_not_resurrect_rolled_back_compaction_history() {
 }
 
 #[tokio::test]
+async fn explicit_retry_rejects_hidden_representation_with_changed_payload() {
+    let codex_home = tempfile::tempdir().expect("create hidden mismatch fixture home");
+    let config = build_test_config(codex_home.path()).await;
+    let store: Arc<dyn codex_thread_store::ThreadStore> =
+        Arc::new(codex_thread_store::LocalThreadStore::new(
+            codex_thread_store::LocalThreadStoreConfig::from_config(&config),
+            /*state_db*/ None,
+        ));
+    let (session, rx_event, _) = make_explicit_test_session(codex_home.path(), store).await;
+    let communication =
+        explicit_test_communication("rolled-back-tampered-update", "original admitted content");
+    let admission = explicit_test_admission(session.thread_id, &communication);
+    persist_explicit_test_admission(&session, &admission).await;
+    let update_id = communication.id.as_ref().expect("update ID").clone();
+    let persisted_envelope = ResponseItemEnvelope {
+        item: communication.to_model_input_item(),
+        metadata: Some(CodexHarnessMetadata {
+            user_input_order: Some(5),
+            inter_agent_update_id: Some(update_id.clone()),
+            ..Default::default()
+        }),
+    };
+    let mut altered_snapshot = persisted_envelope.clone();
+    let ResponseItem::AgentMessage { content, .. } = &mut altered_snapshot.item else {
+        panic!("explicit communication should produce an agent message");
+    };
+    let Some(AgentMessageInputContent::InputText { text }) = content.first_mut() else {
+        panic!("explicit fixture should have text content");
+    };
+    *text = "altered content hidden by rollback".to_string();
+    let user_boundary = ResponseItemEnvelope::new(ResponseItem::Message {
+        id: Some(ResponseItemId::new("tampered-rollback-user-boundary")),
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "a turn that is later rolled back".to_string(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    });
+    let mut compacted: CompactedItem =
+        serde_json::from_value(json!({"message": "compacted checkpoint"}))
+            .expect("create compaction fixture");
+    compacted.window_number = Some(1);
+    compacted.replacement_history = Some(vec![user_boundary, altered_snapshot]);
+    session
+        .live_thread()
+        .expect("explicit test session has a live thread")
+        .append_items(&[
+            RolloutItem::ResponseItem(persisted_envelope),
+            RolloutItem::Compacted(compacted),
+            RolloutItem::EventMsg(codex_protocol::protocol::EventMsg::ThreadRolledBack(
+                codex_protocol::protocol::ThreadRolledBackEvent { num_turns: 1 },
+            )),
+        ])
+        .await
+        .expect("persist hidden mismatched representation");
+    session
+        .flush_rollout()
+        .await
+        .expect("flush mismatched rollback fixture");
+    let mut turn_context = session.new_default_turn().await;
+    Arc::get_mut(&mut turn_context)
+        .expect("turn context should be uniquely owned")
+        .history_mode = codex_protocol::protocol::ThreadHistoryMode::Paginated;
+    let _ = drain_raw_response_items(&rx_event);
+
+    let result = session
+        .record_inter_agent_communication(&turn_context, turn_context.model_info(), communication)
+        .await;
+
+    assert!(result.is_err(), "hidden payload mismatch must fail closed");
+    assert!(
+        session
+            .clone_history()
+            .await
+            .raw_items()
+            .all(|item| item.id() != Some(&update_id)),
+        "mismatched persisted content must not enter active history"
+    );
+    assert!(
+        drain_raw_response_items(&rx_event).is_empty(),
+        "mismatched persisted content must not be emitted as a raw response"
+    );
+}
+
+#[tokio::test]
+async fn explicit_retry_rejects_duplicate_active_representations() {
+    let codex_home = tempfile::tempdir().expect("create duplicate fixture home");
+    let config = build_test_config(codex_home.path()).await;
+    let store: Arc<dyn codex_thread_store::ThreadStore> =
+        Arc::new(codex_thread_store::LocalThreadStore::new(
+            codex_thread_store::LocalThreadStoreConfig::from_config(&config),
+            /*state_db*/ None,
+        ));
+    let (session, rx_event, _) = make_explicit_test_session(codex_home.path(), store).await;
+    let communication =
+        explicit_test_communication("duplicate-active-update", "one logical response only");
+    let admission = explicit_test_admission(session.thread_id, &communication);
+    persist_explicit_test_admission(&session, &admission).await;
+    let update_id = communication.id.as_ref().expect("update ID").clone();
+    let response = ResponseItemEnvelope {
+        item: communication.to_model_input_item(),
+        metadata: Some(CodexHarnessMetadata {
+            inter_agent_update_id: Some(update_id.clone()),
+            ..Default::default()
+        }),
+    };
+    session
+        .live_thread()
+        .expect("explicit test session has a live thread")
+        .append_items(&[
+            RolloutItem::ResponseItem(response.clone()),
+            RolloutItem::ResponseItem(response),
+        ])
+        .await
+        .expect("persist duplicate active representations");
+    session
+        .flush_rollout()
+        .await
+        .expect("flush duplicate active representations");
+    let turn_context = session.new_default_turn().await;
+    let _ = drain_raw_response_items(&rx_event);
+
+    let result = session
+        .record_inter_agent_communication(&turn_context, turn_context.model_info(), communication)
+        .await;
+
+    assert!(result.is_err(), "two active copies must fail closed");
+    assert_eq!(
+        session
+            .clone_history()
+            .await
+            .raw_items()
+            .filter(|item| item.id() == Some(&update_id))
+            .count(),
+        0,
+        "duplicate active persisted items must not be newly recorded"
+    );
+    assert!(
+        drain_raw_response_items(&rx_event).is_empty(),
+        "duplicate active persisted items must not be emitted"
+    );
+}
+
+#[tokio::test]
+async fn explicit_retry_rejects_receipt_with_unrelated_response_id() {
+    let codex_home = tempfile::tempdir().expect("create receipt fixture home");
+    let config = build_test_config(codex_home.path()).await;
+    let store: Arc<dyn codex_thread_store::ThreadStore> =
+        Arc::new(codex_thread_store::LocalThreadStore::new(
+            codex_thread_store::LocalThreadStoreConfig::from_config(&config),
+            /*state_db*/ None,
+        ));
+    let (session, rx_event, _) = make_explicit_test_session(codex_home.path(), store).await;
+    let communication = explicit_test_communication(
+        "receipt-response-id-update",
+        "the receipt must identify this response",
+    );
+    let mut admission = explicit_test_admission(session.thread_id, &communication);
+    admission.represented_response_id = Some(ResponseItemId::new("unrelated-response"));
+    persist_explicit_test_admission(&session, &admission).await;
+    let update_id = communication.id.as_ref().expect("update ID").clone();
+    let turn_context = session.new_default_turn().await;
+    let _ = drain_raw_response_items(&rx_event);
+
+    let result = session
+        .record_inter_agent_communication(&turn_context, turn_context.model_info(), communication)
+        .await;
+
+    assert!(result.is_err(), "unrelated receipt ID must fail closed");
+    assert!(
+        session
+            .clone_history()
+            .await
+            .raw_items()
+            .all(|item| item.id() != Some(&update_id)),
+        "unverified receipt must not enter active history"
+    );
+    assert!(
+        drain_raw_response_items(&rx_event).is_empty(),
+        "unverified receipt must not be emitted"
+    );
+}
+
+#[tokio::test]
 async fn record_inter_agent_communication_sets_turn_id_in_rollout_and_resume() {
     let (mut session, turn_context) = make_session_and_context().await;
     let rollout_path = attach_thread_persistence(&mut session).await;

@@ -5771,9 +5771,30 @@ fn explicit_response_matches_admission(
     communication: &InterAgentCommunication,
 ) -> bool {
     let expected = communication.to_model_input_item();
-    expected.id() == Some(response_id)
-        && matches!(&expected, ResponseItem::AgentMessage { .. })
-        && expected == *item
+    let (
+        ResponseItem::AgentMessage {
+            id: expected_id,
+            author: expected_author,
+            recipient: expected_recipient,
+            content: expected_content,
+            ..
+        },
+        ResponseItem::AgentMessage {
+            id,
+            author,
+            recipient,
+            content,
+            ..
+        },
+    ) = (&expected, item)
+    else {
+        return false;
+    };
+    id.as_ref() == Some(response_id)
+        && expected_id.as_ref() == Some(response_id)
+        && author == expected_author
+        && recipient == expected_recipient
+        && content == expected_content
 }
 
 fn rollout_contains_exact_explicit_response(
