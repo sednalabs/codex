@@ -845,7 +845,12 @@ async fn managed_proxy_mode_routes_through_bridge_and_blocks_direct_egress() {
         format!("http://127.0.0.1:{proxy_port}"),
     );
 
-    let sandbox_helper_dir = std::path::Path::new(env!("CARGO_BIN_EXE_codex-linux-sandbox"))
+    // The nested helper re-entry uses `current_exe()`, which resolves Bazel runfile symlinks.
+    // Grant the physical executable parent so that re-entry path exists inside bubblewrap.
+    let sandbox_helper = std::path::Path::new(env!("CARGO_BIN_EXE_codex-linux-sandbox"))
+        .canonicalize()
+        .expect("sandbox helper should resolve");
+    let sandbox_helper_dir = sandbox_helper
         .parent()
         .expect("sandbox helper should have a parent");
     let file_system_sandbox_policy =
