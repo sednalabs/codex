@@ -474,7 +474,8 @@ def _check_report_shape(database: Path) -> dict[str, Any]:
         "dedupe boundary is explicit",
     )
     _assert(
-        "requested and provider-reported actual model" in coverage["model_identity"],
+        "provider-call requested model and effective actual model are distinct"
+        in coverage["model_identity"],
         "requested/effective identity distinction is explicit",
     )
     _assert(
