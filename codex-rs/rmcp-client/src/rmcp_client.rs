@@ -1388,8 +1388,7 @@ impl RmcpClient {
         label: &str,
         error: rmcp::service::ServiceError,
     ) -> ClientOperationError {
-        if label == "tools/call"
-            && matches!(&error, rmcp::service::ServiceError::TransportSend(_))
+        if label == "tools/call" && matches!(&error, rmcp::service::ServiceError::TransportSend(_))
         {
             ClientOperationError::UncertainService { source: error }
         } else {

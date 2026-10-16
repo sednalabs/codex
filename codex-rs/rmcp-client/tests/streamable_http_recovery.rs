@@ -422,9 +422,11 @@ async fn streamable_http_404_tool_call_is_uncertain_and_next_call_recovers() -> 
     .await?;
 
     let uncertain = call_echo_tool(&client, "uncertain").await.unwrap_err();
-    assert!(uncertain
-        .to_string()
-        .contains("MCP request outcome is uncertain"));
+    assert!(
+        uncertain
+            .to_string()
+            .contains("MCP request outcome is uncertain")
+    );
     assert_eq!(http_client.initialize_attempts(), 1);
     assert_eq!(http_client.tool_call_attempts(), 2);
 
@@ -445,7 +447,10 @@ async fn late_expired_session_failure_does_not_retire_replacement() -> anyhow::R
     );
     let client = create_client_with_http_client(&base_url, Arc::new(http_client.clone())).await?;
 
-    assert_eq!(call_echo_tool(&client, "warmup").await?, expected_echo_result("warmup"));
+    assert_eq!(
+        call_echo_tool(&client, "warmup").await?,
+        expected_echo_result("warmup")
+    );
     assert_eq!(http_client.initialize_attempts(), 1);
 
     arm_session_post_failure(
@@ -467,20 +472,27 @@ async fn late_expired_session_failure_does_not_retire_replacement() -> anyhow::R
     let first_expiry = call_echo_tool(&client, "expire-current-session")
         .await
         .unwrap_err();
-    assert!(first_expiry
-        .to_string()
-        .contains("MCP request outcome is uncertain"));
+    assert!(
+        first_expiry
+            .to_string()
+            .contains("MCP request outcome is uncertain")
+    );
     assert_eq!(http_client.initialize_attempts(), 1);
 
     let replacement_result = call_echo_tool(&client, "replacement-session").await?;
-    assert_eq!(replacement_result, expected_echo_result("replacement-session"));
+    assert_eq!(
+        replacement_result,
+        expected_echo_result("replacement-session")
+    );
     assert_eq!(http_client.initialize_attempts(), 2);
 
     http_client.release_response.notify_one();
     let late_error = late_call.await?.unwrap_err();
-    assert!(late_error
-        .to_string()
-        .contains("MCP request outcome is uncertain"));
+    assert!(
+        late_error
+            .to_string()
+            .contains("MCP request outcome is uncertain")
+    );
 
     let after_late_failure = call_echo_tool(&client, "replacement-remains-current").await?;
     assert_eq!(
@@ -513,19 +525,20 @@ async fn streamable_http_session_recovery_retries_initialize_failure() -> anyhow
         /*www_authenticate_headers*/ &[],
     )
     .await?;
-    let uncertain = call_echo_tool(&client, "uncertain-before-retry").await.unwrap_err();
-    assert!(uncertain
-        .to_string()
-        .contains("MCP request outcome is uncertain"));
+    let uncertain = call_echo_tool(&client, "uncertain-before-retry")
+        .await
+        .unwrap_err();
+    assert!(
+        uncertain
+            .to_string()
+            .contains("MCP request outcome is uncertain")
+    );
     assert_eq!(http_client.initialize_attempts(), 1);
 
     http_client.fail_next_initialize();
     let recovered = call_echo_tool(&client, "distinct-call-after-retry").await?;
     assert_eq!(http_client.initialize_attempts(), 3);
-    assert_eq!(
-        recovered,
-        expected_echo_result("distinct-call-after-retry")
-    );
+    assert_eq!(recovered, expected_echo_result("distinct-call-after-retry"));
 
     Ok(())
 }
@@ -634,16 +647,20 @@ async fn streamable_http_expired_session_reconnects_once_per_operation() -> anyh
     .await?;
 
     let first_error = call_echo_tool(&client, "first-404").await.unwrap_err();
-    assert!(first_error
-        .to_string()
-        .contains("MCP request outcome is uncertain"));
+    assert!(
+        first_error
+            .to_string()
+            .contains("MCP request outcome is uncertain")
+    );
     assert_eq!(http_client.initialize_attempts(), 1);
     assert_eq!(http_client.tool_call_attempts(), 2);
 
     let second_error = call_echo_tool(&client, "second-404").await.unwrap_err();
-    assert!(second_error
-        .to_string()
-        .contains("MCP request outcome is uncertain"));
+    assert!(
+        second_error
+            .to_string()
+            .contains("MCP request outcome is uncertain")
+    );
     assert_eq!(http_client.initialize_attempts(), 2);
     assert_eq!(http_client.tool_call_attempts(), 3);
 
