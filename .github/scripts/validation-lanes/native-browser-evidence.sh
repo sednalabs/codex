@@ -70,20 +70,25 @@ run_rust_selector() {
 
   local cargo_status=0
   env "$@" CARGO_TERM_COLOR=never \
-    cargo --manifest-path codex-rs/Cargo.toml test --locked -p "$package" --lib "$test_name" -- --exact --test-threads=1 >"$log_path" 2>&1 || cargo_status=$?
+    cargo test --manifest-path codex-rs/Cargo.toml --locked -p "$package" --lib "$test_name" -- --exact --test-threads=1 >"$log_path" 2>&1 || cargo_status=$?
   if [[ "$cargo_status" -ne 0 ]]; then
     local rustc_error_codes
+    local cargo_usage_error
     local source_locations
     local test_summary
     local failed_selector_count
     rustc_error_codes="$(LC_ALL=C grep -oE 'error\[E[0-9]{4}\]' "$log_path" | LC_ALL=C sort -u | tr '\n' ',' | sed 's/,$//' || true)"
+    cargo_usage_error=none
+    if LC_ALL=C grep -Fq -- "unexpected argument '--manifest-path' found" "$log_path"; then
+      cargo_usage_error=manifest_path_option_rejected
+    fi
     source_locations="$(LC_ALL=C grep -oE 'codex-rs/[A-Za-z0-9_./-]+:[0-9]+:[0-9]+' "$log_path" | LC_ALL=C sort -u | head -n 3 | tr '\n' ',' | sed 's/,$//' || true)"
     test_summary="$(LC_ALL=C grep -E '^test result: (ok|FAILED)\. [0-9]{1,10} passed; [0-9]{1,10} failed; [0-9]{1,10} ignored; [0-9]{1,10} measured; [0-9]{1,10} filtered out; finished in [0-9]{1,8}(\.[0-9]{1,6})?s$' "$log_path" | tail -n 1 || true)"
     failed_selector_count="$(LC_ALL=C grep -Fxc -- "test ${test_name} ... FAILED" "$log_path" || true)"
     [[ -n "$rustc_error_codes" ]] || rustc_error_codes=none
     [[ -n "$source_locations" ]] || source_locations=none
     [[ -n "$test_summary" ]] || test_summary=none
-    echo "native-browser-evidence: Rust selector failed: ${package}::${test_name}; cargo_exit=${cargo_status}; rustc_error_codes=${rustc_error_codes}; source_locations=${source_locations}; failed_selector_count=${failed_selector_count}; test_summary=${test_summary}" >&2
+    echo "native-browser-evidence: Rust selector failed: ${package}::${test_name}; cargo_exit=${cargo_status}; cargo_usage_error=${cargo_usage_error}; rustc_error_codes=${rustc_error_codes}; source_locations=${source_locations}; failed_selector_count=${failed_selector_count}; test_summary=${test_summary}" >&2
     return 1
   fi
 
