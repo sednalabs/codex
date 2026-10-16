@@ -2976,8 +2976,8 @@ fs.writeFile = async (file, ...args) => {
             .expect("provider-created thread profiles")
             .count();
         assert_eq!(
-            profiles, 3,
-            "each thread, including the visual capture thread, receives its own profile"
+            profiles, 5,
+            "each successful distinct thread receives its own profile"
         );
     }
 
