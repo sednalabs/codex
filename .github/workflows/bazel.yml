@@ -654,6 +654,7 @@ jobs:
           if [[ "${RUNNER_OS}" == "Windows" ]]; then
             bazel_wrapper_args+=(--windows-msvc-host-platform)
             bazel_clippy_args+=(--platforms=//:windows_x86_64_msvc --skip_incompatible_explicit_targets)
+            bazel_clippy_args+=(--workspace_status_command=./scripts/workspace-status.cmd)
           else
             bazel_clippy_args+=(--platforms=@rules_rs//rs/platforms:${{ matrix.target }})
           fi
@@ -816,6 +817,9 @@ jobs:
             --build_metadata=TAG_job=verify-release-build
             --build_metadata=TAG_rust_debug_assertions=off
           )
+          if [[ "${RUNNER_OS}" == "Windows" ]]; then
+            bazel_build_args+=(--workspace_status_command=./scripts/workspace-status.cmd)
+          fi
           if [[ "${RUNNER_OS}" != "Windows" ]]; then
             bazel_build_args+=(--platforms=@rules_rs//rs/platforms:${{ matrix.target }})
           fi
