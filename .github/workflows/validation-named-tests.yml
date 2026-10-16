@@ -48,6 +48,11 @@ on:
         required: false
         type: boolean
         default: false
+      run_a89_android_png_fixture_preflight:
+        description: Validate the two fixed a89 Android protocol PNG fixtures without running the package or provider
+        required: false
+        type: boolean
+        default: false
       windows_validation_mode:
         description: One fixed native Windows receiver validation
         required: true
@@ -88,12 +93,20 @@ jobs:
         (inputs.run_ae94_tui_provider_tests == true && inputs.run_d0_active_wait_test == true) ||
         (inputs.run_ae94_tui_provider_tests == true && inputs.run_a89_android_protocol_test == true) ||
         (inputs.run_d0_active_wait_test == true && inputs.run_a89_android_protocol_test == true) ||
-        (inputs.windows_validation_mode != 'none' && (
+        (inputs.run_a89_android_png_fixture_preflight == true && (
           inputs.prepare_codex_cli_for_exact_usage_test == true ||
           inputs.run_ae94_android_helper_tests == true ||
           inputs.run_ae94_tui_provider_tests == true ||
           inputs.run_d0_active_wait_test == true ||
           inputs.run_a89_android_protocol_test == true
+        )) ||
+        (inputs.windows_validation_mode != 'none' && (
+          inputs.prepare_codex_cli_for_exact_usage_test == true ||
+          inputs.run_ae94_android_helper_tests == true ||
+          inputs.run_ae94_tui_provider_tests == true ||
+          inputs.run_d0_active_wait_test == true ||
+          inputs.run_a89_android_protocol_test == true ||
+          inputs.run_a89_android_png_fixture_preflight == true
         ))
       }}
     runs-on: ubuntu-24.04
@@ -108,7 +121,7 @@ jobs:
 
   named_tests:
     if: >-
-      ${{ inputs.windows_validation_mode == 'none' && inputs.prepare_codex_cli_for_exact_usage_test != true && inputs.run_ae94_android_helper_tests != true && inputs.run_ae94_tui_provider_tests != true && inputs.run_d0_active_wait_test != true && inputs.run_a89_android_protocol_test != true }}
+      ${{ inputs.windows_validation_mode == 'none' && inputs.prepare_codex_cli_for_exact_usage_test != true && inputs.run_ae94_android_helper_tests != true && inputs.run_ae94_tui_provider_tests != true && inputs.run_d0_active_wait_test != true && inputs.run_a89_android_protocol_test != true && inputs.run_a89_android_png_fixture_preflight != true }}
     permissions:
       contents: read
     uses: ./.github/workflows/_validation-named-tests.yml
@@ -122,12 +135,13 @@ jobs:
       run_ae94_tui_provider_tests: ${{ inputs.run_ae94_tui_provider_tests }}
       run_d0_active_wait_test: ${{ inputs.run_d0_active_wait_test }}
       run_a89_android_protocol_test: ${{ inputs.run_a89_android_protocol_test }}
+      run_a89_android_png_fixture_preflight: ${{ inputs.run_a89_android_png_fixture_preflight }}
       request_json: ${{ inputs.request_json }}
       artifact_name: validation-named-tests-${{ github.run_id }}
 
   named_tests_with_exact_package:
     if: >-
-      ${{ inputs.windows_validation_mode == 'none' && inputs.prepare_codex_cli_for_exact_usage_test == true && inputs.run_ae94_android_helper_tests != true && inputs.run_ae94_tui_provider_tests != true && inputs.run_d0_active_wait_test != true && inputs.run_a89_android_protocol_test != true }}
+      ${{ inputs.windows_validation_mode == 'none' && inputs.prepare_codex_cli_for_exact_usage_test == true && inputs.run_ae94_android_helper_tests != true && inputs.run_ae94_tui_provider_tests != true && inputs.run_d0_active_wait_test != true && inputs.run_a89_android_protocol_test != true && inputs.run_a89_android_png_fixture_preflight != true }}
     permissions:
       contents: read
       actions: read
@@ -142,12 +156,13 @@ jobs:
       run_ae94_tui_provider_tests: ${{ inputs.run_ae94_tui_provider_tests }}
       run_d0_active_wait_test: ${{ inputs.run_d0_active_wait_test }}
       run_a89_android_protocol_test: ${{ inputs.run_a89_android_protocol_test }}
+      run_a89_android_png_fixture_preflight: ${{ inputs.run_a89_android_png_fixture_preflight }}
       request_json: ${{ inputs.request_json }}
       artifact_name: validation-named-tests-${{ github.run_id }}
 
   named_tests_for_ae94_android:
     if: >-
-      ${{ inputs.windows_validation_mode == 'none' && inputs.run_ae94_android_helper_tests == true && inputs.prepare_codex_cli_for_exact_usage_test != true && inputs.run_ae94_tui_provider_tests != true && inputs.run_d0_active_wait_test != true && inputs.run_a89_android_protocol_test != true }}
+      ${{ inputs.windows_validation_mode == 'none' && inputs.run_ae94_android_helper_tests == true && inputs.prepare_codex_cli_for_exact_usage_test != true && inputs.run_ae94_tui_provider_tests != true && inputs.run_d0_active_wait_test != true && inputs.run_a89_android_protocol_test != true && inputs.run_a89_android_png_fixture_preflight != true }}
     permissions:
       contents: read
     uses: ./.github/workflows/_validation-named-tests.yml
@@ -161,12 +176,13 @@ jobs:
       run_ae94_tui_provider_tests: ${{ inputs.run_ae94_tui_provider_tests }}
       run_d0_active_wait_test: ${{ inputs.run_d0_active_wait_test }}
       run_a89_android_protocol_test: ${{ inputs.run_a89_android_protocol_test }}
+      run_a89_android_png_fixture_preflight: ${{ inputs.run_a89_android_png_fixture_preflight }}
       request_json: ${{ inputs.request_json }}
       artifact_name: validation-named-tests-${{ github.run_id }}
 
   named_tests_for_ae94_tui_providers:
     if: >-
-      ${{ inputs.windows_validation_mode == 'none' && inputs.run_ae94_tui_provider_tests == true && inputs.prepare_codex_cli_for_exact_usage_test != true && inputs.run_ae94_android_helper_tests != true && inputs.run_d0_active_wait_test != true && inputs.run_a89_android_protocol_test != true }}
+      ${{ inputs.windows_validation_mode == 'none' && inputs.run_ae94_tui_provider_tests == true && inputs.prepare_codex_cli_for_exact_usage_test != true && inputs.run_ae94_android_helper_tests != true && inputs.run_d0_active_wait_test != true && inputs.run_a89_android_protocol_test != true && inputs.run_a89_android_png_fixture_preflight != true }}
     permissions:
       contents: read
     uses: ./.github/workflows/_validation-named-tests.yml
@@ -180,12 +196,13 @@ jobs:
       run_ae94_tui_provider_tests: ${{ inputs.run_ae94_tui_provider_tests }}
       run_d0_active_wait_test: ${{ inputs.run_d0_active_wait_test }}
       run_a89_android_protocol_test: ${{ inputs.run_a89_android_protocol_test }}
+      run_a89_android_png_fixture_preflight: ${{ inputs.run_a89_android_png_fixture_preflight }}
       request_json: ${{ inputs.request_json }}
       artifact_name: validation-named-tests-${{ github.run_id }}
 
   named_tests_for_d0_active_wait:
     if: >-
-      ${{ inputs.windows_validation_mode == 'none' && inputs.run_d0_active_wait_test == true && inputs.prepare_codex_cli_for_exact_usage_test != true && inputs.run_ae94_android_helper_tests != true && inputs.run_ae94_tui_provider_tests != true && inputs.run_a89_android_protocol_test != true }}
+      ${{ inputs.windows_validation_mode == 'none' && inputs.run_d0_active_wait_test == true && inputs.prepare_codex_cli_for_exact_usage_test != true && inputs.run_ae94_android_helper_tests != true && inputs.run_ae94_tui_provider_tests != true && inputs.run_a89_android_protocol_test != true && inputs.run_a89_android_png_fixture_preflight != true }}
     permissions:
       contents: read
     uses: ./.github/workflows/_validation-named-tests.yml
@@ -199,12 +216,13 @@ jobs:
       run_ae94_tui_provider_tests: ${{ inputs.run_ae94_tui_provider_tests }}
       run_d0_active_wait_test: ${{ inputs.run_d0_active_wait_test }}
       run_a89_android_protocol_test: ${{ inputs.run_a89_android_protocol_test }}
+      run_a89_android_png_fixture_preflight: ${{ inputs.run_a89_android_png_fixture_preflight }}
       request_json: ${{ inputs.request_json }}
       artifact_name: validation-named-tests-${{ github.run_id }}
 
   named_tests_for_a89_android_protocol:
     if: >-
-      ${{ inputs.windows_validation_mode == 'none' && inputs.run_a89_android_protocol_test == true && inputs.prepare_codex_cli_for_exact_usage_test != true && inputs.run_ae94_android_helper_tests != true && inputs.run_ae94_tui_provider_tests != true && inputs.run_d0_active_wait_test != true }}
+      ${{ inputs.windows_validation_mode == 'none' && inputs.run_a89_android_protocol_test == true && inputs.prepare_codex_cli_for_exact_usage_test != true && inputs.run_ae94_android_helper_tests != true && inputs.run_ae94_tui_provider_tests != true && inputs.run_d0_active_wait_test != true && inputs.run_a89_android_png_fixture_preflight != true }}
     permissions:
       contents: read
       actions: read
@@ -219,6 +237,28 @@ jobs:
       run_ae94_tui_provider_tests: ${{ inputs.run_ae94_tui_provider_tests }}
       run_d0_active_wait_test: ${{ inputs.run_d0_active_wait_test }}
       run_a89_android_protocol_test: ${{ inputs.run_a89_android_protocol_test }}
+      run_a89_android_png_fixture_preflight: ${{ inputs.run_a89_android_png_fixture_preflight }}
+      request_json: ${{ inputs.request_json }}
+      artifact_name: validation-named-tests-${{ github.run_id }}
+
+  named_tests_for_a89_android_png_fixture_preflight:
+    if: >-
+      ${{ inputs.windows_validation_mode == 'none' &&
+          inputs.run_a89_android_png_fixture_preflight == true &&
+          inputs.prepare_codex_cli_for_exact_usage_test != true &&
+          inputs.run_ae94_android_helper_tests != true &&
+          inputs.run_ae94_tui_provider_tests != true &&
+          inputs.run_d0_active_wait_test != true &&
+          inputs.run_a89_android_protocol_test != true }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/_validation-named-tests.yml
+    with:
+      target_sha: ${{ inputs.target_sha }}
+      base_ref: ${{ inputs.base_ref }}
+      harness_sha: ${{ github.sha }}
+      profile: ${{ inputs.profile }}
+      run_a89_android_png_fixture_preflight: ${{ inputs.run_a89_android_png_fixture_preflight }}
       request_json: ${{ inputs.request_json }}
       artifact_name: validation-named-tests-${{ github.run_id }}
 
@@ -230,7 +270,8 @@ jobs:
           inputs.run_ae94_android_helper_tests != true &&
           inputs.run_ae94_tui_provider_tests != true &&
           inputs.run_d0_active_wait_test != true &&
-          inputs.run_a89_android_protocol_test != true }}
+          inputs.run_a89_android_protocol_test != true &&
+          inputs.run_a89_android_png_fixture_preflight != true }}
     runs-on: windows-latest
     timeout-minutes: 120
     permissions:

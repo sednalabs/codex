@@ -39,6 +39,10 @@ on:
         required: false
         type: boolean
         default: false
+      run_a89_android_png_fixture_preflight:
+        required: false
+        type: boolean
+        default: false
       request_json:
         required: true
         type: string
@@ -50,6 +54,7 @@ on:
 jobs:
   run:
     name: Run exact named Rust tests
+    if: ${{ inputs.run_a89_android_png_fixture_preflight != true }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
@@ -1231,3 +1236,108 @@ jobs:
         if: ${{ steps.named_tests.outcome == 'failure' || steps.android_helper_tests.outcome == 'failure' || steps.tui_provider_tests.outcome == 'failure' || steps.d0_active_wait_test.outcome == 'failure' || steps.a89_android_protocol_test.outcome == 'failure' }}
         shell: bash
         run: exit 1
+
+  a89_android_png_fixture_preflight:
+    name: Validate fixed a89 Android PNG fixtures
+    if: ${{ inputs.run_a89_android_png_fixture_preflight == true }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      VALIDATION_TARGET_SHA: ${{ inputs.target_sha }}
+      VALIDATION_BASE_SHA: ${{ inputs.base_ref }}
+      VALIDATION_HARNESS_SHA: ${{ inputs.harness_sha }}
+      VALIDATION_PROFILE: ${{ inputs.profile }}
+      RUST_TEST_REQUEST_JSON: ${{ inputs.request_json }}
+    steps:
+      - name: Check out exact workflow helper source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.harness_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: .workflow-src
+
+      - name: Check out exact candidate source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.target_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: validation-target
+
+      - name: Check out exact comparison base
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.base_ref }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: validation-base
+
+      - name: Verify fixed target, base, host, and request identity
+        shell: bash
+        env:
+          VALIDATION_TARGET_SHA: ${{ inputs.target_sha }}
+          VALIDATION_BASE_SHA: ${{ inputs.base_ref }}
+          VALIDATION_HARNESS_SHA: ${{ inputs.harness_sha }}
+          VALIDATION_PROFILE: ${{ inputs.profile }}
+          RUST_TEST_REQUEST_JSON: ${{ inputs.request_json }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+
+          expected = {
+              "schema_version": "a89-android-png-preflight-v1",
+              "profile": "rust_integration",
+              "target_sha": "a89b02855334af7c0521882271cb97b818981d1a",
+              "base_sha": "e135df532669849b682dfac712c3f59aded039ba",
+              "consumer": "android-png-fixture-preflight",
+          }
+          identities = {
+              "target_sha": ("validation-target", os.environ["VALIDATION_TARGET_SHA"]),
+              "base_sha": ("validation-base", os.environ["VALIDATION_BASE_SHA"]),
+              "harness_sha": (".workflow-src", os.environ["VALIDATION_HARNESS_SHA"]),
+          }
+          for directory, expected_sha in identities.values():
+              observed = subprocess.check_output(
+                  ["git", "-C", directory, "rev-parse", "HEAD"], text=True
+              ).strip()
+              if observed != expected_sha:
+                  raise SystemExit("Checked-out source identity does not match the requested SHA.")
+          if os.environ["VALIDATION_PROFILE"] != expected["profile"]:
+              raise SystemExit("Preflight is restricted to the fixed hosted profile.")
+          if os.environ["VALIDATION_TARGET_SHA"] != expected["target_sha"]:
+              raise SystemExit("Preflight is restricted to the exact a89 candidate.")
+          if os.environ["VALIDATION_BASE_SHA"] != expected["base_sha"]:
+              raise SystemExit("Preflight is restricted to the exact comparison base.")
+          try:
+              request = json.loads(os.environ["RUST_TEST_REQUEST_JSON"])
+          except (KeyError, json.JSONDecodeError) as error:
+              raise SystemExit("PNG preflight request is malformed.") from error
+          if request != expected:
+              raise SystemExit("PNG preflight request differs from the fixed source selector.")
+          PY
+
+      - name: Validate the synthetic and source PNG fixtures
+        shell: bash
+        env:
+          GITHUB_WORKSPACE: ${{ github.workspace }}
+          VALIDATION_TARGET_DIR: ${{ github.workspace }}/validation-target
+          VALIDATION_HELPER_DIR: ${{ github.workspace }}/.workflow-src
+          VALIDATION_TARGET_SHA: ${{ inputs.target_sha }}
+          VALIDATION_BASE_SHA: ${{ inputs.base_ref }}
+          VALIDATION_HARNESS_SHA: ${{ inputs.harness_sha }}
+        run: python3 .workflow-src/.github/scripts/preflight_a89_android_png_fixtures.py
+
+      - name: Upload fixed fixture preflight result
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: a89-android-png-fixture-preflight-${{ github.run_id }}
+          path: android-png-fixture-preflight-results.json
+          if-no-files-found: ignore
+          retention-days: 3
