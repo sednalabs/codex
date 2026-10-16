@@ -80,6 +80,7 @@ use windows_sys::Win32::Security::TOKEN_QUERY;
 use windows_sys::Win32::Security::TokenGroups;
 use windows_sys::Win32::Security::TokenRestrictedSids;
 use windows_sys::Win32::Security::TokenUser;
+use windows_sys::Win32::Security::WinCreatorOwnerRightsSid;
 use windows_sys::Win32::Security::WinWorldSid;
 use windows_sys::Win32::Storage::FileSystem::DELETE;
 use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
@@ -394,6 +395,18 @@ fn parent_acl_ace_summary(
         if dacl.is_null() {
             return format!("baseline={access_allowed};null_dacl=true;inconclusive");
         }
+        let mut owner_rights = vec![0u8; 68];
+        let mut owner_rights_length = owner_rights.len() as u32;
+        if CreateWellKnownSid(
+            WinCreatorOwnerRightsSid,
+            std::ptr::null_mut(),
+            owner_rights.as_mut_ptr().cast(),
+            &mut owner_rights_length,
+        ) == 0
+        {
+            return "inconclusive".to_string();
+        }
+        owner_rights.truncate(owner_rights_length as usize);
         let mut information: ACL_SIZE_INFORMATION = std::mem::zeroed();
         if GetAclInformation(
             dacl,
@@ -453,6 +466,9 @@ fn parent_acl_ace_summary(
             let Some(ace_sid) = copy_sid(sid_pointer) else {
                 return "inconclusive".to_string();
             };
+            if sids_equal(&ace_sid, &owner_rights) {
+                return "inconclusive".to_string();
+            }
             let user_match = sids_equal(&ace_sid, &classes.user);
             let enabled_group_match = classes.normal_groups.iter().any(|group| {
                 group.attributes & SE_GROUP_ENABLED as u32 != 0
