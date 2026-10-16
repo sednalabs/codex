@@ -257,6 +257,36 @@ def _run_report(
     return parsed, diagnostic
 
 
+def _run_multi_report(current: Path, historical: Path) -> dict[str, Any]:
+    script = Path(__file__).resolve().with_name("codex_usage_report.py")
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--database",
+            str(current),
+            "--historical-database",
+            str(historical),
+            "--all-time",
+            "--timezone",
+            "UTC",
+            "--scope",
+            "subtree",
+            "--thread-id",
+            ROOT_THREAD,
+            "--credit-mode",
+            "none",
+        ],
+        check=False,
+        shell=False,
+        capture_output=True,
+        text=True,
+        timeout=8,
+    )
+    _assert(completed.returncode == 2, "known duplicate conflict remains incomplete")
+    return json.loads(completed.stdout)
+
+
 def _by_model(metrics: dict[str, Any]) -> dict[str | None, dict[str, Any]]:
     return {item["actual_model_used"]: item for item in metrics["by_actual_model"]}
 
@@ -579,6 +609,94 @@ def _check_cycle_is_incomplete(temporary: Path) -> None:
     )
 
 
+def _check_multi_ledger_reconciliation(temporary: Path) -> None:
+    current = temporary / "current-all-time.sqlite"
+    historical = temporary / "historical-all-time.sqlite"
+    _create_database(current, current_indexes=True)
+    _create_database(historical, current_indexes=False)
+    for path in (current, historical):
+        connection = sqlite3.connect(path)
+        try:
+            connection.execute(
+                "UPDATE usage_provider_calls SET spawn_request_id = ? WHERE provider_call_id = ?",
+                ("spawn-sentinel", "child-sentinel-literal"),
+            )
+            connection.execute(
+                "INSERT INTO usage_spawn_requests(spawn_request_id, parent_thread_id, child_thread_id, requested_model, requested_reasoning_effort, status) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    "spawn-sentinel",
+                    ROOT_THREAD,
+                    "synthetic-child",
+                    "configured-beta",
+                    "medium",
+                    "complete",
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+    historical_connection = sqlite3.connect(historical)
+    try:
+        # One exact mirror, one conflicting call ID, and one genuinely new call.
+        historical_connection.execute(
+            "UPDATE usage_provider_calls SET output_tokens = 99 WHERE provider_call_id = ?",
+            ("child-beta",),
+        )
+        historical_connection.execute(
+            "INSERT INTO usage_provider_calls(provider_call_id, thread_id, spawn_request_id, provider, requested_model, actual_model_used, requested_service_tier, actual_service_tier, actual_service_tier_source, fast_mode_used, billing_surface, account_plan, started_at, completed_at, input_tokens_uncached, input_tokens_cached, input_tokens_cache_write, output_tokens, total_tokens, provider_reported_credits, status) SELECT ?, thread_id, spawn_request_id, provider, requested_model, actual_model_used, requested_service_tier, actual_service_tier, actual_service_tier_source, fast_mode_used, billing_surface, account_plan, started_at, completed_at, input_tokens_uncached, input_tokens_cached, input_tokens_cache_write, output_tokens, total_tokens, provider_reported_credits, status FROM usage_provider_calls WHERE provider_call_id = ?",
+            ("historical-only", "grandchild-alpha"),
+        )
+        historical_connection.commit()
+    finally:
+        historical_connection.close()
+
+    before = {
+        path: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in (current, historical)
+    }
+    result = _run_multi_report(current, historical)
+    after = {
+        path: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in (current, historical)
+    }
+    _assert(before == after, "multi-ledger report leaves both inputs unchanged")
+    _assert(result["status"] == "incomplete", "call-ID conflict is not guessed")
+    _assert(
+        result["window"]["kind"] == "all_time",
+        "the report uses unbounded exact-subtree selection",
+    )
+    _assert(
+        [source["source"] for source in result["source_coverage"]["ledger_sources"]]
+        == ["current", "historical"],
+        "the two explicit source roles are preserved",
+    )
+    dedupe = result["deduplication"]
+    _assert(dedupe["selected_provider_call_rows"] == 13, "both indexed selections are counted")
+    _assert(dedupe["identical_mirrored_rows_collapsed"] == 1, "exact mirrors count once")
+    _assert(dedupe["conflicting_call_id_count"] == 1, "conflicting call IDs are surfaced")
+    _assert(dedupe["rows_excluded_for_conflicting_call_ids"] == 2, "both conflict copies are excluded")
+    _assert(result["summary"]["provider_call_count"] == 6, "only unambiguous calls contribute")
+    _assert(
+        result["summary"]["token_sums_known_subtotal"]["uncached_input_tokens"] == 39,
+        "exact mirror is counted once and conflicting call tokens are excluded",
+    )
+    _assert(result["scope_totals"]["requested_root"]["provider_call_count"] == 1, "root usage stays separate")
+    _assert(result["scope_totals"]["all_descendants"]["provider_call_count"] == 5, "nested descendants are included")
+    by_model = {
+        item["actual_model_used"]: item for item in result["by_actual_model"]
+    }
+    sentinel = by_model["<unavailable>"]["configured_model_effort_evidence"]
+    _assert(
+        sentinel[0]["configured_model_from_spawn_request"] == "configured-beta"
+        and sentinel[0]["provider_requested_model"] == "request-sentinel"
+        and sentinel[0]["provider_actual_model"] == "<unavailable>",
+        "configured, provider-requested, and effective models stay distinct",
+    )
+    serialized = json.dumps(result, sort_keys=True)
+    for value in ("root-alpha", "child-beta", "historical-only", "synthetic-child"):
+        _assert(value not in serialized, "call and descendant identifiers stay private")
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory(prefix="codex-usage-exact-root-") as directory:
         temporary = Path(directory)
@@ -587,7 +705,8 @@ def main() -> int:
         _check_report_shape(current)
         _check_bounded_fallback(temporary)
         _check_cycle_is_incomplete(temporary)
-    print(json.dumps({"status": "passed", "cases": 3}, separators=(",", ":")))
+        _check_multi_ledger_reconciliation(temporary)
+    print(json.dumps({"status": "passed", "cases": 4}, separators=(",", ":")))
     return 0
 
 
