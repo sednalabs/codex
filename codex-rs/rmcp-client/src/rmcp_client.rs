@@ -1228,6 +1228,8 @@ impl RmcpClient {
         F: Fn(Arc<RunningService<RoleClient, ElicitationClientService>>) -> Fut,
         Fut: std::future::Future<Output = std::result::Result<T, rmcp::service::ServiceError>>,
     {
+        // A lazy reconnect is a new initialize handshake and uses the stored
+        // initialize timeout; the caller's timeout remains the request budget.
         let service = self.service().await?;
         let mut deadline = timeout.map(|duration| Instant::now() + duration);
         let oauth_persistor = self.oauth_persistor().await;

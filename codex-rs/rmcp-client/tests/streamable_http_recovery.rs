@@ -613,12 +613,17 @@ async fn streamable_http_403_finds_bearer_challenge_in_later_header_value() -> a
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn streamable_http_404_recovery_only_retries_once() -> anyhow::Result<()> {
+async fn streamable_http_expired_session_reconnects_once_per_operation() -> anyhow::Result<()> {
     let (_server, base_url) = spawn_streamable_http_server().await?;
-    let client = create_client(&base_url).await?;
+    let http_client = FailFirstInitializeHttpClient::new(
+        Environment::default_for_tests().get_http_client(),
+        /*failures_remaining*/ 0,
+    );
+    let client = create_client_with_http_client(&base_url, Arc::new(http_client.clone())).await?;
 
     let warmup = call_echo_tool(&client, "warmup").await?;
     assert_eq!(warmup, expected_echo_result("warmup"));
+    assert_eq!(http_client.initialize_attempts(), 1);
 
     arm_session_post_failure(
         &base_url,
@@ -628,15 +633,24 @@ async fn streamable_http_404_recovery_only_retries_once() -> anyhow::Result<()> 
     )
     .await?;
 
-    let error = call_echo_tool(&client, "double-404").await.unwrap_err();
-    let error_message = error.to_string();
-    assert!(
-        error_message.contains("404") || error_message.contains("session expired"),
-        "expected session-expiry error, got: {error:#}"
-    );
+    let first_error = call_echo_tool(&client, "first-404").await.unwrap_err();
+    assert!(first_error
+        .to_string()
+        .contains("MCP request outcome is uncertain"));
+    assert_eq!(http_client.initialize_attempts(), 1);
+    assert_eq!(http_client.tool_call_attempts(), 2);
 
-    let recovered = call_echo_tool(&client, "after-double-404").await?;
-    assert_eq!(recovered, expected_echo_result("after-double-404"));
+    let second_error = call_echo_tool(&client, "second-404").await.unwrap_err();
+    assert!(second_error
+        .to_string()
+        .contains("MCP request outcome is uncertain"));
+    assert_eq!(http_client.initialize_attempts(), 2);
+    assert_eq!(http_client.tool_call_attempts(), 3);
+
+    let recovered = call_echo_tool(&client, "after-two-404s").await?;
+    assert_eq!(recovered, expected_echo_result("after-two-404s"));
+    assert_eq!(http_client.initialize_attempts(), 3);
+    assert_eq!(http_client.tool_call_attempts(), 4);
 
     Ok(())
 }

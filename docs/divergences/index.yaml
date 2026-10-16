@@ -3624,6 +3624,7 @@
         "cancelled_queued_post_is_never_sent_or_executed",
         "timed_out_mutating_call_is_not_replayed",
         "streamable_http_404_tool_call_is_uncertain_and_next_call_recovers",
+        "streamable_http_expired_session_reconnects_once_per_operation",
         "late_expired_session_failure_does_not_retire_replacement",
         "externally_aborted_post_sends_matching_cancellation",
         "initialize_negotiates_only_implemented_protocol_versions",
