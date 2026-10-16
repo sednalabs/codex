@@ -129,8 +129,21 @@ async fn recovered_connections_accept_elicitations_with_previously_cancelled_ids
         })
         .await?;
 
-        let previous = client.service().await?;
-        client.reinitialize_after_session_expiry(&previous).await?;
+        // The in-process transport cannot emit the HTTP 404 that normally marks an expired
+        // generation, so move through the same private state consumed by lazy recovery.
+        {
+            let mut state = client.state.lock().await;
+            let oauth = match &*state {
+                super::ClientState::Ready { oauth, .. } => oauth.clone(),
+                _ => anyhow::bail!("client should be ready before recovery"),
+            };
+            *state = super::ClientState::Expired { oauth };
+        }
+
+        // Drive the production lazy-reconnect path with a distinct notification operation.
+        client
+            .send_custom_notification("notifications/recovery-probe", /*params*/ None)
+            .await?;
         let recovered_server = timeout(Duration::from_secs(/*secs*/ 5), server_rx.recv())
             .await?
             .unwrap()?;
@@ -145,7 +158,6 @@ async fn recovered_connections_accept_elicitations_with_previously_cancelled_ids
             json!({"action": "accept"}),
         );
         client.shutdown().await;
-        drop(previous);
         server.cancel().await?;
         recovered_server.cancel().await?;
     }
