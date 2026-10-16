@@ -106,18 +106,18 @@ struct DelayedToolCallHttpClient {
     inner: Arc<dyn HttpClient>,
     initialize_attempts: Arc<AtomicUsize>,
     tool_call_attempts: Arc<AtomicUsize>,
-    delayed_tool_call: String,
+    delayed_message: String,
     request_captured: Arc<Notify>,
     release_request: Arc<Notify>,
 }
 
 impl DelayedToolCallHttpClient {
-    fn new(inner: Arc<dyn HttpClient>, delayed_tool_call: &str) -> Self {
+    fn new(inner: Arc<dyn HttpClient>, delayed_message: &str) -> Self {
         Self {
             inner,
             initialize_attempts: Arc::new(AtomicUsize::new(0)),
             tool_call_attempts: Arc::new(AtomicUsize::new(0)),
-            delayed_tool_call: delayed_tool_call.to_string(),
+            delayed_message: delayed_message.to_string(),
             request_captured: Arc::new(Notify::new()),
             release_request: Arc::new(Notify::new()),
         }
@@ -147,7 +147,7 @@ impl HttpClient for DelayedToolCallHttpClient {
         let inner = Arc::clone(&self.inner);
         let initialize_attempts = Arc::clone(&self.initialize_attempts);
         let tool_call_attempts = Arc::clone(&self.tool_call_attempts);
-        let delayed_tool_call = self.delayed_tool_call.clone();
+        let delayed_message = self.delayed_message.clone();
         let request_captured = Arc::clone(&self.request_captured);
         let release_request = Arc::clone(&self.release_request);
 
@@ -156,11 +156,14 @@ impl HttpClient for DelayedToolCallHttpClient {
                 initialize_attempts.fetch_add(1, Ordering::SeqCst);
             }
             let tool_name = request_tool_name(&params);
+            let message = request_tool_message(&params);
             if tool_name.is_some() {
                 tool_call_attempts.fetch_add(1, Ordering::SeqCst);
             }
 
-            if tool_name.as_deref() == Some(delayed_tool_call.as_str()) {
+            if tool_name.as_deref() == Some("echo")
+                && message.as_deref() == Some(delayed_message.as_str())
+            {
                 request_captured.notify_one();
                 release_request.notified().await;
             }
@@ -202,6 +205,21 @@ fn request_tool_name(params: &HttpRequestParams) -> Option<String> {
                 return None;
             }
             body.pointer("/params/name")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+}
+
+fn request_tool_message(params: &HttpRequestParams) -> Option<String> {
+    if !params.method.eq_ignore_ascii_case("POST") {
+        return None;
+    }
+    params
+        .body
+        .as_ref()
+        .and_then(|body| serde_json::from_slice::<Value>(&body.0).ok())
+        .and_then(|body| {
+            body.pointer("/params/arguments/message")
                 .and_then(Value::as_str)
                 .map(str::to_string)
         })
@@ -441,10 +459,8 @@ async fn streamable_http_404_tool_call_is_uncertain_and_next_call_recovers() -> 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn late_expired_session_failure_does_not_retire_replacement() -> anyhow::Result<()> {
     let (_server, base_url) = spawn_streamable_http_server().await?;
-    let http_client = DelayedToolCallHttpClient::new(
-        Environment::default_for_tests().get_http_client(),
-        "late",
-    );
+    let http_client =
+        DelayedToolCallHttpClient::new(Environment::default_for_tests().get_http_client(), "late");
     let client =
         Arc::new(create_client_with_http_client(&base_url, Arc::new(http_client.clone())).await?);
 
@@ -470,7 +486,11 @@ async fn late_expired_session_failure_does_not_retire_replacement() -> anyhow::R
             )
             .await
     });
-    tokio::time::timeout(Duration::from_secs(5), http_client.request_captured.notified()).await?;
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        http_client.request_captured.notified(),
+    )
+    .await?;
     assert_eq!(http_client.tool_call_attempts(), 2);
 
     arm_session_post_failure(
