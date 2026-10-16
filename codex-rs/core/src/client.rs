@@ -3569,7 +3569,7 @@ async fn handle_unauthorized(
             RefreshTokenError,
         > = if request_is_ordinary_app_server_turn {
             let Some(expected_state) = expected_state else {
-                return Err(CodexErr::AutomaticTurnContextChanged.into());
+                return Err(CodexErr::AutomaticTurnContextChanged);
             };
             recovery
                 .next_for_unauthorized_request(expected_state)
@@ -3590,7 +3590,7 @@ async fn handle_unauthorized(
         return match step {
             Ok((request_state_matches, auth_state_changed, commit_witness)) => {
                 if !request_state_matches {
-                    return Err(CodexErr::AutomaticTurnContextChanged.into());
+                    return Err(CodexErr::AutomaticTurnContextChanged);
                 }
                 session_telemetry.record_auth_recovery(
                     mode,
