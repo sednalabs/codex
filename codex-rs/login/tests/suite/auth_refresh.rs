@@ -1308,7 +1308,19 @@ async fn unauthorized_recovery_reloads_then_refreshes_tokens() -> Result<()> {
 
     let ctx = RefreshTokenTestContext::new(&server).await?;
     let initial_last_refresh = Utc::now() - Duration::days(1);
-    let initial_tokens = build_tokens(INITIAL_ACCESS_TOKEN, INITIAL_REFRESH_TOKEN);
+    let complete_owner_id_token = IdTokenInfo {
+        chatgpt_user_id: Some("user-123".to_string()),
+        chatgpt_account_id: Some("account-id".to_string()),
+        raw_jwt: jwt_with_payload(json!({
+            "https://api.openai.com/auth": {
+                "chatgpt_user_id": "user-123",
+                "chatgpt_account_id": "account-id"
+            }
+        })),
+        ..Default::default()
+    };
+    let mut initial_tokens = build_tokens(INITIAL_ACCESS_TOKEN, INITIAL_REFRESH_TOKEN);
+    initial_tokens.id_token = complete_owner_id_token.clone();
     let initial_auth = AuthDotJson {
         auth_mode: Some(AuthMode::Chatgpt),
         openai_api_key: None,
@@ -1321,7 +1333,8 @@ async fn unauthorized_recovery_reloads_then_refreshes_tokens() -> Result<()> {
     };
     ctx.write_auth(&initial_auth).await?;
 
-    let disk_tokens = build_tokens("disk-access-token", "disk-refresh-token");
+    let mut disk_tokens = build_tokens("disk-access-token", "disk-refresh-token");
+    disk_tokens.id_token = complete_owner_id_token;
     let disk_auth = AuthDotJson {
         auth_mode: Some(AuthMode::Chatgpt),
         openai_api_key: None,
@@ -1350,7 +1363,7 @@ async fn unauthorized_recovery_reloads_then_refreshes_tokens() -> Result<()> {
 
     let mut recovery = ctx.auth_manager.unauthorized_recovery();
     assert!(recovery.has_next());
-    let mut auth_state = ctx.auth_manager.auth_change_state_receiver();
+    let auth_state = ctx.auth_manager.auth_change_state_receiver();
     let state_before_reload = *auth_state.borrow();
 
     let mut reload = recovery

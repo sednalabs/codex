@@ -2191,14 +2191,16 @@ async fn bedrock_unauthorized_error_uses_provider_mapping() {
                     .to_string(),
             ),
         },
-        &mut auth_recovery,
-        /*expected_state*/ None,
-        /*request_is_ordinary_app_server_turn*/ false,
-        &mut provider_auth_recovery_attempted,
-        &test_session_telemetry(),
-        &provider,
-        /*event_sender*/ None,
-        /*turn_id*/ None,
+        super::UnauthorizedRecoveryContext {
+            auth_recovery: &mut auth_recovery,
+            expected_state: None,
+            request_is_ordinary_app_server_turn: false,
+            provider_auth_recovery_attempted: &mut provider_auth_recovery_attempted,
+            session_telemetry: &test_session_telemetry(),
+            provider: &provider,
+            event_sender: None,
+            turn_id: None,
+        },
     )
     .await
     .expect_err("expired Bedrock signature should fail");
@@ -2290,14 +2292,16 @@ async fn provider_owned_auth_recovery_is_bounded_and_preserves_unauthorized_fail
         let (event_sender, event_receiver) = async_channel::unbounded();
         let result = super::handle_unauthorized(
             unauthorized(),
-            &mut auth_recovery,
-            /*expected_state*/ None,
-            /*request_is_ordinary_app_server_turn*/ false,
-            &mut provider_auth_recovery_attempted,
-            &telemetry,
-            &provider,
-            Some(&event_sender),
-            Some("turn-1"),
+            super::UnauthorizedRecoveryContext {
+                auth_recovery: &mut auth_recovery,
+                expected_state: None,
+                request_is_ordinary_app_server_turn: false,
+                provider_auth_recovery_attempted: &mut provider_auth_recovery_attempted,
+                session_telemetry: &telemetry,
+                provider: &provider,
+                event_sender: Some(&event_sender),
+                turn_id: Some("turn-1"),
+            },
         )
         .await;
 
@@ -2311,14 +2315,16 @@ async fn provider_owned_auth_recovery_is_bounded_and_preserves_unauthorized_fail
             );
             super::handle_unauthorized(
                 unauthorized(),
-                &mut auth_recovery,
-                /*expected_state*/ None,
-                /*request_is_ordinary_app_server_turn*/ false,
-                &mut provider_auth_recovery_attempted,
-                &telemetry,
-                &provider,
-                Some(&event_sender),
-                Some("turn-1"),
+                super::UnauthorizedRecoveryContext {
+                    auth_recovery: &mut auth_recovery,
+                    expected_state: None,
+                    request_is_ordinary_app_server_turn: false,
+                    provider_auth_recovery_attempted: &mut provider_auth_recovery_attempted,
+                    session_telemetry: &telemetry,
+                    provider: &provider,
+                    event_sender: Some(&event_sender),
+                    turn_id: Some("turn-1"),
+                },
             )
             .await
             .expect_err("provider recovery should not run more than once")

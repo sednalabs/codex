@@ -738,6 +738,7 @@ fn hash_provider_authority<H: Hasher>(
 
 fn hash_provider_request_binding<H: Hasher>(
     provider: &ModelProviderInfo,
+    serialized_provider: &[u8],
     api_provider: &ApiProvider,
     account_auth: Option<&CodexAuth>,
     routing: ClientRouting,
@@ -749,9 +750,7 @@ fn hash_provider_request_binding<H: Hasher>(
     // and routing knobs without binding the per-request auth material that an authorized manager
     // refresh is allowed to rotate.
     b"provider-request-binding-v1".hash(state);
-    serde_json::to_vec(provider)
-        .expect("ModelProviderInfo configuration must be serializable")
-        .hash(state);
+    serialized_provider.hash(state);
     provider.include_internal_metadata.hash(state);
 
     match routing {
@@ -931,7 +930,9 @@ fn complete_provider_authority(
     revision: Option<u64>,
     routing: ClientRouting,
     reject_redirects: bool,
-) -> ProviderAuthority {
+) -> Result<ProviderAuthority> {
+    let serialized_provider = serde_json::to_vec(provider)
+        .map_err(|_| std::io::Error::other("provider request configuration could not be bound"))?;
     static KEYS: OnceLock<[RandomState; 2]> = OnceLock::new();
     let keys = KEYS.get_or_init(|| [RandomState::new(), RandomState::new()]);
     let mut fingerprint = [0; 2];
@@ -953,6 +954,7 @@ fn complete_provider_authority(
         let mut binding_state = key.build_hasher();
         hash_provider_request_binding(
             provider,
+            &serialized_provider,
             api_provider,
             account_auth,
             routing,
@@ -961,11 +963,11 @@ fn complete_provider_authority(
         );
         binding_fingerprint[index] = binding_state.finish();
     }
-    ProviderAuthority {
+    Ok(ProviderAuthority {
         revision,
         fingerprint,
         binding_fingerprint,
-    }
+    })
 }
 impl ModelClient {
     #[allow(clippy::too_many_arguments)]
@@ -1706,7 +1708,7 @@ impl ModelClient {
                 auth_revision,
                 routing,
                 matches!(redirect_policy, ClientRedirectPolicy::Reject),
-            );
+            )?;
             let automatic_turn_principal = stable_automatic_turn_principal(
                 self.state.provider.info(),
                 &api_provider,
@@ -2089,7 +2091,7 @@ impl ModelClientSession {
                 .await;
         };
         if !self.allow_same_owner_401_rebind || self.same_owner_401_rebind_consumed {
-            return Err(CodexErr::AutomaticTurnContextChanged.into());
+            return Err(CodexErr::AutomaticTurnContextChanged);
         }
         let expected_before = pending_retry
             .expected_state
@@ -2109,7 +2111,7 @@ impl ModelClientSession {
             || setup.auth_owner_generation != Some(expected_before.owner_generation)
             || setup.authority.binding_fingerprint != expected_authority.binding_fingerprint
         {
-            return Err(CodexErr::AutomaticTurnContextChanged.into());
+            return Err(CodexErr::AutomaticTurnContextChanged);
         }
 
         self.expected_authority = Some(setup.authority);
@@ -2304,14 +2306,17 @@ impl ModelClientSession {
                     pending_retry = PendingUnauthorizedRetry::from_recovery(
                         handle_unauthorized(
                             unauthorized_transport,
-                            &mut auth_recovery,
-                            request_auth_change_state,
-                            request_is_ordinary_app_server_turn,
-                            &mut provider_auth_recovery_attempted,
-                            session_telemetry,
-                            &provider,
-                            self.client.event_sender.as_ref(),
-                            responses_metadata.turn_id.as_deref(),
+                            UnauthorizedRecoveryContext {
+                                auth_recovery: &mut auth_recovery,
+                                expected_state: request_auth_change_state,
+                                request_is_ordinary_app_server_turn,
+                                provider_auth_recovery_attempted:
+                                    &mut provider_auth_recovery_attempted,
+                                session_telemetry,
+                                provider: &provider,
+                                event_sender: self.client.event_sender.as_ref(),
+                                turn_id: responses_metadata.turn_id.as_deref(),
+                            },
                         )
                         .await?,
                     );
@@ -2598,14 +2603,17 @@ impl ModelClientSession {
                     pending_retry = PendingUnauthorizedRetry::from_recovery(
                         handle_unauthorized(
                             unauthorized_transport,
-                            &mut auth_recovery,
-                            request_auth_change_state,
-                            request_is_ordinary_app_server_turn,
-                            &mut provider_auth_recovery_attempted,
-                            session_telemetry,
-                            &self.client.state.provider,
-                            self.client.event_sender.as_ref(),
-                            responses_metadata.turn_id.as_deref(),
+                            UnauthorizedRecoveryContext {
+                                auth_recovery: &mut auth_recovery,
+                                expected_state: request_auth_change_state,
+                                request_is_ordinary_app_server_turn,
+                                provider_auth_recovery_attempted:
+                                    &mut provider_auth_recovery_attempted,
+                                session_telemetry,
+                                provider: &self.client.state.provider,
+                                event_sender: self.client.event_sender.as_ref(),
+                                turn_id: responses_metadata.turn_id.as_deref(),
+                            },
                         )
                         .await?,
                     );
@@ -2751,14 +2759,17 @@ impl ModelClientSession {
                     pending_retry = PendingUnauthorizedRetry::from_recovery(
                         handle_unauthorized(
                             unauthorized_transport,
-                            &mut auth_recovery,
-                            request_auth_change_state,
-                            request_is_ordinary_app_server_turn,
-                            &mut provider_auth_recovery_attempted,
-                            session_telemetry,
-                            &provider,
-                            self.client.event_sender.as_ref(),
-                            responses_metadata.turn_id.as_deref(),
+                            UnauthorizedRecoveryContext {
+                                auth_recovery: &mut auth_recovery,
+                                expected_state: request_auth_change_state,
+                                request_is_ordinary_app_server_turn,
+                                provider_auth_recovery_attempted:
+                                    &mut provider_auth_recovery_attempted,
+                                session_telemetry,
+                                provider: &provider,
+                                event_sender: self.client.event_sender.as_ref(),
+                                turn_id: responses_metadata.turn_id.as_deref(),
+                            },
                         )
                         .await?,
                     );
@@ -3471,17 +3482,31 @@ fn emit_auth_recovery_event(
     }
 }
 
-async fn handle_unauthorized(
-    transport: TransportError,
-    auth_recovery: &mut Option<UnauthorizedRecovery>,
+struct UnauthorizedRecoveryContext<'a> {
+    auth_recovery: &'a mut Option<UnauthorizedRecovery>,
     expected_state: Option<AuthChangeState>,
     request_is_ordinary_app_server_turn: bool,
-    provider_auth_recovery_attempted: &mut bool,
-    session_telemetry: &SessionTelemetry,
-    provider: &SharedModelProvider,
-    event_sender: Option<&Sender<ProtocolEvent>>,
-    turn_id: Option<&str>,
+    provider_auth_recovery_attempted: &'a mut bool,
+    session_telemetry: &'a SessionTelemetry,
+    provider: &'a SharedModelProvider,
+    event_sender: Option<&'a Sender<ProtocolEvent>>,
+    turn_id: Option<&'a str>,
+}
+
+async fn handle_unauthorized(
+    transport: TransportError,
+    context: UnauthorizedRecoveryContext<'_>,
 ) -> Result<UnauthorizedRecoveryExecution> {
+    let UnauthorizedRecoveryContext {
+        auth_recovery,
+        expected_state,
+        request_is_ordinary_app_server_turn,
+        provider_auth_recovery_attempted,
+        session_telemetry,
+        provider,
+        event_sender,
+        turn_id,
+    } = context;
     let debug = extract_response_debug_context(&transport);
     if !*provider_auth_recovery_attempted {
         *provider_auth_recovery_attempted = true;

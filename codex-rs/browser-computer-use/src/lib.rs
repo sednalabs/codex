@@ -2470,7 +2470,7 @@ fs.writeFile = async (file, ...args) => {
                 json!({"url": url}),
             )
             .await;
-            assert!(observed.success, "{observed:?}");
+            assert!(observed.success, "native Browser observe should succeed");
             assert!(response_includes_native_image(&observed));
             assert!(observed.content_items.iter().any(|item| matches!(
                 item,
@@ -2485,7 +2485,7 @@ fs.writeFile = async (file, ...args) => {
                 json!({"url": url, "actions": [{"type": "click", "selector": "#safe"}]}),
             )
             .await;
-            assert!(stepped.success, "{stepped:?}");
+            assert!(stepped.success, "native Browser step should succeed");
             assert!(response_includes_native_image(&stepped));
             assert!(stepped.content_items.iter().any(|item| matches!(
                 item,
@@ -2535,7 +2535,10 @@ fs.writeFile = async (file, ...args) => {
             }),
         )
         .await;
-        assert!(visual.success, "{visual:?}");
+        assert!(
+            visual.success,
+            "native Browser visual observe should succeed"
+        );
         assert_eq!(
             visual
                 .content_items
@@ -2563,8 +2566,8 @@ fs.writeFile = async (file, ...args) => {
             assert!(bytes.len() > PNG_SIGNATURE.len());
             assert!(bytes.starts_with(PNG_SIGNATURE));
         }
-        assert_ne!(
-            image_bytes[0], image_bytes[1],
+        assert!(
+            !image_bytes[0].eq(&image_bytes[1]),
             "captures at different visual states must remain distinct"
         );
         let visual_text = visual
@@ -2635,7 +2638,10 @@ fs.writeFile = async (file, ...args) => {
             }),
         )
         .await;
-        assert!(focused_page.success, "{focused_page:?}");
+        assert!(
+            focused_page.success,
+            "native Browser focused-page step should succeed"
+        );
         let focused_text = focused_page
             .content_items
             .iter()
@@ -2816,7 +2822,10 @@ fs.writeFile = async (file, ...args) => {
             }),
         )
         .await;
-        assert!(repeated_visual.success, "{repeated_visual:?}");
+        assert!(
+            repeated_visual.success,
+            "native Browser repeated visual observe should succeed"
+        );
         let repeated_manifest_path = repeated_visual
             .content_items
             .iter()
@@ -2881,8 +2890,8 @@ fs.writeFile = async (file, ...args) => {
                 .expect("listed PNG exists");
             assert!(saved.len() > PNG_SIGNATURE.len());
             assert!(saved.starts_with(PNG_SIGNATURE));
-            assert_eq!(
-                saved, image_bytes[index],
+            assert!(
+                saved.as_slice().eq(image_bytes[index].as_slice()),
                 "manifest path pairs with the same typed image"
             );
         }

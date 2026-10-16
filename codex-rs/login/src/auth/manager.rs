@@ -2751,10 +2751,6 @@ impl AuthManager {
         Ok(*self.auth_change_tx.borrow())
     }
 
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "the credential transition gate must remain held while loading and publishing auth"
-    )]
     async fn reload_if_account_id_matches(
         &self,
         expected_account_id: Option<&str>,
