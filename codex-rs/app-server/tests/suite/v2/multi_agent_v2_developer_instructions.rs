@@ -1,3 +1,4 @@
+use anyhow::Context;
 use anyhow::Result;
 use app_test_support::MockResponsesConfig;
 use app_test_support::TestAppServer;
@@ -663,7 +664,8 @@ async fn cold_resume_preserves_effective_developer_instructions_for_worker(
                 ..Default::default()
             }),
         )
-        .await??;
+        .await
+        .context("waiting for the initial parent/worker turn to complete")??;
         let initial_child_request = initial_child_request
             .requests()
             .into_iter()
@@ -735,7 +737,9 @@ async fn cold_resume_preserves_effective_developer_instructions_for_worker(
             })
             .await?;
         assert_eq!(reattached, baseline);
-        let shutdown = timeout(READ_TIMEOUT, app_server.shutdown_gracefully()).await??;
+        let shutdown = timeout(READ_TIMEOUT, app_server.shutdown_gracefully())
+            .await
+            .context("shutting down the initial app server")??;
         assert!(
             shutdown.success(),
             "initial app-server shutdown failed: {shutdown}"
@@ -821,7 +825,8 @@ features.shell_tool = false
             READ_TIMEOUT,
             app_server.read_stream_until_error_message(RequestId::Integer(request_id)),
         )
-        .await??;
+        .await
+        .context("waiting for the cold child-resume rejection")??;
         assert_eq!(
             serde_json::to_value(error.error)?,
             json!({"code": -32600, "message": COLD_RESUME_ERROR})
@@ -910,7 +915,8 @@ features.shell_tool = false
             }
         }
     })
-    .await??;
+    .await
+    .context("waiting for the parent-mediated child-resume response")??;
     if history_mode == ThreadHistoryMode::Paginated {
         assert_eq!(resumed.thread.history_mode, history_mode);
         assert!(resumed.thread.turns.is_empty());
@@ -919,7 +925,8 @@ features.shell_tool = false
             app_server
                 .read_stream_until_matching_notification("child usage replay", &is_child_usage),
         )
-        .await??;
+        .await
+        .context("waiting for paginated child usage replay")??;
         let replay: ThreadTokenUsageUpdatedNotification =
             serde_json::from_value(replay.params.expect("usage parameters"))?;
         let saved_turn = stored_child.thread.turns.last().expect("saved child turn");
@@ -999,7 +1006,8 @@ features.shell_tool = false
             tokio::task::yield_now().await;
         }
     })
-    .await?;
+    .await
+    .context("waiting for the resumed worker request after parent follow-up")?;
 
     assert_eq!(
         resumed_child_request.body_json()["reasoning"]["effort"],
