@@ -22,12 +22,22 @@ def _windows_tools_impl(ctx):
     python = ctx.attr._python[PyRuntimeInfo]
     if not python.interpreter:
         fail("Windows native tools require a declared native Python interpreter")
-    system_root = ctx.configuration.default_shell_env.get("SystemRoot")
+    shell_env = ctx.configuration.default_shell_env
+    system_root = shell_env.get("SystemRoot")
+    host_architecture = shell_env.get("PROCESSOR_ARCHITECTURE")
+    diagnostic_context = " (tool_configuration={}, SystemRoot_present={}, SystemRoot_nonempty={}, SystemRoot_case_insensitive_present={}, PROCESSOR_ARCHITECTURE_present={}, PROCESSOR_ARCHITECTURE_nonempty={}, PROCESSOR_ARCHITECTURE_case_insensitive_present={})".format(
+        ctx.configuration.is_tool_configuration(),
+        "SystemRoot" in shell_env,
+        bool(system_root),
+        any([key.lower() == "systemroot" for key in shell_env]),
+        "PROCESSOR_ARCHITECTURE" in shell_env,
+        bool(host_architecture),
+        any([key.lower() == "processor_architecture" for key in shell_env]),
+    )
     if not system_root:
-        fail("Pass --action_env=SystemRoot=<actual Windows directory> as a fixed value")
-    host_architecture = ctx.configuration.default_shell_env.get("PROCESSOR_ARCHITECTURE")
+        fail("Pass --action_env=SystemRoot=<actual Windows directory> as a fixed value" + diagnostic_context)
     if not host_architecture:
-        fail("Pass --action_env=PROCESSOR_ARCHITECTURE=<actual host architecture> as a fixed value")
+        fail("Pass --action_env=PROCESSOR_ARCHITECTURE=<actual host architecture> as a fixed value" + diagnostic_context)
     msvc = ctx.attr.msvc[DirectoryInfo]
     sdk = ctx.attr.sdk[DirectoryInfo]
     tools = {
