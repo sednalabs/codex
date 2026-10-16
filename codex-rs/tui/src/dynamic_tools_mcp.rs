@@ -122,9 +122,7 @@ impl ThreadToolTransport {
             }
         };
         specs.extend(
-            crate::native_computer_use::NativeComputerUseProvider::specs_for_codex_home(
-                codex_home,
-            ),
+            crate::native_computer_use::NativeComputerUseProvider::specs_for_codex_home(codex_home),
         );
         params.dynamic_tools = (!specs.is_empty()).then_some(specs);
         Ok(())

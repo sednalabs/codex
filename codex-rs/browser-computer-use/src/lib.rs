@@ -1217,7 +1217,13 @@ mod tests {
         let properties = spec.input_schema["properties"]
             .as_object()
             .expect("Browser visual request properties");
-        for property in ["scope", "interaction_map", "inspection", "captures", "save_artifact"] {
+        for property in [
+            "scope",
+            "interaction_map",
+            "inspection",
+            "captures",
+            "save_artifact",
+        ] {
             assert!(
                 properties.contains_key(property),
                 "missing schema property {property}"
@@ -2590,13 +2596,21 @@ fs.writeFile = async (file, ...args) => {
             .find_map(|line| line.strip_prefix("page_hints: "))
             .expect("bounded page-control summary");
         let page_hints: Value = serde_json::from_str(page_hints_json).expect("page hints JSON");
-        let controls = page_hints["controls"].as_array().expect("control summaries");
+        let controls = page_hints["controls"]
+            .as_array()
+            .expect("control summaries");
         let has_selector = |control: &Value, selector: &str| {
-            control["selectors"]
-                .as_array()
-                .is_some_and(|selectors| selectors.iter().any(|value| value.as_str() == Some(selector)))
+            control["selectors"].as_array().is_some_and(|selectors| {
+                selectors
+                    .iter()
+                    .any(|value| value.as_str() == Some(selector))
+            })
         };
-        assert!(!controls.iter().any(|control| has_selector(control, "#hidden-control")));
+        assert!(
+            !controls
+                .iter()
+                .any(|control| has_selector(control, "#hidden-control"))
+        );
         assert!(controls.iter().any(|control| {
             has_selector(control, "[data-testid=\"duplicate\"]") && control["ambiguous"] == true
         }));
@@ -2634,9 +2648,13 @@ fs.writeFile = async (file, ...args) => {
             .lines()
             .find_map(|line| line.strip_prefix("page_hints: "))
             .expect("focused control page hints");
-        let focused_hints: Value = serde_json::from_str(focused_hints_json).expect("focused hints JSON");
+        let focused_hints: Value =
+            serde_json::from_str(focused_hints_json).expect("focused hints JSON");
         assert!(focused_hints["controls"][0]["focused"] == true);
-        assert!(has_selector(&focused_hints["controls"][0], "#focus-control"));
+        assert!(has_selector(
+            &focused_hints["controls"][0],
+            "#focus-control"
+        ));
 
         let inspection_response = run_visual(
             temp.path().join("inspection-state"),
@@ -2675,7 +2693,10 @@ fs.writeFile = async (file, ...args) => {
         assert_eq!(inspection["omitted"]["console"], 1);
         assert_eq!(inspection["network"][0]["method"], "GET");
         assert_eq!(inspection["network"][0]["status"], 200);
-        assert_eq!(inspection["network"][0]["destination"], "https://example.test");
+        assert_eq!(
+            inspection["network"][0]["destination"],
+            "https://example.test"
+        );
         assert_eq!(inspection["network"].as_array().unwrap().len(), 20);
         assert_eq!(inspection["observed"]["network"], 21);
         assert_eq!(inspection["omitted"]["network"], 1);
