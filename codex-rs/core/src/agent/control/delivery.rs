@@ -70,7 +70,7 @@ struct ExplicitAdmissionIndex {
     ordered: Vec<InterAgentCommunicationAdmission>,
     by_update_id: HashMap<ResponseItemId, InterAgentCommunicationAdmission>,
     by_scope_key: HashMap<ExplicitAdmissionScopeKey, ResponseItemId>,
-    represented_update_ids: HashSet<ResponseItemId>,
+    represented_response_ids: HashMap<ResponseItemId, ResponseItemId>,
 }
 
 impl ExplicitAdmissionIndex {
@@ -160,11 +160,6 @@ impl ExplicitAdmissionIndex {
                                 .to_string(),
                         ));
                     }
-                    if admission.represented_response_id.is_some() {
-                        index
-                            .represented_update_ids
-                            .insert(admission.update_id.clone());
-                    }
                     index.ordered.push(admission.clone());
                 }
                 RolloutItem::ResponseItem(response) => {
@@ -194,7 +189,28 @@ impl ExplicitAdmissionIndex {
                     "stored inter-agent representation conflicts with its admission".to_string(),
                 ));
             }
-            index.represented_update_ids.insert(update_id);
+            index
+                .represented_response_ids
+                .insert(update_id, response_id);
+        }
+
+        for admission in &index.ordered {
+            if let Some(response_id) = &admission.represented_response_id {
+                if index
+                    .represented_response_ids
+                    .get(&admission.update_id)
+                    .is_some_and(|recorded| recorded != response_id)
+                {
+                    return Err(CodexErr::InvalidRequest(
+                        "stored inter-agent representation conflicts with its admission"
+                            .to_string(),
+                    ));
+                }
+                index
+                    .represented_response_ids
+                    .entry(admission.update_id.clone())
+                    .or_insert_with(|| response_id.clone());
+            }
         }
 
         Ok(index)
@@ -205,7 +221,7 @@ async fn load_explicit_admission_index(
     rollout_path: &Path,
     root_thread_id: ThreadId,
     recipient_thread_id: ThreadId,
-) -> CodexResult<ExplicitAdmissionIndex> {
+) -> CodexResult<(ExplicitAdmissionIndex, Vec<RolloutItem>)> {
     let (items, stored_thread_id, parse_errors) = RolloutRecorder::load_rollout_items(rollout_path)
         .await
         .map_err(|_| CodexErr::Fatal("failed to read explicit inter-agent rollout".into()))?;
@@ -214,18 +230,27 @@ async fn load_explicit_admission_index(
             "explicit inter-agent rollout identity or contents could not be verified".into(),
         ));
     }
-    ExplicitAdmissionIndex::from_rollout_items(&items, root_thread_id, recipient_thread_id)
+    let index =
+        ExplicitAdmissionIndex::from_rollout_items(&items, root_thread_id, recipient_thread_id)?;
+    Ok((index, items))
 }
 
 pub(crate) async fn explicit_admission_for_communication(
     rollout_path: &Path,
     root_thread_id: ThreadId,
     communication: &InterAgentCommunication,
-) -> CodexResult<Option<(InterAgentCommunicationAdmission, bool)>> {
+) -> CodexResult<
+    Option<(
+        InterAgentCommunicationAdmission,
+        Option<ResponseItemId>,
+        Vec<RolloutItem>,
+    )>,
+> {
     let Some(update_id) = communication.id.as_ref() else {
         return Ok(None);
     };
-    let index = load_explicit_admission_index(rollout_path, root_thread_id, root_thread_id).await?;
+    let (index, rollout_items) =
+        load_explicit_admission_index(rollout_path, root_thread_id, root_thread_id).await?;
     let Some(admission) = index.by_update_id.get(update_id) else {
         return Ok(None);
     };
@@ -237,7 +262,8 @@ pub(crate) async fn explicit_admission_for_communication(
     }
     Ok(Some((
         admission.clone(),
-        index.represented_update_ids.contains(update_id),
+        index.represented_response_ids.get(update_id).cloned(),
+        rollout_items,
     )))
 }
 
@@ -431,7 +457,8 @@ impl LocalAgentControl {
         let rollout_path = recipient_thread.rollout_path().ok_or_else(|| {
             CodexErr::Fatal("explicit inter-agent recipient has no retained rollout".to_string())
         })?;
-        let mut index = load_explicit_admission_index(&rollout_path, root_thread_id, recipient).await?;
+        let mut index =
+            load_explicit_admission_index(&rollout_path, root_thread_id, recipient).await?;
         let scope_key = explicit_scope_key(
             &root_thread_id,
             &caller,
@@ -531,8 +558,7 @@ impl LocalAgentControl {
         session: &Session,
     ) -> CodexResult<()> {
         let root_path = AgentPath::root();
-        if session.multi_agent_version()
-            != Some(codex_protocol::protocol::MultiAgentVersion::V2)
+        if session.multi_agent_version() != Some(codex_protocol::protocol::MultiAgentVersion::V2)
             || self.runtime.registry.agent_id_for_path(&root_path) != Some(session.thread_id)
         {
             return Ok(());
@@ -560,8 +586,7 @@ async fn valid_explicit_member(
 ) -> bool {
     thread.session.thread_id == thread_id
         && thread.is_running()
-        && thread.multi_agent_version()
-            == Some(codex_protocol::protocol::MultiAgentVersion::V2)
+        && thread.multi_agent_version() == Some(codex_protocol::protocol::MultiAgentVersion::V2)
         && Arc::ptr_eq(
             &thread.session.services.local_agent_runtime.registry,
             registry,
