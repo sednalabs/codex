@@ -35,7 +35,7 @@ on:
         required: false
         type: boolean
         default: false
-      run_d0_android_protocol_test:
+      run_a89_android_protocol_test:
         required: false
         type: boolean
         default: false
@@ -70,7 +70,7 @@ jobs:
           path: .workflow-src
 
       - name: Verify named-test command builder
-        if: ${{ inputs.run_d0_android_protocol_test != true }}
+        if: ${{ inputs.run_a89_android_protocol_test != true }}
         working-directory: .workflow-src
         shell: bash
         run: python3 .github/scripts/test_run_named_rust_tests.py
@@ -146,8 +146,8 @@ jobs:
             echo "VALIDATION_HARNESS_SHA=${harness_sha}"
           } >> "${GITHUB_ENV}"
 
-      - name: Validate fixed d0 Android package-consumer request
-        if: ${{ inputs.run_d0_android_protocol_test }}
+      - name: Validate fixed a89 Android package-consumer request
+        if: ${{ inputs.run_a89_android_protocol_test }}
         shell: bash
         env:
           VALIDATION_TARGET_SHA: ${{ inputs.target_sha }}
@@ -156,8 +156,8 @@ jobs:
           RUST_TEST_REQUEST_JSON: ${{ inputs.request_json }}
         run: |
           set -euo pipefail
-          if [[ "${VALIDATION_TARGET_SHA}" != "d0a2f8747c2b06fe025163ad927b221e2e1dccf5" || "${VALIDATION_BASE_REF}" != "e135df532669849b682dfac712c3f59aded039ba" || "${VALIDATION_PROFILE}" != "rust_integration" ]]; then
-            echo "Android package consumer is restricted to the fixed d0 target and hosted base." >&2
+          if [[ "${VALIDATION_TARGET_SHA}" != "a89b02855334af7c0521882271cb97b818981d1a" || "${VALIDATION_BASE_REF}" != "e135df532669849b682dfac712c3f59aded039ba" || "${VALIDATION_PROFILE}" != "rust_integration" ]]; then
+            echo "Android package consumer is restricted to the fixed a89 target and hosted base." >&2
             exit 1
           fi
           python3 - <<'PY'
@@ -165,11 +165,11 @@ jobs:
           import os
 
           expected = {
-              "schema_version": "d0-android-protocol-v1",
+              "schema_version": "a89-android-protocol-v1",
               "profile": "rust_integration",
               "target": "x86_64-unknown-linux-gnu",
-              "package_run_id": 38812124082,
-              "artifact_id": 12013640656,
+              "package_run_id": 38867176145,
+              "artifact_id": 12035327373,
               "consumer": "packaged-android-step-install-protocol",
           }
           try:
@@ -180,26 +180,26 @@ jobs:
               raise SystemExit("Android package-consumer request differs from the fixed accepted selector.")
           PY
 
-      - name: Download exact d0 x86 package artifact
-        if: ${{ inputs.run_d0_android_protocol_test }}
+      - name: Download exact a89 x86 package artifact
+        if: ${{ inputs.run_a89_android_protocol_test }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          artifact-ids: "12013640656"
+          artifact-ids: "12035327373"
           repository: sednalabs/codex
-          run-id: "38812124082"
+          run-id: "38867176145"
           github-token: ${{ github.token }}
-          path: ${{ runner.temp }}/d0-x86-package
+          path: ${{ runner.temp }}/a89-x86-package
           digest-mismatch: error
 
-      - name: Verify exact d0 package identity and archives
-        if: ${{ inputs.run_d0_android_protocol_test }}
+      - name: Verify exact a89 package identity and archives
+        if: ${{ inputs.run_a89_android_protocol_test }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          DIST_DIR: ${{ runner.temp }}/d0-x86-package
+          DIST_DIR: ${{ runner.temp }}/a89-x86-package
         run: |
           set -euo pipefail
-          artifact_metadata="$(gh api repos/sednalabs/codex/actions/artifacts/12013640656)"
+          artifact_metadata="$(gh api repos/sednalabs/codex/actions/artifacts/12035327373)"
           ARTIFACT_METADATA_JSON="${artifact_metadata}" DIST_DIR="${DIST_DIR}" python3 - <<'PY'
           import json
           import os
@@ -207,18 +207,18 @@ jobs:
 
           artifact = json.loads(os.environ["ARTIFACT_METADATA_JSON"])
           expected_artifact = {
-              "id": 12013640656,
-              "name": "sedna-first-package-d0a2f874-x86_64-38812124082",
-              "size_in_bytes": 1199476735,
-              "digest": "sha256:498b2995aa8fd9c91f9d52a3d7ee99e3e741da11e487c01589c1298dfa745696",
+              "id": 12035327373,
+              "name": "sedna-first-package-a89b0285-x86_64-38867176145",
+              "size_in_bytes": 1200010231,
+              "digest": "sha256:077a704fb9391c17f359af9856f31faf8fb2013defd85813dd556e4560319512",
               "expired": False,
           }
           for key, expected in expected_artifact.items():
               if artifact.get(key) != expected:
-                  raise SystemExit(f"Exact d0 package artifact metadata mismatch for {key}.")
+                  raise SystemExit(f"Exact a89 package artifact metadata mismatch for {key}.")
           producer = artifact.get("workflow_run") or {}
-          if producer.get("id") != 38812124082 or producer.get("head_sha") != "d0a2f8747c2b06fe025163ad927b221e2e1dccf5":
-              raise SystemExit("Package artifact is not bound to the exact d0 producer run and source.")
+          if producer.get("id") != 38867176145 or producer.get("head_sha") != "a89b02855334af7c0521882271cb97b818981d1a":
+              raise SystemExit("Package artifact is not bound to the exact a89 producer run and source.")
 
           dist = Path(os.environ["DIST_DIR"])
           expected_files = {
@@ -231,46 +231,46 @@ jobs:
           }
           entries = list(dist.iterdir())
           if any(not path.is_file() for path in entries) or {path.name for path in entries} != expected_files:
-              raise SystemExit("Exact d0 package file set does not match the accepted x86 package.")
+              raise SystemExit("Exact a89 package file set does not match the accepted x86 package.")
 
           manifest = json.loads((dist / "release-manifest.json").read_text(encoding="utf-8"))
           expected_manifest = {
               "repository": "sednalabs/codex",
-              "sourceCommit": "d0a2f8747c2b06fe025163ad927b221e2e1dccf5",
-              "sourceTree": "1d7577bb43765e4933b51f48ca2102932751dbc0",
-              "workflowRunId": "38812124082",
+              "sourceCommit": "a89b02855334af7c0521882271cb97b818981d1a",
+              "sourceTree": "8cd1fcbec6101003dba32e2ee8b115c354678e01",
+              "workflowRunId": "38867176145",
               "target": "x86_64-unknown-linux-gnu",
           }
           for key, expected in expected_manifest.items():
               if manifest.get(key) != expected:
-                  raise SystemExit(f"Exact d0 package manifest mismatch for {key}.")
+                  raise SystemExit(f"Exact a89 package manifest mismatch for {key}.")
 
           listed = {}
           for line in (dist / "SHA256SUMS.txt").read_text(encoding="utf-8").splitlines():
               digest, filename = line.split("  ", 1)
               if filename in listed:
-                  raise SystemExit("Exact d0 package checksum list contains a duplicate member.")
+                  raise SystemExit("Exact a89 package checksum list contains a duplicate member.")
               if filename != "release-manifest.json":
                   listed[filename] = digest
           if manifest.get("artifacts") != listed:
-              raise SystemExit("Exact d0 package manifest digests do not match the checksum list.")
+              raise SystemExit("Exact a89 package manifest digests do not match the checksum list.")
           PY
           (cd "${DIST_DIR}" && sha256sum -c SHA256SUMS.txt)
           {
-            echo "D0_PACKAGE_DIR=${DIST_DIR}"
-            echo "D0_CLI_ARCHIVE=${DIST_DIR}/codex-cli-x86_64-unknown-linux-gnu.tar.gz"
-            echo "D0_APPSERVER_ARCHIVE=${DIST_DIR}/codex-app-server-x86_64-unknown-linux-gnu.tar.gz"
-            echo "D0_SYMBOLS_ARCHIVE=${DIST_DIR}/symbols.tar.gz"
+            echo "A89_PACKAGE_DIR=${DIST_DIR}"
+            echo "A89_CLI_ARCHIVE=${DIST_DIR}/codex-cli-x86_64-unknown-linux-gnu.tar.gz"
+            echo "A89_APPSERVER_ARCHIVE=${DIST_DIR}/codex-app-server-x86_64-unknown-linux-gnu.tar.gz"
+            echo "A89_SYMBOLS_ARCHIVE=${DIST_DIR}/symbols.tar.gz"
           } >> "${GITHUB_ENV}"
 
       - name: Set up Python package consumer environment
-        if: ${{ inputs.run_d0_android_protocol_test }}
+        if: ${{ inputs.run_a89_android_protocol_test }}
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
       - name: Install pinned uv for package consumer
-        if: ${{ inputs.run_d0_android_protocol_test }}
+        if: ${{ inputs.run_a89_android_protocol_test }}
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           version: "0.11.3"
@@ -419,7 +419,7 @@ jobs:
 
       - name: Inventory and run exact named tests
         id: named_tests
-        if: ${{ inputs.run_ae94_android_helper_tests != true && inputs.run_ae94_tui_provider_tests != true && inputs.run_d0_active_wait_test != true && inputs.run_d0_android_protocol_test != true }}
+        if: ${{ inputs.run_ae94_android_helper_tests != true && inputs.run_ae94_tui_provider_tests != true && inputs.run_d0_active_wait_test != true && inputs.run_a89_android_protocol_test != true }}
         continue-on-error: true
         working-directory: validation-target
         shell: bash
@@ -1083,9 +1083,9 @@ jobs:
               raise SystemExit(1)
           PY
 
-      - name: Run exact packaged d0 Android client protocol consumer
-        id: d0_android_protocol_test
-        if: ${{ inputs.run_d0_android_protocol_test == true }}
+      - name: Run exact packaged a89 Android client protocol consumer
+        id: a89_android_protocol_test
+        if: ${{ inputs.run_a89_android_protocol_test == true }}
         continue-on-error: true
         working-directory: validation-target
         shell: bash
@@ -1106,15 +1106,15 @@ jobs:
           fi
           cp ../.workflow-src/.github/scripts/test_d0_android_protocol_acceptance.py "${test_path}"
           uv sync --project "${smoke_project}" --frozen
-          log_path="${RUNNER_TEMP}/d0-android-pytest.log"
+          log_path="${RUNNER_TEMP}/a89-android-pytest.log"
           set +e
           uv run --project "${smoke_project}" --frozen --no-sync pytest -q \
             "${test_path}" \
             --compression gzip \
             --package-target "x86_64-unknown-linux-gnu" \
-            --cli-archive "${D0_CLI_ARCHIVE}" \
-            --app-server-archive "${D0_APPSERVER_ARCHIVE}" \
-            --symbols-archive "${D0_SYMBOLS_ARCHIVE}" > "${log_path}" 2>&1
+            --cli-archive "${A89_CLI_ARCHIVE}" \
+            --app-server-archive "${A89_APPSERVER_ARCHIVE}" \
+            --symbols-archive "${A89_SYMBOLS_ARCHIVE}" > "${log_path}" 2>&1
           test_exit=$?
           set -e
           DIAGNOSTIC_PATH="${log_path}" python3 - <<'PY'
@@ -1143,16 +1143,16 @@ jobs:
           failed = sum(int(value) for value in re.findall(r"\b(\d+) failed\b", log))
           skipped = sum(int(value) for value in re.findall(r"\b(\d+) skipped\b", log))
           expected_request = {
-              "schema_version": "d0-android-protocol-v1",
+              "schema_version": "a89-android-protocol-v1",
               "profile": "rust_integration",
               "target": "x86_64-unknown-linux-gnu",
-              "package_run_id": 38812124082,
-              "artifact_id": 12013640656,
+              "package_run_id": 38867176145,
+              "artifact_id": 12035327373,
               "consumer": "packaged-android-step-install-protocol",
           }
           request = json.loads(os.environ["RUST_TEST_REQUEST_JSON"])
           result = {
-              "schema_version": "d0-android-package-consumer-v1",
+              "schema_version": "a89-android-package-consumer-v1",
               "status": "success" if os.environ["RESULT_ENV_TEST_EXIT"] == "0" and passed == 1 and failed == 0 and skipped == 0 else "failure",
               "failure_code": "" if os.environ["RESULT_ENV_TEST_EXIT"] == "0" and passed == 1 and failed == 0 and skipped == 0 else "consumer_execution_mismatch",
               "identity": {
@@ -1163,9 +1163,9 @@ jobs:
                   "run_id": os.environ["GITHUB_RUN_ID"],
               },
               "artifact": {
-                  "producer_run_id": 38812124082,
-                  "artifact_id": 12013640656,
-                  "sha256": "498b2995aa8fd9c91f9d52a3d7ee99e3e741da11e487c01589c1298dfa745696",
+                  "producer_run_id": 38867176145,
+                  "artifact_id": 12035327373,
+                  "sha256": "077a704fb9391c17f359af9856f31faf8fb2013defd85813dd556e4560319512",
                   "target": "x86_64-unknown-linux-gnu",
               },
               "request": request,
@@ -1228,6 +1228,6 @@ jobs:
           retention-days: 3
 
       - name: Preserve failed exact-test result
-        if: ${{ steps.named_tests.outcome == 'failure' || steps.android_helper_tests.outcome == 'failure' || steps.tui_provider_tests.outcome == 'failure' || steps.d0_active_wait_test.outcome == 'failure' || steps.d0_android_protocol_test.outcome == 'failure' }}
+        if: ${{ steps.named_tests.outcome == 'failure' || steps.android_helper_tests.outcome == 'failure' || steps.tui_provider_tests.outcome == 'failure' || steps.d0_active_wait_test.outcome == 'failure' || steps.a89_android_protocol_test.outcome == 'failure' }}
         shell: bash
         run: exit 1
