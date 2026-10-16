@@ -575,7 +575,7 @@ async fn turn_start_shell_zsh_fork_subcommand_decline_marks_parent_declined_v2()
     let mut saw_parent_approval = false;
     let target_decisions = [
         CommandExecutionApprovalDecision::Accept,
-        CommandExecutionApprovalDecision::Cancel,
+        CommandExecutionApprovalDecision::Decline,
     ];
     let mut target_decision_index = 0;
     let first_file_str = first_file.to_string_lossy().into_owned();
