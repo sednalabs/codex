@@ -24,7 +24,9 @@ except ImportError:  # pragma: no cover - unavailable on Windows
 
 
 REPORT_VERSION = "codex-local-usage-report/v1"
-MAX_SECONDS = 2.0
+# Keep one dual-ledger read within a short wall-clock bound; row and VM caps
+# independently bound the amount of SQLite work and retained report data.
+MAX_SECONDS = 10.0
 MAX_VM_INSTRUCTIONS = 8_000_000
 MAX_CALLS = 25_000
 MAX_LINEAGE_NODES = 4_096
