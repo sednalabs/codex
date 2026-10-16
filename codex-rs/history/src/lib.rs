@@ -20,6 +20,7 @@ use std::ops::DerefMut;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use codex_protocol::AgentPath;
 use codex_protocol::ResponseItemId;
 use codex_protocol::ThreadId;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
@@ -154,13 +155,20 @@ pub enum InterAgentCommunicationIntent {
 
 /// Durable admission receipt for an explicitly addressed inter-agent update.
 ///
-/// The matching `InterAgentCommunication` carries sender and recipient scope. The receipt remains
-/// model-invisible and is retained when a represented response is outside the model context.
+/// The receipt is self-contained for exact original readback and authorization-scope
+/// reconstruction. It remains model-invisible when a represented response is outside the model
+/// context.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
 pub struct InterAgentCommunicationAdmission {
     pub update_id: ResponseItemId,
     pub idempotency_key: String,
     pub intent: InterAgentCommunicationIntent,
+    pub original_communication: InterAgentCommunication,
+    pub root_thread_id: ThreadId,
+    pub sender_thread_id: ThreadId,
+    pub recipient_thread_id: ThreadId,
+    pub sender_path: AgentPath,
+    pub recipient_path: AgentPath,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub supersedes: Vec<ResponseItemId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -477,10 +477,27 @@ fn response_item_envelope_ignores_unknown_harness_metadata_fields() -> Result<()
 
 #[test]
 fn explicit_inter_agent_admission_round_trips_on_existing_metadata_record() -> Result<()> {
+    let update_id = codex_protocol::ResponseItemId::from_server("update_1".to_string());
+    let sender_path = AgentPath::root().join("worker")?;
+    let recipient_path = AgentPath::root();
+    let mut original_communication = InterAgentCommunication::new(
+        sender_path.clone(),
+        recipient_path.clone(),
+        Vec::new(),
+        "Please inspect the generated report.".to_string(),
+        /*trigger_turn*/ false,
+    );
+    original_communication.id = Some(update_id.clone());
     let admission = InterAgentCommunicationAdmission {
-        update_id: codex_protocol::ResponseItemId::from_server("update_1".to_string()),
+        update_id,
         idempotency_key: "request-1".to_string(),
         intent: InterAgentCommunicationIntent::ActionRequired,
+        original_communication,
+        root_thread_id: ThreadId::from_u128(1),
+        sender_thread_id: ThreadId::from_u128(2),
+        recipient_thread_id: ThreadId::from_u128(3),
+        sender_path,
+        recipient_path,
         supersedes: vec![codex_protocol::ResponseItemId::from_server(
             "update_0".to_string(),
         )],
@@ -500,7 +517,26 @@ fn explicit_inter_agent_admission_round_trips_on_existing_metadata_record() -> R
         serialized["payload"]["admission"]["intent"],
         "action_required"
     );
-    assert_eq!(serde_json::from_value::<RolloutItem>(serialized)?, item);
+    assert_eq!(
+        serde_json::from_value::<RolloutItem>(serialized.clone())?,
+        item
+    );
+
+    #[derive(serde::Deserialize)]
+    #[serde(tag = "type", rename_all = "snake_case")]
+    enum LegacyRolloutItem {
+        InterAgentCommunicationMetadata { payload: LegacyMetadataPayload },
+    }
+    #[derive(serde::Deserialize)]
+    struct LegacyMetadataPayload {
+        trigger_turn: bool,
+    }
+    let LegacyRolloutItem::InterAgentCommunicationMetadata { payload } =
+        serde_json::from_value(serialized)?
+    else {
+        panic!("expected legacy metadata record");
+    };
+    assert!(!payload.trigger_turn);
 
     // Existing quiet records retain their original serialized shape and still decode.
     let quiet = RolloutItem::InterAgentCommunicationMetadata {
@@ -542,6 +578,61 @@ fn response_item_metadata_round_trips_explicit_inter_agent_update_id() -> Result
         Some(update_id)
     );
     assert_eq!(restored.item, envelope.item);
+    Ok(())
+}
+
+#[test]
+fn compacted_replacement_history_retains_inter_agent_update_identity() -> Result<()> {
+    let update_id = codex_protocol::ResponseItemId::from_server("update_1".to_string());
+    let response_id = codex_protocol::ResponseItemId::from_server("response_1".to_string());
+    let mut response = InterAgentCommunication::new(
+        AgentPath::root().join("worker")?,
+        AgentPath::root(),
+        Vec::new(),
+        "The report is ready.".to_string(),
+        /*trigger_turn*/ false,
+    )
+    .to_model_input_item();
+    response.set_id(Some(response_id.clone()));
+    let item = RolloutItem::Compacted(CompactedItem {
+        message: "summary".to_string(),
+        replacement_history: Some(vec![ResponseItemEnvelope {
+            item: response,
+            metadata: Some(CodexHarnessMetadata {
+                inter_agent_update_id: Some(update_id.clone()),
+                ..Default::default()
+            }),
+        }]),
+        retained_context: None,
+        guardian_history: None,
+        mcp_resource_origins: None,
+        window_number: Some(1),
+        first_window_id: None,
+        previous_window_id: None,
+        window_id: None,
+        compaction_response_id: None,
+        latest_token_usage_record: None,
+        resume_metadata: None,
+    });
+
+    let serialized = serde_json::to_value(&item)?;
+    assert_eq!(
+        serialized["payload"]["replacement_history_metadata"][0]["inter_agent_update_id"],
+        json!("update_1")
+    );
+    let RolloutItem::Compacted(restored) = serde_json::from_value(serialized)? else {
+        panic!("expected compacted item");
+    };
+    let represented = &restored.replacement_history.expect("replacement history")[0];
+    assert_eq!(represented.item.id(), Some(&response_id));
+    assert_eq!(
+        represented
+            .metadata
+            .as_ref()
+            .expect("harness metadata")
+            .inter_agent_update_id,
+        Some(update_id)
+    );
     Ok(())
 }
 
