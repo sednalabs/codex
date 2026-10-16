@@ -317,7 +317,12 @@ async fn run_playwright_provider(
         .write_all(PLAYWRIGHT_BRIDGE_SCRIPT.as_bytes())
         .map_err(|err| format!("failed to write browser provider script: {err}"))?;
 
-    let script_path = script_file.path().to_string_lossy().to_string();
+    // Close the writable handle before asking the external Node process to
+    // read the temporary script, while retaining cleanup on drop.
+    let script_file = script_file.into_temp_path();
+    let script_path = <tempfile::TempPath as AsRef<std::path::Path>>::as_ref(&script_file)
+        .to_string_lossy()
+        .to_string();
     let envs = playwright_provider_envs(config);
 
     let output = run_provider_process(&[config.node.clone(), script_path], params, &envs).await?;
@@ -1447,6 +1452,9 @@ JSON
             .as_file()
             .set_permissions(permissions)
             .expect("make provider executable");
+        let provider_path = provider.path().to_path_buf();
+        // Linux cannot execute a file while its writable handle is still open.
+        let _provider = provider.into_temp_path();
 
         let params = DynamicToolCallParams {
             thread_id: "thread-fixture".to_string(),
@@ -1459,7 +1467,7 @@ JSON
         let error = run_command_provider(
             &params,
             &CommandProviderConfig {
-                argv: vec![provider.path().to_string_lossy().to_string()],
+                argv: vec![provider_path.to_string_lossy().to_string()],
             },
         )
         .await
@@ -2708,10 +2716,7 @@ fs.writeFile = async (file, ...args) => {
                 let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
                 let mut request = Vec::with_capacity(1024);
                 let mut chunk = [0_u8; 1024];
-                loop {
-                    let Ok(read) = stream.read(&mut chunk) else {
-                        break;
-                    };
+                while let Ok(read) = stream.read(&mut chunk) {
                     if read == 0 {
                         break;
                     }
