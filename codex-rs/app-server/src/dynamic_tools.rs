@@ -32,8 +32,11 @@ pub(crate) async fn on_call_response(
         }
         Ok(Err(err)) if is_turn_transition_server_request_error(&err) => {
             record_browser_app_server_stage(
-                &call_id, /*response_accepted*/ false, /*response_submitted*/ false,
+                &call_id,
+                /*response_accepted*/ false,
+                /*response_submitted*/ false,
                 /*accepted_item_count*/ 0,
+                /*accepted_item_kinds*/ (0, 0, 0, 0),
             );
             return;
         }
@@ -51,6 +54,11 @@ pub(crate) async fn on_call_response(
         response.content_items.len()
     } else {
         0
+    };
+    let accepted_item_kinds = if response_accepted {
+        dynamic_tool_item_kind_counts(&response.content_items)
+    } else {
+        (0, 0, 0, 0)
     };
     let DynamicToolCallResponse {
         content_items,
@@ -78,6 +86,7 @@ pub(crate) async fn on_call_response(
         response_accepted,
         response_submitted,
         accepted_item_count,
+        accepted_item_kinds,
     );
 }
 
@@ -86,6 +95,7 @@ fn record_browser_app_server_stage(
     response_accepted: bool,
     response_submitted: bool,
     accepted_item_count: usize,
+    accepted_item_kinds: (usize, usize, usize, usize),
 ) {
     if env::var("CODEX_TEST_BROWSER_OUTPUT_DIAGNOSTIC")
         .ok()
@@ -110,11 +120,29 @@ fn record_browser_app_server_stage(
         "app_server_response_accepted": response_accepted,
         "app_server_response_submitted": response_submitted,
         "app_server_accepted_item_count": accepted_item_count,
+        "app_server_accepted_input_text_count": accepted_item_kinds.0,
+        "app_server_accepted_input_image_count": accepted_item_kinds.1,
+        "app_server_accepted_input_audio_count": accepted_item_kinds.2,
+        "app_server_accepted_other_item_count": accepted_item_kinds.3,
     });
     if let Ok(mut line) = serde_json::to_vec(&observation) {
         line.push(b'\n');
         let _ = file.write_all(&line);
     }
+}
+
+fn dynamic_tool_item_kind_counts(
+    items: &[DynamicToolCallOutputContentItem],
+) -> (usize, usize, usize, usize) {
+    let mut counts = (0, 0, 0, 0);
+    for item in items {
+        match item {
+            DynamicToolCallOutputContentItem::InputText { .. } => counts.0 += 1,
+            DynamicToolCallOutputContentItem::InputImage { .. } => counts.1 += 1,
+            DynamicToolCallOutputContentItem::InputAudio { .. } => counts.2 += 1,
+        }
+    }
+    counts
 }
 
 fn decode_response(value: serde_json::Value) -> (DynamicToolCallResponse, Option<String>) {

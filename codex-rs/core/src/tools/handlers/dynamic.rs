@@ -11,6 +11,7 @@ use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
 use crate::tools::registry::ToolExposure;
 use codex_async_utils::OrCancelExt;
+use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem;
 use codex_protocol::dynamic_tools::DynamicToolFunctionSpec;
 use codex_protocol::dynamic_tools::DynamicToolNamespaceSpec;
 use codex_protocol::dynamic_tools::DynamicToolResponse;
@@ -161,6 +162,8 @@ impl DynamicToolHandler {
                 /*response_received*/ false,
                 /*function_output_constructed*/ false,
                 /*output_item_count*/ 0,
+                /*response_item_kinds*/ (0, 0, 0, 0),
+                /*output_item_kinds*/ (0, 0, 0, 0),
             );
             return Err(FunctionCallError::RespondToModel(
                 "dynamic tool call was cancelled before receiving a response".to_string(),
@@ -171,17 +174,21 @@ impl DynamicToolHandler {
             content_items,
             success,
         } = response;
+        let response_item_kinds = dynamic_tool_response_item_kind_counts(&content_items);
         let body = content_items
             .into_iter()
             .map(FunctionCallOutputContentItem::from)
             .collect::<Vec<_>>();
         let output_item_count = body.len();
+        let output_item_kinds = function_output_item_kind_counts(&body);
         let output = dynamic_tool_output(&self.tool_name, body, success);
         record_browser_core_output_stage(
             &diagnostic_call_id,
             /*response_received*/ true,
             /*function_output_constructed*/ true,
             output_item_count,
+            response_item_kinds,
+            output_item_kinds,
         );
         Ok(output)
     }
@@ -244,6 +251,8 @@ fn record_browser_core_output_stage(
     response_received: bool,
     function_output_constructed: bool,
     output_item_count: usize,
+    response_item_kinds: (usize, usize, usize, usize),
+    output_item_kinds: (usize, usize, usize, usize),
 ) {
     if env::var("CODEX_TEST_BROWSER_OUTPUT_DIAGNOSTIC")
         .ok()
@@ -268,11 +277,48 @@ fn record_browser_core_output_stage(
         "core_response_received": response_received,
         "core_function_output_constructed": function_output_constructed,
         "core_output_item_count": output_item_count,
+        "core_response_input_text_count": response_item_kinds.0,
+        "core_response_input_image_count": response_item_kinds.1,
+        "core_response_input_audio_count": response_item_kinds.2,
+        "core_response_other_item_count": response_item_kinds.3,
+        "core_output_input_text_count": output_item_kinds.0,
+        "core_output_input_image_count": output_item_kinds.1,
+        "core_output_input_audio_count": output_item_kinds.2,
+        "core_output_other_item_count": output_item_kinds.3,
     });
     if let Ok(mut line) = serde_json::to_vec(&observation) {
         line.push(b'\n');
         let _ = file.write_all(&line);
     }
+}
+
+fn dynamic_tool_response_item_kind_counts(
+    items: &[DynamicToolCallOutputContentItem],
+) -> (usize, usize, usize, usize) {
+    let mut counts = (0, 0, 0, 0);
+    for item in items {
+        match item {
+            DynamicToolCallOutputContentItem::InputText { .. } => counts.0 += 1,
+            DynamicToolCallOutputContentItem::InputImage { .. } => counts.1 += 1,
+            DynamicToolCallOutputContentItem::InputAudio { .. } => counts.2 += 1,
+        }
+    }
+    counts
+}
+
+fn function_output_item_kind_counts(
+    items: &[FunctionCallOutputContentItem],
+) -> (usize, usize, usize, usize) {
+    let mut counts = (0, 0, 0, 0);
+    for item in items {
+        match item {
+            FunctionCallOutputContentItem::InputText { .. } => counts.0 += 1,
+            FunctionCallOutputContentItem::InputImage { .. } => counts.1 += 1,
+            FunctionCallOutputContentItem::InputAudio { .. } => counts.2 += 1,
+            FunctionCallOutputContentItem::EncryptedContent { .. } => counts.3 += 1,
+        }
+    }
+    counts
 }
 
 impl CoreToolRuntime for DynamicToolHandler {

@@ -70,8 +70,12 @@ use codex_utils_output_truncation::approx_token_count;
 use codex_utils_output_truncation::approx_tokens_from_byte_count_i64;
 use codex_utils_output_truncation::truncate_function_output_payload;
 use codex_utils_output_truncation::with_serialization_allowance;
+use std::env;
+use std::fs::OpenOptions;
+use std::io::Write as _;
 use std::num::NonZeroUsize;
 use std::ops::Deref;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::sync::OnceLock;
@@ -83,6 +87,112 @@ use crate::context::GuardianContextMode;
 use codex_features::Feature;
 
 static GUARDIAN_REVIEW_CONTEXT_REVISION: AtomicU64 = AtomicU64::new(/*v*/ 1);
+
+struct BrowserOutputImageDiagnostic {
+    expected_call_id: String,
+    path: PathBuf,
+    matched_function_output_count: usize,
+    image_count_before: usize,
+}
+
+fn browser_output_image_counts_for_fixture(
+    items: &[ResponseItemEnvelope],
+) -> Option<BrowserOutputImageDiagnostic> {
+    if env::var("CODEX_TEST_BROWSER_OUTPUT_DIAGNOSTIC")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
+        return None;
+    }
+    let (Ok(expected_call_id), Some(codex_home)) = (
+        env::var("CODEX_TEST_BROWSER_OUTPUT_DIAGNOSTIC_CALL_ID"),
+        env::var_os("CODEX_HOME"),
+    ) else {
+        return None;
+    };
+
+    let mut matched_function_output_count = 0;
+    let mut image_count_before = 0;
+    for envelope in items {
+        let ResponseItem::FunctionCallOutput {
+            call_id, output, ..
+        } = &envelope.item
+        else {
+            continue;
+        };
+        if call_id != &expected_call_id {
+            continue;
+        }
+        matched_function_output_count += 1;
+        image_count_before += output
+            .content_items()
+            .unwrap_or_default()
+            .iter()
+            .filter(|item| matches!(item, FunctionCallOutputContentItem::InputImage { .. }))
+            .count();
+    }
+    if matched_function_output_count == 0 {
+        return None;
+    }
+
+    Some(BrowserOutputImageDiagnostic {
+        expected_call_id,
+        path: PathBuf::from(codex_home).join("browser-output-stage-diagnostic.jsonl"),
+        matched_function_output_count,
+        image_count_before,
+    })
+}
+
+fn record_browser_history_image_normalization(
+    diagnostic: &BrowserOutputImageDiagnostic,
+    input_modalities: &[InputModality],
+    items: &[ResponseItemEnvelope],
+) {
+    let mut matched_function_output_count = 0;
+    let mut image_count_after = 0;
+    for envelope in items {
+        let ResponseItem::FunctionCallOutput {
+            call_id, output, ..
+        } = &envelope.item
+        else {
+            continue;
+        };
+        if call_id != &diagnostic.expected_call_id {
+            continue;
+        }
+        matched_function_output_count += 1;
+        image_count_after += output
+            .content_items()
+            .unwrap_or_default()
+            .iter()
+            .filter(|item| matches!(item, FunctionCallOutputContentItem::InputImage { .. }))
+            .count();
+    }
+    if matched_function_output_count == 0 {
+        return;
+    }
+
+    let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&diagnostic.path)
+    else {
+        return;
+    };
+    let observation = serde_json::json!({
+        "stage": "history_image_normalization",
+        "call_id_matches_fixture": true,
+        "history_model_accepts_image": input_modalities.contains(&InputModality::Image),
+        "history_matched_function_output_count": diagnostic.matched_function_output_count,
+        "history_image_count_before": diagnostic.image_count_before,
+        "history_image_count_after": image_count_after,
+    });
+    if let Ok(mut line) = serde_json::to_vec(&observation) {
+        line.push(b'\n');
+        let _ = file.write_all(&line);
+    }
+}
 
 fn next_guardian_review_context_revision() -> u64 {
     GUARDIAN_REVIEW_CONTEXT_REVISION.fetch_add(/*val*/ 1, Ordering::Relaxed)
@@ -969,8 +1079,14 @@ impl ContextManager {
         // Paired outputs must have a corresponding call; named external outputs stand alone.
         normalize::remove_orphan_outputs(items);
 
+        let browser_output_diagnostic = browser_output_image_counts_for_fixture(items);
+
         // strip images when model does not support them
         normalize::strip_images_when_unsupported(input_modalities, items);
+
+        if let Some(diagnostic) = browser_output_diagnostic {
+            record_browser_history_image_normalization(&diagnostic, input_modalities, items);
+        }
 
         // strip audio when model does not support it
         normalize::strip_audio_when_unsupported(input_modalities, items);
