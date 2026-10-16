@@ -317,7 +317,12 @@ async fn handle_output_item_done_returns_contributed_last_agent_message() {
     let mut ctx = output_context(Arc::new(session), Arc::new(turn_context));
     let item = assistant_output_text("original assistant text");
 
-    let output = handle_output_item_done(&mut ctx, item, /*previously_active_item*/ None)
+    let output = handle_output_item_done(
+        &mut ctx,
+        item,
+        /*previously_active_item*/ None,
+        /*already_started*/ false,
+    )
         .await
         .expect("assistant message should complete");
 
@@ -350,7 +355,12 @@ async fn direct_results_keep_their_own_records_when_call_ids_repeat() {
             "arguments": arguments.to_string(),
         }))
         .expect("direct input");
-        let result = handle_output_item_done(&mut ctx, call, /*previously_active_item*/ None)
+        let result = handle_output_item_done(
+            &mut ctx,
+            call,
+            /*previously_active_item*/ None,
+            /*already_started*/ false,
+        )
             .await
             .expect("direct call should be handled");
         assert!(result.needs_follow_up);
@@ -409,7 +419,12 @@ async fn direct_results_keep_their_own_records_when_call_ids_repeat() {
         }))
         .expect("direct input");
         pending.push(
-            handle_output_item_done(&mut ctx, call, /*previously_active_item*/ None)
+            handle_output_item_done(
+                &mut ctx,
+                call,
+                /*previously_active_item*/ None,
+                /*already_started*/ false,
+            )
                 .await
                 .expect("direct call should be handled")
                 .tool_future

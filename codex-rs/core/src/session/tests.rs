@@ -13479,7 +13479,12 @@ async fn tool_calls_reopen_mailbox_delivery_for_current_turn() {
         cancellation_token: CancellationToken::new(),
     };
 
-    let output = handle_output_item_done(&mut ctx, item, /*previously_active_item*/ None)
+    let output = handle_output_item_done(
+        &mut ctx,
+        item,
+        /*previously_active_item*/ None,
+        /*already_started*/ false,
+    )
         .await
         .expect("tool call should be handled");
 

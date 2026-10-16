@@ -2905,7 +2905,10 @@ async fn try_run_sampling_request(
                         Ok(checked) => checked,
                         Err(err) => break Err(err),
                     };
-                if replay_suppression.take() == Some(ReplaySuppression::AcceptedItem) || replayed {
+                let suppression = replay_suppression.take();
+                let already_started_from_streamed_draft =
+                    suppression == Some(ReplaySuppression::StreamedDraft);
+                if suppression == Some(ReplaySuppression::AcceptedItem) || replayed {
                     active_item = None;
                     active_provider_item_id = None;
                     active_item_is_streaming_to_client = false;
@@ -3011,9 +3014,14 @@ async fn try_run_sampling_request(
                 };
 
                 let output_result =
-                    match handle_output_item_done(&mut ctx, item, previously_streamed_item)
-                        .instrument(handle_responses)
-                        .await
+                    match handle_output_item_done(
+                        &mut ctx,
+                        item,
+                        previously_streamed_item,
+                        already_started_from_streamed_draft,
+                    )
+                    .instrument(handle_responses)
+                    .await
                     {
                         Ok(output_result) => {
                             accepted_retry_items.record(

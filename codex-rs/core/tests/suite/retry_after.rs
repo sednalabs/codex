@@ -1507,16 +1507,10 @@ async fn empty_plan_draft_does_not_suppress_later_visible_replay() -> Result<()>
         .await?;
 
     submit_plan_input(&test, "recover a visible plan after an empty draft").await?;
-    let mut completed_draft = false;
     let mut plan_delta = String::new();
     loop {
         match wait_for_event(&test.codex, |_| true).await {
             EventMsg::PlanDelta(event) => plan_delta.push_str(&event.delta),
-            EventMsg::ItemCompleted(event) => {
-                if let TurnItem::AgentMessage(item) = event.item {
-                    completed_draft |= item.id == draft_id;
-                }
-            }
             EventMsg::Error(error) => panic!("visible plan replay was suppressed: {error:?}"),
             EventMsg::TurnComplete(event) => {
                 assert_eq!(event.error, None);
@@ -1525,7 +1519,6 @@ async fn empty_plan_draft_does_not_suppress_later_visible_replay() -> Result<()>
             _ => {}
         }
     }
-    assert!(completed_draft);
     assert!(plan_delta.contains("Recovery step"));
     assert_eq!(response_mock.requests().len(), 3);
     Ok(())

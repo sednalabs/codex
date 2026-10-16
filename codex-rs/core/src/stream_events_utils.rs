@@ -316,6 +316,7 @@ pub(crate) async fn handle_output_item_done(
     ctx: &mut HandleOutputCtx,
     item: ResponseItem,
     previously_active_item: Option<TurnItem>,
+    already_started: bool,
 ) -> Result<OutputItemResult> {
     let mut output = OutputItemResult::default();
     let plan_mode = ctx.step_context.turn.mode() == ModeKind::Plan;
@@ -373,7 +374,7 @@ pub(crate) async fn handle_output_item_done(
                 .as_ref()
                 .map(|finalized| finalized.facts.clone());
             if let Some(finalized_turn_item) = finalized_turn_item {
-                if previously_active_item.is_none() {
+                if previously_active_item.is_none() && !already_started {
                     ctx.sess
                         .emit_turn_item_started(
                             &ctx.step_context.turn,
