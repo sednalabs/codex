@@ -44,8 +44,11 @@ async function main() {
       viewport,
     });
 
+    let page;
+    let inspection;
     try {
-      const page = await activePage(context);
+      page = await activePage(context);
+      inspection = installInspection(page, request.arguments?.inspection);
       await restoreOrNavigate(page, request, stateDir);
 
       const summaries = [];
@@ -76,13 +79,16 @@ async function main() {
           artifactError = `artifact_save: ${errorMessage(error)}`;
         }
       }
+      const inspectionResult = await snapshotInspection(page, inspection);
       writeResponse(await responseForPage(page, captureBundle, summaries, {
         artifactResult,
         error: captureBundle.error || artifactError,
         pageHints: request.arguments?.scope === "viewport_and_page" || request.arguments?.interaction_map?.scope === "page",
         pageHintOffset: request.arguments?.interaction_map?.offset || 0,
+        inspection: inspectionResult,
       }));
     } finally {
+      inspection?.cleanup();
       await context.close().catch(() => {});
     }
   });
@@ -334,6 +340,7 @@ function validateVisualArguments(args) {
   if (args.interaction_map !== undefined && (!args.interaction_map || typeof args.interaction_map !== "object" || Array.isArray(args.interaction_map) || (args.interaction_map.scope !== undefined && args.interaction_map.scope !== "page") || (args.interaction_map.offset !== undefined && (!Number.isInteger(args.interaction_map.offset) || args.interaction_map.offset < 0)) || Object.keys(args.interaction_map).some((key) => !["scope", "offset"].includes(key)))) {
     throw new Error("interaction_map supports only scope=page and a non-negative integer offset");
   }
+  inspectionConfig(args.inspection);
   if (args.captures !== undefined) {
     if (!Array.isArray(args.captures) || args.captures.length === 0 || args.captures.length > 4) {
       throw new Error("captures must contain between one and four labeled captures");
@@ -370,6 +377,136 @@ function validateVisualArguments(args) {
   if (args.save_artifact !== undefined && typeof args.save_artifact !== "boolean") {
     throw new Error("save_artifact must be a boolean");
   }
+}
+
+const INSPECTION_SECTIONS = new Set(["runtime", "frames", "console", "network"]);
+const INSPECTION_ROW_LIMIT = 20;
+
+function inspectionConfig(value) {
+  if (value === undefined || value === null) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => key !== "sections")) {
+    throw new Error("Browser inspection request is invalid.");
+  }
+  if (value.sections === undefined) return { sections: [...INSPECTION_SECTIONS] };
+  if (!Array.isArray(value.sections) || value.sections.some((section) => typeof section !== "string" || !INSPECTION_SECTIONS.has(section))) {
+    throw new Error("Browser inspection request is invalid.");
+  }
+  return { sections: [...new Set(value.sections)] };
+}
+
+function installInspection(page, value) {
+  const config = inspectionConfig(value);
+  const rows = { console: [], network: [] };
+  const omitted = { console: 0, network: 0 };
+  const listeners = [];
+  const push = (kind, row) => {
+    if (rows[kind].length < INSPECTION_ROW_LIMIT) rows[kind].push(row);
+    else omitted[kind] += 1;
+  };
+  if (config?.sections.includes("console")) {
+    const onConsole = (message) => {
+      const type = safeConsoleType(message?.type?.());
+      push("console", { type, severity: consoleSeverity(type) });
+    };
+    page.on("console", onConsole);
+    listeners.push(["console", onConsole]);
+  }
+  if (config?.sections.includes("network")) {
+    const onResponse = (response) => {
+      const request = response?.request?.();
+      push("network", {
+        method: safeMethod(request?.method?.()),
+        status: boundedStatus(response?.status?.()),
+        resourceType: safeResourceType(request?.resourceType?.()),
+        destination: safeOrigin(response?.url?.()),
+      });
+    };
+    page.on("response", onResponse);
+    listeners.push(["response", onResponse]);
+  }
+  return {
+    config,
+    rows,
+    omitted,
+    cleanup() {
+      for (const [event, listener] of listeners) page.off?.(event, listener);
+    },
+  };
+}
+
+async function snapshotInspection(page, collector) {
+  const config = collector.config;
+  if (!config) return null;
+  const result = { requested: config.sections, scope: "call", observed: {}, omitted: {} };
+  if (config.sections.includes("runtime")) {
+    result.runtime = await page.evaluate(({ markerLimit }) => {
+      const markerSelectors = [
+        ["react", "[data-reactroot], [data-react]"],
+        ["angular", "[ng-version]"],
+        ["vue", "[data-vue-meta]"],
+        ["svelte", "[data-svelte]"],
+        ["next", "#__next"],
+        ["root", "#root"],
+        ["app", "#app"],
+      ];
+      const markers = markerSelectors
+        .flatMap(([marker, selector]) => (document.querySelector(selector) ? [{ marker }] : []))
+        .slice(0, markerLimit);
+      return { userAgent: navigator.userAgent ? "present" : "absent", markers };
+    }, { markerLimit: INSPECTION_ROW_LIMIT }).catch(() => ({ status: "unavailable", markers: [] }));
+    result.observed.runtime = result.runtime.markers.length;
+  }
+  if (config.sections.includes("frames")) {
+    const frames = page.frames?.() || [];
+    result.frames = [];
+    for (const frame of frames.slice(0, INSPECTION_ROW_LIMIT)) {
+      let owner;
+      try {
+        const main = frame === page.mainFrame?.();
+        owner = main ? null : await frame.frameElement?.();
+        const box = await owner?.boundingBox?.();
+        const frameUrl = frame.url?.();
+        result.frames.push({ main, url: safeOrigin(frameUrl), crossOrigin: isCrossOrigin(page.url?.(), frameUrl), geometry: boundedGeometry(box) });
+      } catch {
+        result.frames.push({ main: false, url: "opaque", crossOrigin: true, geometry: null, status: "unavailable" });
+      } finally {
+        await owner?.dispose?.().catch?.(() => {});
+      }
+    }
+    result.observed.frames = frames.length;
+    result.omitted.frames = Math.max(0, frames.length - INSPECTION_ROW_LIMIT);
+  }
+  for (const section of ["console", "network"]) {
+    if (config.sections.includes(section)) {
+      result[section] = collector.rows[section];
+      result.observed[section] = collector.rows[section].length + collector.omitted[section];
+      result.omitted[section] = collector.omitted[section];
+    }
+  }
+  return result;
+}
+
+const SAFE_METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "CONNECT", "TRACE"]);
+const SAFE_RESOURCE_TYPES = new Set(["document", "stylesheet", "image", "media", "font", "script", "texttrack", "xhr", "fetch", "eventsource", "websocket", "manifest", "other"]);
+const SAFE_CONSOLE_TYPES = new Set(["debug", "dir", "dirxml", "error", "info", "log", "trace", "warning", "startGroup", "startGroupCollapsed", "endGroup"]);
+function safeMethod(value) { return typeof value === "string" && SAFE_METHODS.has(value.toUpperCase()) ? value.toUpperCase() : "OTHER"; }
+function safeResourceType(value) { return typeof value === "string" && SAFE_RESOURCE_TYPES.has(value) ? value : "other"; }
+function safeConsoleType(value) { return typeof value === "string" && SAFE_CONSOLE_TYPES.has(value) ? value : "other"; }
+function consoleSeverity(type) { return ["error", "warning", "info", "debug"].includes(type) ? type : "log"; }
+function boundedStatus(value) { return Number.isInteger(value) && value >= 100 && value <= 599 ? value : null; }
+function safeOrigin(value) {
+  try {
+    const url = new URL(String(value));
+    if (!["http:", "https:"].includes(url.protocol) || url.host.length > 256) return "opaque";
+    return `${url.protocol}//${url.host}`;
+  } catch { return "opaque"; }
+}
+function isCrossOrigin(pageUrl, frameUrl) {
+  try { return new URL(pageUrl).origin !== new URL(frameUrl).origin; } catch { return true; }
+}
+function boundedGeometry(box) {
+  if (!box || !["x", "y", "width", "height"].every((key) => Number.isFinite(box[key]))) return null;
+  return { x: box.x, y: box.y, width: box.width, height: box.height };
 }
 
 function captureMode() {
@@ -877,33 +1014,129 @@ async function applyCaptureScroll(page, capture) {
 }
 
 async function pageHints(page, offset = 0) {
-  return page.evaluate((boundedOffset) => {
-    const selectors = "button,a[href],input,textarea,select,[role],[tabindex],[contenteditable='true'],[data-testid]";
-    const all = Array.from(document.querySelectorAll(selectors));
-    const controls = all.slice(boundedOffset, boundedOffset + 24).flatMap((element) => {
-      const rect = element.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0 || element.hidden) return [];
+  return page.evaluate((requestedOffset) => {
+    const selector = "button,a[href],input,textarea,select,iframe,[role],[tabindex],[contenteditable='true'],[data-testid],[data-autosave-action]";
+    const viewportWidth = typeof window !== "undefined" ? window.innerWidth : Number.MAX_SAFE_INTEGER;
+    const viewportHeight = typeof window !== "undefined" ? window.innerHeight : Number.MAX_SAFE_INTEGER;
+    const selectorIndex = { ids: new Map(), testIds: new Map(), labels: new Map(), tags: new Map() };
+    for (const element of document.querySelectorAll("*")) {
       const tag = element.tagName.toLowerCase();
-      const role = element.getAttribute("role") || ({ button: "button", a: "link", input: "textbox", textarea: "textbox", select: "combobox" }[tag] || "element");
-      const valueBearingRole = ["textbox", "searchbox", "combobox", "spinbutton", "slider"].includes(role.toLowerCase());
-      const valueBearingElement = tag === "input" || tag === "textarea" || tag === "select" || element.isContentEditable || valueBearingRole;
-      const name = element.getAttribute("aria-label") || element.getAttribute("title") || (valueBearingElement ? "" : (element.innerText || element.textContent || "").replace(/\s+/g, " ").trim().slice(0, 80));
-      const hints = [];
-      if (element.id) hints.push(`#${CSS.escape(element.id)}`);
+      selectorIndex.tags.set(tag, (selectorIndex.tags.get(tag) || 0) + 1);
+      if (element.id) selectorIndex.ids.set(element.id, (selectorIndex.ids.get(element.id) || 0) + 1);
       const testId = element.getAttribute("data-testid");
-      if (testId) hints.push(`[data-testid="${CSS.escape(testId)}"]`);
+      if (testId) selectorIndex.testIds.set(testId, (selectorIndex.testIds.get(testId) || 0) + 1);
       const label = element.getAttribute("aria-label");
-      if (label) {
-        const escapedLabel = label.slice(0, 80).replace(/[\u0000-\u001f\u007f"\\]/g, (character) => {
-          const codePoint = character.codePointAt(0);
-          return `\\${codePoint.toString(16)} `;
-        });
-        hints.push(`[aria-label="${escapedLabel}"]`);
-      }
-      if (!hints.length) hints.push(tag);
-      return [{ role, name, disabled: Boolean(element.disabled || element.getAttribute("aria-disabled") === "true"), box: { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) }, selectors: hints.slice(0, 3) }];
-    });
+      if (label) selectorIndex.labels.set(label, (selectorIndex.labels.get(label) || 0) + 1);
+    }
+    const all = Array.from(document.querySelectorAll(selector))
+      .map((element, index) => {
+        if (isHidden(element)) return null;
+        const rect = element.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return null;
+        const left = rect.left ?? rect.x;
+        const top = rect.top ?? rect.y;
+        const right = rect.right ?? left + rect.width;
+        const bottom = rect.bottom ?? top + rect.height;
+        const tag = element.tagName.toLowerCase();
+        const role = (element.getAttribute("role") || ({ button: "button", a: "link", input: "textbox", textarea: "textbox", select: "combobox", iframe: "iframe" }[tag] || "element")).slice(0, 40);
+        const valueBearingRole = ["textbox", "searchbox", "combobox", "spinbutton", "slider"].includes(role.toLowerCase());
+        const valueBearingElement = tag === "input" || tag === "textarea" || tag === "select" || element.isContentEditable || valueBearingRole;
+        const name = String(element.getAttribute("aria-label") || element.getAttribute("title") || (valueBearingElement ? "" : (element.innerText || element.textContent || "").replace(/\s+/g, " ").trim())).replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 80);
+        const hints = [];
+        const selectorMatches = [];
+        if (element.id && element.id.length <= 80) {
+          const value = `#${escapeIdentifier(element.id)}`;
+          hints.push(value);
+          selectorMatches.push({ selector: value, count: selectorIndex.ids.get(element.id) || 0 });
+        }
+        const testId = element.getAttribute("data-testid");
+        if (testId && testId.length <= 80) {
+          const value = `[data-testid="${escapeString(testId)}"]`;
+          hints.push(value);
+          selectorMatches.push({ selector: value, count: selectorIndex.testIds.get(testId) || 0 });
+        }
+        const label = element.getAttribute("aria-label");
+        if (label && label.length <= 80) {
+          const value = `[aria-label="${escapeString(label)}"]`;
+          hints.push(value);
+          selectorMatches.push({ selector: value, count: selectorIndex.labels.get(label) || 0 });
+        }
+        if (!hints.length) {
+          hints.push(tag);
+          selectorMatches.push({ selector: tag, count: selectorIndex.tags.get(tag) || 0 });
+        }
+        const selectors = hints.slice(0, 3);
+        const disabled = Boolean(element.disabled || element.getAttribute("aria-disabled") === "true" || element.closest?.("[aria-disabled='true'],fieldset:disabled"));
+        const offscreen = bottom <= 0 || right <= 0 || top >= viewportHeight || left >= viewportWidth;
+        const centerX = Math.max(0, Math.min(viewportWidth - 1, left + rect.width / 2));
+        const centerY = Math.max(0, Math.min(viewportHeight - 1, top + rect.height / 2));
+        const topElement = document.elementFromPoint?.(centerX, centerY);
+        const covered = Boolean(topElement && topElement !== element && !element.contains?.(topElement));
+        const activeOverlay = isActiveOverlay(element);
+        return {
+          index,
+          focused: element === document.activeElement,
+          activeOverlay,
+          summary: {
+            role,
+            name,
+            disabled,
+            covered,
+            offscreen,
+            ambiguous: selectorMatches.some((match) => match.count > 1),
+            selectorMatches,
+            box: { x: Math.round(left), y: Math.round(top), width: Math.round(rect.width), height: Math.round(rect.height) },
+            selectors,
+          },
+        };
+      })
+      .filter(Boolean)
+      .sort((left, right) => compareRank(rank(right), rank(left)) || left.index - right.index);
+    const boundedOffset = Math.min(requestedOffset, all.length);
+    const controls = all.slice(boundedOffset, boundedOffset + 24).map((entry) => entry.summary);
     return { offset: boundedOffset, total: all.length, omitted: Math.max(0, all.length - boundedOffset - controls.length), controls };
+
+    function rank(entry) {
+      const control = entry.summary;
+      return [
+        entry.focused ? 1 : 0,
+        entry.activeOverlay ? 1 : 0,
+        control.offscreen ? 0 : 1,
+        control.covered ? 0 : 1,
+        control.disabled ? 0 : 1,
+        ["link", "button"].includes(control.role) ? 1 : 0,
+      ];
+    }
+    function compareRank(left, right) {
+      for (let index = 0; index < left.length; index += 1) {
+        if (left[index] !== right[index]) return left[index] - right[index];
+      }
+      return 0;
+    }
+    function isHidden(element) {
+      for (let current = element; current; current = current.parentElement) {
+        if (current.hidden || current.inert || current.getAttribute?.("aria-hidden") === "true") return true;
+        if (typeof window !== "undefined" && window.getComputedStyle) {
+          const style = window.getComputedStyle(current);
+          if (style.display === "none" || style.visibility === "hidden" || style.visibility === "collapse") return true;
+        }
+      }
+      return false;
+    }
+    function isActiveOverlay(element) {
+      const overlay = element.closest?.("dialog,[role='dialog'],[aria-modal='true'],[role='menu'],.modal");
+      if (!overlay || overlay.hidden || overlay.inert || overlay.getAttribute("aria-hidden") === "true") return false;
+      const rect = overlay.getBoundingClientRect();
+      if (!rect || rect.width <= 0 || rect.height <= 0) return false;
+      const style = typeof window !== "undefined" && window.getComputedStyle ? window.getComputedStyle(overlay) : null;
+      return !style || (style.display !== "none" && style.visibility !== "hidden");
+    }
+    function escapeIdentifier(value) {
+      return typeof CSS !== "undefined" && CSS.escape ? CSS.escape(value) : String(value).replace(/[^a-zA-Z0-9_-]/g, "\\$&");
+    }
+    function escapeString(value) {
+      return String(value).replace(/[\u0000-\u001f\u007f"\\]/g, (character) => `\\${character.codePointAt(0).toString(16)} `);
+    }
   }, offset);
 }
 
@@ -961,7 +1194,7 @@ async function saveCaptureArtifacts(stateDir, bundle, request) {
   }
 }
 
-async function responseForPage(page, bundle, summaries, { artifactResult, error, pageHints: includePageHints, pageHintOffset }) {
+async function responseForPage(page, bundle, summaries, { artifactResult, error, pageHints: includePageHints, pageHintOffset, inspection }) {
   const lines = ["Browser observation", `url: ${page.url()}`];
   const title = await pageTitle(page);
   if (title) {
@@ -980,6 +1213,9 @@ async function responseForPage(page, bundle, summaries, { artifactResult, error,
   if (includePageHints) {
     const hints = await pageHints(page, pageHintOffset);
     lines.push(`page_hints: ${JSON.stringify(hints)}`);
+  }
+  if (inspection) {
+    lines.push(`inspection: ${JSON.stringify(inspection)}`);
   }
   for (const [index, capture] of bundle.captures.entries()) {
     const label = capture.label ? ` label=${JSON.stringify(capture.label)}` : "";

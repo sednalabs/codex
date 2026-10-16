@@ -110,9 +110,9 @@ impl ThreadToolTransport {
         params: &mut ThreadStartParams,
         codex_home: &Path,
     ) -> Result<(), String> {
-        crate::browser_dynamic_tools::validate_no_reserved_name_conflict(params)?;
-        crate::android_computer_use_provider::validate_no_reserved_name_conflict(params)?;
-        crate::desktop_computer_use_provider::validate_no_reserved_name_conflict(params)?;
+        crate::native_computer_use::NativeComputerUseProvider::validate_no_reserved_name_conflict(
+            params,
+        )?;
         let mut specs = match self {
             Self::Disabled => Vec::new(),
             Self::Dynamic => dynamic_tools::non_delegation_tool_specs(),
@@ -121,15 +121,11 @@ impl ThreadToolTransport {
                 Vec::new()
             }
         };
-        specs.extend(crate::browser_dynamic_tools::specs_for_codex_home(
-            codex_home,
-        ));
-        specs.extend(crate::android_computer_use_provider::specs_for_codex_home(
-            codex_home,
-        ));
-        specs.extend(crate::desktop_computer_use_provider::specs_for_codex_home(
-            codex_home,
-        ));
+        specs.extend(
+            crate::native_computer_use::NativeComputerUseProvider::specs_for_codex_home(
+                codex_home,
+            ),
+        );
         params.dynamic_tools = (!specs.is_empty()).then_some(specs);
         Ok(())
     }

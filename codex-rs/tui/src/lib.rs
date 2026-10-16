@@ -131,6 +131,7 @@ pub(crate) mod custom_terminal;
 mod daybreak;
 mod experimental_features;
 mod markdown_copy;
+mod native_computer_use;
 mod permission_discovery;
 mod pets;
 mod security_setup;

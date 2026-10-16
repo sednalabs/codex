@@ -570,7 +570,9 @@ impl App {
             return;
         }
         if let ServerRequest::DynamicToolCall { request_id, params } = &request {
-            if crate::browser_dynamic_tools::is_browser_call(params) {
+            if let Some(provider) =
+                crate::native_computer_use::NativeComputerUseProvider::for_call(params)
+            {
                 if self.dynamic_tool_tasks.contains_key(request_id) {
                     return;
                 }
@@ -592,97 +594,8 @@ impl App {
                 let codex_home = self.config.codex_home.as_path().to_path_buf();
                 let app_event_tx = self.app_event_tx.clone();
                 let task = tokio::spawn(async move {
-                    let response =
-                        crate::browser_dynamic_tools::handle_for_codex_home(&params, &codex_home)
-                            .await
-                            .unwrap_or_else(|| {
-                                crate::dynamic_tools::failure_response(
-                                    "Browser request did not match an available native tool.",
-                                )
-                            });
-                    app_event_tx.send(crate::browser_dynamic_tools::completed_event(
-                        request_id, response,
-                    ));
-                });
-                self.dynamic_tool_tasks
-                    .insert(task_request_id, (source_thread_id, task));
-                return;
-            }
-            if crate::android_computer_use_provider::is_android_call(params) {
-                if self.dynamic_tool_tasks.contains_key(request_id) {
-                    return;
-                }
-                if codex_protocol::ThreadId::from_string(&params.thread_id)
-                    .is_ok_and(|thread_id| self.abandoned_side_threads.contains(&thread_id))
-                {
-                    self.app_event_tx.send(AppEvent::DynamicToolCallCompleted {
-                        request_id: request_id.clone(),
-                        response: crate::dynamic_tools::failure_response(
-                            "TUI dynamic tools require an active external task",
-                        ),
-                    });
-                    return;
-                }
-                let request_id = request_id.clone();
-                let task_request_id = request_id.clone();
-                let source_thread_id = params.thread_id.clone();
-                let params = params.clone();
-                let codex_home = self.config.codex_home.as_path().to_path_buf();
-                let app_event_tx = self.app_event_tx.clone();
-                let task = tokio::spawn(async move {
-                    let response = crate::android_computer_use_provider::handle_for_codex_home(
-                        &params,
-                        &codex_home,
-                    )
-                    .await
-                    .unwrap_or_else(|| {
-                        crate::dynamic_tools::failure_response(
-                            "Android request did not match an available native tool.",
-                        )
-                    });
-                    app_event_tx.send(crate::android_computer_use_provider::completed_event(
-                        request_id, response,
-                    ));
-                });
-                self.dynamic_tool_tasks
-                    .insert(task_request_id, (source_thread_id, task));
-                return;
-            }
-            if crate::desktop_computer_use_provider::is_desktop_call(params) {
-                if self.dynamic_tool_tasks.contains_key(request_id) {
-                    return;
-                }
-                if codex_protocol::ThreadId::from_string(&params.thread_id)
-                    .is_ok_and(|thread_id| self.abandoned_side_threads.contains(&thread_id))
-                {
-                    self.app_event_tx.send(AppEvent::DynamicToolCallCompleted {
-                        request_id: request_id.clone(),
-                        response: crate::dynamic_tools::failure_response(
-                            "TUI dynamic tools require an active external task",
-                        ),
-                    });
-                    return;
-                }
-                let request_id = request_id.clone();
-                let task_request_id = request_id.clone();
-                let source_thread_id = params.thread_id.clone();
-                let params = params.clone();
-                let codex_home = self.config.codex_home.as_path().to_path_buf();
-                let app_event_tx = self.app_event_tx.clone();
-                let task = tokio::spawn(async move {
-                    let response = crate::desktop_computer_use_provider::handle_for_codex_home(
-                        &params,
-                        &codex_home,
-                    )
-                    .await
-                    .unwrap_or_else(|| {
-                        crate::dynamic_tools::failure_response(
-                            "Desktop request did not match an available native tool.",
-                        )
-                    });
-                    app_event_tx.send(crate::desktop_computer_use_provider::completed_event(
-                        request_id, response,
-                    ));
+                    let response = provider.handle_for_codex_home(&params, &codex_home).await;
+                    app_event_tx.send(provider.completed_event(request_id, response));
                 });
                 self.dynamic_tool_tasks
                     .insert(task_request_id, (source_thread_id, task));

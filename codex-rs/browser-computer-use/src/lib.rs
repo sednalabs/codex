@@ -106,6 +106,20 @@ fn browser_dynamic_tool(name: &str, description: &str) -> DynamicToolNamespaceTo
                         "offset": {"type": "integer", "minimum": 0, "description": "Start position in the bounded control list."}
                     }
                 },
+                "inspection": {
+                    "type": "object",
+                    "description": "Optionally include call-local, value-free browser runtime, frame, console-kind, or network-metadata observations. Page text, console messages, request paths, and bodies are never included.",
+                    "properties": {
+                        "sections": {
+                            "type": "array",
+                            "uniqueItems": true,
+                            "maxItems": 4,
+                            "items": {"type": "string", "enum": ["runtime", "frames", "console", "network"]},
+                            "description": "Selected inspection sections; omitted sections defaults to all four."
+                        }
+                    },
+                    "additionalProperties": false
+                },
                 "captures": {
                     "type": "array",
                     "maxItems": 4,
@@ -405,19 +419,26 @@ async fn run_provider_process(
     if output.status.success() {
         Ok(output.stdout)
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
         Err(format!(
-            "Browser provider exited with status {}: {}",
-            output.status,
-            compact_process_output(&stderr)
+            "Browser provider exited with status {}.",
+            output.status
         ))
     }
 }
 
 fn parse_provider_response(bytes: &[u8]) -> Result<DynamicToolCallResponse, String> {
-    serde_json::from_slice(bytes).map_err(|err| {
-        let snippet = compact_process_output(&String::from_utf8_lossy(bytes));
-        format!("failed to parse browser provider response: {err}; stdout: {snippet}")
+    serde_json::from_slice(bytes).map_err(|error| {
+        format!(
+            "failed to parse browser provider response ({} error at line {}, column {}).",
+            match error.classify() {
+                serde_json::error::Category::Io => "I/O",
+                serde_json::error::Category::Syntax => "syntax",
+                serde_json::error::Category::Data => "data",
+                serde_json::error::Category::Eof => "end-of-input",
+            },
+            error.line(),
+            error.column(),
+        )
     })
 }
 
@@ -924,17 +945,6 @@ fn failed_response(error: String) -> DynamicToolCallResponse {
     }
 }
 
-fn compact_process_output(output: &str) -> String {
-    const LIMIT: usize = 500;
-    let compact = output.trim();
-    if compact.chars().count() <= LIMIT {
-        return compact.to_string();
-    }
-    let mut truncated = compact.chars().take(LIMIT - 3).collect::<String>();
-    truncated.push_str("...");
-    truncated
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1207,7 +1217,7 @@ mod tests {
         let properties = spec.input_schema["properties"]
             .as_object()
             .expect("Browser visual request properties");
-        for property in ["scope", "interaction_map", "captures", "save_artifact"] {
+        for property in ["scope", "interaction_map", "inspection", "captures", "save_artifact"] {
             assert!(
                 properties.contains_key(property),
                 "missing schema property {property}"
@@ -1359,6 +1369,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn malformed_provider_response_diagnostic_does_not_echo_output() {
+        let error =
+            parse_provider_response(br#"{"private_marker":"data:image/png;base64,PRIVATE",}"#)
+                .expect_err("malformed provider response");
+
+        assert!(error.contains("failed to parse browser provider response"));
+        assert!(error.contains("syntax error at line"));
+        assert!(!error.contains("private_marker"));
+        assert!(!error.contains("PRIVATE"));
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn command_provider_bridge_returns_native_image_response() {
@@ -1400,6 +1422,51 @@ JSON
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn nonzero_provider_diagnostic_does_not_echo_stderr() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let mut provider = tempfile::NamedTempFile::new().expect("temp provider");
+        provider
+            .write_all(
+                b"#!/bin/sh\ncat >/dev/null\nprintf '%s' 'data:image/png;base64,PRIVATE' >&2\nexit 7\n",
+            )
+            .expect("write provider");
+        let mut permissions = provider
+            .as_file()
+            .metadata()
+            .expect("provider metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        provider
+            .as_file()
+            .set_permissions(permissions)
+            .expect("make provider executable");
+
+        let params = DynamicToolCallParams {
+            thread_id: "thread-fixture".to_string(),
+            turn_id: "turn-fixture".to_string(),
+            call_id: "call-fixture".to_string(),
+            namespace: Some("codex_browser".to_string()),
+            tool: TOOL_BROWSER_OBSERVE.to_string(),
+            arguments: json!({}),
+        };
+        let error = run_command_provider(
+            &params,
+            &CommandProviderConfig {
+                argv: vec![provider.path().to_string_lossy().to_string()],
+            },
+        )
+        .await
+        .expect_err("provider exit status must be reported");
+
+        assert!(error.contains("status"));
+        assert!(error.contains('7'));
+        assert!(!error.contains("PRIVATE"));
+        assert!(!error.contains("data:image"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn playwright_provider_preserves_state_roots_and_thread_profiles() {
         use std::os::unix::fs::PermissionsExt as _;
         use std::path::Component;
@@ -1415,6 +1482,8 @@ JSON
 let currentUrl = "about:blank";
 let screenshotCount = 0;
 const browserState = { width: 1280, height: 720, scrollX: 0, scrollY: 0, devicePixelRatio: 2 };
+const listeners = new Map();
+const emit = (event, value) => { for (const listener of listeners.get(event) || []) listener(value); };
 global.window = {};
 Object.defineProperties(global.window, {
   innerWidth: { get: () => browserState.width },
@@ -1424,12 +1493,9 @@ Object.defineProperties(global.window, {
   scrollY: { get: () => browserState.scrollY },
 });
 global.window.scrollTo = (x, y) => { browserState.scrollX = x; browserState.scrollY = Math.max(0, Math.min(y, 1080)); };
-global.document = { documentElement: {
-  get clientWidth() { return browserState.width - (process.env.CODEX_BROWSER_FIXTURE_MISMATCH_RESTORE === "1" && screenshotCount > 0 && browserState.width === 1280 ? 1 : 0); },
-  get clientHeight() { return browserState.height; },
-  scrollWidth: 1280,
-  scrollHeight: 1800,
-}, querySelectorAll: () => [
+Object.defineProperty(global, "navigator", { value: { userAgent: "fixture user agent" }, configurable: true });
+const controlSelector = "button,a[href],input,textarea,select,iframe,[role],[tabindex],[contenteditable='true'],[data-testid],[data-autosave-action]";
+const fixtureControls = [
   {
     tagName: "DIV", isContentEditable: false, hidden: false, disabled: false,
     innerText: "DO_NOT_EXPOSE_ARIA_TEXTBOX_SECRET", textContent: "DO_NOT_EXPOSE_ARIA_TEXTBOX_SECRET",
@@ -1448,11 +1514,50 @@ global.document = { documentElement: {
     getAttribute: (name) => name === "aria-label" ? 'Save "draft" \\ now' : null,
     getBoundingClientRect: () => ({ x: 10, y: 100, width: 120, height: 30 }),
   },
-] };
+];
+const largeControls = Array.from({ length: 1200 }, (_, index) => ({
+  tagName: "BUTTON", id: `large-control-${index}`, isContentEditable: false,
+  hidden: false, disabled: false, innerText: "Large control", textContent: "Large control",
+  getAttribute: () => null,
+  getBoundingClientRect: () => ({ x: 10, y: 100, width: 120, height: 30 }),
+}));
+global.document = { documentElement: {
+  get clientWidth() { return browserState.width - (process.env.CODEX_BROWSER_FIXTURE_MISMATCH_RESTORE === "1" && screenshotCount > 0 && browserState.width === 1280 ? 1 : 0); },
+  get clientHeight() { return browserState.height; },
+  scrollWidth: 1280,
+  scrollHeight: 1800,
+}, querySelector: () => null, querySelectorAll: (selector) => {
+  if (process.env.CODEX_BROWSER_FIXTURE_NO_SELECTOR_RESCAN === "1" && selector !== "*" && selector !== controlSelector) {
+    throw new Error("per-control selector rescans are disabled in this fixture");
+  }
+  return process.env.CODEX_BROWSER_FIXTURE_LARGE_CONTROL_SET === "1" ? largeControls : fixtureControls;
+} };
+const mainFrame = { url: () => currentUrl };
+const childFrame = {
+  url: () => "https://frame.example/private/path?DO_NOT_EXPOSE_FRAME_SECRET",
+  frameElement: async () => ({
+    boundingBox: async () => ({ x: 2, y: 3, width: 40, height: 50 }),
+    dispose: async () => {},
+  }),
+};
 const page = {
   isClosed: () => false,
   url: () => currentUrl,
-  goto: async (url) => { currentUrl = url; },
+  on: (event, listener) => { const values = listeners.get(event) || []; values.push(listener); listeners.set(event, values); },
+  off: (event, listener) => { listeners.set(event, (listeners.get(event) || []).filter((value) => value !== listener)); },
+  frames: () => [mainFrame, childFrame],
+  mainFrame: () => mainFrame,
+  goto: async (url) => {
+    currentUrl = url;
+    for (let index = 0; index < 21; index += 1) {
+      emit("console", { type: () => "error", text: () => "DO_NOT_EXPOSE_CONSOLE_SECRET" });
+      emit("response", {
+        request: () => ({ method: () => "GET", resourceType: () => "document" }),
+        status: () => 200,
+        url: () => "https://example.test/private/path?DO_NOT_EXPOSE_NETWORK_SECRET",
+      });
+    }
+  },
   waitForLoadState: async () => {},
   waitForTimeout: async () => {},
   screenshot: async () => {
@@ -1517,6 +1622,13 @@ exports.chromium = {
         };
         let (_configured_node, configured_node_path) = make_node_wrapper(false, &[]);
         let (_default_node, default_node_path) = make_node_wrapper(true, &[]);
+        let (_large_control_node, large_control_node_path) = make_node_wrapper(
+            false,
+            &[
+                ("CODEX_BROWSER_FIXTURE_LARGE_CONTROL_SET", "1"),
+                ("CODEX_BROWSER_FIXTURE_NO_SELECTOR_RESCAN", "1"),
+            ],
+        );
 
         let run = |state_dir: Option<String>, thread_id: &str| {
             let node_path = node_path.to_string_lossy().to_string();
@@ -2046,6 +2158,32 @@ fs.writeFile = async (file, ...args) => {
             "quotes and backslashes in control labels are CSS-escaped"
         );
 
+        let large_control_response = run_visual(
+            temp.path().join("large-control-state"),
+            "large-control-thread",
+            json!({"scope": "viewport_and_page"}),
+            large_control_node_path,
+        )
+        .await
+        .expect("bounded large-page control map");
+        assert!(large_control_response.success, "{large_control_response:?}");
+        let large_control_text = large_control_response
+            .content_items
+            .iter()
+            .find_map(|item| match item {
+                DynamicToolCallOutputContentItem::InputText { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .expect("large-page metadata");
+        let large_hints_json = large_control_text
+            .lines()
+            .find_map(|line| line.strip_prefix("page_hints: "))
+            .expect("large-page control hints");
+        let large_hints: Value = serde_json::from_str(large_hints_json).expect("large hints JSON");
+        assert_eq!(large_hints["total"], 1200);
+        assert_eq!(large_hints["controls"].as_array().unwrap().len(), 24);
+        assert_eq!(large_hints["omitted"], 1176);
+
         let inline_images = visual_fixture
             .content_items
             .iter()
@@ -2224,6 +2362,11 @@ fs.writeFile = async (file, ...args) => {
                 json!({"captures": [{"label": "bad", "scroll": "middle"}]}),
                 "capture scroll must be current, top, or bottom",
             ),
+            (
+                "bad-inspection-section",
+                json!({"inspection": {"sections": ["raw_text"]}}),
+                "Browser inspection request is invalid",
+            ),
         ];
         for (thread, arguments, diagnostic) in invalid_inputs {
             let invalid = run_visual(
@@ -2345,7 +2488,26 @@ fs.writeFile = async (file, ...args) => {
             )));
         }
 
-        let html = "<html><head><title>visual fixture</title></head><body><button id='safe'>Safe button</button><input aria-label='Secret field' value='DO_NOT_EXPOSE_FIXTURE_SECRET'><div contenteditable='true'>DO_NOT_EXPOSE_EDITABLE_SECRET</div><div role='textbox' tabindex='0'>DO_NOT_EXPOSE_ARIA_TEXTBOX_SECRET</div><div role='combobox' tabindex='0'>DO_NOT_EXPOSE_ARIA_COMBOBOX_SECRET</div><div style='height:2400px'>Long static page</div></body></html>";
+        let html = r#"<html><head><title>visual fixture</title><style>
+            #covered-control { position: fixed; left: 500px; top: 50px; width: 150px; height: 40px; }
+            #cover { position: fixed; left: 500px; top: 50px; width: 150px; height: 40px; z-index: 10; }
+            #offscreen-control { margin-top: 2400px; }
+        </style></head><body>
+            <button id='safe'>Safe button</button>
+            <input aria-label='Secret field' value='DO_NOT_EXPOSE_FIXTURE_SECRET'>
+            <div contenteditable='true'>DO_NOT_EXPOSE_EDITABLE_SECRET</div>
+            <div role='textbox' tabindex='0'>DO_NOT_EXPOSE_ARIA_TEXTBOX_SECRET</div>
+            <div role='combobox' tabindex='0'>DO_NOT_EXPOSE_ARIA_COMBOBOX_SECRET</div>
+            <div hidden><button id='hidden-control'>Hidden control</button></div>
+            <button data-testid='duplicate'>Duplicate one</button>
+            <button data-testid='duplicate'>Duplicate two</button>
+            <button id='focus-control'>Focus target</button>
+            <button id='covered-control'>Covered target</button>
+            <div id='cover'></div>
+            <button id='disabled-control' disabled>Disabled target</button>
+            <div style='height:2400px'>Long static page</div>
+            <button id='offscreen-control'>Offscreen target</button>
+        </body></html>"#;
         let encoded_html = html
             .bytes()
             .map(|byte| format!("%{byte:02X}"))
@@ -2423,6 +2585,108 @@ fs.writeFile = async (file, ...args) => {
         assert!(!visual_text.contains("DO_NOT_EXPOSE_ARIA_TEXTBOX_SECRET"));
         assert!(!visual_text.contains("DO_NOT_EXPOSE_ARIA_COMBOBOX_SECRET"));
         assert!(!visual_text.contains("data:image/png;base64,"));
+        let page_hints_json = visual_text
+            .lines()
+            .find_map(|line| line.strip_prefix("page_hints: "))
+            .expect("bounded page-control summary");
+        let page_hints: Value = serde_json::from_str(page_hints_json).expect("page hints JSON");
+        let controls = page_hints["controls"].as_array().expect("control summaries");
+        let has_selector = |control: &Value, selector: &str| {
+            control["selectors"]
+                .as_array()
+                .is_some_and(|selectors| selectors.iter().any(|value| value.as_str() == Some(selector)))
+        };
+        assert!(!controls.iter().any(|control| has_selector(control, "#hidden-control")));
+        assert!(controls.iter().any(|control| {
+            has_selector(control, "[data-testid=\"duplicate\"]") && control["ambiguous"] == true
+        }));
+        assert!(controls.iter().any(|control| {
+            has_selector(control, "#covered-control") && control["covered"] == true
+        }));
+        assert!(controls.iter().any(|control| {
+            has_selector(control, "#offscreen-control") && control["offscreen"] == true
+        }));
+        assert!(controls.iter().any(|control| {
+            has_selector(control, "#disabled-control") && control["disabled"] == true
+        }));
+
+        let focused_page = invoke(
+            codex_home.path(),
+            "focused-control-thread",
+            TOOL_BROWSER_STEP,
+            json!({
+                "url": visual_url.clone(),
+                "action": {"type": "click", "selector": "#focus-control"},
+                "scope": "viewport_and_page"
+            }),
+        )
+        .await;
+        assert!(focused_page.success, "{focused_page:?}");
+        let focused_text = focused_page
+            .content_items
+            .iter()
+            .find_map(|item| match item {
+                DynamicToolCallOutputContentItem::InputText { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .expect("focused control metadata");
+        let focused_hints_json = focused_text
+            .lines()
+            .find_map(|line| line.strip_prefix("page_hints: "))
+            .expect("focused control page hints");
+        let focused_hints: Value = serde_json::from_str(focused_hints_json).expect("focused hints JSON");
+        assert!(focused_hints["controls"][0]["focused"] == true);
+        assert!(has_selector(&focused_hints["controls"][0], "#focus-control"));
+
+        let inspection_response = run_visual(
+            temp.path().join("inspection-state"),
+            "inspection-thread",
+            json!({
+                "url": "https://example.test/page?DO_NOT_EXPOSE_PAGE_SECRET",
+                "inspection": {"sections": ["runtime", "frames", "console", "network"]}
+            }),
+            configured_node_path.clone(),
+        )
+        .await
+        .expect("call-local value-free browser inspection");
+        assert!(inspection_response.success, "{inspection_response:?}");
+        let inspection_text = inspection_response
+            .content_items
+            .iter()
+            .find_map(|item| match item {
+                DynamicToolCallOutputContentItem::InputText { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .expect("inspection metadata text");
+        let inspection_json = inspection_text
+            .lines()
+            .find_map(|line| line.strip_prefix("inspection: "))
+            .expect("requested inspection sections are reported");
+        let inspection: Value = serde_json::from_str(inspection_json).expect("inspection JSON");
+        assert_eq!(inspection["scope"], "call");
+        assert_eq!(inspection["runtime"]["userAgent"], "present");
+        assert_eq!(inspection["frames"][1]["url"], "https://frame.example");
+        assert_eq!(inspection["frames"][1]["geometry"]["width"], 40);
+        assert_eq!(inspection["observed"]["frames"], 2);
+        assert_eq!(inspection["console"][0]["type"], "error");
+        assert_eq!(inspection["console"][0]["severity"], "error");
+        assert_eq!(inspection["console"].as_array().unwrap().len(), 20);
+        assert_eq!(inspection["observed"]["console"], 21);
+        assert_eq!(inspection["omitted"]["console"], 1);
+        assert_eq!(inspection["network"][0]["method"], "GET");
+        assert_eq!(inspection["network"][0]["status"], 200);
+        assert_eq!(inspection["network"][0]["destination"], "https://example.test");
+        assert_eq!(inspection["network"].as_array().unwrap().len(), 20);
+        assert_eq!(inspection["observed"]["network"], 21);
+        assert_eq!(inspection["omitted"]["network"], 1);
+        for private_value in [
+            "DO_NOT_EXPOSE_PAGE_SECRET",
+            "DO_NOT_EXPOSE_FRAME_SECRET",
+            "DO_NOT_EXPOSE_CONSOLE_SECRET",
+            "DO_NOT_EXPOSE_NETWORK_SECRET",
+        ] {
+            assert!(!inspection_json.contains(private_value));
+        }
 
         let visual_profile = std::fs::read_dir(state_root.join("profiles"))
             .expect("provider profile directories")

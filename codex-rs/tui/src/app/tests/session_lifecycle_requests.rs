@@ -2353,6 +2353,121 @@ async fn android_dynamic_tool_image_is_forwarded_to_the_app_server_response() ->
 
 #[cfg(unix)]
 #[tokio::test]
+async fn browser_dynamic_tool_image_is_forwarded_to_the_app_server_response() -> Result<()> {
+    let (mut app, mut events, _ops) = make_test_app_with_channels().await;
+    let codex_home = tempdir()?;
+    app.config.codex_home = codex_home.path().to_path_buf().abs();
+    app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
+    let image_url = "data:image/png;base64,AAAA";
+    let expected = codex_app_server_protocol::DynamicToolCallResponse {
+        content_items: vec![
+            codex_app_server_protocol::DynamicToolCallOutputContentItem::InputText {
+                text: "browser fixture".to_string(),
+            },
+            codex_app_server_protocol::DynamicToolCallOutputContentItem::InputImage {
+                image_url: image_url.to_string(),
+            },
+        ],
+        success: true,
+    };
+    let response_json = serde_json::to_string(&expected)?;
+    std::fs::write(
+        codex_home.path().join("browser-computer-use.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "provider": "command",
+            "command": [
+                "python3",
+                "-c",
+                "import sys; sys.stdin.buffer.read(); sys.stdout.write(sys.argv[1])",
+                response_json
+            ],
+            "timeout_secs": 3
+        }))?,
+    )?;
+    let (mut app_server, requests, proxy) = start_recording_remote_app_server(&app.config).await?;
+
+    let request_id = AppServerRequestId::Integer(706);
+    app.handle_app_server_event(
+        &app_server,
+        AppServerEvent::ServerRequest(Box::new(ServerRequest::DynamicToolCall {
+            request_id: request_id.clone(),
+            params: codex_app_server_protocol::DynamicToolCallParams {
+                thread_id: ThreadId::new().to_string(),
+                turn_id: "browser-fixture-turn".to_string(),
+                call_id: "browser-fixture-call".to_string(),
+                namespace: Some("codex_browser".to_string()),
+                tool: "browser_observe".to_string(),
+                arguments: serde_json::json!({}),
+            },
+        })),
+    )
+    .await;
+
+    let completion =
+        tokio::time::timeout(std::time::Duration::from_secs(/*secs*/ 5), events.recv())
+            .await?
+            .expect("Browser provider completion");
+    let AppEvent::DynamicToolCallCompleted {
+        request_id: completed_request_id,
+        response,
+    } = completion
+    else {
+        panic!("expected a Browser dynamic-tool completion")
+    };
+    assert_eq!(completed_request_id, request_id);
+    assert!(response.success, "{response:?}");
+    assert!(matches!(
+        response.content_items.as_slice(),
+        [
+            codex_app_server_protocol::DynamicToolCallOutputContentItem::InputText { .. },
+            codex_app_server_protocol::DynamicToolCallOutputContentItem::InputImage { image_url: actual }
+        ] if actual == image_url
+    ));
+
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    app.handle_event(
+        &mut tui,
+        &mut app_server,
+        AppEvent::DynamicToolCallCompleted {
+            request_id: completed_request_id,
+            response,
+        },
+    )
+    .await?;
+    let server_response = tokio::time::timeout(std::time::Duration::from_secs(/*secs*/ 5), async {
+        loop {
+            if let Some(response) = recorded_params(&requests, "server/request/response").pop() {
+                break response;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    assert_eq!(server_response["success"], true);
+    assert!(
+        server_response["contentItems"]
+            .as_array()
+            .is_some_and(|items| {
+                items
+                    .iter()
+                    .any(|item| item["type"] == "inputImage" && item["imageUrl"] == image_url)
+            })
+    );
+    assert!(
+        requests
+            .lock()
+            .expect("request recorder lock")
+            .iter()
+            .any(|request| request.method == "server/request/response" && request.id == request_id)
+    );
+
+    app_server.shutdown().await?;
+    proxy.await??;
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn desktop_dynamic_tool_image_is_forwarded_to_the_app_server_response() -> Result<()> {
     let (mut app, mut events, _ops) = make_test_app_with_channels().await;
     let codex_home = tempdir()?;
