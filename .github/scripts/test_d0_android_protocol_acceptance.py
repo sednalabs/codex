@@ -33,6 +33,12 @@ _TOOLS = (
     "interactive_session.install_build_from_run",
 )
 _DROP = object()
+_ANDROID_MARKERS = {
+    "ANDROID_STEP_FIRST_FAILURE_MARKER": "step-failure",
+    "ANDROID_STEP_TRANSPORT_LOSS_MARKER": "step-transport-loss",
+    "ANDROID_STEP_SUCCESS_MARKER": "step-success",
+    "ANDROID_INSTALL_COMPLETION_MARKER": "install",
+}
 
 
 def _require(condition: bool, reason: str) -> None:
@@ -43,6 +49,94 @@ def _require(condition: bool, reason: str) -> None:
 def _thread_id(request: CapturedResponsesRequest) -> str | None:
     metadata = request.body_json().get("client_metadata")
     return metadata.get("thread_id") if isinstance(metadata, dict) else None
+
+
+def _is_automatic_title_request(request: CapturedResponsesRequest) -> bool:
+    """Match only the TUI's bounded, title-only structured-output request."""
+    if request.path != "/v1/responses":
+        return False
+    try:
+        body = request.body_json()
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(body, dict):
+        return False
+    text = body.get("text")
+    format_spec = text.get("format") if isinstance(text, dict) else None
+    schema = format_spec.get("schema") if isinstance(format_spec, dict) else None
+    properties = schema.get("properties") if isinstance(schema, dict) else None
+    title = properties.get("title") if isinstance(properties, dict) else None
+    required = schema.get("required") if isinstance(schema, dict) else None
+    return (
+        isinstance(format_spec, dict)
+        and format_spec.get("type") == "json_schema"
+        and format_spec.get("name") == "codex_output_schema"
+        and isinstance(schema, dict)
+        and schema.get("type") == "object"
+        and schema.get("additionalProperties") is False
+        and required == ["title"]
+        and isinstance(properties, dict)
+        and set(properties) == {"title"}
+        and isinstance(title, dict)
+        and title.get("type") == "string"
+        and title.get("minLength") == 1
+        and isinstance(title.get("maxLength"), int)
+        and title["maxLength"] > 0
+    )
+
+
+def _safe_request_summary(request: CapturedResponsesRequest) -> dict[str, Any]:
+    """Summarize only fixed request classes and counts for route failures."""
+    try:
+        body = request.body_json()
+    except (TypeError, ValueError):
+        return {
+            "path_class": "responses" if request.path == "/v1/responses" else "other",
+            "request_class": "unreadable-json",
+            "android_marker_class": "none",
+            "title_schema": False,
+            "thread_id_present": False,
+            "package_model": False,
+            "input_item_count": 0,
+            "function_call_output_count": 0,
+        }
+    if not isinstance(body, dict):
+        inputs: list[dict[str, Any]] = []
+    else:
+        raw_inputs = body.get("input")
+        inputs = (
+            [item for item in raw_inputs if isinstance(item, dict)]
+            if isinstance(raw_inputs, list)
+            else []
+        )
+    input_text = json.dumps(inputs, sort_keys=True)
+    marker_class = next(
+        (
+            stage
+            for marker, stage in _ANDROID_MARKERS.items()
+            if marker in input_text
+        ),
+        "none",
+    )
+    metadata = body.get("client_metadata") if isinstance(body, dict) else None
+    title_request = _is_automatic_title_request(request)
+    return {
+        "path_class": "responses" if request.path == "/v1/responses" else "other",
+        "request_class": (
+            "automatic-title" if title_request else marker_class
+        ),
+        "android_marker_class": marker_class,
+        "title_schema": title_request,
+        "thread_id_present": isinstance(metadata, dict)
+        and isinstance(metadata.get("thread_id"), str)
+        and bool(metadata.get("thread_id")),
+        "package_model": isinstance(body, dict)
+        and body.get("model") == "package-smoke",
+        "input_item_count": len(inputs),
+        "function_call_output_count": sum(
+            item.get("type") == "function_call_output" for item in inputs
+        ),
+    }
 
 
 def _contains_marker(request: CapturedResponsesRequest, marker: str) -> bool:
@@ -538,6 +632,19 @@ def test_packaged_android_step_and_install_protocol(package: SmokePackage) -> No
         # Native provider specs are injected by the packaged TUI's normal
         # ThreadStart path; the Python SDK's convenience start method omits
         # dynamic_tools and is not a valid consumer for this contract.
+        title_route = responses.enqueue_sse_for_request(
+            _is_automatic_title_request,
+            sse(
+                [
+                    ev_response_created("synthetic-title-response"),
+                    ev_assistant_message(
+                        "synthetic-title-message",
+                        json.dumps({"title": "Synthetic Android protocol"}),
+                    ),
+                    ev_completed("synthetic-title-response"),
+                ]
+            ),
+        )
         with PackagedTui(isolated) as tui:
             tui.until("Ask Codex to do anything")
 
@@ -708,4 +815,21 @@ def test_packaged_android_step_and_install_protocol(package: SmokePackage) -> No
                 "SCREEN_INSTALL" in "\n".join(_text_parts(install_output.get("output"))),
                 "stage=install reason=fresh-post-install-screen-not-returned",
             )
-            _require(not responses.routing_errors(), "stage=responses reason=mock-route-selection-error")
+            captured = responses.requests()
+            title_request_count = sum(
+                _is_automatic_title_request(request) for request in captured
+            )
+            route_errors = responses.routing_errors()
+            _require(
+                title_route.used
+                and title_request_count == 1
+                and not route_errors,
+                "stage=responses reason=mock-route-selection-error "
+                f"expected_title_requests=1 observed_title_requests={title_request_count} "
+                f"observed_route_errors={len(route_errors)} "
+                "requests="
+                + json.dumps(
+                    [_safe_request_summary(request) for request in captured],
+                    sort_keys=True,
+                ),
+            )
