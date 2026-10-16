@@ -314,8 +314,12 @@ def _check_report_shape(database: Path) -> dict[str, Any]:
         "resolved root and descendant totals retain their safe aggregate",
     )
     model_split = result["scope_contributions"]["root_vs_descendants_by_actual_model"]
-    root_by_model = _by_model(model_split["requested_root"])
-    descendants_by_model = _by_model(model_split["all_descendants"])
+    root_by_model = {
+        item["actual_model_used"]: item for item in model_split["requested_root"]
+    }
+    descendants_by_model = {
+        item["actual_model_used"]: item for item in model_split["all_descendants"]
+    }
     _assert(
         root_by_model["synthetic-alpha"]["provider_call_count"] == 1
         and root_by_model["synthetic-alpha"]["token_sums_known_subtotal"][
