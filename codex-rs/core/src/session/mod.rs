@@ -4164,7 +4164,7 @@ impl Session {
             None
         };
         let explicit_admission = match explicit_admission {
-            Some((admission, Some(_), _)) => {
+            Some((admission, Some(_), _, _)) => {
                 let boundary = self
                     .code_mode_message_tasks
                     .communication_boundary
@@ -4181,7 +4181,7 @@ impl Session {
                     )),
                 };
                 let (refreshed_admission, response_id, rollout_items) = match refreshed_snapshot {
-                    Ok(Some((refreshed_admission, Some(response_id), rollout_items)))
+                    Ok(Some((refreshed_admission, Some(response_id), rollout_items, _)))
                         if refreshed_admission == admission =>
                     {
                         (refreshed_admission, response_id, rollout_items)
@@ -4239,7 +4239,15 @@ impl Session {
                 }
                 return Ok(());
             }
-            Some((admission, None, _)) => Some(admission),
+            Some((admission, None, _, true)) => {
+                self.delivered_explicit_inter_agent_updates
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(&admission.update_id);
+                drop(admission_guard);
+                return Ok(());
+            }
+            Some((admission, None, _, false)) => Some(admission),
             None if admitted_queue_provenance => {
                 self.input_queue
                     .enqueue_mailbox_communication(communication.clone(), Default::default())
@@ -4321,7 +4329,8 @@ impl Session {
                         "failed to read back explicit inter-agent representation".into(),
                     )),
                 };
-                let Some((admission, Some(response_id), rollout_items)) = readback.ok().flatten()
+                let Some((admission, Some(response_id), rollout_items, _)) =
+                    readback.ok().flatten()
                 else {
                     self.input_queue
                         .enqueue_mailbox_communication(communication.clone(), Default::default())

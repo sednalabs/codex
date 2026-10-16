@@ -204,21 +204,10 @@ impl InputQueue {
         (activity_rx, pending_activity)
     }
 
-    /// Subscribe before taking a pending-mail snapshot so an explicit action arriving across the
-    /// boundary is either in the snapshot or leaves a watch change for the active wait.
-    pub(crate) async fn subscribe_explicit_activity(
-        &self,
-        recipient_thread_id: ThreadId,
-        target_agents: &[(ThreadId, AgentPath)],
-    ) -> (
-        watch::Receiver<Option<u64>>,
-        Option<ExplicitMailboxActivity>,
-    ) {
-        let activity_rx = self.explicit_activity_tx.subscribe();
-        let pending_activity = self
-            .pending_explicit_activity_for_targets(recipient_thread_id, target_agents)
-            .await;
-        (activity_rx, pending_activity)
+    /// Subscribe before `WaitAgent` snapshots pending mail; the receiver preserves any arrival
+    /// across that queue snapshot.
+    pub(crate) fn subscribe_explicit_activity(&self) -> watch::Receiver<Option<u64>> {
+        self.explicit_activity_tx.subscribe()
     }
 
     pub(crate) async fn pending_explicit_activity_for_targets(
@@ -248,6 +237,16 @@ impl InputQueue {
             }
             activity.generation.map(|_| activity.clone())
         })
+    }
+
+    pub(crate) async fn pending_turn_input_activity(
+        &self,
+        turn_state: Option<&Mutex<TurnState>>,
+    ) -> Option<InputQueueActivity> {
+        match turn_state {
+            Some(turn_state) => turn_state.lock().await.pending_input.pending_activity(),
+            None => None,
+        }
     }
 
     #[expect(
@@ -1199,8 +1198,9 @@ mod tests {
         let unrelated_path = AgentPath::try_from("/root/unrelated").expect("other path");
         let update_id = ResponseItemId::new("explicit-action-1");
         let (mut legacy_activity_rx, _) = queue.subscribe_activity(None).await;
-        let (mut explicit_activity_rx, pending) = queue
-            .subscribe_explicit_activity(recipient, &[(sender, sender_path.clone())])
+        let mut explicit_activity_rx = queue.subscribe_explicit_activity();
+        let pending = queue
+            .pending_explicit_activity_for_targets(recipient, &[(sender, sender_path.clone())])
             .await;
         assert_eq!(pending, None);
 
@@ -1288,8 +1288,9 @@ mod tests {
             )
             .await;
 
-        let (_, pending) = queue
-            .subscribe_explicit_activity(recipient, &[(sender, sender_path)])
+        let _explicit_activity_rx = queue.subscribe_explicit_activity();
+        let pending = queue
+            .pending_explicit_activity_for_targets(recipient, &[(sender, sender_path)])
             .await;
         assert_eq!(pending.map(|activity| activity.update_id), Some(action_id));
     }

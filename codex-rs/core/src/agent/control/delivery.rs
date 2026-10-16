@@ -261,6 +261,7 @@ pub(crate) async fn explicit_admission_for_communication(
         InterAgentCommunicationAdmission,
         Option<ResponseItemId>,
         Vec<RolloutItem>,
+        bool,
     )>,
 > {
     let Some(update_id) = communication.id.as_ref() else {
@@ -277,10 +278,15 @@ pub(crate) async fn explicit_admission_for_communication(
     {
         return Ok(None);
     }
+    let superseded = index
+        .ordered
+        .iter()
+        .any(|candidate| candidate.supersedes.contains(update_id));
     Ok(Some((
         admission.clone(),
         index.represented_response_ids.get(update_id).cloned(),
         rollout_items,
+        superseded,
     )))
 }
 

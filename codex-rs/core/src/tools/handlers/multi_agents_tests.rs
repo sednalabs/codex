@@ -1713,6 +1713,42 @@ async fn multi_agent_v2_explicit_root_updates_are_durable_and_idempotent() {
             _ => None,
         })
         .expect("the intermediate progress admission should be readable");
+    let drained_pending_progress = root_thread.session.input_queue.drain_mailbox().await;
+    let [drained_pending_progress] = drained_pending_progress.as_slice() else {
+        panic!("expected the admitted intermediate progress to be queued");
+    };
+    assert_eq!(
+        drained_pending_progress.communication.id.as_ref(),
+        Some(&pending_progress_update_id)
+    );
+
+    SendMessageHandlerV2
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "send_message",
+            function_payload(json!({
+                "target": "/root",
+                "message": "one more pending progress update",
+                "intent": "progress",
+                "idempotency_key": "worker-progress-queued-1"
+            })),
+        ))
+        .await
+        .expect("the queued progress admission should be durable");
+    let queued_progress_update_id = full_rollout_items(&root_thread)
+        .await
+        .iter()
+        .find_map(|item| match item {
+            RolloutItem::InterAgentCommunicationMetadata {
+                admission: Some(admission),
+                ..
+            } if admission.idempotency_key == "worker-progress-queued-1" => {
+                Some(admission.update_id.clone())
+            }
+            _ => None,
+        })
+        .expect("the queued progress admission should be readable");
     assert_eq!(
         root_thread
             .session
@@ -1734,7 +1770,8 @@ async fn multi_agent_v2_explicit_root_updates_are_durable_and_idempotent() {
                 "idempotency_key": "worker-result-1",
                 "supersedes": [
                     progress.update_id.as_str(),
-                    pending_progress_update_id.as_str()
+                    pending_progress_update_id.as_str(),
+                    queued_progress_update_id.as_str()
                 ]
             })),
         ))
@@ -1752,7 +1789,7 @@ async fn multi_agent_v2_explicit_root_updates_are_durable_and_idempotent() {
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(admissions.len(), 3);
+    assert_eq!(admissions.len(), 4);
     let result = admissions
         .iter()
         .find(|admission| admission.idempotency_key == "worker-result-1")
@@ -1763,7 +1800,8 @@ async fn multi_agent_v2_explicit_root_updates_are_durable_and_idempotent() {
         result.supersedes,
         vec![
             progress.update_id.clone(),
-            pending_progress_update_id.clone()
+            pending_progress_update_id.clone(),
+            queued_progress_update_id.clone()
         ]
     );
     assert_eq!(
@@ -1774,6 +1812,30 @@ async fn multi_agent_v2_explicit_root_updates_are_durable_and_idempotent() {
             .await,
         Some(1),
         "superseding a queued progress message retains only the actionable result"
+    );
+    let root_turn = root_thread.session.new_default_turn().await;
+    root_thread
+        .session
+        .record_inter_agent_communication(
+            root_turn.as_ref(),
+            root_turn.model_info(),
+            drained_pending_progress.communication.clone(),
+        )
+        .await
+        .expect("a superseded progress drained before admission is not represented");
+    assert!(
+        !full_rollout_items(&root_thread).await.iter().any(|item| {
+            matches!(
+                item,
+                RolloutItem::ResponseItem(response)
+                    if response
+                        .metadata
+                        .as_ref()
+                        .and_then(|metadata| metadata.inter_agent_update_id.as_ref())
+                        == Some(&pending_progress_update_id)
+            )
+        }),
+        "a drained but unrepresented progress update is suppressed after supersession"
     );
 
     SendMessageHandlerV2
@@ -1788,7 +1850,8 @@ async fn multi_agent_v2_explicit_root_updates_are_durable_and_idempotent() {
                 "idempotency_key": "worker-result-1",
                 "supersedes": [
                     progress.update_id.as_str(),
-                    pending_progress_update_id.as_str()
+                    pending_progress_update_id.as_str(),
+                    queued_progress_update_id.as_str()
                 ]
             })),
         ))
@@ -1806,7 +1869,7 @@ async fn multi_agent_v2_explicit_root_updates_are_durable_and_idempotent() {
                 }
             ))
             .count(),
-        3,
+        4,
         "same-key retries do not append a second admission"
     );
     assert!(
@@ -1859,7 +1922,7 @@ async fn multi_agent_v2_explicit_root_updates_are_durable_and_idempotent() {
                 }
             ))
             .count(),
-        3,
+        4,
         "root-self rejection appends no admission"
     );
 
@@ -1875,7 +1938,8 @@ async fn multi_agent_v2_explicit_root_updates_are_durable_and_idempotent() {
                 "idempotency_key": "worker-result-1",
                 "supersedes": [
                     progress.update_id.as_str(),
-                    pending_progress_update_id.as_str()
+                    pending_progress_update_id.as_str(),
+                    queued_progress_update_id.as_str()
                 ]
             })),
         ))
@@ -1919,6 +1983,7 @@ async fn multi_agent_v2_explicit_root_updates_are_durable_and_idempotent() {
     assert!(restored_ids.contains(&result_update_id));
     assert!(!restored_ids.contains(&progress_update_id));
     assert!(!restored_ids.contains(&pending_progress_update_id));
+    assert!(!restored_ids.contains(&queued_progress_update_id));
     for mail in restored_mail {
         resumed_root_thread
             .session

@@ -123,10 +123,7 @@ impl Handler {
             .input_queue
             .subscribe_activity(turn_state.as_deref())
             .await;
-        let (explicit_activity_rx, pending_explicit_activity) = session
-            .input_queue
-            .subscribe_explicit_activity(session.thread_id, &explicit_target_paths)
-            .await;
+        let explicit_activity_rx = session.input_queue.subscribe_explicit_activity();
         let return_when = match args.return_when {
             ReturnWhen::Any => AgentWaitReturnWhen::Any,
             ReturnWhen::All => AgentWaitReturnWhen::All,
@@ -177,8 +174,6 @@ impl Handler {
         let deadline = wait_started + Duration::from_millis(timeout_ms as u64);
         let outcome = if let Some(outcome) = initial_agent_outcome {
             WaitOutcome::TargetTerminal(outcome)
-        } else if let Some(activity) = pending_explicit_activity {
-            WaitOutcome::ExplicitActionableMessage(activity)
         } else {
             wait_for_activity_with_explicit(
                 &mut activity_rx,
@@ -190,6 +185,7 @@ impl Handler {
                     input_queue: &session.input_queue,
                     recipient_thread_id: session.thread_id,
                     target_agents: &explicit_target_paths,
+                    turn_state: turn_state.as_deref(),
                 }),
             )
             .await
@@ -382,12 +378,14 @@ struct ExplicitActivityWait<'a> {
     input_queue: &'a InputQueue,
     recipient_thread_id: ThreadId,
     target_agents: &'a [(ThreadId, codex_protocol::AgentPath)],
+    turn_state: Option<&'a tokio::sync::Mutex<crate::state::TurnState>>,
 }
 
 struct ExplicitActivityMatcher<'a> {
     input_queue: &'a InputQueue,
     recipient_thread_id: ThreadId,
     target_agents: &'a [(ThreadId, codex_protocol::AgentPath)],
+    turn_state: Option<&'a tokio::sync::Mutex<crate::state::TurnState>>,
 }
 
 async fn wait_for_activity_with_explicit(
@@ -397,12 +395,6 @@ async fn wait_for_activity_with_explicit(
     agent_wait: &mut Option<AgentWaitRegistration>,
     explicit_wait: Option<ExplicitActivityWait<'_>>,
 ) -> WaitOutcome {
-    if pending_activity == Some(InputQueueActivity::Steer) {
-        return WaitOutcome::Steered;
-    }
-    if let Some(outcome) = agent_wait.as_mut().and_then(AgentWaitRegistration::current) {
-        return WaitOutcome::TargetTerminal(outcome);
-    }
     let (mut explicit_activity_rx, explicit_matcher) = match explicit_wait {
         Some(wait) => (
             Some(wait.activity_rx),
@@ -410,10 +402,19 @@ async fn wait_for_activity_with_explicit(
                 input_queue: wait.input_queue,
                 recipient_thread_id: wait.recipient_thread_id,
                 target_agents: wait.target_agents,
+                turn_state: wait.turn_state,
             }),
         ),
         None => (None, None),
     };
+    if pending_activity == Some(InputQueueActivity::Steer)
+        || pending_turn_steer(explicit_matcher.as_ref()).await
+    {
+        return WaitOutcome::Steered;
+    }
+    if let Some(outcome) = agent_wait.as_mut().and_then(AgentWaitRegistration::current) {
+        return WaitOutcome::TargetTerminal(outcome);
+    }
     if let Some(matcher) = explicit_matcher.as_ref()
         && let Some(activity) = matcher
             .input_queue
@@ -437,6 +438,9 @@ async fn wait_for_activity_with_explicit(
                 Ok(()) => {
                     let observed_activity = *activity_rx.borrow_and_update();
                     if observed_activity == InputQueueActivity::Steer {
+                        return WaitOutcome::Steered;
+                    }
+                    if pending_turn_steer(explicit_matcher.as_ref()).await {
                         return WaitOutcome::Steered;
                     }
                     if let Some(outcome) = agent_wait.as_mut().and_then(AgentWaitRegistration::current) {
@@ -464,6 +468,9 @@ async fn wait_for_activity_with_explicit(
                 }
             }, if has_explicit_wait => match explicit {
                 Ok(()) => {
+                    if pending_turn_steer(explicit_matcher.as_ref()).await {
+                        return WaitOutcome::Steered;
+                    }
                     if let Some(outcome) = agent_wait.as_mut().and_then(AgentWaitRegistration::current) {
                         return WaitOutcome::TargetTerminal(outcome);
                     }
@@ -493,6 +500,17 @@ async fn wait_for_activity_with_explicit(
             }
         }
     }
+}
+
+async fn pending_turn_steer(matcher: Option<&ExplicitActivityMatcher<'_>>) -> bool {
+    let Some(matcher) = matcher else {
+        return false;
+    };
+    matcher
+        .input_queue
+        .pending_turn_input_activity(matcher.turn_state)
+        .await
+        == Some(InputQueueActivity::Steer)
 }
 
 fn activity_wake_outcome(
@@ -816,10 +834,13 @@ mod tests {
         let explicit_targets = vec![(target, worker_path.clone())];
         let (mut activity_rx, pending_activity) =
             input_queue.subscribe_activity(/*turn_state*/ None).await;
-        let (explicit_activity_rx, pending_explicit_activity) = input_queue
-            .subscribe_explicit_activity(recipient, &explicit_targets)
-            .await;
-        assert_eq!(pending_explicit_activity, None);
+        let explicit_activity_rx = input_queue.subscribe_explicit_activity();
+        assert_eq!(
+            input_queue
+                .pending_explicit_activity_for_targets(recipient, &explicit_targets)
+                .await,
+            None
+        );
         let mut agent_wait = None;
         let mut wait = Box::pin(wait_for_activity_with_explicit(
             &mut activity_rx,
@@ -831,6 +852,7 @@ mod tests {
                 input_queue: &input_queue,
                 recipient_thread_id: recipient,
                 target_agents: &explicit_targets,
+                turn_state: None,
             }),
         ));
         assert!(futures::poll!(wait.as_mut()).is_pending());
@@ -912,6 +934,182 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pending_explicit_action_does_not_override_already_pending_steer() {
+        let input_queue = InputQueue::new();
+        let target = ThreadId::new();
+        let recipient = ThreadId::new();
+        let target_path = AgentPath::try_from("/root/worker").expect("worker path");
+        let target_agents = vec![(target, target_path.clone())];
+        let turn_state = tokio::sync::Mutex::new(crate::state::TurnState::default());
+        input_queue
+            .notify_operator_steer_for_test(&turn_state)
+            .await;
+        let update_id = ResponseItemId::new("pending-action-with-steer");
+        input_queue
+            .enqueue_explicit_mailbox_communication(
+                explicit_wait_mail(update_id.clone(), target_path.clone(), "body"),
+                Default::default(),
+                explicit_wait_activity(
+                    update_id,
+                    InterAgentCommunicationIntent::ActionRequired,
+                    target,
+                    recipient,
+                    target_path,
+                ),
+            )
+            .await;
+
+        let (mut activity_rx, pending_activity) =
+            input_queue.subscribe_activity(Some(&turn_state)).await;
+        let explicit_activity_rx = input_queue.subscribe_explicit_activity();
+        assert!(
+            input_queue
+                .pending_explicit_activity_for_targets(recipient, &target_agents)
+                .await
+                .is_some()
+        );
+        let mut agent_wait = None;
+        let outcome = wait_for_activity_with_explicit(
+            &mut activity_rx,
+            pending_activity,
+            Instant::now() + Duration::from_secs(60),
+            &mut agent_wait,
+            Some(ExplicitActivityWait {
+                activity_rx: explicit_activity_rx,
+                input_queue: &input_queue,
+                recipient_thread_id: recipient,
+                target_agents: &target_agents,
+                turn_state: Some(&turn_state),
+            }),
+        )
+        .await;
+        assert!(matches!(outcome, WaitOutcome::Steered));
+    }
+
+    #[tokio::test]
+    async fn active_operator_steer_wins_when_explicit_action_wakes_together() {
+        let input_queue = InputQueue::new();
+        let target = ThreadId::new();
+        let recipient = ThreadId::new();
+        let target_path = AgentPath::try_from("/root/worker").expect("worker path");
+        let target_agents = vec![(target, target_path.clone())];
+        let turn_state = tokio::sync::Mutex::new(crate::state::TurnState::default());
+        let (mut activity_rx, pending_activity) =
+            input_queue.subscribe_activity(Some(&turn_state)).await;
+        let explicit_activity_rx = input_queue.subscribe_explicit_activity();
+        assert_eq!(
+            input_queue
+                .pending_explicit_activity_for_targets(recipient, &target_agents)
+                .await,
+            None
+        );
+        let mut agent_wait = None;
+        let mut wait = Box::pin(wait_for_activity_with_explicit(
+            &mut activity_rx,
+            pending_activity,
+            Instant::now() + Duration::from_secs(60),
+            &mut agent_wait,
+            Some(ExplicitActivityWait {
+                activity_rx: explicit_activity_rx,
+                input_queue: &input_queue,
+                recipient_thread_id: recipient,
+                target_agents: &target_agents,
+                turn_state: Some(&turn_state),
+            }),
+        ));
+        assert!(futures::poll!(wait.as_mut()).is_pending());
+
+        let update_id = ResponseItemId::new("racing-action-with-steer");
+        input_queue
+            .enqueue_explicit_mailbox_communication(
+                explicit_wait_mail(update_id.clone(), target_path.clone(), "body"),
+                Default::default(),
+                explicit_wait_activity(
+                    update_id,
+                    InterAgentCommunicationIntent::ResultReady,
+                    target,
+                    recipient,
+                    target_path,
+                ),
+            )
+            .await;
+        input_queue
+            .notify_operator_steer_for_test(&turn_state)
+            .await;
+
+        assert!(matches!(wait.await, WaitOutcome::Steered));
+    }
+
+    #[tokio::test]
+    async fn target_terminal_wins_when_explicit_action_wakes_together() {
+        let input_queue = InputQueue::new();
+        let registry = Arc::new(Mutex::new(AgentWaitRegistry::default()));
+        let target = ThreadId::new();
+        let recipient = ThreadId::new();
+        let target_path = AgentPath::try_from("/root/worker").expect("worker path");
+        let target_agents = vec![(target, target_path.clone())];
+        let publisher = AgentOutcomePublisher::new(target, registry.clone());
+        publisher.publish(AgentOutcomeSnapshot {
+            turn_id: Some("turn-1".to_string()),
+            status: AgentStatus::Running,
+            readiness: AgentReadiness::Pending,
+        });
+        let mut agent_wait = Some(register_agent_wait(
+            &registry,
+            vec![target],
+            AgentWaitReturnWhen::Any,
+        ));
+        let (mut activity_rx, pending_activity) =
+            input_queue.subscribe_activity(/*turn_state*/ None).await;
+        let explicit_activity_rx = input_queue.subscribe_explicit_activity();
+        assert_eq!(
+            input_queue
+                .pending_explicit_activity_for_targets(recipient, &target_agents)
+                .await,
+            None
+        );
+        let mut wait = Box::pin(wait_for_activity_with_explicit(
+            &mut activity_rx,
+            pending_activity,
+            Instant::now() + Duration::from_secs(60),
+            &mut agent_wait,
+            Some(ExplicitActivityWait {
+                activity_rx: explicit_activity_rx,
+                input_queue: &input_queue,
+                recipient_thread_id: recipient,
+                target_agents: &target_agents,
+                turn_state: None,
+            }),
+        ));
+        assert!(futures::poll!(wait.as_mut()).is_pending());
+
+        let update_id = ResponseItemId::new("racing-action-with-terminal");
+        input_queue
+            .enqueue_explicit_mailbox_communication(
+                explicit_wait_mail(update_id.clone(), target_path.clone(), "body"),
+                Default::default(),
+                explicit_wait_activity(
+                    update_id,
+                    InterAgentCommunicationIntent::ActionRequired,
+                    target,
+                    recipient,
+                    target_path,
+                ),
+            )
+            .await;
+        publisher.publish(AgentOutcomeSnapshot {
+            turn_id: Some("turn-1".to_string()),
+            status: AgentStatus::Completed(Some("done".to_string())),
+            readiness: AgentReadiness::Terminal,
+        });
+
+        let WaitOutcome::TargetTerminal(result) = wait.await else {
+            panic!("terminal target status must win over a concurrent explicit action");
+        };
+        assert_eq!(result.outcomes[0].0, target);
+    }
+
+    #[tokio::test]
     async fn explicit_action_already_pending_at_wait_start_uses_target_snapshot() {
         let input_queue = InputQueue::new();
         let target = ThreadId::new();
@@ -932,8 +1130,9 @@ mod tests {
             )
             .await;
 
-        let (_, pending) = input_queue
-            .subscribe_explicit_activity(recipient, &[(target, sender_path)])
+        let _explicit_activity_rx = input_queue.subscribe_explicit_activity();
+        let pending = input_queue
+            .pending_explicit_activity_for_targets(recipient, &[(target, sender_path)])
             .await;
         assert_eq!(pending.map(|activity| activity.update_id), Some(update_id));
     }
