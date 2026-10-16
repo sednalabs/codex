@@ -312,6 +312,7 @@ jobs:
       - name: Inventory the exact DELETE diagnostic test
         if: ${{ inputs.windows_validation_mode == 'delete_diagnostic' }}
         shell: bash
+        working-directory: codex-rs
         run: |
           set -euo pipefail
           selector="unified_exec::tests::legacy_workspace_write_delete_is_limited_to_writable_roots"
@@ -326,6 +327,7 @@ jobs:
       - name: Run the exact DELETE diagnostic without waiving its assertion
         if: ${{ inputs.windows_validation_mode == 'delete_diagnostic' }}
         shell: bash
+        working-directory: codex-rs
         run: >-
           cargo test --locked -p codex-windows-sandbox --lib
           unified_exec::tests::legacy_workspace_write_delete_is_limited_to_writable_roots
