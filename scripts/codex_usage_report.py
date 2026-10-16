@@ -616,6 +616,7 @@ class UsageReporter:
         max_calls: int = MAX_CALLS,
         max_selected_text_chars: int = MAX_SELECTED_TEXT_CHARS,
         max_vm_instructions: int = MAX_VM_INSTRUCTIONS,
+        shared_text_pool: dict[str, str] | None = None,
     ) -> None:
         self.database = database
         self.start = start
@@ -637,6 +638,7 @@ class UsageReporter:
         self.max_calls = max_calls
         self.max_selected_text_chars = max_selected_text_chars
         self.max_vm_instructions = max_vm_instructions
+        self.shared_text_pool = shared_text_pool
         self.vm_instructions = 0
         self.vm_stop_reason: str | None = None
         self.query_plans: list[dict[str, Any]] = []
@@ -710,15 +712,30 @@ class UsageReporter:
             )
         return self.conn.execute(sql, params)
 
-    def _account_output_text(self, row: sqlite3.Row) -> None:
-        for value in row:
+    def _account_output_text(self, row: sqlite3.Row) -> dict[str, Any]:
+        values: dict[str, Any] = {}
+        for column in row.keys():
+            value = row[column]
             if not isinstance(value, str):
+                values[column] = value
                 continue
             if len(value) > MAX_TEXT_FIELD_CHARS:
                 raise WorkLimitReached("source_text_field_limit_exceeded")
-            self.output_text_chars += len(value)
-            if self.output_text_chars > self.max_selected_text_chars:
-                raise WorkLimitReached("selected_source_text_limit_exceeded")
+            if self.shared_text_pool is None:
+                self.output_text_chars += len(value)
+                if self.output_text_chars > self.max_selected_text_chars:
+                    raise WorkLimitReached("selected_source_text_limit_exceeded")
+                values[column] = value
+                continue
+            shared_value = self.shared_text_pool.get(value)
+            if shared_value is None:
+                self.output_text_chars += len(value)
+                if self.output_text_chars > self.max_selected_text_chars:
+                    raise WorkLimitReached("selected_source_text_limit_exceeded")
+                self.shared_text_pool[value] = value
+                shared_value = value
+            values[column] = shared_value
+        return values
 
     def _fetch_threads(self, thread_ids: Sequence[str]) -> dict[str, dict[str, Any]]:
         result: dict[str, dict[str, Any]] = {}
@@ -728,16 +745,14 @@ class UsageReporter:
             placeholders = ",".join("?" for _ in batch)
             sql = f"SELECT {self.thread_columns} FROM usage_threads WHERE thread_id IN ({placeholders})"
             for row in self._execute("thread_metadata", sql, batch):
-                self._account_output_text(row)
-                result[row["thread_id"]] = dict(row)
+                values = self._account_output_text(row)
+                result[values["thread_id"]] = values
         return result
 
     def _fetch_anchor(self, thread_id: str) -> dict[str, Any] | None:
         sql = f"SELECT {self.thread_columns} FROM usage_threads WHERE thread_id = ?"
         row = self._execute("thread_anchor", sql, (thread_id,)).fetchone()
-        if row is not None:
-            self._account_output_text(row)
-        return dict(row) if row is not None else None
+        return self._account_output_text(row) if row is not None else None
 
     def _fetch_children(
         self, parent_ids: Sequence[str], remaining: int
@@ -758,9 +773,9 @@ class UsageReporter:
                 self.check_deadline()
                 if batch_count >= remaining:
                     raise WorkLimitReached("lineage_node_limit_exceeded")
-                self._account_output_text(row)
+                values = self._account_output_text(row)
                 batch_count += 1
-                children.append(dict(row))
+                children.append(values)
             remaining -= batch_count
         return children
 
@@ -779,8 +794,7 @@ class UsageReporter:
             self.check_deadline()
             if len(rows) >= remaining:
                 raise WorkLimitReached("lineage_node_limit_exceeded")
-            self._account_output_text(row)
-            rows.append(dict(row))
+            rows.append(self._account_output_text(row))
         return rows
 
     def _walk_subtree(
@@ -859,6 +873,11 @@ class UsageReporter:
             self.check_deadline()
             if self.lineage_scan_rows >= MAX_LINEAGE_SCAN_ROWS:
                 raise WorkLimitReached("lineage_scan_row_limit_exceeded")
+            source_row = (
+                self._account_output_text(row)
+                if self.shared_text_pool is not None
+                else row
+            )
             values: dict[str, str | None] = {}
             for column in (
                 "thread_id",
@@ -866,7 +885,7 @@ class UsageReporter:
                 "root_thread_id",
                 "fork_parent_thread_id",
             ):
-                raw = row[column]
+                raw = source_row[column]
                 if raw is not None and not isinstance(raw, str):
                     raise WorkLimitReached("lineage_metadata_invalid")
                 value = _blank_to_none(raw)
@@ -947,10 +966,10 @@ class UsageReporter:
                 "window_calls", sql, (seek_start, seek_end, self.max_calls + 1)
             )
             for row in cursor:
-                self._account_output_text(row)
+                values = self._account_output_text(row)
                 if len(calls) >= self.max_calls:
                     raise WorkLimitReached("call_limit_exceeded")
-                calls.append(dict(row))
+                calls.append(values)
                 self.selected_rows = len(calls)
             self.selected_rows = len(calls)
             return calls
@@ -997,10 +1016,10 @@ class UsageReporter:
                     "thread_window_calls_by_thread_index", fallback_sql, params
                 )
             for row in cursor:
-                self._account_output_text(row)
+                values = self._account_output_text(row)
                 if len(calls) >= self.max_calls:
                     raise WorkLimitReached("call_limit_exceeded")
-                calls.append(dict(row))
+                calls.append(values)
                 self.selected_rows = len(calls)
         self.selected_rows = len(calls)
         return calls
@@ -1039,8 +1058,8 @@ class UsageReporter:
                 self.check_deadline()
                 if len(result) >= MAX_LINEAGE_NODES:
                     raise WorkLimitReached("spawn_request_metadata_limit_exceeded")
-                self._account_output_text(row)
-                result[str(row["spawn_request_id"])] = dict(row)
+                values = self._account_output_text(row)
+                result[str(values["spawn_request_id"])] = values
         return result
 
     def _fetch_ancestors(
@@ -2512,6 +2531,7 @@ def _run_multi_ledger_report(
     remaining_calls = MAX_CALLS
     remaining_text = MAX_MULTI_LEDGER_SELECTED_TEXT_CHARS
     remaining_vm = MAX_VM_INSTRUCTIONS
+    shared_text_pool: dict[str, str] = {}
     for source_name, database in ledger_inputs:
         check_deadline()
         reporter = UsageReporter(
@@ -2530,6 +2550,7 @@ def _run_multi_ledger_report(
             max_calls=remaining_calls,
             max_selected_text_chars=remaining_text,
             max_vm_instructions=remaining_vm,
+            shared_text_pool=shared_text_pool,
         )
         try:
             report = reporter.run()
@@ -2637,6 +2658,7 @@ def _run_multi_ledger_report(
             "limits": {
                 "combined_selected_call_rows": MAX_CALLS,
                 "selected_source_text_characters": MAX_MULTI_LEDGER_SELECTED_TEXT_CHARS,
+                "selected_source_text_accounting": "unique string values are interned and budgeted once across the explicitly selected ledgers",
                 "sqlite_vm_instructions": MAX_VM_INSTRUCTIONS,
                 "elapsed_seconds": MAX_SECONDS,
                 "metadata_scan_rows_per_ledger": MAX_LINEAGE_SCAN_ROWS,

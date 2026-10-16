@@ -292,6 +292,59 @@ def _by_model(metrics: dict[str, Any]) -> dict[str | None, dict[str, Any]]:
     return {item["actual_model_used"]: item for item in metrics["by_actual_model"]}
 
 
+def _check_shared_text_pool() -> None:
+    shared_text_pool: dict[str, str] = {}
+    current = report.UsageReporter(
+        Path("unused"),
+        report.parse_utc(START),
+        report.parse_utc(END),
+        report.UTC,
+        "UTC",
+        "subtree",
+        ROOT_THREAD,
+        "none",
+        False,
+        token_only_projection=True,
+        max_selected_text_chars=5,
+        shared_text_pool=shared_text_pool,
+    )
+    historical = report.UsageReporter(
+        Path("unused"),
+        report.parse_utc(START),
+        report.parse_utc(END),
+        report.UTC,
+        "UTC",
+        "subtree",
+        ROOT_THREAD,
+        "none",
+        False,
+        token_only_projection=True,
+        max_selected_text_chars=0,
+        shared_text_pool=shared_text_pool,
+    )
+    first = current._account_output_text({"thread_id": "root", "model": "m"})
+    _assert(
+        current.output_text_chars == 5,
+        "first source strings consume the shared budget",
+    )
+    mirrored = historical._account_output_text({"thread_id": "root", "model": "m"})
+    _assert(
+        historical.output_text_chars == 0
+        and mirrored["thread_id"] is first["thread_id"]
+        and mirrored["model"] is first["model"],
+        "mirrored source strings reuse the bounded shared pool",
+    )
+    try:
+        historical._account_output_text({"new_value": "x"})
+    except report.WorkLimitReached as exc:
+        _assert(
+            exc.reason == "selected_source_text_limit_exceeded",
+            "unique text beyond the remaining budget fails closed",
+        )
+    else:
+        raise AssertionError("shared text pool exceeded its remaining budget")
+
+
 def _check_report_shape(database: Path) -> dict[str, Any]:
     before = hashlib.sha256(database.read_bytes()).hexdigest()
     result, diagnostic = _run_report(database)
@@ -716,6 +769,11 @@ def _check_multi_ledger_reconciliation(temporary: Path) -> None:
         == 1_000_000,
         "the dual-ledger projection retains its original small text budget",
     )
+    _assert(
+        result["source_coverage"]["limits"]["selected_source_text_accounting"]
+        == "unique string values are interned and budgeted once across the explicitly selected ledgers",
+        "the shared text budget measures its retained unique strings",
+    )
     _assert(result["summary"]["provider_call_count"] == 6, "only unambiguous calls contribute")
     _assert(
         result["summary"]["token_sums_known_subtotal"]["uncached_input_tokens"] == 39,
@@ -805,9 +863,10 @@ def main() -> int:
         _check_report_shape(current)
         _check_bounded_fallback(temporary)
         _check_cycle_is_incomplete(temporary)
+        _check_shared_text_pool()
         _check_multi_ledger_reconciliation(temporary)
         _check_multi_ledger_postprocessing_deadline()
-    print(json.dumps({"status": "passed", "cases": 5}, separators=(",", ":")))
+    print(json.dumps({"status": "passed", "cases": 6}, separators=(",", ":")))
     return 0
 
 
