@@ -225,7 +225,7 @@ pub fn create_send_message_tool() -> ToolSpec {
                     json!("result_ready"),
                 ],
                 Some(
-                    "Optional explicit update intent. Omitting it preserves an ordinary quiet message.".to_string(),
+                    "Optional explicit root-directed update intent. Omitting it preserves an ordinary quiet message; progress remains quiet, while action_required or result_ready can wake an active wait_agent that explicitly targets this sender.".to_string(),
                 ),
             ),
         ),
@@ -331,7 +331,7 @@ pub fn create_wait_agent_tool_v1(options: WaitAgentTimeoutOptions) -> ToolSpec {
 pub fn create_wait_agent_tool_v2(options: WaitAgentTimeoutOptions) -> ToolSpec {
     ToolSpec::Function(ResponsesApiTool {
         name: "wait_agent".to_string(),
-        description: "Wait for mailbox activity, or pass exact agent targets to wait for actionable agent completion. With targets, return_when selects whether any target or all targets must become actionable. The wait also ends early when new user input is steered into the active turn. Does not return agent content; returns a concise outcome summary."
+        description: "Wait for mailbox activity, or pass exact agent targets to wait for actionable agent completion. A direct action_required or result_ready update from one of those exact targets also ends the wait; progress and ordinary queue-only messages remain quiet. With targets, return_when selects whether any target or all targets must become actionable. The wait also ends early when new user input is steered into the active turn. Does not return agent content; returns a concise outcome summary."
             .to_string(),
         strict: false,
         defer_loading: None,
@@ -589,7 +589,7 @@ fn wait_output_schema_v2() -> Value {
                     "timeout",
                     "subscription_loss"
                 ],
-                "description": "The observed reason the wait returned, when available."
+                "description": "The observed reason the wait returned, when available. An exact-target actionable message is identified without including its body."
             }
         },
         "required": ["message", "timed_out"],

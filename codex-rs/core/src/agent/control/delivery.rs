@@ -11,6 +11,7 @@ use crate::config::Config;
 use crate::context::ContextualUserFragment;
 use crate::context::InterAgentMessage;
 use crate::context::InterAgentMessageType;
+use crate::session::ExplicitMailboxActivity;
 use crate::session::session::Session;
 use codex_history::InterAgentCommunicationAdmission;
 use codex_history::InterAgentCommunicationIntent;
@@ -777,19 +778,35 @@ async fn enqueue_pending_explicit_admissions(
     recipient_session: &Session,
     index: &ExplicitAdmissionIndex,
 ) {
+    let superseded_update_ids = index
+        .ordered
+        .iter()
+        .flat_map(|admission| admission.supersedes.iter().cloned())
+        .collect::<HashSet<_>>();
+    let represented_update_ids = index
+        .represented_response_ids
+        .keys()
+        .cloned()
+        .collect::<HashSet<_>>();
+    let unavailable_update_ids = superseded_update_ids
+        .union(&represented_update_ids)
+        .cloned()
+        .collect::<HashSet<_>>();
+    recipient_session
+        .input_queue
+        .remove_pending_explicit_updates(&unavailable_update_ids)
+        .await;
     let pending = {
         let mut delivered = recipient_session
             .delivered_explicit_inter_agent_updates
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        delivered.retain(|update_id| !index.represented_response_ids.contains_key(update_id));
+        delivered.retain(|update_id| !unavailable_update_ids.contains(update_id));
         index
             .ordered
             .iter()
             .filter(|admission| {
-                !index
-                    .represented_response_ids
-                    .contains_key(&admission.update_id)
+                !unavailable_update_ids.contains(&admission.update_id)
                     && !delivered.contains(&admission.update_id)
             })
             .cloned()
@@ -797,11 +814,21 @@ async fn enqueue_pending_explicit_admissions(
     };
 
     for admission in pending {
+        let explicit_activity = ExplicitMailboxActivity {
+            update_id: admission.update_id.clone(),
+            intent: admission.intent,
+            sender_thread_id: admission.sender_thread_id,
+            recipient_thread_id: admission.recipient_thread_id,
+            sender_path: admission.sender_path.clone(),
+            recipient_path: admission.recipient_path.clone(),
+            generation: None,
+        };
         recipient_session
             .input_queue
-            .enqueue_mailbox_communication(
+            .enqueue_explicit_mailbox_communication(
                 admission.original_communication.clone(),
                 Default::default(),
+                explicit_activity,
             )
             .await;
         recipient_session

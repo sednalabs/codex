@@ -78,8 +78,8 @@ use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
-use codex_rollout::RolloutRecorder;
 use codex_protocol::user_input::UserInput;
+use codex_rollout::RolloutRecorder;
 use codex_state::DirectionalThreadSpawnEdgeStatus;
 use core_test_support::TempDirExt;
 use opentelemetry_sdk::metrics::InMemoryMetricExporter;
@@ -1681,6 +1681,47 @@ async fn multi_agent_v2_explicit_root_updates_are_durable_and_idempotent() {
         "successfully represented explicit mail is no longer pending"
     );
 
+    let pending_progress_watermark = root_thread
+        .session
+        .input_queue
+        .mailbox_enqueue_watermark()
+        .await;
+    SendMessageHandlerV2
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "send_message",
+            function_payload(json!({
+                "target": "/root",
+                "message": "a newer intermediate update is available",
+                "intent": "progress",
+                "idempotency_key": "worker-progress-pending-1"
+            })),
+        ))
+        .await
+        .expect("the intermediate progress admission should be durable");
+    let pending_progress_update_id = full_rollout_items(&root_thread)
+        .await
+        .iter()
+        .find_map(|item| match item {
+            RolloutItem::InterAgentCommunicationMetadata {
+                admission: Some(admission),
+                ..
+            } if admission.idempotency_key == "worker-progress-pending-1" => {
+                Some(admission.update_id.clone())
+            }
+            _ => None,
+        })
+        .expect("the intermediate progress admission should be readable");
+    assert_eq!(
+        root_thread
+            .session
+            .input_queue
+            .pending_mailbox_communication_count_since(pending_progress_watermark)
+            .await,
+        Some(1)
+    );
+
     SendMessageHandlerV2
         .handle(invocation(
             session.clone(),
@@ -1691,7 +1732,10 @@ async fn multi_agent_v2_explicit_root_updates_are_durable_and_idempotent() {
                 "message": "the result is ready",
                 "intent": "result_ready",
                 "idempotency_key": "worker-result-1",
-                "supersedes": [progress.update_id.as_str()]
+                "supersedes": [
+                    progress.update_id.as_str(),
+                    pending_progress_update_id.as_str()
+                ]
             })),
         ))
         .await
@@ -1708,14 +1752,29 @@ async fn multi_agent_v2_explicit_root_updates_are_durable_and_idempotent() {
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(admissions.len(), 2);
+    assert_eq!(admissions.len(), 3);
     let result = admissions
         .iter()
         .find(|admission| admission.idempotency_key == "worker-result-1")
         .expect("result admission should be persisted");
     let result_update_id = result.update_id.clone();
     assert_eq!(result.intent, InterAgentCommunicationIntent::ResultReady);
-    assert_eq!(result.supersedes, vec![progress.update_id.clone()]);
+    assert_eq!(
+        result.supersedes,
+        vec![
+            progress.update_id.clone(),
+            pending_progress_update_id.clone()
+        ]
+    );
+    assert_eq!(
+        root_thread
+            .session
+            .input_queue
+            .pending_mailbox_communication_count_since(pending_progress_watermark)
+            .await,
+        Some(1),
+        "superseding a queued progress message retains only the actionable result"
+    );
 
     SendMessageHandlerV2
         .handle(invocation(
@@ -1727,7 +1786,10 @@ async fn multi_agent_v2_explicit_root_updates_are_durable_and_idempotent() {
                 "message": "the result is ready",
                 "intent": "result_ready",
                 "idempotency_key": "worker-result-1",
-                "supersedes": [progress.update_id.as_str()]
+                "supersedes": [
+                    progress.update_id.as_str(),
+                    pending_progress_update_id.as_str()
+                ]
             })),
         ))
         .await
@@ -1744,7 +1806,7 @@ async fn multi_agent_v2_explicit_root_updates_are_durable_and_idempotent() {
                 }
             ))
             .count(),
-        2,
+        3,
         "same-key retries do not append a second admission"
     );
     assert!(
@@ -1797,7 +1859,7 @@ async fn multi_agent_v2_explicit_root_updates_are_durable_and_idempotent() {
                 }
             ))
             .count(),
-        2,
+        3,
         "root-self rejection appends no admission"
     );
 
@@ -1811,7 +1873,10 @@ async fn multi_agent_v2_explicit_root_updates_are_durable_and_idempotent() {
                 "message": "changed body under the old key",
                 "intent": "result_ready",
                 "idempotency_key": "worker-result-1",
-                "supersedes": [progress.update_id.as_str()]
+                "supersedes": [
+                    progress.update_id.as_str(),
+                    pending_progress_update_id.as_str()
+                ]
             })),
         ))
         .await
@@ -1829,11 +1894,7 @@ async fn multi_agent_v2_explicit_root_updates_are_durable_and_idempotent() {
         .expect("root shutdown should complete before resume");
     let resumed_root_id = manager
         .agent_control()
-        .resume_agent_from_rollout(
-            (*turn.config).clone(),
-            root.thread_id,
-            SessionSource::Exec,
-        )
+        .resume_agent_from_rollout((*turn.config).clone(), root.thread_id, SessionSource::Exec)
         .await
         .expect("root should resume from its retained rollout");
     assert_eq!(resumed_root_id, root.thread_id);
@@ -1841,7 +1902,11 @@ async fn multi_agent_v2_explicit_root_updates_are_durable_and_idempotent() {
         .get_thread(root.thread_id)
         .await
         .expect("resumed root should be loaded");
-    let restored_mail = resumed_root_thread.session.input_queue.drain_mailbox().await;
+    let restored_mail = resumed_root_thread
+        .session
+        .input_queue
+        .drain_mailbox()
+        .await;
     assert_eq!(
         restored_mail.len(),
         1,
@@ -1853,6 +1918,7 @@ async fn multi_agent_v2_explicit_root_updates_are_durable_and_idempotent() {
         .collect::<HashSet<_>>();
     assert!(restored_ids.contains(&result_update_id));
     assert!(!restored_ids.contains(&progress_update_id));
+    assert!(!restored_ids.contains(&pending_progress_update_id));
     for mail in restored_mail {
         resumed_root_thread
             .session
