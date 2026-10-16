@@ -841,7 +841,7 @@ impl LocalThreadStore {
                 planner.observe(&line)?;
             }
         }
-        Ok(planner.finish())
+        planner.finish()
     }
 
     async fn write_rollout_with_rollback_plan(

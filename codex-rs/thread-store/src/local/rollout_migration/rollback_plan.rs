@@ -61,6 +61,7 @@ pub(super) struct RollbackPlan {
     record_boundaries: Vec<Option<usize>>,
     boundary_alive: Vec<bool>,
     compacted_items: HashMap<usize, CompactedItem>,
+    admission_representation_ids: HashMap<usize, ResponseItemId>,
 }
 
 impl RollbackPlan {
@@ -73,6 +74,23 @@ impl RollbackPlan {
         record_index: usize,
         mut line: RolloutLine,
     ) -> ThreadStoreResult<Option<RolloutLine>> {
+        if let RolloutItem::InterAgentCommunicationMetadata {
+            admission: Some(admission),
+            ..
+        } = &mut line.item
+            && let Some(response_id) = self.admission_representation_ids.get(&record_index)
+        {
+            if admission
+                .represented_response_id
+                .as_ref()
+                .is_some_and(|recorded| recorded != response_id)
+            {
+                return Err(migration_error(
+                    "explicit inter-agent receipt conflicts with its response identity",
+                ));
+            }
+            admission.represented_response_id = Some(response_id.clone());
+        }
         let boundary = self
             .record_boundaries
             .get(record_index)
@@ -112,6 +130,9 @@ pub(super) struct RollbackPlanner {
     retained_fact_sources: Vec<RetainedFactSource>,
     compactions: Vec<CompactionFrame>,
     model_replay: ModelReplayPlanner,
+    admission_indexes: HashMap<ResponseItemId, usize>,
+    admission_recorded_response_ids: HashMap<ResponseItemId, ResponseItemId>,
+    response_representation_ids: HashMap<ResponseItemId, ResponseItemId>,
 }
 
 impl RollbackPlanner {
@@ -131,6 +152,9 @@ impl RollbackPlanner {
             retained_fact_sources: Vec::new(),
             compactions: Vec::new(),
             model_replay: ModelReplayPlanner::new(),
+            admission_indexes: HashMap::new(),
+            admission_recorded_response_ids: HashMap::new(),
+            response_representation_ids: HashMap::new(),
         }
     }
 
@@ -161,6 +185,23 @@ impl RollbackPlanner {
         match &line.item {
             RolloutItem::SessionMeta(_) => self.record_boundaries[index] = None,
             RolloutItem::ResponseItem(response) => {
+                if let Some(update_id) = response
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.inter_agent_update_id.as_ref())
+                {
+                    if !matches!(&response.item, ResponseItem::AgentMessage { .. }) {
+                        return Err(migration_error(
+                            "explicit inter-agent update identity is attached to a non-agent response",
+                        ));
+                    }
+                    let response_id = response.item.id().cloned().ok_or_else(|| {
+                        migration_error(
+                            "explicit inter-agent representation is missing its response ID",
+                        )
+                    })?;
+                    self.record_response_representation(update_id, response_id)?;
+                }
                 if matches!(&response.item, ResponseItem::Message { role, .. } if role == "assistant")
                     || matches!(&response.item, ResponseItem::FunctionCall { .. })
                 {
@@ -247,12 +288,57 @@ impl RollbackPlanner {
                 let boundary = self.start_boundary(index);
                 self.boundaries[boundary].is_communication = true;
             }
+            RolloutItem::InterAgentCommunicationMetadata {
+                trigger_turn,
+                admission: Some(admission),
+            } => {
+                if *trigger_turn {
+                    return Err(migration_error(
+                        "explicit inter-agent admission cannot use legacy trigger-turn behavior",
+                    ));
+                }
+                self.record_boundaries[index] = None;
+                if self
+                    .admission_indexes
+                    .insert(admission.update_id.clone(), index)
+                    .is_some()
+                {
+                    return Err(migration_error(
+                        "legacy rollout contains duplicate explicit inter-agent admission IDs",
+                    ));
+                }
+                if let Some(response_id) = admission.represented_response_id.as_ref() {
+                    self.admission_recorded_response_ids
+                        .insert(admission.update_id.clone(), response_id.clone());
+                }
+            }
             RolloutItem::InterAgentCommunicationMetadata { .. } => {
                 let boundary = self.start_boundary(index);
                 self.boundaries[boundary].is_communication = true;
                 self.pending_delivery_boundary = Some(boundary);
             }
             RolloutItem::Compacted(item) => {
+                if let Some(replacement_history) = item.replacement_history.as_ref() {
+                    for response in replacement_history {
+                        if let Some(update_id) = response
+                            .metadata
+                            .as_ref()
+                            .and_then(|metadata| metadata.inter_agent_update_id.as_ref())
+                        {
+                            if !matches!(&response.item, ResponseItem::AgentMessage { .. }) {
+                                return Err(migration_error(
+                                    "explicit inter-agent update identity is attached to a non-agent response",
+                                ));
+                            }
+                            let response_id = response.item.id().cloned().ok_or_else(|| {
+                                migration_error(
+                                    "explicit inter-agent representation is missing its response ID",
+                                )
+                            })?;
+                            self.record_response_representation(update_id, response_id)?;
+                        }
+                    }
+                }
                 let owner = self
                     .active_turn_id
                     .as_deref()
@@ -352,14 +438,41 @@ impl RollbackPlanner {
         Ok(())
     }
 
-    pub(super) fn finish(self) -> RollbackPlan {
+    pub(super) fn finish(self) -> ThreadStoreResult<RollbackPlan> {
         let RollbackPlanner {
             record_boundaries,
             boundaries,
             compactions,
             model_replay,
+            admission_indexes,
+            admission_recorded_response_ids,
+            response_representation_ids,
             ..
         } = self;
+        if response_representation_ids
+            .keys()
+            .any(|update_id| !admission_indexes.contains_key(update_id))
+        {
+            return Err(migration_error(
+                "legacy rollout contains an inter-agent representation without its admission",
+            ));
+        }
+        let mut admission_representation_ids = HashMap::new();
+        for (update_id, record_index) in admission_indexes {
+            let recorded = admission_recorded_response_ids.get(&update_id);
+            let observed = response_representation_ids.get(&update_id);
+            if recorded
+                .zip(observed)
+                .is_some_and(|(recorded, observed)| recorded != observed)
+            {
+                return Err(migration_error(
+                    "explicit inter-agent receipt conflicts with its response identity",
+                ));
+            }
+            if let Some(response_id) = observed.or(recorded) {
+                admission_representation_ids.insert(record_index, response_id.clone());
+            }
+        }
         let replay_anchor = model_replay.finish().empty_replacement_history_compaction;
         let boundary_alive = boundaries
             .into_iter()
@@ -379,11 +492,12 @@ impl RollbackPlanner {
                     .then_some((frame.record_index, frame.item))
             })
             .collect::<HashMap<_, _>>();
-        RollbackPlan {
+        Ok(RollbackPlan {
             record_boundaries,
             boundary_alive,
             compacted_items,
-        }
+            admission_representation_ids,
+        })
     }
 
     fn start_boundary(&mut self, index: usize) -> usize {
@@ -410,6 +524,23 @@ impl RollbackPlanner {
         self.boundary_stack.push(boundary);
         self.bind_active_turn(boundary);
         boundary
+    }
+
+    fn record_response_representation(
+        &mut self,
+        update_id: &ResponseItemId,
+        response_id: ResponseItemId,
+    ) -> ThreadStoreResult<()> {
+        if let Some(existing) = self.response_representation_ids.get(update_id)
+            && existing != &response_id
+        {
+            return Err(migration_error(
+                "explicit inter-agent update has conflicting response IDs",
+            ));
+        }
+        self.response_representation_ids
+            .insert(update_id.clone(), response_id);
+        Ok(())
     }
 
     fn bind_active_turn(&mut self, boundary: usize) {

@@ -44,6 +44,7 @@ use codex_protocol::protocol::UserMessageEvent;
 use codex_protocol::protocol::UserMessageImageKind;
 use codex_protocol::user_input::UserInput;
 use codex_rollout::CompactedItem;
+use codex_rollout::ResponseItemEnvelope;
 use codex_rollout::RetainedContextEvent;
 use codex_rollout::RolloutConfig;
 use codex_rollout::RolloutItem;
@@ -241,6 +242,75 @@ fn compacted(replacement_history: Vec<ResponseItem>) -> RolloutItem {
     RolloutItem::Compacted(CompactedItem {
         message: "checkpoint".to_string(),
         replacement_history: Some(replacement_history.into_iter().map(Into::into).collect()),
+        retained_context: None,
+        guardian_history: None,
+        mcp_resource_origins: None,
+        window_number: Some(1),
+        first_window_id: None,
+        previous_window_id: None,
+        window_id: None,
+        compaction_response_id: None,
+        latest_token_usage_record: None,
+        resume_metadata: None,
+    })
+}
+
+fn explicit_admission_metadata(update_id: &str) -> RolloutItem {
+    let sender_path = AgentPath::root().join("worker").expect("worker path");
+    let recipient_path = AgentPath::root();
+    let mut original_communication = InterAgentCommunication::new(
+        sender_path.clone(),
+        recipient_path.clone(),
+        Vec::new(),
+        "Please review the bounded result.".to_string(),
+        /*trigger_turn*/ false,
+    );
+    original_communication.id = Some(ResponseItemId::from_server(update_id.to_string()));
+    let root_thread_id =
+        serde_json::to_value(ThreadId::from_u128(1)).expect("serialize root thread ID");
+    let sender_thread_id =
+        serde_json::to_value(ThreadId::from_u128(2)).expect("serialize sender thread ID");
+    serde_json::from_value(json!({
+        "type": "inter_agent_communication_metadata",
+        "payload": {
+            "trigger_turn": false,
+            "admission": {
+                "update_id": update_id,
+                "idempotency_key": format!("key-{update_id}"),
+                "intent": "action_required",
+                "original_communication": original_communication,
+                "root_thread_id": root_thread_id,
+                "sender_thread_id": sender_thread_id,
+                "recipient_thread_id": root_thread_id,
+                "sender_path": sender_path,
+                "recipient_path": recipient_path,
+                "supersedes": [format!("prior-{update_id}")],
+                "represented_response_id": null,
+            }
+        }
+    }))
+    .expect("deserialize explicit inter-agent admission metadata")
+}
+
+fn explicit_agent_response(update_id: &str, response_id: &str) -> RolloutItem {
+    serde_json::from_value(json!({
+        "type": "response_item",
+        "payload": {
+            "type": "agent_message",
+            "id": response_id,
+            "author": "/root/worker",
+            "recipient": "/root",
+            "content": []
+        },
+        "metadata": { "inter_agent_update_id": update_id }
+    }))
+    .expect("deserialize explicit inter-agent response")
+}
+
+fn compacted_with_envelopes(history: Vec<ResponseItemEnvelope>) -> RolloutItem {
+    RolloutItem::Compacted(CompactedItem {
+        message: "checkpoint".to_string(),
+        replacement_history: Some(history),
         retained_context: None,
         guardian_history: None,
         mcp_resource_origins: None,
@@ -1174,6 +1244,141 @@ async fn migration_rolls_back_inter_agent_metadata_with_its_delivery() {
         }
         _ => false,
     }));
+}
+
+#[tokio::test]
+async fn migration_retains_explicit_admission_and_response_identity_when_rollback_drops_delivery() {
+    let home = TempDir::new().expect("create Codex home");
+    let thread_id = ThreadId::new();
+    let path = write_rollout(
+        home.path(),
+        thread_id,
+        SessionSource::Cli,
+        vec![
+            explicit_admission_metadata("update_1"),
+            started("turn-before-delivery"),
+            explicit_agent_response("update_1", "response_1"),
+            RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
+                num_turns: 1,
+            })),
+            user_message("replacement question"),
+        ],
+    );
+    let store = indexed_store(home.path()).await;
+
+    store
+        .migrate_rollouts(apply_options())
+        .await
+        .expect("migrate inter-agent rollback receipt");
+
+    let lines = read_rollout(&path);
+    let admission = lines.iter().find_map(|line| match &line.item {
+        RolloutItem::InterAgentCommunicationMetadata {
+            admission: Some(admission),
+            ..
+        } => Some(admission),
+        _ => None,
+    });
+    let admission = admission.expect("explicit admission remains after rollback");
+    assert_eq!(admission.update_id.as_str(), "update_1");
+    assert_eq!(admission.idempotency_key, "key-update_1");
+    assert_eq!(
+        admission.original_communication.content,
+        "Please review the bounded result."
+    );
+    assert_eq!(
+        admission.original_communication.author.as_str(),
+        "/root/worker"
+    );
+    assert_eq!(admission.original_communication.recipient.as_str(), "/root");
+    assert_eq!(
+        admission
+            .original_communication
+            .id
+            .as_ref()
+            .map(ResponseItemId::as_str),
+        Some("update_1")
+    );
+    assert_eq!(admission.sender_path.as_str(), "/root/worker");
+    assert_eq!(admission.recipient_path.as_str(), "/root");
+    assert_eq!(admission.root_thread_id, ThreadId::from_u128(1));
+    assert_eq!(admission.sender_thread_id, ThreadId::from_u128(2));
+    assert_eq!(admission.root_thread_id, admission.recipient_thread_id);
+    assert_eq!(
+        serde_json::to_value(admission.intent).unwrap(),
+        json!("action_required")
+    );
+    assert_eq!(admission.supersedes[0].as_str(), "prior-update_1");
+    assert_eq!(
+        admission
+            .represented_response_id
+            .as_ref()
+            .map(ResponseItemId::as_str),
+        Some("response_1")
+    );
+    assert!(!lines.iter().any(|line| matches!(
+        &line.item,
+        RolloutItem::ResponseItem(response)
+            if matches!(&response.item, ResponseItem::AgentMessage { id: Some(id), .. } if id.as_str() == "response_1")
+    )));
+}
+
+#[tokio::test]
+async fn migration_retains_compacted_representation_identity_when_rollback_drops_it() {
+    let home = TempDir::new().expect("create Codex home");
+    let thread_id = ThreadId::new();
+    let RolloutItem::ResponseItem(represented_response) =
+        explicit_agent_response("update_2", "response_2")
+    else {
+        panic!("helper returns a response item");
+    };
+    let path = write_rollout(
+        home.path(),
+        thread_id,
+        SessionSource::Cli,
+        vec![
+            explicit_admission_metadata("update_2"),
+            compacted_with_envelopes(vec![
+                input_response_message("user", "retained compacted context").into(),
+                represented_response,
+            ]),
+            RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
+                num_turns: 1,
+            })),
+            user_message("replacement question"),
+        ],
+    );
+    let store = indexed_store(home.path()).await;
+
+    store
+        .migrate_rollouts(apply_options())
+        .await
+        .expect("migrate compacted inter-agent rollback receipt");
+
+    let lines = read_rollout(&path);
+    let admission = lines.iter().find_map(|line| match &line.item {
+        RolloutItem::InterAgentCommunicationMetadata {
+            admission: Some(admission),
+            ..
+        } => Some(admission),
+        _ => None,
+    });
+    let admission = admission.expect("explicit admission remains after rollback");
+    assert_eq!(admission.update_id.as_str(), "update_2");
+    assert_eq!(
+        admission
+            .represented_response_id
+            .as_ref()
+            .map(ResponseItemId::as_str),
+        Some("response_2")
+    );
+    assert!(!lines.iter().any(|line| matches!(
+        &line.item,
+        RolloutItem::Compacted(compacted)
+            if compacted.replacement_history.as_ref().is_some_and(|history| history.iter().any(|response| {
+                response.item.id().is_some_and(|id| id.as_str() == "response_2")
+            }))
+    )));
 }
 
 #[tokio::test]
@@ -2171,6 +2376,109 @@ async fn migration_compacts_subagent_prefix_and_does_not_project_it() {
             .await
             .turns
             .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn migration_keeps_admission_ledger_outside_bounded_subagent_context() {
+    let home = TempDir::new().expect("create Codex home");
+    let thread_id = ThreadId::new();
+    let RolloutItem::ResponseItem(represented_response) =
+        explicit_agent_response("update_1", "response_1")
+    else {
+        panic!("helper returns a response item");
+    };
+    let path = write_rollout(
+        home.path(),
+        thread_id,
+        SessionSource::SubAgent(SubAgentSource::Other("test".to_string())),
+        vec![
+            explicit_admission_metadata("update_1"),
+            explicit_admission_metadata("update_2"),
+            compacted_with_envelopes(vec![
+                input_response_message("user", "bounded model context").into(),
+                represented_response,
+            ]),
+            started("child-turn"),
+            user_message("child question"),
+            agent_message("child answer"),
+            completed("child-turn"),
+        ],
+    );
+    let store = indexed_store(home.path()).await;
+
+    store
+        .migrate_rollouts(apply_options())
+        .await
+        .expect("migrate subagent with bounded admission ledger");
+
+    let lines = read_rollout(&path);
+    let compacted_index = lines
+        .iter()
+        .position(|line| matches!(&line.item, RolloutItem::Compacted(_)))
+        .expect("bounded compaction remains");
+    let (admission_index, admission) = lines
+        .iter()
+        .enumerate()
+        .find_map(|(index, line)| match &line.item {
+            RolloutItem::InterAgentCommunicationMetadata {
+                admission: Some(admission),
+                ..
+            } if admission.update_id.as_str() == "update_1" => Some((index, admission)),
+            _ => None,
+        })
+        .expect("admission ledger remains beyond bounded model context");
+    assert!(admission_index > compacted_index);
+    assert_eq!(
+        admission.original_communication.content,
+        "Please review the bounded result."
+    );
+    assert_eq!(
+        admission
+            .represented_response_id
+            .as_ref()
+            .map(ResponseItemId::as_str),
+        Some("response_1")
+    );
+    let pending_admission = lines.iter().find_map(|line| match &line.item {
+        RolloutItem::InterAgentCommunicationMetadata {
+            admission: Some(admission),
+            ..
+        } if admission.update_id.as_str() == "update_2" => Some(admission),
+        _ => None,
+    });
+    let pending_admission = pending_admission.expect("unrepresented pending receipt remains");
+    assert_eq!(pending_admission.idempotency_key, "key-update_2");
+    assert_eq!(pending_admission.supersedes[0].as_str(), "prior-update_2");
+    assert!(pending_admission.represented_response_id.is_none());
+    assert!(
+        !lines
+            .iter()
+            .any(|line| matches!(&line.item, RolloutItem::InterAgentCommunication(_)))
+    );
+    assert!(lines.iter().any(|line| matches!(
+        &line.item,
+        RolloutItem::Compacted(compacted)
+            if compacted.replacement_history.as_ref().is_some_and(|history| history.iter().any(|response| {
+                response.item.id().is_some_and(|id| id.as_str() == "response_1")
+            }))
+    )));
+
+    let context = store
+        .load_latest_model_context(LoadThreadHistoryParams {
+            thread_id,
+            include_archived: false,
+        })
+        .await
+        .expect("load bounded model context");
+    assert!(context.items.iter().any(|item| {
+        matches!(item, RolloutItem::Compacted(compacted) if compacted.message == "checkpoint")
+    }));
+    assert!(
+        !context
+            .items
+            .iter()
+            .any(|item| matches!(item, RolloutItem::InterAgentCommunication(_)))
     );
 }
 
