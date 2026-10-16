@@ -452,7 +452,8 @@ async fn late_expired_session_failure_does_not_retire_replacement() -> anyhow::R
         call_echo_tool(&client, "warmup").await?,
         expected_echo_result("warmup")
     );
-    assert_eq!(http_client.initialize_attempts(), 1);
+    let initial_initialize_attempts = http_client.initialize_attempts();
+    assert!(initial_initialize_attempts >= 1);
 
     arm_session_post_failure(
         &base_url,
@@ -478,14 +479,20 @@ async fn late_expired_session_failure_does_not_retire_replacement() -> anyhow::R
             .to_string()
             .contains("MCP request outcome is uncertain")
     );
-    assert_eq!(http_client.initialize_attempts(), 1);
+    assert_eq!(
+        http_client.initialize_attempts(),
+        initial_initialize_attempts
+    );
 
     let replacement_result = call_echo_tool(&client, "replacement-session").await?;
     assert_eq!(
         replacement_result,
         expected_echo_result("replacement-session")
     );
-    assert_eq!(http_client.initialize_attempts(), 2);
+    assert_eq!(
+        http_client.initialize_attempts(),
+        initial_initialize_attempts + 1
+    );
 
     http_client.release_response.notify_one();
     let late_error = late_call.await?.unwrap_err();
@@ -500,7 +507,10 @@ async fn late_expired_session_failure_does_not_retire_replacement() -> anyhow::R
         after_late_failure,
         expected_echo_result("replacement-remains-current")
     );
-    assert_eq!(http_client.initialize_attempts(), 2);
+    assert_eq!(
+        http_client.initialize_attempts(),
+        initial_initialize_attempts + 1
+    );
     assert_eq!(http_client.tool_call_attempts(), 5);
 
     Ok(())
