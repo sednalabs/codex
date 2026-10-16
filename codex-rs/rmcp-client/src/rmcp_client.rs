@@ -1238,13 +1238,13 @@ impl RmcpClient {
                         warn!("cooperative MCP stdio close required direct-child termination");
                     }
                     Some(StdioServerCloseOutcome::Failed) => {
-                        warn!("cooperative MCP stdio close did not complete with a successful child exit");
+                        warn!("cooperative MCP stdio close did not complete cleanly");
                         if let Err(error) = process.terminate().await {
                             warn!("failed to terminate owned MCP stdio child after close failure: {error}");
                         }
                     }
                     None => {
-                        warn!("timed out waiting for cooperative MCP stdio child exit");
+                        warn!("timed out waiting for cooperative MCP stdio close to finish");
                         if let Err(error) = process.terminate().await {
                             warn!("failed to terminate owned MCP stdio child after close failure: {error}");
                         }

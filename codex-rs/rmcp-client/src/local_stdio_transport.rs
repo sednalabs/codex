@@ -122,6 +122,9 @@ impl LocalStdioTransport {
         };
 
         match (transport_result, close_result) {
+            (Err(error), Ok(StdioServerCloseOutcome::Forced)) => {
+                (Err(error), StdioServerCloseOutcome::Forced)
+            }
             (Err(error), _) | (Ok(()), Err(error)) => {
                 (Err(error), StdioServerCloseOutcome::Failed)
             }
