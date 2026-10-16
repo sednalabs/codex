@@ -54,7 +54,7 @@ on:
         type: boolean
         default: false
       run_native_browser_source_validation:
-        description: Diagnose only the fixed synthetic native Browser source selector
+        description: Run the fixed synthetic native Browser source selector
         required: false
         type: boolean
         default: false
@@ -323,11 +323,11 @@ jobs:
           EXPECTED_WORKFLOW_HOST_SHA: ${{ inputs.expected_workflow_host_sha }}
         run: |
           set -euo pipefail
-          expected_target="32e2c6d3add1bc5e11ed3094354965c539848dd1"
-          expected_tree="b3e5802fe245a0c5d2b599cc7d8552e1fedaf838"
-          expected_parent="c29bb3aeb2bb8ad5d608c23193e43ab3a829e462"
+          expected_target="312efecb2169058c051cf902c02fea6198561ea0"
+          expected_tree="59291b19b1e042e99778f8ae79cbaa58a388e897"
+          expected_parent="b9630c6f9fe3cfda7434d882ef98763d78725e92"
           expected_base="a8778ccc83d615b403e4c01370ff8cb5f47677d0"
-          expected_source_ref="refs/heads/validation/ci-repair-32e2c6d3"
+          expected_source_ref="refs/heads/validation/browser-fixture-312efecb"
           expected_host_ref="refs/heads/validation/receiver-exact-cargo-20261016"
           actual_target="$(git -C validation-target rev-parse HEAD)"
           actual_tree="$(git -C validation-target rev-parse 'HEAD^{tree}')"

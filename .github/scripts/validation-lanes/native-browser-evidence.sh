@@ -61,45 +61,88 @@ for name in "${browser_runtime_env_names[@]}"; do
   browser_env_unset+=(-u "$name")
 done
 
-# This diagnostic host runs only the fixed, source-bound synthetic Browser
-# fixture. Keep Cargo/build stderr private: it can include source and compiler
-# details. Default libtest stdout is the existing assertion-failure channel;
-# this fixture prints no provider responses, images, artifacts, or environment.
-test_name="tests::hosted_native_browser_tool_flow"
-test_stdout="$(mktemp "$runner_temp/native-browser-libtest.XXXXXX")"
-cargo_stderr="$(mktemp "$runner_temp/native-browser-cargo.XXXXXX")"
+run_rust_selector() {
+  local package="$1"
+  local test_name="$2"
+  local log_path
+  shift 2
+  log_path="$(mktemp "$runner_temp/native-browser-rust-test.XXXXXX")"
 
-if env "${browser_env_unset[@]}" \
+  local cargo_status
+  if env "$@" CARGO_TERM_COLOR=never \
+    cargo test --manifest-path codex-rs/Cargo.toml --locked -p "$package" --lib "$test_name" -- --exact --test-threads=1 >"$log_path" 2>&1; then
+    cargo_status=0
+  else
+    cargo_status=$?
+  fi
+
+  if [[ "$cargo_status" != "0" ]]; then
+    echo "native-browser-evidence: Rust selector failed: ${package}::${test_name} (test output redacted)" >&2
+    printf 'native-browser-evidence: cargo_exit=%s\n' "$cargo_status" >&2
+    if LC_ALL=C grep -Eq "^error: unexpected argument .* found$" "$log_path"; then
+      echo "native-browser-evidence: cargo_usage_error=unexpected_argument" >&2
+    else
+      echo "native-browser-evidence: cargo_usage_error=none" >&2
+    fi
+
+    local libtest_summary
+    libtest_summary="$(LC_ALL=C grep -E '^test result: (ok|FAILED)\. [0-9]+ passed; [0-9]+ failed; [0-9]+ ignored; [0-9]+ measured; [0-9]+ filtered out;$' "$log_path" | tail -n 1 || true)"
+    if [[ -n "$libtest_summary" ]]; then
+      printf 'native-browser-evidence: libtest_summary=%s\n' "${libtest_summary#test result: }" >&2
+    else
+      echo "native-browser-evidence: libtest_summary=none" >&2
+    fi
+
+    if [[ "$package" == "codex-browser-computer-use" && "$test_name" == "tests::hosted_native_browser_tool_flow" ]]; then
+      local browser_panic_line
+      browser_panic_line="$(LC_ALL=C awk '
+        /panicked at / {
+          location = $0
+          sub(/^.*panicked at /, "", location)
+          if (location ~ /(^|\/)codex-rs\/browser-computer-use\/src\/lib\.rs:[0-9]+:[0-9]+:/) {
+            sub(/^.*codex-rs\/browser-computer-use\/src\/lib\.rs:/, "", location)
+            sub(/:.*/, "", location)
+            print location
+            exit
+          }
+        }
+      ' "$log_path")"
+      if [[ "$browser_panic_line" =~ ^[0-9]+$ ]] && (( browser_panic_line >= 2407 && browser_panic_line <= 2981 )); then
+        printf 'native-browser-evidence: browser_test_panic_line=%s\n' "$browser_panic_line" >&2
+      elif [[ -n "$browser_panic_line" ]]; then
+        echo "native-browser-evidence: browser_test_panic_line=unmatched" >&2
+      else
+        echo "native-browser-evidence: browser_test_panic_line=none" >&2
+      fi
+    fi
+    return 1
+  fi
+
+  local passed_count
+  local summary_count
+  passed_count="$(LC_ALL=C grep -Fxc -- "test ${test_name} ... ok" "$log_path" || true)"
+  summary_count="$(LC_ALL=C grep -Fc -- 'test result: ok. 1 passed; 0 failed; 0 ignored;' "$log_path" || true)"
+  if [[ "$passed_count" != "1" || "$summary_count" != "1" ]]; then
+    echo "native-browser-evidence: Rust selector did not execute exactly once without ignored tests: ${package}::${test_name} (test output redacted)" >&2
+    LC_ALL=C grep -E '^test result: ' "$log_path" | tail -n 1 >&2 || true
+    return 1
+  fi
+  printf 'native-browser-evidence: Rust selector passed exactly once: %s::%s\n' "$package" "$test_name"
+}
+
+run_rust_selector codex-browser-computer-use tests::hosted_native_browser_tool_flow \
+  "${browser_env_unset[@]}" \
   CODEX_BROWSER_COMPUTER_USE_PROVIDER=playwright \
   "CODEX_BROWSER_PLAYWRIGHT_NODE_PATH=$browser_node_path" \
   "CODEX_BROWSER_PLAYWRIGHT_EXECUTABLE_PATH=$browser_executable_path" \
   "CODEX_BROWSER_PLAYWRIGHT_STATE_DIR=$browser_state_dir" \
   CODEX_BROWSER_PLAYWRIGHT_HEADLESS=1 \
   "NODE_PATH=$playwright_prefix/node_modules" \
-  "PLAYWRIGHT_BROWSERS_PATH=$RUNNER_TEMP/native-browser-browsers" \
-  CARGO_TERM_COLOR=never RUST_BACKTRACE=0 RUST_LIB_BACKTRACE=0 RUST_TEST_NOCAPTURE=0 \
-  cargo test --manifest-path codex-rs/Cargo.toml --locked -p codex-browser-computer-use --lib "$test_name" -- --exact --test-threads=1 >"$test_stdout" 2>"$cargo_stderr"; then
-  cargo_status=0
-else
-  cargo_status=$?
-fi
+  "PLAYWRIGHT_BROWSERS_PATH=$RUNNER_TEMP/native-browser-browsers"
 
-if [[ "$cargo_status" != "0" ]]; then
-  printf 'native-browser-evidence: cargo_exit=%s\n' "$cargo_status" >&2
-  if LC_ALL=C grep -Fxq -- 'running 1 test' "$test_stdout"; then
-    echo "native-browser-evidence: failure_stage=selected_synthetic_libtest" >&2
-    cat "$test_stdout"
-  else
-    echo "native-browser-evidence: failure_stage=cargo_or_setup_without_selected_libtest_startup" >&2
-    echo "native-browser-evidence: Cargo/build stderr remains private and is not uploaded" >&2
-  fi
-  exit "$cargo_status"
-fi
-
-passed_count="$(LC_ALL=C grep -Fxc -- "test ${test_name} ... ok" "$test_stdout" || true)"
-summary_count="$(LC_ALL=C grep -Fc -- 'test result: ok. 1 passed; 0 failed; 0 ignored;' "$test_stdout" || true)"
-if [[ "$passed_count" != "1" || "$summary_count" != "1" ]]; then
-  echo "native-browser-evidence: Rust selector did not execute exactly once without ignored tests: codex-browser-computer-use::${test_name}" >&2
-  exit 1
-fi
-printf 'native-browser-evidence: Rust selector passed exactly once: codex-browser-computer-use::%s\n' "$test_name"
+run_rust_selector codex-tui dynamic_tools_mcp::native_computer_use_registration_tests::configured_native_provider_specs_are_registered_for_each_transport \
+  "${browser_env_unset[@]}"
+run_rust_selector codex-tui app::tests::session_lifecycle_requests::browser_dynamic_tool_image_is_forwarded_to_the_app_server_response \
+  "${browser_env_unset[@]}"
+run_rust_selector codex-exec tests::exec_dispatches_browser_provider_and_preserves_typed_images \
+  "${browser_env_unset[@]}"
