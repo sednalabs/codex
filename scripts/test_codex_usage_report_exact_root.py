@@ -722,7 +722,14 @@ def _check_multi_ledger_reconciliation(temporary: Path) -> None:
         "exact mirror is counted once and conflicting call tokens are excluded",
     )
     _assert(result["scope_totals"]["requested_root"]["provider_call_count"] == 1, "root usage stays separate")
-    _assert(result["scope_totals"]["all_descendants"]["provider_call_count"] == 5, "nested descendants are included")
+    _assert(
+        result["scope_totals"]["all_descendants"]["provider_call_count"] == 4,
+        "only lineage-resolved nested descendants are included",
+    )
+    _assert(
+        result["scope_totals"]["unresolved_lineage"]["provider_call_count"] == 1,
+        "a root-tagged record without a parent edge remains unresolved",
+    )
     by_model = {
         item["actual_model_used"]: item for item in result["by_actual_model"]
     }
