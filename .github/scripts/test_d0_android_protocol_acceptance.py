@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -22,7 +22,7 @@ from app_server_harness import (
     sse,
 )
 from fixtures import SmokePackage
-from openai_codex import ApprovalMode, Codex, CodexConfig, Sandbox
+from tui_pty import PackagedTui
 
 
 _PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p6kAAAAASUVORK5CYII="
@@ -70,9 +70,8 @@ def _function_response(response_id: str, call_id: str, name: str, args: dict[str
     return sse([ev_response_created(response_id), item, ev_completed(response_id)])
 
 
-def _queue_turn(
+def _queue_tui_turn(
     server: MockResponsesServer,
-    thread_id: str,
     marker: str,
     call_id: str,
     name: str,
@@ -81,7 +80,6 @@ def _queue_turn(
     server.enqueue_sse_for_request(
         lambda request: (
             request.path == "/v1/responses"
-            and _thread_id(request) == thread_id
             and _contains_marker(request, marker)
             and not _has_call_output(request, call_id)
         ),
@@ -90,13 +88,14 @@ def _queue_turn(
     server.enqueue_sse_for_request(
         lambda request: (
             request.path == "/v1/responses"
-            and _thread_id(request) == thread_id
             and _has_call_output(request, call_id)
         ),
         sse(
             [
                 ev_response_created(f"final-{call_id}"),
-                ev_assistant_message(f"message-{call_id}", "synthetic provider exchange completed"),
+                ev_assistant_message(
+                    f"message-{call_id}", f"SYNTHETIC_{call_id}_COMPLETED"
+                ),
                 ev_completed(f"final-{call_id}"),
             ]
         ),
@@ -313,9 +312,8 @@ def _safe_environment(package: SmokePackage, home: Path) -> dict[str, str]:
 
 
 def _run_tool_turn(
-    thread: Any,
+    tui: PackagedTui,
     server: MockResponsesServer,
-    thread_id: str,
     marker: str,
     call_id: str,
     arguments: dict[str, Any],
@@ -323,14 +321,16 @@ def _run_tool_turn(
     phase: str,
 ) -> tuple[CapturedResponsesRequest, dict[str, Any]]:
     provider.set_phase(phase)
-    _queue_turn(server, thread_id, marker, call_id, "android_step", arguments)
-    try:
-        turn = thread.run(marker)
-    except Exception as exc:
-        raise AssertionError(f"stage={phase} reason=packaged-turn-exception class={type(exc).__name__}") from None
-    _require(turn.final_response == "synthetic provider exchange completed", f"stage={phase} reason=turn-not-completed")
+    _queue_tui_turn(server, marker, call_id, "android_step", arguments)
+    tui.submit_line(marker, pasted_marker=marker)
     request = server.wait_for_request(
-        lambda candidate: _thread_id(candidate) == thread_id and _contains_marker(candidate, marker)
+        lambda candidate: candidate.path == "/v1/responses"
+        and _contains_marker(candidate, marker)
+    )
+    thread_id = _thread_id(request)
+    _require(
+        isinstance(thread_id, str) and bool(thread_id),
+        f"stage={phase} reason=thread-id-not-present",
     )
     tool_names = {
         name
@@ -339,15 +339,30 @@ def _run_tool_turn(
         for name in [item.get("name"), *[child.get("name") for child in item.get("tools", []) if isinstance(child, dict)]]
         if isinstance(name, str)
     }
-    _require("android_step" in tool_names and "android_install_build_from_run" in tool_names, f"stage={phase} reason=android-tools-not-advertised")
+    _require(
+        "android_step" in tool_names and "android_install_build_from_run" in tool_names,
+        f"stage={phase} reason=android-tools-not-advertised",
+    )
+    tui.until(f"SYNTHETIC_{call_id}_COMPLETED")
     output_request, output = _request_with_call_output(server, thread_id, call_id)
-    _require(_has_native_image(output.get("output")), f"stage={phase} reason=native-image-not-forwarded")
+    _require(
+        _thread_id(output_request) == thread_id,
+        f"stage={phase} reason=thread-id-changed",
+    )
+    _require(
+        _has_native_image(output.get("output")),
+        f"stage={phase} reason=native-image-not-forwarded",
+    )
     return output_request, output
 
 
 def test_packaged_android_step_and_install_protocol(package: SmokePackage) -> None:
     home = package.directory / "android-protocol-home"
     home.mkdir()
+    isolated = replace(
+        package,
+        environment=_safe_environment(package, home),
+    )
     with _FakeAndroidProvider() as android, MockResponsesServer() as responses:
         config_path = home / "config.toml"
         config_path.write_text(
@@ -365,24 +380,15 @@ def test_packaged_android_step_and_install_protocol(package: SmokePackage) -> No
             json.dumps({"mcp_url": android.url, "default_serial": "synthetic-serial-17"}),
             encoding="utf-8",
         )
-        environment = _safe_environment(package, home)
-        with Codex(
-            config=CodexConfig(
-                codex_bin=str(package.cli),
-                cwd=str(package.directory),
-                env=environment,
-            )
-        ) as client:
-            thread = client.thread_start(
-                ephemeral=False,
-                approval_mode=ApprovalMode.deny_all,
-                sandbox=Sandbox.workspace_write,
-            )
+        # Native provider specs are injected by the packaged TUI's normal
+        # ThreadStart path; the Python SDK's convenience start method omits
+        # dynamic_tools and is not a valid consumer for this contract.
+        with PackagedTui(isolated) as tui:
+            tui.until("Ask Codex to do anything")
 
             _, failure_output = _run_tool_turn(
-                thread,
+                tui,
                 responses,
-                thread.id,
                 "ANDROID_STEP_FIRST_FAILURE_MARKER",
                 "android-step-first-failure",
                 {
@@ -426,9 +432,8 @@ def test_packaged_android_step_and_install_protocol(package: SmokePackage) -> No
             _require("SCREEN_STEP_FAILURE" in failure_text, "stage=step-failure reason=post-failure-screen-not-returned")
 
             _, transport_output = _run_tool_turn(
-                thread,
+                tui,
                 responses,
-                thread.id,
                 "ANDROID_STEP_TRANSPORT_LOSS_MARKER",
                 "android-step-transport-loss",
                 {"type": "tap", "x": 21, "y": 34},
@@ -447,9 +452,8 @@ def test_packaged_android_step_and_install_protocol(package: SmokePackage) -> No
             )
 
             _, success_output = _run_tool_turn(
-                thread,
+                tui,
                 responses,
-                thread.id,
                 "ANDROID_STEP_SUCCESS_MARKER",
                 "android-step-success",
                 {"type": "tap", "x": 5, "y": 6},
@@ -473,26 +477,33 @@ def test_packaged_android_step_and_install_protocol(package: SmokePackage) -> No
                 "artifact_name": "synthetic-android-build",
                 "launch_after_install": False,
             }
-            _queue_turn(
+            _queue_tui_turn(
                 responses,
-                thread.id,
                 "ANDROID_INSTALL_COMPLETION_MARKER",
                 "android-install-completion",
                 "android_install_build_from_run",
                 install_args,
             )
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(thread.run, "ANDROID_INSTALL_COMPLETION_MARKER")
-                _require(android.install_started.wait(timeout=8), "stage=install reason=provider-call-not-started")
-                _require(not future.done(), "stage=install reason=returned-before-provider-completion")
-                android.release_install.set()
-                try:
-                    turn = future.result(timeout=20)
-                except Exception as exc:
-                    raise AssertionError(f"stage=install reason=packaged-turn-exception class={type(exc).__name__}") from None
-                _require(turn.final_response == "synthetic provider exchange completed", "stage=install reason=turn-not-completed")
+            tui.submit_line(
+                "ANDROID_INSTALL_COMPLETION_MARKER",
+                pasted_marker="ANDROID_INSTALL_COMPLETION_MARKER",
+            )
+            _require(
+                android.install_started.wait(timeout=8),
+                "stage=install reason=provider-call-not-started",
+            )
+            _require(
+                not any(
+                    _has_call_output(request, "android-install-completion")
+                    for request in responses.requests()
+                ),
+                "stage=install reason=returned-before-provider-completion",
+            )
+            android.release_install.set()
+            tui.until("SYNTHETIC_android-install-completion_COMPLETED")
             install_request = responses.wait_for_request(
-                lambda candidate: _thread_id(candidate) == thread.id
+                lambda candidate: candidate.path == "/v1/responses"
+                and _thread_id(candidate) is not None
                 and _contains_marker(candidate, "ANDROID_INSTALL_COMPLETION_MARKER")
             )
             install_tool_names = {
@@ -503,8 +514,17 @@ def test_packaged_android_step_and_install_protocol(package: SmokePackage) -> No
                 if isinstance(name, str)
             }
             _require("android_install_build_from_run" in install_tool_names, "stage=install reason=install-tool-not-advertised")
-            _, install_output = _request_with_call_output(
-                responses, thread.id, "android-install-completion"
+            install_thread_id = _thread_id(install_request)
+            _require(
+                isinstance(install_thread_id, str) and bool(install_thread_id),
+                "stage=install reason=thread-id-not-present",
+            )
+            install_output_request, install_output = _request_with_call_output(
+                responses, install_thread_id, "android-install-completion"
+            )
+            _require(
+                _thread_id(install_output_request) == install_thread_id,
+                "stage=install reason=thread-id-changed",
             )
             _require(_has_native_image(install_output.get("output")), "stage=install reason=native-image-not-forwarded")
             install_calls = android.calls_for("install")
