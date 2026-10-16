@@ -325,7 +325,8 @@ def _run_tool_turn(
     tui.submit_line(marker, pasted_marker=marker)
     request = server.wait_for_request(
         lambda candidate: candidate.path == "/v1/responses"
-        and _contains_marker(candidate, marker)
+        and _contains_marker(candidate, marker),
+        timeout_s=30,
     )
     thread_id = _thread_id(request)
     _require(
