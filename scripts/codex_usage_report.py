@@ -35,7 +35,10 @@ MAX_RATE_POLICY_ROWS = 512
 MAX_OUTPUT_GROUPS = 1_000
 MAX_OUTPUT_BYTES = 16 * 1024 * 1024
 MAX_TEXT_FIELD_CHARS = 8_192
-MAX_OUTPUT_TEXT_CHARS = 1_000_000
+# Selected row text is retained only for the bounded aggregation pass. Eight
+# million characters keeps the all-time subtree path bounded while avoiding the
+# earlier 1 MiB ceiling that rejected ordinary indexed call sets.
+MAX_SELECTED_TEXT_CHARS = 8_000_000
 MAX_SQLITE_ROW_BYTES = 1024 * 1024
 SQL_CHUNK = 250
 PROGRESS_INTERVAL = 1_000
@@ -676,10 +679,10 @@ class UsageReporter:
             if not isinstance(value, str):
                 continue
             if len(value) > MAX_TEXT_FIELD_CHARS:
-                raise WorkLimitReached("output_size_limit_exceeded")
+                raise WorkLimitReached("source_text_field_limit_exceeded")
             self.output_text_chars += len(value)
-            if self.output_text_chars > MAX_OUTPUT_TEXT_CHARS:
-                raise WorkLimitReached("output_size_limit_exceeded")
+            if self.output_text_chars > MAX_SELECTED_TEXT_CHARS:
+                raise WorkLimitReached("selected_source_text_limit_exceeded")
 
     def _fetch_threads(self, thread_ids: Sequence[str]) -> dict[str, dict[str, Any]]:
         result: dict[str, dict[str, Any]] = {}
@@ -1886,7 +1889,7 @@ class UsageReporter:
             if getattr(exc, "sqlite_errorcode", None) == getattr(
                 sqlite3, "SQLITE_TOOBIG", -1
             ):
-                raise WorkLimitReached("output_size_limit_exceeded") from exc
+                raise WorkLimitReached("sqlite_value_limit_exceeded") from exc
             if self.vm_stop_reason:
                 raise WorkLimitReached(self.vm_stop_reason) from exc
             if "no such index" in message or "no query solution" in message:
@@ -1906,7 +1909,7 @@ class UsageReporter:
             if getattr(exc, "sqlite_errorcode", None) == getattr(
                 sqlite3, "SQLITE_TOOBIG", -1
             ):
-                raise WorkLimitReached("output_size_limit_exceeded") from exc
+                raise WorkLimitReached("sqlite_value_limit_exceeded") from exc
             if self.vm_stop_reason:
                 raise WorkLimitReached(self.vm_stop_reason) from exc
             raise ReportProblem("unavailable", "sqlite_read_failed") from exc
@@ -2029,7 +2032,7 @@ def _write_error_json(problem: ReportProblem, args: argparse.Namespace | None) -
     try:
         _write_bounded_json(_error_report(problem, args), sys.stdout)
     except WorkLimitReached:
-        fallback = WorkLimitReached("output_size_limit_exceeded")
+        fallback = WorkLimitReached("serialized_error_limit_exceeded")
         _write_bounded_json(_error_report(fallback, None), sys.stdout)
 
 
@@ -2045,7 +2048,7 @@ def _write_bounded_json(
         # ensure_ascii makes every encoded character one UTF-8 byte.
         encoded_chars += len(chunk)
         if encoded_chars > MAX_OUTPUT_BYTES:
-            raise WorkLimitReached("output_size_limit_exceeded")
+            raise WorkLimitReached("serialized_json_limit_exceeded")
         if check_deadline is not None:
             check_deadline()
         chunks.append(chunk)
