@@ -987,7 +987,8 @@ impl RmcpClient {
                 };
                 let service_error = match operation_error {
                     ClientOperationError::Service(error)
-                    | ClientOperationError::UncertainService { source: error } => error,
+                    | ClientOperationError::UncertainService { source: error }
+                    | ClientOperationError::ExpiredSessionUncertain { source: error } => error,
                     ClientOperationError::Timeout { .. } => {
                         return authentication_required_result(error);
                     }
