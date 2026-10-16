@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import sqlite3
 import subprocess
@@ -736,6 +737,58 @@ def _check_multi_ledger_reconciliation(temporary: Path) -> None:
         _assert(value not in serialized, "call and descendant identifiers stay private")
 
 
+def _check_multi_ledger_postprocessing_deadline() -> None:
+    checks = 0
+
+    def deadline_after_one_step() -> None:
+        nonlocal checks
+        checks += 1
+        if checks > 5:
+            raise report.WorkLimitReached("deadline_exceeded")
+
+    try:
+        report._merge_exact_root_ledgers(
+            [
+                (
+                    "current",
+                    [
+                        {
+                            "provider_call_id": "synthetic-call",
+                            "thread_id": ROOT_THREAD,
+                        },
+                        {
+                            "provider_call_id": "synthetic-call",
+                            "thread_id": ROOT_THREAD,
+                        },
+                    ],
+                )
+            ],
+            ROOT_THREAD,
+            check_deadline=deadline_after_one_step,
+        )
+    except report.WorkLimitReached as exc:
+        _assert(
+            exc.reason == "deadline_exceeded",
+            "deadline interrupts mirrored-call reconciliation",
+        )
+    else:
+        raise AssertionError("multi-ledger merge ignored its shared deadline")
+
+    checks = 0
+    output = io.StringIO()
+    try:
+        report._write_bounded_json(
+            {"synthetic": [1, 2, 3]},
+            output,
+            deadline_after_one_step,
+        )
+    except report.WorkLimitReached as exc:
+        _assert(exc.reason == "deadline_exceeded", "serialization deadline is explicit")
+        _assert(output.getvalue() == "", "deadline failure does not emit partial JSON")
+    else:
+        raise AssertionError("multi-ledger serialization ignored its shared deadline")
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory(prefix="codex-usage-exact-root-") as directory:
         temporary = Path(directory)
@@ -745,7 +798,8 @@ def main() -> int:
         _check_bounded_fallback(temporary)
         _check_cycle_is_incomplete(temporary)
         _check_multi_ledger_reconciliation(temporary)
-    print(json.dumps({"status": "passed", "cases": 4}, separators=(",", ":")))
+        _check_multi_ledger_postprocessing_deadline()
+    print(json.dumps({"status": "passed", "cases": 5}, separators=(",", ":")))
     return 0
 
 

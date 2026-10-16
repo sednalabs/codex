@@ -14,7 +14,7 @@ import sys
 import time
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Sequence
+from typing import Any, Callable, Iterable, Iterator, Sequence
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 try:
@@ -102,6 +102,14 @@ class ReportProblem(Exception):
 class WorkLimitReached(ReportProblem):
     def __init__(self, reason: str) -> None:
         super().__init__("incomplete", reason)
+
+
+def _deadline_checker(deadline: float) -> Callable[[], None]:
+    def check() -> None:
+        if time.monotonic() >= deadline:
+            raise WorkLimitReached("deadline_exceeded")
+
+    return check
 
 
 def _blank_to_none(value: Any) -> str | None:
@@ -2193,7 +2201,9 @@ def _write_error_json(problem: ReportProblem, args: argparse.Namespace | None) -
 
 
 def _write_bounded_json(
-    report: dict[str, Any], output: Any, check_deadline: Any | None = None
+    report: dict[str, Any],
+    output: Any,
+    check_deadline: Callable[[], None] | None = None,
 ) -> None:
     encoder = json.JSONEncoder(
         sort_keys=True, separators=(",", ":"), default=str, ensure_ascii=True
@@ -2332,14 +2342,19 @@ def _serialize_token_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
 def _merge_exact_root_ledgers(
     ledger_rows: Sequence[tuple[str, Sequence[dict[str, Any]]]],
     root_thread_id: str,
+    check_deadline: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
+    if check_deadline is not None:
+        check_deadline()
     by_call_id: dict[str, list[tuple[str, dict[str, Any]]]] = defaultdict(list)
-    unidentified_rows: list[tuple[str, dict[str, Any]]] = []
+    unidentified_rows = 0
     for source_name, rows in ledger_rows:
         for row in rows:
+            if check_deadline is not None:
+                check_deadline()
             call_id = _blank_to_none(row.get("provider_call_id"))
             if call_id is None:
-                unidentified_rows.append((source_name, row))
+                unidentified_rows += 1
             else:
                 by_call_id[call_id].append((source_name, row))
 
@@ -2349,18 +2364,26 @@ def _merge_exact_root_ledgers(
     conflicting_rows = 0
     configured_attribution_conflicts = 0
     for matches in by_call_id.values():
+        if check_deadline is not None:
+            check_deadline()
         if len(matches) == 1:
             canonical_rows.append(matches[0][1])
             continue
-        signatures = {_call_signature(row) for _source_name, row in matches}
+        signatures: set[tuple[Any, ...]] = set()
+        for _source_name, row in matches:
+            if check_deadline is not None:
+                check_deadline()
+            signatures.add(_call_signature(row))
         if len(signatures) == 1:
             canonical = dict(matches[0][1])
-            known_configurations = {
-                (row.get("_configured_model"), row.get("_configured_effort"))
-                for _source_name, row in matches
-                if row.get("_configured_model") is not None
-                or row.get("_configured_effort") is not None
-            }
+            known_configurations: set[tuple[Any, Any]] = set()
+            for _source_name, row in matches:
+                if check_deadline is not None:
+                    check_deadline()
+                configured_model = row.get("_configured_model")
+                configured_effort = row.get("_configured_effort")
+                if configured_model is not None or configured_effort is not None:
+                    known_configurations.add((configured_model, configured_effort))
             if len(known_configurations) > 1:
                 configured_attribution_conflicts += 1
                 canonical["_configured_model"] = None
@@ -2387,8 +2410,11 @@ def _merge_exact_root_ledgers(
     role_model_metrics: dict[str, dict[str | None, dict[str, Any]]] = {
         role: defaultdict(_new_token_metrics) for role in roles
     }
-    date_values: list[dt.datetime] = []
+    earliest_started_at: dt.datetime | None = None
+    latest_started_at: dt.datetime | None = None
     for row in canonical_rows:
+        if check_deadline is not None:
+            check_deadline()
         _add_token_row(overall, row)
         actual = _blank_to_none(row.get("actual_model_used"))
         _add_token_row(model_metrics[actual], row)
@@ -2404,20 +2430,39 @@ def _merge_exact_root_ledgers(
         _add_token_row(roles[role], row)
         _add_token_row(role_model_metrics[role][actual], row)
         try:
-            date_values.append(_supported_utc_text(str(row.get("started_at"))))
+            started_at = _supported_utc_text(str(row.get("started_at")))
+            if earliest_started_at is None or started_at < earliest_started_at:
+                earliest_started_at = started_at
+            if latest_started_at is None or started_at > latest_started_at:
+                latest_started_at = started_at
         except (ValueError, TypeError):
             # Per-ledger reporters already fail closed on unsupported encodings.
             pass
 
     def model_rows(source: dict[str | None, dict[str, Any]]) -> list[dict[str, Any]]:
-        return [
-            {"actual_model_used": model, **_serialize_token_metrics(metrics)}
-            for model, metrics in sorted(
-                source.items(), key=lambda item: (item[0] is None, item[0] or "")
+        if check_deadline is not None:
+            check_deadline()
+        sorted_metrics = sorted(
+            source.items(), key=lambda item: (item[0] is None, item[0] or "")
+        )
+        if check_deadline is not None:
+            check_deadline()
+        rows: list[dict[str, Any]] = []
+        for model, metrics in sorted_metrics:
+            if check_deadline is not None:
+                check_deadline()
+            rows.append(
+                {"actual_model_used": model, **_serialize_token_metrics(metrics)}
             )
-        ]
+        return rows
 
-    return {
+    selected_call_rows = 0
+    for _source_name, rows in ledger_rows:
+        if check_deadline is not None:
+            check_deadline()
+        selected_call_rows += len(rows)
+
+    result = {
         "summary": _serialize_token_metrics(overall),
         "by_actual_model": model_rows(model_metrics),
         "root_vs_descendants_by_actual_model": {
@@ -2426,19 +2471,19 @@ def _merge_exact_root_ledgers(
         "scope_totals": {
             role: _serialize_token_metrics(metrics) for role, metrics in roles.items()
         },
-        "selected_provider_call_rows": sum(len(rows) for _name, rows in ledger_rows),
+        "selected_provider_call_rows": selected_call_rows,
         "deduplicated_provider_call_count": len(canonical_rows),
         "identical_mirrored_rows_collapsed": identical_duplicate_rows,
         "conflicting_call_id_count": conflict_ids,
         "rows_excluded_for_conflicting_call_ids": conflicting_rows,
-        "rows_excluded_for_missing_call_id": len(unidentified_rows),
+        "rows_excluded_for_missing_call_id": unidentified_rows,
         "configured_attribution_conflict_provider_call_count": configured_attribution_conflicts,
         "selected_window_provider_call_bounds_utc": (
             {
-                "earliest_started_at_utc": _iso_utc(min(date_values)),
-                "latest_started_at_utc": _iso_utc(max(date_values)),
+                "earliest_started_at_utc": _iso_utc(earliest_started_at),
+                "latest_started_at_utc": _iso_utc(latest_started_at),
             }
-            if date_values
+            if earliest_started_at is not None and latest_started_at is not None
             else None
         ),
         "physical_call_deduplication": (
@@ -2446,10 +2491,19 @@ def _merge_exact_root_ledgers(
         ),
         "configured_model_source": "usage_spawn_requests.requested_model and requested_reasoning_effort joined only by exact provider-call spawn_request_id; missing values remain unrecorded, and cross-ledger disagreement is reported without choosing a value",
     }
+    if check_deadline is not None:
+        check_deadline()
+    return result
 
 
-def _run_multi_ledger_report(args: argparse.Namespace) -> dict[str, Any]:
-    deadline = time.monotonic() + MAX_SECONDS
+def _run_multi_ledger_report(
+    args: argparse.Namespace,
+    *,
+    deadline: float | None = None,
+    check_deadline: Callable[[], None] | None = None,
+) -> dict[str, Any]:
+    deadline = deadline if deadline is not None else time.monotonic() + MAX_SECONDS
+    check_deadline = check_deadline or _deadline_checker(deadline)
     ledger_inputs = [("current", Path(args.database))]
     if args.historical_database:
         ledger_inputs.append(("historical", Path(args.historical_database)))
@@ -2459,6 +2513,7 @@ def _run_multi_ledger_report(args: argparse.Namespace) -> dict[str, Any]:
     remaining_text = MAX_MULTI_LEDGER_SELECTED_TEXT_CHARS
     remaining_vm = MAX_VM_INSTRUCTIONS
     for source_name, database in ledger_inputs:
+        check_deadline()
         reporter = UsageReporter(
             database=database,
             start=args.start,
@@ -2526,7 +2581,12 @@ def _run_multi_ledger_report(args: argparse.Namespace) -> dict[str, Any]:
         remaining_text = max(0, remaining_text - reporter.output_text_chars)
         remaining_vm = max(0, remaining_vm - reporter.vm_instructions)
 
-    merged = _merge_exact_root_ledgers(rows_by_source, args.thread_id)
+    check_deadline()
+    merged = _merge_exact_root_ledgers(
+        rows_by_source,
+        args.thread_id,
+        check_deadline=check_deadline,
+    )
     reasons = sorted(
         {
             reason
@@ -2550,10 +2610,13 @@ def _run_multi_ledger_report(args: argparse.Namespace) -> dict[str, Any]:
     ):
         status = "incomplete"
         reasons.append("token_coverage_incomplete")
-    return {
+    check_deadline()
+    incomplete_reasons = sorted(set(reasons))
+    check_deadline()
+    result = {
         "schema_version": "codex-local-usage-report/v2",
         "status": status,
-        "incomplete_reasons": sorted(set(reasons)),
+        "incomplete_reasons": incomplete_reasons,
         "scope": {"kind": "subtree", "thread_id": args.thread_id},
         "window": {
             "kind": "all_time" if args.all_time else "bounded",
@@ -2604,6 +2667,8 @@ def _run_multi_ledger_report(args: argparse.Namespace) -> dict[str, Any]:
             "selected_window_provider_call_bounds_utc"
         ],
     }
+    check_deadline()
+    return result
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -2613,7 +2678,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         output_deadline_check = None
         with decimal.localcontext(DECIMAL_CONTEXT):
             if args.historical_database:
-                report = _run_multi_ledger_report(args)
+                deadline = time.monotonic() + MAX_SECONDS
+                output_deadline_check = _deadline_checker(deadline)
+                report = _run_multi_ledger_report(
+                    args,
+                    deadline=deadline,
+                    check_deadline=output_deadline_check,
+                )
                 status = report["status"]
             else:
                 reporter = UsageReporter(
