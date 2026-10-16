@@ -1,0 +1,297 @@
+"""Small real-PTY driver for the downloaded Codex TUI on hosted Linux."""
+
+import fcntl
+import os
+import pty
+import select
+import signal
+import struct
+import subprocess
+import termios
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
+
+from fixtures import SmokePackage
+
+
+def plain(raw: bytes) -> str:
+    visible = bytearray()
+    index = 0
+    while index < len(raw):
+        if raw[index] != 0x1B:
+            visible.append(raw[index])
+            index += 1
+            continue
+
+        index += 1
+        if index >= len(raw):
+            break
+        marker = raw[index]
+        if marker == ord("["):
+            index += 1
+            while index < len(raw) and not 0x40 <= raw[index] <= 0x7E:
+                index += 1
+            if index < len(raw):
+                index += 1
+        elif marker == ord("]"):
+            index += 1
+            while index < len(raw):
+                if raw[index] == 0x07:
+                    index += 1
+                    break
+                if (
+                    raw[index] == 0x1B
+                    and index + 1 < len(raw)
+                    and raw[index + 1] == ord("\\")
+                ):
+                    index += 2
+                    break
+                index += 1
+        else:
+            index += 1
+    return visible.decode("utf-8", errors="replace")
+
+
+@contextmanager
+def shared_agent_server(package: SmokePackage) -> Iterator[None]:
+    """Run /agents against the packaged CLI's daemon in this package home."""
+    command = [str(package.cli), "app-server", "daemon"]
+
+    def run_daemon(action: str) -> None:
+        try:
+            result = subprocess.run(
+                [*command, action],
+                cwd=package.directory,
+                env=package.environment,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise AssertionError(
+                f"packaged app-server daemon {action} timed out: "
+                f"stdout={error.stdout!r}; stderr={error.stderr!r}"
+            ) from error
+        if result.returncode != 0:
+            raise AssertionError(
+                f"packaged app-server daemon {action} failed: "
+                f"stdout={result.stdout!r}; stderr={result.stderr!r}"
+            )
+
+    try:
+        run_daemon("start")
+    except BaseException as primary_error:
+        try:
+            run_daemon("stop")
+        except BaseException as cleanup_error:
+            primary_error.add_note(f"daemon cleanup also failed: {cleanup_error}")
+        raise
+    try:
+        yield
+    except BaseException as primary_error:
+        try:
+            run_daemon("stop")
+        except BaseException as cleanup_error:
+            primary_error.add_note(f"daemon cleanup also failed: {cleanup_error}")
+        raise
+    else:
+        run_daemon("stop")
+
+
+class PackagedTui:
+    def __init__(self, package: SmokePackage, *arguments: str) -> None:
+        self.package = package
+        self.arguments = arguments
+        self.master: int | None = None
+        self.process: subprocess.Popen[bytes] | None = None
+
+    def __enter__(self) -> "PackagedTui":
+        master, slave = pty.openpty()
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 34, 110, 0, 0))
+        env = {
+            **self.package.environment,
+            "TERM": "xterm-256color",
+            "COLUMNS": "110",
+            "LINES": "34",
+        }
+        try:
+            self.process = subprocess.Popen(
+                [str(self.package.cli), "--no-alt-screen", *self.arguments],
+                cwd=self.package.directory,
+                env=env,
+                stdin=slave,
+                stdout=slave,
+                stderr=slave,
+                start_new_session=True,
+                close_fds=True,
+            )
+        except BaseException:
+            os.close(master)
+            raise
+        finally:
+            os.close(slave)
+        self.master = master
+        return self
+
+    def __exit__(self, _kind: object, _error: object, _traceback: object) -> None:
+        if self.process is not None and self.process.poll() is None:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait(timeout=5)
+        if self.master is not None:
+            os.close(self.master)
+
+    def send(self, value: str) -> None:
+        assert self.master is not None
+        # Drop unread bytes from the previous frame so each assertion is
+        # caused by this input rather than by an old redraw in the PTY queue.
+        while select.select([self.master], [], [], 0)[0]:
+            try:
+                if not os.read(self.master, 65536):
+                    break
+            except OSError:
+                break
+        os.write(self.master, value.encode("utf-8"))
+
+    def resize(self, columns: int) -> None:
+        """Resize the owned PTY to force a fresh TUI viewport render."""
+        assert self.master is not None and self.process is not None
+        self.send("")
+        fcntl.ioctl(
+            self.master,
+            termios.TIOCSWINSZ,
+            struct.pack("HHHH", 34, columns, 0, 0),
+        )
+        self.process.send_signal(signal.SIGWINCH)
+
+    def until_output(self, *, timeout: float = 30) -> bytes:
+        """Wait for a fresh PTY redraw after input that has no stable text marker."""
+        assert self.master is not None and self.process is not None
+        deadline = time.monotonic() + timeout
+        received = bytearray()
+        while time.monotonic() < deadline:
+            if self.process.poll() is not None:
+                for _ in range(64):
+                    if not select.select([self.master], [], [], 0)[0]:
+                        break
+                    try:
+                        chunk = os.read(self.master, 65536)
+                    except OSError:
+                        break
+                    if not chunk:
+                        break
+                    received.extend(chunk)
+                raise AssertionError(
+                    "packaged TUI exited "
+                    f"{self.process.returncode} before a fresh PTY redraw: "
+                    f"{plain(received)!r}"
+                )
+            ready, _, _ = select.select(
+                [self.master], [], [], max(0, deadline - time.monotonic())
+            )
+            if not ready:
+                break
+            try:
+                chunk = os.read(self.master, 65536)
+            except OSError as error:
+                returncode = self.process.poll()
+                raise AssertionError(
+                    "packaged TUI PTY closed before a fresh redraw; "
+                    f"exit status: {returncode}; output: {plain(received)!r}"
+                ) from error
+            if not chunk:
+                break
+            received.extend(chunk)
+            return bytes(received)
+        raise AssertionError(
+            f"packaged TUI produced no fresh PTY redraw; output: {plain(received)!r}"
+        )
+
+    def until_all(
+        self,
+        markers: tuple[str, ...],
+        *,
+        initial: str = "",
+        timeout: float = 30,
+    ) -> str:
+        """Wait for all rendered markers, retaining an already captured first frame."""
+        received = bytearray(initial.encode("utf-8"))
+        deadline = time.monotonic() + timeout
+        while not all(marker in plain(received) for marker in markers):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise AssertionError(
+                    f"packaged TUI did not render {markers!r}; "
+                    f"output: {plain(received)!r}"
+                )
+            try:
+                received.extend(self.until_output(timeout=remaining))
+            except AssertionError as error:
+                raise AssertionError(
+                    f"packaged TUI did not render {markers!r}; "
+                    f"output: {plain(received)!r}"
+                ) from error
+        return plain(received)
+
+    def send_paste(self, value: str) -> None:
+        """Send one explicit bracketed-paste event to the TUI."""
+        self.send(f"\x1b[200~{value}\x1b[201~")
+
+    def submit_line(self, value: str, *, pasted_marker: str) -> str:
+        """Paste a line, witness it in the composer, and submit with a key event."""
+        self.send_paste(value)
+        rendered = self.until(pasted_marker)
+        self.send("\r")
+        return rendered
+
+    def until(self, marker: str, *, timeout: float = 30) -> str:
+        """Require a fresh rendered witness after the preceding input."""
+        assert self.master is not None and self.process is not None
+        deadline = time.monotonic() + timeout
+        received = bytearray()
+        while time.monotonic() < deadline:
+            if self.process.poll() is not None:
+                # The child can exit before select sees bytes already queued by
+                # the PTY. Drain a bounded amount so early failures retain their
+                # terminal evidence alongside the actual process status.
+                for _ in range(64):
+                    if not select.select([self.master], [], [], 0)[0]:
+                        break
+                    try:
+                        chunk = os.read(self.master, 65536)
+                    except OSError:
+                        break
+                    if not chunk:
+                        break
+                    received.extend(chunk)
+                raise AssertionError(
+                    f"packaged TUI exited {self.process.returncode} before {marker!r}: "
+                    f"{plain(received)!r}"
+                )
+            ready, _, _ = select.select(
+                [self.master], [], [], max(0, deadline - time.monotonic())
+            )
+            if not ready:
+                break
+            try:
+                chunk = os.read(self.master, 65536)
+            except OSError as error:
+                returncode = self.process.poll()
+                raise AssertionError(
+                    f"packaged TUI PTY closed before {marker!r}; "
+                    f"exit status: {returncode}; output: {plain(received)!r}"
+                ) from error
+            if not chunk:
+                break
+            received.extend(chunk)
+            rendered = plain(received)
+            if marker in rendered:
+                return rendered
+        raise AssertionError(
+            f"packaged TUI did not render {marker!r}: {plain(received)!r}"
+        )
