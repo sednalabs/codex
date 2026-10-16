@@ -119,8 +119,17 @@ async fn installed_client_rejects_mixed_builds_and_missing_helper() -> Result<()
         .close()
         .await?;
     assert!(VoiceHost::connect(&package, "wrong-build").await.is_err());
-    // Startup libraries permit handshakes; the missing runtime receipt prevents readiness.
+    // The helper can handshake, but a missing private runtime plugin prevents readiness.
     let host = VoiceHost::connect(&package, &build_commit().await?).await?;
+    #[cfg(windows)]
+    {
+        // runtime.rs requires gstapp.dll from the installed private runtime.
+        let plugin = directory
+            .path()
+            .join("codex-resources/voice/bin/gstapp.dll");
+        assert!(plugin.is_file(), "prepared runtime must include gstapp.dll");
+        fs::remove_file(plugin)?;
+    }
     assert!(host.initialize_runtime().await.is_err());
     // The same executable elsewhere in the package must not become a fallback.
     fs::rename(&helper, bin.join(source.file_name().unwrap()))?;
