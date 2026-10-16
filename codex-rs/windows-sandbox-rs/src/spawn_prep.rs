@@ -312,8 +312,8 @@ pub(crate) fn apply_legacy_session_acl_rules(
                 let _ = ensure_allow_write_aces(p, &[root_sid.sid.as_ptr()]);
             }
         }
-        apply_legacy_write_deny_acls(&deny, acl_sids.write_root_sids, |path, sid| {
-            unsafe { add_deny_write_ace(path, sid) }
+        apply_legacy_write_deny_acls(&deny, acl_sids.write_root_sids, |path, sid| unsafe {
+            add_deny_write_ace(path, sid)
         })?;
         if !additional_deny_read_paths.is_empty() {
             if let Some(readonly_sid) = acl_sids.readonly_sid {
@@ -459,14 +459,14 @@ pub(crate) fn prepare_elevated_spawn_context_for_permissions(
 
 #[cfg(test)]
 mod tests {
+    use super::RootCapabilitySid;
+    use super::SpawnPrepOptions;
     use super::apply_legacy_write_deny_acls;
     use super::deny_root_capabilities_for_path;
     use super::legacy_session_capability_roots;
     use super::prepare_legacy_spawn_context;
     use super::prepare_spawn_context_common;
     use super::root_capability_sids;
-    use super::RootCapabilitySid;
-    use super::SpawnPrepOptions;
     use crate::cap::load_or_create_cap_sids;
     use crate::cap::workspace_write_cap_sid_for_root;
     use crate::resolved_permissions::ResolvedWindowsSandboxPermissions;
@@ -663,8 +663,8 @@ mod tests {
         let workspace = temp.path().join("workspace");
         let protected_git_dir = workspace.join(".git");
         std::fs::create_dir_all(&protected_git_dir).expect("create protected .git directory");
-        let capability_sid = LocalSid::from_string("S-1-5-21-1-2-3-1001")
-            .expect("parse test capability SID");
+        let capability_sid =
+            LocalSid::from_string("S-1-5-21-1-2-3-1001").expect("parse test capability SID");
         let root_sids = vec![RootCapabilitySid {
             root: workspace,
             sid: capability_sid,

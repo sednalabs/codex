@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 
+import io
 import json
 import os
 import subprocess
 import sys
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import run_bazel_with_buildbuddy
 
@@ -394,6 +398,121 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
                 "--program-arg",
             ],
         )
+
+    def test_windows_voice_test_diagnostic_is_value_free_and_preserves_argv(
+        self,
+    ) -> None:
+        env = {
+            "CODEX_BAZEL_LOCAL_ONLY": "1",
+            "CODEX_BAZEL_WINDOWS_VOICE_TOOLS": "1",
+        }
+        command = [
+            "fake-bazel",
+            "test",
+            "--remote_download_toplevel",
+            "--",
+            "//third_party/voice:windows_runtime_test",
+        ]
+        self.assertTrue(
+            run_bazel_with_buildbuddy.should_run_workspace_status_diagnostic(
+                command, env
+            )
+        )
+        self.assertFalse(
+            run_bazel_with_buildbuddy.should_run_workspace_status_diagnostic(
+                command, {"CODEX_BAZEL_LOCAL_ONLY": "1"}
+            )
+        )
+
+        events = [
+            {
+                "structuredCommandLine": {
+                    "commandLineLabel": "canonical",
+                    "sections": [
+                        {
+                            "sectionLabel": "command",
+                            "chunkList": {"chunk": ["test"]},
+                        },
+                        {
+                            "sectionLabel": "command options",
+                            "optionList": {
+                                "option": [
+                                    {
+                                        "optionName": "workspace_status_command",
+                                        "optionValue": "./scripts/workspace-status.cmd",
+                                    }
+                                ]
+                            },
+                        },
+                    ],
+                }
+            },
+            {
+                "workspaceStatus": {
+                    "item": [
+                        {"key": "STABLE_GIT_COMMIT", "value": "fixture-value"},
+                        {
+                            "key": "STABLE_WINDOWS_STATUS_CMD_ENTERED",
+                            "value": "1",
+                        },
+                    ]
+                }
+            },
+        ]
+        observed_command: list[str] = []
+        observed_marker: str | None = None
+
+        def fake_run(
+            diagnostic_command: list[str], *, env: dict[str, str], check: bool
+        ) -> SimpleNamespace:
+            nonlocal observed_marker
+            observed_command.extend(diagnostic_command)
+            observed_marker = env.get("CODEX_BAZEL_STATUS_DIAGNOSTIC")
+            events_arg = next(
+                arg
+                for arg in diagnostic_command
+                if arg.startswith("--build_event_json_file=")
+            )
+            Path(events_arg.partition("=")[2]).write_text(
+                "".join(json.dumps(event) + "\n" for event in events),
+                encoding="utf-8",
+            )
+            return SimpleNamespace(returncode=23)
+
+        with TemporaryDirectory() as temp_dir:
+            with (
+                patch.dict(os.environ, {"RUNNER_TEMP": temp_dir}),
+                patch.object(
+                    run_bazel_with_buildbuddy.subprocess, "run", side_effect=fake_run
+                ),
+            ):
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    exit_code = (
+                        run_bazel_with_buildbuddy.run_with_workspace_status_diagnostic(
+                            command, "test"
+                        )
+                    )
+
+        self.assertEqual(exit_code, 23)
+        self.assertEqual(
+            [
+                arg
+                for arg in observed_command
+                if not arg.startswith("--build_event_json_file=")
+            ],
+            command,
+        )
+        self.assertEqual(observed_marker, "1")
+        summary_line = output.getvalue().strip()
+        self.assertTrue(summary_line.startswith("Workspace status diagnostic: "))
+        self.assertNotIn("fixture-value", summary_line)
+        summary = json.loads(summary_line.removeprefix("Workspace status diagnostic: "))
+        self.assertEqual(summary["canonical_test_sections"], 1)
+        self.assertEqual(summary["effective_option_selects_cmd"], True)
+        self.assertEqual(summary["commit_key_count"], 1)
+        self.assertEqual(summary["producer_entry_count"], 1)
+        self.assertEqual(summary["workspace_status_known"], True)
 
     def test_main_preserves_spaced_argument_and_child_exit_status(self) -> None:
         spaced_arg = (

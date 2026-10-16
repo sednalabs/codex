@@ -284,11 +284,14 @@ def bazel_command(*args: str, env: Mapping[str, str] | None = None) -> list[str]
     return [bazel, *startup_args(args, env), *bazel_args_with_remote_config(args, env)]
 
 
-def workspace_status_diagnostic(events_path: Path) -> dict[str, int | bool]:
+def workspace_status_diagnostic(
+    events_path: Path, expected_command: str = "build"
+) -> dict[str, int | bool]:
     """Classify private BEP records without publishing their values."""
     summary: dict[str, int | bool] = {
         "canonical_events": 0,
         "canonical_build_sections": 0,
+        "canonical_test_sections": 0,
         "command_option_sections": 0,
         "status_option_count": 0,
         "workspace_status_events": 0,
@@ -314,9 +317,12 @@ def workspace_status_diagnostic(events_path: Path) -> dict[str, int | bool]:
                         for section in sections:
                             if section.get("sectionLabel") == "command":
                                 chunks = section["chunkList"].get("chunk", [])
-                                if chunks != ["build"]:
+                                if chunks == ["build"]:
+                                    summary["canonical_build_sections"] += 1
+                                elif chunks == ["test"]:
+                                    summary["canonical_test_sections"] += 1
+                                else:
                                     raise ValueError
-                                summary["canonical_build_sections"] += 1
                             if section.get("sectionLabel") == "command options":
                                 options = section["optionList"].get("option", [])
                                 if not isinstance(options, list):
@@ -352,9 +358,14 @@ def workspace_status_diagnostic(events_path: Path) -> dict[str, int | bool]:
     except OSError:
         summary["read_failed"] = True
     evidence_valid = not summary["read_failed"] and summary["parse_failures"] == 0
+    canonical_command_sections = (
+        summary["canonical_test_sections"]
+        if expected_command == "test"
+        else summary["canonical_build_sections"]
+    )
     option_known = evidence_valid and (
         summary["canonical_events"] == 1
-        and summary["canonical_build_sections"] == 1
+        and canonical_command_sections == 1
         and summary["command_option_sections"] == 1
         and summary["status_option_count"] <= 1
     )
@@ -379,7 +390,9 @@ def print_workspace_status_diagnostic(summary: dict[str, int | bool]) -> None:
         pass
 
 
-def run_with_workspace_status_diagnostic(command: list[str]) -> int:
+def run_with_workspace_status_diagnostic(
+    command: list[str], expected_command: str = "build"
+) -> int:
     """Use the same Windows build; preserve its exit status on diagnostic failure."""
     separator = command.index("--") if "--" in command else len(command)
     if any(arg.startswith("--build_event_json_file") for arg in command[:separator]):
@@ -403,7 +416,9 @@ def run_with_workspace_status_diagnostic(command: list[str]) -> int:
         child_env = dict(os.environ, CODEX_BAZEL_STATUS_DIAGNOSTIC="1")
         result = subprocess.run(diagnostic_command, env=child_env, check=False)
         try:
-            print_workspace_status_diagnostic(workspace_status_diagnostic(events_path))
+            print_workspace_status_diagnostic(
+                workspace_status_diagnostic(events_path, expected_command)
+            )
         except (OSError, TypeError, ValueError):
             print_workspace_status_diagnostic({"summary_failed": True})
         return result.returncode
@@ -440,20 +455,38 @@ def main() -> None:
         # Windows CRT exec can split arguments containing spaces and lose the
         # eventual child exit status. Wait for Bazel and propagate its status.
         separator = command.index("--") if "--" in command else len(command)
-        build_command = next(
+        bazel_command_name = next(
             (arg for arg in command[1:separator] if not arg.startswith("-")), None
         )
-        if (
-            os.environ.get("CODEX_BAZEL_LOCAL_ONLY") == "1"
-            and os.environ.get("CODEX_BAZEL_WINDOWS_VOICE_TOOLS") == "1"
-            and build_command == "build"
-            and "--config=argument-comment-lint" in command[1:separator]
-        ):
-            raise SystemExit(run_with_workspace_status_diagnostic(command))
+        if should_run_workspace_status_diagnostic(command, os.environ):
+            assert bazel_command_name is not None
+            raise SystemExit(
+                run_with_workspace_status_diagnostic(command, bazel_command_name)
+            )
         result = subprocess.run(command, check=False)
         raise SystemExit(result.returncode)
 
     os.execvp(command[0], command)
+
+
+def should_run_workspace_status_diagnostic(
+    command: list[str], env: Mapping[str, str]
+) -> bool:
+    separator = command.index("--") if "--" in command else len(command)
+    bazel_command = next(
+        (arg for arg in command[1:separator] if not arg.startswith("-")), None
+    )
+    if (
+        env.get("CODEX_BAZEL_LOCAL_ONLY") != "1"
+        or env.get("CODEX_BAZEL_WINDOWS_VOICE_TOOLS") != "1"
+    ):
+        return False
+    if bazel_command == "test":
+        return True
+    return (
+        bazel_command == "build"
+        and "--config=argument-comment-lint" in command[1:separator]
+    )
 
 
 if __name__ == "__main__":
