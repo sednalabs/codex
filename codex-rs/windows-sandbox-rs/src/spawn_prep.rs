@@ -247,6 +247,20 @@ fn deny_root_capabilities_for_path<'a>(
     }
 }
 
+fn apply_legacy_write_deny_acls(
+    deny_paths: &HashSet<PathBuf>,
+    write_root_sids: &[RootCapabilitySid],
+    mut add_deny_ace: impl FnMut(&Path, *mut c_void) -> Result<bool>,
+) -> Result<()> {
+    for path in deny_paths {
+        for root_sid in deny_root_capabilities_for_path(path, write_root_sids) {
+            add_deny_ace(path, root_sid.sid.as_ptr())
+                .with_context(|| format!("apply legacy write-deny ACL to {}", path.display()))?;
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn allow_null_device_for_workspace_write(is_workspace_write: bool) {
     if !is_workspace_write {
         return;
@@ -298,11 +312,9 @@ pub(crate) fn apply_legacy_session_acl_rules(
                 let _ = ensure_allow_write_aces(p, &[root_sid.sid.as_ptr()]);
             }
         }
-        for p in &deny {
-            for root_sid in deny_root_capabilities_for_path(p, acl_sids.write_root_sids) {
-                let _ = add_deny_write_ace(p, root_sid.sid.as_ptr());
-            }
-        }
+        apply_legacy_write_deny_acls(&deny, acl_sids.write_root_sids, |path, sid| {
+            unsafe { add_deny_write_ace(path, sid) }
+        })?;
         if !additional_deny_read_paths.is_empty() {
             if let Some(readonly_sid) = acl_sids.readonly_sid {
                 let Some(readonly_sid_str) = acl_sids.readonly_sid_str else {
@@ -447,15 +459,19 @@ pub(crate) fn prepare_elevated_spawn_context_for_permissions(
 
 #[cfg(test)]
 mod tests {
-    use super::SpawnPrepOptions;
+    use super::apply_legacy_write_deny_acls;
     use super::deny_root_capabilities_for_path;
     use super::legacy_session_capability_roots;
     use super::prepare_legacy_spawn_context;
     use super::prepare_spawn_context_common;
     use super::root_capability_sids;
+    use super::RootCapabilitySid;
+    use super::SpawnPrepOptions;
     use crate::cap::load_or_create_cap_sids;
     use crate::cap::workspace_write_cap_sid_for_root;
     use crate::resolved_permissions::ResolvedWindowsSandboxPermissions;
+    use crate::token::LocalSid;
+    use anyhow::anyhow;
     use codex_protocol::models::PermissionProfile;
     use codex_protocol::permissions::NetworkSandboxPolicy;
     use codex_utils_absolute_path::AbsolutePathBuf;
@@ -639,6 +655,33 @@ mod tests {
         assert!(sid_strs.contains(&active_sid));
         assert!(!sid_strs.contains(&stale_sid));
         assert!(!sid_strs.contains(&caps.workspace));
+    }
+
+    #[test]
+    fn legacy_write_deny_acl_failure_is_reported_with_protected_path() {
+        let temp = TempDir::new().expect("tempdir");
+        let workspace = temp.path().join("workspace");
+        let protected_git_dir = workspace.join(".git");
+        std::fs::create_dir_all(&protected_git_dir).expect("create protected .git directory");
+        let capability_sid = LocalSid::from_string("S-1-5-21-1-2-3-1001")
+            .expect("parse test capability SID");
+        let root_sids = vec![RootCapabilitySid {
+            root: workspace,
+            sid: capability_sid,
+            sid_str: "S-1-5-21-1-2-3-1001".to_string(),
+        }];
+        let deny_paths = [protected_git_dir.clone()].into_iter().collect();
+
+        let error = apply_legacy_write_deny_acls(&deny_paths, &root_sids, |path, _sid| {
+            assert_eq!(path, protected_git_dir.as_path());
+            Err(anyhow!("injected ACL update failure"))
+        })
+        .expect_err("deny ACL failure must stop legacy setup");
+
+        let error = format!("{error:#}");
+        assert!(error.contains("apply legacy write-deny ACL"));
+        assert!(error.contains(".git"));
+        assert!(error.contains("injected ACL update failure"));
     }
 
     #[test]
