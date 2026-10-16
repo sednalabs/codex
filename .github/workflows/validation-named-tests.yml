@@ -24,7 +24,7 @@ on:
           - rust_integration
         default: rust_minimal
       prepare_codex_cli_for_exact_usage_test:
-        description: Stage the exact ae94 package binaries for the fixed usage integration selector
+        description: Stage the exact ae94 package binaries for the fixed usage integration selector set
         required: false
         type: boolean
         default: false

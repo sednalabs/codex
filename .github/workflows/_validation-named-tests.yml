@@ -154,7 +154,7 @@ jobs:
         with:
           targets: x86_64-unknown-linux-gnu
 
-      - name: Validate the fixed usage integration selector
+      - name: Validate the fixed usage integration selector set
         if: ${{ inputs.prepare_codex_cli_for_exact_usage_test }}
         shell: bash
         env:
@@ -179,13 +179,16 @@ jobs:
               "target_kind": "integration",
               "target": "all",
               "tests": [
-                  "suite::token_usage_rollout::completed_response_usage_reaches_sqlite_lineage_and_credit_views_after_reopen"
+                  "suite::token_usage_rollout::completed_response_usage_reaches_sqlite_lineage_and_credit_views_after_reopen",
+                  "suite::compact::manual_compact_records_durable_and_local_token_usage",
+                  "suite::compact_remote::remote_compact_v2_records_usage_before_output_validation",
+                  "suite::compact_remote::remote_mid_turn_compact_v2_sends_turn_state_over_http",
               ],
               "execution_mode": "exact",
           }
           request = json.loads(os.environ["RUST_TEST_REQUEST_JSON"])
           if request != expected:
-              raise SystemExit("CLI preparation request does not match the fixed exact selector")
+              raise SystemExit("CLI preparation request does not match the fixed exact selector set")
           PY
 
       - name: Download the exact ae94 x86 package artifact
