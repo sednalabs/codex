@@ -782,12 +782,14 @@ async fn enqueue_pending_explicit_admissions(
             .delivered_explicit_inter_agent_updates
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        delivered.retain(|update_id| !index.represented_update_ids.contains(update_id));
+        delivered.retain(|update_id| !index.represented_response_ids.contains_key(update_id));
         index
             .ordered
             .iter()
             .filter(|admission| {
-                !index.represented_update_ids.contains(&admission.update_id)
+                !index
+                    .represented_response_ids
+                    .contains_key(&admission.update_id)
                     && !delivered.contains(&admission.update_id)
             })
             .cloned()
