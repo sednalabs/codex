@@ -102,24 +102,24 @@ impl HttpClient for FailFirstInitializeHttpClient {
 }
 
 #[derive(Clone)]
-struct DelayedToolCallResponseHttpClient {
+struct DelayedToolCallHttpClient {
     inner: Arc<dyn HttpClient>,
     initialize_attempts: Arc<AtomicUsize>,
     tool_call_attempts: Arc<AtomicUsize>,
     delayed_tool_call: String,
-    response_started: Arc<Notify>,
-    release_response: Arc<Notify>,
+    request_captured: Arc<Notify>,
+    release_request: Arc<Notify>,
 }
 
-impl DelayedToolCallResponseHttpClient {
+impl DelayedToolCallHttpClient {
     fn new(inner: Arc<dyn HttpClient>, delayed_tool_call: &str) -> Self {
         Self {
             inner,
             initialize_attempts: Arc::new(AtomicUsize::new(0)),
             tool_call_attempts: Arc::new(AtomicUsize::new(0)),
             delayed_tool_call: delayed_tool_call.to_string(),
-            response_started: Arc::new(Notify::new()),
-            release_response: Arc::new(Notify::new()),
+            request_captured: Arc::new(Notify::new()),
+            release_request: Arc::new(Notify::new()),
         }
     }
 
@@ -132,7 +132,7 @@ impl DelayedToolCallResponseHttpClient {
     }
 }
 
-impl HttpClient for DelayedToolCallResponseHttpClient {
+impl HttpClient for DelayedToolCallHttpClient {
     fn http_request(
         &self,
         params: HttpRequestParams,
@@ -148,8 +148,8 @@ impl HttpClient for DelayedToolCallResponseHttpClient {
         let initialize_attempts = Arc::clone(&self.initialize_attempts);
         let tool_call_attempts = Arc::clone(&self.tool_call_attempts);
         let delayed_tool_call = self.delayed_tool_call.clone();
-        let response_started = Arc::clone(&self.response_started);
-        let release_response = Arc::clone(&self.release_response);
+        let request_captured = Arc::clone(&self.request_captured);
+        let release_request = Arc::clone(&self.release_request);
 
         async move {
             if is_initialize_post(&params) {
@@ -160,12 +160,12 @@ impl HttpClient for DelayedToolCallResponseHttpClient {
                 tool_call_attempts.fetch_add(1, Ordering::SeqCst);
             }
 
-            let response = inner.http_request_stream(params).await;
             if tool_name.as_deref() == Some(delayed_tool_call.as_str()) {
-                response_started.notify_one();
-                release_response.notified().await;
+                request_captured.notify_one();
+                release_request.notified().await;
             }
-            response
+
+            inner.http_request_stream(params).await
         }
         .boxed()
     }
@@ -441,7 +441,7 @@ async fn streamable_http_404_tool_call_is_uncertain_and_next_call_recovers() -> 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn late_expired_session_failure_does_not_retire_replacement() -> anyhow::Result<()> {
     let (_server, base_url) = spawn_streamable_http_server().await?;
-    let http_client = DelayedToolCallResponseHttpClient::new(
+    let http_client = DelayedToolCallHttpClient::new(
         Environment::default_for_tests().get_http_client(),
         "late",
     );
@@ -455,16 +455,9 @@ async fn late_expired_session_failure_does_not_retire_replacement() -> anyhow::R
     let initial_initialize_attempts = http_client.initialize_attempts();
     assert!(initial_initialize_attempts >= 1);
 
-    arm_session_post_failure(
-        &base_url,
-        /*status*/ 404,
-        /*remaining*/ 2,
-        /*www_authenticate_headers*/ &[],
-    )
-    .await?;
-
-    // Keep this race test tolerant of slow hosted test servers while still
-    // bounding a missing response-start signal.
+    // Pause after the old service generation has produced the request but
+    // before transport dispatch. The test controls which generation receives
+    // each 404 instead of relying on network timing to order the failures.
     let operation_timeout = Duration::from_secs(30);
     let late_client = Arc::clone(&client);
     let late_call = tokio::spawn(async move {
@@ -477,12 +470,16 @@ async fn late_expired_session_failure_does_not_retire_replacement() -> anyhow::R
             )
             .await
     });
-    tokio::time::timeout(
-        operation_timeout,
-        http_client.response_started.notified(),
+    tokio::time::timeout(Duration::from_secs(5), http_client.request_captured.notified()).await?;
+    assert_eq!(http_client.tool_call_attempts(), 2);
+
+    arm_session_post_failure(
+        &base_url,
+        /*status*/ 404,
+        /*remaining*/ 1,
+        /*www_authenticate_headers*/ &[],
     )
     .await?;
-
     let first_expiry = call_echo_tool(&client, "expire-current-session")
         .await
         .unwrap_err();
@@ -506,7 +503,14 @@ async fn late_expired_session_failure_does_not_retire_replacement() -> anyhow::R
         initial_initialize_attempts + 1
     );
 
-    http_client.release_response.notify_one();
+    arm_session_post_failure(
+        &base_url,
+        /*status*/ 404,
+        /*remaining*/ 1,
+        /*www_authenticate_headers*/ &[],
+    )
+    .await?;
+    http_client.release_request.notify_one();
     let late_error = late_call.await?.unwrap_err();
     assert!(
         late_error
