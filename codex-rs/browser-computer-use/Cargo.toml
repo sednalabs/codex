@@ -27,7 +27,6 @@ anyhow = { workspace = true }
 codex-android-computer-use = { workspace = true }
 codex-code-mode-protocol = { workspace = true }
 codex-code-mode-runtime = { workspace = true }
-codex-core = { workspace = true }
 codex-core-plugins = { workspace = true }
 codex-exec-server = { workspace = true }
 codex-extension-api = { workspace = true }

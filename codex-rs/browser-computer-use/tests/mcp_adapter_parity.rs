@@ -20,7 +20,6 @@ use codex_core_plugins::PluginCatalogEntry;
 use codex_core_plugins::PluginIdentity;
 use codex_core_plugins::PluginListQuery;
 use codex_core_plugins::PluginProvider;
-use codex_core_plugins::PluginProviderError;
 use codex_core_plugins::PluginProviderFuture;
 use codex_core_plugins::PluginSourceLocation;
 use codex_exec_server::EnvironmentManager;
