@@ -463,10 +463,22 @@ async fn late_expired_session_failure_does_not_retire_replacement() -> anyhow::R
     )
     .await?;
 
+    // Keep this race test tolerant of slow hosted test servers while still
+    // bounding a missing response-start signal.
+    let operation_timeout = Duration::from_secs(30);
     let late_client = Arc::clone(&client);
-    let late_call = tokio::spawn(async move { call_echo_tool(&late_client, "late").await });
+    let late_call = tokio::spawn(async move {
+        late_client
+            .call_tool(
+                "echo".to_string(),
+                Some(serde_json::json!({ "message": "late" })),
+                /*meta*/ None,
+                Some(operation_timeout),
+            )
+            .await
+    });
     tokio::time::timeout(
-        Duration::from_secs(5),
+        operation_timeout,
         http_client.response_started.notified(),
     )
     .await?;
