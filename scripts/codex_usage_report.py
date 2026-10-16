@@ -2764,17 +2764,19 @@ def _run_multi_ledger_report(
         "scope_totals": merged["scope_totals"],
         "deduplication": {
             "source_selection_complete": source_selection_complete,
-            key: merged[key]
-            for key in (
-                "selected_provider_call_rows",
-                "deduplicated_provider_call_count",
-                "identical_mirrored_rows_collapsed",
-                "conflicting_call_id_count",
-                "rows_excluded_for_conflicting_call_ids",
-                "rows_excluded_for_missing_call_id",
-                "configured_attribution_conflict_provider_call_count",
-                "physical_call_deduplication",
-            )
+            **{
+                key: merged[key]
+                for key in (
+                    "selected_provider_call_rows",
+                    "deduplicated_provider_call_count",
+                    "identical_mirrored_rows_collapsed",
+                    "conflicting_call_id_count",
+                    "rows_excluded_for_conflicting_call_ids",
+                    "rows_excluded_for_missing_call_id",
+                    "configured_attribution_conflict_provider_call_count",
+                    "physical_call_deduplication",
+                )
+            }
         },
         "selected_window_provider_call_bounds_utc": merged[
             "selected_window_provider_call_bounds_utc"
