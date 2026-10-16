@@ -154,6 +154,76 @@ def _has_native_image(value: Any) -> bool:
     return False
 
 
+def _safe_type_counts(value: Any, counts: dict[str, int] | None = None) -> dict[str, int]:
+    """Summarize wire structure without copying text, URLs, or payloads."""
+    if counts is None:
+        counts = {}
+    if isinstance(value, dict):
+        kind = value.get("type")
+        if isinstance(kind, str):
+            safe_kind = (
+                kind
+                if kind in {"input_image", "input_text", "output_text", "text", "image"}
+                else "other"
+            )
+            counts[safe_kind] = counts.get(safe_kind, 0) + 1
+        for child in value.values():
+            if isinstance(child, (dict, list)):
+                _safe_type_counts(child, counts)
+            elif isinstance(child, str) and child[:1] in {"{", "["}:
+                try:
+                    _safe_type_counts(json.loads(child), counts)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+    elif isinstance(value, list):
+        for child in value:
+            _safe_type_counts(child, counts)
+    elif isinstance(value, str) and value[:1] in {"{", "["}:
+        try:
+            _safe_type_counts(json.loads(value), counts)
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return counts
+
+
+def _safe_stage_diagnostics(path: Path, call_id: str) -> dict[str, Any]:
+    """Return only fixed stage names, booleans, and item counts from the Rust hook."""
+    if not path.is_file():
+        return {"status": "missing", "matched_records": []}
+    matched = []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return {"status": "unreadable", "matched_records": []}
+    for line in lines:
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if (
+            not isinstance(record, dict)
+            or record.get("call_id_matches_fixture") is not True
+        ):
+            continue
+        stage = record.get("stage")
+        if stage not in {"app_server_response", "core_function_output"}:
+            continue
+        safe_record: dict[str, Any] = {"stage": stage, "call_id_matches_fixture": True}
+        for key in (
+            "app_server_response_accepted",
+            "app_server_response_submitted",
+            "core_response_received",
+            "core_function_output_constructed",
+        ):
+            if isinstance(record.get(key), bool):
+                safe_record[key] = record[key]
+        for key in ("app_server_accepted_item_count", "core_output_item_count"):
+            if isinstance(record.get(key), int) and record[key] >= 0:
+                safe_record[key] = record[key]
+        matched.append(safe_record)
+    return {"status": "present", "matched_records": matched}
+
+
 class _FakeAndroidProvider:
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -325,6 +395,7 @@ def _run_tool_turn(
     arguments: dict[str, Any],
     provider: _FakeAndroidProvider,
     phase: str,
+    stage_diagnostic_path: Path | None = None,
 ) -> tuple[CapturedResponsesRequest, dict[str, Any]]:
     provider.set_phase(phase)
     _queue_tui_turn(server, marker, call_id, "android_step", arguments)
@@ -356,10 +427,47 @@ def _run_tool_turn(
         _thread_id(output_request) == thread_id,
         f"stage={phase} reason=thread-id-changed",
     )
-    _require(
-        _has_native_image(output.get("output")),
-        f"stage={phase} reason=native-image-not-forwarded",
-    )
+    if not _has_native_image(output.get("output")):
+        request_body = output_request.body_json()
+        model = request_body.get("model")
+        evidence = {
+            "stage": phase,
+            "reason": "native-image-not-forwarded",
+            "request_model": model if model == "package-smoke" else "other",
+            "request_modalities_field": (
+                [
+                    value
+                    for value in request_body["modalities"]
+                    if isinstance(value, str) and value in {"text", "image", "audio"}
+                ]
+                if isinstance(request_body.get("modalities"), list)
+                else "not-present"
+            ),
+            "expected_source_fallback_input_modalities": (
+                ["text", "image"] if model == "package-smoke" else "unverified"
+            ),
+            "wire_output_container": (
+                "object"
+                if isinstance(output.get("output"), dict)
+                else "array"
+                if isinstance(output.get("output"), list)
+                else "string"
+                if isinstance(output.get("output"), str)
+                else "other"
+            ),
+            "wire_output_type_counts": _safe_type_counts(output.get("output")),
+            "wire_has_native_image": False,
+            "pipeline_stages": (
+                _safe_stage_diagnostics(stage_diagnostic_path, call_id)
+                if stage_diagnostic_path is not None
+                else {"status": "not-requested", "matched_records": []}
+            ),
+        }
+        _require(
+            False,
+            f"stage={phase} reason=native-image-not-forwarded "
+            f"evidence={json.dumps(evidence, sort_keys=True)}",
+        )
     return output_request, output
 
 
@@ -370,6 +478,11 @@ def test_packaged_android_step_and_install_protocol(package: SmokePackage) -> No
         package,
         environment=_safe_environment(package, home),
     )
+    isolated.environment["CODEX_TEST_BROWSER_OUTPUT_DIAGNOSTIC"] = "1"
+    isolated.environment["CODEX_TEST_BROWSER_OUTPUT_DIAGNOSTIC_CALL_ID"] = (
+        "android-step-first-failure"
+    )
+    stage_diagnostic_path = home / "browser-output-stage-diagnostic.jsonl"
     with _FakeAndroidProvider() as android, MockResponsesServer() as responses:
         config_path = home / "config.toml"
         config_path.write_text(
@@ -407,6 +520,7 @@ def test_packaged_android_step_and_install_protocol(package: SmokePackage) -> No
                 },
                 android,
                 "step-failure",
+                stage_diagnostic_path,
             )
             failure_calls = android.calls_for("step-failure")
             _require(
