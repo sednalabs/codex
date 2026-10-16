@@ -4097,6 +4097,12 @@ impl Session {
         model_info: &ModelInfo,
         communication: InterAgentCommunication,
     ) {
+        let update_id = communication.id.clone();
+        let admission_guard = if update_id.is_some() {
+            Some(self.explicit_inter_agent_admission.lock().await)
+        } else {
+            None
+        };
         let response_item = communication.to_model_input_item();
         let (items, _) = self
             .prepare_conversation_items_for_history(
@@ -4128,6 +4134,12 @@ impl Session {
             .metadata
             .get_or_insert_default()
             .user_input_order = Some(order);
+        if let Some(update_id) = update_id.as_ref() {
+            response_item
+                .metadata
+                .get_or_insert_default()
+                .inter_agent_update_id = Some(update_id.clone());
+        }
         for mut recording in pending {
             let _ = recording.changed().await;
         }
@@ -4139,14 +4151,22 @@ impl Session {
                 model_info.truncation_policy.into(),
             );
         }
-        self.persist_rollout_items(&[
-            RolloutItem::InterAgentCommunicationMetadata {
-                trigger_turn: communication.trigger_turn,
-                admission: None,
-            },
-            RolloutItem::ResponseItem(response_item),
-        ])
-        .await;
+        let persisted = self
+            .persist_rollout_items(&[
+                RolloutItem::InterAgentCommunicationMetadata {
+                    trigger_turn: communication.trigger_turn,
+                    admission: None,
+                },
+                RolloutItem::ResponseItem(response_item),
+            ])
+            .await;
+        if persisted && let Some(update_id) = update_id.as_ref() {
+            self.delivered_explicit_inter_agent_updates
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(update_id);
+        }
+        drop(admission_guard);
         drop(boundary);
         self.send_raw_response_items(turn_context, items).await;
     }

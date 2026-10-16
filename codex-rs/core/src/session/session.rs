@@ -30,6 +30,7 @@ use codex_http_client::RouteAwareClientPool;
 use codex_login::auth::AgentIdentityAuthPolicy;
 use codex_model_provider::SharedModelProvider;
 use codex_prompts::render_model_instructions;
+use codex_protocol::ResponseItemId;
 use codex_protocol::SessionId;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
 use codex_protocol::config_types::ShellEnvironmentPolicy;
@@ -65,6 +66,10 @@ pub(crate) struct Session {
     pub(super) tx_event: Sender<Event>,
     pub(super) agent_status: watch::Sender<AgentStatus>,
     pub(super) state: Mutex<SessionState>,
+    /// Serializes explicit inter-agent admission against retained-history scans and representation.
+    pub(crate) explicit_inter_agent_admission: tokio::sync::Mutex<()>,
+    /// Suppresses duplicate volatile delivery while an admitted update awaits durable representation.
+    pub(crate) delivered_explicit_inter_agent_updates: std::sync::Mutex<HashSet<ResponseItemId>>,
     /// Orders accepted settings commits and their persisted events with compaction checkpoints.
     /// Keep this separate from `state` so storage I/O does not block runtime state access.
     pub(super) thread_settings_persistence: Semaphore,
@@ -1840,6 +1845,8 @@ impl Session {
                 tx_event: tx_event.clone(),
                 agent_status,
                 state: Mutex::new(state),
+                explicit_inter_agent_admission: tokio::sync::Mutex::new(()),
+                delivered_explicit_inter_agent_updates: std::sync::Mutex::new(HashSet::new()),
                 thread_settings_persistence: Semaphore::new(/*permits*/ 1),
                 code_mode_message_tasks: CodeModeMessageTasks::default(),
                 managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),

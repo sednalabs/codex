@@ -30,6 +30,7 @@ use crate::turn_diff_tracker::TurnDiffTracker;
 use codex_extension_api::empty_extension_registry;
 use codex_features::Feature;
 use codex_history::InitialHistory;
+use codex_history::InterAgentCommunicationIntent;
 use codex_history::RolloutItem;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
@@ -1476,6 +1477,215 @@ async fn multi_agent_v2_send_message_accepts_root_target_from_child() {
 }
 
 #[tokio::test]
+async fn multi_agent_v2_explicit_root_updates_are_durable_and_idempotent() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config);
+    let root = manager
+        .start_thread(StartThreadOptions::new((*turn.config).clone()))
+        .await
+        .expect("root thread should start");
+    set_agent_control(&mut session, manager.agent_control());
+    session.thread_id = root.thread_id;
+
+    let child_path = AgentPath::try_from("/root/worker").expect("agent path");
+    let child_thread_id = session
+        .services
+        .local_agent_runtime
+        .control(session.session_id())
+        .spawn_agent_with_metadata(
+            (*turn.config).clone(),
+            vec![UserInput::Text {
+                text: "inspect this repo".to_string(),
+                text_elements: Vec::new(),
+            }],
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.thread_id,
+                depth: 1,
+                agent_path: Some(child_path.clone()),
+                agent_nickname: None,
+                agent_role: None,
+            }),
+            crate::agent::types::SpawnAgentOptions::default(),
+        )
+        .await
+        .expect("worker spawn should succeed")
+        .thread_id;
+    session.thread_id = child_thread_id;
+    turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id: root.thread_id,
+        depth: 1,
+        agent_path: Some(child_path.clone()),
+        agent_nickname: None,
+        agent_role: None,
+    });
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    let root_thread = manager
+        .get_thread(root.thread_id)
+        .await
+        .expect("root thread should remain loaded");
+
+    SendMessageHandlerV2
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "send_message",
+            function_payload(json!({
+                "target": "/root",
+                "message": "completed the first step",
+                "intent": "progress",
+                "idempotency_key": "worker-progress-1"
+            })),
+        ))
+        .await
+        .expect("explicit progress should be admitted");
+
+    let history = root_thread
+        .load_history(/*include_archived*/ false)
+        .await
+        .expect("read root admission history");
+    let progress = history.items.iter().find_map(|item| match item {
+        RolloutItem::InterAgentCommunicationMetadata {
+            admission: Some(admission),
+            ..
+        } if admission.idempotency_key == "worker-progress-1" => Some(admission),
+        _ => None,
+    });
+    let progress = progress.expect("progress admission should be persisted");
+    assert_eq!(progress.intent, InterAgentCommunicationIntent::Progress);
+    assert_eq!(progress.sender_thread_id, child_thread_id);
+    assert_eq!(progress.recipient_thread_id, root.thread_id);
+    assert_eq!(progress.sender_path, child_path);
+    assert_eq!(progress.recipient_path, AgentPath::root());
+    assert_eq!(
+        progress.original_communication.author,
+        AgentPath::try_from("/root/worker").unwrap()
+    );
+    assert_eq!(progress.original_communication.recipient, AgentPath::root());
+    assert_eq!(
+        progress.original_communication.id.as_ref(),
+        Some(&progress.update_id)
+    );
+
+    SendMessageHandlerV2
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "send_message",
+            function_payload(json!({
+                "target": "/root",
+                "message": "the result is ready",
+                "intent": "result_ready",
+                "idempotency_key": "worker-result-1",
+                "supersedes": [progress.update_id.as_str()]
+            })),
+        ))
+        .await
+        .expect("result admission should supersede same-scope progress");
+
+    let history = root_thread
+        .load_history(/*include_archived*/ false)
+        .await
+        .expect("read updated root admission history");
+    let admissions = history
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            RolloutItem::InterAgentCommunicationMetadata {
+                admission: Some(admission),
+                ..
+            } => Some(admission),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(admissions.len(), 2);
+    let result = admissions
+        .iter()
+        .find(|admission| admission.idempotency_key == "worker-result-1")
+        .expect("result admission should be persisted");
+    assert_eq!(result.intent, InterAgentCommunicationIntent::ResultReady);
+    assert_eq!(result.supersedes, vec![progress.update_id.clone()]);
+
+    SendMessageHandlerV2
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "send_message",
+            function_payload(json!({
+                "target": "/root",
+                "message": "the result is ready",
+                "intent": "result_ready",
+                "idempotency_key": "worker-result-1",
+                "supersedes": [progress.update_id.as_str()]
+            })),
+        ))
+        .await
+        .expect("identical idempotent retry should return the original receipt");
+    let retried_history = root_thread
+        .load_history(/*include_archived*/ false)
+        .await
+        .expect("read retried root admission history");
+    assert_eq!(
+        retried_history
+            .items
+            .iter()
+            .filter(|item| matches!(
+                item,
+                RolloutItem::InterAgentCommunicationMetadata {
+                    admission: Some(_),
+                    ..
+                }
+            ))
+            .count(),
+        2,
+        "same-key retries do not append a second admission"
+    );
+    assert!(
+        root_thread
+            .session
+            .input_queue
+            .has_pending_mailbox_items()
+            .await,
+        "explicit updates remain queued without starting a turn"
+    );
+    assert!(
+        !root_thread
+            .session
+            .input_queue
+            .has_trigger_turn_mailbox_items()
+            .await,
+        "explicit updates do not use follow-up turn-start behavior"
+    );
+
+    let Err(error) = SendMessageHandlerV2
+        .handle(invocation(
+            session,
+            turn,
+            "send_message",
+            function_payload(json!({
+                "target": "/root",
+                "message": "changed body under the old key",
+                "intent": "result_ready",
+                "idempotency_key": "worker-result-1",
+                "supersedes": [progress.update_id.as_str()]
+            })),
+        ))
+        .await
+    else {
+        panic!("changed payload must not reuse the previous idempotency key");
+    };
+    assert!(
+        matches!(error, FunctionCallError::RespondToModel(message) if message.contains("reused for a changed request"))
+    );
+}
+
+#[tokio::test]
 async fn multi_agent_v2_followup_task_rejects_root_target_from_child() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
@@ -1971,9 +2181,7 @@ async fn multi_agent_v2_send_message_rejects_interrupt_parameter() {
     let FunctionCallError::RespondToModel(message) = err else {
         panic!("expected model-facing parse error");
     };
-    assert!(message.starts_with(
-        "failed to parse function arguments: unknown field `interrupt`, expected `target` or `message`"
-    ));
+    assert!(message.contains("unknown field `interrupt`"));
 
     let ops = manager.captured_ops();
     let ops_for_agent: Vec<&Op> = ops

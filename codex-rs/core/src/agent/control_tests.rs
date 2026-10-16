@@ -1062,6 +1062,7 @@ async fn cancelled_v2_send_finishes_reload_registration() {
             message: AgentMessage::Plaintext(message.to_string()),
             mode: MessageDeliveryMode::TriggerTurn,
         },
+        explicit_update: None,
         start_options: Default::default(),
     };
     let mut created = harness.manager.subscribe_thread_created();
@@ -1895,6 +1896,7 @@ async fn cold_resume_with_thread_instructions_preserves_lazy_v2_child_inheritanc
                     message: AgentMessage::Plaintext("hello after resume".to_string()),
                     mode: MessageDeliveryMode::QueueOnly,
                 },
+                explicit_update: None,
                 start_options: TurnStartOptions {
                     root_turn_id: turn.turn_metadata_state.root_turn_id(),
                     turn_trigger: turn.turn_metadata_state.current_turn_trigger(),
@@ -2044,6 +2046,7 @@ async fn v2_reload_preserves_shared_instructions_after_root_unloads(
                 message: AgentMessage::Plaintext("wake the unloaded target".to_string()),
                 mode: MessageDeliveryMode::QueueOnly,
             },
+            explicit_update: None,
             start_options: TurnStartOptions {
                 root_turn_id: sender_turn.turn_metadata_state.root_turn_id(),
                 turn_trigger: sender_turn.turn_metadata_state.current_turn_trigger(),

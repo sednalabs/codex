@@ -216,11 +216,39 @@ pub fn create_send_message_tool() -> ToolSpec {
             ))
             .with_encrypted(),
         ),
+        (
+            "intent".to_string(),
+            JsonSchema::string_enum(
+                vec![
+                    json!("progress"),
+                    json!("action_required"),
+                    json!("result_ready"),
+                ],
+                Some(
+                    "Optional explicit update intent. Omitting it preserves an ordinary quiet message.".to_string(),
+                ),
+            ),
+        ),
+        (
+            "idempotency_key".to_string(),
+            JsonSchema::string(Some(
+                "Required with intent. Reuse only for an identical request; use a new key for changed content or supersession.".to_string(),
+            )),
+        ),
+        (
+            "supersedes".to_string(),
+            JsonSchema::array(
+                JsonSchema::string(Some("Explicit progress update ID.".to_string())),
+                Some(
+                    "Optional explicit progress update IDs from the same sender and target.".to_string(),
+                ),
+            ),
+        ),
     ]);
 
     ToolSpec::Function(ResponsesApiTool {
         name: "send_message".to_string(),
-        description: "Send a message to an existing agent. The message will be delivered promptly. Does not trigger a new turn."
+        description: "Send a quiet message to an existing agent. Optional intent and idempotency_key mark a durable explicit update; only progress updates may be superseded, and only within the same sender and target scope. Does not start a new turn."
             .to_string(),
         strict: false,
         defer_loading: None,
