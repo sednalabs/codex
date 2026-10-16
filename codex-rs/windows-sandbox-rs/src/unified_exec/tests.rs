@@ -24,6 +24,7 @@ use std::fs;
 use std::fs::OpenOptions;
 use std::io::Seek;
 use std::io::SeekFrom;
+use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::AsRawHandle;
 use std::os::windows::io::FromRawHandle;
 use std::os::windows::io::OwnedHandle;
@@ -43,6 +44,7 @@ use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
 use windows_sys::Win32::Foundation::ERROR_NO_MORE_FILES;
+use windows_sys::Win32::Foundation::ERROR_SUCCESS;
 use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
 use windows_sys::Win32::Foundation::LocalFree;
@@ -50,17 +52,27 @@ use windows_sys::Win32::Foundation::WAIT_FAILED;
 use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
 use windows_sys::Win32::Foundation::WAIT_TIMEOUT;
 use windows_sys::Win32::Security::AccessCheck;
+use windows_sys::Win32::Security::Authorization::GetSecurityInfo;
+use windows_sys::Win32::Security::Authorization::SE_FILE_OBJECT;
+use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
 use windows_sys::Win32::Security::DuplicateToken;
 use windows_sys::Win32::Security::GENERIC_MAPPING;
+use windows_sys::Win32::Security::GROUP_SECURITY_INFORMATION;
+use windows_sys::Win32::Security::OWNER_SECURITY_INFORMATION;
 use windows_sys::Win32::Security::SecurityImpersonation;
 use windows_sys::Win32::Security::TOKEN_DUPLICATE;
 use windows_sys::Win32::Security::TOKEN_QUERY;
 use windows_sys::Win32::Storage::FileSystem::DELETE;
 use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
 use windows_sys::Win32::Storage::FileSystem::FILE_DELETE_CHILD;
+use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS;
 use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_EXECUTE;
 use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_READ;
 use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_WRITE;
+use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_DELETE;
+use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_WRITE;
+use windows_sys::Win32::Storage::FileSystem::READ_CONTROL;
 use windows_sys::Win32::System::Diagnostics::ToolHelp::CreateToolhelp32Snapshot;
 use windows_sys::Win32::System::Diagnostics::ToolHelp::PROCESSENTRY32W;
 use windows_sys::Win32::System::Diagnostics::ToolHelp::Process32FirstW;
@@ -231,7 +243,32 @@ fn direct_child_cmd_pids() -> Option<HashSet<u32>> {
 
 fn access_check_for_path(token: HANDLE, path: &Path, desired_access: u32) -> Option<bool> {
     unsafe {
-        let (_, descriptor) = crate::acl::fetch_dacl_handle(path).ok()?;
+        let handle = OpenOptions::new()
+            .access_mode(READ_CONTROL)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(path)
+            .ok()?;
+        let mut owner = std::ptr::null_mut();
+        let mut group = std::ptr::null_mut();
+        let mut dacl = std::ptr::null_mut();
+        let mut descriptor = std::ptr::null_mut();
+        let status = GetSecurityInfo(
+            handle.as_raw_handle() as HANDLE,
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+            &mut owner,
+            &mut group,
+            &mut dacl,
+            std::ptr::null_mut(),
+            &mut descriptor,
+        );
+        if status != ERROR_SUCCESS {
+            if !descriptor.is_null() {
+                LocalFree(descriptor as _);
+            }
+            return None;
+        }
         let mapping = GENERIC_MAPPING {
             GenericRead: FILE_GENERIC_READ,
             GenericWrite: FILE_GENERIC_WRITE,
