@@ -339,7 +339,7 @@ async fn auto_store_remains_pinned_across_session_recovery_child() -> anyhow::Re
     assert!(
         uncertain
             .to_string()
-            .contains("MCP request outcome is uncertain"),
+            .contains("MCP session expired during tools/call"),
         "the expired tool call must remain uncertain and not be replayed: {uncertain:#}"
     );
 
