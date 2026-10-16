@@ -19,6 +19,7 @@ use codex_utils_pty::ProcessSignal;
 use codex_windows_sandbox_test_support::WindowsSandboxAccountTestGuard;
 use pretty_assertions::assert_eq;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Seek;
@@ -41,10 +42,34 @@ use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
+use windows_sys::Win32::Foundation::ERROR_NO_MORE_FILES;
+use windows_sys::Win32::Foundation::HANDLE;
+use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+use windows_sys::Win32::Foundation::LocalFree;
 use windows_sys::Win32::Foundation::WAIT_FAILED;
 use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
 use windows_sys::Win32::Foundation::WAIT_TIMEOUT;
+use windows_sys::Win32::Security::AccessCheck;
+use windows_sys::Win32::Security::DuplicateToken;
+use windows_sys::Win32::Security::GENERIC_MAPPING;
+use windows_sys::Win32::Security::SecurityImpersonation;
+use windows_sys::Win32::Security::TOKEN_DUPLICATE;
+use windows_sys::Win32::Security::TOKEN_QUERY;
+use windows_sys::Win32::Storage::FileSystem::DELETE;
+use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
+use windows_sys::Win32::Storage::FileSystem::FILE_DELETE_CHILD;
+use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_EXECUTE;
+use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_READ;
+use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_WRITE;
+use windows_sys::Win32::System::Diagnostics::ToolHelp::CreateToolhelp32Snapshot;
+use windows_sys::Win32::System::Diagnostics::ToolHelp::PROCESSENTRY32W;
+use windows_sys::Win32::System::Diagnostics::ToolHelp::Process32FirstW;
+use windows_sys::Win32::System::Diagnostics::ToolHelp::Process32NextW;
+use windows_sys::Win32::System::Diagnostics::ToolHelp::TH32CS_SNAPPROCESS;
+use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 use windows_sys::Win32::System::Threading::OpenProcess;
+use windows_sys::Win32::System::Threading::OpenProcessToken;
+use windows_sys::Win32::System::Threading::PROCESS_QUERY_LIMITED_INFORMATION;
 use windows_sys::Win32::System::Threading::PROCESS_SYNCHRONIZE;
 use windows_sys::Win32::System::Threading::WaitForSingleObject;
 
@@ -158,6 +183,179 @@ fn wait_for_process_exit(process: &OwnedHandle, timeout: Duration) -> std::io::R
         result => Err(std::io::Error::other(format!(
             "unexpected process wait result: {result}"
         ))),
+    }
+}
+
+struct DeleteAccessObservation {
+    // Retain the exact child process handle through the fixture's completion.
+    _process: Option<OwnedHandle>,
+    allowed: Option<[bool; 4]>,
+}
+
+fn direct_child_cmd_pids() -> Option<HashSet<u32>> {
+    // Toolhelp exposes only PID, parent PID, and image name. The caller uses a
+    // before/after delta around this fixture's sole spawn; it does not attest argv.
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snapshot.is_null() || snapshot == INVALID_HANDLE_VALUE {
+            return None;
+        }
+        let snapshot = OwnedHandle::from_raw_handle(snapshot as _);
+        let parent_pid = GetCurrentProcessId();
+        let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        if Process32FirstW(snapshot.as_raw_handle() as HANDLE, &mut entry) == 0 {
+            return None;
+        }
+
+        let mut children = HashSet::new();
+        loop {
+            if entry.th32ParentProcessID == parent_pid {
+                let name_end = entry
+                    .szExeFile
+                    .iter()
+                    .position(|character| *character == 0)
+                    .unwrap_or(entry.szExeFile.len());
+                let name = String::from_utf16_lossy(&entry.szExeFile[..name_end]);
+                if name.eq_ignore_ascii_case("cmd.exe") {
+                    children.insert(entry.th32ProcessID);
+                }
+            }
+            if Process32NextW(snapshot.as_raw_handle() as HANDLE, &mut entry) == 0 {
+                return (windows_sys::Win32::Foundation::GetLastError() == ERROR_NO_MORE_FILES)
+                    .then_some(children);
+            }
+        }
+    }
+}
+
+fn access_check_for_path(token: HANDLE, path: &Path, desired_access: u32) -> Option<bool> {
+    unsafe {
+        let (_, descriptor) = crate::acl::fetch_dacl_handle(path).ok()?;
+        let mapping = GENERIC_MAPPING {
+            GenericRead: FILE_GENERIC_READ,
+            GenericWrite: FILE_GENERIC_WRITE,
+            GenericExecute: FILE_GENERIC_EXECUTE,
+            GenericAll: FILE_ALL_ACCESS,
+        };
+        let mut privilege_set = [0u64; 128];
+        let mut privilege_set_size = std::mem::size_of_val(&privilege_set) as u32;
+        let mut granted_access = 0;
+        let mut access_status = 0;
+        let checked = AccessCheck(
+            descriptor,
+            token,
+            desired_access,
+            &mapping,
+            privilege_set.as_mut_ptr().cast(),
+            &mut privilege_set_size,
+            &mut granted_access,
+            &mut access_status,
+        );
+        LocalFree(descriptor as _);
+        (checked != 0).then_some(access_status != 0)
+    }
+}
+
+fn observe_delete_access(
+    before: Option<HashSet<u32>>,
+    outside_file: &Path,
+    outside_parent: &Path,
+    protected_git_dir: &Path,
+    workspace_parent: &Path,
+) -> DeleteAccessObservation {
+    let Some(before) = before else {
+        return DeleteAccessObservation {
+            _process: None,
+            allowed: None,
+        };
+    };
+    let Some(after) = direct_child_cmd_pids() else {
+        return DeleteAccessObservation {
+            _process: None,
+            allowed: None,
+        };
+    };
+    let children: Vec<_> = after.difference(&before).copied().collect();
+    if children.len() != 1 {
+        return DeleteAccessObservation {
+            _process: None,
+            allowed: None,
+        };
+    }
+
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, children[0]);
+        if process.is_null() {
+            return DeleteAccessObservation {
+                _process: None,
+                allowed: None,
+            };
+        }
+        let process = OwnedHandle::from_raw_handle(process as _);
+        let mut token = std::ptr::null_mut();
+        if OpenProcessToken(
+            process.as_raw_handle() as HANDLE,
+            TOKEN_QUERY | TOKEN_DUPLICATE,
+            &mut token,
+        ) == 0
+        {
+            return DeleteAccessObservation {
+                _process: Some(process),
+                allowed: None,
+            };
+        }
+        let token = OwnedHandle::from_raw_handle(token as _);
+        let mut impersonation_token = std::ptr::null_mut();
+        if DuplicateToken(
+            token.as_raw_handle() as HANDLE,
+            SecurityImpersonation,
+            &mut impersonation_token,
+        ) == 0
+        {
+            return DeleteAccessObservation {
+                _process: Some(process),
+                allowed: None,
+            };
+        }
+        let impersonation_token = OwnedHandle::from_raw_handle(impersonation_token as _);
+        let checks = [
+            access_check_for_path(
+                impersonation_token.as_raw_handle() as HANDLE,
+                outside_file,
+                DELETE,
+            ),
+            access_check_for_path(
+                impersonation_token.as_raw_handle() as HANDLE,
+                outside_parent,
+                FILE_DELETE_CHILD,
+            ),
+            access_check_for_path(
+                impersonation_token.as_raw_handle() as HANDLE,
+                protected_git_dir,
+                DELETE,
+            ),
+            access_check_for_path(
+                impersonation_token.as_raw_handle() as HANDLE,
+                workspace_parent,
+                FILE_DELETE_CHILD,
+            ),
+        ];
+        if checks.iter().any(Option::is_none) {
+            return DeleteAccessObservation {
+                _process: Some(process),
+                allowed: None,
+            };
+        }
+        DeleteAccessObservation {
+            _process: Some(process),
+            allowed: Some([
+                checks[0].unwrap_or(false),
+                checks[1].unwrap_or(false),
+                checks[2].unwrap_or(false),
+                checks[3].unwrap_or(false),
+            ]),
+        }
     }
 }
 
@@ -765,6 +963,7 @@ fn legacy_workspace_write_delete_is_limited_to_writable_roots() {
             &script,
             concat!(
                 "@echo off\r\n",
+                "set /p \"__CODEX_DELETE_DIAGNOSTIC_GATE=\"\r\n",
                 "del /f /q \"%WORKSPACE_DELETE%\"\r\n",
                 "del /f /q \"%TEMP_DELETE%\"\r\n",
                 "del /f /q \"%TMP_DELETE%\"\r\n",
@@ -801,6 +1000,7 @@ fn legacy_workspace_write_delete_is_limited_to_writable_roots() {
         ]);
 
         let permission_profile = PermissionProfile::workspace_write();
+        let before_children = direct_child_cmd_pids();
         let spawned = spawn_windows_sandbox_session_legacy(
             &permission_profile,
             workspace_roots_for(workspace.as_path()).as_slice(),
@@ -817,13 +1017,38 @@ fn legacy_workspace_write_delete_is_limited_to_writable_roots() {
             &[],
             &[],
             /*tty*/ false,
-            /*stdin_open*/ false,
+            /*stdin_open*/ true,
         )
         .await
         .expect("spawn legacy delete session");
+
+        let observation = observe_delete_access(
+            before_children,
+            &outside_file,
+            &outside_root,
+            &protected_git_dir,
+            &workspace,
+        );
+        let gate_released = spawned
+            .session
+            .writer_sender()
+            .send(b"release\r\n".to_vec())
+            .await
+            .is_ok();
+        spawned.session.close_stdin();
+        if !gate_released {
+            eprintln!("legacy delete access diagnostic: inconclusive");
+        } else if let Some([outside_file_delete, outside_parent_delete_child, git_delete, workspace_delete_child]) = observation.allowed {
+            eprintln!(
+                "legacy delete access diagnostic: outside_file_delete={outside_file_delete} outside_parent_delete_child={outside_parent_delete_child} git_delete={git_delete} workspace_delete_child={workspace_delete_child}"
+            );
+        } else {
+            eprintln!("legacy delete access diagnostic: inconclusive");
+        }
         let (stdout, exit_code) =
             collect_stdout_and_exit(spawned, codex_home.path(), Duration::from_secs(/*secs*/ 10))
                 .await;
+        drop(observation);
         let stdout = String::from_utf8_lossy(&stdout);
 
         assert_eq!(
