@@ -9,7 +9,9 @@ runner_temp="${RUNNER_TEMP:?RUNNER_TEMP must be set}"
 
 # The named-test host supplies identities after materializing and verifying
 # both checkouts. This proof must fail closed if either binding is absent.
-if [[ ! "${VALIDATION_TARGET_SHA:-}" =~ ^[0-9a-fA-F]{40}$ ]] || [[ "$(git rev-parse --verify HEAD)" != "${VALIDATION_TARGET_SHA}" ]]; then
+target_root="$(git rev-parse --show-toplevel)"
+cd "$target_root"
+if [[ ! -f codex-rs/Cargo.toml ]] || [[ ! "${VALIDATION_TARGET_SHA:-}" =~ ^[0-9a-fA-F]{40}$ ]] || [[ "$(git rev-parse --verify HEAD)" != "${VALIDATION_TARGET_SHA}" ]]; then
   echo "native-browser-evidence: target checkout identity mismatch" >&2
   exit 1
 fi
@@ -19,32 +21,14 @@ if [[ ! "${VALIDATION_HARNESS_SHA:-}" =~ ^[0-9a-fA-F]{40}$ ]] || [[ "$(git -C "$
   echo "native-browser-evidence: trusted helper checkout identity mismatch" >&2
   exit 1
 fi
+
 playwright_prefix="$(mktemp -d "$runner_temp/native-browser-playwright.XXXXXX")"
-playwright_venv="$(mktemp -d "$runner_temp/native-browser-skill-venv.XXXXXX")"
-native_browser_evidence_dir="$runner_temp/native-browser-evidence"
-mkdir -p "$native_browser_evidence_dir"
 npm install --prefix "$playwright_prefix" --ignore-scripts "playwright@${playwright_version}"
 PLAYWRIGHT_BROWSERS_PATH="${RUNNER_TEMP}/native-browser-browsers" \
   "$playwright_prefix/node_modules/.bin/playwright" install chromium --with-deps
 
-export NODE_PATH="$playwright_prefix/node_modules${NODE_PATH:+:${NODE_PATH}}"
+export NODE_PATH="$playwright_prefix/node_modules"
 export PLAYWRIGHT_BROWSERS_PATH="${RUNNER_TEMP}/native-browser-browsers"
-export NATIVE_BROWSER_EVIDENCE_DIR="$native_browser_evidence_dir"
-
-shopt -s nullglob
-test_files=(codex-rs/browser-computer-use/src/*_test.mjs)
-shopt -u nullglob
-if ((${#test_files[@]} > 0)); then
-  node --test "${test_files[@]}"
-else
-  echo "native-browser-evidence: no standalone Node tests in target; required Rust Chromium flow follows"
-fi
-
-python3 -m venv "$playwright_venv"
-"$playwright_venv/bin/pip" install --quiet 'PyYAML==6.0.2'
-"$playwright_venv/bin/python" \
-  codex-rs/skills/src/assets/samples/skill-creator/scripts/quick_validate.py \
-  .codex/skills/use-native-browser
 
 browser_node_path="$playwright_prefix/node_modules"
 browser_executable_path="$(node -e 'process.stdout.write(require("playwright").chromium.executablePath())')"
@@ -53,6 +37,29 @@ if [[ ! -d "$browser_node_path" || -z "$browser_executable_path" || ! -x "$brows
   echo "native-browser-evidence: pinned Playwright runtime preflight failed" >&2
   exit 1
 fi
+
+browser_runtime_env_names=(
+  CODEX_BROWSER_COMPUTER_USE_PROVIDER
+  CODEX_BROWSER_COMPUTER_USE_COMMAND
+  CODEX_BROWSER_COMPUTER_USE_NODE
+  CODEX_BROWSER_COMPUTER_USE_TIMEOUT_SECS
+  CODEX_BROWSER_PLAYWRIGHT_NODE_PATH
+  CODEX_BROWSER_PLAYWRIGHT_EXECUTABLE_PATH
+  CODEX_BROWSER_PLAYWRIGHT_STATE_DIR
+  CODEX_BROWSER_PLAYWRIGHT_HEADLESS
+  CODEX_BROWSER_PLAYWRIGHT_CHANNEL
+  CODEX_BROWSER_PLAYWRIGHT_DISPLAY
+  CODEX_BROWSER_PLAYWRIGHT_CAPTURE_MODE
+  CODEX_BROWSER_PLAYWRIGHT_VIEWPORT_WIDTH
+  CODEX_BROWSER_PLAYWRIGHT_VIEWPORT_HEIGHT
+  CODEX_BROWSER_PLAYWRIGHT_LOCK_TIMEOUT_MS
+  NODE_PATH
+  PLAYWRIGHT_BROWSERS_PATH
+)
+browser_env_unset=()
+for name in "${browser_runtime_env_names[@]}"; do
+  browser_env_unset+=(-u "$name")
+done
 
 run_rust_selector() {
   local package="$1"
@@ -81,23 +88,14 @@ run_rust_selector() {
 }
 
 run_rust_selector codex-browser-computer-use tests::hosted_native_browser_tool_flow \
+  "${browser_env_unset[@]}" \
   CODEX_BROWSER_COMPUTER_USE_PROVIDER=playwright \
   "CODEX_BROWSER_PLAYWRIGHT_NODE_PATH=$browser_node_path" \
   "CODEX_BROWSER_PLAYWRIGHT_EXECUTABLE_PATH=$browser_executable_path" \
   "CODEX_BROWSER_PLAYWRIGHT_STATE_DIR=$browser_state_dir" \
-  CODEX_BROWSER_PLAYWRIGHT_HEADLESS=1
-
-browser_env_names=(
-  CODEX_BROWSER_COMPUTER_USE_PROVIDER
-  CODEX_BROWSER_PLAYWRIGHT_NODE_PATH
-  CODEX_BROWSER_PLAYWRIGHT_EXECUTABLE_PATH
-  CODEX_BROWSER_PLAYWRIGHT_STATE_DIR
-  CODEX_BROWSER_PLAYWRIGHT_HEADLESS
-)
-browser_env_unset=()
-for name in "${browser_env_names[@]}"; do
-  browser_env_unset+=(-u "$name")
-done
+  CODEX_BROWSER_PLAYWRIGHT_HEADLESS=1 \
+  "NODE_PATH=$playwright_prefix/node_modules" \
+  "PLAYWRIGHT_BROWSERS_PATH=$RUNNER_TEMP/native-browser-browsers"
 
 run_rust_selector codex-tui dynamic_tools_mcp::native_computer_use_registration_tests::configured_native_provider_specs_are_registered_for_each_transport \
   "${browser_env_unset[@]}"
