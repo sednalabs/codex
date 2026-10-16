@@ -31,6 +31,8 @@ KNOWN_REPORT_REASON_CODES = frozenset(
         "database_unavailable",
         "deadline_exceeded",
         "instruction_limit_exceeded",
+        "ledger_busy",
+        "ledger_schema_mismatch",
         "lineage_cycle",
         "lineage_depth_limit_exceeded",
         "lineage_incomplete",
@@ -43,6 +45,8 @@ KNOWN_REPORT_REASON_CODES = frozenset(
         "output_group_limit_exceeded",
         "physical_call_deduplication_incomplete",
         "rate_policy_row_limit_exceeded",
+        "rate_policy_key_limit_exceeded",
+        "read_only_policy_denied_query",
         "required_reporting_index_missing",
         "required_spawn_request_index_missing",
         "selected_attribution_text_limit_exceeded",
@@ -56,6 +60,11 @@ KNOWN_REPORT_REASON_CODES = frozenset(
         "standard_scenario_coverage_incomplete",
         "thread_metadata_missing",
         "token_coverage_incomplete",
+        "unknown_thread_id",
+        "unsupported_timestamp_encoding",
+        "sqlite_query_failed",
+        "sqlite_read_failed",
+        "all_time_requires_exact_thread_scope",
     }
 )
 
