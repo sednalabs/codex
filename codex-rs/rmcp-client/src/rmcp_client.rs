@@ -250,6 +250,13 @@ enum ClientOperationError {
         #[source]
         source: rmcp::service::ServiceError,
     },
+    #[error(
+        "MCP session expired during tools/call; this invocation was not retried and its result is unknown. The expired session was retired if it was still current. Make a separate independent call to continue; it will initialize a fresh session if needed. Do not repeat this call unless its operation is independently known to be read-only."
+    )]
+    ExpiredSessionUncertain {
+        #[source]
+        source: rmcp::service::ServiceError,
+    },
     #[error("timed out awaiting {label} after {duration:.0?}")]
     Timeout { label: String, duration: Duration },
 }
@@ -1284,7 +1291,14 @@ impl RmcpClient {
             }
 
             if label == "tools/call" {
-                return result.map_err(Into::into);
+                return result
+                    .map_err(|error| match error {
+                        ClientOperationError::UncertainService { source } => {
+                            ClientOperationError::ExpiredSessionUncertain { source }
+                        }
+                        error => error,
+                    })
+                    .map_err(Into::into);
             }
 
             let recovered_service = self.service().await?;
@@ -1416,7 +1430,8 @@ impl RmcpClient {
     fn is_session_expired_404(error: &ClientOperationError) -> bool {
         let service_error = match error {
             ClientOperationError::Service(source)
-            | ClientOperationError::UncertainService { source } => source,
+            | ClientOperationError::UncertainService { source }
+            | ClientOperationError::ExpiredSessionUncertain { source } => source,
             ClientOperationError::Timeout { .. } => return false,
         };
         let rmcp::service::ServiceError::TransportSend(error) = service_error else {
@@ -1439,7 +1454,8 @@ impl RmcpClient {
     fn is_unauthorized_operation_error(error: &ClientOperationError) -> bool {
         let service_error = match error {
             ClientOperationError::Service(source)
-            | ClientOperationError::UncertainService { source } => source,
+            | ClientOperationError::UncertainService { source }
+            | ClientOperationError::ExpiredSessionUncertain { source } => source,
             ClientOperationError::Timeout { .. } => return false,
         };
         let rmcp::service::ServiceError::TransportSend(error) = service_error else {
