@@ -2641,7 +2641,7 @@ fs.writeFile = async (file, ...args) => {
             TOOL_BROWSER_STEP,
             json!({
                 "url": visual_url.clone(),
-                "action": {"type": "click", "selector": "#focus-control"},
+                "actions": [{"type": "click", "selector": "#focus-control"}],
                 "scope": "viewport_and_page"
             }),
         )
