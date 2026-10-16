@@ -25,6 +25,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
+use std::sync::Mutex as StdMutex;
 #[cfg(unix)]
 use std::thread::sleep;
 #[cfg(unix)]
@@ -312,7 +313,7 @@ struct StdioServerProcessHandleInner {
     program_name: String,
     kind: StdioServerProcessKind,
     close_policy: StdioServerClosePolicy,
-    local_child: Option<Arc<AsyncMutex<Child>>>,
+    local_child: StdMutex<Option<Arc<AsyncMutex<Child>>>>,
     terminated: AtomicBool,
     close_outcome: AtomicU8,
     close_completion: watch::Sender<StdioServerCloseOutcome>,
@@ -559,12 +560,17 @@ impl StdioServerProcessHandle {
         local_child: Option<Arc<AsyncMutex<Child>>>,
     ) -> Self {
         let (close_completion, _close_receiver) = watch::channel(StdioServerCloseOutcome::Pending);
+        let local_child = if close_policy == StdioServerClosePolicy::CooperativeLocal {
+            local_child
+        } else {
+            None
+        };
         Self {
             inner: Arc::new(StdioServerProcessHandleInner {
                 program_name,
                 kind: StdioServerProcessKind::Local(terminator),
                 close_policy,
-                local_child,
+                local_child: StdMutex::new(local_child),
                 terminated: AtomicBool::new(false),
                 close_outcome: AtomicU8::new(StdioServerCloseOutcome::Pending as u8),
                 close_completion,
@@ -579,7 +585,7 @@ impl StdioServerProcessHandle {
                 program_name,
                 kind: StdioServerProcessKind::Executor(process),
                 close_policy: StdioServerClosePolicy::Legacy,
-                local_child: None,
+                local_child: StdMutex::new(None),
                 terminated: AtomicBool::new(false),
                 close_outcome: AtomicU8::new(StdioServerCloseOutcome::Pending as u8),
                 close_completion: watch::channel(StdioServerCloseOutcome::Pending).0,
@@ -593,6 +599,18 @@ impl StdioServerProcessHandle {
     }
 
     pub(crate) fn report_close_outcome(&self, outcome: StdioServerCloseOutcome) {
+        let child_reaped = matches!(
+            outcome,
+            StdioServerCloseOutcome::Exited | StdioServerCloseOutcome::Forced
+        );
+        if child_reaped {
+            self.inner.terminated.store(true, Ordering::Release);
+            self.inner
+                .local_child
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+        }
         if self
             .inner
             .close_outcome
@@ -605,10 +623,6 @@ impl StdioServerProcessHandle {
             .is_ok()
         {
             self.inner.close_completion.send_replace(outcome);
-            if matches!(outcome, StdioServerCloseOutcome::Exited | StdioServerCloseOutcome::Forced)
-            {
-                self.inner.terminated.store(true, Ordering::Release);
-            }
             if let Some(stderr_reader) = &self.inner.stderr_reader {
                 stderr_reader.send_replace(());
             }
@@ -638,10 +652,14 @@ impl StdioServerProcessHandle {
     pub(crate) async fn terminate(&self) -> io::Result<()> {
         if self.inner.terminated.swap(true, Ordering::AcqRel) {
             if self.inner.close_policy == StdioServerClosePolicy::CooperativeLocal {
-                let Some(child) = &self.inner.local_child else {
-                    return Err(io::Error::other(
-                        "cooperative MCP stdio child ownership is unavailable",
-                    ));
+                let child = self
+                    .inner
+                    .local_child
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone();
+                let Some(child) = child else {
+                    return Ok(());
                 };
                 let mut child = child.lock().await;
                 return match tokio::time::timeout(
@@ -668,7 +686,13 @@ impl StdioServerProcessHandle {
         }
 
         if self.inner.close_policy == StdioServerClosePolicy::CooperativeLocal {
-            let Some(child) = &self.inner.local_child else {
+            let child = self
+                .inner
+                .local_child
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            let Some(child) = child else {
                 self.inner.terminated.store(false, Ordering::Release);
                 return Err(io::Error::other(
                     "cooperative MCP stdio child ownership is unavailable",
@@ -716,7 +740,12 @@ impl Drop for StdioServerProcessHandleInner {
 
         match &self.kind {
             StdioServerProcessKind::Local(_) if self.close_policy == StdioServerClosePolicy::CooperativeLocal => {
-                if let Some(child) = self.local_child.as_ref().cloned() {
+                let child = self
+                    .local_child
+                    .get_mut()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take();
+                if let Some(child) = child {
                     if let Ok(handle) = tokio::runtime::Handle::try_current() {
                         std::mem::drop(handle.spawn(async move {
                             let mut child = child.lock().await;
