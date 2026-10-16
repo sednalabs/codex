@@ -490,6 +490,7 @@ def codex_rust_crate(
         workspace_root_test(
             name = binary_unit_test_name,
             env = test_env,
+            path_runfile_env = test_path_runfile_env,
             test_bin = ":" + binary_unit_test_binary,
             workspace_root_marker = "//codex-rs/utils/cargo-bin:repo_root.marker",
             target_compatible_with = binary_test_target_compatible_with,
@@ -557,7 +558,7 @@ def codex_rust_crate(
         test_kwargs = {}
         test_kwargs.update(integration_test_kwargs)
         test_shard_count = _test_shard_count(test_shard_counts, test_name)
-        if test_shard_count or test_path_runfile_env:
+        if test_shard_count:
             # Put Bazel sharding on the label users/CI invoke. Do not set
             # rules_rust's experimental_enable_sharding on the Rust test
             # binary: that creates an intermediate wrapper that expects a
@@ -572,7 +573,8 @@ def codex_rust_crate(
         #
         # 1. Unsharded native tests keep the plain rust_test label for minimal
         #    churn and the usual rules_rust Cargo-like environment, unless a
-        #    runfile-backed PATH entry must be established before launch.
+        #    runfile-backed PATH entry must be established before launch. That
+        #    wrapper keeps the normal runfiles cwd when it is not sharded.
         # 2. Sharded native tests split into a manual rust_test binary plus an
         #    outer workspace_root_test. The outer test action receives Bazel's
         #    sharding environment, resolves the real binary through the
@@ -586,10 +588,10 @@ def codex_rust_crate(
         #    owns cleanup. The outer workspace_root_test resolves the runner,
         #    test, and server from runfiles, sets a Cargo-like cwd, and applies
         #    the native test's shard count.
-        if test_shard_count:
+        if test_shard_count or test_path_runfile_env:
             # This target is intentionally a binary-like helper, not the public
-            # test target. The wrapper below owns cwd setup, runfile env
-            # materialization, sharding, and flaky retry behavior.
+            # test target. The wrapper below owns runfile env materialization,
+            # optional cwd setup, and optional sharding/retry behavior.
             rust_test(
                 name = integration_test_binary,
                 crate_name = test_crate_name,
@@ -613,10 +615,11 @@ def codex_rust_crate(
 
             workspace_root_test(
                 name = test_name,
+                chdir_workspace_root = bool(test_shard_count),
                 env = test_env,
                 # CARGO_BIN_EXE_* values are rlocation paths at analysis time.
                 # The launcher rewrites them to absolute paths at execution
-                # time so tests keep working after chdir_workspace_root and on
+                # time so tests keep working with either cwd mode and on
                 # manifest-only platforms.
                 runfile_env = integration_test_cargo_env_runfiles,
                 path_runfile_env = test_path_runfile_env,
