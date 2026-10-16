@@ -40,7 +40,13 @@ TEST_RESULT_RE = re.compile(
     r"(?P<measured>\d+) measured;\s+"
     r"(?P<filtered>\d+) filtered out"
 )
-TEST_OUTCOME_RE = re.compile(r"^test (?P<name>.+?) \.\.\. (?P<status>ok|FAILED|ignored)$")
+# Some TUI tests write directly to the terminal while libtest is printing the
+# outcome. Keep terminal-control sequences as separators so the final status
+# still has a token boundary; arbitrary text ending in "ok" is not an outcome.
+TEST_OUTCOME_RE = re.compile(
+    r"^test (?P<name>.+?) \.\.\..*(?:[ \t]|\x00)"
+    r"(?P<status>ok|FAILED|ignored)$"
+)
 ANSI_CSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
@@ -328,7 +334,7 @@ def test_outcomes(output: str) -> dict[str, list[str]]:
     """Index each exact Cargo test result without trusting a summary count."""
 
     outcomes: dict[str, list[str]] = {}
-    for line in ANSI_CSI_RE.sub("", output).splitlines():
+    for line in ANSI_CSI_RE.sub("\x00", output).splitlines():
         match = TEST_OUTCOME_RE.match(line.strip())
         if match:
             outcomes.setdefault(match.group("name"), []).append(match.group("status"))

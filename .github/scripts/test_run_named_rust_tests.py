@@ -77,12 +77,41 @@ class NamedRustTests(TestCase):
         self.assertEqual(result["failure_code"], "execution_reconciliation_failed")
         self.assertIn("hosted job log", result["message"])
 
-    def test_named_outcome_parser_ignores_terminal_control_sequences(self) -> None:
+    def test_named_outcome_parser_preserves_control_sequence_status_boundary(self) -> None:
         output = "test suite::known ... \x1b[0 qok\n"
         self.assertEqual(
             MODULE.test_outcomes(output),
             {"suite::known": ["ok"]},
         )
+
+    def test_named_outcome_parser_rejects_status_suffix_inside_word(self) -> None:
+        output = "test suite::known ... terminal book\n"
+        self.assertEqual(MODULE.test_outcomes(output), {})
+
+    def test_exact_result_reconciles_terminal_rendering_before_status(self) -> None:
+        result = self.run_request(
+            "test suite::known ... \x1b[?2026h\x1b[1;1H› terminal UI"
+            "\x1b[?2026l\x1b[0 qok\n"
+            "\n"
+            "test result: ok. 1 passed; 0 failed; 0 ignored; "
+            "0 measured; 0 filtered out\n"
+        )
+
+        self.assertEqual(result["status"], "success")
+        self.assertTrue(result["tests"][0]["execution_reconciled"])
+        self.assertEqual(result["tests"][0]["observed_outcomes"], ["ok"])
+
+    def test_terminal_rendering_does_not_hide_failed_or_ignored_status(self) -> None:
+        for status in ("FAILED", "ignored"):
+            with self.subTest(status=status):
+                output = (
+                    "test suite::known ... \x1b[?2026h\x1b[1;1H› terminal UI"
+                    f"\x1b[?2026l\x1b[0 q{status}\n"
+                )
+                self.assertEqual(
+                    MODULE.test_outcomes(output),
+                    {"suite::known": [status]},
+                )
 
     def test_inventory_failure_preserves_actionable_bounded_diagnostics(self) -> None:
         inventory = self.completed(stderr="manifest could not be loaded", code=101)
