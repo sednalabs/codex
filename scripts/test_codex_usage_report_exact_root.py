@@ -20,6 +20,44 @@ import codex_usage_report as report
 ROOT_THREAD = "synthetic-root"
 START = "1970-01-01T00:00:00Z"
 END = "2100-01-01T00:00:00Z"
+KNOWN_REPORT_REASON_CODES = frozenset(
+    {
+        "actual_credit_coverage_incomplete",
+        "attribution_text_accounting_unavailable",
+        "bounded_text_limit_unavailable",
+        "call_limit_exceeded",
+        "configured_model_attribution_conflict",
+        "cross_ledger_reconciliation_limited_by_source_coverage",
+        "database_unavailable",
+        "deadline_exceeded",
+        "instruction_limit_exceeded",
+        "lineage_cycle",
+        "lineage_depth_limit_exceeded",
+        "lineage_incomplete",
+        "lineage_metadata_changed_during_snapshot",
+        "lineage_metadata_duplicate_id",
+        "lineage_metadata_invalid",
+        "lineage_node_limit_exceeded",
+        "lineage_scan_row_limit_exceeded",
+        "lineage_scan_text_limit_exceeded",
+        "output_group_limit_exceeded",
+        "physical_call_deduplication_incomplete",
+        "rate_policy_row_limit_exceeded",
+        "required_reporting_index_missing",
+        "required_spawn_request_index_missing",
+        "selected_attribution_text_limit_exceeded",
+        "selected_source_text_limit_exceeded",
+        "serialized_error_limit_exceeded",
+        "serialized_json_limit_exceeded",
+        "source_identity_field_limit_exceeded",
+        "source_text_field_limit_exceeded",
+        "spawn_request_metadata_limit_exceeded",
+        "sqlite_value_limit_exceeded",
+        "standard_scenario_coverage_incomplete",
+        "thread_metadata_missing",
+        "token_coverage_incomplete",
+    }
+)
 
 
 def _assert(condition: bool, message: str) -> None:
@@ -32,6 +70,7 @@ def _safe_report_process_diagnostic(
 ) -> str:
     status = "unavailable"
     reason_codes: tuple[str, ...] = ()
+    error_reason = "none"
     try:
         parsed = json.loads(stdout)
     except json.JSONDecodeError:
@@ -45,15 +84,16 @@ def _safe_report_process_diagnostic(
             reason_codes = tuple(
                 value
                 for value in reasons
-                if isinstance(value, str)
-                and value
-                and all(
-                    character.islower()
-                    or character.isdigit()
-                    or character == "_"
-                    for character in value
-                )
-            )
+                if isinstance(value, str) and value in KNOWN_REPORT_REASON_CODES
+            )[:8]
+        error = parsed.get("error")
+        if isinstance(error, dict):
+            candidate_reason = error.get("reason")
+            if (
+                isinstance(candidate_reason, str)
+                and candidate_reason in KNOWN_REPORT_REASON_CODES
+            ):
+                error_reason = candidate_reason
 
     source_line = "none"
     for line in stderr.splitlines():
@@ -77,7 +117,8 @@ def _safe_report_process_diagnostic(
             break
     return (
         f"stage=single_ledger_cli expected_exit=2 observed_exit={returncode} "
-        f"report_status={status} reason_codes={','.join(reason_codes) or 'none'} "
+        f"report_status={status} error_reason={error_reason} "
+        f"reason_codes={','.join(reason_codes) or 'none'} "
         f"source_line={source_line} exception_class={exception_class}"
     )
 
