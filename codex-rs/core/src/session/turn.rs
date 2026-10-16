@@ -208,7 +208,7 @@ pub(crate) async fn run_turn(
             &input,
             PersistContext::Standard,
         )
-        .await;
+        .await?;
         if matches!(err.details(), CodexErrorDetails::TurnAborted) {
             return Err(err);
         }
@@ -257,7 +257,7 @@ pub(crate) async fn run_turn(
                     &input,
                     PersistContext::Standard,
                 )
-                .await;
+                .await?;
                 return Err(err.into());
             }
         };
@@ -285,7 +285,7 @@ pub(crate) async fn run_turn(
                 &input,
                 PersistContext::Standard,
             )
-            .await;
+            .await?;
             return Err(err);
         }
         Err(err) => return Err(err),
@@ -383,7 +383,7 @@ pub(crate) async fn run_turn(
         &input,
         PersistContext::TurnStart,
     )
-    .await
+    .await?
     {
         return Ok(None);
     }
@@ -454,7 +454,7 @@ pub(crate) async fn run_turn(
             &pending_input,
             PersistContext::SteeredUserInput,
         )
-        .await
+        .await?
         {
             break;
         }
@@ -883,7 +883,7 @@ pub(crate) async fn run_hooks_and_record_inputs(
     model_info: &ModelInfo,
     input: &[TurnInput],
     persist_context: PersistContext,
-) -> bool {
+) -> CodexResult<bool> {
     // Cancellation can reach this path before Guardian's tools and context are
     // resolved. Only finalized evidence may enter reusable reviewer history.
     if sess
@@ -892,11 +892,11 @@ pub(crate) async fn run_hooks_and_record_inputs(
         .get::<crate::guardian::PendingReviewContext>()
         .is_some()
     {
-        return false;
+        return Ok(false);
     }
     let mut blocked_input = false;
     let mut accepted_user_input = false;
-    for input_item in input {
+    for (input_index, input_item) in input.iter().enumerate() {
         let hook_outcome = inspect_pending_input(sess, turn_context, input_item).await;
         if hook_outcome.should_stop {
             blocked_input = true;
@@ -913,7 +913,7 @@ pub(crate) async fn run_hooks_and_record_inputs(
             } else {
                 persist_context
             };
-            record_pending_input(
+            if let Err(err) = record_pending_input(
                 sess,
                 turn_context,
                 model_info,
@@ -921,10 +921,27 @@ pub(crate) async fn run_hooks_and_record_inputs(
                 hook_outcome.additional_contexts,
                 input_persist_context,
             )
-            .await;
+            .await
+            {
+                let remaining = input[input_index + 1..].to_vec();
+                if !remaining.is_empty() {
+                    let turn_state = {
+                        let active_turn = sess.active_turn.lock().await;
+                        active_turn
+                            .as_ref()
+                            .map(|active_turn| Arc::clone(&active_turn.turn_state))
+                    };
+                    if let Some(turn_state) = turn_state {
+                        sess.input_queue
+                            .extend_pending_input_for_turn_state(&turn_state, remaining)
+                            .await;
+                    }
+                }
+                return Err(err);
+            }
         }
     }
-    blocked_input && !accepted_user_input
+    Ok(blocked_input && !accepted_user_input)
 }
 
 fn turn_user_input(input: &[TurnInput]) -> Vec<UserInput> {

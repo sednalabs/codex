@@ -2704,6 +2704,7 @@ async fn inter_agent_communication_waits_for_confirmed_delivery_persistence() {
     recording.await.expect("confirmed delivery persisted");
     communication_task
         .await
+        .expect("communication task completed")
         .expect("communication persisted after delivery");
     later.await.expect("later delivery persisted");
     session.flush_rollout().await.expect("rollout flushed");
@@ -2792,7 +2793,8 @@ async fn record_inter_agent_communication_sets_turn_id_in_rollout_and_resume() {
 
     session
         .record_inter_agent_communication(&turn_context, turn_context.model_info(), communication)
-        .await;
+        .await
+        .expect("communication should be recorded");
 
     let recorded_history = session.clone_history().await;
     let recorded_items = raw_history_items(&recorded_history);
@@ -2867,17 +2869,19 @@ async fn record_inter_agent_communication_preserves_item_id_in_rollout_and_resum
     .await;
     let rollout_path =
         attach_thread_persistence(Arc::get_mut(&mut session).expect("unique session")).await;
-    let communication = InterAgentCommunication::new(
+    let mut communication = InterAgentCommunication::new(
         AgentPath::root().join("worker").expect("worker path"),
         AgentPath::root(),
         Vec::new(),
         "child done".to_string(),
         /*trigger_turn*/ false,
     );
+    communication.id = Some(ResponseItemId::new("legacy-public-message-id"));
 
     session
         .record_inter_agent_communication(&turn_context, turn_context.model_info(), communication)
-        .await;
+        .await
+        .expect("communication should be recorded");
 
     let live_history = session.clone_history().await;
     let live_items = raw_history_items(&live_history);
@@ -2888,7 +2892,7 @@ async fn record_inter_agent_communication_preserves_item_id_in_rollout_and_resum
         .id()
         .expect("live agent message should have an item id")
         .to_string();
-    assert!(live_item_id.starts_with("amsg_"));
+    assert_eq!(live_item_id, "legacy-public-message-id");
 
     session.flush_rollout().await.expect("rollout should flush");
     let InitialHistory::Resumed(resumed) = RolloutRecorder::get_rollout_history(&rollout_path)
@@ -2908,6 +2912,22 @@ async fn record_inter_agent_communication_preserves_item_id_in_rollout_and_resum
     assert_eq!(
         persisted_item_id.map(ResponseItemId::as_str),
         Some(live_item_id.as_str())
+    );
+    assert!(
+        resumed
+            .history
+            .iter()
+            .filter_map(|item| match item {
+                RolloutItem::ResponseItem(item)
+                    if matches!(&item.item, ResponseItem::AgentMessage { .. }) =>
+                {
+                    Some(item.metadata.as_ref().and_then(|metadata| {
+                        metadata.inter_agent_update_id.as_ref()
+                    }))
+                }
+                _ => None,
+            })
+            .all(|update_id| update_id.is_none())
     );
 
     let (resumed_session, _resumed_turn_context, _rx) =
@@ -7087,6 +7107,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
 
     let session = Session {
         thread_id,
+        rollout_path: None,
         execution_nonce: Uuid::new_v4(),
         installation_id: "11111111-1111-4111-8111-111111111111".to_string(),
         tx_event,
@@ -9620,6 +9641,7 @@ where
 
     let session = Arc::new(Session {
         thread_id,
+        rollout_path: None,
         execution_nonce: Uuid::new_v4(),
         installation_id: "11111111-1111-4111-8111-111111111111".to_string(),
         tx_event,

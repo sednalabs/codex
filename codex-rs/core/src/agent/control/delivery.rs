@@ -11,6 +11,7 @@ use crate::config::Config;
 use crate::context::ContextualUserFragment;
 use crate::context::InterAgentMessage;
 use crate::context::InterAgentMessageType;
+use crate::session::session::Session;
 use codex_history::InterAgentCommunicationAdmission;
 use codex_history::InterAgentCommunicationIntent;
 use codex_history::ResponseItemEnvelope;
@@ -22,9 +23,10 @@ use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::InterAgentCommunication;
-use codex_thread_store::StoredThreadHistory;
+use codex_rollout::RolloutRecorder;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::path::Path;
 use std::sync::Arc;
 
 impl AgentMessage {
@@ -72,15 +74,15 @@ struct ExplicitAdmissionIndex {
 }
 
 impl ExplicitAdmissionIndex {
-    fn from_history(
-        history: &StoredThreadHistory,
+    fn from_rollout_items(
+        items: &[RolloutItem],
         root_thread_id: ThreadId,
         recipient_thread_id: ThreadId,
     ) -> CodexResult<Self> {
         let mut index = Self::default();
         let mut represented_response_ids = HashMap::<ResponseItemId, ResponseItemId>::new();
 
-        for item in &history.items {
+        for item in items {
             match item {
                 RolloutItem::InterAgentCommunicationMetadata {
                     trigger_turn,
@@ -94,6 +96,8 @@ impl ExplicitAdmissionIndex {
                         || admission.original_communication.author != admission.sender_path
                         || admission.original_communication.recipient != admission.recipient_path
                         || !admission.recipient_path.is_root()
+                        || admission.sender_thread_id == root_thread_id
+                        || admission.sender_path.is_root()
                         || admission.root_thread_id != root_thread_id
                         || admission.recipient_thread_id != recipient_thread_id
                         || admission.idempotency_key.trim().is_empty()
@@ -197,6 +201,46 @@ impl ExplicitAdmissionIndex {
     }
 }
 
+async fn load_explicit_admission_index(
+    rollout_path: &Path,
+    root_thread_id: ThreadId,
+    recipient_thread_id: ThreadId,
+) -> CodexResult<ExplicitAdmissionIndex> {
+    let (items, stored_thread_id, parse_errors) = RolloutRecorder::load_rollout_items(rollout_path)
+        .await
+        .map_err(|_| CodexErr::Fatal("failed to read explicit inter-agent rollout".into()))?;
+    if stored_thread_id != Some(recipient_thread_id) || parse_errors != 0 {
+        return Err(CodexErr::Fatal(
+            "explicit inter-agent rollout identity or contents could not be verified".into(),
+        ));
+    }
+    ExplicitAdmissionIndex::from_rollout_items(&items, root_thread_id, recipient_thread_id)
+}
+
+pub(crate) async fn explicit_admission_for_communication(
+    rollout_path: &Path,
+    root_thread_id: ThreadId,
+    communication: &InterAgentCommunication,
+) -> CodexResult<Option<(InterAgentCommunicationAdmission, bool)>> {
+    let Some(update_id) = communication.id.as_ref() else {
+        return Ok(None);
+    };
+    let index = load_explicit_admission_index(rollout_path, root_thread_id, root_thread_id).await?;
+    let Some(admission) = index.by_update_id.get(update_id) else {
+        return Ok(None);
+    };
+    if admission.root_thread_id != root_thread_id
+        || admission.recipient_thread_id != root_thread_id
+        || admission.original_communication != *communication
+    {
+        return Ok(None);
+    }
+    Ok(Some((
+        admission.clone(),
+        index.represented_update_ids.contains(update_id),
+    )))
+}
+
 fn record_explicit_representation(
     response: &ResponseItemEnvelope,
     represented_response_ids: &mut HashMap<ResponseItemId, ResponseItemId>,
@@ -293,9 +337,10 @@ impl LocalAgentControl {
             .registry
             .agent_id_for_path(&root_path)
             .ok_or_else(|| CodexErr::ThreadNotFound(recipient))?;
-        if recipient != root_thread_id {
-            return Err(CodexErr::UnsupportedOperation(
-                "explicit inter-agent updates must target the registered root agent".to_string(),
+        if caller == root_thread_id || caller == recipient || recipient != root_thread_id {
+            return Err(CodexErr::InvalidRequest(
+                "explicit inter-agent updates require a non-root sender and the registered root recipient"
+                    .to_string(),
             ));
         }
 
@@ -370,13 +415,23 @@ impl LocalAgentControl {
             .explicit_inter_agent_admission
             .lock()
             .await;
-        let history = recipient_thread
-            .load_history(/*include_archived*/ false)
-            .await
-            .map_err(|_| {
-                CodexErr::Fatal("failed to read explicit inter-agent admission history".to_string())
-            })?;
-        let mut index = ExplicitAdmissionIndex::from_history(&history, root_thread_id, recipient)?;
+        validate_current_explicit_membership(
+            state.as_ref(),
+            &self.runtime.registry,
+            &sender_thread,
+            &recipient_thread,
+            &root_thread_id,
+            &caller,
+            &recipient,
+            &sender_path,
+            &root_path,
+        )
+        .await?;
+
+        let rollout_path = recipient_thread.rollout_path().ok_or_else(|| {
+            CodexErr::Fatal("explicit inter-agent recipient has no retained rollout".to_string())
+        })?;
+        let mut index = load_explicit_admission_index(&rollout_path, root_thread_id, recipient).await?;
         let scope_key = explicit_scope_key(
             &root_thread_id,
             &caller,
@@ -414,11 +469,11 @@ impl LocalAgentControl {
                 idempotency_key: update.idempotency_key.clone(),
                 intent: update.intent,
                 original_communication: communication.clone(),
-                root_thread_id,
-                sender_thread_id: caller,
-                recipient_thread_id: recipient,
-                sender_path,
-                recipient_path: root_path,
+                root_thread_id: root_thread_id.clone(),
+                sender_thread_id: caller.clone(),
+                recipient_thread_id: recipient.clone(),
+                sender_path: sender_path.clone(),
+                recipient_path: root_path.clone(),
                 supersedes: update.supersedes.clone(),
                 represented_response_id: None,
             };
@@ -426,6 +481,18 @@ impl LocalAgentControl {
                 trigger_turn: false,
                 admission: Some(admission.clone()),
             };
+            validate_current_explicit_membership(
+                state.as_ref(),
+                &self.runtime.registry,
+                &sender_thread,
+                &recipient_thread,
+                &root_thread_id,
+                &caller,
+                &recipient,
+                &sender_path,
+                &root_path,
+            )
+            .await?;
             recipient_thread
                 .append_rollout_items(&[rollout_item])
                 .await
@@ -455,9 +522,111 @@ impl LocalAgentControl {
                 recipient,
             );
         }
-        enqueue_pending_explicit_admissions(&recipient_thread, &index).await;
+        enqueue_pending_explicit_admissions(&recipient_thread.session, &index).await;
         Ok(update_id.to_string())
     }
+
+    pub(crate) async fn restore_explicit_inter_agent_admissions(
+        &self,
+        session: &Session,
+    ) -> CodexResult<()> {
+        let root_path = AgentPath::root();
+        if session.multi_agent_version()
+            != Some(codex_protocol::protocol::MultiAgentVersion::V2)
+            || self.runtime.registry.agent_id_for_path(&root_path) != Some(session.thread_id)
+        {
+            return Ok(());
+        }
+        let Some(rollout_path) = session
+            .current_rollout_path()
+            .await
+            .map_err(|_| CodexErr::Fatal("failed to locate root inter-agent rollout".into()))?
+        else {
+            return Ok(());
+        };
+        let index =
+            load_explicit_admission_index(&rollout_path, session.thread_id, session.thread_id)
+                .await?;
+        enqueue_pending_explicit_admissions(session, &index).await;
+        Ok(())
+    }
+}
+
+async fn valid_explicit_member(
+    thread: &Arc<CodexThread>,
+    registry: &Arc<crate::agent::registry::AgentRegistry>,
+    thread_id: ThreadId,
+    path: &AgentPath,
+) -> bool {
+    thread.session.thread_id == thread_id
+        && thread.is_running()
+        && thread.multi_agent_version()
+            == Some(codex_protocol::protocol::MultiAgentVersion::V2)
+        && Arc::ptr_eq(
+            &thread.session.services.local_agent_runtime.registry,
+            registry,
+        )
+        && registry.agent_id_for_path(path) == Some(thread_id)
+        && registry
+            .agent_metadata_for_thread(thread_id)
+            .and_then(|metadata| metadata.agent_path)
+            .as_ref()
+            == Some(path)
+        && !is_final(&thread.agent_status().await)
+}
+
+async fn validate_current_explicit_membership(
+    state: &crate::thread_manager::ThreadManagerState,
+    registry: &Arc<crate::agent::registry::AgentRegistry>,
+    original_sender: &Arc<CodexThread>,
+    original_recipient: &Arc<CodexThread>,
+    root_thread_id: &ThreadId,
+    sender_thread_id: &ThreadId,
+    recipient_thread_id: &ThreadId,
+    sender_path: &AgentPath,
+    root_path: &AgentPath,
+) -> CodexResult<()> {
+    let current_root_id = registry
+        .agent_id_for_path(root_path)
+        .ok_or_else(|| CodexErr::ThreadNotFound(recipient_thread_id.clone()))?;
+    let sender_metadata = registry
+        .agent_metadata_for_thread(sender_thread_id.clone())
+        .ok_or_else(|| {
+            CodexErr::InvalidRequest("explicit update sender is no longer registered".into())
+        })?;
+    let recipient_metadata = registry
+        .agent_metadata_for_thread(recipient_thread_id.clone())
+        .ok_or_else(|| {
+            CodexErr::InvalidRequest("explicit update root is no longer registered".into())
+        })?;
+    let current_sender = state.get_thread(sender_thread_id.clone()).await?;
+    let current_recipient = state.get_thread(recipient_thread_id.clone()).await?;
+    if &current_root_id != root_thread_id
+        || sender_metadata.agent_path.as_ref() != Some(sender_path)
+        || recipient_metadata.agent_path.as_ref() != Some(root_path)
+        || registry.agent_id_for_path(sender_path) != Some(sender_thread_id.clone())
+        || !Arc::ptr_eq(original_sender, &current_sender)
+        || !Arc::ptr_eq(original_recipient, &current_recipient)
+        || !valid_explicit_member(
+            &current_sender,
+            registry,
+            sender_thread_id.clone(),
+            sender_path,
+        )
+        .await
+        || !valid_explicit_member(
+            &current_recipient,
+            registry,
+            recipient_thread_id.clone(),
+            root_path,
+        )
+        .await
+    {
+        return Err(CodexErr::InvalidRequest(
+            "explicit update membership changed before durable admission".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_explicit_supersession(
@@ -493,12 +662,11 @@ fn validate_explicit_supersession(
 }
 
 async fn enqueue_pending_explicit_admissions(
-    recipient_thread: &Arc<CodexThread>,
+    recipient_session: &Session,
     index: &ExplicitAdmissionIndex,
 ) {
     let pending = {
-        let mut delivered = recipient_thread
-            .session
+        let mut delivered = recipient_session
             .delivered_explicit_inter_agent_updates
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -515,20 +683,60 @@ async fn enqueue_pending_explicit_admissions(
     };
 
     for admission in pending {
-        recipient_thread
-            .session
+        recipient_session
             .input_queue
             .enqueue_mailbox_communication(
                 admission.original_communication.clone(),
                 Default::default(),
             )
             .await;
-        recipient_thread
-            .session
+        recipient_session
             .delivered_explicit_inter_agent_updates
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(admission.update_id.clone());
         crate::agent_communication::emit_agent_communication_receive(admission.update_id.as_str());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_admission_replay_rejects_root_as_sender() {
+        let root_thread_id = ThreadId::new();
+        let update_id = ResponseItemId::new("invalid-root-sender");
+        let root_path = AgentPath::root();
+        let mut original_communication = InterAgentCommunication::new(
+            root_path.clone(),
+            root_path.clone(),
+            Vec::new(),
+            "invalid root self-message".to_string(),
+            /*trigger_turn*/ false,
+        );
+        original_communication.id = Some(update_id.clone());
+        let admission = InterAgentCommunicationAdmission {
+            update_id,
+            idempotency_key: "invalid-root-sender-key".to_string(),
+            intent: InterAgentCommunicationIntent::Progress,
+            original_communication,
+            root_thread_id: root_thread_id.clone(),
+            sender_thread_id: root_thread_id.clone(),
+            recipient_thread_id: root_thread_id.clone(),
+            sender_path: root_path.clone(),
+            recipient_path: root_path,
+            supersedes: Vec::new(),
+            represented_response_id: None,
+        };
+        let items = [RolloutItem::InterAgentCommunicationMetadata {
+            trigger_turn: false,
+            admission: Some(admission),
+        }];
+
+        assert!(matches!(
+            ExplicitAdmissionIndex::from_rollout_items(&items, root_thread_id, root_thread_id),
+            Err(CodexErr::InvalidRequest(_))
+        ));
     }
 }
