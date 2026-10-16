@@ -35,10 +35,8 @@ MAX_RATE_POLICY_ROWS = 512
 MAX_OUTPUT_GROUPS = 1_000
 MAX_OUTPUT_BYTES = 16 * 1024 * 1024
 MAX_TEXT_FIELD_CHARS = 8_192
-# Selected row text is retained only for the bounded aggregation pass. Eight
-# million characters keeps the all-time subtree path bounded while avoiding the
-# earlier 1 MiB ceiling that rejected ordinary indexed call sets.
 MAX_SELECTED_TEXT_CHARS = 8_000_000
+MAX_MULTI_LEDGER_SELECTED_TEXT_CHARS = 1_000_000
 MAX_SQLITE_ROW_BYTES = 1024 * 1024
 SQL_CHUNK = 250
 PROGRESS_INTERVAL = 1_000
@@ -56,9 +54,17 @@ CALL_COLUMNS = (
     "input_tokens_uncached, input_tokens_cached, input_tokens_cache_write, "
     "output_tokens, total_tokens, provider_reported_credits, status"
 )
+TOKEN_CALL_COLUMNS = (
+    "provider_call_id, thread_id, spawn_request_id, provider, requested_model, "
+    "actual_model_used, started_at, completed_at, input_tokens_uncached, "
+    "input_tokens_cached, input_tokens_cache_write, output_tokens, total_tokens, status"
+)
 THREAD_COLUMNS = (
     "thread_id, parent_thread_id, root_thread_id, fork_parent_thread_id, "
     "agent_nickname, agent_role, source, created_at"
+)
+LINEAGE_THREAD_COLUMNS = (
+    "thread_id, parent_thread_id, root_thread_id, fork_parent_thread_id"
 )
 RATE_COLUMNS = (
     "rate_id, provider, model, service_tier, speed_mode, rate_card_kind, "
@@ -597,6 +603,7 @@ class UsageReporter:
         diagnostics: bool,
         *,
         all_time: bool = False,
+        token_only_projection: bool = False,
         deadline: float | None = None,
         max_calls: int = MAX_CALLS,
         max_selected_text_chars: int = MAX_SELECTED_TEXT_CHARS,
@@ -612,6 +619,12 @@ class UsageReporter:
         self.credit_mode = credit_mode
         self.diagnostics_enabled = diagnostics
         self.all_time = all_time
+        self.call_columns = (
+            TOKEN_CALL_COLUMNS if token_only_projection else CALL_COLUMNS
+        )
+        self.thread_columns = (
+            LINEAGE_THREAD_COLUMNS if token_only_projection else THREAD_COLUMNS
+        )
         self.deadline = deadline if deadline is not None else time.monotonic() + MAX_SECONDS
         self.max_calls = max_calls
         self.max_selected_text_chars = max_selected_text_chars
@@ -705,14 +718,14 @@ class UsageReporter:
         for batch in _sql_chunks(ids):
             self.check_deadline()
             placeholders = ",".join("?" for _ in batch)
-            sql = f"SELECT {THREAD_COLUMNS} FROM usage_threads WHERE thread_id IN ({placeholders})"
+            sql = f"SELECT {self.thread_columns} FROM usage_threads WHERE thread_id IN ({placeholders})"
             for row in self._execute("thread_metadata", sql, batch):
                 self._account_output_text(row)
                 result[row["thread_id"]] = dict(row)
         return result
 
     def _fetch_anchor(self, thread_id: str) -> dict[str, Any] | None:
-        sql = f"SELECT {THREAD_COLUMNS} FROM usage_threads WHERE thread_id = ?"
+        sql = f"SELECT {self.thread_columns} FROM usage_threads WHERE thread_id = ?"
         row = self._execute("thread_anchor", sql, (thread_id,)).fetchone()
         if row is not None:
             self._account_output_text(row)
@@ -729,7 +742,7 @@ class UsageReporter:
             batch_count = 0
             placeholders = ",".join("?" for _ in batch)
             sql = (
-                f"SELECT {THREAD_COLUMNS} FROM usage_threads INDEXED BY {PARENT_INDEX} "
+                f"SELECT {self.thread_columns} FROM usage_threads INDEXED BY {PARENT_INDEX} "
                 f"WHERE {PARENT_EXPR} IN ({placeholders}) LIMIT ?"
             )
             cursor = self._execute("lineage_children", sql, (*batch, remaining + 1))
@@ -748,7 +761,7 @@ class UsageReporter:
     ) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         sql = (
-            f"SELECT {THREAD_COLUMNS} FROM usage_threads INDEXED BY {ROOT_INDEX} "
+            f"SELECT {self.thread_columns} FROM usage_threads INDEXED BY {ROOT_INDEX} "
             "WHERE root_thread_id = ? LIMIT ?"
         )
         cursor = self._execute(
@@ -919,7 +932,7 @@ class UsageReporter:
             if seek_start is None or seek_end is None:
                 raise ReportProblem("unavailable", "all_time_requires_exact_thread_scope")
             sql = (
-                f"SELECT {CALL_COLUMNS} FROM usage_provider_calls INDEXED BY {STARTED_INDEX} "
+                f"SELECT {self.call_columns} FROM usage_provider_calls INDEXED BY {STARTED_INDEX} "
                 "WHERE started_at >= ? AND started_at < ? LIMIT ?"
             )
             cursor = self._execute(
@@ -942,13 +955,13 @@ class UsageReporter:
             placeholders = ",".join("?" for _ in batch)
             if seek_start is None or seek_end is None:
                 sql = (
-                    f"SELECT {CALL_COLUMNS} FROM usage_provider_calls INDEXED BY {THREAD_STARTED_INDEX} "
+                    f"SELECT {self.call_columns} FROM usage_provider_calls INDEXED BY {THREAD_STARTED_INDEX} "
                     f"WHERE thread_id IN ({placeholders}) LIMIT ?"
                 )
                 params = (*batch, remaining + 1)
             else:
                 sql = (
-                    f"SELECT {CALL_COLUMNS} FROM usage_provider_calls INDEXED BY {THREAD_STARTED_INDEX} "
+                    f"SELECT {self.call_columns} FROM usage_provider_calls INDEXED BY {THREAD_STARTED_INDEX} "
                     f"WHERE thread_id IN ({placeholders}) AND started_at >= ? AND started_at < ? LIMIT ?"
                 )
                 params = (*batch, seek_start, seek_end, remaining + 1)
@@ -964,12 +977,12 @@ class UsageReporter:
                     raise
                 if seek_start is None or seek_end is None:
                     fallback_sql = (
-                        f"SELECT {CALL_COLUMNS} FROM usage_provider_calls INDEXED BY usage_provider_calls_thread_idx "
+                        f"SELECT {self.call_columns} FROM usage_provider_calls INDEXED BY usage_provider_calls_thread_idx "
                         f"WHERE thread_id IN ({placeholders}) LIMIT ?"
                     )
                 else:
                     fallback_sql = (
-                        f"SELECT {CALL_COLUMNS} FROM usage_provider_calls INDEXED BY usage_provider_calls_thread_idx "
+                        f"SELECT {self.call_columns} FROM usage_provider_calls INDEXED BY usage_provider_calls_thread_idx "
                         f"WHERE thread_id IN ({placeholders}) AND started_at >= ? AND started_at < ? LIMIT ?"
                     )
                 cursor = self._execute(
@@ -1658,7 +1671,7 @@ class UsageReporter:
                     {
                         **{
                             column: call.get(column)
-                            for column in CALL_COLUMNS.split(", ")
+                            for column in self.call_columns.split(", ")
                         },
                         "_resolved_root_thread_id": thread_lineage.get(
                             "resolved_root_thread_id"
@@ -2204,7 +2217,7 @@ def _write_bounded_json(
 
 DEDUP_FIELDS = tuple(
     field.strip()
-    for field in CALL_COLUMNS.split(",")
+    for field in TOKEN_CALL_COLUMNS.split(",")
     if field.strip() != "provider_call_id"
 )
 
@@ -2334,13 +2347,30 @@ def _merge_exact_root_ledgers(
     identical_duplicate_rows = 0
     conflict_ids = 0
     conflicting_rows = 0
+    configured_attribution_conflicts = 0
     for matches in by_call_id.values():
         if len(matches) == 1:
             canonical_rows.append(matches[0][1])
             continue
         signatures = {_call_signature(row) for _source_name, row in matches}
         if len(signatures) == 1:
-            canonical_rows.append(matches[0][1])
+            canonical = dict(matches[0][1])
+            known_configurations = {
+                (row.get("_configured_model"), row.get("_configured_effort"))
+                for _source_name, row in matches
+                if row.get("_configured_model") is not None
+                or row.get("_configured_effort") is not None
+            }
+            if len(known_configurations) > 1:
+                configured_attribution_conflicts += 1
+                canonical["_configured_model"] = None
+                canonical["_configured_effort"] = None
+                canonical["_configured_attribution_conflict"] = True
+            elif known_configurations:
+                configured_model, configured_effort = next(iter(known_configurations))
+                canonical["_configured_model"] = configured_model
+                canonical["_configured_effort"] = configured_effort
+            canonical_rows.append(canonical)
             identical_duplicate_rows += len(matches) - 1
         else:
             conflict_ids += 1
@@ -2402,6 +2432,7 @@ def _merge_exact_root_ledgers(
         "conflicting_call_id_count": conflict_ids,
         "rows_excluded_for_conflicting_call_ids": conflicting_rows,
         "rows_excluded_for_missing_call_id": len(unidentified_rows),
+        "configured_attribution_conflict_provider_call_count": configured_attribution_conflicts,
         "selected_window_provider_call_bounds_utc": (
             {
                 "earliest_started_at_utc": _iso_utc(min(date_values)),
@@ -2411,9 +2442,9 @@ def _merge_exact_root_ledgers(
             else None
         ),
         "physical_call_deduplication": (
-            "same stable provider_call_id counted once only when every selected provider-call field, including exact thread/provider/time/model/token identity, matches; conflicting or unidentified rows are excluded"
+            "same stable provider_call_id counted once only when every selected token-report provider-call field, including exact thread/provider/time/model/token identity, matches; conflicting or unidentified rows are excluded"
         ),
-        "configured_model_source": "usage_spawn_requests.requested_model and requested_reasoning_effort joined only by exact provider-call spawn_request_id; missing values remain unrecorded",
+        "configured_model_source": "usage_spawn_requests.requested_model and requested_reasoning_effort joined only by exact provider-call spawn_request_id; missing values remain unrecorded, and cross-ledger disagreement is reported without choosing a value",
     }
 
 
@@ -2425,7 +2456,7 @@ def _run_multi_ledger_report(args: argparse.Namespace) -> dict[str, Any]:
     ledgers: list[dict[str, Any]] = []
     rows_by_source: list[tuple[str, Sequence[dict[str, Any]]]] = []
     remaining_calls = MAX_CALLS
-    remaining_text = MAX_SELECTED_TEXT_CHARS
+    remaining_text = MAX_MULTI_LEDGER_SELECTED_TEXT_CHARS
     remaining_vm = MAX_VM_INSTRUCTIONS
     for source_name, database in ledger_inputs:
         reporter = UsageReporter(
@@ -2439,6 +2470,7 @@ def _run_multi_ledger_report(args: argparse.Namespace) -> dict[str, Any]:
             credit_mode="none",
             diagnostics=args.diagnostics,
             all_time=args.all_time,
+            token_only_projection=True,
             deadline=deadline,
             max_calls=remaining_calls,
             max_selected_text_chars=remaining_text,
@@ -2509,6 +2541,9 @@ def _run_multi_ledger_report(args: argparse.Namespace) -> dict[str, Any]:
     if merged["conflicting_call_id_count"] or merged["rows_excluded_for_missing_call_id"]:
         status = "incomplete"
         reasons.append("physical_call_deduplication_incomplete")
+    if merged["configured_attribution_conflict_provider_call_count"]:
+        status = "incomplete"
+        reasons.append("configured_model_attribution_conflict")
     if any(
         value > 0
         for value in merged["summary"]["token_missing_call_count"].values()
@@ -2538,7 +2573,7 @@ def _run_multi_ledger_report(args: argparse.Namespace) -> dict[str, Any]:
             "deduplication": merged["physical_call_deduplication"],
             "limits": {
                 "combined_selected_call_rows": MAX_CALLS,
-                "selected_source_text_characters": MAX_SELECTED_TEXT_CHARS,
+                "selected_source_text_characters": MAX_MULTI_LEDGER_SELECTED_TEXT_CHARS,
                 "sqlite_vm_instructions": MAX_VM_INSTRUCTIONS,
                 "elapsed_seconds": MAX_SECONDS,
                 "metadata_scan_rows_per_ledger": MAX_LINEAGE_SCAN_ROWS,
@@ -2561,6 +2596,7 @@ def _run_multi_ledger_report(args: argparse.Namespace) -> dict[str, Any]:
                 "conflicting_call_id_count",
                 "rows_excluded_for_conflicting_call_ids",
                 "rows_excluded_for_missing_call_id",
+                "configured_attribution_conflict_provider_call_count",
                 "physical_call_deduplication",
             )
         },

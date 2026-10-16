@@ -635,12 +635,32 @@ def _check_multi_ledger_reconciliation(temporary: Path) -> None:
             connection.commit()
         finally:
             connection.close()
+    # Billing-only text is deliberately above the selected-text field limit;
+    # the token projection must not materialize it.
+    for path in (current, historical):
+        wide_row_connection = sqlite3.connect(path)
+        try:
+            wide_row_connection.execute(
+                "UPDATE usage_provider_calls SET account_plan = ? WHERE provider_call_id = ?",
+                ("x" * 9_000, "root-alpha"),
+            )
+            wide_row_connection.execute(
+                "UPDATE usage_threads SET agent_nickname = ? WHERE thread_id = ?",
+                ("x" * 9_000, ROOT_THREAD),
+            )
+            wide_row_connection.commit()
+        finally:
+            wide_row_connection.close()
     historical_connection = sqlite3.connect(historical)
     try:
-        # One exact mirror, one conflicting call ID, and one genuinely new call.
+        # Five exact mirrors, one conflicting call ID, and one genuinely new call.
         historical_connection.execute(
             "UPDATE usage_provider_calls SET output_tokens = 99 WHERE provider_call_id = ?",
             ("child-beta",),
+        )
+        historical_connection.execute(
+            "UPDATE usage_spawn_requests SET requested_model = ? WHERE spawn_request_id = ?",
+            ("legacy-configured-beta", "spawn-sentinel"),
         )
         historical_connection.execute(
             "INSERT INTO usage_provider_calls(provider_call_id, thread_id, spawn_request_id, provider, requested_model, actual_model_used, requested_service_tier, actual_service_tier, actual_service_tier_source, fast_mode_used, billing_surface, account_plan, started_at, completed_at, input_tokens_uncached, input_tokens_cached, input_tokens_cache_write, output_tokens, total_tokens, provider_reported_credits, status) SELECT ?, thread_id, spawn_request_id, provider, requested_model, actual_model_used, requested_service_tier, actual_service_tier, actual_service_tier_source, fast_mode_used, billing_surface, account_plan, started_at, completed_at, input_tokens_uncached, input_tokens_cached, input_tokens_cache_write, output_tokens, total_tokens, provider_reported_credits, status FROM usage_provider_calls WHERE provider_call_id = ?",
@@ -672,9 +692,28 @@ def _check_multi_ledger_reconciliation(temporary: Path) -> None:
     )
     dedupe = result["deduplication"]
     _assert(dedupe["selected_provider_call_rows"] == 13, "both indexed selections are counted")
-    _assert(dedupe["identical_mirrored_rows_collapsed"] == 1, "exact mirrors count once")
+    _assert(
+        dedupe["identical_mirrored_rows_collapsed"] == 5,
+        "five exact mirrored rows are each counted once",
+    )
     _assert(dedupe["conflicting_call_id_count"] == 1, "conflicting call IDs are surfaced")
     _assert(dedupe["rows_excluded_for_conflicting_call_ids"] == 2, "both conflict copies are excluded")
+    _assert(
+        dedupe["configured_attribution_conflict_provider_call_count"] == 1,
+        "conflicting spawn configuration is counted without selecting either value",
+    )
+    _assert(
+        all(
+            "source_text_field_limit_exceeded" not in source["incomplete_reasons"]
+            for source in result["source_coverage"]["ledger_sources"]
+        ),
+        "unused billing text is not selected by the all-time token projection",
+    )
+    _assert(
+        result["source_coverage"]["limits"]["selected_source_text_characters"]
+        == 1_000_000,
+        "the dual-ledger projection retains its original small text budget",
+    )
     _assert(result["summary"]["provider_call_count"] == 6, "only unambiguous calls contribute")
     _assert(
         result["summary"]["token_sums_known_subtotal"]["uncached_input_tokens"] == 39,
@@ -687,10 +726,10 @@ def _check_multi_ledger_reconciliation(temporary: Path) -> None:
     }
     sentinel = by_model["<unavailable>"]["configured_model_effort_evidence"]
     _assert(
-        sentinel[0]["configured_model_from_spawn_request"] == "configured-beta"
+        sentinel[0]["configured_model_from_spawn_request"] is None
         and sentinel[0]["provider_requested_model"] == "request-sentinel"
         and sentinel[0]["provider_actual_model"] == "<unavailable>",
-        "configured, provider-requested, and effective models stay distinct",
+        "configured, provider-requested, and effective models stay distinct without guessing conflicting configuration",
     )
     serialized = json.dumps(result, sort_keys=True)
     for value in ("root-alpha", "child-beta", "historical-only", "synthetic-child"):
