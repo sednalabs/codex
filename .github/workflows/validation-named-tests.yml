@@ -54,7 +54,7 @@ on:
         type: boolean
         default: false
       run_native_browser_source_validation:
-        description: Run the fixed Browser Chromium, TUI registration/forwarding, and exec dispatch source selectors
+        description: Diagnose only the fixed synthetic native Browser source selector
         required: false
         type: boolean
         default: false
@@ -278,7 +278,7 @@ jobs:
       artifact_name: validation-named-tests-${{ github.run_id }}
 
   native_browser_source_validation:
-    name: Native Browser exact source selectors
+    name: Native Browser exact synthetic diagnostic selector
     if: >-
       ${{ inputs.run_native_browser_source_validation == true &&
           inputs.windows_validation_mode == 'none' &&
@@ -386,7 +386,7 @@ jobs:
           toolchain: 1.96.0
           targets: x86_64-unknown-linux-gnu
 
-      - name: Run fixed Playwright and Browser source selectors
+      - name: Run fixed synthetic Browser diagnostic selector
         shell: bash
         working-directory: validation-target
         run: bash ../validation-host/.github/scripts/validation-lanes/native-browser-evidence.sh
