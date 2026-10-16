@@ -5,5 +5,9 @@ codex_rust_crate(
     binaries_with_build_commit = ["codex-voice-host"],
     crate_name = "codex_voice_host",
     crate_srcs = [],
+    test_data_extra = ["//third_party/voice:native_link"],
+    test_path_runfile_env = {
+        "//third_party/voice:native_link": "\\..\\..\\bin",
+    },
     unit_test_args = ["--test-threads=1"],
 )
