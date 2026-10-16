@@ -10,6 +10,14 @@
       "execution_argv": ["cargo", "test", "--locked", "-p", "codex-app-server", "--lib", "--", "--test-threads=1"]
     },
     {
+      "package": "codex-app-server",
+      "target_kind": "integration",
+      "target": "all",
+      "profiles": ["rust_minimal", "rust_integration"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-app-server", "--test", "all", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-app-server", "--test", "all", "--", "--test-threads=1"]
+    },
+    {
       "package": "codex-app-server-protocol",
       "target_kind": "lib",
       "target": "",
@@ -88,6 +96,14 @@
       "profiles": ["rust_minimal", "rust_integration"],
       "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-goal-extension", "--test", "goal_scheduler_native_wait", "--", "--list"],
       "execution_argv": ["cargo", "test", "--locked", "-p", "codex-goal-extension", "--test", "goal_scheduler_native_wait", "--", "--test-threads=1"]
+    },
+    {
+      "package": "codex-login",
+      "target_kind": "integration",
+      "target": "all",
+      "profiles": ["rust_minimal", "rust_integration"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-login", "--test", "all", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-login", "--test", "all", "--", "--test-threads=1"]
     },
     {
       "package": "codex-mcp",
