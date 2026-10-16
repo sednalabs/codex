@@ -415,6 +415,7 @@ jobs:
           bazel_test_args=(
             test
             --repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1
+            --workspace_status_command=./scripts/workspace-status.cmd
             --skip_incompatible_explicit_targets
             --test_tag_filters=-argument-comment-lint
             --test_verbose_timeout_warnings

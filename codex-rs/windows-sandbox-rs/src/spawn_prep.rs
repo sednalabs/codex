@@ -313,7 +313,7 @@ pub(crate) fn apply_legacy_session_acl_rules(
                 let _ = ensure_allow_write_aces(p, &[root_sid.sid.as_ptr()]);
             }
         }
-        apply_legacy_write_deny_acls(&deny, acl_sids.write_root_sids, |path, sid| unsafe {
+        apply_legacy_write_deny_acls(&deny, acl_sids.write_root_sids, |path, sid| {
             add_deny_write_ace(path, sid)
         })?;
         if !additional_deny_read_paths.is_empty() {
