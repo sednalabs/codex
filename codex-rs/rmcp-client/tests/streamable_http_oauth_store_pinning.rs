@@ -329,29 +329,28 @@ async fn auto_store_remains_pinned_across_session_recovery_child() -> anyhow::Re
         /*www_authenticate_headers*/ &[],
     )
     .await?;
-    // The selected keyring becomes unavailable only after initial construction. If recovery
-    // reevaluates Auto, it adopts the stale File token and this operation incorrectly succeeds.
+    // The failed tools/call stays uncertain and is never replayed. A later distinct call lazily
+    // reconnects; if recovery reevaluates Auto, it adopts the stale File token instead of failing.
     state.fail_reads.store(true, Ordering::SeqCst);
 
-    match client
-        .list_tools(
-            /*params*/ None,
-            /*timeout*/ Some(std::time::Duration::from_secs(5)),
-        )
+    let uncertain = call_echo_tool(&client, "recovery-must-not-fallback")
         .await
-    {
-        Ok(_) => assert_eq!(
-            call_echo_tool(&client, "recovery-must-not-fallback").await?,
-            expected_echo_result("recovery-must-not-fallback")
-        ),
-        Err(error) => {
-            let error_chain = format!("{error:#}");
-            assert!(
-                error_chain.contains("failed to reread OAuth tokens from resolved keyring storage"),
-                "unexpected recovery error: {error_chain}"
-            );
-        }
-    }
+        .unwrap_err();
+    assert!(
+        uncertain
+            .to_string()
+            .contains("MCP request outcome is uncertain"),
+        "the expired tool call must remain uncertain and not be replayed: {uncertain:#}"
+    );
+
+    let recovery_error = call_echo_tool(&client, "distinct-reconnect-must-not-fallback")
+        .await
+        .unwrap_err();
+    let error_chain = format!("{recovery_error:#}");
+    assert!(
+        error_chain.contains("failed to reread OAuth tokens from resolved keyring storage"),
+        "unexpected recovery error: {error_chain}"
+    );
 
     let bearer_tokens = http_client.bearer_tokens();
     assert!(

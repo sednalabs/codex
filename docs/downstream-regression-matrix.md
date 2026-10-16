@@ -35,7 +35,14 @@ CI as proof for a composed candidate.
 `codex.rmcp-client-transport` runs the complete client suite, including a dedicated
 HTTP observer for blocked-POST independence, timeout and caller-drop cancellation
 IDs, saturated-queue removal, capacity recovery and uncertain-mutation no-replay.
-Existing active-time tests retain elicitation-pause coverage. OAuth metadata
+`streamable_http_404_tool_call_is_uncertain_and_next_call_recovers` proves the
+failed mutation is not replayed and a later distinct call reconnects;
+`streamable_http_expired_session_reconnects_once_per_operation` proves each
+distinct operation observes at most one expired generation before a later
+operation reconnects;
+`late_expired_session_failure_does_not_retire_replacement` proves stale
+generation failures cannot evict a replacement. Existing active-time tests
+retain elicitation-pause coverage. OAuth metadata
 regressions reject guessed endpoints and cover both configured-client and dynamic
 registration login paths when the server publishes no metadata.
 `codex.rmcp-consumers-check` compiles all direct SDK consumers and their targets.

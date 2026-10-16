@@ -386,6 +386,13 @@ expiry, sends a cancellation notification. Completed requests retain rmcp's
 normal response cleanup. Existing elicitation pauses continue to suspend the
 active-time budget, and uncertain tool mutations are not retried.
 
+When Streamable HTTP reports an expired session for `tools/call`, the client
+returns an uncertain outcome without replaying that mutation. It retires the
+failed generation only if it is still current; the next distinct operation
+reinitializes lazily, while a late failure from an older generation cannot
+evict its replacement. Keep this recovery tied to the existing initialize
+context and recovery semaphore rather than adding a replay path.
+
 The SDK upgrade also adapts its direct consumers to typed request metadata,
 flat content and resource models, and non-exhaustive constructors. The client
 initialize lifecycle and negotiated protocol version remain unchanged; SDK
@@ -401,7 +408,8 @@ the SDK legacy projection so initialization and response shape agree.
 
 `codex.rmcp-client-transport` exercises observed request/cancellation IDs,
 blocked-POST independence, queued cancellation, capacity recovery after abort,
-mutation no-replay and existing elicitation tests. `codex.rmcp-consumers-check`
+mutation no-replay, expired-session lazy recovery, generation-safe late errors,
+and existing elicitation tests. `codex.rmcp-consumers-check`
 compiles all direct SDK consumers. Remove this guard when upstream provides
 both equivalent caller-drop cancellation and the existing concurrent control
 capacity; passing source tests alone does not prove an installed host adopted it.
