@@ -646,6 +646,7 @@ class UsageReporter:
         self.credit_mode = credit_mode
         self.diagnostics_enabled = diagnostics
         self.all_time = all_time
+        self.token_only_projection = token_only_projection
         self.call_columns = (
             TOKEN_CALL_COLUMNS if token_only_projection else CALL_COLUMNS
         )
