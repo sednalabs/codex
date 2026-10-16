@@ -16,7 +16,7 @@ mod agent_plugin_config;
 
 pub use agent_plugin_config::parse_agent_plugin_mcp_config;
 
-pub(crate) const STDIO_CLOSE_POLICY_ENV: &str = "CODEX_INTERNAL_MCP_STDIO_CLOSE_POLICY";
+pub(crate) use codex_rmcp_client::STDIO_CLOSE_POLICY_ENV;
 
 fn reject_plugin_stdio_close_policy(config: &McpServerConfig) -> Result<(), String> {
     let McpServerTransportConfig::Stdio { env, env_vars, .. } = &config.transport else {

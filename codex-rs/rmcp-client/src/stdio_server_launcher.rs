@@ -73,7 +73,7 @@ use crate::utils::create_env_for_mcp_server;
 use crate::utils::create_env_overlay_for_remote_mcp_server;
 use crate::utils::remote_mcp_env_var_names;
 
-pub(crate) const STDIO_CLOSE_POLICY_ENV: &str = "CODEX_INTERNAL_MCP_STDIO_CLOSE_POLICY";
+pub const STDIO_CLOSE_POLICY_ENV: &str = "CODEX_INTERNAL_MCP_STDIO_CLOSE_POLICY";
 pub(crate) const COOPERATIVE_STDIO_CLOSE_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) const COOPERATIVE_STDIO_KILL_ERROR_WAIT: Duration = Duration::from_secs(1);
 
