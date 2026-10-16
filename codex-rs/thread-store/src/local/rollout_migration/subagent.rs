@@ -146,15 +146,16 @@ pub(super) async fn select_bounded_context(
             fold_representation_id(item, &represented_response_ids)?;
         }
 
-        items.retain(|item| {
-            !matches!(
-                item,
+        let retained_admission_ids = items
+            .iter()
+            .filter_map(|item| match item {
                 RolloutItem::InterAgentCommunicationMetadata {
-                    admission: Some(_),
+                    admission: Some(admission),
                     ..
-                }
-            )
-        });
+                } => Some(admission.update_id.clone()),
+                _ => None,
+            })
+            .collect::<HashSet<_>>();
         let newest_compaction_index = items
             .iter()
             .rposition(|item| matches!(item, RolloutItem::Compacted(_)))
@@ -162,19 +163,22 @@ pub(super) async fn select_bounded_context(
                 migration_error("bounded subagent context is missing its retained compaction")
             })?;
 
-        // Keep one source-ordered admission block after the selected compaction. This preserves
-        // supersession order even when an earlier admission predates the compaction and a later
-        // one appears in its retained suffix. Model-context readers continue to ignore metadata.
-        let mut admission_ledger = Vec::new();
+        // Keep only the omitted pre-compaction admissions as a source-ordered prefix after the
+        // selected compaction. Admissions already in the bounded suffix stay at their original
+        // positions so legacy metadata/response adjacency and ordering are unchanged.
+        let mut omitted_admissions = Vec::new();
         for update_id in admission_ids_newest_first.into_iter().rev() {
+            if retained_admission_ids.contains(&update_id) {
+                continue;
+            }
             let mut item = admissions_by_id
                 .remove(&update_id)
                 .expect("indexed admission has a rollout record");
             fold_representation_id(&mut item, &represented_response_ids)?;
-            admission_ledger.push(item);
+            omitted_admissions.push(item);
         }
         let insertion_index = newest_compaction_index + 1;
-        items.splice(insertion_index..insertion_index, admission_ledger);
+        items.splice(insertion_index..insertion_index, omitted_admissions);
         Ok(Some(items))
     })
     .await

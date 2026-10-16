@@ -2690,6 +2690,175 @@ async fn migration_keeps_cross_compaction_admissions_in_source_supersession_orde
 }
 
 #[tokio::test]
+async fn bounded_subagent_migration_preserves_legacy_admission_response_interleaving() {
+    let home = TempDir::new().expect("create Codex home");
+    let thread_id = ThreadId::new();
+    let path = write_rollout(
+        home.path(),
+        thread_id,
+        SessionSource::SubAgent(SubAgentSource::Other("test".to_string())),
+        vec![
+            compacted(vec![input_response_message("user", "bounded model context")]),
+            RolloutItem::InterAgentCommunicationMetadata {
+                trigger_turn: false,
+                admission: None,
+            },
+            explicit_admission_metadata_with(
+                "update_b",
+                "key-b",
+                2,
+                "Second update.",
+                "progress",
+                Vec::new(),
+            ),
+            explicit_agent_response("update_b", "response_b"),
+            started("child-turn"),
+            user_message("child question"),
+            agent_message("child answer"),
+            completed("child-turn"),
+        ],
+    );
+    let store = indexed_store(home.path()).await;
+
+    store
+        .migrate_rollouts(apply_options())
+        .await
+        .expect("migrate bounded subagent with interleaved metadata");
+
+    let lines = read_rollout(&path);
+    let legacy_index = lines
+        .iter()
+        .position(|line| {
+            matches!(
+                &line.item,
+                RolloutItem::InterAgentCommunicationMetadata {
+                    admission: None,
+                    ..
+                }
+            )
+        })
+        .expect("legacy metadata remains in its source position");
+    assert!(matches!(
+        &lines[legacy_index + 1].item,
+        RolloutItem::InterAgentCommunicationMetadata {
+            admission: Some(admission),
+            ..
+        } if admission.update_id.as_str() == "update_b"
+    ));
+    assert!(matches!(
+        &lines[legacy_index + 2].item,
+        RolloutItem::ResponseItem(response)
+            if response.metadata.as_ref().and_then(|metadata| metadata.inter_agent_update_id.as_ref()).is_some_and(|id| id.as_str() == "update_b")
+    ));
+}
+
+#[tokio::test]
+async fn bounded_subagent_migration_keeps_explicit_admission_response_pair_adjacent() {
+    let home = TempDir::new().expect("create Codex home");
+    let thread_id = ThreadId::new();
+    let path = write_rollout(
+        home.path(),
+        thread_id,
+        SessionSource::SubAgent(SubAgentSource::Other("test".to_string())),
+        vec![
+            compacted(vec![input_response_message("user", "bounded model context")]),
+            explicit_admission_metadata_with(
+                "update_a",
+                "key-a",
+                2,
+                "First update.",
+                "progress",
+                Vec::new(),
+            ),
+            explicit_agent_response("update_a", "response_a"),
+            started("child-turn"),
+            user_message("child question"),
+            agent_message("child answer"),
+            completed("child-turn"),
+        ],
+    );
+    let store = indexed_store(home.path()).await;
+
+    store
+        .migrate_rollouts(apply_options())
+        .await
+        .expect("migrate adjacent admission and response");
+
+    let lines = read_rollout(&path);
+    let admission_index = lines
+        .iter()
+        .position(|line| {
+            matches!(
+                &line.item,
+                RolloutItem::InterAgentCommunicationMetadata {
+                    admission: Some(admission),
+                    ..
+                } if admission.update_id.as_str() == "update_a"
+            )
+        })
+        .expect("explicit admission remains");
+    assert!(matches!(
+        &lines[admission_index + 1].item,
+        RolloutItem::ResponseItem(response)
+            if response.metadata.as_ref().and_then(|metadata| metadata.inter_agent_update_id.as_ref()).is_some_and(|id| id.as_str() == "update_a")
+    ));
+}
+
+#[tokio::test]
+async fn bounded_subagent_migration_joins_omitted_admission_before_leading_response() {
+    let home = TempDir::new().expect("create Codex home");
+    let thread_id = ThreadId::new();
+    let path = write_rollout(
+        home.path(),
+        thread_id,
+        SessionSource::SubAgent(SubAgentSource::Other("test".to_string())),
+        vec![
+            explicit_admission_metadata_with(
+                "update_a",
+                "key-a",
+                2,
+                "First update.",
+                "progress",
+                Vec::new(),
+            ),
+            compacted(vec![input_response_message(
+                "user",
+                "bounded model context",
+            )]),
+            explicit_agent_response("update_a", "response_a"),
+            started("child-turn"),
+            user_message("child question"),
+            agent_message("child answer"),
+            completed("child-turn"),
+        ],
+    );
+    let store = indexed_store(home.path()).await;
+
+    store
+        .migrate_rollouts(apply_options())
+        .await
+        .expect("migrate admission before leading represented response");
+
+    let lines = read_rollout(&path);
+    let compacted_index = lines
+        .iter()
+        .position(|line| matches!(&line.item, RolloutItem::Compacted(_)))
+        .expect("bounded compaction remains");
+    assert!(matches!(
+        &lines[compacted_index + 1].item,
+        RolloutItem::InterAgentCommunicationMetadata {
+            admission: Some(admission),
+            ..
+        } if admission.update_id.as_str() == "update_a"
+    ));
+    assert!(matches!(
+        &lines[compacted_index + 2].item,
+        RolloutItem::ResponseItem(response)
+            if response.metadata.as_ref().and_then(|metadata| metadata.inter_agent_update_id.as_ref()).is_some_and(|id| id.as_str() == "update_a")
+    ));
+}
+
+#[tokio::test]
 async fn bounded_subagent_migration_rejects_duplicate_scoped_idempotency_keys() {
     let home = TempDir::new().expect("create Codex home");
     let thread_id = ThreadId::new();
@@ -2706,7 +2875,10 @@ async fn bounded_subagent_migration_rejects_duplicate_scoped_idempotency_keys() 
                 "action_required",
                 Vec::new(),
             ),
-            compacted(vec![input_response_message("user", "bounded model context")]),
+            compacted(vec![input_response_message(
+                "user",
+                "bounded model context",
+            )]),
             explicit_admission_metadata_with(
                 "update_b",
                 "shared-key",
@@ -2765,7 +2937,10 @@ async fn bounded_subagent_migration_allows_same_key_in_distinct_thread_scopes() 
                 "action_required",
                 Vec::new(),
             ),
-            compacted(vec![input_response_message("user", "bounded model context")]),
+            compacted(vec![input_response_message(
+                "user",
+                "bounded model context",
+            )]),
             explicit_admission_metadata_with(
                 "update_b",
                 "shared-key",
