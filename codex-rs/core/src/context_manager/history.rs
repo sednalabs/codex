@@ -121,7 +121,7 @@ fn browser_output_image_counts_for_fixture(
         else {
             continue;
         };
-        if call_id != &expected_call_id {
+        if call_id.as_deref() != Some(expected_call_id.as_str()) {
             continue;
         }
         matched_function_output_count += 1;
@@ -158,7 +158,7 @@ fn record_browser_history_image_normalization(
         else {
             continue;
         };
-        if call_id != &diagnostic.expected_call_id {
+        if call_id.as_deref() != Some(diagnostic.expected_call_id.as_str()) {
             continue;
         }
         matched_function_output_count += 1;
