@@ -242,7 +242,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ inputs.target_sha }}
-          fetch-depth: 4
+          fetch-depth: 5
           persist-credentials: false
 
       - name: Verify fixed source, base, and workflow-host identity
@@ -259,10 +259,10 @@ jobs:
           expected_base="a89b02855334af7c0521882271cb97b818981d1a"
           case "${WINDOWS_VALIDATION_MODE}" in
             delete_diagnostic)
-              expected_target="e71147fbe138299b17ae64101a705aae2bbb3553"
-              expected_tree="0bd6e125ff7ead20a57bf7c5cb37dd6eb529b4dd"
-              expected_parent="adedc72e4759572ed69791f685613aeeb047a0c1"
-              expected_base_depth=3
+              expected_target="6d97f6bbf14e803caab49e0f403d88f4982f82dc"
+              expected_tree="7ac44082ef7ddc28f1f66a23fdd072c102c0b1a7"
+              expected_parent="e71147fbe138299b17ae64101a705aae2bbb3553"
+              expected_base_depth=4
               ;;
             voice_runtime)
               expected_target="1f769231c112a57a67800431aa472256a7e11697"
@@ -318,7 +318,11 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($env:SystemRoot) -or -not (Test-Path -LiteralPath $env:SystemRoot -PathType Container)) {
             throw "The Windows runner did not provide a valid SystemRoot directory."
           }
+          if ([string]::IsNullOrWhiteSpace($env:PROCESSOR_ARCHITECTURE)) {
+            throw "The Windows runner did not provide its process architecture."
+          }
           "WINDOWS_SYSTEM_ROOT=$env:SystemRoot" >> $env:GITHUB_ENV
+          "WINDOWS_PROCESSOR_ARCHITECTURE=$env:PROCESSOR_ARCHITECTURE" >> $env:GITHUB_ENV
 
       - name: Inventory the exact DELETE diagnostic test
         if: ${{ inputs.windows_validation_mode == 'delete_diagnostic' }}
@@ -359,8 +363,8 @@ jobs:
           VALIDATION_TARGET_SHA: ${{ inputs.target_sha }}
         run: |
           set -euo pipefail
-          if [[ -z "${WINDOWS_SYSTEM_ROOT:-}" ]]; then
-            echo "The fixed Windows SystemRoot value is missing." >&2
+          if [[ -z "${WINDOWS_SYSTEM_ROOT:-}" || -z "${WINDOWS_PROCESSOR_ARCHITECTURE:-}" ]]; then
+            echo "A required fixed Windows analysis environment value is missing." >&2
             exit 1
           fi
           ./.github/scripts/run-bazel-ci.sh \
@@ -378,6 +382,9 @@ jobs:
             --local_test_jobs=1 \
             --test_env=CODEX_BAZEL_LOCAL_ONLY=1 \
             "--action_env=SystemRoot=${WINDOWS_SYSTEM_ROOT}" \
+            "--host_action_env=SystemRoot=${WINDOWS_SYSTEM_ROOT}" \
+            "--action_env=PROCESSOR_ARCHITECTURE=${WINDOWS_PROCESSOR_ARCHITECTURE}" \
+            "--host_action_env=PROCESSOR_ARCHITECTURE=${WINDOWS_PROCESSOR_ARCHITECTURE}" \
             "--build_metadata=COMMIT_SHA=${VALIDATION_TARGET_SHA}" \
             -- \
             //codex-rs/voice-host:codex-voice-host-bin-unit-tests \
