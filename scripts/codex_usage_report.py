@@ -1595,6 +1595,34 @@ class UsageReporter:
                 root: self._serialize_metric(_merge_metrics(items))
                 for root, items in sorted(root_buckets.items())
             }
+            if self.scope == "subtree":
+                safe_root_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+                safe_root_buckets: dict[str, dict[str, Any]] = {}
+                for root_id, items in root_buckets.items():
+                    label = (
+                        "requested_root"
+                        if root_id == self.thread_id
+                        else "unresolved"
+                        if root_id == "unresolved"
+                        else "conflicting_root"
+                    )
+                    safe_root_groups[label].extend(items)
+                safe_root_buckets = {
+                    label: self._serialize_metric(_merge_metrics(items))
+                    for label, items in sorted(safe_root_groups.items())
+                }
+                safe_thread_rows = [
+                    {
+                        "thread_id": self.thread_id,
+                        "thread_role": "requested_root",
+                        "metrics": self._serialize_metric(
+                            thread_metrics.get(self.thread_id or "", _new_metrics())
+                        ),
+                    }
+                ]
+            else:
+                safe_root_buckets = disjoint_roots
+                safe_thread_rows = thread_rows
             if self.scope in {"thread", "subtree"} and self.thread_id:
                 anchor_id = self.thread_id
                 direct_ids = [
@@ -1708,8 +1736,8 @@ class UsageReporter:
                     "model_identity": "requested and provider-reported actual model are shown separately where recorded; configured model and effort are unavailable in these report inputs",
                 },
                 "summary": self._serialize_metric(all_calls_metrics),
-                "threads": thread_rows,
-                "resolved_root_buckets": disjoint_roots,
+                "threads": safe_thread_rows,
+                "resolved_root_buckets": safe_root_buckets,
                 "credit_evidence": {
                     "rates": [
                         {
@@ -1727,7 +1755,25 @@ class UsageReporter:
                 "scope_contributions": scope_contributions,
                 "lineage_coverage": {
                     "participating_thread_count": len(participating),
+                    "descendant_thread_count": (
+                        max(0, len(participating) - 1)
+                        if self.scope == "subtree"
+                        else None
+                    ),
                     "unresolved_thread_count": unresolved_lineage,
+                    "lineage_status_counts": {
+                        status: sum(
+                            1
+                            for item in lineage.values()
+                            if item.get("lineage_status") == status
+                        )
+                        for status in sorted(
+                            {
+                                str(item.get("lineage_status"))
+                                for item in lineage.values()
+                            }
+                        )
+                    },
                     "known_zero_call_thread_count": sum(
                         1
                         for thread_id in participating

@@ -287,16 +287,31 @@ def _check_report_shape(database: Path) -> dict[str, Any]:
         result["lineage_coverage"]["known_zero_call_thread_count"] == 1,
         "zero-call leaf remains visible",
     )
-    thread_rows = {item["thread_id"]: item for item in result["threads"]}
+    serialized = json.dumps(result, sort_keys=True)
     _assert(
-        thread_rows["synthetic-root-tagged-detached-child"]["recorded_root_thread_id"]
-        == ROOT_THREAD,
-        "indexed root membership retains a root-tagged child with no parent edge",
+        ROOT_THREAD in serialized,
+        "the exact requested anchor remains identifiable",
+    )
+    for descendant_id in (
+        "synthetic-child",
+        "synthetic-root-tagged-detached-child",
+        "synthetic-grandchild",
+        "synthetic-zero-call-leaf",
+    ):
+        _assert(descendant_id not in serialized, "descendant identifiers are omitted")
+    _assert(
+        len(result["threads"]) == 1
+        and result["threads"][0]["thread_role"] == "requested_root",
+        "subtree output exposes only the requested root row",
     )
     _assert(
-        thread_rows["synthetic-root-tagged-detached-child"]["lineage_status"]
-        == "recorded_root_unverified",
-        "detached root-tagged membership is included without fabricating ancestry",
+        result["lineage_coverage"]["lineage_status_counts"]["recorded_root_unverified"]
+        == 1,
+        "detached root-tagged membership remains explicitly unresolved without its ID",
+    )
+    _assert(
+        result["resolved_root_buckets"]["requested_root"]["provider_call_count"] == 5,
+        "resolved root and descendant totals retain their safe aggregate",
     )
 
     summary_models = _by_model(result["summary"])
