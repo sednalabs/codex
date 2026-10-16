@@ -282,7 +282,8 @@ def _check_report_shape(database: Path) -> dict[str, Any]:
         "older ledgers are not silently claimed",
     )
     _assert(
-        "no cross-ledger" in coverage["physical_call_deduplication"],
+        "cross-ledger" in coverage["physical_call_deduplication"]
+        and "not attempted" in coverage["physical_call_deduplication"],
         "dedupe boundary is explicit",
     )
     _assert(
