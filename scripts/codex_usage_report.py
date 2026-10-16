@@ -1706,9 +1706,7 @@ class UsageReporter:
                 tree = _merge_metrics(thread_metrics.values())
                 scope_contributions = {
                     "anchor_thread_id": anchor_id,
-                    "own": self._serialize_subtree_metric(
-                        own, compact_aggregate=True
-                    )
+                    "own": self._serialize_subtree_metric(own, compact_aggregate=True)
                     if self.scope == "subtree"
                     else self._serialize_metric(own),
                     "direct_children": self._serialize_subtree_metric(
