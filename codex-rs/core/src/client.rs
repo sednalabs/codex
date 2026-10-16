@@ -3535,7 +3535,7 @@ async fn handle_unauthorized(
     {
         let mode = recovery.mode_name();
         let phase = recovery.step_name();
-        let step: Result<
+        let step: std::result::Result<
             (
                 bool,
                 Option<bool>,

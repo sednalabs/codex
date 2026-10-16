@@ -2683,7 +2683,8 @@ fs.writeFile = async (file, ...args) => {
         let response_html = inspection_html.to_string();
         let (inspection_shutdown, inspection_shutdown_rx) = std::sync::mpsc::channel();
         let inspection_server = std::thread::spawn(move || {
-            use std::io::{Read as _, Write as _};
+            use std::io::Read as _;
+            use std::io::Write as _;
 
             loop {
                 match inspection_shutdown_rx.try_recv() {
