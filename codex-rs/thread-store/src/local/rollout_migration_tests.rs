@@ -1149,7 +1149,10 @@ async fn migration_rolls_back_inter_agent_metadata_with_its_delivery() {
         thread_id,
         SessionSource::Cli,
         vec![
-            RolloutItem::InterAgentCommunicationMetadata { trigger_turn: true },
+            RolloutItem::InterAgentCommunicationMetadata {
+                trigger_turn: true,
+                admission: None,
+            },
             rollout_response_item(delivery.to_model_input_item()),
             RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
                 num_turns: 1,
@@ -1522,7 +1525,10 @@ async fn migration_removes_delivery_from_rolled_back_communication_turn() {
                 rollout_response_item(response)
             };
             items.extend([
-                RolloutItem::InterAgentCommunicationMetadata { trigger_turn: true },
+                RolloutItem::InterAgentCommunicationMetadata {
+                    trigger_turn: true,
+                    admission: None,
+                },
                 response,
             ]);
         }

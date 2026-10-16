@@ -4142,6 +4142,7 @@ impl Session {
         self.persist_rollout_items(&[
             RolloutItem::InterAgentCommunicationMetadata {
                 trigger_turn: communication.trigger_turn,
+                admission: None,
             },
             RolloutItem::ResponseItem(response_item),
         ])

@@ -2831,6 +2831,7 @@ async fn record_inter_agent_communication_sets_turn_id_in_rollout_and_resume() {
     let expected_persisted_items = vec![
         RolloutItem::InterAgentCommunicationMetadata {
             trigger_turn: false,
+            admission: None,
         },
         RolloutItem::ResponseItem(ResponseItemEnvelope {
             item: expected_item.clone(),

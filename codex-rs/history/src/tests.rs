@@ -476,6 +476,76 @@ fn response_item_envelope_ignores_unknown_harness_metadata_fields() -> Result<()
 }
 
 #[test]
+fn explicit_inter_agent_admission_round_trips_on_existing_metadata_record() -> Result<()> {
+    let admission = InterAgentCommunicationAdmission {
+        update_id: codex_protocol::ResponseItemId::from_server("update_1".to_string()),
+        idempotency_key: "request-1".to_string(),
+        intent: InterAgentCommunicationIntent::ActionRequired,
+        supersedes: vec![codex_protocol::ResponseItemId::from_server(
+            "update_0".to_string(),
+        )],
+        represented_response_id: Some(codex_protocol::ResponseItemId::from_server(
+            "response_1".to_string(),
+        )),
+    };
+    let item = RolloutItem::InterAgentCommunicationMetadata {
+        trigger_turn: false,
+        admission: Some(admission.clone()),
+    };
+
+    let serialized = serde_json::to_value(&item)?;
+    assert_eq!(serialized["type"], "inter_agent_communication_metadata");
+    assert_eq!(serialized["payload"]["trigger_turn"], false);
+    assert_eq!(
+        serialized["payload"]["admission"]["intent"],
+        "action_required"
+    );
+    assert_eq!(serde_json::from_value::<RolloutItem>(serialized)?, item);
+
+    // Existing quiet records retain their original serialized shape and still decode.
+    let quiet = RolloutItem::InterAgentCommunicationMetadata {
+        trigger_turn: false,
+        admission: None,
+    };
+    assert_eq!(
+        serde_json::to_value(&quiet)?,
+        json!({
+            "type": "inter_agent_communication_metadata",
+            "payload": { "trigger_turn": false },
+        })
+    );
+    Ok(())
+}
+
+#[test]
+fn response_item_metadata_round_trips_explicit_inter_agent_update_id() -> Result<()> {
+    let update_id = codex_protocol::ResponseItemId::from_server("update_1".to_string());
+    let envelope = ResponseItemEnvelope {
+        item: response_message("assistant"),
+        metadata: Some(CodexHarnessMetadata {
+            inter_agent_update_id: Some(update_id.clone()),
+            ..Default::default()
+        }),
+    };
+
+    let restored = serde_json::from_value::<RolloutItem>(serde_json::to_value(
+        RolloutItem::ResponseItem(envelope.clone()),
+    )?)?;
+    let RolloutItem::ResponseItem(restored) = restored else {
+        panic!("expected response item");
+    };
+    assert_eq!(
+        restored
+            .metadata
+            .expect("harness metadata")
+            .inter_agent_update_id,
+        Some(update_id)
+    );
+    assert_eq!(restored.item, envelope.item);
+    Ok(())
+}
+
+#[test]
 /// Keeps legacy compacted replacement histories readable while adding nullable checkpoints.
 fn response_item_replacement_history_accepts_legacy_shape() -> Result<()> {
     let legacy_item = json!({

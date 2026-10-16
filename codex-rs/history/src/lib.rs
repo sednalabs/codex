@@ -20,6 +20,7 @@ use std::ops::DerefMut;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use codex_protocol::ResponseItemId;
 use codex_protocol::ThreadId;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
@@ -62,6 +63,11 @@ pub struct ResponseItemEnvelope {
 ///
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
 pub struct CodexHarnessMetadata {
+    /// Stable explicit inter-agent update represented by this history item.
+    /// Host-only; ordinary messages leave this unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inter_agent_update_id: Option<ResponseItemId>,
+
     /// Complete retained records actually delivered by this Guardian message. Host-only.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub guardian_sources: Vec<RetainedSource>,
@@ -133,6 +139,32 @@ pub struct CodexHarnessMetadata {
     /// Sender context captured by the host when this task message was accepted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sender_user_messages: Option<Box<SenderUserMessages>>,
+}
+
+/// The explicit intent attached to an addressed inter-agent update.
+///
+/// This is persisted metadata, not model-visible message content.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum InterAgentCommunicationIntent {
+    Progress,
+    ActionRequired,
+    ResultReady,
+}
+
+/// Durable admission receipt for an explicitly addressed inter-agent update.
+///
+/// The matching `InterAgentCommunication` carries sender and recipient scope. The receipt remains
+/// model-invisible and is retained when a represented response is outside the model context.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
+pub struct InterAgentCommunicationAdmission {
+    pub update_id: ResponseItemId,
+    pub idempotency_key: String,
+    pub intent: InterAgentCommunicationIntent,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supersedes: Vec<ResponseItemId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub represented_response_id: Option<ResponseItemId>,
 }
 
 fn deserialize_mcp_attribution_checkpoint<'de, D>(
@@ -215,6 +247,7 @@ pub enum RolloutItem {
     InterAgentCommunication(InterAgentCommunication),
     InterAgentCommunicationMetadata {
         trigger_turn: bool,
+        admission: Option<InterAgentCommunicationAdmission>,
     },
     Compacted(CompactedItem),
     TurnContext(TurnContextItem),

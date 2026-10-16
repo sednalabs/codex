@@ -134,7 +134,7 @@ fn fork_turn_positions_in_rollout(items: &[RolloutItem]) -> Vec<ForkTurnPosition
                     fork_turn_positions.push(position);
                 }
             }
-            RolloutItem::InterAgentCommunicationMetadata { trigger_turn } => {
+            RolloutItem::InterAgentCommunicationMetadata { trigger_turn, .. } => {
                 let position = ForkTurnPosition::TopLevel(index);
                 rollback_turn_positions.push(position);
                 if *trigger_turn {
