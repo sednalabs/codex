@@ -1578,10 +1578,15 @@ async fn daemon_owned_updates_require_and_request_an_isolated_installer() {
     // Reuse the stopped daemon to verify explicit unpinning with either preference.
     let marker = root.join("auto-update-version");
     let no_op = FakeInstallerHttp::new(InstallerResponse::Success(
-        b"# CODEX_INSTALL_IF_CURRENT CODEX_INSTALL_DAEMON_ONLY\nexit 0\n".to_vec(),
+        br#"# CODEX_INSTALL_IF_CURRENT CODEX_INSTALL_DAEMON_ONLY
+# CODEX_SEDNA_UPDATE CODEX_SEDNA_PREVIOUS_NATIVE_VERSION
+exit 0
+"#
+        .to_vec(),
     ));
     let script = format!(
         r#"# CODEX_INSTALL_IF_CURRENT CODEX_INSTALL_DAEMON_ONLY
+# CODEX_SEDNA_UPDATE CODEX_SEDNA_PREVIOUS_NATIVE_VERSION
 set -eu
 test "$CODEX_INSTALL_IF_CURRENT" = 1
 test "$CODEX_INSTALL_IF_LATEST" = 0

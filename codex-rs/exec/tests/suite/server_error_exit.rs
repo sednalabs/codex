@@ -121,9 +121,25 @@ with socket.create_connection(("127.0.0.1", int(sys.argv[1]))) as gate:
     // exits. This times out on the old inline-await implementation.
     let output = tokio::time::timeout(Duration::from_secs(20), child.wait_with_output()).await??;
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8(output.stderr)?;
-    assert!(stderr.contains("turn/interrupt"), "{stderr}");
-    assert!(!stderr.contains("turn/interrupt failed"), "{stderr}");
+    let stdout = String::from_utf8(output.stdout)?;
+    let events = stdout
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(serde_json::from_str::<serde_json::Value>)
+        .collect::<Result<Vec<_>, _>>()?;
+    assert!(
+        events.iter().any(|event| event["type"] == "turn.started"),
+        "expected a started turn before interruption: {events:?}"
+    );
+    // Interrupted turns initiate shutdown without a terminal JSON event. An
+    // unrelated typed error or an ordinary completion must not satisfy this test.
+    assert!(
+        events.iter().all(|event| !matches!(
+            event["type"].as_str(),
+            Some("error" | "turn.failed" | "turn.completed")
+        )),
+        "expected an interrupted turn, not a failed or completed turn: {events:?}"
+    );
     assert_eq!(request.requests().len(), 1, "no model request replay");
     let mut closed = [0];
     assert_eq!(
