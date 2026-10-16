@@ -294,6 +294,7 @@ def _by_model(metrics: dict[str, Any]) -> dict[str | None, dict[str, Any]]:
 
 def _check_shared_text_pool() -> None:
     shared_text_pool: dict[str, str] = {}
+    shared_attribution_text: set[str] = set()
     current = report.UsageReporter(
         Path("unused"),
         report.parse_utc(START),
@@ -307,6 +308,7 @@ def _check_shared_text_pool() -> None:
         token_only_projection=True,
         max_selected_text_chars=5,
         shared_text_pool=shared_text_pool,
+        shared_attribution_text=shared_attribution_text,
     )
     historical = report.UsageReporter(
         Path("unused"),
@@ -321,28 +323,53 @@ def _check_shared_text_pool() -> None:
         token_only_projection=True,
         max_selected_text_chars=0,
         shared_text_pool=shared_text_pool,
+        shared_attribution_text=shared_attribution_text,
     )
-    first = current._account_output_text({"thread_id": "root", "model": "m"})
+    first = current._account_output_text(
+        {
+            "thread_id": "root",
+            "provider_call_id": "call-1",
+            "provider": "m",
+            "requested_model": "m",
+        }
+    )
     _assert(
-        current.output_text_chars == 5,
-        "first source strings consume the shared budget",
+        current.output_text_chars == 1,
+        "only model-attribution text consumes the shared output budget",
     )
-    mirrored = historical._account_output_text({"thread_id": "root", "model": "m"})
+    mirrored = historical._account_output_text(
+        {
+            "thread_id": "root",
+            "provider_call_id": "call-1",
+            "provider": "m",
+            "requested_model": "m",
+        }
+    )
     _assert(
         historical.output_text_chars == 0
         and mirrored["thread_id"] is first["thread_id"]
-        and mirrored["model"] is first["model"],
-        "mirrored source strings reuse the bounded shared pool",
+        and mirrored["provider_call_id"] is first["provider_call_id"]
+        and mirrored["requested_model"] is first["requested_model"],
+        "mirrored identity and model strings reuse the shared pool",
     )
     try:
-        historical._account_output_text({"new_value": "x"})
+        historical._account_output_text({"actual_model_used": "x"})
     except report.WorkLimitReached as exc:
         _assert(
-            exc.reason == "selected_source_text_limit_exceeded",
-            "unique text beyond the remaining budget fails closed",
+            exc.reason == "selected_attribution_text_limit_exceeded",
+            "new model attribution beyond the remaining budget fails closed",
         )
     else:
-        raise AssertionError("shared text pool exceeded its remaining budget")
+        raise AssertionError("shared attribution budget was exceeded")
+    try:
+        current._account_output_text({"thread_id": "t" * 129})
+    except report.WorkLimitReached as exc:
+        _assert(
+            exc.reason == "source_identity_field_limit_exceeded",
+            "internal identifiers remain bounded without charging output text",
+        )
+    else:
+        raise AssertionError("internal identity field exceeded its fixed bound")
 
 
 def _check_report_shape(database: Path) -> dict[str, Any]:
@@ -765,14 +792,19 @@ def _check_multi_ledger_reconciliation(temporary: Path) -> None:
         "unused billing text is not selected by the all-time token projection",
     )
     _assert(
-        result["source_coverage"]["limits"]["selected_source_text_characters"]
+        result["source_coverage"]["limits"]["selected_attribution_text_characters"]
         == 1_000_000,
-        "the dual-ledger projection retains its original small text budget",
+        "the dual-ledger projection retains its original small attribution budget",
     )
     _assert(
-        result["source_coverage"]["limits"]["selected_source_text_accounting"]
-        == "unique string values are interned and budgeted once across the explicitly selected ledgers",
-        "the shared text budget measures its retained unique strings",
+        result["source_coverage"]["limits"]["selected_attribution_text_accounting"]
+        == (
+            "unique requested, actual, configured model and effort strings "
+            "are interned and budgeted once; identity, lineage, provider, "
+            "timestamp and status strings use fixed per-field bounds and "
+            "selected-row limits"
+        ),
+        "the shared budget measures only output model attribution strings",
     )
     _assert(result["summary"]["provider_call_count"] == 6, "only unambiguous calls contribute")
     _assert(

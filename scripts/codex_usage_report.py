@@ -36,7 +36,22 @@ MAX_OUTPUT_GROUPS = 1_000
 MAX_OUTPUT_BYTES = 16 * 1024 * 1024
 MAX_TEXT_FIELD_CHARS = 8_192
 MAX_SELECTED_TEXT_CHARS = 8_000_000
-MAX_MULTI_LEDGER_SELECTED_TEXT_CHARS = 1_000_000
+MAX_MULTI_LEDGER_ATTRIBUTION_TEXT_CHARS = 1_000_000
+MAX_MULTI_LEDGER_INTERNAL_TEXT_CHARS = {
+    "provider_call_id": 128,
+    "thread_id": 128,
+    "spawn_request_id": 128,
+    "parent_thread_id": 128,
+    "root_thread_id": 128,
+    "fork_parent_thread_id": 128,
+    "provider": 128,
+    "started_at": 64,
+    "completed_at": 64,
+    "status": 32,
+}
+MULTI_LEDGER_ATTRIBUTION_TEXT_COLUMNS = frozenset(
+    {"requested_model", "actual_model_used", "requested_reasoning_effort"}
+)
 MAX_SQLITE_ROW_BYTES = 1024 * 1024
 SQL_CHUNK = 250
 PROGRESS_INTERVAL = 1_000
@@ -617,6 +632,7 @@ class UsageReporter:
         max_selected_text_chars: int = MAX_SELECTED_TEXT_CHARS,
         max_vm_instructions: int = MAX_VM_INSTRUCTIONS,
         shared_text_pool: dict[str, str] | None = None,
+        shared_attribution_text: set[str] | None = None,
     ) -> None:
         self.database = database
         self.start = start
@@ -639,6 +655,7 @@ class UsageReporter:
         self.max_selected_text_chars = max_selected_text_chars
         self.max_vm_instructions = max_vm_instructions
         self.shared_text_pool = shared_text_pool
+        self.shared_attribution_text = shared_attribution_text
         self.vm_instructions = 0
         self.vm_stop_reason: str | None = None
         self.query_plans: list[dict[str, Any]] = []
@@ -719,8 +736,22 @@ class UsageReporter:
             if not isinstance(value, str):
                 values[column] = value
                 continue
-            if len(value) > MAX_TEXT_FIELD_CHARS:
-                raise WorkLimitReached("source_text_field_limit_exceeded")
+            pooled_multi_ledger = self.shared_text_pool is not None
+            field_limit = (
+                MAX_MULTI_LEDGER_INTERNAL_TEXT_CHARS.get(
+                    column, MAX_TEXT_FIELD_CHARS
+                )
+                if pooled_multi_ledger
+                else MAX_TEXT_FIELD_CHARS
+            )
+            if len(value) > field_limit:
+                reason = (
+                    "source_identity_field_limit_exceeded"
+                    if pooled_multi_ledger
+                    and column in MAX_MULTI_LEDGER_INTERNAL_TEXT_CHARS
+                    else "source_text_field_limit_exceeded"
+                )
+                raise WorkLimitReached(reason)
             if self.shared_text_pool is None:
                 self.output_text_chars += len(value)
                 if self.output_text_chars > self.max_selected_text_chars:
@@ -729,11 +760,20 @@ class UsageReporter:
                 continue
             shared_value = self.shared_text_pool.get(value)
             if shared_value is None:
-                self.output_text_chars += len(value)
-                if self.output_text_chars > self.max_selected_text_chars:
-                    raise WorkLimitReached("selected_source_text_limit_exceeded")
                 self.shared_text_pool[value] = value
                 shared_value = value
+            if column in MULTI_LEDGER_ATTRIBUTION_TEXT_COLUMNS:
+                if self.shared_attribution_text is None:
+                    raise ReportProblem(
+                        "unavailable", "attribution_text_accounting_unavailable"
+                    )
+                if value not in self.shared_attribution_text:
+                    self.output_text_chars += len(value)
+                    if self.output_text_chars > self.max_selected_text_chars:
+                        raise WorkLimitReached(
+                            "selected_attribution_text_limit_exceeded"
+                        )
+                    self.shared_attribution_text.add(value)
             values[column] = shared_value
         return values
 
@@ -2529,9 +2569,10 @@ def _run_multi_ledger_report(
     ledgers: list[dict[str, Any]] = []
     rows_by_source: list[tuple[str, Sequence[dict[str, Any]]]] = []
     remaining_calls = MAX_CALLS
-    remaining_text = MAX_MULTI_LEDGER_SELECTED_TEXT_CHARS
+    remaining_text = MAX_MULTI_LEDGER_ATTRIBUTION_TEXT_CHARS
     remaining_vm = MAX_VM_INSTRUCTIONS
     shared_text_pool: dict[str, str] = {}
+    shared_attribution_text: set[str] = set()
     for source_name, database in ledger_inputs:
         check_deadline()
         reporter = UsageReporter(
@@ -2551,6 +2592,7 @@ def _run_multi_ledger_report(
             max_selected_text_chars=remaining_text,
             max_vm_instructions=remaining_vm,
             shared_text_pool=shared_text_pool,
+            shared_attribution_text=shared_attribution_text,
         )
         try:
             report = reporter.run()
@@ -2657,8 +2699,13 @@ def _run_multi_ledger_report(
             "deduplication": merged["physical_call_deduplication"],
             "limits": {
                 "combined_selected_call_rows": MAX_CALLS,
-                "selected_source_text_characters": MAX_MULTI_LEDGER_SELECTED_TEXT_CHARS,
-                "selected_source_text_accounting": "unique string values are interned and budgeted once across the explicitly selected ledgers",
+                "selected_attribution_text_characters": MAX_MULTI_LEDGER_ATTRIBUTION_TEXT_CHARS,
+                "selected_attribution_text_accounting": (
+                    "unique requested, actual, configured model and effort strings "
+                    "are interned and budgeted once; identity, lineage, provider, "
+                    "timestamp and status strings use fixed per-field bounds and "
+                    "selected-row limits"
+                ),
                 "sqlite_vm_instructions": MAX_VM_INSTRUCTIONS,
                 "elapsed_seconds": MAX_SECONDS,
                 "metadata_scan_rows_per_ledger": MAX_LINEAGE_SCAN_ROWS,
