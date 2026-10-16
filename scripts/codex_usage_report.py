@@ -1367,6 +1367,63 @@ class UsageReporter:
             result.pop("provider_reported_credits")
         return result
 
+    def _serialize_subtree_metric(
+        self, metrics: dict[str, Any], *, compact_aggregate: bool = False
+    ) -> dict[str, Any]:
+        """Keep model partitions useful without repeating global rate evidence."""
+        result = self._serialize_metric(metrics)
+        model_rows = result.get("by_actual_model")
+        if model_rows is not None:
+            compact_rows: list[dict[str, Any]] = []
+            for row in model_rows:
+                compact: dict[str, Any] = {
+                    key: row[key]
+                    for key in (
+                        "actual_model_used",
+                        "provider_call_count",
+                        "token_sums_known_subtotal",
+                        "token_missing_call_count",
+                        "missing_usage_call_count",
+                        "requested_to_actual_model_evidence",
+                        "provider_reported_credits",
+                    )
+                    if key in row
+                }
+                for mode_name in ("actual_mode", "standard_scenario"):
+                    mode = row.get(mode_name)
+                    if mode is None:
+                        continue
+                    compact[mode_name] = {
+                        key: mode[key]
+                        for key in (
+                            "covered_call_count",
+                            "rate_estimated_call_count",
+                            "uncovered_call_count",
+                            "credits_subtotal",
+                            "complete_total",
+                            "uncovered_reasons",
+                        )
+                        if key in mode
+                    }
+                compact_rows.append(compact)
+            result["by_actual_model"] = compact_rows
+
+        if compact_aggregate:
+            for key in (
+                "actual_model_evidence",
+                "requested_to_actual_model_evidence",
+                "actual_service_tier_evidence",
+                "service_tier_source_evidence",
+                "fast_mode_used_evidence",
+            ):
+                result.pop(key, None)
+            for mode_name in ("actual_mode", "standard_scenario"):
+                mode = result.get(mode_name)
+                if mode is not None:
+                    mode.pop("rate_id_call_counts", None)
+                    mode.pop("policy_id_call_counts", None)
+        return result
+
     def run(self) -> dict[str, Any]:
         started = time.monotonic()
         self.conn = self.open()
@@ -1608,15 +1665,18 @@ class UsageReporter:
                     )
                     safe_root_groups[label].extend(items)
                 safe_root_buckets = {
-                    label: self._serialize_metric(_merge_metrics(items))
+                    label: self._serialize_subtree_metric(
+                        _merge_metrics(items), compact_aggregate=True
+                    )
                     for label, items in sorted(safe_root_groups.items())
                 }
                 safe_thread_rows = [
                     {
                         "thread_id": self.thread_id,
                         "thread_role": "requested_root",
-                        "metrics": self._serialize_metric(
-                            thread_metrics.get(self.thread_id or "", _new_metrics())
+                        "metrics": self._serialize_subtree_metric(
+                            thread_metrics.get(self.thread_id or "", _new_metrics()),
+                            compact_aggregate=True,
                         ),
                     }
                 ]
@@ -1646,19 +1706,35 @@ class UsageReporter:
                 tree = _merge_metrics(thread_metrics.values())
                 scope_contributions = {
                     "anchor_thread_id": anchor_id,
-                    "own": self._serialize_metric(own),
-                    "direct_children": self._serialize_metric(direct),
-                    "descendants_excluding_anchor": self._serialize_metric(descendants),
-                    "tree_including_anchor": self._serialize_metric(tree),
+                    "own": self._serialize_subtree_metric(
+                        own, compact_aggregate=True
+                    )
+                    if self.scope == "subtree"
+                    else self._serialize_metric(own),
+                    "direct_children": self._serialize_subtree_metric(
+                        direct, compact_aggregate=True
+                    )
+                    if self.scope == "subtree"
+                    else self._serialize_metric(direct),
+                    "descendants_excluding_anchor": self._serialize_subtree_metric(
+                        descendants, compact_aggregate=True
+                    )
+                    if self.scope == "subtree"
+                    else self._serialize_metric(descendants),
+                    "tree_including_anchor": self._serialize_subtree_metric(
+                        tree, compact_aggregate=True
+                    )
+                    if self.scope == "subtree"
+                    else self._serialize_metric(tree),
                     "disjoint_call_counts_reconcile": tree["provider_call_count"]
                     == all_calls_metrics["provider_call_count"],
                 }
                 if self.scope == "subtree":
                     scope_contributions["root_vs_descendants_by_actual_model"] = {
-                        "requested_root": self._serialize_metric(own)[
+                        "requested_root": self._serialize_subtree_metric(own)[
                             "by_actual_model"
                         ],
-                        "all_descendants": self._serialize_metric(descendants)[
+                        "all_descendants": self._serialize_subtree_metric(descendants)[
                             "by_actual_model"
                         ],
                     }
@@ -1744,7 +1820,11 @@ class UsageReporter:
                     "physical_call_deduplication": "rows in the selected ledger are counted as stored; no content-based or cross-ledger mirror reconciliation is attempted",
                     "model_identity": "requested and provider-reported actual model are shown separately where recorded; configured model and effort are unavailable in these report inputs",
                 },
-                "summary": self._serialize_metric(all_calls_metrics),
+                "summary": (
+                    self._serialize_subtree_metric(all_calls_metrics)
+                    if self.scope == "subtree"
+                    else self._serialize_metric(all_calls_metrics)
+                ),
                 "threads": safe_thread_rows,
                 "resolved_root_buckets": safe_root_buckets,
                 "credit_evidence": {

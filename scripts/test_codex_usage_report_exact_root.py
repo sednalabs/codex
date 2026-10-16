@@ -321,6 +321,15 @@ def _check_report_shape(database: Path) -> dict[str, Any]:
         item["actual_model_used"]: item for item in model_split["all_descendants"]
     }
     _assert(
+        all(
+            "rate_id_call_counts" not in item.get("actual_mode", {})
+            and "policy_id_call_counts" not in item.get("actual_mode", {})
+            and "rate_id_call_counts" not in item.get("standard_scenario", {})
+            for item in (*root_by_model.values(), *descendants_by_model.values())
+        ),
+        "root and descendant model partitions remain compact",
+    )
+    _assert(
         root_by_model["synthetic-alpha"]["provider_call_count"] == 1
         and root_by_model["synthetic-alpha"]["token_sums_known_subtotal"][
             "uncached_input_tokens"
@@ -346,6 +355,19 @@ def _check_report_shape(database: Path) -> dict[str, Any]:
     )
 
     summary_models = _by_model(result["summary"])
+    _assert(
+        all(
+            "rate_id_call_counts" not in item.get("actual_mode", {})
+            and "policy_id_call_counts" not in item.get("actual_mode", {})
+            and "rate_id_call_counts" not in item.get("standard_scenario", {})
+            for item in summary_models.values()
+        ),
+        "per-model partitions omit repeated rate identifiers",
+    )
+    _assert(
+        bool(result["credit_evidence"]["rates"]),
+        "global rate evidence remains available once",
+    )
     _assert(
         summary_models["synthetic-alpha"]["token_sums_known_subtotal"][
             "uncached_input_tokens"
