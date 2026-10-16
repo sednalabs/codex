@@ -6,6 +6,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
+use std::time::Instant;
 
 use anyhow::Context;
 use anyhow::Result;
@@ -78,6 +79,17 @@ async fn wait_for_process_exit(pid: u32) -> Result<()> {
     }
 
     anyhow::bail!("process {pid} still running after timeout");
+}
+
+async fn wait_for_file(path: &Path) -> Result<()> {
+    for _ in 0..50 {
+        if path.is_file() {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    anyhow::bail!("timed out waiting for server close acknowledgment");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -177,4 +189,138 @@ async fn shutdown_kills_initialized_stdio_server_with_in_flight_operation() -> R
     wait_for_process_exit(server_pid).await?;
     let _ = tokio::time::timeout(Duration::from_secs(5), call_task).await?;
     Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn cooperative_close_waits_for_local_server_ack_and_reaps_owned_child() -> Result<()> {
+    let temp_dir = tempfile::tempdir()?;
+    let server_pid_file = temp_dir.path().join("server.pid");
+    let wrapper_pid_file = temp_dir.path().join("wrapper.pid");
+    let close_ack_file = temp_dir.path().join("close.ack");
+    let policy_leak_file = temp_dir.path().join("policy-leaked");
+    let wrapper = temp_dir.path().join("wrapper");
+    codex_utils_cargo_bin::write_executable(
+        &wrapper,
+        "#!/bin/sh\n\
+         printf '%s\\n' \"$$\" > \"$WRAPPER_PID_FILE\"\n\
+         if [ \"${CODEX_INTERNAL_MCP_STDIO_CLOSE_POLICY+x}\" = x ]; then printf leaked > \"$POLICY_LEAK_FILE\"; fi\n\
+         \"$MCP_SERVER\" &\n\
+         server_pid=$!\n\
+         wait \"$server_pid\"\n\
+         sleep 3.2\n\
+         printf acknowledged > \"$CLOSE_ACK_FILE\"\n",
+    )?;
+
+    let server = stdio_server_bin()?;
+    let client = RmcpClient::new_stdio_client(
+        OsString::from("./wrapper"),
+        Vec::<OsString>::new(),
+        Some(HashMap::from([
+            (
+                OsString::from("CODEX_INTERNAL_MCP_STDIO_CLOSE_POLICY"),
+                OsString::from("cooperative-local-v1"),
+            ),
+            (
+                OsString::from("WRAPPER_PID_FILE"),
+                OsString::from(wrapper_pid_file.to_string_lossy().into_owned()),
+            ),
+            (
+                OsString::from("MCP_TEST_PID_FILE"),
+                OsString::from(server_pid_file.to_string_lossy().into_owned()),
+            ),
+            (
+                OsString::from("MCP_SERVER"),
+                server.into_os_string(),
+            ),
+            (
+                OsString::from("CLOSE_ACK_FILE"),
+                OsString::from(close_ack_file.to_string_lossy().into_owned()),
+            ),
+            (
+                OsString::from("POLICY_LEAK_FILE"),
+                OsString::from(policy_leak_file.to_string_lossy().into_owned()),
+            ),
+        ])),
+        &[],
+        Some(temp_dir.path().to_string_lossy().into_owned()),
+        Arc::new(LocalStdioServerLauncher::new(std::env::current_dir()?)),
+    )
+    .await?;
+
+    client
+        .initialize(
+            init_params(),
+            Some(Duration::from_secs(5)),
+            Box::new(|_, _| {
+                async {
+                    Ok(ElicitationResponse {
+                        action: ElicitationAction::Accept,
+                        content: Some(json!({})),
+                        meta: None,
+                    })
+                }
+                .boxed()
+            }),
+        )
+        .await?;
+
+    let wrapper_pid = wait_for_pid_file(&wrapper_pid_file).await?;
+    let server_pid = wait_for_pid_file(&server_pid_file).await?;
+    assert!(process_exists(wrapper_pid));
+    assert!(process_exists(server_pid));
+    let started_at = Instant::now();
+    let ((), ()) = tokio::join!(client.shutdown(), client.shutdown());
+    assert!(
+        started_at.elapsed() >= Duration::from_secs(3),
+        "cooperative close must wait for the server's delayed close acknowledgment"
+    );
+    assert!(close_ack_file.is_file(), "server completed its close path");
+    assert!(!policy_leak_file.exists(), "host selector is not passed to the child");
+    wait_for_process_exit(wrapper_pid).await?;
+    wait_for_process_exit(server_pid).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn cooperative_drop_closes_stdin_before_owned_child_fallback() -> Result<()> {
+    let temp_dir = tempfile::tempdir()?;
+    let server_pid_file = temp_dir.path().join("server.pid");
+    let close_ack_file = temp_dir.path().join("close.ack");
+    let wrapper = temp_dir.path().join("wrapper");
+    codex_utils_cargo_bin::write_executable(
+        &wrapper,
+        "#!/bin/sh\n\
+         printf '%s\\n' \"$$\" > \"$SERVER_PID_FILE\"\n\
+         cat >/dev/null\n\
+         sleep 3.2\n\
+         printf acknowledged > \"$CLOSE_ACK_FILE\"\n",
+    )?;
+
+    let client = RmcpClient::new_stdio_client(
+        OsString::from("./wrapper"),
+        Vec::<OsString>::new(),
+        Some(HashMap::from([
+            (
+                OsString::from("CODEX_INTERNAL_MCP_STDIO_CLOSE_POLICY"),
+                OsString::from("cooperative-local-v1"),
+            ),
+            (
+                OsString::from("SERVER_PID_FILE"),
+                OsString::from(server_pid_file.to_string_lossy().into_owned()),
+            ),
+            (
+                OsString::from("CLOSE_ACK_FILE"),
+                OsString::from(close_ack_file.to_string_lossy().into_owned()),
+            ),
+        ])),
+        &[],
+        Some(temp_dir.path().to_string_lossy().into_owned()),
+        Arc::new(LocalStdioServerLauncher::new(std::env::current_dir()?)),
+    )
+    .await?;
+
+    let server_pid = wait_for_pid_file(&server_pid_file).await?;
+    assert!(process_exists(server_pid));
+    drop(client);
+    wait_for_file(&close_ack_file).await?;
+    wait_for_process_exit(server_pid).await
 }

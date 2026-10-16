@@ -31,6 +31,7 @@ use codex_config::McpServerAuth;
 use codex_config::McpServerConfig;
 use codex_config::McpServerEnvVar;
 use codex_config::McpServerToolConfig;
+use codex_config::McpServerTransportConfig;
 use codex_config::types::AuthKeyringBackendKind;
 use codex_config::types::OAuthCredentialsStoreMode;
 use codex_connectors::ConnectorRuntimeContext;
@@ -6605,4 +6606,157 @@ async fn view_only_changes_reuse_connection_and_preserve_the_old_step() {
         vec!["search".to_string()]
     );
     assert_eq!(new_call.tool_approval_mode(), AppToolApproval::Approve);
+}
+
+fn stdio_close_policy_config(
+    entries: &[(&str, &str)],
+    env_vars: Vec<McpServerEnvVar>,
+) -> McpServerConfig {
+    let mut config = reusable_server_config("http://127.0.0.1:1");
+    config.transport = McpServerTransportConfig::Stdio {
+        command: "mcp-server".to_string(),
+        args: Vec::new(),
+        env: (!entries.is_empty()).then(|| {
+            entries
+                .iter()
+                .map(|(name, value)| ((*name).to_string(), (*value).to_string()))
+                .collect()
+        }),
+        env_vars,
+        cwd: None,
+    };
+    config
+}
+
+fn resolve_test_registration(
+    registration: crate::McpServerRegistration,
+) -> crate::ResolvedMcpServer {
+    let mut builder = crate::McpCatalogBuilder::default();
+    builder.register(registration);
+    builder
+        .build()
+        .server("computer-use")
+        .expect("test registration resolves")
+        .clone()
+}
+
+#[test]
+fn cooperative_stdio_close_requires_matching_host_local_stdio_config() {
+    const SELECTOR: &str = "CODEX_INTERNAL_MCP_STDIO_CLOSE_POLICY";
+    const VALUE: &str = "cooperative-local-v1";
+    let config = stdio_close_policy_config(&[(SELECTOR, VALUE)], Vec::new());
+    let host_registration = resolve_test_registration(crate::McpServerRegistration::from_config(
+        "computer-use".to_string(),
+        config.clone(),
+    ));
+    assert!(validate_cooperative_stdio_close_policy(&config, Some(&host_registration)).is_ok());
+
+    let plugin_registration = resolve_test_registration(crate::McpServerRegistration::from_plugin(
+        "computer-use".to_string(),
+        crate::McpPluginAttribution::new("fixture@tests".to_string(), "Fixture".to_string()),
+        0,
+        config.clone(),
+    ));
+    assert!(validate_cooperative_stdio_close_policy(&config, Some(&plugin_registration)).is_err());
+
+    let selected_plugin_registration = resolve_test_registration(
+        crate::McpServerRegistration::from_selected_plugin(
+            "computer-use".to_string(),
+            crate::McpPluginAttribution::new("selected@tests".to_string(), "Selected".to_string()),
+            0,
+            codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID,
+            config.clone(),
+        ),
+    );
+    assert!(validate_cooperative_stdio_close_policy(&config, Some(&selected_plugin_registration)).is_err());
+
+    let extension_registration = resolve_test_registration(
+        crate::McpServerRegistration::from_extension(
+            "computer-use".to_string(),
+            "fixture-extension",
+            0,
+            config.clone(),
+        ),
+    );
+    assert!(validate_cooperative_stdio_close_policy(&config, Some(&extension_registration)).is_err());
+
+    let compatibility_registration = resolve_test_registration(
+        crate::McpServerRegistration::from_compatibility(
+            "computer-use".to_string(),
+            "legacy-fixture",
+            config.clone(),
+        ),
+    );
+    assert!(validate_cooperative_stdio_close_policy(&config, Some(&compatibility_registration)).is_err());
+
+    let executor_registration = resolve_test_registration(
+        crate::McpServerRegistration::from_executor_config("computer-use".to_string(), config.clone()),
+    );
+    assert!(validate_cooperative_stdio_close_policy(&config, Some(&executor_registration)).is_err());
+
+    let mut remote_config = config.clone();
+    remote_config.environment_id = "remote-test".to_string();
+    let remote_registration = resolve_test_registration(crate::McpServerRegistration::from_config(
+        "computer-use".to_string(),
+        remote_config.clone(),
+    ));
+    assert!(validate_cooperative_stdio_close_policy(&remote_config, Some(&remote_registration)).is_err());
+
+    let mut mismatched_effective_config = config.clone();
+    mismatched_effective_config.transport = McpServerTransportConfig::Stdio {
+        command: "mcp-server".to_string(),
+        args: Vec::new(),
+        env: None,
+        env_vars: Vec::new(),
+        cwd: None,
+    };
+    assert!(validate_cooperative_stdio_close_policy(
+        &mismatched_effective_config,
+        Some(&host_registration)
+    )
+    .is_err());
+
+    let bad_value_config = stdio_close_policy_config(&[(SELECTOR, "unknown")], Vec::new());
+    let bad_value_registration = resolve_test_registration(crate::McpServerRegistration::from_config(
+        "computer-use".to_string(),
+        bad_value_config.clone(),
+    ));
+    assert!(validate_cooperative_stdio_close_policy(&bad_value_config, Some(&bad_value_registration)).is_err());
+
+    let env_var_config = stdio_close_policy_config(
+        &[],
+        vec![McpServerEnvVar::Name(SELECTOR.to_string())],
+    );
+    let env_var_registration = resolve_test_registration(crate::McpServerRegistration::from_config(
+        "computer-use".to_string(),
+        env_var_config.clone(),
+    ));
+    assert!(validate_cooperative_stdio_close_policy(&env_var_config, Some(&env_var_registration)).is_err());
+
+    let case_variant_config = stdio_close_policy_config(
+        &[("codex_internal_mcp_stdio_close_policy", VALUE)],
+        Vec::new(),
+    );
+    let case_variant_registration = resolve_test_registration(crate::McpServerRegistration::from_config(
+        "computer-use".to_string(),
+        case_variant_config.clone(),
+    ));
+    assert!(validate_cooperative_stdio_close_policy(&case_variant_config, Some(&case_variant_registration)).is_err());
+
+    let duplicate_key_config = stdio_close_policy_config(
+        &[
+            (SELECTOR, VALUE),
+            ("codex_internal_mcp_stdio_close_policy", VALUE),
+        ],
+        Vec::new(),
+    );
+    let duplicate_key_registration = resolve_test_registration(crate::McpServerRegistration::from_config(
+        "computer-use".to_string(),
+        duplicate_key_config.clone(),
+    ));
+    assert!(validate_cooperative_stdio_close_policy(&duplicate_key_config, Some(&duplicate_key_registration)).is_err());
+
+    let ordinary_config = stdio_close_policy_config(&[], Vec::new());
+    assert!(validate_cooperative_stdio_close_policy(&ordinary_config, None).is_ok());
+    assert!(validate_cooperative_stdio_close_policy(&config, None).is_err());
 }
