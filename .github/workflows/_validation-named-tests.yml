@@ -31,6 +31,10 @@ on:
         required: false
         type: boolean
         default: false
+      run_d0_active_wait_test:
+        required: false
+        type: boolean
+        default: false
       request_json:
         required: true
         type: string
@@ -278,7 +282,7 @@ jobs:
 
       - name: Inventory and run exact named tests
         id: named_tests
-        if: ${{ inputs.run_ae94_android_helper_tests != true && inputs.run_ae94_tui_provider_tests != true }}
+        if: ${{ inputs.run_ae94_android_helper_tests != true && inputs.run_ae94_tui_provider_tests != true && inputs.run_d0_active_wait_test != true }}
         continue-on-error: true
         working-directory: validation-target
         shell: bash
@@ -750,6 +754,198 @@ jobs:
               raise SystemExit(1)
           PY
 
+      - name: Run the fixed d0 active-wait test
+        id: d0_active_wait_test
+        if: ${{ inputs.run_d0_active_wait_test == true }}
+        continue-on-error: true
+        working-directory: validation-target
+        shell: bash
+        env:
+          VALIDATION_TARGET_SHA: ${{ inputs.target_sha }}
+          VALIDATION_BASE_REF: ${{ inputs.base_ref }}
+          VALIDATION_PROFILE: ${{ inputs.profile }}
+          RUST_TEST_REQUEST_JSON: ${{ inputs.request_json }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          expected_target = "d0a2f8747c2b06fe025163ad927b221e2e1dccf5"
+          expected_base = "e135df532669849b682dfac712c3f59aded039ba"
+          expected_profile = "rust_integration"
+          expected_test = "tools::handlers::multi_agents_v2::wait::tests::active_wait_wakes_when_operator_steer_arrives"
+          expected_request = {
+              "schema_version": "rust-tests-v1",
+              "profile": expected_profile,
+              "package": "codex-core",
+              "target_kind": "lib",
+              "target": "",
+              "tests": [expected_test],
+              "execution_mode": "exact",
+          }
+          identity = {
+              "harness_sha": os.environ.get("VALIDATION_HARNESS_SHA", ""),
+              "base_ref": os.environ.get("VALIDATION_BASE_REF", ""),
+              "base_sha": os.environ.get("VALIDATION_BASE_SHA", ""),
+              "target_sha": os.environ.get("VALIDATION_TARGET_SHA", ""),
+              "run_id": os.environ.get("GITHUB_RUN_ID", ""),
+          }
+          try:
+              request = json.loads(os.environ.get("RUST_TEST_REQUEST_JSON", ""))
+          except (json.JSONDecodeError, TypeError):
+              request = None
+
+          result = {
+              "schema_version": "rust-tests-v1",
+              "status": "failure",
+              "failure_code": "",
+              "message": "",
+              "identity": identity,
+              "candidate_sha": identity["target_sha"],
+              "request": request,
+              "request_fingerprint": hashlib.sha256(
+                  json.dumps(request, sort_keys=True, separators=(",", ":")).encode("utf-8")
+              ).hexdigest() if isinstance(request, dict) else "",
+              "expected_test_count": 1,
+              "inventory": {"status": "not_run", "test_count": 0, "selected_counts": {}},
+              "tests": [],
+              "result_counts": {"passed": 0, "failed": 0, "ignored": 0, "measured": 0},
+          }
+
+          def fail(code, message):
+              result["failure_code"] = code
+              result["message"] = message
+
+          ansi_csi = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+          def bounded_diagnostic(stdout, stderr):
+              text = ansi_csi.sub("", (stderr or "") + "\n" + (stdout or ""))
+              for key in ("GITHUB_WORKSPACE", "RUNNER_TEMP", "HOME"):
+                  value = os.environ.get(key, "")
+                  if value:
+                      text = text.replace(value, f"<{key.lower()}>")
+              text = re.sub(r"/home/runner/work/[^\s:]+", "<runner-path>", text)
+              text = re.sub(r"/tmp/[^\s:]+", "<temporary-path>", text)
+              text = re.sub(r"https?://[^\s/@:]+:[^\s/@]+@", "https://<redacted>@", text)
+              text = re.sub(r"(?i)(authorization:\s*bearer\s+)[^\s]+", r"\1<redacted>", text)
+              text = re.sub(r"\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,})\b", "<redacted-token>", text)
+              return text[-4000:].strip()
+
+          outcome_re = re.compile(
+              r"^test (?P<name>[A-Za-z0-9_:]+) \.\.\. (?P<status>ok|FAILED|ignored)$",
+              re.MULTILINE,
+          )
+          summary_re = re.compile(
+              r"test result:\s+\w+\.\s+(?P<passed>\d+) passed;\s+(?P<failed>\d+) failed;\s+(?P<ignored>\d+) ignored;\s+(?P<measured>\d+) measured;\s+(?P<filtered>\d+) filtered out"
+          )
+          panic_re = re.compile(r"panicked at .*?([^/\\\s]+\.rs):(\d+):(\d+)")
+
+          if (
+              identity["target_sha"] != expected_target
+              or identity["base_ref"] != "main"
+              or identity["base_sha"] != expected_base
+              or os.environ.get("VALIDATION_PROFILE") != expected_profile
+          ):
+              fail("fixed_identity_mismatch", "The active-wait route is restricted to its exact target, base, and profile.")
+          elif request != expected_request:
+              fail("fixed_selector_mismatch", "The active-wait request does not match the fixed core-library selector.")
+          else:
+              inventory_command = [
+                  "cargo", "test", "--manifest-path", "codex-rs/Cargo.toml", "--locked",
+                  "-p", "codex-core", "--lib", "--", "--list",
+              ]
+              inventory = subprocess.run(
+                  inventory_command, text=True, capture_output=True, check=False, shell=False
+              )
+              observed_inventory = re.findall(r"^([A-Za-z0-9_:]+): test$", inventory.stdout, re.MULTILINE)
+              selected_count = observed_inventory.count(expected_test)
+              result["inventory"] = {
+                  "status": "success" if inventory.returncode == 0 else "failure",
+                  "command_argv": inventory_command,
+                  "test_count": len(observed_inventory),
+                  "selected_counts": {expected_test: selected_count},
+                  "exit_code": inventory.returncode,
+              }
+              if inventory.returncode != 0:
+                  fail("inventory_command_failed", "Cargo could not inventory the fixed core active-wait test.")
+                  result["inventory"]["failure_class"] = (
+                      "compile_failure"
+                      if "could not compile" in (inventory.stdout + inventory.stderr).lower()
+                      else "cargo_inventory_failure"
+                  )
+                  result["inventory"]["diagnostic_tail"] = bounded_diagnostic(
+                      inventory.stdout, inventory.stderr
+                  )
+              elif selected_count != 1:
+                  fail("inventory_reconciliation_failed", "The exact active-wait selector is not present exactly once.")
+              else:
+                  command = [
+                      "cargo", "test", "--manifest-path", "codex-rs/Cargo.toml", "--locked",
+                      "-p", "codex-core", "--lib", "--", expected_test, "--exact", "--test-threads=1",
+                  ]
+                  completed = subprocess.run(
+                      command, text=True, capture_output=True, check=False, shell=False
+                  )
+                  combined = ansi_csi.sub("", completed.stdout + "\n" + completed.stderr)
+                  outcomes = outcome_re.findall(combined)
+                  summaries = list(summary_re.finditer(combined))
+                  counts = None
+                  if summaries:
+                      counts = {
+                          key: int(summaries[-1].group(key))
+                          for key in ("passed", "failed", "ignored", "measured", "filtered")
+                      }
+                  passed = (
+                      completed.returncode == 0
+                      and outcomes == [(expected_test, "ok")]
+                      and counts == {
+                          "passed": 1, "failed": 0, "ignored": 0, "measured": 0,
+                          "filtered": len(observed_inventory) - 1,
+                      }
+                  )
+                  receipt = {
+                      "name": expected_test,
+                      "status": "ok" if passed else "failed",
+                      "exit_code": completed.returncode,
+                      "command_argv": command,
+                      "result_counts": counts,
+                  }
+                  if not passed:
+                      receipt["panic_sites"] = [
+                          {"file": file_name, "line": int(line), "column": int(column)}
+                          for file_name, line, column in panic_re.findall(combined)[-3:]
+                      ]
+                      receipt["diagnostic_tail"] = bounded_diagnostic(
+                          completed.stdout, completed.stderr
+                      )
+                      fail("test_execution_mismatch", "The exact active-wait selector did not pass exactly once.")
+                      result["result_counts"]["failed"] = 1
+                  else:
+                      result["result_counts"]["passed"] = 1
+                  result["tests"].append(receipt)
+                  if passed:
+                      result["status"] = "success"
+                      result["message"] = "The fixed active-wait selector passed exactly once."
+
+          Path("rust-tests-v1-results.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+          )
+          print(json.dumps({
+              "status": result["status"],
+              "failure_code": result["failure_code"],
+              "inventory_count": result["inventory"]["test_count"],
+              "selected_count": result["inventory"]["selected_counts"].get(expected_test, 0),
+              "result_counts": result["result_counts"],
+          }, sort_keys=True))
+          if result["status"] != "success":
+              raise SystemExit(1)
+          PY
+
       - name: Append named-test evidence
         if: ${{ always() }}
         shell: bash
@@ -789,6 +985,6 @@ jobs:
           retention-days: 3
 
       - name: Preserve failed exact-test result
-        if: ${{ steps.named_tests.outcome == 'failure' || steps.android_helper_tests.outcome == 'failure' || steps.tui_provider_tests.outcome == 'failure' }}
+        if: ${{ steps.named_tests.outcome == 'failure' || steps.android_helper_tests.outcome == 'failure' || steps.tui_provider_tests.outcome == 'failure' || steps.d0_active_wait_test.outcome == 'failure' }}
         shell: bash
         run: exit 1
