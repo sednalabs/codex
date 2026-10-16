@@ -27,6 +27,61 @@ def _assert(condition: bool, message: str) -> None:
         raise AssertionError(message)
 
 
+def _safe_report_process_diagnostic(
+    returncode: int, stdout: str, stderr: str
+) -> str:
+    status = "unavailable"
+    reason_codes: tuple[str, ...] = ()
+    try:
+        parsed = json.loads(stdout)
+    except json.JSONDecodeError:
+        parsed = None
+    if isinstance(parsed, dict):
+        candidate_status = parsed.get("status")
+        if candidate_status in {"complete", "incomplete", "unavailable"}:
+            status = str(candidate_status)
+        reasons = parsed.get("incomplete_reasons")
+        if isinstance(reasons, list):
+            reason_codes = tuple(
+                value
+                for value in reasons
+                if isinstance(value, str)
+                and value
+                and all(
+                    character.islower()
+                    or character.isdigit()
+                    or character == "_"
+                    for character in value
+                )
+            )
+
+    source_line = "none"
+    for line in stderr.splitlines():
+        marker = "scripts/codex_usage_report.py\", line "
+        if marker not in line:
+            continue
+        suffix = line.rsplit(marker, 1)[1]
+        candidate = suffix.split(",", 1)[0]
+        if candidate.isdigit():
+            source_line = candidate
+
+    exception_class = "none"
+    for line in reversed(stderr.splitlines()):
+        candidate = line.strip().split(":", 1)[0]
+        if candidate.isidentifier() and (
+            candidate.endswith("Error")
+            or candidate.endswith("Exception")
+            or candidate in {"AssertionError", "KeyboardInterrupt"}
+        ):
+            exception_class = candidate
+            break
+    return (
+        f"stage=single_ledger_cli expected_exit=2 observed_exit={returncode} "
+        f"report_status={status} reason_codes={','.join(reason_codes) or 'none'} "
+        f"source_line={source_line} exception_class={exception_class}"
+    )
+
+
 def _create_database(path: Path, *, current_indexes: bool) -> None:
     connection = sqlite3.connect(path)
     try:
@@ -248,7 +303,10 @@ def _run_report(
     )
     _assert(
         completed.returncode == 2,
-        "expected incomplete only for missing actual-model rate",
+        "expected incomplete only for missing actual-model rate; "
+        + _safe_report_process_diagnostic(
+            completed.returncode, completed.stdout, completed.stderr
+        ),
     )
     parsed = json.loads(completed.stdout)
     diagnostic: dict[str, Any] = {}
