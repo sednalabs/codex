@@ -16,7 +16,7 @@ from pathlib import Path
 TARGET_SHA = "a89b02855334af7c0521882271cb97b818981d1a"
 BASE_SHA = "e135df532669849b682dfac712c3f59aded039ba"
 HOST_TEST_PATH = ".github/scripts/test_d0_android_protocol_acceptance.py"
-SOURCE_FIXTURE_PATH = "codex-rs/core/tests/suite/compact_remote.rs"
+SOURCE_FIXTURE_PATH = "codex-rs/core/tests/suite/client.rs"
 
 
 class FixtureProblem(Exception):
@@ -49,14 +49,15 @@ def _extract_source_png(path: Path) -> str:
     except (OSError, UnicodeError) as error:
         raise FixtureProblem("source_fixture_unreadable") from error
     matches = re.findall(
-        r'let image_url = "data:image/png;base64,([A-Za-z0-9+/=]+)";', source
+        r'let (?:legacy_image_url|image_url) = "data:image/png;base64,([A-Za-z0-9+/=]+)";',
+        source,
     )
-    if len(matches) != 1:
+    if len(matches) != 2 or matches[0] != matches[1]:
         raise FixtureProblem("source_fixture_assignment_cardinality")
     return matches[0]
 
 
-def _validate_one_pixel_grayscale_alpha_png(encoded: str) -> dict[str, int | str]:
+def _validate_one_pixel_rgba_png(encoded: str) -> dict[str, int | str]:
     try:
         payload = base64.b64decode(encoded, validate=True)
     except (ValueError, binascii.Error) as error:
@@ -103,7 +104,7 @@ def _validate_one_pixel_grayscale_alpha_png(encoded: str) -> dict[str, int | str
 
     if not ended or header is None or chunk_types != [b"IHDR", b"IDAT", b"IEND"]:
         raise FixtureProblem("png_chunk_sequence_invalid")
-    if header != (1, 1, 8, 4, 0, 0, 0):
+    if header != (1, 1, 8, 6, 0, 0, 0):
         raise FixtureProblem("png_header_parameters_invalid")
 
     decoder = zlib.decompressobj()
@@ -113,10 +114,10 @@ def _validate_one_pixel_grayscale_alpha_png(encoded: str) -> dict[str, int | str
         raise FixtureProblem("png_zlib_invalid") from error
     if not decoder.eof or decoder.unused_data or decoder.unconsumed_tail:
         raise FixtureProblem("png_zlib_stream_invalid")
-    # A 1x1, 8-bit grayscale-alpha row is one filter byte plus two pixel bytes.
-    if len(scanline) != 3 or scanline[0] != 0:
+    # A 1x1, 8-bit RGBA row is one filter byte plus four pixel bytes.
+    if len(scanline) != 5 or scanline[0] != 0:
         raise FixtureProblem("png_decoded_scanline_invalid")
-    return {"width": 1, "height": 1, "chunk_count": 3, "decoded_scanline_bytes": 3}
+    return {"width": 1, "height": 1, "chunk_count": 3, "decoded_scanline_bytes": 5}
 
 
 def main() -> int:
@@ -149,10 +150,10 @@ def main() -> int:
         fixture_results = []
         for name, encoded in (
             ("synthetic_android_screenshot", host_png),
-            ("source_compact_remote_fixture", source_png),
+            ("source_client_suite_fixture", source_png),
         ):
             try:
-                details = _validate_one_pixel_grayscale_alpha_png(encoded)
+                details = _validate_one_pixel_rgba_png(encoded)
             except FixtureProblem as error:
                 fixture_results.append({
                     "name": name,

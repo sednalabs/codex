@@ -25,7 +25,7 @@ from fixtures import SmokePackage
 from tui_pty import PackagedTui
 
 
-_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p6kAAAAASUVORK5CYII="
+_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg=="
 _TOOLS = (
     "android.input.tap",
     "android.input.text",
