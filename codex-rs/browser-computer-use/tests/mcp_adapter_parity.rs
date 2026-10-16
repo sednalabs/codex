@@ -117,8 +117,8 @@ for (const block of result.content) {
         })
         .collect::<Vec<_>>();
     anyhow::ensure!(
-        image_urls.as_slice() == support::IMAGE_DATA_URLS.as_slice(),
-        "Code Mode did not preserve every MCP image as ordered typed image content"
+        image_urls.as_slice() == [support::IMAGE_DATA_URL],
+        "Code Mode did not preserve the MCP image as typed image content"
     );
     Ok(())
 }
@@ -171,8 +171,7 @@ async fn mock_android_operations_remain_ordered_and_forward_post_action_image() 
                         "structuredContent": {"node_count": 0, "nodes": []},
             "content": [
                 {"type": "text", "text": "synthetic visual result"},
-                {"type": "image", "data": "AQID", "mimeType": "image/png"},
-                {"type": "image", "data": "BAUG", "mimeType": "image/png"}
+                {"type": "image", "data": support::IMAGE_BASE64, "mimeType": "image/png"}
             ]
                     }),
                     "android.input.tap" => json!({
@@ -222,7 +221,7 @@ async fn mock_android_operations_remain_ordered_and_forward_post_action_image() 
         step.content_items.iter().any(|item| matches!(
             item,
             DynamicToolCallOutputContentItem::InputImage { image_url }
-                if image_url.as_str() == support::IMAGE_DATA_URLS[0]
+                if image_url.as_str() == support::IMAGE_DATA_URL
         )),
         "mock Android post-action observation did not preserve typed image output"
     );
@@ -268,7 +267,7 @@ async fn mock_android_operations_remain_ordered_and_forward_post_action_image() 
         install.content_items.iter().any(|item| matches!(
             item,
             DynamicToolCallOutputContentItem::InputImage { image_url }
-                if image_url.as_str() == support::IMAGE_DATA_URLS[0]
+                if image_url.as_str() == support::IMAGE_DATA_URL
         )),
         "mock Android post-install observation did not preserve typed image output"
     );
@@ -306,8 +305,7 @@ impl CodeModeSessionDelegate for SyntheticImageDelegate {
             Ok(json!({
             "content": [
                 {"type": "text", "text": "synthetic visual result"},
-                {"type": "image", "data": "AQID", "mimeType": "image/png"},
-                {"type": "image", "data": "BAUG", "mimeType": "image/png"}
+                {"type": "image", "data": support::IMAGE_BASE64, "mimeType": "image/png"}
             ]
             }))
         })
@@ -434,8 +432,8 @@ async fn run_image_parity() -> Result<()> {
         .filter_map(|item| item["image_url"].as_str())
         .collect::<Vec<_>>();
     anyhow::ensure!(
-        model_images.as_slice() == support::IMAGE_DATA_URLS.as_slice(),
-        "model-facing MCP output did not preserve every image in order"
+        model_images.as_slice() == [support::IMAGE_DATA_URL],
+        "model-facing MCP output did not preserve the image as typed input"
     );
     anyhow::ensure!(
         cloud.calls.load(Ordering::SeqCst) == 1,

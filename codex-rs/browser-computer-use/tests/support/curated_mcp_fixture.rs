@@ -1,10 +1,8 @@
 use serde_json::Value;
 use serde_json::json;
 
-pub const IMAGE_DATA_URLS: [&str; 2] = [
-    "data:image/png;base64,AQID",
-    "data:image/png;base64,BAUG",
-];
+pub const IMAGE_DATA_URL: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
+pub const IMAGE_BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
 
 pub fn image_tool_response(request_id: &Value) -> Value {
     json!({
@@ -13,8 +11,7 @@ pub fn image_tool_response(request_id: &Value) -> Value {
         "result": {
             "content": [
                 {"type": "text", "text": "synthetic visual result"},
-                {"type": "image", "data": "AQID", "mimeType": "image/png"},
-                {"type": "image", "data": "BAUG", "mimeType": "image/png"}
+                {"type": "image", "data": IMAGE_BASE64, "mimeType": "image/png"}
             ],
             "isError": false
         }
