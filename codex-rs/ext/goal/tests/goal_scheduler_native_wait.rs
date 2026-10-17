@@ -72,6 +72,7 @@ use wiremock::matchers::path;
 const CHILD_INITIAL: &str = "goal-worker-initial";
 const WAIT_PROMPT: &str = "wait for goal worker";
 const OPERATOR_PROMPT: &str = "operator changes the request";
+const DRAIN_PROMPT: &str = "record queued goal handbacks";
 const REPORT_PROMPT: &str = "report the final goal handback";
 const SPAWN_CALL: &str = "goal-spawn-call";
 const WAIT_CALL: &str = "goal-wait-call";
@@ -407,6 +408,15 @@ async fn mount_provider(
         ]),
     )
     .await;
+    mount_sse_once_match(
+        server,
+        |request: &Request| body_contains(request, DRAIN_PROMPT),
+        sse(vec![
+            ev_assistant_message("parent-drain", "ready to report"),
+            ev_completed("parent-drain"),
+        ]),
+    )
+    .await;
     let report = mount_sse_once_match(
         server,
         |request: &Request| body_contains(request, REPORT_PROMPT),
@@ -720,7 +730,12 @@ async fn run_goal_scheduler_wait(scenario: Scenario) -> Result<()> {
     assert_eq!(result["outcome"], serde_json::to_value(expected)?);
     assert_eq!(result["timed_out"], false);
 
-    // Every child idle boundary was consumed above, including the final post-notification one.
+    // A fresh nonempty turn samples its prompt before queued mail. Its terminal
+    // completion records deferred mail, so observe the following report only
+    // after that recording boundary. All child notification idle boundaries and
+    // the root wait idle boundary have already been consumed above.
+    test.submit_turn(DRAIN_PROMPT).await?;
+    timeout(Duration::from_secs(10), ThreadIdle::wait(&test.codex)).await?;
     test.submit_turn(REPORT_PROMPT).await?;
     let reports = report_mock
         .requests()
