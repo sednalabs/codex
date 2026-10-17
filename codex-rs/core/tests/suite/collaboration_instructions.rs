@@ -27,6 +27,7 @@ use codex_protocol::protocol::ReviewTarget;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadSettingsOverrides;
+use codex_protocol::turn_input::TurnInputSubmission;
 use codex_protocol::user_input::UserInput;
 use codex_thread_store::LoadThreadHistoryParams;
 use core_test_support::responses::ev_assistant_message;
@@ -160,13 +161,24 @@ async fn persisted_model_context_json(test: &TestCodex) -> Result<String> {
 }
 
 async fn submit_thread_text_turn(thread: &codex_core::CodexThread, prompt: &str) -> Result<()> {
-    thread
+    let submission = thread
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
             text: prompt.to_string(),
             text_elements: Vec::new(),
         }]))
         .await?;
-    wait_for_event(thread, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+    let turn_id = match submission {
+        TurnInputSubmission::Started { turn_id, .. }
+        | TurnInputSubmission::Steered { turn_id, .. } => turn_id,
+        TurnInputSubmission::NotSubmitted { .. } => {
+            anyhow::bail!("child turn input was not submitted")
+        }
+    };
+    wait_for_event(
+        thread,
+        |ev| matches!(ev, EventMsg::TurnComplete(event) if event.turn_id == turn_id),
+    )
+    .await;
     Ok(())
 }
 
@@ -587,9 +599,6 @@ async fn thread_spawn_child_inherits_the_resolved_overlay_plan() -> Result<()> {
         })
         .await?;
     submit_thread_text_turn(&child.thread, "spawned child request").await?;
-    // A new ThreadSpawn stream can expose the setup TurnComplete before the submitted turn.
-    // Wait for the submitted child request's completion before inspecting the mock recorder.
-    wait_for_event(&child.thread, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
     let texts = developer_texts(&request.single_request().input());
     assert_eq!(
