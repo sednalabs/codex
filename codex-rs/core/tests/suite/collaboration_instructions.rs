@@ -279,7 +279,6 @@ async fn configured_developer_overlay_changes_only_its_tagged_request_fragment()
         .build(&server)
         .await?;
     test.submit_text_turn("hello").await?;
-    wait_for_event(&test.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
     let texts = developer_texts(&req.single_request().input());
     let permissions = texts
@@ -319,7 +318,6 @@ async fn retained_model_switch_overlay_is_request_only_and_does_not_accumulate()
         .await?;
 
     test.submit_text_turn("initial model").await?;
-    wait_for_event(&test.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
     submit_text_turn_with_model(&test, "switch model", "gpt-5.5").await?;
     submit_text_turn_with_model(&test, "same selected model", "gpt-5.5").await?;
 
@@ -384,7 +382,6 @@ async fn review_uses_review_baseline_and_does_not_apply_normal_baseline() -> Res
         .build(&server)
         .await?;
     test.submit_text_turn("normal request").await?;
-    wait_for_event(&test.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
     test.codex
         .submit(Op::Review {
             review_request: ReviewRequest {
@@ -455,7 +452,6 @@ async fn fork_reconstructs_the_configured_overlay_on_its_child_client() -> Resul
         .build(&server)
         .await?;
     test.submit_text_turn("parent turn").await?;
-    wait_for_event(&test.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
     test.codex.ensure_rollout_materialized().await;
     test.codex.flush_rollout().await?;
     let path = test
@@ -508,7 +504,6 @@ async fn resume_and_config_rollback_change_only_new_outgoing_requests() -> Resul
     });
     let initial = configured_builder.build(&server).await?;
     initial.submit_text_turn("before restart").await?;
-    wait_for_event(&initial.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
     let raw_before_restart = persisted_model_context_json(&initial).await?;
     assert!(!raw_before_restart.contains("reconstructed config marker"));
     let home = initial.home.clone();
@@ -527,17 +522,12 @@ async fn resume_and_config_rollback_change_only_new_outgoing_requests() -> Resul
     });
     let resumed = resume_builder.resume(&server, home, rollout_path).await?;
     resumed.submit_text_turn("after resume").await?;
-    wait_for_event(&resumed.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
     let raw_after_resume = persisted_model_context_json(&resumed).await?;
     assert!(!raw_after_resume.contains("reconstructed config marker"));
 
     let mut rollback_builder = test_codex();
     let rolled_back = rollback_builder.restart(&server, &resumed).await?;
     rolled_back.submit_text_turn("after rollback").await?;
-    wait_for_event(&rolled_back.codex, |ev| {
-        matches!(ev, EventMsg::TurnComplete(_))
-    })
-    .await;
     let requests = mock.requests();
     assert_eq!(requests.len(), 3);
     let resumed_texts = developer_texts(
@@ -597,6 +587,9 @@ async fn thread_spawn_child_inherits_the_resolved_overlay_plan() -> Result<()> {
         })
         .await?;
     submit_thread_text_turn(&child.thread, "spawned child request").await?;
+    // A new ThreadSpawn stream can expose the setup TurnComplete before the submitted turn.
+    // Wait for the submitted child request's completion before inspecting the mock recorder.
+    wait_for_event(&child.thread, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
     let texts = developer_texts(&request.single_request().input());
     assert_eq!(
@@ -670,26 +663,62 @@ async fn trusted_project_role_overlay_reaches_the_spawned_child_request() -> Res
         ]),
     )
     .await;
-    mount_sse_once_match(
-        &server,
-        |request: &wiremock::Request| request_body_contains(request, "spawn-project-role"),
-        sse(vec![
-            ev_response_created("resp-root-wait"),
-            ev_function_call_with_namespace(
-                "wait-project-worker",
-                "collaboration",
-                "wait_agent",
-                &json!({
-                    "targets": ["project-worker"],
-                    "return_when": "all",
-                    "timeout_ms": 10_000,
-                })
-                .to_string(),
-            ),
-            ev_completed("resp-root-wait"),
-        ]),
-    )
-    .await;
+    let wait_target_seen =
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(/*value*/ false));
+    struct WaitForSpawnedRoleResponder {
+        wait_target_seen: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+    impl wiremock::Respond for WaitForSpawnedRoleResponder {
+        fn respond(&self, request: &wiremock::Request) -> wiremock::ResponseTemplate {
+            let agent_id = decoded_request_body(request)
+                .and_then(|body| serde_json::from_slice::<Value>(&body).ok())
+                .and_then(|body| body.get("input")?.as_array().cloned())
+                .and_then(|input| {
+                    input.iter().find_map(|item| {
+                        (item.get("type")?.as_str()? == "function_call_output"
+                            && item.get("call_id")?.as_str()? == "spawn-project-role")
+                            .then(|| item.get("output")?.as_str())
+                            .flatten()
+                            .and_then(|output| serde_json::from_str::<Value>(output).ok())
+                            .and_then(|output| output.get("agent_id")?.as_str().map(str::to_owned))
+                    })
+                });
+            let targets = match agent_id {
+                Some(agent_id) => {
+                    self.wait_target_seen
+                        .store(/*value*/ true, std::sync::atomic::Ordering::SeqCst);
+                    vec![agent_id]
+                }
+                None => vec!["missing-spawn-agent-id".to_string()],
+            };
+            let wait_args = json!({
+                "targets": targets,
+                "return_when": "all",
+                "timeout_ms": 10_000,
+            });
+            wiremock::ResponseTemplate::new(/*status_code*/ 200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(sse(vec![
+                    ev_response_created("resp-root-wait"),
+                    ev_function_call_with_namespace(
+                        "wait-project-worker",
+                        "collaboration",
+                        "wait_agent",
+                        &wait_args.to_string(),
+                    ),
+                    ev_completed("resp-root-wait"),
+                ]))
+        }
+    }
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path_regex(".*/responses$"))
+        .and(|request: &wiremock::Request| request_body_contains(request, "spawn-project-role"))
+        .respond_with(WaitForSpawnedRoleResponder {
+            wait_target_seen: std::sync::Arc::clone(&wait_target_seen),
+        })
+        .up_to_n_times(/*n_times*/ 1)
+        .mount(&server)
+        .await;
     let child_request = mount_sse_once_match(
         &server,
         |request: &wiremock::Request| {
@@ -715,6 +744,10 @@ async fn trusted_project_role_overlay_reaches_the_spawned_child_request() -> Res
         .single_request()
         .function_call_output_text("wait-project-worker")
         .expect("root continuation contains the targeted wait result");
+    assert!(
+        wait_target_seen.load(std::sync::atomic::Ordering::SeqCst),
+        "spawn response did not provide an exact agent ID for wait_agent"
+    );
     let wait_result: Value = serde_json::from_str(&wait_output)?;
     assert_eq!(
         wait_result["message"],
