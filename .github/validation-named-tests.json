@@ -146,6 +146,14 @@
       "execution_argv": ["cargo", "test", "--locked", "-p", "codex-protocol", "--lib", "--", "--test-threads=1"]
     },
     {
+      "package": "codex-rmcp-client",
+      "target_kind": "integration",
+      "target": "process_group_cleanup",
+      "profiles": ["rust_integration"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-rmcp-client", "--test", "process_group_cleanup", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-rmcp-client", "--test", "process_group_cleanup", "--", "--test-threads=1"]
+    },
+    {
       "package": "codex-state",
       "target_kind": "lib",
       "target": "",
