@@ -550,6 +550,7 @@ async fn client_setup_accepts_command_credential_refresh() {
         let manager = provider.auth_manager().unwrap();
         let mut client = test_model_client(SessionSource::Exec);
         Arc::get_mut(&mut client.state).unwrap().provider = provider;
+        let previous_revision = Some(*manager.auth_change_receiver().borrow());
 
         let setup = client
             .current_client_setup(routing, /*expected_authority*/ None)
@@ -561,15 +562,17 @@ async fn client_setup_accepts_command_credential_refresh() {
             headers.get(http::header::AUTHORIZATION).unwrap(),
             "Bearer refreshed-token"
         );
-        let refreshed_revision = Some(*manager.auth_change_receiver().borrow());
+        let current_revision = Some(*manager.auth_change_receiver().borrow());
+        assert_eq!(setup.auth_revision, current_revision);
+        assert_ne!(previous_revision, current_revision);
         assert_ne!(
             codex_model_provider::ResponsesConnectionKey::new(
                 &setup.api_provider,
-                setup.auth_revision
+                previous_revision
             ),
             codex_model_provider::ResponsesConnectionKey::new(
                 &setup.api_provider,
-                refreshed_revision
+                setup.auth_revision
             ),
         );
         assert_ne!(setup.auth_owner_generation, client.auth_owner_generation());
@@ -577,69 +580,174 @@ async fn client_setup_accepts_command_credential_refresh() {
 }
 
 #[tokio::test]
-async fn client_setup_rebuilds_chatgpt_refresh_but_rejects_account_switches() {
-    for (user, workspace, expected_calls) in [
-        ("user-a", "workspace-a", 2),
-        ("user-b", "workspace-a", 1),
-        ("user-a", "workspace-b", 1),
-    ] {
-        let token = |user: &str, revision: &str| {
-            let claims =
-                json!({"jti": revision, "https://api.openai.com/auth": {"chatgpt_user_id": user}});
-            let payload =
-                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(claims.to_string());
-            format!("header.{payload}.signature")
-        };
-        let home = TempDir::new().unwrap();
-        let initial = CodexAuth::from_external_chatgpt_tokens(
-            &token("user-a", "initial"),
-            "workspace-a",
-            /*chatgpt_plan_type*/ None,
+async fn workspace_client_setup_uses_refreshed_chatgpt_auth() {
+    let home = TempDir::new().unwrap();
+    let initial = external_chatgpt_auth("user-a", "workspace-a", "initial");
+    let manager =
+        AuthManager::from_auth_for_testing_with_home(initial, home.path().to_path_buf());
+    let refreshed_token = external_chatgpt_auth("user-a", "workspace-a", "refreshed");
+    let mut info = test_model_provider().info().clone();
+    info.requires_openai_auth = true;
+    let provider = Arc::new(SetupRefreshProvider {
+        inner: create_model_provider(info, Some(manager.clone())),
+        refresh: SetupRefresh::ChatGpt {
+            home: home.path().to_path_buf(),
+            token: refreshed_token.get_token().unwrap(),
+            workspace: "workspace-a".into(),
+        },
+        setup_calls: AtomicUsize::new(/*v*/ 0),
+    });
+    let mut client = test_model_client(SessionSource::Exec);
+    Arc::get_mut(&mut client.state).unwrap().provider = provider.clone();
+    let setup = client
+        .current_client_setup(
+            super::ClientRouting::Workspace,
+            /*expected_authority*/ None,
         )
-        .unwrap();
+        .await
+        .expect("workspace setup uses refreshed auth");
+    let mut headers = http::HeaderMap::new();
+    setup.api_auth.add_auth_headers(&mut headers);
+    assert_eq!(
+        headers.get(http::header::AUTHORIZATION).unwrap(),
+        &format!("Bearer {}", refreshed_token.get_token().unwrap())
+    );
+    assert_eq!(
+        setup.auth.as_ref().and_then(|auth| auth.get_token().ok()),
+        Some(refreshed_token.get_token().unwrap())
+    );
+    assert_eq!(
+        (setup.auth_revision, setup.auth_owner_generation),
+        (Some(*manager.auth_change_receiver().borrow()), Some(0))
+    );
+    assert_eq!(provider.setup_calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn workspace_unauthorized_retry_rejects_account_switches() {
+    for (user, workspace) in [("user-b", "workspace-a"), ("user-a", "workspace-b")] {
+        let home = TempDir::new().unwrap();
+        let initial = external_chatgpt_auth("user-a", "workspace-a", "initial");
+        let refreshed = external_chatgpt_auth(user, workspace, "refreshed");
         let manager =
-            AuthManager::from_auth_for_testing_with_home(initial, home.path().to_path_buf());
-        let refreshed_token = token(user, "refreshed");
+            AuthManager::from_auth_for_testing_with_home(initial.clone(), home.path().to_path_buf());
+        manager
+            .set_external_auth(Arc::new(RefreshingExternalAuth {
+                current: Arc::new(Mutex::new(initial)),
+                refreshed,
+            }))
+            .await
+            .expect("external auth fixture installs");
+
         let mut info = test_model_provider().info().clone();
         info.requires_openai_auth = true;
-        let provider = Arc::new(SetupRefreshProvider {
-            inner: create_model_provider(info, Some(manager.clone())),
-            refresh: SetupRefresh::ChatGpt {
-                home: home.path().to_path_buf(),
-                token: refreshed_token.clone(),
-                workspace: workspace.into(),
-            },
-            setup_calls: AtomicUsize::new(/*v*/ 0),
-        });
         let mut client = test_model_client(SessionSource::Exec);
-        Arc::get_mut(&mut client.state).unwrap().provider = provider.clone();
-        let result = client
+        Arc::get_mut(&mut client.state)
+            .expect("test client has unique state")
+            .provider = create_model_provider(info, Some(manager.clone()));
+        let initial_setup = client
             .current_client_setup(
-                super::ClientRouting::ConfiguredProvider,
+                super::ClientRouting::Workspace,
                 /*expected_authority*/ None,
             )
+            .await
+            .expect("request-start setup");
+        let original_authority = initial_setup.authority;
+        let expected_state = initial_setup
+            .auth_change_state
+            .expect("request-start auth state is captured");
+        drop(initial_setup);
+
+        let mut session = client
+            .new_session_with_authority(Some(original_authority), /*ordinary_401_rebind*/ true);
+        let mut recovery = manager.unauthorized_recovery();
+        let mut result = recovery
+            .next_for_unauthorized_request(expected_state)
+            .await
+            .expect("manager unauthorized recovery runs");
+        assert!(result.request_state_matches());
+        let witness = result
+            .take_commit_witness()
+            .expect("manager recovery commit witness");
+        let observed_after = *manager.auth_change_state_receiver().borrow();
+        assert_eq!(
+            expected_state.generation.checked_add(1),
+            Some(observed_after.generation)
+        );
+        assert_ne!(expected_state.owner_generation, observed_after.owner_generation);
+        assert!(!witness.matches_same_owner_successor(expected_state, observed_after));
+
+        let mut retry = PendingUnauthorizedRetry::from_recovery(UnauthorizedRecoveryExecution {
+            mode: "external",
+            phase: "external_refresh",
+            expected_state: Some(expected_state),
+            commit_witness: Some(witness),
+        });
+        let setup = session
+            .current_client_setup_for_retry(super::ClientRouting::Workspace, &mut retry)
             .await;
-        if expected_calls == 2 {
-            let setup = result.unwrap();
-            let mut headers = http::HeaderMap::new();
-            setup.api_auth.add_auth_headers(&mut headers);
-            assert_eq!(
-                headers.get(http::header::AUTHORIZATION).unwrap(),
-                &format!("Bearer {refreshed_token}")
-            );
-            assert_eq!(setup.auth.unwrap().get_token().unwrap(), refreshed_token);
-            assert_eq!(
-                (setup.auth_revision, setup.auth_owner_generation),
-                (Some(*manager.auth_change_receiver().borrow()), Some(0))
-            );
-        } else {
-            assert_eq!(
-                result.err().expect("account switch must fail").to_string(),
-                "account changed while preparing model request"
-            );
-        }
-        assert_eq!(provider.setup_calls.load(Ordering::SeqCst), expected_calls);
+        let error = setup
+            .err()
+            .expect("account switch cannot rebind a 401 retry");
+        assert!(matches!(
+            error.details(),
+            CodexErrorDetails::AutomaticTurnContextChanged
+        ));
     }
+}
+
+#[tokio::test]
+async fn configured_provider_setup_uses_coherent_refreshed_chatgpt_auth() {
+    let home = TempDir::new().unwrap();
+    let initial = external_chatgpt_auth("user-a", "workspace-a", "initial-token");
+    let refreshed = external_chatgpt_auth("user-a", "workspace-a", "refreshed-token");
+    let manager =
+        AuthManager::from_auth_for_testing_with_home(initial.clone(), home.path().to_path_buf());
+    manager
+        .set_external_auth(Arc::new(RefreshingExternalAuth {
+            current: Arc::new(Mutex::new(initial)),
+            refreshed,
+        }))
+        .await
+        .expect("external auth fixture installs");
+    manager
+        .refresh_token_from_authority()
+        .await
+        .expect("external auth refreshes before configured-provider setup");
+
+    let mut client = test_model_client(SessionSource::Exec);
+    Arc::get_mut(&mut client.state)
+        .expect("test client has unique state")
+        .provider = create_model_provider(
+        ModelProviderInfo::create_openai_provider(/*base_url*/ None),
+        Some(manager.clone()),
+    );
+    let setup = client
+        .current_client_setup(
+            super::ClientRouting::ConfiguredProvider,
+            /*expected_authority*/ None,
+        )
+        .await
+        .expect("configured-provider setup uses refreshed auth");
+    let mut headers = http::HeaderMap::new();
+    setup.api_auth.add_auth_headers(&mut headers);
+    assert_eq!(
+        headers.get(http::header::AUTHORIZATION).unwrap(),
+        "Bearer refreshed-token"
+    );
+    assert_eq!(
+        setup
+            .auth
+            .as_ref()
+            .and_then(|auth| auth.get_token().ok())
+            .as_deref(),
+        Some("refreshed-token")
+    );
+    assert_eq!(
+        setup.auth_revision,
+        Some(*manager.auth_change_receiver().borrow())
+    );
+    assert_eq!(setup.auth_owner_generation, Some(0));
 }
 
 fn test_responses_metadata_for_client(
@@ -2459,8 +2567,10 @@ fn auth_request_telemetry_context_tracks_agent_identity_ids() {
 
 #[test]
 fn automatic_turn_principal_is_stable_but_bound_to_authenticated_route() {
-    let provider =
+    let mut provider =
         ModelProviderInfo::create_openai_provider(Some(CHATGPT_CODEX_BASE_URL.to_string()));
+    provider.http_headers = None;
+    provider.env_http_headers = None;
     let mut api_provider = provider
         .to_api_provider(Some(AuthMode::ChatgptAuthTokens))
         .expect("API provider");
