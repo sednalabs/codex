@@ -109,7 +109,7 @@ jobs:
               raise SystemExit("Fixed schema generation request rejected.")
           if usage_report_request and (
               payload != {"schema_version": "usage-report-exact-root-v1"}
-              or os.environ["VALIDATION_TARGET_SHA"] != "09c99a8c05ecf504d727e42f07123182a57b8f18"
+              or os.environ["VALIDATION_TARGET_SHA"] != "bb666e290040e1a6717e45f54ca877a9d0c1746c"
               or os.environ["VALIDATION_BASE_REF"] != "a319e05bad22a5b2870c9bfad3f49ac74dc0bef3"
               or os.environ.get("VALIDATION_EXPECTED_BASE_SHA", "") not in ("", "a319e05bad22a5b2870c9bfad3f49ac74dc0bef3")
               or os.environ["VALIDATION_PROFILE"] != "rust_minimal"
@@ -195,7 +195,7 @@ jobs:
             echo "VALIDATION_HARNESS_SHA=${harness_sha}"
           } >> "${GITHUB_ENV}"
 
-      - name: Validate fixed ac392 Android package-consumer request
+      - name: Validate fixed 4ad9 Android package-consumer request
         if: ${{ inputs.run_ac392_android_protocol_test }}
         shell: bash
         env:
@@ -205,8 +205,8 @@ jobs:
           RUST_TEST_REQUEST_JSON: ${{ inputs.request_json }}
         run: |
           set -euo pipefail
-          if [[ "${VALIDATION_TARGET_SHA}" != "ac392c2ef51171dbd5ca5a524ccc8cf060ec1aa1" || "${VALIDATION_BASE_REF}" != "a8778ccc83d615b403e4c01370ff8cb5f47677d0" || "${VALIDATION_PROFILE}" != "rust_integration" ]]; then
-            echo "Android package consumer is restricted to the fixed ac392 target and hosted base." >&2
+          if [[ "${VALIDATION_TARGET_SHA}" != "4ad9c8dcc71d901ba8610c35c11d916ba253f168" || "${VALIDATION_BASE_REF}" != "970a5edd1c2521eb70d7d7264b732ec323552c79" || "${VALIDATION_BASE_SHA}" != "970a5edd1c2521eb70d7d7264b732ec323552c79" || "${VALIDATION_PROFILE}" != "rust_integration" ]]; then
+            echo "Android package consumer is restricted to the fixed 4ad9 target and hosted base." >&2
             exit 1
           fi
           python3 - <<'PY'
@@ -214,11 +214,11 @@ jobs:
           import os
 
           expected = {
-              "schema_version": "ac392-android-protocol-v1",
+              "schema_version": "4ad9-android-protocol-v1",
               "profile": "rust_integration",
               "target": "x86_64-unknown-linux-gnu",
-              "package_run_id": 38905431732,
-              "artifact_id": 12052154895,
+              "package_run_id": 39027328625,
+              "artifact_id": 12101887037,
               "consumer": "packaged-android-step-install-protocol",
           }
           try:
@@ -229,26 +229,26 @@ jobs:
               raise SystemExit("Android package-consumer request differs from the fixed accepted selector.")
           PY
 
-      - name: Download exact ac392 x86 package artifact
+      - name: Download exact 4ad9 x86 package artifact
         if: ${{ inputs.run_ac392_android_protocol_test }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          artifact-ids: "12052154895"
+          artifact-ids: "12101887037"
           repository: sednalabs/codex
-          run-id: "38905431732"
+          run-id: "39027328625"
           github-token: ${{ github.token }}
-          path: ${{ runner.temp }}/ac392-x86-package
+          path: ${{ runner.temp }}/android-4ad9-x86-package
           digest-mismatch: error
 
-      - name: Verify exact ac392 package identity and archives
+      - name: Verify exact 4ad9 package identity and archives
         if: ${{ inputs.run_ac392_android_protocol_test }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          DIST_DIR: ${{ runner.temp }}/ac392-x86-package
+          DIST_DIR: ${{ runner.temp }}/android-4ad9-x86-package
         run: |
           set -euo pipefail
-          artifact_metadata="$(gh api repos/sednalabs/codex/actions/artifacts/12052154895)"
+          artifact_metadata="$(gh api repos/sednalabs/codex/actions/artifacts/12101887037)"
           ARTIFACT_METADATA_JSON="${artifact_metadata}" DIST_DIR="${DIST_DIR}" python3 - <<'PY'
           import json
           import os
@@ -256,18 +256,18 @@ jobs:
 
           artifact = json.loads(os.environ["ARTIFACT_METADATA_JSON"])
           expected_artifact = {
-              "id": 12052154895,
-              "name": "sedna-first-package-ac392c2e-x86_64-38905431732",
-              "size_in_bytes": 1199481611,
-              "digest": "sha256:9631ba758693eb3065bafff97018b590113e68a86eb35c5f13f77a1220b45912",
+              "id": 12101887037,
+              "name": "sedna-first-package-4ad9c8dc-x86_64-39027328625",
+              "size_in_bytes": 1202301675,
+              "digest": "sha256:1ab29765b18117569e82812b5c54c6c802d51bc4381f358ecbce56484f08b1ec",
               "expired": False,
           }
           for key, expected in expected_artifact.items():
               if artifact.get(key) != expected:
-                  raise SystemExit(f"Exact ac392 package artifact metadata mismatch for {key}.")
+                  raise SystemExit(f"Exact 4ad9 package artifact metadata mismatch for {key}.")
           producer = artifact.get("workflow_run") or {}
-          if producer.get("id") != 38905431732 or producer.get("head_sha") != "ac392c2ef51171dbd5ca5a524ccc8cf060ec1aa1":
-              raise SystemExit("Package artifact is not bound to the exact ac392 producer run and source.")
+          if producer.get("id") != 39027328625 or producer.get("head_sha") != "4ad9c8dcc71d901ba8610c35c11d916ba253f168":
+              raise SystemExit("Package artifact is not bound to the exact 4ad9 producer run and source.")
 
           dist = Path(os.environ["DIST_DIR"])
           expected_files = {
@@ -280,36 +280,36 @@ jobs:
           }
           entries = list(dist.iterdir())
           if any(not path.is_file() for path in entries) or {path.name for path in entries} != expected_files:
-              raise SystemExit("Exact ac392 package file set does not match the accepted x86 package.")
+              raise SystemExit("Exact 4ad9 package file set does not match the accepted x86 package.")
 
           manifest = json.loads((dist / "release-manifest.json").read_text(encoding="utf-8"))
           expected_manifest = {
               "repository": "sednalabs/codex",
-              "sourceCommit": "ac392c2ef51171dbd5ca5a524ccc8cf060ec1aa1",
-              "sourceTree": "e364120b0782c1424a6d99d1dd0e068d458614be",
-              "workflowRunId": "38905431732",
+              "sourceCommit": "4ad9c8dcc71d901ba8610c35c11d916ba253f168",
+              "sourceTree": "fb58ee125d7b86cdbbb125b388dc73e3cc8137db",
+              "workflowRunId": "39027328625",
               "target": "x86_64-unknown-linux-gnu",
           }
           for key, expected in expected_manifest.items():
               if manifest.get(key) != expected:
-                  raise SystemExit(f"Exact ac392 package manifest mismatch for {key}.")
+                  raise SystemExit(f"Exact 4ad9 package manifest mismatch for {key}.")
 
           listed = {}
           for line in (dist / "SHA256SUMS.txt").read_text(encoding="utf-8").splitlines():
               digest, filename = line.split("  ", 1)
               if filename in listed:
-                  raise SystemExit("Exact ac392 package checksum list contains a duplicate member.")
+                  raise SystemExit("Exact 4ad9 package checksum list contains a duplicate member.")
               if filename != "release-manifest.json":
                   listed[filename] = digest
           if manifest.get("artifacts") != listed:
-              raise SystemExit("Exact ac392 package manifest digests do not match the checksum list.")
+              raise SystemExit("Exact 4ad9 package manifest digests do not match the checksum list.")
           PY
           (cd "${DIST_DIR}" && sha256sum -c SHA256SUMS.txt)
           {
-            echo "AC392_PACKAGE_DIR=${DIST_DIR}"
-            echo "AC392_CLI_ARCHIVE=${DIST_DIR}/codex-cli-x86_64-unknown-linux-gnu.tar.gz"
-            echo "AC392_APPSERVER_ARCHIVE=${DIST_DIR}/codex-app-server-x86_64-unknown-linux-gnu.tar.gz"
-            echo "AC392_SYMBOLS_ARCHIVE=${DIST_DIR}/symbols.tar.gz"
+            echo "ANDROID_PACKAGE_DIR=${DIST_DIR}"
+            echo "ANDROID_CLI_ARCHIVE=${DIST_DIR}/codex-cli-x86_64-unknown-linux-gnu.tar.gz"
+            echo "ANDROID_APPSERVER_ARCHIVE=${DIST_DIR}/codex-app-server-x86_64-unknown-linux-gnu.tar.gz"
+            echo "ANDROID_SYMBOLS_ARCHIVE=${DIST_DIR}/symbols.tar.gz"
           } >> "${GITHUB_ENV}"
 
       - name: Set up Python package consumer environment
@@ -598,9 +598,9 @@ jobs:
           host = workspace / ".workflow-src"
           base = workspace / "validation-base"
           output_dir = Path(os.environ["OUTPUT_DIR"])
-          expected_target = "09c99a8c05ecf504d727e42f07123182a57b8f18"
-          expected_tree = "fc9910401b8687214aeca88cede1fef6d2df3290"
-          expected_parent = "43dfc7894b59db6992ab7b6f57f36c5d9fd7f39f"
+          expected_target = "bb666e290040e1a6717e45f54ca877a9d0c1746c"
+          expected_tree = "69c658ce075673ae528b413203e0281fe116540f"
+          expected_parent = "09c99a8c05ecf504d727e42f07123182a57b8f18"
           expected_base = "a319e05bad22a5b2870c9bfad3f49ac74dc0bef3"
 
           def git_value(root, *arguments):
@@ -1511,7 +1511,7 @@ jobs:
               raise SystemExit(1)
           PY
 
-      - name: Run exact packaged ac392 Android client protocol consumer
+      - name: Run exact packaged 4ad9 Android client protocol consumer
         id: ac392_android_protocol_test
         if: ${{ inputs.run_ac392_android_protocol_test == true }}
         continue-on-error: true
@@ -1534,15 +1534,15 @@ jobs:
           fi
           cp ../.workflow-src/.github/scripts/test_d0_android_protocol_acceptance.py "${test_path}"
           uv sync --project "${smoke_project}" --frozen
-          log_path="${RUNNER_TEMP}/ac392-android-pytest.log"
+          log_path="${RUNNER_TEMP}/android-4ad9-pytest.log"
           set +e
           uv run --project "${smoke_project}" --frozen --no-sync pytest -q \
             "${test_path}" \
             --compression gzip \
             --package-target "x86_64-unknown-linux-gnu" \
-            --cli-archive "${AC392_CLI_ARCHIVE}" \
-            --app-server-archive "${AC392_APPSERVER_ARCHIVE}" \
-            --symbols-archive "${AC392_SYMBOLS_ARCHIVE}" > "${log_path}" 2>&1
+            --cli-archive "${ANDROID_CLI_ARCHIVE}" \
+            --app-server-archive "${ANDROID_APPSERVER_ARCHIVE}" \
+            --symbols-archive "${ANDROID_SYMBOLS_ARCHIVE}" > "${log_path}" 2>&1
           test_exit=$?
           set -e
           DIAGNOSTIC_PATH="${log_path}" python3 - <<'PY'
@@ -1571,16 +1571,16 @@ jobs:
           failed = sum(int(value) for value in re.findall(r"\b(\d+) failed\b", log))
           skipped = sum(int(value) for value in re.findall(r"\b(\d+) skipped\b", log))
           expected_request = {
-              "schema_version": "ac392-android-protocol-v1",
+              "schema_version": "4ad9-android-protocol-v1",
               "profile": "rust_integration",
               "target": "x86_64-unknown-linux-gnu",
-            "package_run_id": 38905431732,
-            "artifact_id": 12052154895,
+              "package_run_id": 39027328625,
+              "artifact_id": 12101887037,
               "consumer": "packaged-android-step-install-protocol",
           }
           request = json.loads(os.environ["RUST_TEST_REQUEST_JSON"])
           result = {
-              "schema_version": "ac392-android-package-consumer-v1",
+              "schema_version": "4ad9-android-package-consumer-v1",
               "status": "success" if os.environ["RESULT_ENV_TEST_EXIT"] == "0" and passed == 1 and failed == 0 and skipped == 0 else "failure",
               "failure_code": "" if os.environ["RESULT_ENV_TEST_EXIT"] == "0" and passed == 1 and failed == 0 and skipped == 0 else "consumer_execution_mismatch",
               "identity": {
@@ -1591,9 +1591,9 @@ jobs:
                   "run_id": os.environ["GITHUB_RUN_ID"],
               },
               "artifact": {
-                  "producer_run_id": 38905431732,
-                  "artifact_id": 12052154895,
-                  "sha256": "9631ba758693eb3065bafff97018b590113e68a86eb35c5f13f77a1220b45912",
+                  "producer_run_id": 39027328625,
+                  "artifact_id": 12101887037,
+                  "sha256": "1ab29765b18117569e82812b5c54c6c802d51bc4381f358ecbce56484f08b1ec",
                   "target": "x86_64-unknown-linux-gnu",
               },
               "request": request,
@@ -1617,7 +1617,7 @@ jobs:
             exit 1
           fi
 
-      - name: Run the exact ac392 Android install-timeout selector
+      - name: Run the exact 4ad9 Android install-timeout selector
         id: ac392_android_timeout_test
         if: ${{ inputs.run_ac392_android_protocol_test == true && steps.ac392_android_protocol_test.outcome == 'success' }}
         continue-on-error: true
@@ -1639,17 +1639,17 @@ jobs:
           import subprocess
           from pathlib import Path
 
-          expected_target = "ac392c2ef51171dbd5ca5a524ccc8cf060ec1aa1"
-          expected_base = "a8778ccc83d615b403e4c01370ff8cb5f47677d0"
+          expected_target = "4ad9c8dcc71d901ba8610c35c11d916ba253f168"
+          expected_base = "970a5edd1c2521eb70d7d7264b732ec323552c79"
           expected_profile = "rust_integration"
           package = "codex-android-computer-use"
           test_name = "tests::install_build_from_run_gets_extended_provider_timeout"
           expected_request = {
-              "schema_version": "ac392-android-protocol-v1",
+              "schema_version": "4ad9-android-protocol-v1",
               "profile": expected_profile,
               "target": "x86_64-unknown-linux-gnu",
-              "package_run_id": 38905431732,
-              "artifact_id": 12052154895,
+              "package_run_id": 39027328625,
+              "artifact_id": 12101887037,
               "consumer": "packaged-android-step-install-protocol",
           }
           try:
@@ -1668,7 +1668,7 @@ jobs:
               json.dumps(request, sort_keys=True, separators=(",", ":")).encode("utf-8")
           ).hexdigest() if isinstance(request, dict) else ""
           result = {
-              "schema_version": "ac392-android-timeout-test-v1",
+              "schema_version": "4ad9-android-timeout-test-v1",
               "status": "failure",
               "failure_code": "",
               "identity": identity,
@@ -1837,11 +1837,11 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
-      - name: Upload ac392 Android install-timeout test evidence
+      - name: Upload 4ad9 Android install-timeout test evidence
         if: ${{ always() && inputs.run_ac392_android_protocol_test == true && hashFiles('validation-target/android-timeout-selector-results.json') != '' }}
         uses: actions/upload-artifact@v7
         with:
-          name: ac392-android-timeout-test-${{ github.run_id }}
+          name: 4ad9-android-timeout-test-${{ github.run_id }}
           path: validation-target/android-timeout-selector-results.json
           if-no-files-found: error
           retention-days: 3
