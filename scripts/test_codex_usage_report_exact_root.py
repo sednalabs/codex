@@ -884,6 +884,7 @@ def _check_spawn_edge_status_and_identifier_bounds(temporary: Path) -> None:
         ("oversized-parent-id", "parent", "x" * 129),
         ("blob-request-id", "blob-request", sqlite3.Binary(b"x" * 129)),
         ("blob-child-id", "blob-child", sqlite3.Binary(b"x" * 129)),
+        ("blob-parent-metadata-collision", "blob-parent-metadata", "b'root'"),
     )
     for name, field, value in cases:
         database = temporary / f"lineage-{name}.sqlite"
@@ -915,6 +916,20 @@ def _check_spawn_edge_status_and_identifier_bounds(temporary: Path) -> None:
                 connection.execute(
                     "UPDATE usage_spawn_requests SET child_thread_id = ? WHERE spawn_request_id = ?",
                     (value, "spawn-sentinel"),
+                )
+            elif field == "blob-parent-metadata":
+                root_id = value
+                connection.execute(
+                    "UPDATE usage_threads SET thread_id = ?, root_thread_id = ? WHERE thread_id = ?",
+                    (root_id, root_id, ROOT_THREAD),
+                )
+                connection.execute(
+                    "UPDATE usage_spawn_requests SET parent_thread_id = ? WHERE parent_thread_id = ?",
+                    (root_id, ROOT_THREAD),
+                )
+                connection.execute(
+                    "UPDATE usage_threads SET parent_thread_id = ?, root_thread_id = ? WHERE thread_id = ?",
+                    (sqlite3.Binary(b"root"), root_id, "synthetic-child"),
                 )
             else:
                 root_id = value

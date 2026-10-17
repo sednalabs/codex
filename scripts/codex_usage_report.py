@@ -824,6 +824,16 @@ class UsageReporter:
     ) -> tuple[dict[str, dict[str, Any]], bool]:
         """Walk only spawn-confirmed descendants from the exact requested root."""
         root_id = anchor["thread_id"]
+        if any(
+            anchor.get(column) is not None and not isinstance(anchor.get(column), str)
+            for column in (
+                "thread_id",
+                "root_thread_id",
+                "parent_thread_id",
+                "fork_parent_thread_id",
+            )
+        ):
+            self.lineage_walk_incomplete = True
         nodes = {root_id: anchor}
         seen_requests: set[str] = set()
         seen_children: dict[str, str] = {}
@@ -930,6 +940,20 @@ class UsageReporter:
                     # require recorded parent/root/fork metadata to agree.
                     child = self._fetch_threads([child_id]).get(child_id)
                     if child is None:
+                        self.lineage_walk_incomplete = True
+                        continue
+                    if any(
+                        child.get(column) is not None
+                        and not isinstance(child.get(column), str)
+                        for column in (
+                            "thread_id",
+                            "root_thread_id",
+                            "parent_thread_id",
+                            "fork_parent_thread_id",
+                        )
+                    ):
+                        # Metadata identifiers must remain exact text; in
+                        # particular, never stringify a BLOB into a thread ID.
                         self.lineage_walk_incomplete = True
                         continue
                     metadata_parent, _source = self._effective_parent(child)
