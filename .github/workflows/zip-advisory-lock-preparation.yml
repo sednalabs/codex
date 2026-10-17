@@ -69,10 +69,7 @@ jobs:
           packages = tomllib.loads(Path("codex-rs/Cargo.lock").read_text())["package"]
           zip_packages = [package for package in packages if package["name"] == "zip"]
           if len(zip_packages) != 1 or zip_packages[0]["version"] != "9.0.4":
-              raise SystemExit(
-                  f"expected exactly one zip lock entry at 9.0.4, found "
-                  f"{[(package['version'], package.get('source')) for package in zip_packages]}"
-              )
+              raise SystemExit("expected exactly one zip lock entry at 9.0.4")
           print(zip_packages[0]["version"])
           PY
           )"
