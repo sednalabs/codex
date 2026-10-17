@@ -3095,7 +3095,11 @@ async fn explicit_communication_reconciles_post_append_metadata_failure_once() {
 
     let retry_turn = session.new_default_turn().await;
     session
-        .record_inter_agent_communication(&retry_turn, retry_turn.model_info(), communication)
+        .record_inter_agent_communication(
+            &retry_turn,
+            retry_turn.model_info(),
+            communication.clone(),
+        )
         .await
         .expect("a later retry should reconcile the committed response");
     assert_eq!(

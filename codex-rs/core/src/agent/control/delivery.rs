@@ -887,7 +887,11 @@ mod tests {
 
         assert!(matches!(
             ExplicitAdmissionIndex::from_rollout_items(&items, root_thread_id, root_thread_id),
-            Err(CodexErr::InvalidRequest(_))
+            Err(err)
+                if matches!(
+                    err.details(),
+                    codex_protocol::error::CodexErrorDetails::InvalidRequest(_)
+                )
         ));
     }
 }

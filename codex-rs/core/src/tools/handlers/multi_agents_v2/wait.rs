@@ -1125,7 +1125,7 @@ mod tests {
                     InterAgentCommunicationIntent::ResultReady,
                     target,
                     recipient,
-                    sender_path,
+                    sender_path.clone(),
                 ),
             )
             .await;
