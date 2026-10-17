@@ -92,6 +92,7 @@ use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_WRITE;
 use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_DELETE;
 use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
 use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_WRITE;
+use windows_sys::Win32::Storage::FileSystem::FILE_WRITE_DATA;
 use windows_sys::Win32::Storage::FileSystem::READ_CONTROL;
 use windows_sys::Win32::System::Diagnostics::ToolHelp::CreateToolhelp32Snapshot;
 use windows_sys::Win32::System::Diagnostics::ToolHelp::PROCESSENTRY32W;
@@ -228,6 +229,7 @@ struct DeleteAccessObservation {
     // Retain the exact child process handle through the fixture's completion.
     _process: Option<OwnedHandle>,
     allowed: Option<[bool; 4]>,
+    outside_parent_access_bits: Option<(bool, bool)>,
     parent_aces: Option<String>,
 }
 
@@ -565,8 +567,9 @@ fn access_check_for_path(
     token: HANDLE,
     path: &Path,
     desired_access: u32,
+    comparison_access: Option<u32>,
     sid_diagnostic: Option<(&ChildSidClasses, Option<bool>)>,
-) -> Option<(bool, Option<String>)> {
+) -> Option<(bool, Option<bool>, Option<String>)> {
     unsafe {
         let handle = OpenOptions::new()
             .access_mode(READ_CONTROL)
@@ -600,28 +603,32 @@ fn access_check_for_path(
             GenericExecute: FILE_GENERIC_EXECUTE,
             GenericAll: FILE_ALL_ACCESS,
         };
-        let mut privilege_set = [0u64; 128];
-        let mut privilege_set_size = std::mem::size_of_val(&privilege_set) as u32;
-        let mut granted_access = 0;
-        let mut access_status = 0;
-        let checked = AccessCheck(
-            descriptor,
-            token,
-            desired_access,
-            &mapping,
-            privilege_set.as_mut_ptr().cast(),
-            &mut privilege_set_size,
-            &mut granted_access,
-            &mut access_status,
-        );
-        let allowed = (checked != 0).then_some(access_status != 0);
+        let check_access = |desired_access| {
+            let mut privilege_set = [0u64; 128];
+            let mut privilege_set_size = std::mem::size_of_val(&privilege_set) as u32;
+            let mut granted_access = 0;
+            let mut access_status = 0;
+            let checked = AccessCheck(
+                descriptor,
+                token,
+                desired_access,
+                &mapping,
+                privilege_set.as_mut_ptr().cast(),
+                &mut privilege_set_size,
+                &mut granted_access,
+                &mut access_status,
+            );
+            (checked != 0).then_some(access_status != 0)
+        };
+        let allowed = check_access(desired_access);
+        let comparison_allowed = comparison_access.and_then(check_access);
         let parent_aces = allowed.and_then(|allowed| {
             sid_diagnostic.map(|(classes, base_token_unrestricted)| {
                 parent_acl_ace_summary(dacl, owner, classes, base_token_unrestricted, Some(allowed))
             })
         });
         LocalFree(descriptor as _);
-        allowed.map(|allowed| (allowed, parent_aces))
+        allowed.map(|allowed| (allowed, comparison_allowed, parent_aces))
     }
 }
 
@@ -637,6 +644,7 @@ fn observe_delete_access(
         return DeleteAccessObservation {
             _process: None,
             allowed: None,
+            outside_parent_access_bits: None,
             parent_aces: None,
         };
     };
@@ -644,6 +652,7 @@ fn observe_delete_access(
         return DeleteAccessObservation {
             _process: None,
             allowed: None,
+            outside_parent_access_bits: None,
             parent_aces: None,
         };
     };
@@ -652,6 +661,7 @@ fn observe_delete_access(
         return DeleteAccessObservation {
             _process: None,
             allowed: None,
+            outside_parent_access_bits: None,
             parent_aces: None,
         };
     }
@@ -662,6 +672,7 @@ fn observe_delete_access(
             return DeleteAccessObservation {
                 _process: None,
                 allowed: None,
+                outside_parent_access_bits: None,
                 parent_aces: None,
             };
         }
@@ -676,6 +687,7 @@ fn observe_delete_access(
             return DeleteAccessObservation {
                 _process: Some(process),
                 allowed: None,
+                outside_parent_access_bits: None,
                 parent_aces: None,
             };
         }
@@ -690,6 +702,7 @@ fn observe_delete_access(
             return DeleteAccessObservation {
                 _process: Some(process),
                 allowed: None,
+                outside_parent_access_bits: None,
                 parent_aces: None,
             };
         }
@@ -700,11 +713,13 @@ fn observe_delete_access(
             outside_file,
             DELETE,
             None,
+            None,
         );
         let outside_parent_check = access_check_for_path(
             impersonation_token.as_raw_handle() as HANDLE,
             outside_parent,
             FILE_DELETE_CHILD,
+            Some(FILE_WRITE_DATA),
             classes
                 .as_ref()
                 .map(|classes| (classes, base_token_unrestricted)),
@@ -714,11 +729,13 @@ fn observe_delete_access(
             protected_git_dir,
             DELETE,
             None,
+            None,
         );
         let workspace_parent_check = access_check_for_path(
             impersonation_token.as_raw_handle() as HANDLE,
             workspace_parent,
             FILE_DELETE_CHILD,
+            None,
             None,
         );
         let checks = [
@@ -727,14 +744,31 @@ fn observe_delete_access(
             git_check.map(|check| check.0),
             workspace_parent_check.map(|check| check.0),
         ];
+        let outside_parent_access_bits = outside_parent_check.as_ref().and_then(
+            |(delete_child, write_data, parent_aces)| {
+                let parent_aces = parent_aces.as_deref()?;
+                if !parent_aces.starts_with("baseline=")
+                    || !parent_aces.contains(";aces=[")
+                    || !parent_aces.ends_with(']')
+                {
+                    return None;
+                }
+                write_data
+                    .as_ref()
+                    .map(|write_data| (*delete_child, *write_data))
+            },
+        );
         if checks.iter().any(Option::is_none) {
             return DeleteAccessObservation {
                 _process: Some(process),
                 allowed: None,
+                outside_parent_access_bits,
                 parent_aces: None,
             };
         }
-        let parent_aces = outside_parent_check.and_then(|check| check.1);
+        let parent_aces = outside_parent_check
+            .as_ref()
+            .and_then(|check| check.2.clone());
         DeleteAccessObservation {
             _process: Some(process),
             allowed: Some([
@@ -743,6 +777,7 @@ fn observe_delete_access(
                 checks[2].unwrap_or(false),
                 checks[3].unwrap_or(false),
             ]),
+            outside_parent_access_bits,
             parent_aces,
         }
     }
@@ -1439,6 +1474,19 @@ fn legacy_workspace_write_delete_is_limited_to_writable_roots() {
             );
         } else {
             eprintln!("legacy delete access diagnostic: inconclusive");
+        }
+        if gate_released {
+            if let Some((outside_parent_delete_child, outside_parent_write_data)) =
+                observation.outside_parent_access_bits
+            {
+                eprintln!(
+                    "legacy delete access bit diagnostic: outside_parent_delete_child={outside_parent_delete_child} outside_parent_write_data={outside_parent_write_data}"
+                );
+            } else {
+                eprintln!("legacy delete access bit diagnostic: inconclusive");
+            }
+        } else {
+            eprintln!("legacy delete access bit diagnostic: inconclusive");
         }
         let (stdout, exit_code) =
             collect_stdout_and_exit(spawned, codex_home.path(), Duration::from_secs(/*secs*/ 10))
