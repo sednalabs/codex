@@ -498,7 +498,16 @@ async fn assert_quiet(
     Ok(())
 }
 
-async fn run_goal_scheduler_wait(scenario: Scenario) -> Result<()> {
+fn set_resumed_phase(phase: &mut Option<&mut &'static str>, next: &'static str) {
+    if let Some(phase) = phase.as_deref_mut() {
+        *phase = next;
+    }
+}
+
+async fn run_goal_scheduler_wait(
+    scenario: Scenario,
+    mut resumed_phase: Option<&mut &'static str>,
+) -> Result<()> {
     let server = start_mock_server().await;
     let (output_mock, report_mock) = mount_provider(&server, scenario).await?;
     let state = Arc::new(Mutex::new(None));
@@ -515,6 +524,7 @@ async fn run_goal_scheduler_wait(scenario: Scenario) -> Result<()> {
         .await?;
     let parent_id = test.session_configured.thread_id;
     let mut created = test.thread_manager.subscribe_thread_created();
+    set_resumed_phase(&mut resumed_phase, "spawn and initial child completion");
     test.submit_turn("spawn goal worker").await?;
     timeout(Duration::from_secs(10), ThreadIdle::wait(&test.codex)).await?;
     let child_id = timeout(Duration::from_secs(10), created.recv()).await??;
@@ -522,6 +532,7 @@ async fn run_goal_scheduler_wait(scenario: Scenario) -> Result<()> {
     let mut activities = Vec::new();
     let initial_turn = child_complete(&child, child_id, &mut activities).await?;
     let (test, initial_goal_id) = if matches!(scenario, Scenario::ResumedComplete) {
+        set_resumed_phase(&mut resumed_phase, "shutdown and seed persisted goal");
         let db = state.lock().expect("state").clone().expect("DB");
         test.thread_manager
             .shutdown_all_threads_bounded(Duration::from_secs(5))
@@ -537,6 +548,7 @@ async fn run_goal_scheduler_wait(scenario: Scenario) -> Result<()> {
             .await?
             .context("insert resumed goal")?;
         let mut builder = builder_with_goal(Arc::clone(&state), Arc::clone(&gate));
+        set_resumed_phase(&mut resumed_phase, "resume root");
         let resumed = builder
             .resume(
                 &server,
@@ -548,6 +560,7 @@ async fn run_goal_scheduler_wait(scenario: Scenario) -> Result<()> {
             )
             .await?;
         assert_eq!(resumed.session_configured.thread_id, parent_id);
+        set_resumed_phase(&mut resumed_phase, "reload selected child");
         resumed
             .thread_manager
             .ensure_multi_agent_v2_child_loaded(child_id)
@@ -562,6 +575,7 @@ async fn run_goal_scheduler_wait(scenario: Scenario) -> Result<()> {
         (test, marker.goal_id)
     };
     let child = test.thread_manager.get_thread(child_id).await?;
+    set_resumed_phase(&mut resumed_phase, "first automatic goal start");
     let first = timeout(Duration::from_secs(10), start_rx.recv())
         .await?
         .context("first automatic goal turn")?;
@@ -576,6 +590,7 @@ async fn run_goal_scheduler_wait(scenario: Scenario) -> Result<()> {
             .goal_id,
         first.goal_id
     );
+    set_resumed_phase(&mut resumed_phase, "start exact target native wait");
     test.codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
             text: WAIT_PROMPT.to_string(),
@@ -605,6 +620,7 @@ async fn run_goal_scheduler_wait(scenario: Scenario) -> Result<()> {
     .await??;
     let baseline = parent_request_count(&server, parent_id).await;
     assert_eq!(baseline, 3);
+    set_resumed_phase(&mut resumed_phase, "initial quiet observation");
     assert_quiet(&test.codex, &server, parent_id, baseline).await?;
 
     let mut completed = None;
@@ -618,6 +634,7 @@ async fn run_goal_scheduler_wait(scenario: Scenario) -> Result<()> {
         completed = Some(timeout(Duration::from_secs(10), completed_wait(&test.codex)).await??);
     }
     let mut previous = first;
+    set_resumed_phase(&mut resumed_phase, "intermediate goal turns and quiet observations");
     for intermediate in 0..2 {
         gate.permits.add_permits(1);
         let turn_id = child_complete(&child, child_id, &mut activities).await?;
@@ -651,6 +668,7 @@ async fn run_goal_scheduler_wait(scenario: Scenario) -> Result<()> {
             assert_quiet(&test.codex, &server, parent_id, baseline).await?;
         }
     }
+    set_resumed_phase(&mut resumed_phase, "final goal turn");
     gate.permits.add_permits(1);
     child_complete(&child, child_id, &mut activities).await?;
     let final_goal = db
@@ -667,6 +685,7 @@ async fn run_goal_scheduler_wait(scenario: Scenario) -> Result<()> {
             ThreadGoalStatus::Complete
         }
     );
+    set_resumed_phase(&mut resumed_phase, "native wait completion and output");
     let call = match completed {
         Some(call) => call,
         None => timeout(Duration::from_secs(10), completed_wait(&test.codex)).await??,
@@ -702,7 +721,11 @@ async fn run_goal_scheduler_wait(scenario: Scenario) -> Result<()> {
     } else {
         assert!(call.agents_states.is_empty());
     }
-    wait_for_event(&test.codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    let EventMsg::TurnComplete(wait_turn) =
+        wait_for_event(&test.codex, |event| matches!(event, EventMsg::TurnComplete(_))).await
+    else {
+        unreachable!("the matcher selects the root wait turn completion");
+    };
     timeout(Duration::from_secs(10), ThreadIdle::wait(&test.codex)).await?;
     // ResponseMock also records requests rejected by the caller's matcher.
     // Select the actual root continuation, independently of its output value.
@@ -734,8 +757,10 @@ async fn run_goal_scheduler_wait(scenario: Scenario) -> Result<()> {
     // completion records deferred mail, so observe the following report only
     // after that recording boundary. All child notification idle boundaries and
     // the root wait idle boundary have already been consumed above.
+    set_resumed_phase(&mut resumed_phase, "deferred handback recording turn");
     test.submit_turn(DRAIN_PROMPT).await?;
     timeout(Duration::from_secs(10), ThreadIdle::wait(&test.codex)).await?;
+    set_resumed_phase(&mut resumed_phase, "final report and handback identity");
     test.submit_turn(REPORT_PROMPT).await?;
     let reports = report_mock
         .requests()
@@ -786,6 +811,7 @@ async fn run_goal_scheduler_wait(scenario: Scenario) -> Result<()> {
         | Scenario::ActionRequired
         | Scenario::ResultReady => assert_eq!(payloads, vec!["goal complete"]),
     }
+    set_resumed_phase(&mut resumed_phase, "progress delivery identity");
     let progress = activities
         .iter()
         .filter(|activity| activity.id == PROGRESS_CALL)
@@ -847,9 +873,33 @@ async fn run_goal_scheduler_wait(scenario: Scenario) -> Result<()> {
             Some(&admission.update_id)
         );
         assert_eq!(update["id"], admission.update_id.as_str());
+        let recorded_updates = items
+            .iter()
+            .filter_map(|item| match item {
+                RolloutItem::ResponseItem(response)
+                    if response
+                        .metadata
+                        .as_ref()
+                        .and_then(|metadata| metadata.inter_agent_update_id.as_ref())
+                        == Some(&admission.update_id) => Some(response),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(recorded_updates.len(), 1);
+        let recorded_update = &recorded_updates[0].item;
+        assert_eq!(recorded_update.turn_id(), Some(wait_turn.turn_id.as_str()));
+        let create_time = recorded_update
+            .executed_tool_call_metadata()
+            .and_then(|metadata| metadata.create_time.clone())
+            .context("recorded addressed update creation time")?;
+        assert!(create_time.as_f64().is_some_and(|seconds| seconds > 0.0));
+        let mut expected_update = admission.original_communication.to_model_input_item();
+        expected_update.set_turn_id_if_missing(&wait_turn.turn_id);
+        expected_update.set_create_time_if_missing(create_time);
+        assert_eq!(recorded_update, &expected_update);
         assert_eq!(
             *update,
-            serde_json::to_value(admission.original_communication.to_model_input_item())?
+            serde_json::to_value(expected_update)?
         );
         assert_eq!(admission.original_communication.author, admission.sender_path);
         assert_eq!(
@@ -873,30 +923,36 @@ async fn run_goal_scheduler_wait(scenario: Scenario) -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fresh_goal_scheduler_keeps_native_wait_quiet_until_complete() -> Result<()> {
-    run_goal_scheduler_wait(Scenario::FreshComplete).await
+    run_goal_scheduler_wait(Scenario::FreshComplete, None).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn resumed_goal_scheduler_keeps_native_wait_quiet_until_complete() -> Result<()> {
-    run_goal_scheduler_wait(Scenario::ResumedComplete).await
+async fn resumed_goal_scheduler_keeps_native_wait_quiet_until_complete(
+) -> std::result::Result<(), &'static str> {
+    let mut phase = "setup";
+    // Keep this diagnostic finite and payload-free instead of returning an
+    // anyhow backtrace that can displace the failure origin from hosted tails.
+    run_goal_scheduler_wait(Scenario::ResumedComplete, Some(&mut phase))
+        .await
+        .map_err(|_| phase)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn goal_scheduler_error_wakes_native_wait_with_raw_error() -> Result<()> {
-    run_goal_scheduler_wait(Scenario::Error).await
+    run_goal_scheduler_wait(Scenario::Error, None).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn operator_steer_wakes_goal_native_wait_without_goal_completion() -> Result<()> {
-    run_goal_scheduler_wait(Scenario::OperatorSteer).await
+    run_goal_scheduler_wait(Scenario::OperatorSteer, None).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn goal_action_required_wakes_same_pending_native_wait() -> Result<()> {
-    run_goal_scheduler_wait(Scenario::ActionRequired).await
+    run_goal_scheduler_wait(Scenario::ActionRequired, None).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn goal_result_ready_wakes_same_pending_native_wait() -> Result<()> {
-    run_goal_scheduler_wait(Scenario::ResultReady).await
+    run_goal_scheduler_wait(Scenario::ResultReady, None).await
 }
