@@ -1522,7 +1522,7 @@ async fn multi_agent_v2_explicit_root_updates_are_durable_and_idempotent() {
         .session
         .services
         .local_agent_runtime
-        .control(session.session_id());
+        .control(root_thread.session.session_id());
     set_agent_control(&mut session, root_agent_control);
 
     let child_path = AgentPath::try_from("/root/worker").expect("agent path");
