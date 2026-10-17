@@ -44,6 +44,7 @@ use core_test_support::responses::ev_function_call;
 use core_test_support::responses::ev_function_call_with_namespace;
 use core_test_support::responses::ev_response_created;
 use core_test_support::responses::mount_sse_once_match;
+use core_test_support::responses::received_responses_requests;
 use core_test_support::responses::sse;
 use core_test_support::responses::sse_failed;
 use core_test_support::responses::sse_response;
@@ -670,6 +671,29 @@ async fn run_goal_scheduler_wait(
     for intermediate in 0..2 {
         gate.permits.add_permits(1);
         let turn_id = child_complete(&child, child_id, &mut activities).await?;
+        if intermediate == 0 && matches!(scenario, Scenario::OperatorSteer) {
+            let child_thread_id = child_id.to_string();
+            let progress_continuations = received_responses_requests(&server)
+                .await
+                .into_iter()
+                .filter(|request| {
+                    request.body_json()["client_metadata"]["thread_id"].as_str()
+                        == Some(child_thread_id.as_str())
+                        && request
+                            .inputs_of_type("function_call_output")
+                            .iter()
+                            .any(|output| output["call_id"] == PROGRESS_CALL)
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(progress_continuations.len(), 1);
+            let progress_output = progress_continuations[0]
+                .function_call_output_text(PROGRESS_CALL)
+                .context("selected child progress continuation has no text result")?;
+            assert!(
+                progress_output.is_empty(),
+                "selected child progress send returned non-success output"
+            );
+        }
         let marker = timeout(Duration::from_secs(10), marker_rx.recv())
             .await?
             .context("real continuing marker")?;
