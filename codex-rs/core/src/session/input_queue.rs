@@ -289,8 +289,12 @@ impl InputQueue {
         communication: InterAgentCommunication,
         start_options: TurnStartOptions,
     ) {
-        self.enqueue_mailbox_communication_with_activity(communication, start_options, None)
-            .await;
+        self.enqueue_mailbox_communication_with_activity(
+            communication,
+            start_options,
+            /*explicit_activity*/ None,
+        )
+        .await;
     }
 
     pub(crate) async fn enqueue_explicit_mailbox_communication(

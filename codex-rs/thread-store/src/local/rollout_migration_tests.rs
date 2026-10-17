@@ -261,7 +261,7 @@ fn explicit_admission_metadata(update_id: &str) -> RolloutItem {
     explicit_admission_metadata_with(
         update_id,
         &idempotency_key,
-        2,
+        /*sender_thread_number*/ 2,
         "Please review the bounded result.",
         "action_required",
         supersedes,
@@ -287,10 +287,9 @@ fn explicit_admission_metadata_with(
     );
     original_communication.id = Some(ResponseItemId::from_server(update_id.to_string()));
     let root_thread_id =
-        serde_json::to_value(ThreadId::from_u128(1)).expect("serialize root thread ID");
-    let sender_thread_id =
-        serde_json::to_value(ThreadId::from_u128(sender_thread_number))
-            .expect("serialize sender thread ID");
+        serde_json::to_value(ThreadId::from_u128(/*value*/ 1)).expect("serialize root thread ID");
+    let sender_thread_id = serde_json::to_value(ThreadId::from_u128(sender_thread_number))
+        .expect("serialize sender thread ID");
     serde_json::from_value(json!({
         "type": "inter_agent_communication_metadata",
         "payload": {
@@ -1322,8 +1321,8 @@ async fn migration_retains_explicit_admission_and_response_identity_when_rollbac
     );
     assert_eq!(admission.sender_path.as_str(), "/root/worker");
     assert_eq!(admission.recipient_path.as_str(), "/root");
-    assert_eq!(admission.root_thread_id, ThreadId::from_u128(1));
-    assert_eq!(admission.sender_thread_id, ThreadId::from_u128(2));
+    assert_eq!(admission.root_thread_id, ThreadId::from_u128(/*value*/ 1));
+    assert_eq!(admission.sender_thread_id, ThreadId::from_u128(/*value*/ 2));
     assert_eq!(admission.root_thread_id, admission.recipient_thread_id);
     assert_eq!(
         serde_json::to_value(admission.intent).unwrap(),
@@ -1356,7 +1355,7 @@ async fn rollback_migration_rejects_duplicate_scoped_idempotency_keys() {
             explicit_admission_metadata_with(
                 "update_a",
                 "shared-key",
-                2,
+                /*sender_thread_number*/ 2,
                 "First request.",
                 "action_required",
                 Vec::new(),
@@ -1364,7 +1363,7 @@ async fn rollback_migration_rejects_duplicate_scoped_idempotency_keys() {
             explicit_admission_metadata_with(
                 "update_b",
                 "shared-key",
-                2,
+                /*sender_thread_number*/ 2,
                 "First request.",
                 "action_required",
                 Vec::new(),
@@ -1416,7 +1415,7 @@ async fn rollback_migration_allows_same_key_in_distinct_thread_scopes() {
             explicit_admission_metadata_with(
                 "update_a",
                 "shared-key",
-                2,
+                /*sender_thread_number*/ 2,
                 "First request.",
                 "action_required",
                 Vec::new(),
@@ -1424,7 +1423,7 @@ async fn rollback_migration_allows_same_key_in_distinct_thread_scopes() {
             explicit_admission_metadata_with(
                 "update_b",
                 "shared-key",
-                3,
+                /*sender_thread_number*/ 3,
                 "Second sender scope.",
                 "result_ready",
                 Vec::new(),
@@ -2637,16 +2636,19 @@ async fn migration_keeps_cross_compaction_admissions_in_source_supersession_orde
             explicit_admission_metadata_with(
                 "update_a",
                 "key-a",
-                2,
+                /*sender_thread_number*/ 2,
                 "First actionable update.",
                 "action_required",
                 Vec::new(),
             ),
-            compacted(vec![input_response_message("user", "bounded model context")]),
+            compacted(vec![input_response_message(
+                "user",
+                "bounded model context",
+            )]),
             explicit_admission_metadata_with(
                 "update_b",
                 "key-b",
-                2,
+                /*sender_thread_number*/ 2,
                 "Replacement actionable update.",
                 "action_required",
                 vec!["update_a".to_string()],
@@ -2698,7 +2700,10 @@ async fn bounded_subagent_migration_preserves_legacy_admission_response_interlea
         thread_id,
         SessionSource::SubAgent(SubAgentSource::Other("test".to_string())),
         vec![
-            compacted(vec![input_response_message("user", "bounded model context")]),
+            compacted(vec![input_response_message(
+                "user",
+                "bounded model context",
+            )]),
             RolloutItem::InterAgentCommunicationMetadata {
                 trigger_turn: false,
                 admission: None,
@@ -2706,7 +2711,7 @@ async fn bounded_subagent_migration_preserves_legacy_admission_response_interlea
             explicit_admission_metadata_with(
                 "update_b",
                 "key-b",
-                2,
+                /*sender_thread_number*/ 2,
                 "Second update.",
                 "progress",
                 Vec::new(),
@@ -2761,11 +2766,14 @@ async fn bounded_subagent_migration_keeps_explicit_admission_response_pair_adjac
         thread_id,
         SessionSource::SubAgent(SubAgentSource::Other("test".to_string())),
         vec![
-            compacted(vec![input_response_message("user", "bounded model context")]),
+            compacted(vec![input_response_message(
+                "user",
+                "bounded model context",
+            )]),
             explicit_admission_metadata_with(
                 "update_a",
                 "key-a",
-                2,
+                /*sender_thread_number*/ 2,
                 "First update.",
                 "progress",
                 Vec::new(),
@@ -2816,7 +2824,7 @@ async fn bounded_subagent_migration_joins_omitted_admission_before_leading_respo
             explicit_admission_metadata_with(
                 "update_a",
                 "key-a",
-                2,
+                /*sender_thread_number*/ 2,
                 "First update.",
                 "progress",
                 Vec::new(),
@@ -2870,7 +2878,7 @@ async fn bounded_subagent_migration_rejects_duplicate_scoped_idempotency_keys() 
             explicit_admission_metadata_with(
                 "update_a",
                 "shared-key",
-                2,
+                /*sender_thread_number*/ 2,
                 "First request.",
                 "action_required",
                 Vec::new(),
@@ -2882,7 +2890,7 @@ async fn bounded_subagent_migration_rejects_duplicate_scoped_idempotency_keys() 
             explicit_admission_metadata_with(
                 "update_b",
                 "shared-key",
-                2,
+                /*sender_thread_number*/ 2,
                 "Changed request.",
                 "result_ready",
                 vec!["update_a".to_string()],
@@ -2932,7 +2940,7 @@ async fn bounded_subagent_migration_allows_same_key_in_distinct_thread_scopes() 
             explicit_admission_metadata_with(
                 "update_a",
                 "shared-key",
-                2,
+                /*sender_thread_number*/ 2,
                 "First request.",
                 "action_required",
                 Vec::new(),
@@ -2944,7 +2952,7 @@ async fn bounded_subagent_migration_allows_same_key_in_distinct_thread_scopes() 
             explicit_admission_metadata_with(
                 "update_b",
                 "shared-key",
-                3,
+                /*sender_thread_number*/ 3,
                 "Second sender scope.",
                 "result_ready",
                 Vec::new(),

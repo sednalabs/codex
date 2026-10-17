@@ -1,8 +1,8 @@
 use crate::agent::LocalAgentControl;
-#[path = "notification_tests.rs"]
-mod notification_tests;
 #[path = "tests/inter_agent_communication_tests.rs"]
 mod inter_agent_communication_tests;
+#[path = "notification_tests.rs"]
+mod notification_tests;
 
 use super::mcp_refresh::McpRefresh;
 #[path = "turn_start_mcp_tests.rs"]
