@@ -146,6 +146,14 @@
       "execution_argv": ["cargo", "test", "--locked", "-p", "codex-protocol", "--lib", "--", "--test-threads=1"]
     },
     {
+      "package": "codex-queue-extension",
+      "target_kind": "integration",
+      "target": "queue_service",
+      "profiles": ["rust_integration"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-queue-extension", "--test", "queue_service", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-queue-extension", "--test", "queue_service", "--", "--test-threads=1"]
+    },
+    {
       "package": "codex-state",
       "target_kind": "lib",
       "target": "",
