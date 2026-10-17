@@ -347,7 +347,7 @@ jobs:
           RUST_TEST_REQUEST_JSON: ${{ inputs.request_json }}
         run: |
           set -euo pipefail
-          if [[ "${VALIDATION_TARGET_SHA}" != "a89b02855334af7c0521882271cb97b818981d1a" || "${VALIDATION_BASE_REF}" != "e135df532669849b682dfac712c3f59aded039ba" || "${VALIDATION_PROFILE}" != "rust_integration" ]]; then
+          if [[ "${VALIDATION_TARGET_SHA}" != "4ad9c8dcc71d901ba8610c35c11d916ba253f168" || "${VALIDATION_BASE_REF}" != "970a5edd1c2521eb70d7d7264b732ec323552c79" || "${VALIDATION_PROFILE}" != "rust_integration" ]]; then
             echo "CLI preparation is restricted to the fixed usage integration target" >&2
             exit 1
           fi
@@ -374,15 +374,15 @@ jobs:
               raise SystemExit("CLI preparation request does not match the fixed exact selector set")
           PY
 
-      - name: Download the exact a89 x86 package artifact
+      - name: Download the exact 4ad9 x86 package artifact
         if: ${{ inputs.prepare_codex_cli_for_exact_usage_test }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          artifact-ids: "12035327373"
+          artifact-ids: "12101887037"
           repository: sednalabs/codex
-          run-id: "38867176145"
+          run-id: "39027328625"
           github-token: ${{ github.token }}
-          path: ${{ runner.temp }}/a89-usage-package
+          path: ${{ runner.temp }}/4ad9-usage-package
           digest-mismatch: error
 
       - name: Verify package identity and stage exact binaries
@@ -390,29 +390,29 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          DIST_DIR: ${{ runner.temp }}/a89-usage-package
-          CLI_DIR: ${{ runner.temp }}/a89-usage-cli
+          DIST_DIR: ${{ runner.temp }}/4ad9-usage-package
+          CLI_DIR: ${{ runner.temp }}/4ad9-usage-cli
         run: |
           set -euo pipefail
-          artifact_metadata="$(gh api repos/sednalabs/codex/actions/artifacts/12035327373)"
+          artifact_metadata="$(gh api repos/sednalabs/codex/actions/artifacts/12101887037)"
           ARTIFACT_METADATA_JSON="${artifact_metadata}" python3 - <<'PY'
           import json
           import os
 
           artifact = json.loads(os.environ["ARTIFACT_METADATA_JSON"])
           expected = {
-              "id": 12035327373,
-              "name": "sedna-first-package-a89b0285-x86_64-38867176145",
-              "size_in_bytes": 1200010231,
-              "digest": "sha256:077a704fb9391c17f359af9856f31faf8fb2013defd85813dd556e4560319512",
+              "id": 12101887037,
+              "name": "sedna-first-package-4ad9c8dc-x86_64-39027328625",
+              "size_in_bytes": 1202301675,
+              "digest": "sha256:1ab29765b18117569e82812b5c54c6c802d51bc4381f358ecbce56484f08b1ec",
               "expired": False,
           }
           for key, value in expected.items():
               if artifact.get(key) != value:
                   raise SystemExit(f"Exact package artifact metadata mismatch for {key}.")
           workflow_run = artifact.get("workflow_run") or {}
-          if workflow_run.get("id") != 38867176145 or workflow_run.get("head_sha") != "a89b02855334af7c0521882271cb97b818981d1a":
-              raise SystemExit("Package artifact is not bound to the exact a89 producer run and source.")
+          if workflow_run.get("id") != 39027328625 or workflow_run.get("head_sha") != "4ad9c8dcc71d901ba8610c35c11d916ba253f168":
+              raise SystemExit("Package artifact is not bound to the exact 4ad9 producer run and source.")
           PY
 
           (cd "${DIST_DIR}" && sha256sum -c SHA256SUMS.txt)
@@ -437,9 +437,9 @@ jobs:
           manifest = json.loads((dist / "release-manifest.json").read_text(encoding="utf-8"))
           expected_manifest = {
               "repository": "sednalabs/codex",
-              "sourceCommit": "a89b02855334af7c0521882271cb97b818981d1a",
-              "sourceTree": "8cd1fcbec6101003dba32e2ee8b115c354678e01",
-              "workflowRunId": "38867176145",
+              "sourceCommit": "4ad9c8dcc71d901ba8610c35c11d916ba253f168",
+              "sourceTree": "fb58ee125d7b86cdbbb125b388dc73e3cc8137db",
+              "workflowRunId": "39027328625",
               "target": "x86_64-unknown-linux-gnu",
           }
           for key, value in expected_manifest.items():
