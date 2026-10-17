@@ -109,7 +109,7 @@ jobs:
               raise SystemExit("Fixed schema generation request rejected.")
           if usage_report_request and (
               payload != {"schema_version": "usage-report-exact-root-v1"}
-              or os.environ["VALIDATION_TARGET_SHA"] != "43dfc7894b59db6992ab7b6f57f36c5d9fd7f39f"
+              or os.environ["VALIDATION_TARGET_SHA"] != "09c99a8c05ecf504d727e42f07123182a57b8f18"
               or os.environ["VALIDATION_BASE_REF"] != "a319e05bad22a5b2870c9bfad3f49ac74dc0bef3"
               or os.environ.get("VALIDATION_EXPECTED_BASE_SHA", "") not in ("", "a319e05bad22a5b2870c9bfad3f49ac74dc0bef3")
               or os.environ["VALIDATION_PROFILE"] != "rust_minimal"
@@ -598,9 +598,9 @@ jobs:
           host = workspace / ".workflow-src"
           base = workspace / "validation-base"
           output_dir = Path(os.environ["OUTPUT_DIR"])
-          expected_target = "43dfc7894b59db6992ab7b6f57f36c5d9fd7f39f"
-          expected_tree = "d5e6ce716827e065992c438215b69e1d270062aa"
-          expected_parent = "aeb563872125eb5b93bd80dbdaf2685a8fa39c20"
+          expected_target = "09c99a8c05ecf504d727e42f07123182a57b8f18"
+          expected_tree = "fc9910401b8687214aeca88cede1fef6d2df3290"
+          expected_parent = "43dfc7894b59db6992ab7b6f57f36c5d9fd7f39f"
           expected_base = "a319e05bad22a5b2870c9bfad3f49ac74dc0bef3"
 
           def git_value(root, *arguments):
