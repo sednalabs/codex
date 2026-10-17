@@ -1080,6 +1080,7 @@ async function pageHints(page, offset = 0) {
           summary: {
             role,
             name,
+            focused: element === document.activeElement,
             disabled,
             covered,
             offscreen,
