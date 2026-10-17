@@ -286,6 +286,28 @@ async fn submit_user_input(test: &TestCodex, text: &str) -> Result<()> {
     Ok(())
 }
 
+async fn submit_capacity_effect_input(test: &TestCodex, text: &str) -> Result<()> {
+    // These fixtures deliberately execute side effects. Match submit_turn's
+    // execution permissions without consuming the events asserted below.
+    let (sandbox_policy, permission_profile) =
+        turn_permission_fields(PermissionProfile::Disabled, test.config.cwd.as_path());
+    test.codex
+        .start_or_steer_turn(
+            TurnInputRequest::user_input(vec![UserInput::Text {
+                text: text.to_string(),
+                text_elements: Vec::new(),
+            }])
+            .with_thread_settings(codex_protocol::protocol::ThreadSettingsOverrides {
+                approval_policy: Some(AskForApproval::Never),
+                sandbox_policy: Some(sandbox_policy),
+                permission_profile,
+                ..Default::default()
+            }),
+        )
+        .await?;
+    Ok(())
+}
+
 async fn submit_plan_input(test: &TestCodex, text: &str) -> Result<()> {
     let cwd = std::env::current_dir()?.abs();
     let (sandbox_policy, permission_profile) =
@@ -1206,7 +1228,7 @@ async fn capacity_retry_deduplicates_accepted_output_and_tool_ids() -> Result<()
         })
         .build_with_auto_env(&server)
         .await?;
-    submit_user_input(&test, "recover the accepted effects").await?;
+    submit_capacity_effect_input(&test, "recover the accepted effects").await?;
 
     let mut accepted_message_ids = Vec::new();
     let mut streamed_partial_deltas = 0;
@@ -1367,7 +1389,7 @@ async fn capacity_retry_rejects_conflicting_tool_call_id() -> Result<()> {
         })
         .build_with_auto_env(&server)
         .await?;
-    submit_user_input(&test, "reject a changed accepted call").await?;
+    submit_capacity_effect_input(&test, "reject a changed accepted call").await?;
     let mut terminal_errors = 0;
     loop {
         match wait_for_event(&test.codex, |_| true).await {
