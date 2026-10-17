@@ -40,6 +40,7 @@ MAX_MULTI_LEDGER_ATTRIBUTION_TEXT_CHARS = 1_000_000
 MAX_MULTI_LEDGER_INTERNAL_TEXT_CHARS = {
     "provider_call_id": 128,
     "thread_id": 128,
+    "child_thread_id": 128,
     "spawn_request_id": 128,
     "parent_thread_id": 128,
     "root_thread_id": 128,
