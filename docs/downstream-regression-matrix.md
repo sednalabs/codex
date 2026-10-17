@@ -57,11 +57,12 @@ Installed-host first use is a separate acceptance step after protected delivery.
 ## Core default path
 
 V2 `send_message` without an explicit intent keeps ordinary queue-only delivery
-quiet and FIFO; explicit `progress` is quiet as well. `action_required` and
-`result_ready` require an `idempotency_key` and retain the original message and
-scope in durable admission metadata. An identical retry returns its original
-receipt, changed requests cannot reuse the key, and `supersedes` may name only
-same-scope progress updates. These two actionable intents can wake an active
+quiet and FIFO; explicit `progress` is quiet as well. Every explicit intent,
+including `progress`, requires an `idempotency_key` and retains the original
+message and scope in durable admission metadata. An identical retry returns
+its original receipt, changed requests cannot reuse the key, and `supersedes`
+may name only same-scope progress updates. Only `action_required` and
+`result_ready` are actionable and can wake an active
 V2 `wait_agent` only when the root wait explicitly targets the matching sender.
 The signal is body-free and matched against the sender/recipient identity and
 pending generation; subscription precedes the pending-message snapshot.

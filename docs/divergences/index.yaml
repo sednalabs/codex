@@ -155,7 +155,7 @@
         "codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs",
         "codex-rs/core/src/session/input_queue.rs"
       ],
-      "behavior": "Ordinary queue-only messages and explicit progress remain quiet and FIFO. Explicit root-directed action_required or result_ready updates require an idempotency_key, retain the original communication and scope in durable admission metadata, and may wake an active wait only when it explicitly targets the matching sender. The wake signal is body-free and matched by sender/recipient identity and queue generation. Identical retries return the original receipt; changed requests cannot reuse a key, and supersedes may name same-scope progress updates only. Legacy IDs and unmatched activity do not create an actionable wake.",
+      "behavior": "Ordinary queue-only messages and explicit progress remain quiet and FIFO. Every explicit intent, including progress, requires an idempotency_key and retains the original communication and scope in durable admission metadata. Only root-directed action_required or result_ready are actionable; they may wake an active wait only when it explicitly targets the matching sender. The wake signal is body-free and matched by sender/recipient identity and queue generation. Identical retries return the original receipt; changed requests cannot reuse a key, and supersedes may name same-scope progress updates only. Legacy IDs and unmatched activity do not create an actionable wake.",
       "upstream_equivalent": false,
       "introduced_in": {"carry_commit": null, "upstream_commit": null},
       "guardrail_lane": "codex.core-multi-agent-orchestration-targeted",

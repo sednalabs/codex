@@ -560,11 +560,12 @@ proof of a transformed provider request.
 ## V2 root-directed agent updates
 
 The V2 `send_message` surface preserves quiet FIFO delivery for ordinary
-messages and explicit `progress`. `action_required` and `result_ready` are
-additive root-directed intents: they require an `idempotency_key`, keep the
-original communication and scope in durable admission metadata, and permit
-superseding same-scope progress updates only. Identical retries return the
-original receipt; a changed request cannot reuse its key.
+messages and explicit `progress`. Every explicit intent, including `progress`,
+requires an `idempotency_key` and keeps the original communication and scope in
+durable admission metadata. Only `action_required` and `result_ready` are
+actionable root-directed intents; they permit superseding same-scope progress
+updates only. Identical retries return the original receipt; a changed request
+cannot reuse its key.
 
 Only a matching explicit action/result can wake an active V2 wait, and only
 when that wait names the sender. The body-free activity carries the update and
