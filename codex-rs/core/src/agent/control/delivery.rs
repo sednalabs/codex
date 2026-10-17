@@ -25,6 +25,7 @@ use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_rollout::RolloutRecorder;
+use codex_thread_store::PersistContext;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
@@ -551,6 +552,23 @@ impl LocalAgentControl {
         let rollout_path = recipient_thread.rollout_path().ok_or_else(|| {
             CodexErr::Fatal("explicit inter-agent recipient has no retained rollout".to_string())
         })?;
+        // A new idle root has a live recorder but no rollout file until its first persist.
+        // Materialize that existing recorder before scanning the durable admission ledger;
+        // this does not start a model turn or add model-visible context.
+        if codex_rollout::existing_rollout_path(&rollout_path)
+            .await
+            .is_none()
+        {
+            recipient_thread
+                .session
+                .try_ensure_rollout_materialized(PersistContext::Standard)
+                .await
+                .map_err(|_| {
+                    CodexErr::Fatal(
+                        "failed to materialize explicit inter-agent recipient rollout".to_string(),
+                    )
+                })?;
+        }
         let (mut index, _retained_rollout_items) =
             load_explicit_admission_index(&rollout_path, root_thread_id, recipient).await?;
         let scope_key = explicit_scope_key(
