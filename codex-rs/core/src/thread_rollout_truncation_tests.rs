@@ -144,7 +144,7 @@ fn compacted_with_envelopes(history: Vec<ResponseItemEnvelope>) -> RolloutItem {
 }
 
 #[test]
-fn explicit_admission_is_not_a_fork_boundary_and_interleaved_response_is_one() {
+fn quiet_explicit_update_remains_in_the_prior_fork_turn_suffix() {
     let rollout = vec![
         response_item(user_msg("earlier user turn")),
         explicit_inter_agent_admission("update_1"),
@@ -159,11 +159,40 @@ fn explicit_admission_is_not_a_fork_boundary_and_interleaved_response_is_one() {
     );
 
     let retained_last_turn = truncate_rollout_to_last_n_fork_turns(&rollout, /*n_from_end*/ 1);
-    assert!(matches!(
-        retained_last_turn.as_slice(),
-        [RolloutItem::ResponseItem(response)]
-            if matches!(&response.item, ResponseItem::AgentMessage { id: Some(id), .. } if id.as_str() == "response_1")
-    ));
+    assert_eq!(
+        serde_json::to_value(&retained_last_turn).unwrap(),
+        serde_json::to_value(&rollout).unwrap(),
+        "quiet progress stays in the suffix of the previous real user turn"
+    );
+    assert_eq!(
+        retained_last_turn
+            .iter()
+            .filter(|item| matches!(
+                item,
+                RolloutItem::InterAgentCommunicationMetadata {
+                    admission: Some(admission),
+                    ..
+                } if admission.update_id.as_str() == "update_1"
+            ))
+            .count(),
+        1,
+        "the explicit admission must be retained exactly once"
+    );
+    assert_eq!(
+        retained_last_turn
+            .iter()
+            .filter(|item| matches!(
+                item,
+                RolloutItem::ResponseItem(response)
+                    if matches!(&response.item, ResponseItem::AgentMessage {
+                        id: Some(id),
+                        ..
+                    } if id.as_str() == "response_1")
+            ))
+            .count(),
+        1,
+        "the quiet AgentMessage must be retained exactly once"
+    );
 }
 
 #[test]
