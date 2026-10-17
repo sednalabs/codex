@@ -670,6 +670,26 @@ async fn trusted_project_role_overlay_reaches_the_spawned_child_request() -> Res
         ]),
     )
     .await;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| request_body_contains(request, "spawn-project-role"),
+        sse(vec![
+            ev_response_created("resp-root-wait"),
+            ev_function_call_with_namespace(
+                "wait-project-worker",
+                "collaboration",
+                "wait_agent",
+                &json!({
+                    "targets": ["project-worker"],
+                    "return_when": "all",
+                    "timeout_ms": 10_000,
+                })
+                .to_string(),
+            ),
+            ev_completed("resp-root-wait"),
+        ]),
+    )
+    .await;
     let child_request = mount_sse_once_match(
         &server,
         |request: &wiremock::Request| {
@@ -683,14 +703,29 @@ async fn trusted_project_role_overlay_reaches_the_spawned_child_request() -> Res
         ]),
     )
     .await;
-    mount_sse_once_match(
+    let root_completion = mount_sse_once_match(
         &server,
-        |request: &wiremock::Request| request_body_contains(request, "spawn-project-role"),
+        |request: &wiremock::Request| request_body_contains(request, "wait-project-worker"),
         sse(vec![ev_completed("resp-root-complete")]),
     )
     .await;
 
     submit_thread_text_turn(&root.thread, "spawn this synthetic role").await?;
+    let wait_output = root_completion
+        .single_request()
+        .function_call_output_text("wait-project-worker")
+        .expect("root continuation contains the targeted wait result");
+    let wait_result: Value = serde_json::from_str(&wait_output)?;
+    assert_eq!(
+        wait_result["message"],
+        "Target agent completion is actionable."
+    );
+    assert!(
+        !wait_result["timed_out"]
+            .as_bool()
+            .expect("wait timeout flag")
+    );
+    assert_eq!(wait_result["outcome"], "target_terminal_all");
     let child_texts = developer_texts(&child_request.single_request().input());
     assert!(
         child_texts
