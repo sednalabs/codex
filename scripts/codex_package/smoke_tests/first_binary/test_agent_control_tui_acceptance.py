@@ -156,19 +156,23 @@ def _selected_subagent_details(
     tui: PackagedTui,
     expected: dict[str, tuple[str, str]],
     initial_frame: str,
+    *,
+    stage: str,
 ) -> dict[str, str]:
     """Wait for rows, then bind the latest selected detail to its identity."""
     # UUIDs and configured identity metadata are rendered in the compact list
     # rows. Path/parent/status are selected-only fields validated in the detail
     # block below.
     population_bytes = bytearray(initial_frame.encode("utf-8"))
-    deadline = time.monotonic() + 30
+    population_started_at = time.monotonic()
+    deadline = population_started_at + 30
     while True:
         population = plain(population_bytes)
         row_starts = sorted(
             (population.rfind(thread_id), thread_id) for thread_id in expected
         )
         rows_ready = all(position >= 0 for position, _ in row_starts)
+        row_presence = [position >= 0 for position, _ in row_starts]
         if rows_ready:
             for index, (row_start, thread_id) in enumerate(row_starts):
                 row_end = (
@@ -177,31 +181,46 @@ def _selected_subagent_details(
                     else len(population)
                 )
                 row = population[row_start:row_end]
-                if not all(
+                presence = tuple(
                     marker in row
                     for marker in (
                         f"configured model: {_SPAWN_MODEL}",
                         "configured effort: medium",
                         "provider-effective identity: unverified",
                     )
-                ):
+                )
+                row_presence.extend(presence)
+                if not all(presence):
                     rows_ready = False
                     break
         if rows_ready:
             break
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise AssertionError(
-                "packaged TUI did not render configured identity for each "
-                f"subagent row: {population!r}"
+            tui.require_condition(
+                False,
+                stage=f"{stage}-identity-rows",
+                action="await-subagents-render",
+                marker_presence=tuple(row_presence),
+                started_at=population_started_at,
             )
         try:
-            population_bytes.extend(tui.until_output(timeout=remaining))
+            population_bytes.extend(
+                tui.until_output(
+                    timeout=remaining,
+                    stage=f"{stage}-identity-rows",
+                    action="await-subagents-render",
+                )
+            )
         except AssertionError as error:
-            raise AssertionError(
-                "packaged TUI did not render configured identity for each "
-                f"subagent row: {population!r}"
-            ) from error
+            tui.require_condition(
+                False,
+                stage=f"{stage}-identity-rows",
+                action="await-subagents-render",
+                marker_presence=tuple(row_presence),
+                started_at=population_started_at,
+            )
+            raise error
 
     selected: dict[str, str] = {}
     # The real picker includes the primary row first. Reset to that row, then
@@ -212,16 +231,22 @@ def _selected_subagent_details(
         expected.items()
     ):
         tui.send("\x1b[B")
-        tui.until_output()
+        tui.until_output(
+            stage=f"{stage}-selected-row",
+            action="down-arrow-redraw",
+        )
         tui.resize(111 + index)
-        detail_deadline = time.monotonic() + 30
+        detail_started_at = time.monotonic()
+        detail_deadline = detail_started_at + 30
         frame = tui.until_all(
             (
                 expected_id,
                 f"Path: {expected_path}",
                 f"Parent: {expected_parent}",
                 "Status: ",
-            )
+            ),
+            stage=f"{stage}-selected-detail",
+            action="resize-redraw",
         )
         selected_detail = re.compile(
             rf"Path: {re.escape(expected_path)}\s*•\s*"
@@ -236,15 +261,56 @@ def _selected_subagent_details(
         ):
             remaining = detail_deadline - time.monotonic()
             if remaining <= 0:
-                raise AssertionError(
-                    f"selected subagent detail did not finish rendering: {frame!r}"
+                markers = (
+                    expected_id,
+                    f"Path: {expected_path}",
+                    f"Parent: {expected_parent}",
+                    "Status: ",
+                )
+                presence = tuple(marker in frame for marker in markers)
+                tui.require_condition(
+                    False,
+                    stage=f"{stage}-selected-detail",
+                    action="await-selected-detail",
+                    marker_presence=presence
+                    + (
+                        selected_detail.search(
+                            frame[frame.rfind(f"Path: {expected_path}") :]
+                        )
+                        is not None,
+                    ),
+                    started_at=detail_started_at,
                 )
             try:
-                frame += plain(tui.until_output(timeout=remaining))
+                frame += plain(
+                    tui.until_output(
+                        timeout=remaining,
+                        stage=f"{stage}-selected-detail",
+                        action="await-selected-detail",
+                    )
+                )
             except AssertionError as error:
-                raise AssertionError(
-                    f"selected subagent detail did not finish rendering: {frame!r}"
-                ) from error
+                markers = (
+                    expected_id,
+                    f"Path: {expected_path}",
+                    f"Parent: {expected_parent}",
+                    "Status: ",
+                )
+                presence = tuple(marker in frame for marker in markers)
+                tui.require_condition(
+                    False,
+                    stage=f"{stage}-selected-detail",
+                    action="await-selected-detail",
+                    marker_presence=presence
+                    + (
+                        selected_detail.search(
+                            frame[frame.rfind(f"Path: {expected_path}") :]
+                        )
+                        is not None,
+                    ),
+                    started_at=detail_started_at,
+                )
+                raise error
         # PTY reads are incremental terminal deltas, not reconstructed frames.
         # A resize can therefore leave the previous selection's detail in this
         # stream before the latest redraw. Bind to the final selected-only
@@ -254,46 +320,116 @@ def _selected_subagent_details(
             for thread_id, (path, parent_id) in expected.items()
             if f"Path: {path}" in frame
         ]
-        assert latest_details, frame
+        tui.require_condition(
+            bool(latest_details),
+            stage=f"{stage}-selected-detail",
+            action="bind-selected-row",
+            marker_presence=(bool(latest_details),),
+            started_at=detail_started_at,
+        )
         latest_path_start, thread_id, path, parent_id = max(latest_details)
-        assert thread_id == expected_id, frame
+        tui.require_condition(
+            thread_id == expected_id,
+            stage=f"{stage}-selected-detail",
+            action="bind-selected-row",
+            marker_presence=(thread_id == expected_id,),
+            started_at=detail_started_at,
+        )
         path_marker = f"Path: {path}"
         parent_marker = f"Parent: {parent_id}"
         path_start = latest_path_start
         parent_start = frame.find(parent_marker, path_start)
-        assert parent_start > path_start, frame
+        tui.require_condition(
+            parent_start > path_start,
+            stage=f"{stage}-selected-detail",
+            action="validate-detail-order",
+            marker_presence=(parent_start > path_start,),
+            started_at=detail_started_at,
+        )
         status_start = frame.find("Status: ", parent_start)
         # The selected row's own UUID anchors this detail. The parent UUID is
         # repeated later in the `Parent:` field, so choosing the last of all
         # known IDs before Path would incorrectly treat that valid relation as
         # the selected row identity.
         detail_start = frame.rfind(thread_id, 0, path_start)
-        assert detail_start >= 0, frame
-        assert status_start > parent_start, frame
+        tui.require_condition(
+            detail_start >= 0,
+            stage=f"{stage}-selected-detail",
+            action="validate-detail-order",
+            marker_presence=(detail_start >= 0,),
+            started_at=detail_started_at,
+        )
+        tui.require_condition(
+            status_start > parent_start,
+            stage=f"{stage}-selected-detail",
+            action="validate-detail-order",
+            marker_presence=(status_start > parent_start,),
+            started_at=detail_started_at,
+        )
         status_match = re.match(
             r"Status:\s+(running|not running|not loaded)(?=\s|$)",
             frame[status_start:],
         )
         status_marker = status_match.group(0) if status_match is not None else None
-        assert detail_start < path_start < parent_start < status_start, frame
-        assert status_marker is not None, frame
+        tui.require_condition(
+            detail_start < path_start < parent_start < status_start,
+            stage=f"{stage}-selected-detail",
+            action="validate-detail-order",
+            marker_presence=(detail_start < path_start < parent_start < status_start,),
+            started_at=detail_started_at,
+        )
+        tui.require_condition(
+            status_marker is not None,
+            stage=f"{stage}-selected-detail",
+            action="validate-status-marker",
+            marker_presence=(status_marker is not None,),
+            started_at=detail_started_at,
+        )
         detail_end = status_start + len(status_marker)
         # The compact row's configured model/effort and provider identity were
         # checked above. Keep this slice focused on the selected-only detail;
         # PTY resize output is an incremental delta, not a reconstructed frame.
         detail = frame[detail_start:detail_end]
-        assert all(
+        other_identity_absent = tuple(
             other_id not in detail
             for other_id in set(expected) - {thread_id, parent_id}
-        ), detail
-        assert path_marker in detail and parent_marker in detail, detail
-        assert "PRIVATE_PROMPT_SENTINEL" not in frame, frame
-        assert "PRIVATE_NESTED_PROMPT_SENTINEL" not in frame, frame
-        assert "instructions" not in frame.lower(), frame
-        assert "credentials" not in frame.lower(), frame
+        )
+        tui.require_condition(
+            all(other_identity_absent),
+            stage=f"{stage}-selected-detail",
+            action="validate-selected-only-identity",
+            marker_presence=other_identity_absent,
+            started_at=detail_started_at,
+        )
+        tui.assert_markers(
+            detail,
+            (path_marker, parent_marker),
+            stage=f"{stage}-selected-detail",
+            action="validate-selected-only-fields",
+        )
+        tui.assert_marker_states(
+            frame,
+            (
+                "PRIVATE_PROMPT_SENTINEL",
+                "PRIVATE_NESTED_PROMPT_SENTINEL",
+                "instructions",
+                "credentials",
+            ),
+            expected_presence=(False, False, False, False),
+            stage=f"{stage}-selected-detail",
+            action="validate-private-content-absence",
+        )
         selected[thread_id] = detail
 
-    assert set(selected) == set(expected), selected
+    tui.require_condition(
+        set(selected) == set(expected),
+        stage=f"{stage}-selected-detail",
+        action="validate-selected-set",
+        marker_presence=(
+            len(selected) == len(expected),
+            set(selected) == set(expected),
+        ),
+    )
     return selected
 
 
@@ -594,14 +730,33 @@ def test_packaged_tui_subagents_picker_renders_spawned_descendant_identity_and_r
                     "/review - review any changes and find issues",
                     root_id,
                     "Ask Codex",
-                )
+                ),
+                stage="subagents-initial-startup",
+                action="process-launch",
             )
-            tui.submit_line("/subagents", pasted_marker="/subagents")
-            picker_frame = tui.until("Subagents")
+            tui.submit_line(
+                "/subagents",
+                pasted_marker="/subagents",
+                stage="subagents-initial-open",
+                action="paste-command",
+            )
+            picker_frame = tui.until(
+                "Subagents",
+                stage="subagents-initial-open",
+                action="await-picker",
+            )
             selected = _selected_subagent_details(
-                tui, expected_descendants, picker_frame
+                tui,
+                expected_descendants,
+                picker_frame,
+                stage="subagents-initial-selection",
             )
-            assert set(selected) == {child_id, nested_id}
+            tui.require_condition(
+                set(selected) == {child_id, nested_id},
+                stage="subagents-initial-selection",
+                action="validate-selected-set",
+                marker_presence=(len(selected) == 2,),
+            )
 
     with shared_agent_server(isolated):
         with PackagedTui(isolated, "resume", root.id) as tui:
@@ -610,11 +765,30 @@ def test_packaged_tui_subagents_picker_renders_spawned_descendant_identity_and_r
                     "/review - review any changes and find issues",
                     root_id,
                     "Ask Codex",
-                )
+                ),
+                stage="subagents-resume-startup",
+                action="process-launch",
             )
-            tui.submit_line("/subagents", pasted_marker="/subagents")
-            picker_frame = tui.until("Subagents")
+            tui.submit_line(
+                "/subagents",
+                pasted_marker="/subagents",
+                stage="subagents-resume-open",
+                action="paste-command",
+            )
+            picker_frame = tui.until(
+                "Subagents",
+                stage="subagents-resume-open",
+                action="await-picker",
+            )
             selected = _selected_subagent_details(
-                tui, expected_descendants, picker_frame
+                tui,
+                expected_descendants,
+                picker_frame,
+                stage="subagents-resume-selection",
             )
-            assert set(selected) == {child_id, nested_id}
+            tui.require_condition(
+                set(selected) == {child_id, nested_id},
+                stage="subagents-resume-selection",
+                action="validate-selected-set",
+                marker_presence=(len(selected) == 2,),
+            )

@@ -76,6 +76,8 @@ class PackagedTui:
         self.arguments = arguments
         self.master: int | None = None
         self.process: subprocess.Popen[bytes] | None = None
+        self._last_wait_started_at: float | None = None
+        self._last_wait_received_bytes = 0
 
     def __enter__(self) -> "PackagedTui":
         master, slave = pty.openpty()
@@ -136,11 +138,104 @@ class PackagedTui:
         )
         self.process.send_signal(signal.SIGWINCH)
 
-    def until_output(self, *, timeout: float = 30) -> bytes:
+    def _failure_context(
+        self,
+        *,
+        stage: str,
+        action: str,
+        started_at: float,
+        marker_presence: tuple[bool, ...],
+    ) -> str:
+        process_status = "unavailable"
+        exit_code = "unavailable"
+        if self.process is not None:
+            exit_code = self.process.poll()
+            process_status = "alive" if exit_code is None else "exited"
+            exit_code = "none" if exit_code is None else str(exit_code)
+        presence = ",".join(
+            "true" if present else "false" for present in marker_presence
+        )
+        return (
+            f"stage={stage}; action={action}; process={process_status}; "
+            f"exit_code={exit_code}; elapsed_ms="
+            f"{max(0, int((time.monotonic() - started_at) * 1000))}; "
+            f"received_pty_bytes={self._last_wait_received_bytes}; "
+            f"marker_presence=[{presence}]"
+        )
+
+    def require_condition(
+        self,
+        condition: bool,
+        *,
+        stage: str,
+        action: str,
+        marker_presence: tuple[bool, ...],
+        started_at: float | None = None,
+    ) -> None:
+        """Fail with value-free PTY state rather than fixture or terminal text."""
+        if condition:
+            return
+        started_at = started_at or self._last_wait_started_at or time.monotonic()
+        raise AssertionError(
+            self._failure_context(
+                stage=stage,
+                action=action,
+                started_at=started_at,
+                marker_presence=marker_presence,
+            )
+        )
+
+    def assert_markers(
+        self,
+        received: str,
+        markers: tuple[str, ...],
+        stage: str,
+        action: str,
+    ) -> None:
+        self.assert_marker_states(
+            received,
+            markers,
+            expected_presence=(True,) * len(markers),
+            stage=stage,
+            action=action,
+        )
+
+    def assert_marker_states(
+        self,
+        received: str,
+        markers: tuple[str, ...],
+        *,
+        expected_presence: tuple[bool, ...],
+        stage: str,
+        action: str,
+    ) -> None:
+        presence = tuple(marker in received for marker in markers)
+        self.require_condition(
+            presence == expected_presence,
+            stage=stage,
+            action=action,
+            marker_presence=presence,
+        )
+
+    def until_output(
+        self,
+        *,
+        timeout: float = 30,
+        stage: str = "unspecified",
+        action: str = "wait-for-redraw",
+        _received: bytearray | None = None,
+        _markers: tuple[str, ...] = (),
+        _started_at: float | None = None,
+    ) -> bytes:
         """Wait for a fresh PTY redraw after input that has no stable text marker."""
         assert self.master is not None and self.process is not None
-        deadline = time.monotonic() + timeout
-        received = bytearray()
+        started_at = _started_at or time.monotonic()
+        if _started_at is None:
+            self._last_wait_received_bytes = 0
+        self._last_wait_started_at = started_at
+        deadline = started_at + timeout
+        received = _received if _received is not None else bytearray()
+        start_length = len(received)
         while time.monotonic() < deadline:
             if self.process.poll() is not None:
                 for _ in range(64):
@@ -153,10 +248,16 @@ class PackagedTui:
                     if not chunk:
                         break
                     received.extend(chunk)
+                    self._last_wait_received_bytes += len(chunk)
                 raise AssertionError(
-                    "packaged TUI exited "
-                    f"{self.process.returncode} before a fresh PTY redraw: "
-                    f"{plain(received)!r}"
+                    self._failure_context(
+                        stage=stage,
+                        action=action,
+                        started_at=started_at,
+                        marker_presence=tuple(
+                            marker in plain(received) for marker in _markers
+                        ),
+                    )
                 )
             ready, _, _ = select.select(
                 [self.master], [], [], max(0, deadline - time.monotonic())
@@ -166,17 +267,30 @@ class PackagedTui:
             try:
                 chunk = os.read(self.master, 65536)
             except OSError as error:
-                returncode = self.process.poll()
                 raise AssertionError(
-                    "packaged TUI PTY closed before a fresh redraw; "
-                    f"exit status: {returncode}; output: {plain(received)!r}"
+                    self._failure_context(
+                        stage=stage,
+                        action=action,
+                        started_at=started_at,
+                        marker_presence=tuple(
+                            marker in plain(received) for marker in _markers
+                        ),
+                    )
                 ) from error
             if not chunk:
                 break
             received.extend(chunk)
-            return bytes(received)
+            self._last_wait_received_bytes += len(chunk)
+            return bytes(received[start_length:])
         raise AssertionError(
-            f"packaged TUI produced no fresh PTY redraw; output: {plain(received)!r}"
+            self._failure_context(
+                stage=stage,
+                action=action,
+                started_at=started_at,
+                marker_presence=tuple(
+                    marker in plain(received) for marker in _markers
+                ),
+            )
         )
 
     def until_all(
@@ -185,47 +299,75 @@ class PackagedTui:
         *,
         initial: str = "",
         timeout: float = 30,
+        stage: str = "unspecified",
+        action: str = "wait-for-markers",
     ) -> str:
         """Wait for all rendered markers, retaining an already captured first frame."""
         received = bytearray(initial.encode("utf-8"))
-        deadline = time.monotonic() + timeout
+        started_at = time.monotonic()
+        self._last_wait_received_bytes = 0
+        self._last_wait_started_at = started_at
+        deadline = started_at + timeout
         while not all(marker in plain(received) for marker in markers):
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
+            if deadline - time.monotonic() <= 0:
                 raise AssertionError(
-                    f"packaged TUI did not render {markers!r}; "
-                    f"output: {plain(received)!r}"
+                    self._failure_context(
+                        stage=stage,
+                        action=action,
+                        started_at=started_at,
+                        marker_presence=tuple(
+                            marker in plain(received) for marker in markers
+                        ),
+                    )
                 )
-            try:
-                received.extend(self.until_output(timeout=remaining))
-            except AssertionError as error:
-                raise AssertionError(
-                    f"packaged TUI did not render {markers!r}; "
-                    f"output: {plain(received)!r}"
-                ) from error
+            self.until_output(
+                timeout=timeout,
+                stage=stage,
+                action=action,
+                _received=received,
+                _markers=markers,
+                _started_at=started_at,
+            )
         return plain(received)
 
     def send_paste(self, value: str) -> None:
         """Send one explicit bracketed-paste event to the TUI."""
         self.send(f"\x1b[200~{value}\x1b[201~")
 
-    def submit_line(self, value: str, *, pasted_marker: str) -> str:
+    def submit_line(
+        self,
+        value: str,
+        *,
+        pasted_marker: str,
+        stage: str = "unspecified",
+        action: str = "paste-before-submit",
+    ) -> str:
         """Paste a line, witness it in the composer, and submit with a key event."""
         self.send_paste(value)
-        rendered = self.until(pasted_marker)
+        rendered = self.until(pasted_marker, stage=stage, action=action)
         self.send("\r")
         return rendered
 
-    def until(self, marker: str, *, timeout: float = 30) -> str:
+    def until(
+        self,
+        marker: str,
+        *,
+        timeout: float = 30,
+        stage: str = "unspecified",
+        action: str = "wait-for-marker",
+    ) -> str:
         """Require a fresh rendered witness after the preceding input."""
         assert self.master is not None and self.process is not None
-        deadline = time.monotonic() + timeout
+        started_at = time.monotonic()
+        self._last_wait_received_bytes = 0
+        self._last_wait_started_at = started_at
+        deadline = started_at + timeout
         received = bytearray()
         while time.monotonic() < deadline:
             if self.process.poll() is not None:
                 # The child can exit before select sees bytes already queued by
-                # the PTY. Drain a bounded amount so early failures retain their
-                # terminal evidence alongside the actual process status.
+                # the PTY. Drain a bounded amount so early failures can report
+                # received-byte and marker-presence evidence.
                 for _ in range(64):
                     if not select.select([self.master], [], [], 0)[0]:
                         break
@@ -236,29 +378,31 @@ class PackagedTui:
                     if not chunk:
                         break
                     received.extend(chunk)
+                    self._last_wait_received_bytes += len(chunk)
                 raise AssertionError(
-                    f"packaged TUI exited {self.process.returncode} before {marker!r}: "
-                    f"{plain(received)!r}"
+                    self._failure_context(
+                        stage=stage,
+                        action=action,
+                        started_at=started_at,
+                        marker_presence=(marker in plain(received),),
+                    )
                 )
-            ready, _, _ = select.select(
-                [self.master], [], [], max(0, deadline - time.monotonic())
+            self.until_output(
+                timeout=timeout,
+                stage=stage,
+                action=action,
+                _received=received,
+                _markers=(marker,),
+                _started_at=started_at,
             )
-            if not ready:
-                break
-            try:
-                chunk = os.read(self.master, 65536)
-            except OSError as error:
-                returncode = self.process.poll()
-                raise AssertionError(
-                    f"packaged TUI PTY closed before {marker!r}; "
-                    f"exit status: {returncode}; output: {plain(received)!r}"
-                ) from error
-            if not chunk:
-                break
-            received.extend(chunk)
             rendered = plain(received)
             if marker in rendered:
                 return rendered
         raise AssertionError(
-            f"packaged TUI did not render {marker!r}: {plain(received)!r}"
+            self._failure_context(
+                stage=stage,
+                action=action,
+                started_at=started_at,
+                marker_presence=(marker in plain(received),),
+            )
         )

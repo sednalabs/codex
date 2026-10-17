@@ -354,13 +354,23 @@ def test_actual_tui_agents_entry_has_initial_empty_search(
                 )
                 tui.submit_line("/agents", pasted_marker="/agents")
                 opened = tui.until("Agent command center")
-                assert "Group:" in opened
+                tui.assert_markers(
+                    opened,
+                    ("Group:",),
+                    "agents-empty-search",
+                    "validate-header",
+                )
                 tui.send("/")
                 tui.resize(111)
                 search = tui.until_all(
                     ("Search ›", "Agent command center"), initial=opened
                 )
-                assert "Search ›" in search and "Agent command center" in search
+                tui.assert_markers(
+                    search,
+                    ("Search ›", "Agent command center"),
+                    "agents-empty-search",
+                    "validate-filter",
+                )
 
 
 def test_actual_tui_nested_filter_clear_live_rename_and_replay(
@@ -403,42 +413,99 @@ def test_actual_tui_nested_filter_clear_live_rename_and_replay(
                 )
                 tui.submit_line("/agents", pasted_marker="/agents")
                 tree = tui.until("nested-package-task")
-                assert "Agent command center" in tree
-                assert "root-package-task" in tree and "child-package-task" in tree
+                tui.assert_markers(
+                    tree,
+                    ("Agent command center", "root-package-task", "child-package-task"),
+                    "agents-tree-open",
+                    "validate-tree-content",
+                )
                 tui.send("/")
-                assert "Search ›" in tui.until("Search ›")
+                tui.until(
+                    "Search ›",
+                    stage="agents-search-open",
+                    action="open-search",
+                )
                 tui.send("child-package-task")
                 child_row = tui.until("child-package-task")
-                assert "child-package-task" in child_row
+                tui.assert_markers(
+                    child_row,
+                    ("child-package-task",),
+                    "agents-child-selected",
+                    "validate-selected-row",
+                )
                 tui.send("\x03")
-                assert "nested-package-task" in tui.until("nested-package-task")
+                tui.until(
+                    "nested-package-task",
+                    stage="agents-nested-selected",
+                    action="validate-selected-row",
+                )
                 tui.send("/")
-                assert "Search ›" in tui.until("Search ›")
+                tui.until(
+                    "Search ›",
+                    stage="agents-search-open",
+                    action="open-search",
+                )
                 tui.send("nested-package-task")
                 nested_row = tui.until("nested-package-task")
-                assert "nested-package-task" in nested_row
+                tui.assert_markers(
+                    nested_row,
+                    ("nested-package-task",),
+                    "agents-nested-selected",
+                    "validate-selected-row",
+                )
                 tui.send("\x03")
-                assert "root-package-task" in tui.until("root-package-task")
+                tui.until(
+                    "root-package-task",
+                    stage="agents-root-selected",
+                    action="validate-selected-row",
+                )
                 tui.send("/")
-                assert "Search ›" in tui.until("Search ›")
+                tui.until(
+                    "Search ›",
+                    stage="agents-search-open",
+                    action="open-search",
+                )
                 tui.send("no-such-synthetic-task")
-                assert "No matching tasks" in tui.until("No matching tasks")
+                tui.until(
+                    "No matching tasks",
+                    stage="agents-search-no-results",
+                    action="validate-empty-search",
+                )
                 tui.send("\x03")
-                assert "nested-package-task" in tui.until("nested-package-task")
+                tui.until(
+                    "nested-package-task",
+                    stage="agents-nested-selected",
+                    action="validate-selected-row",
+                )
                 tui.send("r")
-                assert "Rename ›" in tui.until("Rename ›")
+                tui.until(
+                    "Rename ›",
+                    stage="agents-rename-open",
+                    action="open-rename",
+                )
                 tui.send("\x7f" * 80)
                 tui.send_paste("live-renamed-package-task")
                 # The PTY helper strips cursor moves rather than applying them;
                 # require the whole edited value in a fresh viewport, not diffs.
                 tui.until("renamed")
                 tui.resize(111)
-                tui.until("live-renamed-package-task")
+                tui.until(
+                    "live-renamed-package-task",
+                    stage="agents-post-rename-resize-before-submit",
+                    action="await-renamed-row",
+                )
                 tui.send("\r")
                 # A full fresh viewport avoids matching fragmented cell updates.
                 tui.resize(109)
-                assert "live-renamed-package-task" in tui.until(
-                    "live-renamed-package-task"
+                tui.assert_markers(
+                    tui.until(
+                        "live-renamed-package-task",
+                        stage="agents-post-rename-resize-after-submit",
+                        action="await-renamed-row",
+                    ),
+                    ("live-renamed-package-task",),
+                    "agents-post-rename-resize-after-submit",
+                    "validate-renamed-row",
                 )
 
         with shared_agent_server(isolated):
@@ -459,12 +526,21 @@ def test_actual_tui_nested_filter_clear_live_rename_and_replay(
                         "child-package-task",
                         "nested-package-task",
                         "live-renamed-package-task",
-                    )
+                    ),
+                    stage="agents-post-rename-resume-resize",
+                    action="resize-redraw",
                 )
-                assert "Agent command center" in replay
-                assert "child-package-task" in replay
-                assert "nested-package-task" in replay
-                assert "live-renamed-package-task" in replay
+                tui.assert_markers(
+                    replay,
+                    (
+                        "Agent command center",
+                        "child-package-task",
+                        "nested-package-task",
+                        "live-renamed-package-task",
+                    ),
+                    "agents-post-rename-resume-resize",
+                    "validate-replayed-tree",
+                )
 
 
 def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate(
@@ -610,15 +686,26 @@ def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate
                     "/review - review any changes and find issues",
                     browser_thread_id,
                     "Ask Codex to do anything",
-                )
+                ),
+                stage="browser-output-startup",
+                action="process-launch",
             )
             prompt = "Inspect the configured synthetic Browser page and report its capture labels."
             # Cursor-diff rendering can omit unchanged spaces from the raw PTY
             # stream. Witness the paste suffix; attest the complete delivered
             # prompt in the captured request below, before Browser assertions.
-            tui.submit_line(prompt, pasted_marker="labels.")
+            tui.submit_line(
+                prompt,
+                pasted_marker="labels.",
+                stage="browser-output-request",
+                action="paste-prompt-before-submit",
+            )
             server.wait_for_requests(2, timeout_s=30)
-            tui.until("browser synthetic consumer complete")
+            tui.until(
+                "browser synthetic consumer complete",
+                stage="browser-output-complete",
+                action="await-completion-render",
+            )
 
         requests = [
             request for request in server.requests() if request.path == "/v1/responses"
