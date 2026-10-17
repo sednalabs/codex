@@ -56,11 +56,26 @@ jobs:
           test ! -s "$RUNNER_TEMP/zip-prep-before.txt"
 
           rustup toolchain install nightly-2025-09-18 --component rustfmt
-          cargo +1.96.0 update --manifest-path codex-rs/Cargo.toml -p zip --precise 9.0.0
+          cargo +1.96.0 update --manifest-path codex-rs/Cargo.toml -p zip --precise 9.0.4
           just bazel-lock-update
           rustfmt +nightly-2025-09-18 --config-path codex-rs/rustfmt.toml \
             codex-rs/core-plugins/src/startup_sync.rs \
             codex-rs/core-plugins/src/startup_sync_tests.rs
+
+          zip_version="$(python3 - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          packages = tomllib.loads(Path("codex-rs/Cargo.lock").read_text())["package"]
+          zip_packages = [package for package in packages if package["name"] == "zip"]
+          if len(zip_packages) != 1 or zip_packages[0]["version"] != "9.0.4":
+              raise SystemExit(
+                  f"expected exactly one zip lock entry at 9.0.4, found "
+                  f"{[(package['version'], package.get('source')) for package in zip_packages]}"
+              )
+          print(zip_packages[0]["version"])
+          PY
+          )"
 
           git diff --check
           git status --porcelain --untracked-files=all > "$RUNNER_TEMP/zip-prep-status.txt"
@@ -107,7 +122,8 @@ jobs:
             printf 'rust_action=ebb3d1676050bfd0971c36c1e215b5751473994d\nrust_toolchain=1.96.0\nrustfmt_toolchain=nightly-2025-09-18\n'
             printf 'setup_bazel_ci=source-pinned-local-action\nbazel_setup_action=c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86\nbazelisk=1.28.1\nbazel_version=9.2.0\n'
             printf 'dotslash_action=1e4e7b3e07eaca387acb98f1d4720e0bee8dbb6a\njust_install_action=4cef1412cce204788f482e778a0b9187f9626a29\njust_version=1.51.0\n'
-            printf 'commands=cargo +1.96.0 update --manifest-path codex-rs/Cargo.toml -p zip --precise 9.0.0; just bazel-lock-update; rustfmt +nightly-2025-09-18 on two startup_sync Rust files\n'
+            printf 'commands=cargo +1.96.0 update --manifest-path codex-rs/Cargo.toml -p zip --precise 9.0.4; just bazel-lock-update; rustfmt +nightly-2025-09-18 on two startup_sync Rust files\n'
+            printf 'zip_lock_observed_version=%s\n' "$zip_version"
             printf 'changed_paths:\n'
             sed 's/^...//' "$RUNNER_TEMP/zip-prep-status.txt"
             printf 'postimage_sha256:\n'
