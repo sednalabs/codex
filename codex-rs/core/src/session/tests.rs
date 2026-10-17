@@ -2968,6 +2968,10 @@ async fn make_explicit_test_session(
         Some(MultiAgentVersion::V2),
         "explicit inter-agent tests must use the version selected by config"
     );
+    session
+        .try_ensure_rollout_materialized(PersistContext::Standard)
+        .await
+        .expect("persistent explicit inter-agent session should materialize its rollout");
     let rollout_path = session
         .current_rollout_path()
         .await
