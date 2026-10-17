@@ -105,6 +105,8 @@ pub use remote_control::RemoteControlEnrollmentRecord;
 pub use threads::ThreadFilterOptions;
 pub use usage::ProviderCallUsageRecord;
 pub use usage::ProviderCallUsageWriteOutcome;
+pub use usage::SpawnRequestUsageRecord;
+pub use usage::SpawnRequestUsageWriteOutcome;
 pub use usage::UsageThreadRecord;
 
 // "Partition" is the retained-log-content bucket we cap at 10 MiB:
