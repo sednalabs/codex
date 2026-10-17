@@ -74,8 +74,38 @@ jobs:
           persist-credentials: false
           path: .workflow-src
 
+      - name: Classify fixed schema generation request
+        id: request_kind
+        shell: bash
+        env:
+          SPECIAL_MODE_SELECTED: ${{ inputs.prepare_codex_cli_for_exact_usage_test || inputs.run_ae94_android_helper_tests || inputs.run_ae94_tui_provider_tests || inputs.run_d0_active_wait_test || inputs.run_ac392_android_protocol_test || inputs.run_a89_android_png_fixture_preflight }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+
+          raw = os.environ.get("RUST_TEST_REQUEST_JSON", "")
+          try:
+              payload = json.loads(raw) if len(raw) <= 65536 else None
+          except (ValueError, RecursionError):
+              payload = None
+          schema_request = (
+              isinstance(payload, dict)
+              and payload.get("schema_version") == "codex-config-schema-v1"
+          )
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"schema_generation={str(schema_request).lower()}\n")
+          if schema_request and (
+              payload != {"schema_version": "codex-config-schema-v1"}
+              or os.environ["VALIDATION_TARGET_SHA"] != "46014d2f9ad7d7cdf8d9c62da99ea9d2ee1e6c9b"
+              or os.environ["VALIDATION_PROFILE"] != "rust_minimal"
+              or os.environ.get("SPECIAL_MODE_SELECTED") != "false"
+          ):
+              raise SystemExit("Fixed schema generation request rejected.")
+          PY
+
       - name: Verify named-test command builder
-        if: ${{ inputs.run_ac392_android_protocol_test != true }}
+        if: ${{ inputs.run_ac392_android_protocol_test != true && steps.request_kind.outputs.schema_generation != 'true' }}
         working-directory: .workflow-src
         shell: bash
         run: python3 .github/scripts/test_run_named_rust_tests.py
@@ -424,13 +454,113 @@ jobs:
 
       - name: Inventory and run exact named tests
         id: named_tests
-        if: ${{ inputs.run_ae94_android_helper_tests != true && inputs.run_ae94_tui_provider_tests != true && inputs.run_d0_active_wait_test != true && inputs.run_ac392_android_protocol_test != true }}
+        if: ${{ inputs.run_ae94_android_helper_tests != true && inputs.run_ae94_tui_provider_tests != true && inputs.run_d0_active_wait_test != true && inputs.run_ac392_android_protocol_test != true && steps.request_kind.outputs.schema_generation != 'true' }}
         continue-on-error: true
         working-directory: validation-target
         shell: bash
         run: |
           set -euo pipefail
           python3 ../.workflow-src/.github/scripts/run_named_rust_tests.py
+
+      - name: Generate complete exact-source config schema
+        id: config_schema
+        if: ${{ steps.request_kind.outputs.schema_generation == 'true' }}
+        working-directory: validation-target
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import stat
+          import subprocess
+
+          target = Path.cwd()
+          workspace = Path(os.environ["GITHUB_WORKSPACE"])
+          host = workspace / ".workflow-src"
+          base = workspace / "validation-base"
+          expected_target = "46014d2f9ad7d7cdf8d9c62da99ea9d2ee1e6c9b"
+          expected_base = "43e3a00e105c3675b3e086c7f0d59788b506b8c4"
+
+          def git_value(root, *arguments):
+              return subprocess.check_output(
+                  ["git", "-C", str(root), *arguments],
+                  text=True,
+                  stderr=subprocess.DEVNULL,
+              ).strip()
+
+          def identity():
+              identities = {
+                  "harness_sha": git_value(host, "rev-parse", "HEAD"),
+                  "harness_tree": git_value(host, "rev-parse", "HEAD^{tree}"),
+                  "target_sha": git_value(target, "rev-parse", "HEAD"),
+                  "target_tree": git_value(target, "rev-parse", "HEAD^{tree}"),
+                  "base_sha": git_value(base, "rev-parse", "HEAD"),
+                  "base_tree": git_value(base, "rev-parse", "HEAD^{tree}"),
+              }
+              if (
+                  identities["harness_sha"] != os.environ["VALIDATION_EXPECTED_HARNESS_SHA"]
+                  or identities["target_sha"] != expected_target
+                  or identities["base_sha"] != expected_base
+                  or os.environ["VALIDATION_HARNESS_SHA"] != identities["harness_sha"]
+                  or os.environ["VALIDATION_TARGET_SHA"] != expected_target
+                  or os.environ["VALIDATION_BASE_SHA"] != expected_base
+                  or os.environ["VALIDATION_PROFILE"] != "rust_minimal"
+                  or git_value(host, "status", "--porcelain", "--untracked-files=no")
+                  or git_value(target, "status", "--porcelain", "--untracked-files=no")
+              ):
+                  raise ValueError("identity")
+              return identities
+
+          try:
+              before = identity()
+              output_dir = Path(os.environ["RUNNER_TEMP"]) / "codex-config-schema-output"
+              output_dir.mkdir(mode=0o700, exist_ok=False)
+              schema = output_dir / "config.schema.json"
+              completed = subprocess.run(
+                  [
+                      "cargo", "run", "--locked", "-p", "codex-config-schema",
+                      "--bin", "codex-write-config-schema", "--", "--out", str(schema),
+                  ],
+                  cwd=target / "codex-rs",
+                  stdin=subprocess.DEVNULL,
+                  stdout=subprocess.DEVNULL,
+                  stderr=subprocess.DEVNULL,
+                  check=False,
+              )
+              if completed.returncode != 0:
+                  raise ValueError("producer")
+              with os.fdopen(os.open(schema, os.O_RDONLY | os.O_NOFOLLOW), "rb") as source:
+                  metadata = os.fstat(source.fileno())
+                  if not stat.S_ISREG(metadata.st_mode) or not 0 < metadata.st_size <= 4 * 1024 * 1024:
+                      raise ValueError("output")
+                  content = source.read(4 * 1024 * 1024 + 1)
+              if len(content) != metadata.st_size or identity() != before:
+                  raise ValueError("output identity")
+              receipt = {
+                  "schema_version": "codex-config-schema-result-v1",
+                  "status": "success",
+                  "identity": {
+                      **before,
+                      "repository": os.environ["GITHUB_REPOSITORY"],
+                      "run_id": os.environ["GITHUB_RUN_ID"],
+                  },
+                  "producer": "codex-config-schema/codex-write-config-schema",
+                  "output": {
+                      "file": "config.schema.json",
+                      "bytes": len(content),
+                      "sha256": hashlib.sha256(content).hexdigest(),
+                  },
+              }
+              (output_dir / "generation-receipt.json").write_text(
+                  json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+              )
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+                  output.write("generated=true\n")
+          except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+              raise SystemExit("Fixed config schema generation failed.") from None
+          PY
 
       - name: Run the fixed ae94 Android helper test set
         id: android_helper_tests
@@ -1334,7 +1464,7 @@ jobs:
           PY
 
       - name: Append named-test evidence
-        if: ${{ always() }}
+        if: ${{ always() && steps.request_kind.outputs.schema_generation != 'true' }}
         shell: bash
         env:
           RESULT_PATH: ${{ github.workspace }}/validation-target/rust-tests-v1-results.json
@@ -1363,11 +1493,22 @@ jobs:
           PY
 
       - name: Upload named-test evidence
-        if: ${{ always() }}
+        if: ${{ always() && steps.request_kind.outputs.schema_generation != 'true' }}
         uses: actions/upload-artifact@v7
         with:
           name: ${{ inputs.artifact_name }}
           path: validation-target/rust-tests-v1-results.json
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Upload complete generated config schema
+        if: ${{ steps.config_schema.outputs.generated == 'true' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: codex-config-schema-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/codex-config-schema-output/config.schema.json
+            ${{ runner.temp }}/codex-config-schema-output/generation-receipt.json
           if-no-files-found: error
           retention-days: 3
 
