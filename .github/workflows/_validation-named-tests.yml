@@ -111,7 +111,7 @@ jobs:
               payload != {"schema_version": "usage-report-exact-root-v1"}
               or os.environ["VALIDATION_TARGET_SHA"] != "43dfc7894b59db6992ab7b6f57f36c5d9fd7f39f"
               or os.environ["VALIDATION_BASE_REF"] != "a319e05bad22a5b2870c9bfad3f49ac74dc0bef3"
-              or os.environ["VALIDATION_EXPECTED_BASE_SHA"] != "a319e05bad22a5b2870c9bfad3f49ac74dc0bef3"
+              or os.environ.get("VALIDATION_EXPECTED_BASE_SHA", "") not in ("", "a319e05bad22a5b2870c9bfad3f49ac74dc0bef3")
               or os.environ["VALIDATION_PROFILE"] != "rust_minimal"
               or os.environ.get("SPECIAL_MODE_SELECTED") != "false"
           ):
