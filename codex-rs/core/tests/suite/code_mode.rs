@@ -6828,7 +6828,6 @@ image(imageItem);
         Some(false),
         "code_mode mcp image scenario call failed unexpectedly"
     );
-    assert_eq!(items.len(), 2);
     assert_regex_match(
         concat!(
             r"(?s)\A",
@@ -6836,6 +6835,7 @@ image(imageItem);
         ),
         text_item(&items, /*index*/ 0),
     );
+    assert_eq!(items.len(), 2);
 
     assert_eq!(
         items[1].get("type").and_then(Value::as_str),
