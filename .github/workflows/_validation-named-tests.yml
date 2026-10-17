@@ -97,9 +97,17 @@ jobs:
               isinstance(payload, dict)
               and payload.get("schema_version") == "usage-report-exact-root-v1"
           )
+          provider_capabilities_snapshot_request = (
+              isinstance(payload, dict)
+              and payload.get("schema_version") == "codex-provider-capabilities-snapshot-v1"
+          )
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               output.write(f"schema_generation={str(schema_request).lower()}\n")
               output.write(f"usage_report_synthetic={str(usage_report_request).lower()}\n")
+              output.write(
+                  "provider_capabilities_snapshot="
+                  f"{str(provider_capabilities_snapshot_request).lower()}\n"
+              )
           if schema_request and (
               payload != {"schema_version": "codex-config-schema-v1"}
               or os.environ["VALIDATION_TARGET_SHA"] != "46014d2f9ad7d7cdf8d9c62da99ea9d2ee1e6c9b"
@@ -116,10 +124,19 @@ jobs:
               or os.environ.get("SPECIAL_MODE_SELECTED") != "false"
           ):
               raise SystemExit("Fixed usage-report synthetic request rejected.")
+          if provider_capabilities_snapshot_request and (
+              payload != {"schema_version": "codex-provider-capabilities-snapshot-v1"}
+              or os.environ["VALIDATION_TARGET_SHA"] != "d6d79c1ad3a711b6272cad99370f1594baf20d3a"
+              or os.environ["VALIDATION_BASE_REF"] != "4ad9c8dcc71d901ba8610c35c11d916ba253f168"
+              or os.environ.get("VALIDATION_EXPECTED_BASE_SHA", "") not in ("", "4ad9c8dcc71d901ba8610c35c11d916ba253f168")
+              or os.environ["VALIDATION_PROFILE"] != "rust_integration"
+              or os.environ.get("SPECIAL_MODE_SELECTED") != "false"
+          ):
+              raise SystemExit("Fixed provider-capabilities snapshot request rejected.")
           PY
 
       - name: Verify named-test command builder
-        if: ${{ inputs.run_ac392_android_protocol_test != true && steps.request_kind.outputs.schema_generation != 'true' && steps.request_kind.outputs.usage_report_synthetic != 'true' }}
+        if: ${{ inputs.run_ac392_android_protocol_test != true && steps.request_kind.outputs.schema_generation != 'true' && steps.request_kind.outputs.usage_report_synthetic != 'true' && steps.request_kind.outputs.provider_capabilities_snapshot != 'true' }}
         working-directory: .workflow-src
         shell: bash
         run: python3 .github/scripts/test_run_named_rust_tests.py
@@ -468,7 +485,7 @@ jobs:
 
       - name: Inventory and run exact named tests
         id: named_tests
-        if: ${{ inputs.run_ae94_android_helper_tests != true && inputs.run_ae94_tui_provider_tests != true && inputs.run_d0_active_wait_test != true && inputs.run_ac392_android_protocol_test != true && steps.request_kind.outputs.schema_generation != 'true' && steps.request_kind.outputs.usage_report_synthetic != 'true' }}
+        if: ${{ inputs.run_ae94_android_helper_tests != true && inputs.run_ae94_tui_provider_tests != true && inputs.run_d0_active_wait_test != true && inputs.run_ac392_android_protocol_test != true && steps.request_kind.outputs.schema_generation != 'true' && steps.request_kind.outputs.usage_report_synthetic != 'true' && steps.request_kind.outputs.provider_capabilities_snapshot != 'true' }}
         continue-on-error: true
         working-directory: validation-target
         shell: bash
@@ -574,6 +591,172 @@ jobs:
                   output.write("generated=true\n")
           except (OSError, ValueError, KeyError, subprocess.SubprocessError):
               raise SystemExit("Fixed config schema generation failed.") from None
+          PY
+
+      - name: Generate fixed provider-capabilities snapshot
+        id: provider_capabilities_snapshot
+        if: ${{ steps.request_kind.outputs.provider_capabilities_snapshot == 'true' }}
+        working-directory: validation-target
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import stat
+          import subprocess
+
+          target = Path.cwd()
+          workspace = Path(os.environ["GITHUB_WORKSPACE"])
+          host = workspace / ".workflow-src"
+          base = workspace / "validation-base"
+          expected_target = "d6d79c1ad3a711b6272cad99370f1594baf20d3a"
+          expected_target_tree = "261aca34939eaa4f6e8cd69ea82479ef35675dd4"
+          expected_base = "4ad9c8dcc71d901ba8610c35c11d916ba253f168"
+          expected_base_tree = "fb58ee125d7b86cdbbb125b388dc73e3cc8137db"
+          expected_snapshot_blob = "0da9296d9a3dabbb9ee6c63d7149799d596d957d"
+          expected_snapshot_sha256 = "b65a6a56f43048823bba405267365693364819b6e6790b453812ba7820b65648"
+          snapshot_rel = Path(
+              "codex-rs/core/tests/suite/snapshots/"
+              "all__suite__scenarios__provider_capabilities__custom_provider_capabilities.snap"
+          )
+          selector = (
+              "suite::scenarios::provider_capabilities::"
+              "custom_provider_capabilities_constrain_web_access_and_enable_compaction"
+          )
+          maximum_output_bytes = 256 * 1024
+
+          def git_value(root, *arguments):
+              return subprocess.check_output(
+                  ["git", "-C", str(root), *arguments],
+                  text=True,
+                  stdin=subprocess.DEVNULL,
+                  stderr=subprocess.DEVNULL,
+              ).strip()
+
+          def identity():
+              values = {
+                  "harness_sha": git_value(host, "rev-parse", "HEAD"),
+                  "harness_tree": git_value(host, "rev-parse", "HEAD^{tree}"),
+                  "target_sha": git_value(target, "rev-parse", "HEAD"),
+                  "target_tree": git_value(target, "rev-parse", "HEAD^{tree}"),
+                  "base_sha": git_value(base, "rev-parse", "HEAD"),
+                  "base_tree": git_value(base, "rev-parse", "HEAD^{tree}"),
+              }
+              expected_harness = os.environ["VALIDATION_EXPECTED_HARNESS_SHA"]
+              if (
+                  not expected_harness
+                  or values["harness_sha"] != expected_harness
+                  or os.environ["VALIDATION_HARNESS_SHA"] != expected_harness
+                  or values["target_sha"] != expected_target
+                  or values["target_tree"] != expected_target_tree
+                  or os.environ["VALIDATION_TARGET_SHA"] != expected_target
+                  or values["base_sha"] != expected_base
+                  or values["base_tree"] != expected_base_tree
+                  or os.environ["VALIDATION_BASE_SHA"] != expected_base
+                  or os.environ["VALIDATION_BASE_REF"] != expected_base
+                  or os.environ.get("VALIDATION_EXPECTED_BASE_SHA", "") not in ("", expected_base)
+                  or os.environ["VALIDATION_PROFILE"] != "rust_integration"
+              ):
+                  raise ValueError("identity")
+              return values
+
+          def read_regular_file(path, maximum_bytes):
+              descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+              with os.fdopen(descriptor, "rb") as source:
+                  metadata = os.fstat(source.fileno())
+                  if not stat.S_ISREG(metadata.st_mode) or not 0 < metadata.st_size <= maximum_bytes:
+                      raise ValueError("file")
+                  content = source.read(maximum_bytes + 1)
+              if len(content) != metadata.st_size:
+                  raise ValueError("file")
+              return content
+
+          try:
+              before = identity()
+              if (
+                  git_value(target, "status", "--porcelain", "--untracked-files=all")
+                  or git_value(host, "status", "--porcelain", "--untracked-files=all")
+              ):
+                  raise ValueError("dirty input")
+              snapshot = target / snapshot_rel
+              if git_value(target, "rev-parse", f"HEAD:{snapshot_rel.as_posix()}") != expected_snapshot_blob:
+                  raise ValueError("snapshot preimage")
+              preimage = read_regular_file(snapshot, maximum_output_bytes)
+              if hashlib.sha256(preimage).hexdigest() != expected_snapshot_sha256:
+                  raise ValueError("snapshot preimage")
+
+              child_env = os.environ.copy()
+              child_env["INSTA_UPDATE"] = "always"
+              completed = subprocess.run(
+                  [
+                      "cargo", "test", "--locked", "-p", "codex-core", "--test", "all",
+                      selector, "--", "--exact", "--test-threads=1",
+                  ],
+                  cwd=target / "codex-rs",
+                  env=child_env,
+                  stdin=subprocess.DEVNULL,
+                  stdout=subprocess.DEVNULL,
+                  stderr=subprocess.DEVNULL,
+                  check=False,
+              )
+              if completed.returncode != 0:
+                  raise ValueError("producer")
+
+              content = read_regular_file(snapshot, maximum_output_bytes)
+              if (
+                  hashlib.sha256(content).hexdigest() == expected_snapshot_sha256
+                  or identity() != before
+                  or git_value(target, "diff", "--cached", "--name-only")
+                  or git_value(target, "ls-files", "--others", "--exclude-standard")
+                  or git_value(target, "diff", "--name-only", "--no-renames")
+                  != snapshot_rel.as_posix()
+              ):
+                  raise ValueError("output identity")
+
+              output_dir = Path(os.environ["RUNNER_TEMP"]) / "codex-provider-capabilities-snapshot-output"
+              output_dir.mkdir(mode=0o700, exist_ok=False)
+              output_snapshot = output_dir / "custom_provider_capabilities.snap"
+              descriptor = os.open(
+                  output_snapshot,
+                  os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                  0o600,
+              )
+              with os.fdopen(descriptor, "wb") as destination:
+                  destination.write(content)
+              receipt = {
+                  "schema_version": "codex-provider-capabilities-snapshot-result-v1",
+                  "status": "success",
+                  "identity": {
+                      **before,
+                      "repository": os.environ["GITHUB_REPOSITORY"],
+                      "run_id": os.environ["GITHUB_RUN_ID"],
+                      "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+                      "profile": os.environ["VALIDATION_PROFILE"],
+                  },
+                  "test": selector,
+                  "output": {
+                      "path": snapshot_rel.as_posix(),
+                      "file": output_snapshot.name,
+                      "bytes": len(content),
+                      "sha256": hashlib.sha256(content).hexdigest(),
+                      "preimage_blob": expected_snapshot_blob,
+                  },
+              }
+              receipt_path = output_dir / "generation-receipt.json"
+              descriptor = os.open(
+                  receipt_path,
+                  os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                  0o600,
+              )
+              with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+                  json.dump(receipt, output, indent=2, sort_keys=True)
+                  output.write("\n")
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+                  output.write("generated=true\n")
+          except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+              raise SystemExit("Fixed provider-capabilities snapshot generation failed.") from None
           PY
 
       - name: Run fixed exact-root usage-report synthetic tests
@@ -1757,7 +1940,7 @@ jobs:
           PY
 
       - name: Append named-test evidence
-        if: ${{ always() && steps.request_kind.outputs.schema_generation != 'true' && steps.request_kind.outputs.usage_report_synthetic != 'true' }}
+        if: ${{ always() && steps.request_kind.outputs.schema_generation != 'true' && steps.request_kind.outputs.usage_report_synthetic != 'true' && steps.request_kind.outputs.provider_capabilities_snapshot != 'true' }}
         shell: bash
         env:
           RESULT_PATH: ${{ github.workspace }}/validation-target/rust-tests-v1-results.json
@@ -1786,7 +1969,7 @@ jobs:
           PY
 
       - name: Upload named-test evidence
-        if: ${{ always() && steps.request_kind.outputs.schema_generation != 'true' && steps.request_kind.outputs.usage_report_synthetic != 'true' }}
+        if: ${{ always() && steps.request_kind.outputs.schema_generation != 'true' && steps.request_kind.outputs.usage_report_synthetic != 'true' && steps.request_kind.outputs.provider_capabilities_snapshot != 'true' }}
         uses: actions/upload-artifact@v7
         with:
           name: ${{ inputs.artifact_name }}
@@ -1834,6 +2017,17 @@ jobs:
           path: |
             ${{ runner.temp }}/codex-config-schema-output/config.schema.json
             ${{ runner.temp }}/codex-config-schema-output/generation-receipt.json
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Upload fixed provider-capabilities snapshot
+        if: ${{ steps.provider_capabilities_snapshot.outputs.generated == 'true' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: codex-provider-capabilities-snapshot-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/codex-provider-capabilities-snapshot-output/custom_provider_capabilities.snap
+            ${{ runner.temp }}/codex-provider-capabilities-snapshot-output/generation-receipt.json
           if-no-files-found: error
           retention-days: 3
 
