@@ -13,6 +13,7 @@ use codex_core::StateDbHandle;
 use codex_core::TurnInputRequest;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionFuture;
+use codex_extension_api::ThreadIdleCause;
 use codex_extension_api::TurnLifecycleContributor;
 use codex_extension_api::TurnStartInput;
 use codex_extension_api::TurnStartPhase;
@@ -575,6 +576,13 @@ async fn run_goal_scheduler_wait(
         (test, marker.goal_id)
     };
     let child = test.thread_manager.get_thread(child_id).await?;
+    if matches!(scenario, Scenario::ResumedComplete) {
+        child
+            .emit_thread_idle_lifecycle_if_idle(ThreadIdleCause::Completed)
+            .await;
+        // Consume the resume setup idle before any gated goal turn can finish.
+        timeout(Duration::from_secs(10), ThreadIdle::wait(&child)).await?;
+    }
     set_resumed_phase(&mut resumed_phase, "first automatic goal start");
     let first = timeout(Duration::from_secs(10), start_rx.recv())
         .await?
