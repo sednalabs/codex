@@ -494,9 +494,12 @@ mod tests {
 
     #[test]
     fn composite_managed_source_reports_allowlisted_constituents_only() {
-        let system_file = AbsolutePathBuf::from_absolute_path("/managed/system-requirements.toml")
+        let temp = tempdir().expect("synthetic managed paths directory");
+        let system_file_path = temp.path().join("system-requirements.toml");
+        let legacy_file_path = temp.path().join("legacy.toml");
+        let system_file = AbsolutePathBuf::from_absolute_path(system_file_path.clone())
             .expect("absolute system requirements path");
-        let legacy_file = AbsolutePathBuf::from_absolute_path("/managed/legacy.toml")
+        let legacy_file = AbsolutePathBuf::from_absolute_path(legacy_file_path.clone())
             .expect("absolute legacy config path");
         let source = RequirementSource::Composite {
             sources: vec![
@@ -515,10 +518,13 @@ mod tests {
         assert_eq!(metadata["sources"][0]["kind"], "system-requirements");
         assert_eq!(
             metadata["sources"][0]["file"],
-            "/managed/system-requirements.toml"
+            serde_json::Value::String(system_file_path.to_string_lossy().into_owned())
         );
         assert_eq!(metadata["sources"][1]["kind"], "legacy-managed-file");
-        assert_eq!(metadata["sources"][1]["file"], "/managed/legacy.toml");
+        assert_eq!(
+            metadata["sources"][1]["file"],
+            serde_json::Value::String(legacy_file_path.to_string_lossy().into_owned())
+        );
         assert_eq!(metadata["sources"][2]["kind"], "enterprise-managed");
         assert!(!serialized.contains("PRIVATE_BACKEND_ID"));
         assert!(!serialized.contains("PRIVATE_BACKEND_NAME"));
@@ -599,17 +605,14 @@ mod tests {
         let mut loader_overrides =
             super::super::loader_overrides_for_profile_at_codex_home(Some(&profile), &home);
         let profile_path = codex_core::config::resolve_profile_v2_config_path(&home, &profile);
+        let model_instructions_path = temp.path().join("not-opened-instructions.md");
+        let model_instructions_path_toml =
+            TomlValue::String(model_instructions_path.to_string_lossy().into_owned()).to_string();
         std::fs::write(
             profile_path,
-            r#"
-developer_instructions = "profile developer text"
-model_instructions_file = "/forbidden/not-opened.md"
-features.multi_agent_v2.subagent_developer_instructions = "subagent text"
-features.multi_agent_v2.multi_agent_mode_hint_text = "profile mode hint"
-features.multi_agent_v2.usage_hint_text = "profile usage hint"
-features.multi_agent_v2.root_agent_usage_hint_text = "root usage hint"
-features.multi_agent_v2.subagent_usage_hint_text = "subagent usage hint"
-"#,
+            format!(
+                "developer_instructions = \"profile developer text\"\nmodel_instructions_file = {model_instructions_path_toml}\nfeatures.multi_agent_v2.subagent_developer_instructions = \"subagent text\"\nfeatures.multi_agent_v2.multi_agent_mode_hint_text = \"profile mode hint\"\nfeatures.multi_agent_v2.usage_hint_text = \"profile usage hint\"\nfeatures.multi_agent_v2.root_agent_usage_hint_text = \"root usage hint\"\nfeatures.multi_agent_v2.subagent_usage_hint_text = \"subagent usage hint\"\n"
+            ),
         )
         .expect("write profile fixture");
         std::fs::write(
@@ -688,7 +691,21 @@ features.multi_agent_v2.multi_agent_mode_hint_text = "project mode hint""#,
         assert!(!default_json.contains("UNRELATED_PROVIDER"));
         assert!(!default_json.contains("UNRELATED_ENV_SECRET"));
         assert!(!default_json.contains("UNRELATED_AUTH_TOKEN"));
-        assert!(default_json.contains("/forbidden/not-opened.md"));
+        let model_instructions_field = default_report["inline_configuration"]
+            .as_array()
+            .expect("inline configuration array")
+            .iter()
+            .find(|field| field["key"] == "model_instructions_file")
+            .expect("model instructions field");
+        assert_eq!(
+            model_instructions_field["configured_path"],
+            serde_json::Value::String(model_instructions_path.to_string_lossy().into_owned())
+        );
+        assert_eq!(
+            model_instructions_field["content_status"],
+            "not_opened; configured path only"
+        );
+        assert!(model_instructions_field.get("content").is_none());
         let default_managed_report =
             &default_report["local_managed_additional_developer_instructions"];
         assert!(
