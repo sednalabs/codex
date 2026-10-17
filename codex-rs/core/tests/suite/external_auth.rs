@@ -499,10 +499,22 @@ async fn amazon_bedrock_aws_auth_refresh_resigns() -> anyhow::Result<()> {
                 "Expiration": "2000-01-01T00:00:00Z",
             }))?,
         )?;
+    } else if mode == "export" {
+        // The initial export must succeed so the Responses request reaches the
+        // expired-token path that invokes the configured refresh command.
+        std::fs::write(
+            credentials_path.with_extension("json"),
+            serde_json::to_vec(&serde_json::json!({
+                "Version": 1,
+                "AccessKeyId": "OLD",
+                "SecretAccessKey": "s",
+                "SessionToken": "initial-session-token",
+            }))?,
+        )?;
     }
     let export_invocations = credentials_path.with_extension("exports");
     let credential_export = if export_mode {
-        // Login creates or replaces this file after the initial export fails.
+        // The refresh command creates or replaces this file during recovery.
         Some(bedrock_credential_export_config(
             &credentials_path.with_extension("json"),
             &export_invocations,
@@ -528,6 +540,7 @@ async fn amazon_bedrock_aws_auth_refresh_resigns() -> anyhow::Result<()> {
         })
         .expect(match mode.as_str() {
             "profile" => 2,
+            "export" => 2,
             "export-failure" => 0,
             _ => 1,
         })
@@ -663,10 +676,21 @@ async fn amazon_bedrock_aws_auth_refresh_resigns() -> anyhow::Result<()> {
         let requests = server
             .received_requests()
             .await
-            .expect("mock server should capture the exported request");
+            .expect("mock server should capture the exported requests");
+        let expected_session_tokens = match mode.as_str() {
+            "export" => vec![
+                Some(HeaderValue::from_static("initial-session-token")),
+                Some(HeaderValue::from_static("exported-session-token")),
+            ],
+            "export-expired" => vec![Some(HeaderValue::from_static("exported-session-token"))],
+            _ => unreachable!("only successful export modes reach the token assertions"),
+        };
         assert_eq!(
-            requests[0].headers.get("x-amz-security-token"),
-            Some(&HeaderValue::from_static("exported-session-token"))
+            requests
+                .iter()
+                .map(|request| request.headers.get("x-amz-security-token").cloned())
+                .collect::<Vec<_>>(),
+            expected_session_tokens
         );
     }
 

@@ -148,13 +148,32 @@ async fn guardian_circuit_breaker_notifies_parent(action: CircuitBreakAction) ->
         .thread_manager
         .get_thread(created.recv().await?)
         .await?;
-    let warning = wait_for_event_match(&worker, |event| match event {
-        EventMsg::GuardianWarning(warning) if warning.message.contains("3 consecutive") => {
-            Some(warning.message.clone())
+    let warning = loop {
+        let event = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            worker.next_event(),
+        )
+        .await
+        .unwrap_or_else(|_| {
+            let call_counts = calls
+                .iter()
+                .map(|mock| mock.requests().len())
+                .collect::<Vec<_>>();
+            let review_counts = reviews
+                .iter()
+                .map(|mock| mock.requests().len())
+                .collect::<Vec<_>>();
+            panic!(
+                "timeout waiting for GuardianWarning; worker_exec_mock_counts={call_counts:?}, guardian_review_mock_counts={review_counts:?}"
+            );
+        })
+        .expect("worker event stream should remain open while waiting for GuardianWarning");
+        if let EventMsg::GuardianWarning(warning) = event.msg
+            && warning.message.contains("3 consecutive")
+        {
+            break warning.message;
         }
-        _ => None,
-    })
-    .await;
+    };
     let aborted = wait_for_event_match(&worker, |event| match event {
         EventMsg::TurnAborted(aborted) => Some(aborted.clone()),
         _ => None,

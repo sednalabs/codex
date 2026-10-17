@@ -173,7 +173,11 @@ if payload["prompt"] == "blocked":
             "UserPromptSubmit": [{
                 "hooks": [{
                     "type": "command",
-                    "command": format!("python3 {}", script_path.display()),
+                    "command": format!(
+                        "{} \"{}\"",
+                        if cfg!(windows) { "python" } else { "python3" },
+                        script_path.display()
+                    ),
                 }]
             }]
         }

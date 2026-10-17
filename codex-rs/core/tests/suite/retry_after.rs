@@ -32,6 +32,7 @@ use http::Method;
 use http::StatusCode;
 use pretty_assertions::assert_eq;
 use serde_json::json;
+use std::path::Path;
 use std::sync::Mutex;
 use std::time::Duration;
 use std::time::Instant;
@@ -58,6 +59,18 @@ const FIRST_RETRY_MIN_DELAY: Duration = Duration::from_millis(180);
 const FIRST_RETRY_MAX_DELAY: Duration = Duration::from_millis(220);
 const SECOND_RETRY_MIN_DELAY: Duration = Duration::from_millis(360);
 const SECOND_RETRY_MAX_DELAY: Duration = Duration::from_millis(440);
+
+fn capacity_retry_append_command(path: &Path, line: &str) -> String {
+    #[cfg(windows)]
+    {
+        let path = path.to_string_lossy().replace('\'', "''");
+        format!("Add-Content -LiteralPath '{path}' -Value '{line}' -Encoding Ascii")
+    }
+    #[cfg(not(windows))]
+    {
+        format!("printf '{line}\\n' >> {path:?}")
+    }
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct RetryTelemetryEvent {
@@ -1140,13 +1153,13 @@ async fn capacity_retry_deduplicates_accepted_output_and_tool_ids() -> Result<()
     let effects_dir = tempfile::tempdir()?;
     let effect_path = effects_dir.path().join("effect.txt");
     let first_args = json!({
-        "command": format!("printf 'first\\n' >> {effect_path:?}"),
+        "command": capacity_retry_append_command(&effect_path, "first"),
         "login": false,
         "timeout_ms": 5_000,
     })
     .to_string();
     let distinct_args = json!({
-        "command": format!("printf 'distinct\\n' >> {effect_path:?}"),
+        "command": capacity_retry_append_command(&effect_path, "distinct"),
         "login": false,
         "timeout_ms": 5_000,
     })
@@ -1230,7 +1243,12 @@ async fn capacity_retry_deduplicates_accepted_output_and_tool_ids() -> Result<()
         1,
         "only one completed assistant item with the accepted provider ID",
     );
-    assert_eq!(std::fs::read_to_string(&effect_path)?, "first\ndistinct\n");
+    assert_eq!(
+        std::fs::read_to_string(&effect_path)?
+            .lines()
+            .collect::<Vec<_>>(),
+        vec!["first", "distinct"]
+    );
 
     let requests = response_mock.requests();
     assert_eq!(requests.len(), 4);
@@ -1291,13 +1309,13 @@ async fn capacity_retry_rejects_conflicting_tool_call_id() -> Result<()> {
     let effects_dir = tempfile::tempdir()?;
     let effect_path = effects_dir.path().join("effect.txt");
     let accepted_args = json!({
-        "command": format!("printf 'accepted\\n' >> {effect_path:?}"),
+        "command": capacity_retry_append_command(&effect_path, "accepted"),
         "login": false,
         "timeout_ms": 5_000,
     })
     .to_string();
     let conflicting_args = json!({
-        "command": format!("printf 'conflict\\n' >> {effect_path:?}"),
+        "command": capacity_retry_append_command(&effect_path, "conflict"),
         "login": false,
         "timeout_ms": 5_000,
     })
@@ -1365,7 +1383,12 @@ async fn capacity_retry_rejects_conflicting_tool_call_id() -> Result<()> {
         }
     }
     assert_eq!(terminal_errors, 1);
-    assert_eq!(std::fs::read_to_string(&effect_path)?, "accepted\n");
+    assert_eq!(
+        std::fs::read_to_string(&effect_path)?
+            .lines()
+            .collect::<Vec<_>>(),
+        vec!["accepted"]
+    );
     assert_eq!(response_mock.requests().len(), 3);
     Ok(())
 }
