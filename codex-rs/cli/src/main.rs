@@ -1770,7 +1770,7 @@ async fn cli_main(
                 instruction_debug::run(
                     cmd,
                     root_config_overrides,
-                    interactive.cwd,
+                    interactive.cwd.clone(),
                     loader_overrides,
                 )
                 .await?;
@@ -1924,7 +1924,7 @@ fn profile_v2_for_subcommand<'a>(
             subcommand: DebugSubcommand::Instructions(_),
         }) => Ok(Some(profile_v2)),
         _ => anyhow::bail!(
-            "--profile only applies to runtime commands and `codex mcp`: `codex`, `codex exec`, `codex review`, `codex resume`, `codex queue`, `codex archive`, `codex delete`, `codex unarchive`, `codex fork`, `codex mcp`, `codex sandbox`, and `codex debug prompt-input`."
+            "--profile only applies to runtime commands and `codex mcp`: `codex`, `codex exec`, `codex review`, `codex resume`, `codex queue`, `codex archive`, `codex delete`, `codex unarchive`, `codex fork`, `codex mcp`, `codex sandbox`, `codex debug prompt-input`, and `codex debug instructions`."
         ),
     }
 }

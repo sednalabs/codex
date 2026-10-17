@@ -21,6 +21,8 @@ use toml::Value as TomlValue;
 const MAX_CONTENT_BYTES: usize = 32_768;
 const MAX_INPUT_BYTES: usize = MAX_CONTENT_BYTES + 1;
 const MAX_REPORT_BYTES: usize = 131_072;
+const MAX_REQUIREMENT_SOURCE_DEPTH: usize = 4;
+const MAX_REQUIREMENT_SOURCE_ENTRIES: usize = 16;
 
 #[derive(Debug, Parser)]
 pub(crate) struct DebugInstructionsCommand {
@@ -278,6 +280,20 @@ fn file_source(kind: &str, file: &AbsolutePathBuf) -> JsonValue {
 }
 
 fn requirement_source_metadata(source: &RequirementSource) -> JsonValue {
+    let mut remaining = MAX_REQUIREMENT_SOURCE_ENTRIES;
+    requirement_source_metadata_bounded(source, 0, &mut remaining)
+}
+
+fn requirement_source_metadata_bounded(
+    source: &RequirementSource,
+    depth: usize,
+    remaining: &mut usize,
+) -> JsonValue {
+    if *remaining == 0 {
+        return json!({"kind": "omitted", "reason": "source metadata limit"});
+    }
+    *remaining -= 1;
+
     match source {
         RequirementSource::SystemRequirementsToml { file } => {
             file_source("system-requirements", file)
@@ -290,7 +306,28 @@ fn requirement_source_metadata(source: &RequirementSource) -> JsonValue {
         RequirementSource::LegacyManagedConfigTomlFromMdm => {
             json!({"kind": "legacy-managed-mdm"})
         }
-        RequirementSource::Composite { .. } => json!({"kind": "composite"}),
+        RequirementSource::Composite { .. } if depth >= MAX_REQUIREMENT_SOURCE_DEPTH => {
+            json!({"kind": "composite", "sources": "omitted; nesting limit"})
+        }
+        RequirementSource::Composite { sources } => {
+            let mut metadata = Vec::new();
+            for (index, child) in sources.iter().enumerate() {
+                if *remaining == 0 {
+                    metadata.push(json!({
+                        "kind": "omitted",
+                        "reason": "source metadata limit",
+                        "remaining": sources.len() - index,
+                    }));
+                    break;
+                }
+                metadata.push(requirement_source_metadata_bounded(
+                    child,
+                    depth + 1,
+                    remaining,
+                ));
+            }
+            json!({"kind": "composite", "sources": metadata})
+        }
         RequirementSource::Unknown => json!({"kind": "unknown"}),
     }
 }
@@ -339,11 +376,15 @@ fn redact(input: &str) -> (String, usize) {
         let suspicious_line =
             private_key_end.is_some() || suspicious.iter().any(|marker| lower.contains(marker));
         if suspicious_line {
-            let newline = line.ends_with('\n');
+            let line_ending = if line.ends_with("\r\n") {
+                "\r\n"
+            } else if line.ends_with('\n') {
+                "\n"
+            } else {
+                ""
+            };
             result.push_str("[REDACTED]");
-            if newline {
-                result.push('\n');
-            }
+            result.push_str(line_ending);
             redacted_lines += 1;
         } else {
             result.push_str(line);
@@ -391,6 +432,38 @@ mod tests {
     }
 
     #[test]
+    fn redacts_private_key_formats_and_preserves_mixed_line_endings() {
+        for (begin, end) in [
+            ("-----BEGIN PRIVATE KEY-----", "-----END PRIVATE KEY-----"),
+            (
+                "-----BEGIN RSA PRIVATE KEY-----",
+                "-----END RSA PRIVATE KEY-----",
+            ),
+            (
+                "-----BEGIN EC PRIVATE KEY-----",
+                "-----END EC PRIVATE KEY-----",
+            ),
+            (
+                "-----BEGIN OPENSSH PRIVATE KEY-----",
+                "-----END OPENSSH PRIVATE KEY-----",
+            ),
+        ] {
+            let input = format!("safe\r\n{begin}\r\nsecret\n{end}\r\ntail\n");
+            let (output, lines) = redact(&input);
+            assert_eq!(
+                output,
+                "safe\r\n[REDACTED]\r\n[REDACTED]\n[REDACTED]\r\ntail\n"
+            );
+            assert_eq!(lines, 3);
+        }
+
+        let (unterminated_output, unterminated_lines) =
+            redact("safe\r\n-----BEGIN PRIVATE KEY-----\r\nsecret at eof");
+        assert_eq!(unterminated_output, "safe\r\n[REDACTED]\r\n[REDACTED]");
+        assert_eq!(unterminated_lines, 2);
+    }
+
+    #[test]
     fn instruction_projection_never_selects_unrelated_fields() {
         let expected: &[&[&str]] = &[
             &["instructions"],
@@ -416,6 +489,38 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(actual, expected);
         assert!(!is_instruction_path(&["api_key".to_string()]));
+    }
+
+    #[test]
+    fn composite_managed_source_reports_allowlisted_constituents_only() {
+        let system_file = AbsolutePathBuf::from_absolute_path("/managed/system-requirements.toml")
+            .expect("absolute system requirements path");
+        let legacy_file = AbsolutePathBuf::from_absolute_path("/managed/legacy.toml")
+            .expect("absolute legacy config path");
+        let source = RequirementSource::Composite {
+            sources: vec![
+                RequirementSource::SystemRequirementsToml { file: system_file },
+                RequirementSource::LegacyManagedConfigTomlFromFile { file: legacy_file },
+                RequirementSource::EnterpriseManaged {
+                    id: "PRIVATE_BACKEND_ID_MUST_NOT_APPEAR".to_string(),
+                    name: "PRIVATE_BACKEND_NAME_MUST_NOT_APPEAR".to_string(),
+                },
+            ],
+        };
+
+        let metadata = requirement_source_metadata(&source);
+        let serialized = metadata.to_string();
+        assert_eq!(metadata["kind"], "composite");
+        assert_eq!(metadata["sources"][0]["kind"], "system-requirements");
+        assert_eq!(
+            metadata["sources"][0]["file"],
+            "/managed/system-requirements.toml"
+        );
+        assert_eq!(metadata["sources"][1]["kind"], "legacy-managed-file");
+        assert_eq!(metadata["sources"][1]["file"], "/managed/legacy.toml");
+        assert_eq!(metadata["sources"][2]["kind"], "enterprise-managed");
+        assert!(!serialized.contains("PRIVATE_BACKEND_ID"));
+        assert!(!serialized.contains("PRIVATE_BACKEND_NAME"));
     }
 
     #[test]
