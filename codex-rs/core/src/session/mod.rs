@@ -287,7 +287,6 @@ pub(crate) use self::environment::ThreadEnvironmentDefaults;
 use self::handlers::submission_dispatch_span;
 use self::handlers::submission_loop;
 pub(crate) use self::input_queue::ExplicitMailboxActivity;
-#[cfg(test)]
 pub(crate) use self::input_queue::InputQueue;
 pub(crate) use self::input_queue::InputQueueActivity;
 pub(crate) use self::input_queue::TurnInput;
@@ -4146,7 +4145,7 @@ impl Session {
                                 .await;
                             return Err(err);
                         }
-                        Err(CodexErr::Fatal(_)) => None,
+                        Err(err) if matches!(err.details(), CodexErrorDetails::Fatal(_)) => None,
                         Err(err) => return Err(err),
                     }
                 }
@@ -4312,7 +4311,7 @@ impl Session {
                 .append_items(&[RolloutItem::ResponseItem(response_item.clone())])
                 .await;
             let failure = match append_result {
-                Ok(()) => live_thread
+                Ok(()) => self
                     .flush_rollout()
                     .await
                     .err()
