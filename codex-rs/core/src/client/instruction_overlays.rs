@@ -315,12 +315,12 @@ fn apply_candidates(
             };
             if remove_content {
                 content.remove(content_index);
-                if let Some(metadata) = internal_chat_message_metadata_passthrough.as_mut() {
-                    if let Some(kinds) = metadata.content_item_kinds.as_mut() {
-                        kinds.remove(content_index);
-                        if kinds.is_empty() {
-                            metadata.content_item_kinds = None;
-                        }
+                if let Some(metadata) = internal_chat_message_metadata_passthrough.as_mut()
+                    && let Some(kinds) = metadata.content_item_kinds.as_mut()
+                {
+                    kinds.remove(content_index);
+                    if kinds.is_empty() {
+                        metadata.content_item_kinds = None;
                     }
                 }
                 if internal_chat_message_metadata_passthrough
@@ -337,10 +337,8 @@ fn apply_candidates(
         };
         if remove_message {
             input.remove(item_index);
-        } else if remove_content {
-            if let ResponseItem::Message { id, .. } = &mut input[item_index] {
-                *id = None;
-            }
+        } else if remove_content && let ResponseItem::Message { id, .. } = &mut input[item_index] {
+            *id = None;
         }
     }
     Ok(())
@@ -360,11 +358,11 @@ fn target_kind(component: InstructionOverlayComponent) -> &'static str {
     }
 }
 
-fn split_wrapper<'a>(
+fn split_wrapper(
     component: InstructionOverlayComponent,
-    text: &'a str,
+    text: &str,
     item_index: usize,
-) -> Result<(&'a str, &'a str, &'a str)> {
+) -> Result<(&str, &str, &str)> {
     let required = match component {
         InstructionOverlayComponent::MultiAgentMode => {
             Some((MULTI_AGENT_MODE_OPEN_TAG, MULTI_AGENT_MODE_CLOSE_TAG))
@@ -434,7 +432,7 @@ mod tests {
         baseline: &str,
         input: &[ResponseItem],
     ) -> Result<(String, Vec<ResponseItem>)> {
-        transform_request_with_provenance(source, plan, baseline, None, input)
+        transform_request_with_provenance(source, plan, baseline, /*provenance*/ None, input)
     }
 
     fn transform_request_with_provenance(
@@ -702,9 +700,14 @@ mod tests {
             model_baseline: Some(active("edited typed base")),
             ..Default::default()
         };
-        let (placeholder, output) =
-            transform_request_with_provenance(&SessionSource::Cli, &plan, "", None, &typed_base)
-                .expect("empty no-provenance placeholder selects typed base");
+        let (placeholder, output) = transform_request_with_provenance(
+            &SessionSource::Cli,
+            &plan,
+            "",
+            /*provenance*/ None,
+            &typed_base,
+        )
+        .expect("empty no-provenance placeholder selects typed base");
         assert!(placeholder.is_empty());
         let ResponseItem::Message { content, .. } = &output[0] else {
             panic!("typed base message retained")
@@ -717,13 +720,25 @@ mod tests {
         );
 
         assert!(
-            transform_request_with_provenance(&SessionSource::Cli, &plan, "", None, &[],).is_err()
+            transform_request_with_provenance(
+                &SessionSource::Cli,
+                &plan,
+                "",
+                /*provenance*/ None,
+                &[],
+            )
+            .is_err()
         );
         let mut skipped = plan.clone();
         skipped.model_baseline.as_mut().unwrap().on_absent = InstructionOverlayOnAbsent::Skip;
-        let (placeholder, input) =
-            transform_request_with_provenance(&SessionSource::Cli, &skipped, "", None, &[])
-                .expect("explicit skip accepts an absent typed base");
+        let (placeholder, input) = transform_request_with_provenance(
+            &SessionSource::Cli,
+            &skipped,
+            "",
+            /*provenance*/ None,
+            &[],
+        )
+        .expect("explicit skip accepts an absent typed base");
         assert!(placeholder.is_empty());
         assert!(input.is_empty());
     }
@@ -964,7 +979,7 @@ mod tests {
             developer_fragment("generic.developer_instructions", "match")
         );
         edit.edits = vec![InstructionOverlayEdit::Append {
-            text: "x".repeat(128).to_string(),
+            text: "x".repeat(128),
         }];
         let crowded = InstructionOverlaysToml {
             developer_guidance: Some(edit),

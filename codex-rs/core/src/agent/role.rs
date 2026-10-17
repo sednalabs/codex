@@ -510,7 +510,7 @@ mod instruction_overlay_role_tests {
 
     #[tokio::test]
     async fn trusted_project_discovery_projects_role_overlay_but_untrusted_is_excluded() {
-        let (home, _project, mut trusted) = project_role_config("trusted").await;
+        let (_home, _project, mut trusted) = project_role_config("trusted").await;
         assert!(trusted.agent_roles.contains_key("project-role"));
         apply_role_to_config(&mut trusted, /*role_name*/ Some("project-role"))
             .await

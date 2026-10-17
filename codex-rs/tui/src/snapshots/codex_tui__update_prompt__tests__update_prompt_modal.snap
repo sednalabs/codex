@@ -7,7 +7,7 @@ expression: terminal.backend()
   Release notes: https://github.com/sednalabs/codex/releases
 
 › 1. Update now (runs `sh -c "echo 'Manual reinstall from https://github.com/   
-    sednalabs/codex/releases'; exit 1"`)                                       
+     sednalabs/codex/releases'; exit 1"`)                                       
   2. Skip
   3. Skip until next version
 

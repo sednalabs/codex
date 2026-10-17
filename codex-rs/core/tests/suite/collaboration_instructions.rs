@@ -153,7 +153,7 @@ async fn persisted_model_context_json(test: &TestCodex) -> Result<String> {
     let history = test
         .thread_store
         .load_latest_model_context(LoadThreadHistoryParams {
-            thread_id: test.session_configured.thread_id.clone(),
+            thread_id: test.session_configured.thread_id,
             include_archived: true,
         })
         .await?;
@@ -617,7 +617,7 @@ async fn thread_spawn_child_inherits_the_resolved_overlay_plan() -> Result<()> {
         .start_thread(StartThreadOptions {
             environments: Some(vec![test.executor_environment().request()]),
             session_source: Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                parent_thread_id: test.session_configured.thread_id.clone(),
+                parent_thread_id: test.session_configured.thread_id,
                 depth: 1,
                 agent_path: None,
                 agent_nickname: None,
@@ -641,7 +641,7 @@ async fn trusted_project_role_overlay_reaches_the_spawned_child_request() -> Res
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
-    let mut test = test_codex().build(&server).await?;
+    let test = test_codex().build(&server).await?;
     let project = tempfile::TempDir::new()?;
     let home = tempfile::TempDir::new()?;
     std::fs::write(project.path().join(".project-root"), "")?;

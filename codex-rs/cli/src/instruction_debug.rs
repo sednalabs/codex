@@ -728,7 +728,7 @@ features.multi_agent_v2.multi_agent_mode_hint_text = "project mode hint""#,
         )
         .await
         .expect("load fixture-only config");
-        let origins = layers.origins_with_path_filter(|path| is_instruction_path(path));
+        let origins = layers.origins_with_path_filter(is_instruction_path);
         assert_eq!(origins.len(), INSTRUCTION_PATHS.len());
         assert!(
             origins

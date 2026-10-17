@@ -6,9 +6,9 @@ use std::num::NonZeroU64;
 use std::num::NonZeroUsize;
 use std::path::Path;
 
+use crate::HooksToml;
 use crate::browser_use::BrowserUseConfigToml;
 use crate::computer_use::ComputerUseConfigToml;
-use crate::HooksToml;
 use crate::instruction_overlays::InstructionOverlaysToml;
 use crate::permissions_toml::PermissionsToml;
 use crate::profile_toml::ConfigProfile;
