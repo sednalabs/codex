@@ -1171,7 +1171,7 @@ async fn capacity_retry_deduplicates_accepted_output_and_tool_ids() -> Result<()
     let server = responses::start_mock_server().await;
     let first_call_id = "capacity-accepted-call";
     let distinct_call_id = "capacity-distinct-call";
-    let partial_id = "capacity-accepted-message";
+    let partial_id = "msg_capacity_accepted_message";
     let effects_dir = tempfile::tempdir()?;
     let effect_path = effects_dir.path().join("effect.txt");
     let first_args = json!({
