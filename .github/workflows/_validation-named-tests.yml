@@ -783,47 +783,81 @@ jobs:
           )
 
           def safe_test_diagnostic(captured_stderr):
+              source_suffix = b"scripts/test_codex_usage_report_exact_root.py"
+              frame_pattern = re.compile(
+                  rb'^\s*File "([^"\r\n]+)", line ([0-9]+)(?:, in [A-Za-z_][A-Za-z0-9_]*)?\s*$'
+              )
+              traceback_seen = False
+              candidate_lines = []
+              for raw_line in captured_stderr.splitlines():
+                  if raw_line.startswith(b"Traceback (most recent call last):"):
+                      traceback_seen = True
+                  frame = frame_pattern.fullmatch(raw_line)
+                  if frame is None:
+                      continue
+                  traceback_seen = True
+                  frame_path = frame.group(1).replace(b"\\", b"/")
+                  if frame_path != source_suffix and not frame_path.endswith(
+                      b"/" + source_suffix
+                  ):
+                      continue
+                  try:
+                      line_number = int(frame.group(2))
+                  except ValueError:
+                      continue
+                  if not 1 <= line_number <= 1671:
+                      continue
+                  if 72 <= line_number <= 74 or 1645 <= line_number <= 1671:
+                      continue
+                  candidate_lines.append(line_number)
+              test_source_line = candidate_lines[-1] if candidate_lines else None
+
               matches = [
                   match
                   for line in captured_stderr.splitlines()
                   if (match := diagnostic_pattern.fullmatch(line)) is not None
               ]
-              if len(matches) != 1:
-                  return "unmatched"
-              match = matches[0]
-              observed_exit = int(match.group(1))
-              error_reason = match.group(3).decode("ascii")
-              reason_text = match.group(4).decode("ascii")
-              source_line_text = match.group(5).decode("ascii")
-              exception_text = match.group(6).decode("ascii")
-              reason_codes = [] if reason_text == "none" else reason_text.split(",")
-              if (
-                  observed_exit > 255
-                  or (error_reason != "none" and error_reason not in known_report_reasons)
-                  or len(reason_codes) > 8
-                  or len(reason_codes) != len(set(reason_codes))
-                  or any(reason not in known_report_reasons for reason in reason_codes)
-              ):
-                  return "unmatched"
-              source_line = None
-              if source_line_text != "none":
-                  source_line = int(source_line_text)
-                  if not 1 <= source_line <= 4000:
-                      return "unmatched"
-              return {
-                  "stage": "single_ledger_cli",
-                  "expected_exit": 2,
-                  "observed_exit": observed_exit,
-                  "report_status": match.group(2).decode("ascii"),
-                  "error_reason": error_reason,
-                  "reason_codes": reason_codes,
-                  "source_line": source_line,
-                  "exception_class": (
-                      exception_text
-                      if exception_text in known_exception_classes or exception_text == "none"
-                      else "other"
-                  ),
-              }
+              if len(matches) == 1:
+                  match = matches[0]
+                  observed_exit = int(match.group(1))
+                  error_reason = match.group(3).decode("ascii")
+                  reason_text = match.group(4).decode("ascii")
+                  source_line_text = match.group(5).decode("ascii")
+                  exception_text = match.group(6).decode("ascii")
+                  reason_codes = [] if reason_text == "none" else reason_text.split(",")
+                  source_line = (
+                      None
+                      if source_line_text == "none"
+                      else int(source_line_text)
+                  )
+                  if (
+                      observed_exit <= 255
+                      and (error_reason == "none" or error_reason in known_report_reasons)
+                      and len(reason_codes) <= 8
+                      and len(reason_codes) == len(set(reason_codes))
+                      and all(reason in known_report_reasons for reason in reason_codes)
+                      and (source_line is None or 1 <= source_line <= 4000)
+                  ):
+                      return {
+                          "stage": "single_ledger_cli",
+                          "expected_exit": 2,
+                          "observed_exit": observed_exit,
+                          "report_status": match.group(2).decode("ascii"),
+                          "error_reason": error_reason,
+                          "reason_codes": reason_codes,
+                          "source_line": source_line,
+                          "exception_class": (
+                              exception_text
+                              if exception_text in known_exception_classes or exception_text == "none"
+                              else "other"
+                          ),
+                      }
+              if test_source_line is not None:
+                  return {
+                      "stage": "synthetic_test",
+                      "test_source_line": test_source_line,
+                  }
+              return "unmatched" if traceback_seen else "none"
 
           receipt = {
               "schema_version": "usage-report-exact-root-result-v1",
