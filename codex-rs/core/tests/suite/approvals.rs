@@ -3747,6 +3747,20 @@ async fn matched_prefix_rule_runs_unsandboxed_under_zsh_fork() -> Result<()> {
     wait_for_completion_without_approval(&test).await;
 
     let result = parse_result(&results.single_request().function_call_output(call_id));
+    if result.exit_code != Some(0) {
+        let exit_code = result
+            .exit_code
+            .map(|code| code.to_string())
+            .unwrap_or_else(|| "missing".to_string());
+        eprintln!(
+            "zsh_fork_prefix_diagnostic exit_present={} exit_code={} output_empty={} output_bytes={} outside_target_created={}",
+            result.exit_code.is_some(),
+            exit_code,
+            result.stdout.is_empty(),
+            result.stdout.len(),
+            outside_path.exists(),
+        );
+    }
     assert_eq!(result.exit_code.unwrap_or(0), 0);
     assert!(
         outside_path.exists(),

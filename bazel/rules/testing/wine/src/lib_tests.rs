@@ -308,9 +308,13 @@ async fn pinned_powershell_runs_under_wine_with_a_pty() -> Result<()> {
         "$PSVersionTable.PSEdition + '|' + ",
         "$IsWindows.ToString().ToLowerInvariant() + '|' + $separatorCode)",
     );
+    eprintln!("wine_powershell_stage=test-start");
     let runtime = WineRuntimePaths::from_runfiles()?;
+    eprintln!("wine_powershell_stage=runtime-resolved");
     let prefix = TempDir::new()?;
+    eprintln!("wine_powershell_stage=materialize-start");
     install_powershell_runtime(prefix.path(), &runtime.powershell_runtime)?;
+    eprintln!("wine_powershell_stage=materialize-complete");
     let mut env = std::env::vars().collect::<HashMap<_, _>>();
     env.remove("DISPLAY");
     env.extend([
@@ -355,6 +359,7 @@ async fn pinned_powershell_runs_under_wine_with_a_pty() -> Result<()> {
         POWERSHELL_SMOKE_SCRIPT.to_string(),
     ];
     let wine = runtime.wine.to_string_lossy().into_owned();
+    eprintln!("wine_powershell_stage=pty-spawn-start");
     let SpawnedProcess {
         session,
         mut stdout_rx,
@@ -370,6 +375,8 @@ async fn pinned_powershell_runs_under_wine_with_a_pty() -> Result<()> {
         codex_utils_pty::ChildFds::Inherited(&[]),
     )
     .await?;
+    eprintln!("wine_powershell_stage=pty-spawn-complete");
+    eprintln!("wine_powershell_stage=output-drain-start");
     let command_result = timeout(Duration::from_secs(30), async {
         let stdout = async {
             let mut output = Vec::new();
@@ -391,6 +398,9 @@ async fn pinned_powershell_runs_under_wine_with_a_pty() -> Result<()> {
     .await
     .context("PowerShell smoke test timed out")
     .and_then(std::convert::identity);
+    if command_result.is_ok() {
+        eprintln!("wine_powershell_stage=output-drain-complete");
+    }
     drop(session);
     let shutdown_result = timeout(Duration::from_secs(10), async {
         let mut command = TokioCommand::new(&runtime.wineserver);
