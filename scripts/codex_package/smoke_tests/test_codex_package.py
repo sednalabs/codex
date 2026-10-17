@@ -24,6 +24,7 @@ import shutil
 import subprocess
 import sys
 import tomllib
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -54,6 +55,176 @@ def test_cli_public_commands(
     """Packaged CLI remains usable for discovery, features, and completions."""
     output = package.run(*arguments).stdout
     assert expected in output
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="Instruction consumer is scoped to the disposable Linux first-package runner",
+)
+def test_cli_instruction_inspection_with_synthetic_linux_configuration(
+    package: SmokePackage,
+    tmp_path: Path,
+) -> None:
+    """Exercise the shipped CLI in the disposable Linux first-package consumer."""
+    home = tmp_path / "home"
+    config_home = home / "codex"
+    workspace = tmp_path / "workspace"
+    temporary = tmp_path / "temporary"
+    for directory in (config_home, workspace, temporary):
+        directory.mkdir(parents=True)
+    # The resolver recognizes .git/HEAD as a checkout boundary. Keep project
+    # discovery inside this fresh workspace without invoking an external git.
+    (workspace / ".git").mkdir()
+    (workspace / ".git" / "HEAD").write_text(
+        "ref: refs/heads/main\n", encoding="utf-8"
+    )
+
+    # Keep the exact package entrypoint, but do not inherit credentials, provider
+    # settings, remote-control selectors, or runtime-proof configuration.
+    environment = {
+        key: package.environment[key]
+        for key in ("PATH", "SystemRoot", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT")
+        if key in package.environment
+    }
+    environment.update(
+        CODEX_HOME=str(config_home),
+        HOME=str(home),
+        USERPROFILE=str(home),
+        XDG_CONFIG_HOME=str(home / "xdg-config"),
+        APPDATA=str(home / "app-data"),
+        LOCALAPPDATA=str(home / "local-app-data"),
+        PROGRAMDATA=str(home / "program-data"),
+        TMPDIR=str(temporary),
+        TMP=str(temporary),
+        TEMP=str(temporary),
+    )
+    isolated = replace(package, directory=workspace, environment=environment)
+    config_path = config_home / "config.toml"
+    unopened_path = workspace / "missing-instruction-target.md"
+    configuration = (
+        'instructions = "PACKAGE_BASE_MARKER"\n'
+        'developer_instructions = "PACKAGE_DEVELOPER_MARKER"\n'
+        f"model_instructions_file = {json.dumps(str(unopened_path))}\n"
+        "[features.multi_agent_v2]\n"
+        'subagent_developer_instructions = "PACKAGE_CHILD_MARKER"\n'
+    )
+    config_path.write_text(configuration, encoding="utf-8")
+
+    def run_report(*arguments: str, stdin: str | None = None) -> tuple[dict, str]:
+        # Synthetic HOME does not redirect Unix system configuration. This
+        # canonical Linux consumer must fail closed before either invocation;
+        # lstat also rejects dangling symlinks without reading their targets.
+        for name in ("config.toml", "requirements.toml", "managed_config.toml"):
+            try:
+                (Path("/etc/codex") / name).lstat()
+            except FileNotFoundError:
+                continue
+            except OSError:
+                pytest.fail("System configuration absence is unverified", pytrace=False)
+            pytest.fail(
+                "Instruction consumer requires absent system configuration", pytrace=False
+            )
+        try:
+            completed = isolated.run("debug", "instructions", *arguments, stdin=stdin)
+            report = json.loads(completed.stdout)
+        except (OSError, subprocess.SubprocessError, ValueError, UnicodeError):
+            pytest.fail("Packaged instruction inspection failed", pytrace=False)
+        if not isinstance(report, dict):
+            pytest.fail("Packaged instruction report has an invalid shape", pytrace=False)
+        return report, completed.stdout
+
+    def inline_fields(report: dict) -> dict:
+        values = report.get("inline_configuration")
+        if not isinstance(values, list):
+            return {}
+        return {
+            value["key"]: value
+            for value in values
+            if isinstance(value, dict) and isinstance(value.get("key"), str)
+        }
+
+    def section(report: dict, key: str) -> dict:
+        value = report.get(key)
+        return value if isinstance(value, dict) else {}
+
+    default, default_output = run_report()
+    default_fields = inline_fields(default)
+    base = default_fields.get("instructions", {})
+    origin = base.get("origin")
+    model_file = default_fields.get("model_instructions_file", {})
+    default_checks = (
+        isinstance(origin, dict)
+        and origin.get("kind") == "user"
+        and origin.get("file") == str(config_path),
+        base.get("present") is True,
+        default_fields.get("developer_instructions", {}).get("present") is True,
+        default_fields.get(
+            "features.multi_agent_v2.subagent_developer_instructions", {}
+        ).get("present") is True,
+        len(default_fields) == 8,
+        all("content" not in field for field in default_fields.values()),
+        not any(
+            marker in default_output
+            for marker in (
+                "PACKAGE_BASE_MARKER",
+                "PACKAGE_DEVELOPER_MARKER",
+                "PACKAGE_CHILD_MARKER",
+            )
+        ),
+        model_file.get("configured_path") == str(unopened_path),
+        model_file.get("content_status") == "not_opened; configured path only",
+        section(default, "caller_supplied_text").get("origin") == "not read",
+        default.get("scope")
+        == "selected local merged configuration; not a complete effective session prompt",
+        default.get("unknown_or_not_inspected")
+        == [
+            "cloud-managed additions (cloud callback is no-op)",
+            "stored thread history, current model template, runtime conversation and provider-hidden instructions",
+            "AGENTS.md and user/provider instruction discovery",
+            "model_instructions_file target contents and final baseline fallback",
+        ],
+    )
+    if not all(default_checks):
+        pytest.fail("Default packaged instruction projection failed", pytrace=False)
+
+    explicit, explicit_output = run_report(
+        "--show-content",
+        "--client-instructions-stdin",
+        stdin="PACKAGE_CALLER_MARKER\npassword=PACKAGE_PRIVATE_MARKER\n",
+    )
+    explicit_fields = inline_fields(explicit)
+    caller = section(explicit, "caller_supplied_text")
+    managed = section(explicit, "local_managed_additional_developer_instructions")
+    warning = explicit.get("publication_warning")
+    explicit_checks = (
+        explicit_fields.get("instructions", {}).get("content")
+        == "PACKAGE_BASE_MARKER",
+        explicit_fields.get("developer_instructions", {}).get("content")
+        == "PACKAGE_DEVELOPER_MARKER",
+        caller.get("origin") == "caller-supplied; unverified",
+        caller.get("content") == "PACKAGE_CALLER_MARKER\n[REDACTED]\n",
+        caller.get("redacted_lines") == 1,
+        "PACKAGE_PRIVATE_MARKER" not in explicit_output,
+        managed.get("content")
+        == "excluded; local-managed instruction content is never displayed",
+        isinstance(warning, str)
+        and "heuristic" in warning
+        and "not guaranteed" in warning,
+    )
+    if not all(explicit_checks):
+        pytest.fail("Explicit packaged instruction projection failed", pytrace=False)
+
+    state_created = any(
+        path.name in {"auth.json", "history.jsonl", "sessions"}
+        or ".sqlite" in path.name
+        or path.name.endswith(".db")
+        for path in config_home.rglob("*")
+    )
+    config_unchanged = config_path.read_text(encoding="utf-8") == configuration
+    target_unopened = not unopened_path.exists()
+    assert not state_created, "Instruction inspection created auth or session state"
+    assert config_unchanged, "Instruction inspection changed its synthetic config"
+    assert target_unopened, "Instruction inspection created its configured target"
 
 
 def test_cli_version_matches_release_sources(package: SmokePackage) -> None:
