@@ -18,6 +18,14 @@
       "execution_argv": ["cargo", "test", "--locked", "-p", "codex-app-server-protocol", "--lib", "--", "--test-threads=1"]
     },
     {
+      "package": "codex-browser-computer-use",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_integration"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-browser-computer-use", "--lib", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-browser-computer-use", "--lib", "--", "--test-threads=1"]
+    },
+    {
       "package": "codex-config",
       "target_kind": "lib",
       "target": "",
@@ -144,6 +152,14 @@
       "profiles": ["rust_minimal", "rust_integration"],
       "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-protocol", "--lib", "--", "--list"],
       "execution_argv": ["cargo", "test", "--locked", "-p", "codex-protocol", "--lib", "--", "--test-threads=1"]
+    },
+    {
+      "package": "codex-rmcp-client",
+      "target_kind": "integration",
+      "target": "process_group_cleanup",
+      "profiles": ["rust_integration"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-rmcp-client", "--test", "process_group_cleanup", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-rmcp-client", "--test", "process_group_cleanup", "--", "--test-threads=1"]
     },
     {
       "package": "codex-state",
