@@ -304,12 +304,13 @@ pub trait ModelProvider: fmt::Debug + Send + Sync {
                         ResolvedProviderAuth::new(self.api_auth().await?),
                     )
                 } else {
-                    (
-                        self.info()
-                            .to_api_provider(account_auth.as_ref().map(CodexAuth::auth_mode))?,
-                        resolve_provider_auth(account_auth.as_ref(), self.info())
-                            .map(ResolvedProviderAuth::new)?,
-                    )
+                    let api_provider = self
+                        .info()
+                        .to_api_provider(account_auth.as_ref().map(CodexAuth::auth_mode))?;
+                    let resolved = resolve_provider_auth(account_auth.as_ref(), self.info())
+                        .map(ResolvedProviderAuth::new)?;
+                    let resolved = compose_gateway_auth_for_request(self, resolved).await?;
+                    (api_provider, resolved)
                 };
                 return Ok(ProviderRequestAuth {
                     account_auth,
@@ -328,6 +329,7 @@ pub trait ModelProvider: fmt::Debug + Send + Sync {
                 scope,
             )
             .await?;
+            let resolved = compose_gateway_auth_for_request(self, resolved).await?;
             Ok(ProviderRequestAuth {
                 account_auth,
                 api_provider,
@@ -384,6 +386,25 @@ fn provider_uses_first_party_auth_path(provider: &ModelProviderInfo) -> bool {
         && provider.experimental_bearer_token.is_none()
         && provider.auth.is_none()
         && provider.aws.is_none()
+}
+
+async fn compose_gateway_auth_for_request(
+    provider: &dyn ModelProvider,
+    resolved: ResolvedProviderAuth,
+) -> codex_protocol::error::Result<ResolvedProviderAuth> {
+    if provider.info().gateway_oauth.is_none() {
+        return Ok(resolved);
+    }
+
+    let gateway_auth_manager = match provider.gateway_auth_manager() {
+        Ok(manager) => manager.map(Ok),
+        Err(_) => {
+            return Err(CodexErr::InvalidRequest(
+                "failed to create provider OAuth HTTP client".into(),
+            ));
+        }
+    };
+    compose_auth(provider.info(), gateway_auth_manager.as_ref(), resolved).await
 }
 
 /// Creates the default runtime model provider for configured provider metadata.

@@ -18,6 +18,7 @@ use codex_login::CodexAuth;
 use codex_login::auth::AgentIdentityAuthPolicy;
 use codex_login::default_client::ClientRedirectPolicy;
 use codex_login::default_client::create_client_for_route;
+use codex_model_provider_info::GatewayOAuthConfig;
 use codex_model_provider_info::GatewayOAuthDelivery;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_models_manager::manager::RefreshStrategy;
@@ -104,14 +105,16 @@ async fn gateway_credentials_accompany_primary_auth_in_models_and_responses() {
             .raw_model_catalog(RefreshStrategy::Online, factory.clone())
             .await;
         let auth = provider.api_auth().await.unwrap();
-        let scoped = provider
-            .api_auth_for_scope(ProviderAuthScope {
-                agent_identity_policy: AgentIdentityAuthPolicy::JwtOnly,
-                session_source: SessionSource::Cli,
-                agent_identity_session_fallback: AgentIdentitySessionFallback::default(),
-            })
+        let scope = ProviderAuthScope {
+            agent_identity_policy: AgentIdentityAuthPolicy::JwtOnly,
+            session_source: SessionSource::Cli,
+            agent_identity_session_fallback: AgentIdentitySessionFallback::default(),
+        };
+        let scoped = provider.api_auth_for_scope(scope.clone()).await.unwrap();
+        let request_auth = provider
+            .request_auth_for_scope(scope)
             .await
-            .unwrap();
+            .expect("request auth should preserve gateway and primary credentials");
         let mut expected = HeaderMap::from_iter([
             (
                 http::header::AUTHORIZATION,
@@ -134,6 +137,8 @@ async fn gateway_credentials_accompany_primary_auth_in_models_and_responses() {
         assert_eq!(auth.to_auth_headers(), expected);
         assert_eq!(auth.resolve_auth_headers().await.unwrap(), expected);
         assert_eq!(scoped.auth.to_auth_headers(), expected);
+        assert_eq!(request_auth.resolved.auth.to_auth_headers(), expected);
+        assert!(request_auth.account_auth.is_some());
         assert!(auth.to_auth_headers()[name].is_sensitive());
         let api = info.to_api_provider(/*auth_mode*/ None).unwrap();
         let transport = ReqwestTransport::from_http_client(
@@ -170,6 +175,66 @@ async fn gateway_credentials_accompany_primary_auth_in_models_and_responses() {
                     .get("cookie")
                     .is_some_and(|value| value == "gateway_session=gateway-token")
         );
+    }
+}
+
+#[tokio::test]
+async fn request_auth_for_scope_composes_gateway_credentials_for_regular_provider() {
+    let server = MockServer::start().await;
+    let home = tempfile::tempdir().unwrap();
+
+    for delivery in [
+        GatewayOAuthDelivery::Header {
+            name: "x-gateway-auth".into(),
+            scheme: "Bearer".into(),
+        },
+        GatewayOAuthDelivery::Cookie {
+            name: "gateway_session".into(),
+        },
+    ] {
+        let mut info = ModelProviderInfo::create_openai_provider(Some(server.uri()));
+        info.requires_openai_auth = false;
+        info.gateway_oauth = Some(GatewayOAuthConfig {
+            authorization_url: format!("{}/authorize", server.uri()),
+            token_url: format!("{}/token", server.uri()),
+            client_id: "test".into(),
+            resource: None,
+            scopes: vec![],
+            redirect_port: None,
+            delivery: delivery.clone(),
+        });
+        let primary = AuthManager::from_auth_for_testing_with_home(
+            CodexAuth::from_api_key("primary-token"),
+            home.path().to_path_buf(),
+        );
+        let _gateway = seed_gateway_auth(
+            &info,
+            &primary,
+            json!({"access_token": "gateway-token", "refresh_token": "refresh-secret", "expires_at": i64::MAX}),
+        );
+        let provider = create_model_provider(info, Some(primary));
+        let request_auth = provider
+            .request_auth_for_scope(ProviderAuthScope {
+                agent_identity_policy: AgentIdentityAuthPolicy::JwtOnly,
+                session_source: SessionSource::Cli,
+                agent_identity_session_fallback: AgentIdentitySessionFallback::default(),
+            })
+            .await
+            .expect("regular-provider request auth should compose gateway credentials");
+
+        let headers = request_auth.resolved.auth.to_auth_headers();
+        assert_eq!(headers[http::header::AUTHORIZATION], "Bearer primary-token");
+        match delivery {
+            GatewayOAuthDelivery::Header { .. } => {
+                assert_eq!(headers["x-gateway-auth"], "Bearer gateway-token");
+            }
+            GatewayOAuthDelivery::Cookie { .. } => {
+                assert_eq!(
+                    headers[http::header::COOKIE],
+                    "gateway_session=gateway-token"
+                );
+            }
+        }
     }
 }
 
@@ -553,6 +618,22 @@ async fn gateway_login_states_stop_request_retries() {
     login_control.require_explicit_login();
     let provider = create_model_provider(info, Some(primary));
     let gateway = provider.gateway_auth_manager().unwrap().unwrap();
+    let request_error = match provider
+        .request_auth_for_scope(ProviderAuthScope {
+            agent_identity_policy: AgentIdentityAuthPolicy::JwtOnly,
+            session_source: SessionSource::Cli,
+            agent_identity_session_fallback: AgentIdentitySessionFallback::default(),
+        })
+        .await
+    {
+        Ok(_) => panic!("request auth must fail when gateway login is required"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        request_error.to_string(),
+        codex_login::GatewayAuthError::LoginRequired.to_string()
+    );
+    assert!(server.received_requests().await.unwrap().is_empty());
     let error = provider.api_auth().await.err().expect("login required");
     assert_eq!(
         (error.to_string(), error.retry_delay(/*retry_count*/ 1)),
