@@ -90,6 +90,7 @@ use serde::Deserialize;
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -1507,7 +1508,10 @@ async fn multi_agent_v2_explicit_root_updates_are_durable_and_idempotent() {
         })
         .await
         .expect("root thread should start");
-    assert_eq!(root.thread.history_mode, ThreadHistoryMode::Paginated);
+    assert_eq!(
+        root.thread.config_snapshot().await.history_mode,
+        ThreadHistoryMode::Paginated
+    );
     set_agent_control(&mut session, manager.agent_control());
     session.thread_id = root.thread_id;
 

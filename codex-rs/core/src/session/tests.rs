@@ -2833,7 +2833,7 @@ async fn inter_agent_communication_waits_for_confirmed_delivery_persistence() {
                 turn_context.model_info(),
                 communication,
             )
-            .await;
+            .await
     });
     assert!(
         tokio::time::timeout(
