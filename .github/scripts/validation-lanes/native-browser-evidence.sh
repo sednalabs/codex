@@ -184,7 +184,7 @@ for name in expected["tests"]:
                     continue
                 location = line[panic + len("panicked at "):]
                 match = re.search(
-                    r"(?:^|[/\\])(?:codex-rs/)?browser-computer-use/src/lib\.rs:(\d+):\d+(?::|$)",
+                    r"(?:^browser-computer-use/src/lib\.rs|(?:^|[/\\])codex-rs/browser-computer-use/src/lib\.rs):(\d+):\d+(?::|$)",
                     location,
                 )
                 if match is None:
