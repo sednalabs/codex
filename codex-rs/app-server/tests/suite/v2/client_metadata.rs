@@ -604,17 +604,17 @@ async fn turn_start_forwards_client_metadata_to_responses_websocket_request_body
 {
     skip_if_no_network!(Ok(()));
 
-    let websocket_server = responses::start_websocket_server(vec![vec![
-        vec![
+    let websocket_server = responses::start_websocket_server(vec![
+        vec![vec![
             responses::ev_response_created("warm-1"),
             responses::ev_completed("warm-1"),
-        ],
-        vec![
+        ]],
+        vec![vec![
             responses::ev_response_created("resp-1"),
             responses::ev_assistant_message("msg-1", "Done"),
             responses::ev_completed("resp-1"),
-        ],
-    ]])
+        ]],
+    ])
     .await;
 
     let codex_home = TempDir::new()?;
@@ -672,7 +672,7 @@ async fn turn_start_forwards_client_metadata_to_responses_websocket_request_body
         .await
         .body_json();
     let request = websocket_server
-        .wait_for_request(/*connection_index*/ 0, /*request_index*/ 1)
+        .wait_for_request(/*connection_index*/ 1, /*request_index*/ 0)
         .await
         .body_json();
 
