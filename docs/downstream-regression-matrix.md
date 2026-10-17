@@ -1219,3 +1219,26 @@ on a disposable hosted Linux runner. Ordinary non-Linux compile coverage must
 include the new crate and all production consumers. These fixture and compile
 lanes supplement the exact protected contribution checks; source inspection
 does not replace them.
+
+## Client instruction overlays
+
+The public behavior and limits are documented in
+[`docs/config.md`](config.md#client-instruction-overlays). The focused
+consumer map uses existing named-test targets: `codex-config` library for
+closed configuration, literal operations, bounds, and layer trust;
+`codex-core` library for source gating, request-copy transformation, atomic
+failure, role projection, and model-client construction; and the `codex-core`
+`all` integration target for lifecycle behavior across fresh requests, resume,
+fork, thread spawn, review, and configuration rollback. The `codex-cli` binary
+target covers the bounded configuration inspection projection and its stated
+overlay limitation. `config_schema_matches_fixture` covers the generated
+configuration schema contract. These names describe consumer coverage; this
+matrix does not assert that a hosted run passed.
+
+The canonical package consumer is
+`test_cli_instruction_overlays_in_synthetic_linux_package` in
+`scripts/codex_package/smoke_tests/test_codex_package.py`. It exercises the
+packaged CLI with synthetic configuration and a loopback Responses server,
+including ordered edit behavior, unchanged permissions, mismatch failure, and
+configuration rollback on the same binary. It is a source-level fixture until
+run on the applicable hosted package surface, not installed or live acceptance.
