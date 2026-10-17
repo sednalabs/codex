@@ -10,22 +10,26 @@
 //! Both paths return [`StdioServerTransport`], so `RmcpClient` can hand the
 //! resulting byte stream to rmcp without knowing where the process lives. The
 //! executor-specific byte adaptation lives in `executor_process_transport`.
+//! Unix local servers use the stdio-only descriptor policy.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::future::Future;
 use std::io;
+#[cfg(windows)]
+use std::os::windows::io::OwnedHandle;
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Stdio;
+use std::process::ExitStatus;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
 #[cfg(unix)]
 use std::thread::sleep;
 #[cfg(unix)]
 use std::thread::spawn;
-#[cfg(unix)]
 use std::time::Duration;
 
 use anyhow::Result;
@@ -38,6 +42,11 @@ use codex_exec_server::ExecProcess;
 use codex_protocol::config_types::ShellEnvironmentPolicyInherit;
 use codex_utils_path_uri::LegacyAppPathString;
 use codex_utils_path_uri::PathUri;
+use codex_utils_pty::Child;
+use codex_utils_pty::Command;
+#[cfg(unix)]
+use codex_utils_pty::DescriptorPolicy;
+use codex_utils_pty::ProcessMode;
 #[cfg(unix)]
 use codex_utils_pty::process_group::kill_process_group;
 #[cfg(unix)]
@@ -48,18 +57,65 @@ use rmcp::service::RoleClient;
 use rmcp::service::RxJsonRpcMessage;
 use rmcp::service::TxJsonRpcMessage;
 use rmcp::transport::Transport;
-use rmcp::transport::child_process::TokioChildProcess;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::BufReader;
-use tokio::process::Command;
+use tokio::sync::watch;
+use tokio::time::Instant;
 use tracing::info;
 use tracing::warn;
 
 use crate::executor_process_transport::ExecutorProcessTransport;
+use crate::local_stdio_transport::LocalStdioTransport;
+use crate::local_stdio_transport::SharedChild;
 use crate::program_resolver;
+use crate::protocol_mode::McpProtocolMode;
 use crate::utils::create_env_for_mcp_server;
 use crate::utils::create_env_overlay_for_remote_mcp_server;
 use crate::utils::remote_mcp_env_var_names;
+
+pub const STDIO_CLOSE_POLICY_ENV: &str = "CODEX_INTERNAL_MCP_STDIO_CLOSE_POLICY";
+pub(crate) const COOPERATIVE_STDIO_CLOSE_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const COOPERATIVE_STDIO_KILL_ERROR_WAIT: Duration = Duration::from_secs(1);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StdioServerClosePolicy {
+    Legacy,
+    CooperativeLocal,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub(crate) enum StdioServerCloseOutcome {
+    Pending = 0,
+    Exited = 1,
+    Forced = 2,
+    Failed = 3,
+}
+
+pub(super) fn cooperative_close_outcome_after_exit(
+    status: ExitStatus,
+) -> io::Result<StdioServerCloseOutcome> {
+    if status.success() {
+        Ok(StdioServerCloseOutcome::Exited)
+    } else {
+        Err(io::Error::other(format!(
+            "owned MCP stdio child exited unsuccessfully: {status}"
+        )))
+    }
+}
+
+async fn terminate_owned_stdio_child(child: &mut Child) -> io::Result<StdioServerCloseOutcome> {
+    match child.kill().await {
+        Ok(()) => Ok(StdioServerCloseOutcome::Forced),
+        Err(kill_error) => {
+            match tokio::time::timeout(COOPERATIVE_STDIO_KILL_ERROR_WAIT, child.wait()).await {
+                Ok(Ok(status)) => cooperative_close_outcome_after_exit(status),
+                Ok(Err(wait_error)) => Err(wait_error),
+                Err(_) => Err(kill_error),
+            }
+        }
+    }
+}
 
 // General purpose public code.
 
@@ -85,6 +141,8 @@ pub struct StdioServerCommand {
     env: Option<HashMap<OsString, OsString>>,
     env_vars: Vec<McpServerEnvVar>,
     cwd: Option<String>,
+    protocol_mode: McpProtocolMode,
+    close_policy: StdioServerClosePolicy,
 }
 
 /// Client-side rmcp transport for a launched MCP stdio server.
@@ -98,9 +156,16 @@ pub struct StdioServerTransport {
 }
 
 enum StdioServerTransportInner {
-    Local(TokioChildProcess),
+    Local(LocalStdioTransport),
     Executor(ExecutorProcessTransport),
 }
+
+type LocalStdioSpawnResult = (
+    StdioServerTransportInner,
+    Option<tokio::process::ChildStderr>,
+    Option<u32>,
+    Option<Arc<SharedChild>>,
+);
 
 impl Transport<RoleClient> for StdioServerTransport {
     type Error = io::Error;
@@ -129,6 +194,17 @@ impl Transport<RoleClient> for StdioServerTransport {
     }
 
     async fn close(&mut self) -> std::result::Result<(), Self::Error> {
+        if self.process.close_policy() == StdioServerClosePolicy::CooperativeLocal {
+            let StdioServerTransportInner::Local(transport) = &mut self.inner else {
+                return Err(io::Error::other(
+                    "cooperative MCP stdio close requires a local process",
+                ));
+            };
+            let (result, outcome) = transport.close_cooperatively().await;
+            self.process.report_close_outcome(outcome);
+            return result;
+        }
+
         self.process.terminate().await?;
         match &mut self.inner {
             StdioServerTransportInner::Local(transport) => transport.close().await,
@@ -152,6 +228,8 @@ impl StdioServerCommand {
         env: Option<HashMap<OsString, OsString>>,
         env_vars: Vec<McpServerEnvVar>,
         cwd: Option<String>,
+        protocol_mode: McpProtocolMode,
+        close_policy: StdioServerClosePolicy,
     ) -> Self {
         Self {
             program,
@@ -159,6 +237,8 @@ impl StdioServerCommand {
             env,
             env_vars,
             cwd,
+            protocol_mode,
+            close_policy,
         }
     }
 }
@@ -207,14 +287,19 @@ impl StdioServerLauncher for LocalStdioServerLauncher {
 #[cfg(unix)]
 const PROCESS_GROUP_TERM_GRACE_PERIOD: Duration = Duration::from_secs(2);
 
+// Keep queued stderr diagnostics before closing the reader, even when an
+// escaped descendant prevents the pipe from reaching EOF.
+const STDERR_READER_DRAIN_GRACE_PERIOD: Duration = Duration::from_millis(250);
+
 #[cfg(unix)]
 struct LocalProcessTerminator {
     process_group_id: u32,
 }
 
 #[cfg(windows)]
-struct LocalProcessTerminator {
-    pid: u32,
+enum LocalProcessTerminator {
+    Job(codex_utils_pty::JobObject),
+    Process(OwnedHandle),
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -228,7 +313,13 @@ pub(crate) struct StdioServerProcessHandle {
 struct StdioServerProcessHandleInner {
     program_name: String,
     kind: StdioServerProcessKind,
+    close_policy: StdioServerClosePolicy,
+    local_child: StdMutex<Option<Arc<SharedChild>>>,
     terminated: AtomicBool,
+    close_outcome: AtomicU8,
+    close_completion: watch::Sender<StdioServerCloseOutcome>,
+    // An escaped descendant can keep stderr open after the MCP server exits.
+    stderr_reader: Option<watch::Sender<()>>,
 }
 
 enum StdioServerProcessKind {
@@ -253,69 +344,159 @@ impl LocalStdioServerLauncher {
             env,
             env_vars,
             cwd,
+            protocol_mode,
+            close_policy,
         } = command;
+        if close_policy == StdioServerClosePolicy::CooperativeLocal && !cfg!(unix) {
+            return Err(io::Error::other(
+                "cooperative MCP stdio close is supported only for local Unix processes",
+            ));
+        }
         let program_name = program.to_string_lossy().into_owned();
-        let envs = create_env_for_mcp_server(env, &env_vars).map_err(io::Error::other)?;
+        let mut envs = create_env_for_mcp_server(env, &env_vars).map_err(io::Error::other)?;
+        envs.retain(|key, _| {
+            !key.to_string_lossy()
+                .eq_ignore_ascii_case(STDIO_CLOSE_POLICY_ENV)
+        });
         let cwd = cwd.map(PathBuf::from).unwrap_or(fallback_cwd);
         let resolved_program =
             program_resolver::resolve(program, &envs, &cwd).map_err(io::Error::other)?;
 
-        let mut command = Command::new(resolved_program);
-        command
-            .kill_on_drop(true)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .current_dir(cwd)
-            .env_clear()
-            .envs(envs)
-            .args(args);
-        #[cfg(unix)]
-        command.process_group(0);
+        let build_command = || {
+            let mut command = Command::new(&resolved_program);
+            command.current_dir(&cwd).envs(&envs).args(&args);
+            command.process_mode(ProcessMode::NewGroup);
+            // MCP uses only stdio; select Explicit to exclude unrelated
+            // orchestrator descriptors from the server and commands it launches.
+            // Descriptor allowlisting is Unix-only. Windows can still inherit unrelated
+            // handles and needs a handle allowlist in the shared spawn backend.
+            #[cfg(unix)]
+            command.descriptor_policy(DescriptorPolicy::Explicit);
+            command
+        };
+        #[cfg(windows)]
+        let mut command = build_command();
+        #[cfg(not(windows))]
+        let command = build_command();
+        #[cfg(windows)]
+        let job = match codex_utils_pty::JobObject::create_without_breakaway() {
+            Ok(job) => {
+                command.prepare_suspended_spawn(&job);
+                Some(job)
+            }
+            Err(error) => {
+                warn!("Windows MCP process job containment unavailable: {error}");
+                None
+            }
+        };
 
-        let (transport, stderr) = TokioChildProcess::builder(command)
-            .stderr(Stdio::piped())
-            .spawn()?;
-        let process = StdioServerProcessHandle::local(
-            program_name.clone(),
-            transport.id().map(LocalProcessTerminator::new),
-        );
-
-        if let Some(stderr) = stderr {
-            tokio::spawn(async move {
-                let mut reader = BufReader::new(stderr).lines();
-                loop {
-                    match reader.next_line().await {
-                        Ok(Some(line)) => {
-                            info!("MCP server stderr ({program_name}): {line}");
-                        }
-                        Ok(None) => break,
-                        Err(error) => {
-                            warn!("Failed to read MCP server stderr ({program_name}): {error}");
-                            break;
-                        }
+        let spawn_transport = |command: Command| -> io::Result<LocalStdioSpawnResult> {
+            let (transport, stderr) =
+                LocalStdioTransport::spawn(command, program_name.clone(), protocol_mode)?;
+            let process_id = transport.id();
+            let child = Some(transport.process_child());
+            Ok((
+                StdioServerTransportInner::Local(transport),
+                stderr,
+                process_id,
+                child,
+            ))
+        };
+        let (transport, stderr, process_id, child) = spawn_transport(command)?;
+        #[cfg(windows)]
+        let (transport, stderr, process_id, child, job) = match job {
+            Some(job) => match process_id
+                .ok_or_else(|| io::Error::other("missing suspended MCP server process id"))
+                .and_then(|process_id| job.assign_and_resume_process(process_id))
+            {
+                Ok(true) => (transport, stderr, process_id, child, Some(job)),
+                Ok(false) => (transport, stderr, process_id, child, None),
+                Err(error) => {
+                    warn!(
+                        "Windows MCP process job containment failed; retrying without it: {error}"
+                    );
+                    drop(stderr);
+                    drop(transport);
+                    drop(job);
+                    let (transport, stderr, process_id, child) = spawn_transport(build_command())?;
+                    (transport, stderr, process_id, child, None)
+                }
+            },
+            None => (transport, stderr, process_id, child, None),
+        };
+        #[cfg(windows)]
+        let terminator = match job {
+            Some(job) => Some(LocalProcessTerminator::Job(job)),
+            None => process_id.and_then(|process_id| {
+                match codex_utils_pty::JobObject::open_process_handle(process_id) {
+                    Ok(handle) => Some(LocalProcessTerminator::Process(handle)),
+                    Err(error) => {
+                        warn!("Windows MCP process handle unavailable: {error}");
+                        None
                     }
                 }
-            });
-        }
+            }),
+        };
+        #[cfg(not(windows))]
+        let terminator = process_id.map(LocalProcessTerminator::new);
+        let stderr_reader = stderr.map(|stderr| {
+            let program_name = program_name.clone();
+            let (stop_tx, mut stop_rx) = watch::channel(());
+            std::mem::drop(tokio::spawn(async move {
+                let mut reader = BufReader::new(stderr).lines();
+                // Give queued diagnostics time to reach the logs without waiting
+                // indefinitely for a descendant that still has stderr open.
+                let drain_deadline = tokio::time::sleep(STDERR_READER_DRAIN_GRACE_PERIOD);
+                tokio::pin!(drain_deadline);
+                let mut draining = false;
+                loop {
+                    tokio::select! {
+                        biased;
+                        _ = &mut drain_deadline, if draining => break,
+                        _ = stop_rx.changed(), if !draining => {
+                            draining = true;
+                            drain_deadline.as_mut().reset(
+                                Instant::now() + STDERR_READER_DRAIN_GRACE_PERIOD
+                            );
+                        }
+                        line = reader.next_line() => {
+                            match line {
+                                Ok(Some(line)) => {
+                                    info!("MCP server stderr ({program_name}): {line}");
+                                }
+                                Ok(None) => break,
+                                Err(error) => {
+                                    warn!("Failed to read MCP server stderr ({program_name}): {error}");
+                                    break;
+                                }
+                            }
+                        },
+                    }
+                }
+            }));
+            stop_tx
+        });
+        let process = StdioServerProcessHandle::local(
+            program_name,
+            terminator,
+            stderr_reader,
+            close_policy,
+            child,
+        );
 
         Ok(StdioServerTransport {
-            inner: StdioServerTransportInner::Local(transport),
+            inner: transport,
             process,
         })
     }
 }
 
 impl LocalProcessTerminator {
+    #[cfg(not(windows))]
     fn new(process_group_id: u32) -> Self {
         #[cfg(unix)]
         {
             Self { process_group_id }
-        }
-        #[cfg(windows)]
-        {
-            Self {
-                pid: process_group_id,
-            }
         }
         #[cfg(not(any(unix, windows)))]
         {
@@ -346,15 +527,15 @@ impl LocalProcessTerminator {
 
     #[cfg(windows)]
     fn terminate(&self) {
-        let _ = std::process::Command::new("taskkill")
-            .arg("/PID")
-            .arg(self.pid.to_string())
-            .arg("/T")
-            .arg("/F")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+        let result = match self {
+            Self::Job(job) => job.terminate(),
+            Self::Process(process_handle) => {
+                codex_utils_pty::JobObject::terminate_process_handle(process_handle)
+            }
+        };
+        if let Err(error) = result {
+            warn!("Failed to terminate Windows MCP process: {error}");
+        }
     }
 
     #[cfg(not(any(unix, windows)))]
@@ -362,12 +543,29 @@ impl LocalProcessTerminator {
 }
 
 impl StdioServerProcessHandle {
-    fn local(program_name: String, terminator: Option<LocalProcessTerminator>) -> Self {
+    fn local(
+        program_name: String,
+        terminator: Option<LocalProcessTerminator>,
+        stderr_reader: Option<watch::Sender<()>>,
+        close_policy: StdioServerClosePolicy,
+        local_child: Option<Arc<SharedChild>>,
+    ) -> Self {
+        let (close_completion, _close_receiver) = watch::channel(StdioServerCloseOutcome::Pending);
+        let local_child = if close_policy == StdioServerClosePolicy::CooperativeLocal {
+            local_child
+        } else {
+            None
+        };
         Self {
             inner: Arc::new(StdioServerProcessHandleInner {
                 program_name,
                 kind: StdioServerProcessKind::Local(terminator),
+                close_policy,
+                local_child: StdMutex::new(local_child),
                 terminated: AtomicBool::new(false),
+                close_outcome: AtomicU8::new(StdioServerCloseOutcome::Pending as u8),
+                close_completion,
+                stderr_reader,
             }),
         }
     }
@@ -377,17 +575,138 @@ impl StdioServerProcessHandle {
             inner: Arc::new(StdioServerProcessHandleInner {
                 program_name,
                 kind: StdioServerProcessKind::Executor(process),
+                close_policy: StdioServerClosePolicy::Legacy,
+                local_child: StdMutex::new(None),
                 terminated: AtomicBool::new(false),
+                close_outcome: AtomicU8::new(StdioServerCloseOutcome::Pending as u8),
+                close_completion: watch::channel(StdioServerCloseOutcome::Pending).0,
+                stderr_reader: None,
             }),
         }
     }
 
+    pub(crate) fn close_policy(&self) -> StdioServerClosePolicy {
+        self.inner.close_policy
+    }
+
+    pub(crate) fn report_close_outcome(&self, outcome: StdioServerCloseOutcome) {
+        let child_reaped = matches!(
+            outcome,
+            StdioServerCloseOutcome::Exited | StdioServerCloseOutcome::Forced
+        );
+        if child_reaped {
+            self.inner.terminated.store(true, Ordering::Release);
+            self.inner
+                .local_child
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+        }
+        if self
+            .inner
+            .close_outcome
+            .compare_exchange(
+                StdioServerCloseOutcome::Pending as u8,
+                outcome as u8,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            self.inner.close_completion.send_replace(outcome);
+            if let Some(stderr_reader) = &self.inner.stderr_reader {
+                stderr_reader.send_replace(());
+            }
+        }
+    }
+
+    pub(crate) async fn wait_for_close(
+        &self,
+        timeout: Duration,
+    ) -> Option<StdioServerCloseOutcome> {
+        let mut receiver = self.inner.close_completion.subscribe();
+        tokio::time::timeout(timeout, async move {
+            loop {
+                let outcome = *receiver.borrow_and_update();
+                if outcome != StdioServerCloseOutcome::Pending {
+                    return outcome;
+                }
+                if receiver.changed().await.is_err() {
+                    return StdioServerCloseOutcome::Failed;
+                }
+            }
+        })
+        .await
+        .ok()
+    }
+
     pub(crate) async fn terminate(&self) -> io::Result<()> {
         if self.inner.terminated.swap(true, Ordering::AcqRel) {
+            if self.inner.close_policy == StdioServerClosePolicy::CooperativeLocal {
+                let child = self
+                    .inner
+                    .local_child
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone();
+                let Some(child) = child else {
+                    return Ok(());
+                };
+                let mut child = child.lock().await?;
+                return match tokio::time::timeout(COOPERATIVE_STDIO_CLOSE_TIMEOUT, child.wait())
+                    .await
+                {
+                    Ok(Ok(_)) => Ok(()),
+                    Ok(Err(error)) => {
+                        self.inner.terminated.store(false, Ordering::Release);
+                        Err(error)
+                    }
+                    Err(_) => {
+                        self.inner.terminated.store(false, Ordering::Release);
+                        Err(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "timed out waiting for owned MCP stdio child termination",
+                        ))
+                    }
+                };
+            }
             return Ok(());
         }
 
-        match &self.inner.kind {
+        if self.inner.close_policy == StdioServerClosePolicy::CooperativeLocal {
+            let child = self
+                .inner
+                .local_child
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            let Some(child) = child else {
+                self.inner.terminated.store(false, Ordering::Release);
+                return Err(io::Error::other(
+                    "cooperative MCP stdio child ownership is unavailable",
+                ));
+            };
+            let mut child = match child.lock().await {
+                Ok(child) => child,
+                Err(error) => {
+                    self.inner.terminated.store(false, Ordering::Release);
+                    self.report_close_outcome(StdioServerCloseOutcome::Failed);
+                    return Err(error);
+                }
+            };
+            let outcome = match terminate_owned_stdio_child(&mut child).await {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    self.inner.terminated.store(false, Ordering::Release);
+                    self.report_close_outcome(StdioServerCloseOutcome::Failed);
+                    return Err(error);
+                }
+            };
+            self.report_close_outcome(outcome);
+            return Ok(());
+        }
+
+        let result = match &self.inner.kind {
             StdioServerProcessKind::Local(Some(terminator)) => {
                 terminator.terminate();
                 Ok(())
@@ -400,7 +719,11 @@ impl StdioServerProcessHandle {
                     Err(io::Error::other(error))
                 }
             },
+        };
+        if let Some(stderr_reader) = &self.inner.stderr_reader {
+            stderr_reader.send_replace(());
         }
+        result
     }
 }
 
@@ -411,6 +734,56 @@ impl Drop for StdioServerProcessHandleInner {
         }
 
         match &self.kind {
+            StdioServerProcessKind::Local(_)
+                if self.close_policy == StdioServerClosePolicy::CooperativeLocal =>
+            {
+                let child = self
+                    .local_child
+                    .get_mut()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take();
+                if let Some(child) = child {
+                    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                        std::mem::drop(handle.spawn(async move {
+                            let mut child = match child.lock().await {
+                                Ok(child) => child,
+                                Err(error) => {
+                                    warn!(
+                                        "Failed to acquire owned MCP child for drop cleanup: {error}"
+                                    );
+                                    return;
+                                }
+                            };
+                            match tokio::time::timeout(
+                                COOPERATIVE_STDIO_CLOSE_TIMEOUT,
+                                child.wait(),
+                            )
+                            .await
+                            {
+                                Ok(Ok(_)) => {}
+                                Ok(Err(wait_error)) => {
+                                    if let Err(kill_error) =
+                                        terminate_owned_stdio_child(&mut child).await
+                                    {
+                                        warn!("Failed to reap owned MCP child on drop: wait={wait_error}; terminate={kill_error}");
+                                    }
+                                }
+                                Err(_) => {
+                                    if let Err(error) =
+                                        terminate_owned_stdio_child(&mut child).await
+                                    {
+                                        warn!("Failed to terminate owned MCP child after drop timeout: {error}");
+                                    }
+                                },
+                            }
+                        }));
+                    } else {
+                        // The Child was configured with kill_on_drop for this policy.
+                        // Without a runtime, dropping the final owner still kills the
+                        // exact direct child; completion/reaping cannot be acknowledged.
+                    }
+                }
+            }
             StdioServerProcessKind::Local(Some(terminator)) => {
                 terminator.terminate();
             }
@@ -435,6 +808,9 @@ impl Drop for StdioServerProcessHandleInner {
                 }));
             }
         }
+        if let Some(stderr_reader) = &self.stderr_reader {
+            stderr_reader.send_replace(());
+        }
     }
 }
 
@@ -445,6 +821,11 @@ impl Drop for StdioServerProcessHandleInner {
 /// MCP framing still runs in the orchestrator. The executor only owns the
 /// child process and transports raw stdin/stdout/stderr bytes, so it does not
 /// need to know about MCP methods such as `initialize` or `tools/list`.
+///
+/// Windows executor-backed servers retain the executor's normal descendant
+/// lifetime. MCP-specific containment requires negotiated process ownership:
+/// caller-controlled process IDs cannot safely select a destructive policy,
+/// and a wrapper may exit while its descendants continue serving requests.
 #[derive(Clone)]
 pub struct ExecutorStdioServerLauncher {
     exec_backend: Arc<dyn ExecBackend>,
@@ -482,7 +863,14 @@ impl ExecutorStdioServerLauncher {
             env,
             env_vars,
             cwd,
+            protocol_mode: _,
+            close_policy,
         } = command;
+        if close_policy == StdioServerClosePolicy::CooperativeLocal {
+            return Err(io::Error::other(
+                "cooperative MCP stdio close is not supported by executor launch",
+            ));
+        }
         let Some(cwd) = cwd else {
             return Err(io::Error::other(
                 "executor stdio server requires an explicit cwd",
@@ -506,9 +894,11 @@ impl ExecutorStdioServerLauncher {
         // rmcp write JSON-RPC requests after the process starts.
         let started = exec_backend
             .start(ExecParams {
+                metadata: Default::default(),
                 process_id,
                 argv,
                 cwd,
+                shell_snapshot: None,
                 env_policy: Some(Self::remote_env_policy(&remote_env_vars)),
                 env,
                 tty: false,
@@ -573,8 +963,12 @@ impl ExecutorStdioServerLauncher {
             // environment, not copied from Codex. Start from `All` only so the
             // named remote variable is available to the filter below; the
             // effective child env is still limited by `include_only`.
+            // The orchestrator may be Unix while the executor is Windows.
+            // Preserve Windows runtime initialization and temporary-directory
+            // inputs even when explicit remote vars activate this allowlist.
             crate::utils::DEFAULT_ENV_VARS
                 .iter()
+                .chain(["SYSTEMROOT", "TEMP", "TMP"].iter())
                 .map(|name| (*name).to_string())
                 .chain(remote_env_vars.iter().cloned())
                 .collect()
@@ -649,6 +1043,15 @@ mod tests {
         let env = shell_environment::create_env_from_vars(
             [
                 ("PATH".to_string(), "/remote/bin".to_string()),
+                ("SystemRoot".to_string(), r"C:\Windows".to_string()),
+                (
+                    "TEMP".to_string(),
+                    r"C:\Users\test\AppData\Local\Temp".to_string(),
+                ),
+                (
+                    "TMP".to_string(),
+                    r"C:\Users\test\AppData\Local\Temp".to_string(),
+                ),
                 ("REMOTE_TOKEN".to_string(), "remote-secret".to_string()),
                 (
                     "UNREQUESTED_SECRET".to_string(),
@@ -660,6 +1063,16 @@ mod tests {
         );
 
         assert_eq!(env.get("PATH").map(String::as_str), Some("/remote/bin"));
+        assert_eq!(
+            env.get("SystemRoot").map(String::as_str),
+            Some(r"C:\Windows")
+        );
+        for name in ["TEMP", "TMP"] {
+            assert_eq!(
+                env.get(name).map(String::as_str),
+                Some(r"C:\Users\test\AppData\Local\Temp")
+            );
+        }
         assert_eq!(
             env.get("REMOTE_TOKEN").map(String::as_str),
             Some("remote-secret")

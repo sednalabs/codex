@@ -9,6 +9,8 @@ use std::sync::atomic::Ordering;
 use codex_agent_identity::AgentIdentityKey;
 use codex_agent_identity::authorization_header_for_agent_task;
 use codex_api::AgentIdentityTelemetry;
+use codex_api::AuthError;
+use codex_api::AuthHeadersFuture;
 use codex_api::AuthProvider;
 use codex_api::SharedAuthProvider;
 use codex_login::AuthHeaders;
@@ -59,8 +61,8 @@ pub struct ResolvedProviderAuth {
     freeze_to_headers: bool,
 }
 
-/// Process-local, secret-safe identity for the credentials represented by a resolved provider
-/// auth snapshot. The keyed hash is intentionally neither printable nor persisted.
+/// Opaque process-local identity for the effective credentials admitted for a request.
+/// Its keyed hash is never rendered or persisted.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ProviderAuthIdentity([u64; 2]);
 
@@ -109,8 +111,6 @@ impl ResolvedProviderAuth {
         }
     }
 
-    /// Preserves an auth provider whose credentials are applied to the complete request (for
-    /// example AWS SigV4), while binding its already-frozen signer identity into admission.
     pub(crate) fn for_complete_request_auth(
         auth: SharedAuthProvider,
         signer_identity: codex_aws_auth::AwsCredentialIdentity,
@@ -148,10 +148,6 @@ impl ResolvedProviderAuth {
         }
     }
 
-    /// Freezes the exact credentials used by this request attempt. Header-based providers become
-    /// immutable headers; complete-request providers retain their already-frozen signer. This
-    /// removes dynamic AuthManager/env reads from the send path while preserving the semantic
-    /// credential identity used for automatic admission and transport reuse.
     pub fn freeze(mut self) -> Self {
         if self.freeze_to_headers {
             let headers = self.auth.to_auth_headers();
@@ -225,25 +221,41 @@ struct AuthManagerAuthProvider {
     expected_auth: CodexAuth,
 }
 
+impl AuthManagerAuthProvider {
+    fn is_expected_auth(&self, auth: &CodexAuth) -> bool {
+        auth.uses_codex_backend()
+            && auth.get_account_id() == self.expected_auth.get_account_id()
+            && auth.get_chatgpt_user_id() == self.expected_auth.get_chatgpt_user_id()
+            && auth.is_workspace_account() == self.expected_auth.is_workspace_account()
+    }
+
+    fn current_auth(&self) -> Option<CodexAuth> {
+        self.auth_manager
+            .auth_cached()
+            .filter(|auth| self.is_expected_auth(auth))
+    }
+}
+
 impl AuthProvider for AuthManagerAuthProvider {
     fn add_auth_headers(&self, headers: &mut HeaderMap) {
-        let Some(auth) = self
-            .auth_manager
-            .auth_cached()
-            .filter(CodexAuth::uses_codex_backend)
-        else {
+        let Some(auth) = self.current_auth() else {
             return;
         };
-        // The caller's account-scoped state was built for the expected
-        // identity. Follow token refreshes for that identity, but never cross
-        // an account or workspace boundary without rebuilding that state.
-        if auth.get_account_id() != self.expected_auth.get_account_id()
-            || auth.get_chatgpt_user_id() != self.expected_auth.get_chatgpt_user_id()
-            || auth.is_workspace_account() != self.expected_auth.is_workspace_account()
-        {
-            return;
-        }
         auth_provider_from_auth(&auth).add_auth_headers(headers);
+    }
+
+    fn resolve_auth_headers(&self) -> AuthHeadersFuture<'_> {
+        Box::pin(async move {
+            let auth = self
+                .auth_manager
+                .auth()
+                .await
+                .filter(|auth| self.is_expected_auth(auth))
+                .ok_or_else(|| {
+                    AuthError::Transient("managed authentication is unavailable".to_string())
+                })?;
+            Ok(auth_provider_from_auth(&auth).to_auth_headers())
+        })
     }
 }
 
@@ -277,14 +289,21 @@ pub(crate) fn resolve_provider_auth(
     auth: Option<&CodexAuth>,
     provider: &ModelProviderInfo,
 ) -> codex_protocol::error::Result<SharedAuthProvider> {
-    if matches!(auth, Some(CodexAuth::BedrockApiKey(_))) {
+    if let Some(auth) = bearer_auth_for_provider(provider)? {
+        return Ok(Arc::new(auth));
+    }
+
+    if !provider.requires_openai_auth && provider.auth.is_none() {
+        return Ok(unauthenticated_auth_provider());
+    }
+
+    if matches!(
+        auth,
+        Some(CodexAuth::BedrockApiKey(_) | CodexAuth::BedrockAccessKeys(_))
+    ) {
         return Err(CodexErr::UnsupportedOperation(
             BEDROCK_API_KEY_UNSUPPORTED_MESSAGE.to_string(),
         ));
-    }
-
-    if let Some(auth) = bearer_auth_for_provider(provider)? {
-        return Ok(Arc::new(auth));
     }
 
     Ok(match auth {
@@ -369,7 +388,7 @@ fn bearer_auth_for_provider(
     }
 
     if let Some(token) = provider.experimental_bearer_token.clone() {
-        return Ok(Some(BearerAuthProvider::new(token)));
+        return Ok(Some(BearerAuthProvider::new(token.into_inner())));
     }
 
     Ok(None)
@@ -382,7 +401,9 @@ pub fn auth_provider_from_auth(auth: &CodexAuth) -> SharedAuthProvider {
             Arc::new(AgentIdentityAuthProvider { auth: auth.clone() })
         }
         CodexAuth::Headers(auth) => Arc::new(HeaderAuthProvider { auth: auth.clone() }),
-        CodexAuth::BedrockApiKey(_) => unreachable!("{BEDROCK_API_KEY_UNSUPPORTED_MESSAGE}"),
+        CodexAuth::BedrockApiKey(_) | CodexAuth::BedrockAccessKeys(_) => {
+            unreachable!("{BEDROCK_API_KEY_UNSUPPORTED_MESSAGE}")
+        }
         CodexAuth::ApiKey(_)
         | CodexAuth::Chatgpt(_)
         | CodexAuth::ChatgptAuthTokens(_)
@@ -420,10 +441,12 @@ mod tests {
     use codex_model_provider_info::WireApi;
     use codex_model_provider_info::create_oss_provider_with_base_url;
     use codex_protocol::account::PlanType;
+    use codex_protocol::config_types::ModelProviderAuthInfo;
     use codex_protocol::error::CodexErrorDetails;
     use http::header::AUTHORIZATION;
     use pretty_assertions::assert_eq;
     use serde_json::json;
+    use std::num::NonZeroU64;
     use std::path::Path;
     use std::path::PathBuf;
     use std::sync::atomic::AtomicUsize;
@@ -546,6 +569,109 @@ mod tests {
     }
 
     #[test]
+    fn custom_provider_does_not_inherit_ambient_auth_headers() {
+        let provider =
+            create_oss_provider_with_base_url("http://localhost:11434/v1", WireApi::Responses);
+        let mut ambient_headers = HeaderMap::new();
+        ambient_headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_static("Bearer ambient-token"),
+        );
+        ambient_headers.insert(
+            "ChatGPT-Account-ID",
+            HeaderValue::from_static("account-123"),
+        );
+        let ambient_auth = CodexAuth::Headers(AuthHeaders::new(ambient_headers));
+
+        let auth =
+            resolve_provider_auth(Some(&ambient_auth), &provider).expect("auth should resolve");
+
+        assert!(auth.to_auth_headers().is_empty());
+    }
+
+    #[test]
+    fn custom_provider_does_not_inherit_ambient_bedrock_auth() {
+        let provider =
+            create_oss_provider_with_base_url("http://localhost:11434/v1", WireApi::Responses);
+        let ambient_auth = CodexAuth::BedrockApiKey(BedrockApiKeyAuth {
+            api_key: "bedrock-api-key-test".to_string(),
+            region: "us-east-1".to_string(),
+        });
+
+        let auth =
+            resolve_provider_auth(Some(&ambient_auth), &provider).expect("auth should resolve");
+
+        assert!(auth.to_auth_headers().is_empty());
+    }
+
+    #[test]
+    fn custom_provider_uses_explicit_bearer_instead_of_ambient_auth() {
+        let mut provider =
+            create_oss_provider_with_base_url("http://localhost:11434/v1", WireApi::Responses);
+        provider.experimental_bearer_token = Some("provider-token".into());
+        let ambient_auth = CodexAuth::BedrockApiKey(BedrockApiKeyAuth {
+            api_key: "bedrock-api-key-test".to_string(),
+            region: "us-east-1".to_string(),
+        });
+
+        let headers = resolve_provider_auth(Some(&ambient_auth), &provider)
+            .expect("auth should resolve")
+            .to_auth_headers();
+
+        assert_eq!(
+            headers.get(AUTHORIZATION),
+            Some(&HeaderValue::from_static("Bearer provider-token"))
+        );
+        assert_eq!(headers.len(), 1);
+    }
+
+    #[test]
+    fn custom_provider_uses_command_resolved_auth() {
+        let mut provider =
+            create_oss_provider_with_base_url("http://localhost:11434/v1", WireApi::Responses);
+        provider.auth = Some(ModelProviderAuthInfo {
+            command: "print-token".to_string(),
+            args: Vec::new(),
+            timeout_ms: NonZeroU64::new(5_000).expect("timeout should be non-zero"),
+            refresh_interval_ms: 300_000,
+            cwd: std::env::current_dir()
+                .expect("current directory should be available")
+                .try_into()
+                .expect("current directory should be absolute"),
+        });
+        let command_auth = CodexAuth::from_api_key("command-token");
+
+        let headers = resolve_provider_auth(Some(&command_auth), &provider)
+            .expect("auth should resolve")
+            .to_auth_headers();
+
+        assert_eq!(
+            headers.get(AUTHORIZATION),
+            Some(&HeaderValue::from_static("Bearer command-token"))
+        );
+    }
+
+    #[test]
+    fn openai_provider_preserves_ambient_auth_headers() {
+        let provider = ModelProviderInfo::create_openai_provider(/*base_url*/ None);
+        let mut expected = HeaderMap::new();
+        expected.insert(
+            AUTHORIZATION,
+            HeaderValue::from_static("Bearer ambient-token"),
+        );
+        expected.insert(
+            "ChatGPT-Account-ID",
+            HeaderValue::from_static("account-123"),
+        );
+        let ambient_auth = CodexAuth::Headers(AuthHeaders::new(expected.clone()));
+
+        let auth =
+            resolve_provider_auth(Some(&ambient_auth), &provider).expect("auth should resolve");
+
+        assert_eq!(auth.to_auth_headers(), expected);
+    }
+
+    #[test]
     fn header_auth_adds_predefined_headers() {
         let mut expected = HeaderMap::new();
         expected.insert(
@@ -620,8 +746,12 @@ mod tests {
         .expect("save reloaded auth");
         auth_manager.reload().await;
 
+        let resolved_headers = provider
+            .resolve_auth_headers()
+            .await
+            .expect("managed auth headers should resolve");
         assert_eq!(
-            provider.to_auth_headers().get(AUTHORIZATION),
+            resolved_headers.get(AUTHORIZATION),
             Some(&HeaderValue::from_static("Bearer header.e30.reloaded"))
         );
 
@@ -635,55 +765,6 @@ mod tests {
         auth_manager.reload().await;
 
         assert!(provider.to_auth_headers().is_empty());
-    }
-
-    #[tokio::test]
-    async fn frozen_request_auth_keeps_the_credentials_represented_before_transition() {
-        let codex_home = test_codex_home();
-        login_with_chatgpt_auth_tokens(
-            &codex_home,
-            "header.e30.token-a",
-            "test-account",
-            /*chatgpt_plan_type*/ None,
-        )
-        .expect("save auth A");
-        let auth_manager = Arc::new(
-            AuthManager::new(
-                codex_home.clone(),
-                /*enable_codex_api_key_env*/ false,
-                AuthCredentialsStoreMode::Ephemeral,
-                /*forced_chatgpt_workspace_id*/ None,
-                /*chatgpt_base_url*/ None,
-                AuthKeyringBackendKind::default(),
-                codex_login::test_support::transport_default_auth_route_config(),
-            )
-            .await,
-        );
-        let auth_a = auth_manager.auth_cached().expect("auth A");
-        let frozen = ResolvedProviderAuth::new(auth_provider_from_auth_manager(
-            Arc::clone(&auth_manager),
-            &auth_a,
-        ))
-        .freeze();
-
-        login_with_chatgpt_auth_tokens(
-            &codex_home,
-            "header.e30.token-b",
-            "test-account",
-            /*chatgpt_plan_type*/ None,
-        )
-        .expect("save auth B");
-        auth_manager.reload().await;
-
-        let headers = frozen.auth.to_auth_headers();
-        assert_eq!(
-            headers
-                .get(AUTHORIZATION)
-                .and_then(|value| value.to_str().ok()),
-            Some("Bearer header.e30.token-a")
-        );
-        assert!(!format!("{:?}", frozen.authority_identity()).contains("token-a"));
-        assert!(!format!("{:?}", frozen.authority_identity()).contains("token-b"));
     }
 
     #[tokio::test]

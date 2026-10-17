@@ -1,8 +1,10 @@
 use crate::ClientNotification;
 use crate::ClientRequest;
+use crate::JsonSchema;
 use crate::ServerNotification;
 use crate::ServerNotificationEnvelope;
 use crate::ServerRequest;
+use crate::TS;
 use crate::experimental_api::experimental_fields;
 use crate::export_client_notification_schemas;
 use crate::export_client_param_schemas;
@@ -21,10 +23,8 @@ use crate::protocol::common::EXPERIMENTAL_SERVER_METHODS;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
-use codex_protocol::protocol::RolloutLine;
-use schemars::JsonSchema;
+use codex_history::RolloutLine;
 use schemars::schema_for;
-use serde::Serialize;
 use serde_json::Map;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -38,12 +38,17 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::thread;
-use ts_rs::TS;
+
+#[path = "export_user_verification.rs"]
+mod user_verification;
 
 pub(crate) const GENERATED_TS_HEADER: &str = "// GENERATED CODE! DO NOT MODIFY BY HAND!\n\n";
 const IGNORED_DEFINITIONS: &[&str] = &["Option<()>"];
 const JSON_V1_ALLOWLIST: &[&str] = &["InitializeParams", "InitializeResponse"];
 const EXPERIMENTAL_CLIENT_METHOD_DEPENDENCY_TYPES: &[&str] = &[
+    "AwsCredentialType",
+    "BedrockAwsProfile",
+    "BedrockEnvironmentCredential",
     "EnvironmentShellInfo",
     "EnvironmentStatusKind",
     "RemoteControlClient",
@@ -51,6 +56,14 @@ const EXPERIMENTAL_CLIENT_METHOD_DEPENDENCY_TYPES: &[&str] = &[
     "ThreadBackgroundTerminal",
     "ThreadSearchOccurrence",
     "ThreadSearchTextRange",
+    "TurnSettingsUpdateStatus",
+    "UserVerificationProof",
+    "UserVerificationCancellationReason",
+    "UserVerificationErrorDetails",
+    "UserVerificationFailureReason",
+    "UserVerificationInvalidRequestReason",
+    "UserVerificationRpcError",
+    "UserVerificationUnavailableReason",
 ];
 const SPECIAL_DEFINITIONS: &[&str] = &[
     "ClientNotification",
@@ -87,11 +100,6 @@ impl GeneratedSchema {
 }
 
 type JsonSchemaEmitter = fn(&Path) -> Result<GeneratedSchema>;
-pub fn generate_types(out_dir: &Path, prettier: Option<&Path>) -> Result<()> {
-    generate_ts(out_dir, prettier)?;
-    generate_json(out_dir)?;
-    Ok(())
-}
 
 #[derive(Clone, Copy, Debug)]
 pub struct GenerateTsOptions {
@@ -112,10 +120,6 @@ impl Default for GenerateTsOptions {
     }
 }
 
-pub fn generate_ts(out_dir: &Path, prettier: Option<&Path>) -> Result<()> {
-    generate_ts_with_options(out_dir, prettier, GenerateTsOptions::default())
-}
-
 pub fn generate_ts_with_options(
     out_dir: &Path,
     prettier: Option<&Path>,
@@ -125,16 +129,15 @@ pub fn generate_ts_with_options(
     ensure_dir(out_dir)?;
     ensure_dir(&v2_out_dir)?;
 
-    let ts_config = ts_rs::Config::new().with_out_dir(out_dir);
-
-    ClientRequest::export_all(&ts_config)?;
+    ClientRequest::export_all_to(out_dir)?;
     export_client_responses(out_dir)?;
-    ClientNotification::export_all(&ts_config)?;
+    ClientNotification::export_all_to(out_dir)?;
+    crate::UserVerificationRpcError::export_all_to(out_dir)?;
 
-    ServerRequest::export_all(&ts_config)?;
+    ServerRequest::export_all_to(out_dir)?;
     export_server_responses(out_dir)?;
-    ServerNotification::export_all(&ts_config)?;
-    ServerNotificationEnvelope::export_all(&ts_config)?;
+    ServerNotification::export_all_to(out_dir)?;
+    ServerNotificationEnvelope::export_all_to(out_dir)?;
 
     if !options.experimental_api {
         filter_experimental_ts(out_dir)?;
@@ -227,6 +230,10 @@ pub fn generate_json_with_experimental(out_dir: &Path, experimental_api: bool) -
         schemas.push(emit(out_dir)?);
     }
 
+    schemas.push(write_json_schema::<crate::UserVerificationRpcError>(
+        out_dir,
+        "v2::UserVerificationRpcError",
+    )?);
     schemas.extend(export_client_param_schemas(out_dir)?);
     schemas.extend(export_client_response_schemas(out_dir)?);
     schemas.extend(export_server_param_schemas(out_dir)?);
@@ -267,6 +274,11 @@ fn filter_experimental_ts(out_dir: &Path) -> Result<()> {
     filter_request_ts(out_dir, "ServerRequest.ts", EXPERIMENTAL_SERVER_METHODS)?;
     filter_experimental_type_fields_ts(out_dir, &registered_fields)?;
     remove_generated_type_files(out_dir, &experimental_method_types, "ts")?;
+    let elicitation_path = out_dir.join("v2/McpServerElicitationRequestParams.ts");
+    if elicitation_path.exists() {
+        let content = fs::read_to_string(&elicitation_path)?;
+        fs::write(elicitation_path, user_verification::filter_ts(&content))?;
+    }
     Ok(())
 }
 
@@ -291,6 +303,11 @@ pub(crate) fn filter_experimental_ts_tree(tree: &mut BTreeMap<PathBuf, String>) 
     }
 
     for (path, content) in tree.iter_mut() {
+        if path.file_stem().and_then(|stem| stem.to_str())
+            == Some("McpServerElicitationRequestParams")
+        {
+            *content = user_verification::filter_ts(content);
+        }
         let Some(type_name) = path.file_stem().and_then(|stem| stem.to_str()) else {
             continue;
         };
@@ -335,7 +352,7 @@ fn filter_request_ts_contents(mut content: String, experimental_methods: &[&str]
     let filtered_arms: Vec<String> = arms
         .into_iter()
         .filter(|arm| {
-            extract_method_from_arm(arm)
+            extract_discriminator_from_arm(arm, "method")
                 .is_none_or(|method| !experimental_methods.contains(method.as_str()))
         })
         .collect();
@@ -421,6 +438,7 @@ fn filter_experimental_schema(bundle: &mut Value) -> Result<()> {
     prune_experimental_methods(bundle, EXPERIMENTAL_CLIENT_METHODS);
     prune_experimental_methods(bundle, EXPERIMENTAL_SERVER_METHODS);
     remove_experimental_method_type_definitions(bundle);
+    user_verification::filter_json(bundle);
     Ok(())
 }
 
@@ -800,14 +818,14 @@ fn split_top_level_multi(input: &str, delimiters: &[char]) -> Vec<String> {
     parts
 }
 
-fn extract_method_from_arm(arm: &str) -> Option<String> {
+fn extract_discriminator_from_arm(arm: &str, discriminator: &str) -> Option<String> {
     let (open, close) = find_top_level_brace_span(arm)?;
     let inner = &arm[open + 1..close];
     for field in split_top_level(inner, ',') {
         let Some((name, value)) = parse_property(field.as_str()) else {
             continue;
         };
-        if name != "method" {
+        if name != discriminator {
             continue;
         }
         let value = value.trim_start();
@@ -1022,8 +1040,11 @@ fn build_schema_bundle(schemas: Vec<GeneratedSchema>) -> Result<Value> {
         }
 
         let mut forced_namespace_refs: Vec<(String, String)> = Vec::new();
-        if let Value::Object(ref mut obj) = value {
-            for (def_name, mut def_schema) in drain_schema_definitions(obj) {
+        if let Value::Object(ref mut obj) = value
+            && let Some(defs) = obj.remove("definitions")
+            && let Value::Object(defs_obj) = defs
+        {
+            for (def_name, mut def_schema) in defs_obj {
                 if IGNORED_DEFINITIONS.contains(&def_name.as_str()) {
                     continue;
                 }
@@ -1076,25 +1097,7 @@ fn build_schema_bundle(schemas: Vec<GeneratedSchema>) -> Result<Value> {
     root.insert("type".to_string(), Value::String("object".into()));
     root.insert("definitions".to_string(), Value::Object(definitions));
 
-    let mut bundle = Value::Object(root);
-    rewrite_ref_prefix(&mut bundle, "#/$defs/", "#/definitions/");
-    ensure_no_ref_prefix(&bundle, "#/$defs/", "full")?;
-    ensure_referenced_definitions_present(&bundle, "full")?;
-    Ok(bundle)
-}
-
-fn drain_schema_definitions(schema: &mut Map<String, Value>) -> Vec<(String, Value)> {
-    let mut drained = Vec::new();
-    for defs_key in ["definitions", "$defs"] {
-        let Some(defs) = schema.remove(defs_key) else {
-            continue;
-        };
-        let Value::Object(defs_obj) = defs else {
-            continue;
-        };
-        drained.extend(defs_obj);
-    }
-    drained
+    Ok(Value::Object(root))
 }
 
 /// Build a datamodel-code-generator-friendly v2 bundle from the mixed export.
@@ -1154,10 +1157,7 @@ fn build_flat_v2_schema(bundle: &Value) -> Result<Value> {
     flat_root.insert("definitions".to_string(), Value::Object(flat_definitions));
     let mut flat_bundle = Value::Object(flat_root);
     rewrite_ref_prefix(&mut flat_bundle, "#/definitions/v2/", "#/definitions/");
-    rewrite_ref_prefix(&mut flat_bundle, "#/$defs/v2/", "#/definitions/");
-    rewrite_ref_prefix(&mut flat_bundle, "#/$defs/", "#/definitions/");
     ensure_no_ref_prefix(&flat_bundle, "#/definitions/v2/", "flat v2")?;
-    ensure_no_ref_prefix(&flat_bundle, "#/$defs/", "flat v2")?;
     ensure_referenced_definitions_present(&flat_bundle, "flat v2")?;
     Ok(flat_bundle)
 }
@@ -1172,10 +1172,9 @@ fn collect_non_v2_refs_inner(value: &Value, refs: &mut HashSet<String>) {
     match value {
         Value::Object(obj) => {
             if let Some(Value::String(reference)) = obj.get("$ref")
-                && let Some(suffix) = local_definition_ref_suffix(reference)
-                && !suffix.starts_with("v2/")
+                && let Some(name) = reference.strip_prefix("#/definitions/")
+                && !reference.starts_with("#/definitions/v2/")
             {
-                let name = suffix.split('/').next().unwrap_or(suffix);
                 refs.insert(name.to_string());
             }
             for child in obj.values() {
@@ -1260,40 +1259,45 @@ fn first_ref_with_prefix(value: &Value, prefix: &str) -> Option<String> {
 }
 
 fn ensure_referenced_definitions_present(schema: &Value, label: &str) -> Result<()> {
-    schema
+    let definitions = schema
         .get("definitions")
         .and_then(Value::as_object)
         .ok_or_else(|| anyhow!("expected definitions map in {label} schema"))?;
     let mut missing = HashSet::new();
-    collect_missing_definitions(schema, schema, &mut missing);
+    collect_missing_definitions(schema, definitions, &mut missing);
     if missing.is_empty() {
         return Ok(());
     }
-    let mut missing_references: Vec<String> = missing.into_iter().collect();
-    missing_references.sort();
+    let mut missing_names: Vec<String> = missing.into_iter().collect();
+    missing_names.sort();
     Err(anyhow!(
-        "{label} schema has unresolved definition references: {}",
-        missing_references.join(", ")
+        "{label} schema missing definitions: {}",
+        missing_names.join(", ")
     ))
 }
 
-fn collect_missing_definitions(value: &Value, schema: &Value, missing: &mut HashSet<String>) {
+fn collect_missing_definitions(
+    value: &Value,
+    definitions: &Map<String, Value>,
+    missing: &mut HashSet<String>,
+) {
     match value {
         Value::Object(obj) => {
             if let Some(Value::String(reference)) = obj.get("$ref")
-                && local_definition_ref_suffix(reference).is_some()
-                && let Some(pointer) = reference.strip_prefix('#')
-                && schema.pointer(pointer).is_none()
+                && let Some(name) = reference.strip_prefix("#/definitions/")
             {
-                missing.insert(reference.clone());
+                let name = name.split('/').next().unwrap_or(name);
+                if !definitions.contains_key(name) {
+                    missing.insert(name.to_string());
+                }
             }
             for child in obj.values() {
-                collect_missing_definitions(child, schema, missing);
+                collect_missing_definitions(child, definitions, missing);
             }
         }
         Value::Array(items) => {
             for child in items {
-                collect_missing_definitions(child, schema, missing);
+                collect_missing_definitions(child, definitions, missing);
             }
         }
         _ => {}
@@ -1362,6 +1366,11 @@ where
             strip_v1_server_notification_variants_from_json_schema(&mut schema_value);
             add_server_notification_emitted_at_to_json_schema(&mut schema_value)?;
         }
+        if let Some(Value::Object(error_schema)) =
+            schema_value.pointer_mut("/definitions/CodexErrorInfo")
+        {
+            keep_enum_open_ended(error_schema);
+        }
         enforce_numbered_definition_collision_overrides(file_stem, &mut schema_value);
         annotate_schema(&mut schema_value, Some(file_stem));
     }
@@ -1391,6 +1400,13 @@ where
         logical_name: logical_name.to_string(),
         value: schema_value,
     })
+}
+
+fn keep_enum_open_ended(schema: &mut Map<String, Value>) {
+    if let Some(Value::Array(mut variants)) = schema.remove("oneOf") {
+        variants.push(serde_json::json!({ "type": ["string", "object"] }));
+        schema.insert("anyOf".to_string(), Value::Array(variants));
+    }
 }
 
 fn add_server_notification_emitted_at_to_json_schema(schema: &mut Value) -> Result<()> {
@@ -1580,17 +1596,14 @@ where
     write_json_schema_with_return::<T>(out_dir, name)
 }
 
-fn write_pretty_json(path: PathBuf, value: &impl Serialize) -> Result<()> {
-    let json = serde_json::to_vec_pretty(value)
+fn write_pretty_json(path: PathBuf, value: &Value) -> Result<()> {
+    let mut value = value.clone();
+    // Keep Cargo and Bazel output identical without changing meaningful array order.
+    value.sort_all_objects();
+    let json = serde_json::to_vec_pretty(&value)
         .with_context(|| format!("Failed to serialize JSON schema to {}", path.display()))?;
     fs::write(&path, json).with_context(|| format!("Failed to write {}", path.display()))?;
     Ok(())
-}
-
-fn local_definition_ref_suffix(reference: &str) -> Option<&str> {
-    reference
-        .strip_prefix("#/definitions/")
-        .or_else(|| reference.strip_prefix("#/$defs/"))
 }
 
 /// Split a fully-qualified type name like "v2::Type" into its namespace and logical name.
@@ -1605,7 +1618,7 @@ fn rewrite_refs_to_namespace(value: &mut Value, ns: &str) {
     match value {
         Value::Object(obj) => {
             if let Some(Value::String(r)) = obj.get_mut("$ref")
-                && let Some(suffix) = local_definition_ref_suffix(r)
+                && let Some(suffix) = r.strip_prefix("#/definitions/")
             {
                 let prefix = format!("{ns}/");
                 if !suffix.starts_with(&prefix) {
@@ -1639,7 +1652,7 @@ fn rewrite_refs_to_known_namespaces(value: &mut Value, types: &HashMap<String, S
     match value {
         Value::Object(obj) => {
             if let Some(Value::String(reference)) = obj.get_mut("$ref")
-                && let Some(suffix) = local_definition_ref_suffix(reference)
+                && let Some(suffix) = reference.strip_prefix("#/definitions/")
             {
                 let (name, tail) = suffix
                     .split_once('/')
@@ -1955,22 +1968,17 @@ fn ensure_dir(dir: &Path) -> Result<()> {
 }
 
 fn rewrite_named_ref_to_namespace(value: &mut Value, ns: &str, name: &str) {
-    let direct_refs = [format!("#/definitions/{name}"), format!("#/$defs/{name}")];
+    let direct = format!("#/definitions/{name}");
+    let prefixed = format!("{direct}/");
     let replacement = format!("#/definitions/{ns}/{name}");
     let replacement_prefixed = format!("{replacement}/");
     match value {
         Value::Object(obj) => {
             if let Some(Value::String(reference)) = obj.get_mut("$ref") {
-                for direct in &direct_refs {
-                    if reference == direct {
-                        reference.clone_from(&replacement);
-                        break;
-                    }
-                    let prefixed = format!("{direct}/");
-                    if let Some(rest) = reference.strip_prefix(&prefixed) {
-                        *reference = format!("{replacement_prefixed}{rest}");
-                        break;
-                    }
+                if reference == &direct {
+                    *reference = replacement;
+                } else if let Some(rest) = reference.strip_prefix(&prefixed) {
+                    *reference = format!("{replacement_prefixed}{rest}");
                 }
             }
             for child in obj.values_mut() {
@@ -2162,42 +2170,9 @@ mod tests {
     use anyhow::Result;
     use pretty_assertions::assert_eq;
     use std::collections::BTreeSet;
-    use std::collections::HashMap;
     use std::path::Path;
     use std::path::PathBuf;
     use uuid::Uuid;
-
-    fn one_of_method_literals(
-        schema: &Value,
-        definitions: &Map<String, Value>,
-    ) -> BTreeSet<String> {
-        schema["oneOf"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|variant| method_literal_from_variant(variant, definitions))
-            .collect()
-    }
-
-    fn method_literal_from_variant(
-        variant: &Value,
-        definitions: &Map<String, Value>,
-    ) -> Option<String> {
-        if let Some(method) = variant
-            .get("properties")
-            .and_then(Value::as_object)
-            .and_then(|props| props.get("method"))
-            .and_then(string_literal)
-        {
-            return Some(method.to_string());
-        }
-
-        let reference = variant.get("$ref").and_then(Value::as_str)?;
-        let name = reference.strip_prefix("#/definitions/")?;
-        let name = name.split('/').next().unwrap_or(name);
-        let target = definitions.get(name)?;
-        method_literal_from_variant(target, definitions)
-    }
 
     #[test]
     fn generated_ts_optional_nullable_fields_only_in_params() -> Result<()> {
@@ -2214,6 +2189,28 @@ mod tests {
             client_request_ts.contains("MockExperimentalMethodParams"),
             false
         );
+        const LEGACY_ACCOUNT_USAGE_REQUEST: &str = concat!(
+            "{ \"method\": \"account/usage/read\", id: RequestId, ",
+            "params?: GetAccountTokenUsageParams | undefined, }"
+        );
+        assert!(client_request_ts.contains(LEGACY_ACCOUNT_USAGE_REQUEST));
+        const LEGACY_ACCOUNT_RATE_LIMITS_REQUEST: &str = concat!(
+            "{ \"method\": \"account/rateLimits/read\", id: RequestId, ",
+            "params?: GetAccountRateLimitsParams | undefined, }"
+        );
+        assert!(client_request_ts.contains(LEGACY_ACCOUNT_RATE_LIMITS_REQUEST));
+        let account_usage_response_ts = std::str::from_utf8(
+            fixture_tree
+                .get(Path::new("v2/GetAccountTokenUsageResponse.ts"))
+                .ok_or_else(|| anyhow::anyhow!("missing account usage response fixture"))?,
+        )?;
+        assert!(account_usage_response_ts.contains("threadUsage?: ThreadUsage | null"));
+        let mcp_login_completion_ts = std::str::from_utf8(
+            fixture_tree
+                .get(Path::new("v2/McpServerOauthLoginCompletedNotification.ts"))
+                .ok_or_else(|| anyhow::anyhow!("missing MCP login completion fixture"))?,
+        )?;
+        assert!(mcp_login_completion_ts.contains("loginId?: string | null"));
         let server_request_ts = std::str::from_utf8(
             fixture_tree
                 .get(Path::new("ServerRequest.ts"))
@@ -2286,7 +2283,16 @@ mod tests {
                 });
 
             let contents = std::str::from_utf8(contents)?;
-            if contents.contains("| undefined") {
+            // Both stable usage RPCs originally required `params: undefined`. Preserve that
+            // source compatibility only for these exact envelopes, not arbitrary new fields.
+            let checked_contents = if path == Path::new("ClientRequest.ts") {
+                contents
+                    .replace(LEGACY_ACCOUNT_USAGE_REQUEST, "")
+                    .replace(LEGACY_ACCOUNT_RATE_LIMITS_REQUEST, "")
+            } else {
+                contents.to_owned()
+            };
+            if checked_contents.contains("| undefined") {
                 undefined_offenders.push(path.clone());
             }
 
@@ -2398,9 +2404,18 @@ mod tests {
 
                 // If the last non-whitespace before ':' is '?', then this is an
                 // optional field with a nullable type (i.e., "?: T | null").
-                // These are only allowed in *Params types.
+                // These are only allowed in *Params types, except additive stable fields
+                // that older servers omit and newer servers may return as null.
+                let legacy_optional_nullable_field = (path
+                    == Path::new("v2/GetAccountTokenUsageResponse.ts")
+                    && field_prefix.trim() == "threadUsage?")
+                    || (path == Path::new("v2/McpServerOauthLoginCompletedNotification.ts")
+                        && field_prefix.trim() == "loginId?")
+                    || (path == Path::new("v2/MisalignmentErrorDetails.ts")
+                        && field_prefix.trim() == "reviewTarget?");
                 if field_prefix.chars().rev().find(|c| !c.is_whitespace()) == Some('?')
                     && !allow_optional_nullable
+                    && !legacy_optional_nullable_field
                 {
                     let line_number =
                         contents[..abs_idx].chars().filter(|c| *c == '\n').count() + 1;
@@ -2437,70 +2452,6 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn collab_wait_required_nullable_contract_is_consistent() -> Result<()> {
-        let item = v2::ThreadItem::CollabAgentToolCall {
-            id: "call-wait".to_string(),
-            tool: v2::CollabAgentTool::Wait,
-            status: v2::CollabAgentToolCallStatus::Completed,
-            sender_thread_id: "sender".to_string(),
-            receiver_thread_ids: Vec::new(),
-            prompt: None,
-            model: None,
-            reasoning_effort: None,
-            requested_model: None,
-            requested_reasoning_effort: None,
-            effective_model: None,
-            effective_reasoning_effort: None,
-            agents_states: HashMap::new(),
-            wake_notifications: None,
-            completion_reason: None,
-            wake_cause: None,
-        };
-        let wire = serde_json::to_value(item)?;
-        assert_eq!(wire["wakeNotifications"], Value::Null);
-        assert_eq!(wire["completionReason"], Value::Null);
-
-        let schema_root = schema_root()?;
-        let bundle =
-            read_json_value(&schema_root.join("json/codex_app_server_protocol.v2.schemas.json"))?;
-        let thread_item = &bundle["definitions"]["ThreadItem"];
-        let collab = thread_item["oneOf"]
-            .as_array()
-            .and_then(|variants| {
-                variants
-                    .iter()
-                    .find(|variant| variant["properties"]["type"]["const"] == "collabAgentToolCall")
-            })
-            .context("collabAgentToolCall schema variant should exist")?;
-        let required = collab["required"]
-            .as_array()
-            .context("collab schema required list should exist")?;
-        assert!(required.iter().any(|field| field == "wakeNotifications"));
-        assert!(required.iter().any(|field| field == "completionReason"));
-        assert!(
-            collab["properties"]["wakeNotifications"]["type"]
-                .as_array()
-                .is_some_and(|types| types.iter().any(|ty| ty == "null"))
-        );
-        assert!(
-            collab["properties"]["completionReason"]["anyOf"]
-                .as_array()
-                .is_some_and(|variants| variants.iter().any(|variant| variant["type"] == "null"))
-        );
-
-        let typescript_fixtures = read_schema_fixture_subtree(&schema_root, "typescript")?;
-        let thread_item_ts =
-            std::str::from_utf8(&typescript_fixtures[Path::new("v2/ThreadItem.ts")])?;
-        assert!(!thread_item_ts.contains("wakeNotifications?:"));
-        assert!(!thread_item_ts.contains("completionReason?:"));
-        assert!(
-            thread_item_ts.contains("wakeNotifications: Array<AgentNotificationSummary> | null")
-        );
-        assert!(thread_item_ts.contains("completionReason: CollabWaitingCompletionReason | null"));
-        Ok(())
-    }
-
     fn schema_root() -> Result<PathBuf> {
         let typescript_index = codex_utils_cargo_bin::find_resource!("schema/typescript/index.ts")
             .context("resolve TypeScript schema index.ts")?;
@@ -2514,28 +2465,27 @@ mod tests {
 
     #[test]
     fn generate_ts_with_experimental_api_retains_experimental_entries() -> Result<()> {
-        let ts_config = ts_rs::Config::default();
-        let client_request_ts = ClientRequest::export_to_string(&ts_config)?;
+        let client_request_ts = ClientRequest::export_to_string()?;
         assert_eq!(client_request_ts.contains("mock/experimentalMethod"), true);
         assert_eq!(
             client_request_ts.contains("MockExperimentalMethodParams"),
             true
         );
         assert_eq!(
-            v2::MockExperimentalMethodParams::export_to_string(&ts_config)?
+            v2::MockExperimentalMethodParams::export_to_string()?
                 .contains("MockExperimentalMethodParams"),
             true
         );
         assert_eq!(
-            v2::MockExperimentalMethodResponse::export_to_string(&ts_config)?
+            v2::MockExperimentalMethodResponse::export_to_string()?
                 .contains("MockExperimentalMethodResponse"),
             true
         );
 
-        let thread_start_ts = v2::ThreadStartParams::export_to_string(&ts_config)?;
+        let thread_start_ts = v2::ThreadStartParams::export_to_string()?;
         assert_eq!(thread_start_ts.contains("mockExperimentalField"), true);
         let command_execution_request_approval_ts =
-            v2::CommandExecutionRequestApprovalParams::export_to_string(&ts_config)?;
+            v2::CommandExecutionRequestApprovalParams::export_to_string()?;
         assert_eq!(
             command_execution_request_approval_ts.contains("additionalPermissions"),
             true
@@ -2650,70 +2600,6 @@ mod tests {
         );
 
         Ok(())
-    }
-
-    #[test]
-    fn build_schema_bundle_rewrites_draft_2020_refs_to_draft_7() -> Result<()> {
-        let bundle = build_schema_bundle(vec![GeneratedSchema {
-            namespace: None,
-            logical_name: "Draft2020Envelope".to_string(),
-            in_v1_dir: false,
-            value: serde_json::json!({
-                "$schema": "https://json-schema.org/draft/2020-12/schema",
-                "title": "Draft2020Envelope",
-                "type": "object",
-                "properties": {
-                    "helper": { "$ref": "#/$defs/Helper" }
-                },
-                "required": ["helper"],
-                "$defs": {
-                    "Helper": { "type": "string" }
-                }
-            }),
-        }])?;
-
-        assert_eq!(
-            bundle,
-            serde_json::json!({
-                "$schema": "http://json-schema.org/draft-07/schema#",
-                "title": "CodexAppServerProtocol",
-                "type": "object",
-                "definitions": {
-                    "Draft2020Envelope": {
-                        "$schema": "https://json-schema.org/draft/2020-12/schema",
-                        "title": "Draft2020Envelope",
-                        "type": "object",
-                        "properties": {
-                            "helper": { "$ref": "#/definitions/Helper" }
-                        },
-                        "required": ["helper"]
-                    },
-                    "Helper": { "type": "string" }
-                }
-            })
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn referenced_definitions_check_rejects_missing_namespaced_target() {
-        let schema = serde_json::json!({
-            "definitions": {
-                "Envelope": { "$ref": "#/definitions/v2/MissingType" },
-                "v2": {
-                    "ExistingType": { "type": "string" }
-                }
-            }
-        });
-
-        let error = ensure_referenced_definitions_present(&schema, "test")
-            .expect_err("reject unresolved namespaced reference");
-
-        assert_eq!(
-            error.to_string(),
-            "test schema has unresolved definition references: #/definitions/v2/MissingType"
-        );
     }
 
     #[test]
@@ -3058,23 +2944,6 @@ permissionProfile?: string | null};
     }
 
     #[test]
-    fn stable_schema_filter_removes_nested_experimental_fields_from_client_request_bundle()
-    -> Result<()> {
-        let output_dir = std::env::temp_dir().join(format!("codex_schema_{}", Uuid::now_v7()));
-        fs::create_dir(&output_dir)?;
-        let schema =
-            write_json_schema_with_return::<crate::ClientRequest>(&output_dir, "ClientRequest")?;
-        let mut bundle = build_schema_bundle(vec![schema])?;
-        filter_experimental_schema(&mut bundle)?;
-
-        let bundle_str = serde_json::to_string(&bundle)?;
-        assert_eq!(bundle_str.contains("mockExperimentalField"), false);
-        assert_eq!(bundle_str.contains("additionalPermissions"), false);
-        let _cleanup = fs::remove_dir_all(&output_dir);
-        Ok(())
-    }
-
-    #[test]
     fn generate_json_filters_experimental_fields_and_methods() -> Result<()> {
         let output_dir = std::env::temp_dir().join(format!("codex_schema_{}", Uuid::now_v7()));
         fs::create_dir(&output_dir)?;
@@ -3133,8 +3002,18 @@ permissionProfile?: string | null};
         let definitions = flat_v2_bundle["definitions"]
             .as_object()
             .expect("flat v2 bundle should include definitions");
-        let client_request_methods =
-            one_of_method_literals(&definitions["ClientRequest"], definitions);
+        let client_request_methods: BTreeSet<String> = definitions["ClientRequest"]["oneOf"]
+            .as_array()
+            .expect("flat v2 ClientRequest should remain a oneOf")
+            .iter()
+            .filter_map(|variant| {
+                variant["properties"]["method"]["enum"]
+                    .as_array()
+                    .and_then(|values| values.first())
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .collect();
         let missing_client_request_methods: Vec<String> = [
             "account/logout",
             "account/rateLimits/read",
@@ -3148,8 +3027,19 @@ permissionProfile?: string | null};
         .map(str::to_string)
         .collect();
         assert_eq!(missing_client_request_methods, Vec::<String>::new());
-        let server_notification_methods =
-            one_of_method_literals(&definitions["ServerNotification"], definitions);
+        let server_notification_methods: BTreeSet<String> =
+            definitions["ServerNotification"]["oneOf"]
+                .as_array()
+                .expect("flat v2 ServerNotification should remain a oneOf")
+                .iter()
+                .filter_map(|variant| {
+                    variant["properties"]["method"]["enum"]
+                        .as_array()
+                        .and_then(|values| values.first())
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+                .collect();
         let missing_server_notification_methods: Vec<String> = [
             "fuzzyFileSearch/sessionCompleted",
             "fuzzyFileSearch/sessionUpdated",

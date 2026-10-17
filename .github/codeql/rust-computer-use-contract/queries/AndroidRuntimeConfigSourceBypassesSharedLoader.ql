@@ -22,7 +22,7 @@ predicate cfgTestMeta(Meta meta) {
 }
 
 predicate inlineRustTestModule(Module modItem) {
-  cfgTestMeta(modItem.getAnAttr().getMeta()) or
+  cfgTestMeta(modItem.getAnAttr().(Attr).getMeta()) or
   modItem.getName().getText() = "tests"
 }
 

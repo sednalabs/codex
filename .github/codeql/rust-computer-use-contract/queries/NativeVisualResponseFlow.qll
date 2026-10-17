@@ -285,10 +285,153 @@ predicate responseContentItemsClearAfterGuard(
   )
 }
 
+/** A bounded, local write of the supplied diagnostic into the supplied content. */
+predicate helperItemsReceiver(Function helper, Expr receiver) {
+  exists(Variable items |
+    items.getParameter() = helper.getParam(0) and responseVariableExpr(receiver, items)
+  )
+}
+
+/** The mutable text binding extracted directly from the supplied first item. */
+predicate helperTextReceiver(Function helper, Expr receiver) {
+  exists(LetExpr binding, MethodCallExpr first, StructPatField field, Variable text |
+    binding.getEnclosingCallable() = helper and
+    binding.getScrutinee() = first and
+    first.getIdentifier().getText() = "first_mut" and
+    helperItemsReceiver(helper, first.getReceiver()) and
+    field.getParentNode*() = binding.getPat() and
+    field.getFieldName() = "text" and
+    field.getPat() = text.getPat() and
+    responseVariableExpr(receiver, text)
+  )
+}
+
 /**
- * Keep helper recognition body-backed.  The guard must still force a failed
- * response when image output is absent; naming a function alone is not enough.
+ * Follow the supplied diagnostic through value-preserving local steps and only
+ * the two string conversions used by the current append helper. This does not
+ * treat arbitrary taint propagation or an unrelated string as retained detail.
  */
+predicate helperDiagnosticValue(Function helper, DataFlow::Node node) {
+  node.asParameter() = helper.getParam(1)
+  or
+  exists(DataFlow::Node previous |
+    helperDiagnosticValue(helper, previous) and DataFlow::localFlowStep(previous, node)
+  )
+  or
+  exists(MethodCallExpr conversion, DataFlow::ExprNode receiver |
+    conversion.getEnclosingCallable() = helper and
+    conversion.getIdentifier().getText() = ["trim", "to_string"] and
+    receiver.asExpr() = conversion.getReceiver() and
+    helperDiagnosticValue(helper, receiver) and
+    node.asExpr() = conversion
+  )
+}
+
+predicate helperDetailMutation(Function helper, MethodCallExpr mutation) {
+  exists(DataFlow::ExprNode text |
+    mutation.getEnclosingCallable() = helper and
+    (
+      mutation.getIdentifier().getText() = "push_str" and
+      helperTextReceiver(helper, mutation.getReceiver()) and
+      text.asExpr() = mutation.getPositionalArgument(0)
+      or
+      helperItemsReceiver(helper, mutation.getReceiver()) and
+      exists(Expr item |
+        (
+          mutation.getIdentifier().getText() = "insert" and
+          item = mutation.getPositionalArgument(1)
+          or
+          mutation.getIdentifier().getText() = "push" and
+          item = mutation.getPositionalArgument(0)
+        ) and
+        (
+          text.asExpr() = item or
+          text.asExpr() = item.(StructExpr).getFieldExpr("text").getExpr()
+        )
+      )
+    ) and
+    helperDiagnosticValue(helper, text)
+  )
+}
+
+/** Reachability that deliberately stops at a message-bearing content write. */
+predicate detailFreeReachable(Function helper, CfgNode node) {
+  node.getEnclosingCallable() = helper and
+  not exists(MethodCallExpr mutation |
+    helperDetailMutation(helper, mutation) and node = mutation.getACfgNode()
+  ) and
+  (
+    not exists(node.getAPredecessor()) or
+    detailFreeReachable(helper, node.getAPredecessor())
+  )
+}
+
+/**
+ * Trust only the small current append helper vocabulary. Unknown calls and
+ * assignments fail closed, including clear, replacement, detached clones and
+ * arbitrary mutable borrows. No interprocedural mutation summary is inferred.
+ */
+predicate helperOperationKnown(Function helper, Call call) {
+  exists(MethodCallExpr method |
+    call = method and
+    (
+      helperDetailMutation(helper, method) or
+      method.getIdentifier().getText() = "first_mut" and
+      helperItemsReceiver(helper, method.getReceiver()) or
+      exists(DataFlow::ExprNode receiver |
+        receiver.asExpr() = method.getReceiver() and
+        helperDiagnosticValue(helper, receiver) and
+        method.getIdentifier().getText() = ["trim", "to_string"]
+      )
+    )
+  )
+}
+
+predicate helperRetainsFailureDetail(Function helper) {
+  exists(MethodCallExpr mutation | helperDetailMutation(helper, mutation)) and
+  not exists(AssignmentExpr assignment | assignment.getEnclosingCallable() = helper) and
+  not exists(Call call |
+    call.getEnclosingCallable() = helper and not helperOperationKnown(helper, call)
+  ) and
+  not exists(CfgNode exit |
+    exit.getEnclosingCallable() = helper and
+    not exists(exit.getASuccessor()) and
+    detailFreeReachable(helper, exit)
+  )
+}
+
+predicate guardWritesFailureDetail(
+  Function target, AssignmentExpr successWrite, FieldExpr successField
+) {
+  exists(AssignmentExpr errorWrite, FieldExpr errorField |
+    errorWrite.getEnclosingCallable() = target and
+    errorWrite.getLhs() = errorField and
+    errorField.hasIdentifier() and
+    errorField.getIdentifier().getText() = "error"
+  ) or
+  exists(
+    Call diagnostic, Function helper, RefExpr borrow, FieldExpr contentItems,
+    Variable responseVariable
+  |
+    diagnostic.getEnclosingCallable() = target and
+    helper = diagnostic.getStaticTarget() and
+    helper.getName().getText() = "append_text" and
+    helper.getFile() = target.getFile() and
+    diagnostic.getPositionalArgument(0) = borrow and
+    borrow.getExpr() = contentItems and
+    contentItems.hasContainer() and
+    contentItems.hasIdentifier() and
+    contentItems.getIdentifier().getText() = "content_items" and
+    responseVariableExpr(contentItems.getContainer(), responseVariable) and
+    successField.hasContainer() and
+    responseVariableExpr(successField.getContainer(), responseVariable) and
+    // Every helper completion must retain the actual diagnostic in the actual
+    // content, and the call must precede the failed-success write.
+    helperRetainsFailureDetail(helper) and
+    nodeBefore(diagnostic.getACfgNode(), successWrite.getACfgNode())
+  )
+}
+
 predicate guardBodyDowngrades(Call guard) {
   exists(Function target |
     visualGuardTarget(guard, target) and
@@ -303,13 +446,8 @@ predicate guardBodyDowngrades(Call guard) {
           successField.hasIdentifier() and
           successField.getIdentifier().getText() = "success" and
           falseValue = successWrite.getRhs() and
-          falseValue.getTextValue() = "false"
-        ) and
-        exists(AssignmentExpr errorWrite, FieldExpr errorField |
-          errorWrite.getEnclosingCallable() = target and
-          errorWrite.getLhs() = errorField and
-          errorField.hasIdentifier() and
-          errorField.getIdentifier().getText() = "error"
+          falseValue.getTextValue() = "false" and
+          guardWritesFailureDetail(target, successWrite, successField)
         )
       )
     )

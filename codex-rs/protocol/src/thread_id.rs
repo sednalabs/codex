@@ -1,9 +1,8 @@
-use std::borrow::Cow;
 use std::fmt::Display;
 
 use schemars::JsonSchema;
-use schemars::Schema;
-use schemars::SchemaGenerator;
+use schemars::r#gen::SchemaGenerator;
+use schemars::schema::Schema;
 use serde::Deserialize;
 use serde::Serialize;
 use ts_rs::TS;
@@ -18,10 +17,24 @@ pub struct ThreadId {
     pub(crate) uuid: Uuid,
 }
 
+/// Identifier encoded in a rollout filename.
+///
+/// Rollout IDs use the same UUID representation as thread IDs. Ordinary rollout files use the
+/// thread ID as their rollout ID; \`thread/revert\` creates a new rollout file with a distinct
+/// rollout ID while preserving the thread ID.
+pub type RolloutId = ThreadId;
+
 impl ThreadId {
     pub fn new() -> Self {
         Self {
             uuid: Uuid::now_v7(),
+        }
+    }
+
+    /// Construct an identifier from a UUID's 128-bit representation.
+    pub fn from_u128(value: u128) -> Self {
+        Self {
+            uuid: Uuid::from_u128(value),
         }
     }
 
@@ -87,8 +100,8 @@ impl<'de> Deserialize<'de> for ThreadId {
 }
 
 impl JsonSchema for ThreadId {
-    fn schema_name() -> Cow<'static, str> {
-        "ThreadId".into()
+    fn schema_name() -> String {
+        "ThreadId".to_string()
     }
 
     fn json_schema(generator: &mut SchemaGenerator) -> Schema {
@@ -99,6 +112,7 @@ impl JsonSchema for ThreadId {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn test_thread_id_default_is_not_zeroes() {
         let id = ThreadId::default();

@@ -2,69 +2,49 @@ name: cargo-deny
 
 on:
   workflow_call:
-    inputs:
-      run_cargo_deny:
-        description: Run dependency policy validation for this change.
-        required: false
-        type: boolean
-        default: true
-
-permissions:
-  contents: read
 
 jobs:
   cargo-deny:
-    if: ${{ inputs.run_cargo_deny }}
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: ./codex-rs
     steps:
       - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
       - uses: ./.github/actions/setup-ci
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582
-        with:
-          toolchain: 1.96.0
+        uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
 
       - name: Run cargo-deny
         uses: EmbarkStudios/cargo-deny-action@82eb9f621fbc699dd0918f3ea06864c14cc84246 # v2
         with:
-          rust-version: 1.96.0
+          rust-version: 1.95.0
           manifest-path: ./codex-rs/Cargo.toml
+
+      - name: Detect generated Cargo lockfile
+        id: cargo_lockfile
+        if: always() && !cancelled()
+        run: |
+          if git diff --quiet -- Cargo.lock; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload generated Cargo lockfile
+        if: ${{ always() && !cancelled() && steps.cargo_lockfile.outputs.changed == 'true' }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: generated-cargo-lock-${{ github.run_id }}-${{ github.run_attempt }}
+          path: codex-rs/Cargo.lock
+          if-no-files-found: error
+          retention-days: 3
 
       - name: Check for a clean worktree
         if: always() && !cancelled()
         uses: ./.github/actions/check-clean-worktree
-
-  required:
-    name: cargo-deny required gate
-    if: ${{ always() }}
-    needs: cargo-deny
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Require selected dependency policy lane
-        shell: bash
-        env:
-          RUN_CARGO_DENY: ${{ inputs.run_cargo_deny }}
-          RESULT: ${{ needs.cargo-deny.result }}
-        run: |
-          set -euo pipefail
-          if [[ "${RUN_CARGO_DENY}" == "true" ]]; then
-            [[ "${RESULT}" == "success" ]] || {
-              echo "cargo-deny was required but concluded: ${RESULT}" >&2
-              exit 1
-            }
-          else
-            [[ "${RESULT}" == "skipped" ]] || {
-              echo "cargo-deny was not selected but concluded unexpectedly: ${RESULT}" >&2
-              exit 1
-            }
-            echo "cargo-deny not applicable to this change."
-          fi

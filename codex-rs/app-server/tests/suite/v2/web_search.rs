@@ -161,6 +161,7 @@ async fn assert_standalone_web_search_round_trips_output(
 
     let turn_req = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread_id.clone(),
             client_user_message_id: None,
             input: vec![V2UserInput::Text {

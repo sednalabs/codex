@@ -1,11 +1,14 @@
 {
-  "$defs": {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
     "Account": {
       "oneOf": [
         {
           "properties": {
             "type": {
-              "const": "apiKey",
+              "enum": [
+                "apiKey"
+              ],
               "title": "ApiKeyAccountType",
               "type": "string"
             }
@@ -25,18 +28,20 @@
               ]
             },
             "planType": {
-              "$ref": "#/$defs/PlanType"
+              "$ref": "#/definitions/PlanType"
             },
             "type": {
-              "const": "chatgpt",
+              "enum": [
+                "chatgpt"
+              ],
               "title": "ChatgptAccountType",
               "type": "string"
             }
           },
           "required": [
-            "type",
             "email",
-            "planType"
+            "planType",
+            "type"
           ],
           "title": "ChatgptAccount",
           "type": "object"
@@ -44,7 +49,9 @@
         {
           "properties": {
             "type": {
-              "const": "amazonBedrock",
+              "enum": [
+                "amazonBedrock"
+              ],
               "title": "AmazonBedrockAccountType",
               "type": "string"
             },
@@ -61,6 +68,15 @@
         }
       ]
     },
+    "AccountRoutingOverride": {
+      "description": "Backend routing policy. Wire values match the accounts/check contract.",
+      "enum": [
+        "NO_CONSTRAINT",
+        "us",
+        "us_cr"
+      ],
+      "type": "string"
+    },
     "PlanType": {
       "enum": [
         "free",
@@ -68,24 +84,47 @@
         "plus",
         "pro",
         "prolite",
+        "promax",
         "team",
+        "self_serve_business_prolite",
         "self_serve_business_usage_based",
         "business",
         "ent26",
+        "enterprise_cbp_automation",
         "enterprise_cbp_usage_based",
         "enterprise",
         "edu",
+        "edu_plus",
+        "edu_pro",
         "unknown"
       ],
       "type": "string"
+    },
+    "WorkspaceRouting": {
+      "properties": {
+        "accountRoutingOverride": {
+          "$ref": "#/definitions/AccountRoutingOverride"
+        },
+        "backendOrigin": {
+          "type": "string"
+        },
+        "chatgptAccountId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "accountRoutingOverride",
+        "backendOrigin",
+        "chatgptAccountId"
+      ],
+      "type": "object"
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "account": {
       "anyOf": [
         {
-          "$ref": "#/$defs/Account"
+          "$ref": "#/definitions/Account"
         },
         {
           "type": "null"

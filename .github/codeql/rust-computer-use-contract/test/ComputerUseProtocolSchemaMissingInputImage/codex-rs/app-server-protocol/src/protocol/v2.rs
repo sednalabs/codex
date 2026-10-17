@@ -6,9 +6,7 @@ struct CoreComputerUseOutputContentItem;
 
 fn from(item: ComputerUseCallOutputContentItem) -> CoreComputerUseOutputContentItem {
     match item {
-        ComputerUseCallOutputContentItem::InputText { text: _ } => {
-            CoreComputerUseOutputContentItem
-        }
+        ComputerUseCallOutputContentItem::InputText { text: _ } => CoreComputerUseOutputContentItem,
         _ => CoreComputerUseOutputContentItem,
     }
 }

@@ -9,7 +9,6 @@ use codex_app_server_protocol::AttestationGenerateResponse;
 use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::InitializeCapabilities;
 use codex_app_server_protocol::JSONRPCMessage;
-use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::ThreadStartParams;
@@ -25,6 +24,7 @@ use core_test_support::skip_if_no_network;
 use pretty_assertions::assert_eq;
 use std::path::Path;
 use tempfile::TempDir;
+use test_case::test_case;
 use tokio::time::Duration;
 use tokio::time::timeout;
 
@@ -32,31 +32,38 @@ const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(60);
 const ATTESTATION_HEADER: &str = "v1.integration-test";
 const APP_SERVER_ATTESTATION_HEADER: &str = r#"{"v":1,"s":0,"t":"v1.integration-test"}"#;
 
+#[test_case(ThreadStartParams::default(); "persistent")]
+#[test_case(ThreadStartParams { ephemeral: Some(true), ..Default::default() }; "ephemeral")]
 #[tokio::test]
-async fn attestation_generate_round_trip_adds_header_to_responses_websocket_handshake() -> Result<()>
-{
+async fn attestation_generate_round_trip_adds_header_to_responses_websocket_handshake(
+    thread_start_params: ThreadStartParams,
+) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
-    let websocket_server = start_websocket_server_with_headers(vec![WebSocketConnectionConfig {
-        requests: vec![
-            vec![
+    let websocket_server = start_websocket_server_with_headers(vec![
+        WebSocketConnectionConfig {
+            requests: vec![vec![
                 responses::ev_response_created("warm-1"),
                 responses::ev_completed("warm-1"),
-            ],
-            vec![
+            ]],
+            response_headers: Vec::new(),
+            accept_delay: None,
+            close_after_requests: true,
+        },
+        WebSocketConnectionConfig {
+            requests: vec![vec![
                 responses::ev_response_created("resp-1"),
                 responses::ev_assistant_message("msg-1", "Done"),
                 responses::ev_completed("resp-1"),
-            ],
-        ],
-        response_headers: Vec::new(),
-        accept_delay: None,
-        close_after_requests: true,
-    }])
+            ]],
+            response_headers: Vec::new(),
+            accept_delay: None,
+            close_after_requests: true,
+        },
+    ])
     .await;
 
     let codex_home = TempDir::new()?;
-    write_models_cache(codex_home.path())?;
     create_chatgpt_websocket_config(
         codex_home.path(),
         &websocket_server.uri().replacen("ws://", "http://", 1),
@@ -66,6 +73,7 @@ async fn attestation_generate_round_trip_adds_header_to_responses_websocket_hand
         ChatGptAuthFixture::new("access-chatgpt").plan_type("pro"),
         AuthCredentialsStoreMode::File,
     )?;
+    write_models_cache(codex_home.path()).await?;
 
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.path())
@@ -81,10 +89,12 @@ async fn attestation_generate_round_trip_adds_header_to_responses_websocket_hand
                 version: "0.1.0".to_string(),
             },
             Some(InitializeCapabilities {
+                explicit_gateway_oauth: false,
                 experimental_api: true,
                 request_attestation: true,
                 opt_out_notification_methods: None,
                 mcp_server_openai_form_elicitation: false,
+                extensions: None,
             }),
         ),
     )
@@ -94,37 +104,41 @@ async fn attestation_generate_round_trip_adds_header_to_responses_websocket_hand
     };
 
     let thread_request_id = mcp
-        .send_thread_start_request_with_auto_env(ThreadStartParams::default())
+        .send_thread_start_request_with_auto_env(thread_start_params)
         .await?;
-    let thread_response: JSONRPCResponse = timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(thread_request_id)),
-    )
-    .await??;
-    let ThreadStartResponse { thread, .. } = to_response(thread_response)?;
-
-    let turn_request_id = mcp
-        .send_turn_start_request(TurnStartParams {
-            thread_id: thread.id,
-            client_user_message_id: None,
-            input: vec![V2UserInput::Text {
-                text: "Hello".to_string(),
-                text_elements: Vec::new(),
-            }],
-            ..Default::default()
-        })
-        .await?;
-    let turn_response: JSONRPCResponse = timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(turn_request_id)),
-    )
-    .await??;
-    let _: TurnStartResponse = to_response(turn_response)?;
-
+    let mut turn_request_id = None;
+    let mut turn_started = false;
+    let mut turn_completed = false;
     let mut attestation_requests = 0;
+    // Prewarming can request attestation before thread/start or turn/start responds.
+    // Service those requests immediately instead of buffering them behind RPC responses.
     timeout(DEFAULT_READ_TIMEOUT, async {
         loop {
             match mcp.read_next_message().await? {
+                JSONRPCMessage::Response(response)
+                    if response.id == RequestId::Integer(thread_request_id) =>
+                {
+                    let ThreadStartResponse { thread, .. } = to_response(response)?;
+                    turn_request_id = Some(RequestId::Integer(
+                        mcp.send_turn_start_request(TurnStartParams {
+                            automatic_turn_continuation: None,
+                            thread_id: thread.id,
+                            client_user_message_id: None,
+                            input: vec![V2UserInput::Text {
+                                text: "Hello".to_string(),
+                                text_elements: Vec::new(),
+                            }],
+                            ..Default::default()
+                        })
+                        .await?,
+                    ));
+                }
+                JSONRPCMessage::Response(response)
+                    if turn_request_id.as_ref() == Some(&response.id) =>
+                {
+                    let _: TurnStartResponse = to_response(response)?;
+                    turn_started = true;
+                }
                 JSONRPCMessage::Request(request) => {
                     let request = ServerRequest::try_from(request)?;
                     let ServerRequest::AttestationGenerate { request_id, .. } = request else {
@@ -134,7 +148,7 @@ async fn attestation_generate_round_trip_adds_header_to_responses_websocket_hand
                     mcp.send_response(
                         request_id,
                         serde_json::to_value(AttestationGenerateResponse {
-                            token: ATTESTATION_HEADER.to_string(),
+                            token: ATTESTATION_HEADER.into(),
                         })?,
                     )
                     .await?;
@@ -142,9 +156,12 @@ async fn attestation_generate_round_trip_adds_header_to_responses_websocket_hand
                 JSONRPCMessage::Notification(notification)
                     if notification.method == "turn/completed" =>
                 {
-                    break Ok(());
+                    turn_completed = true;
                 }
                 _ => {}
+            }
+            if turn_started && turn_completed {
+                break Ok(());
             }
         }
     })
@@ -153,14 +170,17 @@ async fn attestation_generate_round_trip_adds_header_to_responses_websocket_hand
 
     assert!(
         websocket_server
-            .wait_for_handshakes(/*expected*/ 1, DEFAULT_READ_TIMEOUT)
+            .wait_for_handshakes(/*expected*/ 2, DEFAULT_READ_TIMEOUT)
             .await
     );
-    let handshake = websocket_server.single_handshake();
-    assert_eq!(
-        handshake.header("x-oai-attestation").as_deref(),
-        Some(APP_SERVER_ATTESTATION_HEADER)
-    );
+    let handshakes = websocket_server.handshakes();
+    assert_eq!(handshakes.len(), 2);
+    for handshake in handshakes {
+        assert_eq!(
+            handshake.header("x-oai-attestation").as_deref(),
+            Some(APP_SERVER_ATTESTATION_HEADER)
+        );
+    }
 
     websocket_server.shutdown().await;
     Ok(())

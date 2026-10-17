@@ -80,6 +80,7 @@ impl PendingInteractiveReplayState {
             AppCommand::ExecApproval { .. }
                 | AppCommand::PatchApproval { .. }
                 | AppCommand::ResolveElicitation { .. }
+                | AppCommand::ResolveUserVerification { .. }
                 | AppCommand::RequestPermissionsResponse { .. }
                 | AppCommand::UserInputAnswer { .. }
         )
@@ -113,6 +114,11 @@ impl PendingInteractiveReplayState {
                     .retain(|_, pending| !matches!(pending, PendingInteractiveRequest::PatchApproval { item_id, .. } if item_id == id));
             }
             AppCommand::ResolveElicitation {
+                server_name,
+                request_id,
+                ..
+            }
+            | AppCommand::ResolveUserVerification {
                 server_name,
                 request_id,
                 ..
@@ -609,6 +615,7 @@ mod tests {
         ServerRequest::CommandExecutionRequestApproval {
             request_id: AppServerRequestId::Integer(2),
             params: CommandExecutionRequestApprovalParams {
+                kind: Default::default(),
                 thread_id: "thread-1".to_string(),
                 turn_id: turn_id.to_string(),
                 item_id: call_id.to_string(),
@@ -665,18 +672,17 @@ mod tests {
 
     fn turn_completed(turn_id: &str) -> ServerNotification {
         ServerNotification::TurnCompleted(TurnCompletedNotification {
-            final_model: None,
-            model_snapshot: None,
             thread_id: "thread-1".to_string(),
             turn: Turn {
                 id: turn_id.to_string(),
+                root_turn_id: None,
                 items_view: codex_app_server_protocol::TurnItemsView::Full,
                 items: Vec::new(),
                 status: TurnStatus::Completed,
                 error: None,
                 started_at: None,
-                completed_at: None,
-                duration_ms: None,
+                completed_at: Some(0),
+                duration_ms: Some(1),
             },
         })
     }
@@ -705,8 +711,12 @@ mod tests {
         assert_eq!(snapshot.events.len(), 1);
         assert!(matches!(
             snapshot.events.first(),
-            Some(ThreadBufferedEvent::Request(ServerRequest::ToolRequestUserInput { params, .. }))
-                if params.item_id == "call-1"
+            Some(ThreadBufferedEvent::Request(request))
+                if matches!(
+                    request.as_ref(),
+                    ServerRequest::ToolRequestUserInput { params, .. }
+                        if params.item_id == "call-1"
+                )
         ));
     }
 
@@ -741,7 +751,11 @@ mod tests {
             snapshot.events.iter().all(|event| {
                 !matches!(
                     event,
-                    ThreadBufferedEvent::Request(ServerRequest::ToolRequestUserInput { .. })
+                    ThreadBufferedEvent::Request(request)
+                        if matches!(
+                            request.as_ref(),
+                            ServerRequest::ToolRequestUserInput { .. }
+                        )
                 )
             }),
             "server-resolved request_user_input prompt should not replay on thread switch"
@@ -786,9 +800,11 @@ mod tests {
             snapshot.events.iter().all(|event| {
                 !matches!(
                     event,
-                    ThreadBufferedEvent::Request(
-                        ServerRequest::CommandExecutionRequestApproval { .. }
-                    )
+                    ThreadBufferedEvent::Request(request)
+                        if matches!(
+                            request.as_ref(),
+                            ServerRequest::CommandExecutionRequestApproval { .. }
+                        )
                 )
             }),
             "server-resolved exec approval prompt should not replay on thread switch"
@@ -813,8 +829,12 @@ mod tests {
         assert_eq!(snapshot.events.len(), 1);
         assert!(matches!(
             snapshot.events.first(),
-            Some(ThreadBufferedEvent::Request(ServerRequest::ToolRequestUserInput { params, .. }))
-                if params.item_id == "call-2"
+            Some(ThreadBufferedEvent::Request(request))
+                if matches!(
+                    request.as_ref(),
+                    ServerRequest::ToolRequestUserInput { params, .. }
+                        if params.item_id == "call-2"
+                )
         ));
     }
 
@@ -835,8 +855,12 @@ mod tests {
         assert_eq!(snapshot.events.len(), 1);
         assert!(matches!(
             snapshot.events.first(),
-            Some(ThreadBufferedEvent::Request(ServerRequest::ToolRequestUserInput { params, .. }))
-                if params.item_id == "call-2"
+            Some(ThreadBufferedEvent::Request(request))
+                if matches!(
+                    request.as_ref(),
+                    ServerRequest::ToolRequestUserInput { params, .. }
+                        if params.item_id == "call-2"
+                )
         ));
     }
 
@@ -872,31 +896,53 @@ mod tests {
         assert!(snapshot.events.iter().all(|event| {
             !matches!(
                 event,
-                ThreadBufferedEvent::Request(ServerRequest::CommandExecutionRequestApproval { .. })
-                    | ThreadBufferedEvent::Request(ServerRequest::FileChangeRequestApproval { .. })
+                ThreadBufferedEvent::Request(request)
+                    if matches!(
+                        request.as_ref(),
+                        ServerRequest::CommandExecutionRequestApproval { .. }
+                            | ServerRequest::FileChangeRequestApproval { .. }
+                    )
             )
         }));
     }
 
     #[test]
     fn thread_event_snapshot_drops_resolved_elicitation_after_outbound_resolution() {
-        let mut store = ThreadEventStore::new(/*capacity*/ 8);
         let request_id = AppServerRequestId::String("request-1".to_string());
-        store.push_request(elicitation_request("server-1", "request-1", "turn-1"));
-
-        store.note_outbound_op(&Op::ResolveElicitation {
-            server_name: "server-1".to_string(),
-            request_id,
-            decision: McpServerElicitationAction::Accept,
-            content: None,
-            meta: None,
-        });
-
-        let snapshot = store.snapshot();
-        assert!(
-            snapshot.events.is_empty(),
-            "resolved elicitation prompt should not replay on thread switch"
-        );
+        for response in [
+            Op::ResolveElicitation {
+                server_name: "server-1".to_string(),
+                request_id: request_id.clone(),
+                decision: McpServerElicitationAction::Accept,
+                content: None,
+                meta: None,
+            },
+            Op::ResolveUserVerification {
+                server_name: "server-1".to_string(),
+                request_id,
+                response: crate::app_command::UserVerificationResponse::Cancel,
+            },
+        ] {
+            let mut store = ThreadEventStore::new(/*capacity*/ 8);
+            let mut request = elicitation_request("server-1", "request-1", "turn-1");
+            if matches!(&response, Op::ResolveUserVerification { .. })
+                && let ServerRequest::McpServerElicitationRequest { params, .. } = &mut request
+            {
+                params.request = McpServerElicitationRequest::UserVerification {
+                    meta: None,
+                    title: "Verify".to_string(),
+                    description: "Approve deployment".to_string(),
+                    challenge: "AQID".to_string(),
+                };
+            }
+            store.push_request(request);
+            assert_eq!(store.snapshot().events.len(), 1);
+            store.note_outbound_op(&response);
+            assert!(
+                store.snapshot().events.is_empty(),
+                "resolved elicitation prompt should not replay on thread switch"
+            );
+        }
     }
 
     #[test]
@@ -938,7 +984,11 @@ mod tests {
         assert!(store.snapshot().events.iter().all(|event| {
             !matches!(
                 event,
-                ThreadBufferedEvent::Request(ServerRequest::CommandExecutionRequestApproval { .. })
+                ThreadBufferedEvent::Request(request)
+                    if matches!(
+                        request.as_ref(),
+                        ServerRequest::CommandExecutionRequestApproval { .. }
+                    )
             )
         }));
     }

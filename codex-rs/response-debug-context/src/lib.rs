@@ -19,10 +19,7 @@ pub struct ResponseDebugContext {
 pub fn extract_response_debug_context(transport: &TransportError) -> ResponseDebugContext {
     let mut context = ResponseDebugContext::default();
 
-    let TransportError::Http {
-        headers, body: _, ..
-    } = transport
-    else {
+    let TransportError::Http { headers, .. } = transport else {
         return context;
     };
 
@@ -55,7 +52,9 @@ pub fn extract_response_debug_context(transport: &TransportError) -> ResponseDeb
 
 pub fn extract_response_debug_context_from_api_error(error: &ApiError) -> ResponseDebugContext {
     match error {
-        ApiError::Transport(transport) => extract_response_debug_context(transport),
+        ApiError::Transport(transport) | ApiError::TransientAvailability(transport) => {
+            extract_response_debug_context(transport)
+        }
         _ => ResponseDebugContext::default(),
     }
 }
@@ -64,9 +63,12 @@ pub fn telemetry_transport_error_message(error: &TransportError) -> String {
     match error {
         TransportError::Http { status, .. } => format!("http {}", status.as_u16()),
         TransportError::RetryLimit => "retry limit reached".to_string(),
+        TransportError::ResponseTooLarge { .. } => "response body too large".to_string(),
         TransportError::Timeout => "timeout".to_string(),
+        TransportError::Connection(err) => err.to_string(),
         TransportError::Network(err) => err.to_string(),
         TransportError::Build(err) => err.to_string(),
+        TransportError::Policy(denied) => denied.to_string(),
         TransportError::AutomaticTurnContextChanged => {
             "automatic turn context changed before provider request".to_string()
         }
@@ -75,17 +77,28 @@ pub fn telemetry_transport_error_message(error: &TransportError) -> String {
 
 pub fn telemetry_api_error_message(error: &ApiError) -> String {
     match error {
-        ApiError::Transport(transport) => telemetry_transport_error_message(transport),
+        ApiError::Transport(transport) | ApiError::TransientAvailability(transport) => {
+            telemetry_transport_error_message(transport)
+        }
         ApiError::Api { status, .. } => format!("api error {}", status.as_u16()),
         ApiError::Stream(err) => err.to_string(),
+        ApiError::ContentFilter => {
+            "Incomplete response returned, reason: content_filter".to_string()
+        }
         ApiError::ContextWindowExceeded => "context window exceeded".to_string(),
         ApiError::QuotaExceeded => "quota exceeded".to_string(),
         ApiError::UsageNotIncluded => "usage not included".to_string(),
         ApiError::Retryable { .. } => "retryable error".to_string(),
+        ApiError::RateLimitExceeded { .. } => "rate limit exceeded".to_string(),
         ApiError::RateLimit(_) => "rate limit".to_string(),
-        ApiError::InvalidRequest { .. } => "invalid request".to_string(),
+        ApiError::InvalidRequest { .. } | ApiError::InvalidPrompt { .. } => {
+            "invalid request".to_string()
+        }
         ApiError::CyberPolicy { .. } => "cyber policy".to_string(),
-        ApiError::ServerOverloaded => "server overloaded".to_string(),
+        ApiError::BioPolicy { .. } => "bio policy".to_string(),
+        ApiError::MisalignmentPolicyViolation { .. } => "misalignment policy violation".to_string(),
+        ApiError::ServerOverloaded { .. } => "server overloaded".to_string(),
+        ApiError::FlexUnavailable => "flex capacity unavailable".to_string(),
     }
 }
 
@@ -93,6 +106,7 @@ pub fn telemetry_api_error_message(error: &ApiError) -> String {
 mod tests {
     use super::ResponseDebugContext;
     use super::extract_response_debug_context;
+    use super::extract_response_debug_context_from_api_error;
     use super::telemetry_api_error_message;
     use super::telemetry_transport_error_message;
     use codex_api::ApiError;
@@ -117,6 +131,7 @@ mod tests {
         );
 
         let context = extract_response_debug_context(&TransportError::Http {
+            retry_after: None,
             status: StatusCode::UNAUTHORIZED,
             url: Some("https://chatgpt.com/backend-api/codex/models".to_string()),
             headers: Some(headers),
@@ -135,8 +150,9 @@ mod tests {
     }
 
     #[test]
-    fn telemetry_error_messages_omit_http_bodies() {
+    fn telemetry_error_messages_omit_upstream_bodies() {
         let transport = TransportError::Http {
+            retry_after: None,
             status: StatusCode::UNAUTHORIZED,
             url: Some("https://chatgpt.com/backend-api/codex/responses".to_string()),
             headers: None,
@@ -148,12 +164,40 @@ mod tests {
             telemetry_api_error_message(&ApiError::Transport(transport)),
             "http 401"
         );
+        assert_eq!(
+            telemetry_api_error_message(&ApiError::RateLimitExceeded {
+                message: "private upstream diagnostic".to_string(),
+                retry_after: None,
+            }),
+            "rate limit exceeded"
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert("x-request-id", HeaderValue::from_static("req-capacity"));
+        headers.insert("cf-ray", HeaderValue::from_static("ray-capacity"));
+        let availability = ApiError::TransientAvailability(TransportError::Http {
+            retry_after: None,
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            url: Some("https://example.com/v1/responses".to_string()),
+            headers: Some(headers),
+            body: Some(
+                r#"{"error":{"type":"rate_limit_error","code":"slow_down","message":"secret upstream body"}}"#
+                    .to_string(),
+            ),
+        });
+        let context = extract_response_debug_context_from_api_error(&availability);
+        assert_eq!(context.request_id.as_deref(), Some("req-capacity"));
+        assert_eq!(context.cf_ray.as_deref(), Some("ray-capacity"));
+        let telemetry = telemetry_api_error_message(&availability);
+        assert_eq!(telemetry, "http 503");
+        assert!(!telemetry.contains("secret upstream body"));
     }
 
     #[test]
     fn telemetry_error_messages_preserve_non_http_details() {
         let network = TransportError::Network("dns lookup failed".to_string());
         let build = TransportError::Build("invalid header value".to_string());
+        let context_changed = TransportError::AutomaticTurnContextChanged;
         let stream = ApiError::Stream("socket closed".to_string());
 
         assert_eq!(
@@ -163,6 +207,10 @@ mod tests {
         assert_eq!(
             telemetry_transport_error_message(&build),
             "invalid header value"
+        );
+        assert_eq!(
+            telemetry_transport_error_message(&context_changed),
+            "automatic turn context changed before provider request"
         );
         assert_eq!(telemetry_api_error_message(&stream), "socket closed");
     }

@@ -15,10 +15,10 @@ workspace = true
 [dependencies]
 base64 = { workspace = true }
 codex-app-server-protocol = { workspace = true }
+codex-http-client = { workspace = true }
 codex-protocol = { workspace = true }
-codex-tools = { workspace = true }
 codex-utils-home-dir = { workspace = true }
-reqwest = { workspace = true, features = ["json"] }
+http = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["time"] }

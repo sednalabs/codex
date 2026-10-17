@@ -6,14 +6,19 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${repo_root}"
 
 windows_cross_compile=0
+query_args=(--output=label)
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --windows-cross-compile)
       windows_cross_compile=1
       shift
       ;;
+    --repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1)
+      query_args+=("$1")
+      shift
+      ;;
     *)
-      echo "Usage: $0 [--windows-cross-compile]" >&2
+      echo "Usage: $0 [--windows-cross-compile] [--repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1]" >&2
       exit 1
       ;;
   esac
@@ -24,12 +29,12 @@ done
 # local on all platforms.
 manual_rust_test_targets="$(
   ./.github/scripts/run-bazel-query-ci.sh \
-    --output=label \
+    "${query_args[@]}" \
     -- 'kind("rust_test rule", attr(tags, "manual", //codex-rs/... except //codex-rs/v8-poc/...))'
 )"
-if [[ "${RUNNER_OS:-}" != "Windows" ]]; then
-  # Non-Windows clippy jobs lint the native test binaries; the
-  # Windows-cross binaries exist only for the fast Windows test leg.
+if [[ "${RUNNER_OS:-}" != "Windows" || $windows_cross_compile -eq 0 ]]; then
+  # Native Clippy jobs lint the native test binaries on every OS; the
+  # Windows-cross binaries belong only to the historical cross leg.
   manual_rust_test_targets="$(printf '%s\n' "${manual_rust_test_targets}" | grep -v -- '-windows-cross-bin$' || true)"
 elif [[ $windows_cross_compile -eq 1 ]]; then
   # `bazel query` is intentionally pre-analysis and does not remove targets

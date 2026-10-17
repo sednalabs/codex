@@ -3,6 +3,8 @@ use crate::error::ApiError;
 use crate::provider::Provider;
 use crate::telemetry::WithStatus;
 use crate::telemetry::run_with_attempt_telemetry;
+use chrono::SecondsFormat;
+use chrono::Utc;
 use codex_client::EncodedJsonBody;
 use codex_client::HttpTransport;
 use codex_client::Request;
@@ -16,11 +18,23 @@ use codex_client::TransportError;
 use http::HeaderMap;
 use http::Method;
 use http::StatusCode;
+use serde::Deserialize;
 use serde_json::Value;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use tracing::instrument;
+
+struct StartedStreamResponse {
+    stream: StreamResponse,
+    started_at: String,
+}
+
+impl WithStatus for StartedStreamResponse {
+    fn status(&self) -> http::StatusCode {
+        self.stream.status
+    }
+}
 
 pub(crate) struct EndpointSession<T: HttpTransport> {
     transport: T,
@@ -41,12 +55,9 @@ impl WithStatus for ResponseWithAuth {
     }
 }
 
-/// Complete immutable setup for one credential-bearing application attempt.
-///
-/// The transport, provider, frozen auth implementation, and one-use initiation must be renewed as
-/// one bundle. Keeping them in this type prevents a retry from combining a renewed authority guard
-/// with the route, provider URL, provider headers, query parameters, or auth captured by the
-/// initial attempt.
+/// The transport, provider, frozen credentials and one-use request authority that belong to one
+/// application retry attempt. Keeping these together prevents mixing a refreshed auth guard with
+/// a stale route or provider snapshot.
 pub struct ProviderRequestAttempt<T: HttpTransport> {
     transport: T,
     provider: Provider,
@@ -79,7 +90,7 @@ impl<T: HttpTransport> ProviderRequestAttempt<T> {
 type ProviderRequestAttemptFuture<T> =
     Pin<Box<dyn Future<Output = Result<ProviderRequestAttempt<T>, TransportError>> + Send>>;
 
-/// Produces one independently resolved, immutable setup for each application attempt.
+/// Creates one complete auth/provider/transport snapshot per application attempt.
 pub struct ProviderRequestAttemptFactory<T: HttpTransport> {
     create: Arc<dyn Fn() -> ProviderRequestAttemptFuture<T> + Send + Sync>,
 }
@@ -193,27 +204,6 @@ impl<T: HttpTransport> EndpointSession<T> {
             .map(|(response, _auth)| response)
     }
 
-    #[instrument(
-        name = "endpoint_session.execute_with",
-        level = "info",
-        skip_all,
-        fields(http.method = %method, api.path = path)
-    )]
-    pub(crate) async fn execute_with_auth<C>(
-        &self,
-        method: Method,
-        path: &str,
-        extra_headers: HeaderMap,
-        body: Option<Value>,
-        configure: C,
-    ) -> Result<(Response, SharedAuthProvider), ApiError>
-    where
-        C: Fn(&mut Request),
-    {
-        self.execute_with_auth_inner(method, path, extra_headers, body, configure)
-            .await
-    }
-
     async fn execute_with_auth_inner<C>(
         &self,
         method: Method,
@@ -252,16 +242,16 @@ impl<T: HttpTransport> EndpointSession<T> {
                             }
                             None => (None, static_provider, static_auth, None),
                         };
-                    let mut req =
+                    let mut request =
                         Self::make_request(&provider, &method, path, &extra_headers, body.as_ref());
-                    configure(&mut req);
-                    let req = match auth.apply_auth(req).await {
-                        Ok(req) => req,
-                        Err(err) => {
+                    configure(&mut request);
+                    let request = match auth.apply_auth(request).await {
+                        Ok(request) => request,
+                        Err(error) => {
                             if let Some(initiation) = initiation {
                                 initiation.cancel();
                             }
-                            return Err(TransportError::from(err));
+                            return Err(TransportError::from(error));
                         }
                     };
                     let claim = initiation
@@ -269,7 +259,7 @@ impl<T: HttpTransport> EndpointSession<T> {
                         .transpose()
                         .map_err(TransportError::Build)?;
                     let transport = attempt_transport.as_ref().unwrap_or(static_transport);
-                    let response = transport.execute(req);
+                    let response = transport.execute(request);
                     if let Some(claim) = claim {
                         claim.acknowledge();
                     }
@@ -297,13 +287,10 @@ impl<T: HttpTransport> EndpointSession<T> {
         extra_headers: HeaderMap,
         body: Option<EncodedJsonBody>,
         configure: C,
-    ) -> Result<StreamResponse, ApiError>
+    ) -> Result<(StreamResponse, String), ApiError>
     where
         C: Fn(&mut Request),
     {
-        // Prepare the encoded body and any derived content headers once. The provider and auth
-        // remain attempt-local so credential/provider transitions still get a fresh request on
-        // every retry, while the immutable wire bytes are shared by each request clone.
         let (prepared_body, prepared_content_type, prepared_content_encoding) = match body
             .map(RequestBody::EncodedJson)
         {
@@ -320,6 +307,7 @@ impl<T: HttpTransport> EndpointSession<T> {
             }
             None => (None, None, None),
         };
+
         let stream = run_with_attempt_telemetry(
             self.provider.retry.to_policy(),
             self.request_telemetry.clone(),
@@ -348,73 +336,120 @@ impl<T: HttpTransport> EndpointSession<T> {
                             }
                             None => (None, static_provider, static_auth, None),
                         };
-                    let mut req = Self::make_request(
+                    let mut request = Self::make_request(
                         &provider,
                         &method,
                         path,
                         &extra_headers,
                         /*body*/ None,
                     );
-                    configure(&mut req);
+                    configure(&mut request);
                     if let Some(body) = prepared_body.clone() {
-                        req.body = Some(body);
-                        // `prepared_body` already contains the exact bytes and the final body
-                        // encoding. Do not prepare it again: doing so would discard trace bytes
-                        // and, more importantly, could allocate a distinct retry body.
-                        req.compression = RequestCompression::None;
+                        request.body = Some(body);
+                        request.compression = RequestCompression::None;
                         match prepared_content_type.as_ref() {
                             Some(value) => {
-                                req.headers
+                                request
+                                    .headers
                                     .insert(http::header::CONTENT_TYPE, value.clone());
                             }
                             None => {
-                                req.headers.remove(http::header::CONTENT_TYPE);
+                                request.headers.remove(http::header::CONTENT_TYPE);
                             }
                         }
                         match prepared_content_encoding.as_ref() {
                             Some(value) => {
-                                req.headers
+                                request
+                                    .headers
                                     .insert(http::header::CONTENT_ENCODING, value.clone());
                             }
                             None => {
-                                req.headers.remove(http::header::CONTENT_ENCODING);
+                                request.headers.remove(http::header::CONTENT_ENCODING);
                             }
                         }
                     } else {
-                        req = match req.into_prepared() {
-                            Ok(req) => req,
-                            Err(err) => {
+                        request = match request.into_prepared() {
+                            Ok(request) => request,
+                            Err(error) => {
                                 if let Some(initiation) = initiation {
                                     initiation.cancel();
                                 }
-                                return Err(TransportError::Build(err));
+                                return Err(TransportError::Build(error));
                             }
                         };
                     }
-                    let req = match auth.apply_auth(req).await {
-                        Ok(req) => req,
-                        Err(err) => {
+                    let request = match auth.apply_auth(request).await {
+                        Ok(request) => request,
+                        Err(error) => {
                             if let Some(initiation) = initiation {
                                 initiation.cancel();
                             }
-                            return Err(TransportError::from(err));
+                            return Err(TransportError::from(error));
                         }
                     };
                     let claim = initiation
                         .map(|initiation| initiation.claim())
                         .transpose()
                         .map_err(TransportError::Build)?;
+                    let started_at = Utc::now().to_rfc3339_opts(SecondsFormat::Nanos, true);
                     let transport = attempt_transport.as_ref().unwrap_or(static_transport);
-                    let response = transport.stream(req);
+                    let response = transport.stream(request);
                     if let Some(claim) = claim {
                         claim.acknowledge();
                     }
-                    response.await
+                    response
+                        .await
+                        .map(|stream| StartedStreamResponse { stream, started_at })
                 }
             },
         )
-        .await?;
+        .await;
 
-        Ok(stream)
+        let stream = match stream {
+            Ok(stream) => stream,
+            Err(error) if is_transient_availability_response(&error) => {
+                return Err(ApiError::TransientAvailability(error));
+            }
+            Err(error) => return Err(ApiError::Transport(error)),
+        };
+
+        Ok((stream.stream, stream.started_at))
     }
+}
+
+#[derive(Deserialize)]
+struct AvailabilityErrorEnvelope {
+    error: AvailabilityError,
+}
+
+#[derive(Deserialize)]
+struct AvailabilityError {
+    #[serde(rename = "type")]
+    error_type: String,
+    code: String,
+}
+
+fn is_transient_availability_response(error: &TransportError) -> bool {
+    let TransportError::Http {
+        status,
+        headers,
+        body: Some(body),
+        ..
+    } = error
+    else {
+        return false;
+    };
+
+    if *status != http::StatusCode::SERVICE_UNAVAILABLE
+        || headers.as_ref().is_some_and(|headers| {
+            headers.contains_key("x-openai-authorization-error")
+                || headers.contains_key("x-error-json")
+        })
+    {
+        return false;
+    }
+
+    serde_json::from_str::<AvailabilityErrorEnvelope>(body).is_ok_and(|envelope| {
+        envelope.error.error_type == "rate_limit_error" && envelope.error.code == "slow_down"
+    })
 }

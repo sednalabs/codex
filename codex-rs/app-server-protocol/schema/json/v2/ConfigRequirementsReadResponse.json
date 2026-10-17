@@ -1,5 +1,47 @@
 {
-  "$defs": {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "AllowDenyRequirement": {
+      "enum": [
+        "allow",
+        "deny"
+      ],
+      "type": "string"
+    },
+    "ApplicationNetworkRequirements": {
+      "properties": {
+        "domains": {
+          "additionalProperties": {
+            "$ref": "#/definitions/NetworkDomainPermission"
+          },
+          "type": "object"
+        },
+        "enabled": {
+          "description": "When enabled, only explicitly allowed exact domains may be contacted.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "domains",
+        "enabled"
+      ],
+      "type": "object"
+    },
+    "ApplicationRequirements": {
+      "properties": {
+        "network": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ApplicationNetworkRequirements"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
     "ApprovalsReviewer": {
       "description": "Configures who approval requests are routed to for review. Examples include sandbox escapes, blocked network access, MCP approval prompts, and ARC escalations. Defaults to `user`. `auto_review` uses a carefully prompted subagent to gather relevant context and apply a risk-based decision framework before approving or denying the request. The legacy value `guardian_subagent` is accepted for compatibility.",
       "enum": [
@@ -43,9 +85,9 @@
                 }
               },
               "required": [
-                "sandbox_approval",
+                "mcp_elicitations",
                 "rules",
-                "mcp_elicitations"
+                "sandbox_approval"
               ],
               "type": "object"
             }
@@ -58,11 +100,196 @@
         }
       ]
     },
+    "AutoReviewRequirements": {
+      "properties": {
+        "ignoreRules": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "requiredOnModels": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "BrowserUseAccessApprovalLifetime": {
+      "enum": [
+        "turn",
+        "thread"
+      ],
+      "type": "string"
+    },
+    "BrowserUseExtensionRequirements": {
+      "properties": {
+        "requestHeaders": {
+          "items": {
+            "$ref": "#/definitions/RequestHeader"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "BrowserUseOriginPolicy": {
+      "properties": {
+        "access": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AllowDenyRequirement"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "accessApprovalLifetime": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BrowserUseAccessApprovalLifetime"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "autoReview": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AllowDenyRequirement"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "downloads": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AllowDenyRequirement"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fullCdpAccess": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AllowDenyRequirement"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "persistentApproval": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "uploads": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AllowDenyRequirement"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
     "BrowserUseRequirements": {
       "properties": {
+        "allowGlobalPersistentApproval": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "allowHistoryAccess": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "allowWebmcp": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "defaultOriginPolicy": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BrowserUseOriginPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "disableAutoReview": {
           "type": [
             "boolean",
+            "null"
+          ]
+        },
+        "extension": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BrowserUseExtensionRequirements"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "origins": {
+          "additionalProperties": {
+            "$ref": "#/definitions/BrowserUseOriginPolicy"
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "CliAuthCredentialsStoreMode": {
+      "enum": [
+        "file",
+        "keyring",
+        "auto",
+        "ephemeral"
+      ],
+      "type": "string"
+    },
+    "ComputerUseMacosRequirements": {
+      "properties": {
+        "bundleIds": {
+          "additionalProperties": {
+            "$ref": "#/definitions/AllowDenyRequirement"
+          },
+          "type": [
+            "object",
             "null"
           ]
         }
@@ -76,13 +303,109 @@
             "boolean",
             "null"
           ]
+        },
+        "allowPersistentApproval": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "defaultAppAccess": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AllowDenyRequirement"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "macos": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ComputerUseMacosRequirements"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "windows": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ComputerUseWindowsRequirements"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "ComputerUseWindowsExeRequirement": {
+      "properties": {
+        "access": {
+          "$ref": "#/definitions/AllowDenyRequirement"
+        },
+        "binaryName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "productName": {
+          "type": "string"
+        },
+        "publisherName": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "access",
+        "productName",
+        "publisherName"
+      ],
+      "type": "object"
+    },
+    "ComputerUseWindowsRequirements": {
+      "properties": {
+        "aumids": {
+          "additionalProperties": {
+            "$ref": "#/definitions/AllowDenyRequirement"
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "exes": {
+          "items": {
+            "$ref": "#/definitions/ComputerUseWindowsExeRequirement"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
         }
       },
       "type": "object"
     },
     "ConfigRequirements": {
       "properties": {
+        "additionalDeveloperInstructions": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "allowAppshots": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "allowBrowserAndComputerUse": {
           "type": [
             "boolean",
             "null"
@@ -108,16 +431,17 @@
         },
         "allowedApprovalPolicies": {
           "items": {
-            "$ref": "#/$defs/AskForApproval"
+            "$ref": "#/definitions/AskForApproval"
           },
           "type": [
             "array",
             "null"
           ]
         },
-        "allowedApprovalsReviewers": {
+        "allowedLoginMethods": {
+          "description": "Effective login methods after managed, forced-login, and workspace restrictions. An empty list permits no login method. Older servers may omit this field.",
           "items": {
-            "$ref": "#/$defs/ApprovalsReviewer"
+            "$ref": "#/definitions/ForcedLoginMethod"
           },
           "type": [
             "array",
@@ -135,7 +459,7 @@
         },
         "allowedSandboxModes": {
           "items": {
-            "$ref": "#/$defs/SandboxMode"
+            "$ref": "#/definitions/SandboxMode"
           },
           "type": [
             "array",
@@ -144,7 +468,7 @@
         },
         "allowedWebSearchModes": {
           "items": {
-            "$ref": "#/$defs/WebSearchMode"
+            "$ref": "#/definitions/WebSearchMode"
           },
           "type": [
             "array",
@@ -153,21 +477,37 @@
         },
         "allowedWindowsSandboxImplementations": {
           "items": {
-            "$ref": "#/$defs/WindowsSandboxSetupMode"
+            "$ref": "#/definitions/WindowsSandboxImplementation"
           },
           "type": [
             "array",
             "null"
           ]
         },
-        "browserUse": {
+        "autoReview": {
           "anyOf": [
             {
-              "$ref": "#/$defs/BrowserUseRequirements"
+              "$ref": "#/definitions/AutoReviewRequirements"
             },
             {
               "type": "null"
             }
+          ]
+        },
+        "browserUse": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BrowserUseRequirements"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "chatgptBaseUrl": {
+          "type": [
+            "string",
+            "null"
           ]
         },
         "checkForUpdateOnStartup": {
@@ -176,10 +516,20 @@
             "null"
           ]
         },
+        "cliAuthCredentialsStore": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/CliAuthCredentialsStoreMode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "computerUse": {
           "anyOf": [
             {
-              "$ref": "#/$defs/ComputerUseRequirements"
+              "$ref": "#/definitions/ComputerUseRequirements"
             },
             {
               "type": "null"
@@ -195,7 +545,7 @@
         "enforceResidency": {
           "anyOf": [
             {
-              "$ref": "#/$defs/ResidencyRequirement"
+              "$ref": "#/definitions/ResidencyRequirement"
             },
             {
               "type": "null"
@@ -214,17 +564,17 @@
         "feedback": {
           "anyOf": [
             {
-              "$ref": "#/$defs/FeedbackRequirements"
+              "$ref": "#/definitions/FeedbackRequirements"
             },
             {
               "type": "null"
             }
           ]
         },
-        "hooks": {
+        "inAppBrowser": {
           "anyOf": [
             {
-              "$ref": "#/$defs/ManagedHooksRequirements"
+              "$ref": "#/definitions/InAppBrowserRequirements"
             },
             {
               "type": "null"
@@ -243,20 +593,25 @@
             "null"
           ]
         },
+        "modelProvider": {
+          "description": "Exact provider selection required by managed policy.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "modelProviders": {
+          "additionalProperties": true,
+          "description": "Complete required provider definitions, using config.toml field names.",
+          "type": [
+            "object",
+            "null"
+          ]
+        },
         "models": {
           "anyOf": [
             {
-              "$ref": "#/$defs/ModelsRequirements"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "network": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/NetworkRequirements"
+              "$ref": "#/definitions/ModelsRequirements"
             },
             {
               "type": "null"
@@ -268,12 +623,6 @@
             "string",
             "null"
           ]
-        },
-        "windowsSandboxPrivateDesktop": {
-          "type": [
-            "boolean",
-            "null"
-          ]
         }
       },
       "type": "object"
@@ -283,9 +632,9 @@
         {
           "properties": {
             "additionalContextLimit": {
-              "description": "Approximate token threshold for spilling this hook's `additionalContext` to disk.\n`null` uses 2,500 tokens; `0` disables spilling for this hook. The threshold is\nevaluated against the original context; a spilled preview also includes recovery\nmetadata.",
+              "description": "Approximate token threshold for spilling this hook's `additionalContext` to disk. `null` uses 2,500 tokens; `0` disables spilling for this hook. The threshold is evaluated against the original context; a spilled preview also includes recovery metadata.",
               "format": "uint",
-              "minimum": 0,
+              "minimum": 0.0,
               "type": [
                 "integer",
                 "null"
@@ -311,30 +660,77 @@
             },
             "timeoutSec": {
               "format": "uint64",
-              "minimum": 0,
+              "minimum": 0.0,
               "type": [
                 "integer",
                 "null"
               ]
             },
             "type": {
-              "const": "command",
+              "enum": [
+                "command"
+              ],
               "title": "CommandConfiguredHookHandlerType",
               "type": "string"
             }
           },
           "required": [
-            "type",
+            "async",
             "command",
-            "async"
+            "type"
           ],
           "title": "CommandConfiguredHookHandler",
           "type": "object"
         },
         {
           "properties": {
+            "input": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "server": {
+              "type": "string"
+            },
+            "statusMessage": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "timeoutSec": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "tool": {
+              "type": "string"
+            },
             "type": {
-              "const": "prompt",
+              "enum": [
+                "mcp_tool"
+              ],
+              "title": "McpToolConfiguredHookHandlerType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "input",
+            "server",
+            "tool",
+            "type"
+          ],
+          "title": "McpToolConfiguredHookHandler",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "enum": [
+                "prompt"
+              ],
               "title": "PromptConfiguredHookHandlerType",
               "type": "string"
             }
@@ -348,7 +744,9 @@
         {
           "properties": {
             "type": {
-              "const": "agent",
+              "enum": [
+                "agent"
+              ],
               "title": "AgentConfiguredHookHandlerType",
               "type": "string"
             }
@@ -365,7 +763,7 @@
       "properties": {
         "hooks": {
           "items": {
-            "$ref": "#/$defs/ConfiguredHookHandler"
+            "$ref": "#/definitions/ConfiguredHookHandler"
           },
           "type": "array"
         },
@@ -392,72 +790,97 @@
       },
       "type": "object"
     },
+    "ForcedLoginMethod": {
+      "enum": [
+        "chatgpt",
+        "api"
+      ],
+      "type": "string"
+    },
+    "InAppBrowserRequirements": {
+      "properties": {
+        "allowExternalBrowserSettingsImport": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "ManagedHooksRequirements": {
       "properties": {
+        "Interrupt": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/ConfiguredHookMatcherGroup"
+          },
+          "type": "array"
+        },
         "PermissionRequest": {
           "items": {
-            "$ref": "#/$defs/ConfiguredHookMatcherGroup"
+            "$ref": "#/definitions/ConfiguredHookMatcherGroup"
           },
           "type": "array"
         },
         "PostCompact": {
           "items": {
-            "$ref": "#/$defs/ConfiguredHookMatcherGroup"
+            "$ref": "#/definitions/ConfiguredHookMatcherGroup"
           },
           "type": "array"
         },
         "PostToolUse": {
           "items": {
-            "$ref": "#/$defs/ConfiguredHookMatcherGroup"
+            "$ref": "#/definitions/ConfiguredHookMatcherGroup"
           },
           "type": "array"
         },
         "PreCompact": {
           "items": {
-            "$ref": "#/$defs/ConfiguredHookMatcherGroup"
+            "$ref": "#/definitions/ConfiguredHookMatcherGroup"
           },
           "type": "array"
         },
         "PreToolUse": {
           "items": {
-            "$ref": "#/$defs/ConfiguredHookMatcherGroup"
+            "$ref": "#/definitions/ConfiguredHookMatcherGroup"
           },
           "type": "array"
         },
         "SessionEnd": {
           "default": [],
           "items": {
-            "$ref": "#/$defs/ConfiguredHookMatcherGroup"
+            "$ref": "#/definitions/ConfiguredHookMatcherGroup"
           },
           "type": "array"
         },
         "SessionStart": {
           "items": {
-            "$ref": "#/$defs/ConfiguredHookMatcherGroup"
+            "$ref": "#/definitions/ConfiguredHookMatcherGroup"
           },
           "type": "array"
         },
         "Stop": {
           "items": {
-            "$ref": "#/$defs/ConfiguredHookMatcherGroup"
+            "$ref": "#/definitions/ConfiguredHookMatcherGroup"
           },
           "type": "array"
         },
         "SubagentStart": {
           "items": {
-            "$ref": "#/$defs/ConfiguredHookMatcherGroup"
+            "$ref": "#/definitions/ConfiguredHookMatcherGroup"
           },
           "type": "array"
         },
         "SubagentStop": {
           "items": {
-            "$ref": "#/$defs/ConfiguredHookMatcherGroup"
+            "$ref": "#/definitions/ConfiguredHookMatcherGroup"
           },
           "type": "array"
         },
         "UserPromptSubmit": {
           "items": {
-            "$ref": "#/$defs/ConfiguredHookMatcherGroup"
+            "$ref": "#/definitions/ConfiguredHookMatcherGroup"
           },
           "type": "array"
         },
@@ -475,16 +898,16 @@
         }
       },
       "required": [
-        "PreToolUse",
         "PermissionRequest",
+        "PostCompact",
         "PostToolUse",
         "PreCompact",
-        "PostCompact",
+        "PreToolUse",
         "SessionStart",
-        "UserPromptSubmit",
+        "Stop",
         "SubagentStart",
         "SubagentStop",
-        "Stop"
+        "UserPromptSubmit"
       ],
       "type": "object"
     },
@@ -493,7 +916,7 @@
         "newThread": {
           "anyOf": [
             {
-              "$ref": "#/$defs/NewThreadModelDefaults"
+              "$ref": "#/definitions/NewThreadModelDefaults"
             },
             {
               "type": "null"
@@ -568,7 +991,7 @@
         },
         "domains": {
           "additionalProperties": {
-            "$ref": "#/$defs/NetworkDomainPermission"
+            "$ref": "#/definitions/NetworkDomainPermission"
           },
           "description": "Canonical network permission map for `experimental_network`.",
           "type": [
@@ -584,15 +1007,14 @@
         },
         "httpPort": {
           "format": "uint16",
-          "maximum": 65535,
-          "minimum": 0,
+          "minimum": 0.0,
           "type": [
             "integer",
             "null"
           ]
         },
         "managedAllowedDomainsOnly": {
-          "description": "When true, only managed allowlist entries are respected while managed\nnetwork enforcement is active.",
+          "description": "When true, only managed allowlist entries are respected while managed network enforcement is active.",
           "type": [
             "boolean",
             "null"
@@ -600,8 +1022,7 @@
         },
         "socksPort": {
           "format": "uint16",
-          "maximum": 65535,
-          "minimum": 0,
+          "minimum": 0.0,
           "type": [
             "integer",
             "null"
@@ -609,7 +1030,7 @@
         },
         "unixSockets": {
           "additionalProperties": {
-            "$ref": "#/$defs/NetworkUnixSocketPermission"
+            "$ref": "#/definitions/NetworkUnixSocketPermission"
           },
           "description": "Canonical unix socket permission map for `experimental_network`.",
           "type": [
@@ -638,7 +1059,7 @@
         "modelReasoningEffort": {
           "anyOf": [
             {
-              "$ref": "#/$defs/ReasoningEffort"
+              "$ref": "#/definitions/ReasoningEffort"
             },
             {
               "type": "null"
@@ -658,6 +1079,21 @@
       "description": "A non-empty reasoning effort value advertised by the model.",
       "minLength": 1,
       "type": "string"
+    },
+    "RequestHeader": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "value"
+      ],
+      "type": "object"
     },
     "ResidencyRequirement": {
       "enum": [
@@ -682,26 +1118,34 @@
       ],
       "type": "string"
     },
-    "WindowsSandboxSetupMode": {
+    "WindowsSandboxImplementation": {
       "enum": [
         "elevated",
-        "unelevated"
+        "unelevated",
+        "mxc"
       ],
       "type": "string"
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "requirements": {
       "anyOf": [
         {
-          "$ref": "#/$defs/ConfigRequirements"
+          "$ref": "#/definitions/ConfigRequirements"
         },
         {
           "type": "null"
         }
       ],
       "description": "Null if no requirements are configured (e.g. no requirements.toml/MDM entries)."
+    },
+    "supportsIndependentSpeedModes": {
+      "default": null,
+      "description": "Whether Fast and Ultra Fast requirements are enforced independently. Older servers omit this field and use Fast mode as a shared speed gate.",
+      "type": [
+        "boolean",
+        "null"
+      ]
     }
   },
   "title": "ConfigRequirementsReadResponse",

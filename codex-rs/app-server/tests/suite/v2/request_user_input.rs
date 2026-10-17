@@ -77,7 +77,7 @@ async fn request_user_input_round_trip_for_mode(
     ];
     let server = create_mock_responses_server_sequence(responses).await;
     MockResponsesConfig::new(&server.uri())
-        .with_approval_policy("untrusted")
+        .with_approval_policy("on-request")
         .write(codex_home.path())?;
 
     let mut mcp = TestAppServer::builder()
@@ -102,6 +102,7 @@ async fn request_user_input_round_trip_for_mode(
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 client_user_message_id: None,
                 input: vec![V2UserInput::Text {

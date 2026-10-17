@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import json
+import os
 import queue
 import shutil
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from openai_codex import CodexConfig
 
@@ -99,6 +100,22 @@ class MockSseResponse:
         return chunks
 
 
+@dataclass
+class MockRequestRoute:
+    """One-shot request-matched SSE response, optionally held behind a gate."""
+
+    predicate: Callable[[CapturedResponsesRequest], bool]
+    response: MockSseResponse
+    gate: threading.Event | None = None
+    selected: threading.Event = dataclass_field(default_factory=threading.Event)
+    used: bool = False
+
+    def wait_until_selected(self, timeout_s: float = 5.0) -> None:
+        """Wait until a captured HTTP request selects this route."""
+        if not self.selected.wait(timeout_s):
+            raise AssertionError("request-matched route was not selected")
+
+
 class MockResponsesServer:
     """Local HTTP server that records `/v1/responses` requests and returns SSE."""
 
@@ -106,6 +123,11 @@ class MockResponsesServer:
         self._responses: queue.Queue[MockSseResponse] = queue.Queue()
         self._requests: list[CapturedResponsesRequest] = []
         self._requests_lock = threading.Lock()
+        self._requests_changed = threading.Condition(self._requests_lock)
+        self._routing_lock = threading.Lock()
+        self._response_mode: str | None = None
+        self._request_routes: list[MockRequestRoute] = []
+        self._routing_errors: list[str] = []
         self._server = _ResponsesHttpServer(("127.0.0.1", 0), _ResponsesHandler, self)
         self._thread = threading.Thread(
             target=self._server.serve_forever,
@@ -128,9 +150,26 @@ class MockResponsesServer:
 
     def close(self) -> None:
         """Stop the background HTTP server thread."""
-        self._server.shutdown()
-        self._server.server_close()
-        self._thread.join(timeout=2)
+        # Release request handlers before server_close waits for active threads.
+        with self._routing_lock:
+            gates = [route.gate for route in self._request_routes if route.gate is not None]
+        for gate in gates:
+            gate.set()
+        if self._thread.is_alive():
+            self._server.shutdown()
+            self._server.server_close()
+            self._thread.join(timeout=2)
+        with self._routing_lock:
+            if self._response_mode == "request-matched":
+                unused = sum(not route.used for route in self._request_routes)
+                failures = list(self._routing_errors)
+            else:
+                unused = 0
+                failures = []
+        if failures or unused:
+            raise AssertionError(
+                f"request routing did not reconcile: errors={failures!r}, unused_routes={unused}"
+            )
 
     def enqueue_sse(
         self,
@@ -139,12 +178,38 @@ class MockResponsesServer:
         delay_between_events_s: float = 0.0,
     ) -> None:
         """Queue one SSE body for the next `/v1/responses` request."""
-        self._responses.put(
-            MockSseResponse(
-                body=body,
-                delay_between_events_s=delay_between_events_s,
-            )
+        with self._routing_lock:
+            if self._response_mode == "request-matched":
+                raise RuntimeError("FIFO and request-matched response modes cannot be mixed")
+            self._response_mode = "fifo"
+            self._responses.put(MockSseResponse(body, delay_between_events_s))
+
+    def enqueue_sse_for_request(
+        self,
+        predicate: Callable[[CapturedResponsesRequest], bool],
+        body: str,
+        *,
+        delay_between_events_s: float = 0.0,
+        gate: threading.Event | None = None,
+    ) -> MockRequestRoute:
+        """Register a single-use route selected by the captured request.
+
+        Matching is performed under one lock and every declared predicate is
+        considered, so overlapping routes fail as ambiguous instead of
+        depending on registration order. Event gates are waited outside the
+        selector lock so concurrent requests can select their own responses.
+        """
+        route = MockRequestRoute(
+            predicate=predicate,
+            response=MockSseResponse(body, delay_between_events_s),
+            gate=gate,
         )
+        with self._routing_lock:
+            if self._response_mode == "fifo":
+                raise RuntimeError("FIFO and request-matched response modes cannot be mixed")
+            self._response_mode = "request-matched"
+            self._request_routes.append(route)
+        return route
 
     def enqueue_assistant_message(self, text: str, *, response_id: str = "resp-1") -> None:
         """Queue a completed assistant-message model response."""
@@ -163,6 +228,26 @@ class MockResponsesServer:
         with self._requests_lock:
             return list(self._requests)
 
+    def wait_for_request(
+        self,
+        predicate: Callable[[CapturedResponsesRequest], bool],
+        *,
+        timeout_s: float = 5.0,
+    ) -> CapturedResponsesRequest:
+        """Condition-wait for a matching captured request witness."""
+        with self._requests_changed:
+            matched = self._requests_changed.wait_for(
+                lambda: any(predicate(request) for request in self._requests), timeout_s
+            )
+            if not matched:
+                raise AssertionError("timed out waiting for a matching Responses request")
+            return next(request for request in self._requests if predicate(request))
+
+    def routing_errors(self) -> list[str]:
+        """Return request-matcher errors recorded by HTTP handler threads."""
+        with self._routing_lock:
+            return list(self._routing_errors)
+
     def single_request(self) -> CapturedResponsesRequest:
         """Return the only recorded request, failing if the count differs."""
         requests = self.requests()
@@ -177,16 +262,17 @@ class MockResponsesServer:
         timeout_s: float = 5.0,
     ) -> list[CapturedResponsesRequest]:
         """Wait until at least `count` requests have been recorded."""
-        deadline = time.monotonic() + timeout_s
-        while time.monotonic() < deadline:
-            requests = self.requests()
-            if len(requests) >= count:
-                return requests
-            time.sleep(0.01)
-        requests = self.requests()
-        raise AssertionError(f"expected {count} requests, got {len(requests)}")
+        with self._requests_changed:
+            matched = self._requests_changed.wait_for(
+                lambda: len(self._requests) >= count, timeout_s
+            )
+            if not matched:
+                raise AssertionError(f"expected {count} requests, got {len(self._requests)}")
+            return list(self._requests)
 
-    def _record_request(self, handler: BaseHTTPRequestHandler, body: bytes) -> None:
+    def _record_request(
+        self, handler: BaseHTTPRequestHandler, body: bytes
+    ) -> CapturedResponsesRequest:
         """Record one inbound HTTP request from app-server."""
         headers = {key.lower(): value for key, value in handler.headers.items()}
         request = CapturedResponsesRequest(
@@ -195,16 +281,42 @@ class MockResponsesServer:
             headers=headers,
             body=body,
         )
-        with self._requests_lock:
+        with self._requests_changed:
             self._requests.append(request)
+            self._requests_changed.notify_all()
+        return request
 
-    def _next_response(self) -> MockSseResponse:
-        """Return the next queued SSE response or fail the HTTP request."""
-        return self._responses.get_nowait()
+    def _next_response(self, request: CapturedResponsesRequest) -> MockSseResponse:
+        """Select one FIFO response or exactly one matching route."""
+        with self._routing_lock:
+            if self._response_mode != "request-matched":
+                return self._responses.get_nowait()
+            matches = [route for route in self._request_routes if route.predicate(request)]
+            if len(matches) != 1:
+                message = (
+                    "unmatched Responses request"
+                    if not matches
+                    else f"ambiguous Responses request matched {len(matches)} routes"
+                )
+                self._routing_errors.append(message)
+                raise AssertionError(message)
+            route = matches[0]
+            if route.used:
+                message = "one-shot Responses route was matched more than once"
+                self._routing_errors.append(message)
+                raise AssertionError(message)
+            route.used = True
+
+        route.selected.set()
+        if route.gate is not None and not route.gate.wait(timeout=30):
+            with self._routing_lock:
+                self._routing_errors.append("request-matched response gate timed out")
+            raise AssertionError("request-matched response gate timed out")
+        return route.response
 
 
 class AppServerHarness:
-    """Test fixture that points a pinned runtime app-server at MockResponsesServer."""
+    """Test fixture that points the checkout's app-server at MockResponsesServer."""
 
     def __init__(self, tmp_path: Path, *, requires_openai_auth: bool = False) -> None:
         self.tmp_path = tmp_path
@@ -226,8 +338,14 @@ class AppServerHarness:
         shutil.rmtree(self.workspace, ignore_errors=True)
 
     def app_server_config(self) -> CodexConfig:
-        """Build SDK config for an isolated pinned-runtime app-server process."""
+        """Prefer the CI binary, then a local debug build, then the installed runtime."""
+        binary_name = "codex.exe" if os.name == "nt" else "codex"
+        debug_binary = Path(__file__).resolve().parents[3] / "codex-rs/target/debug" / binary_name
+        codex_bin = os.environ.get("CODEX_EXEC_PATH")
+        if codex_bin is None and debug_binary.is_file():
+            codex_bin = str(debug_binary)
         return CodexConfig(
+            codex_bin=codex_bin,
             cwd=str(self.workspace),
             env={
                 "CODEX_HOME": str(self.codex_home),
@@ -304,16 +422,23 @@ class _ResponsesHandler(BaseHTTPRequestHandler):
         """Serve queued SSE responses for `/v1/responses` requests."""
         length = int(self.headers.get("content-length", "0"))
         body = self.rfile.read(length)
-        self.server.mock._record_request(self, body)
+        if self.path.endswith("/analytics/codex/turn-costs"):
+            # Optional cost probes are not model requests.
+            self.send_error(404, "turn costs are unavailable for the mock provider")
+            return
+        request = self.server.mock._record_request(self, body)
 
         if not (self.path.endswith("/v1/responses") or self.path.endswith("/responses")):
             self.send_error(404, f"unexpected POST {self.path}")
             return
 
         try:
-            response = self.server.mock._next_response()
+            response = self.server.mock._next_response(request)
         except queue.Empty:
             self.send_error(500, "no queued SSE response")
+            return
+        except AssertionError as error:
+            self.send_error(500, str(error))
             return
 
         self.send_response(200)

@@ -1,7 +1,9 @@
 use super::*;
-use crate::agent::agent_resolver::resolve_agent_target;
+use crate::agent::api::AgentTarget;
+use crate::agent::child_config::build_agent_resume_config;
 use crate::agent::control::render_input_preview;
 use crate::tools::handlers::multi_agents_spec::create_send_input_tool_v1;
+use codex_protocol::protocol::MultiAgentVersion;
 use codex_tools::ToolSpec;
 
 pub(crate) struct Handler;
@@ -22,7 +24,10 @@ impl ToolExecutor<ToolInvocation> for Handler {
         )
     }
 
-    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
+    where
+        ToolInvocation: 'a,
+    {
         Box::pin(self.handle_call(invocation))
     }
 }
@@ -41,28 +46,34 @@ impl Handler {
         } = invocation;
         let arguments = function_arguments(payload)?;
         let args: SendInputArgs = parse_arguments(&arguments)?;
-        let receiver_thread_id = resolve_agent_target(&session, &turn, &args.target).await?;
+        let receiver_thread_id = parse_agent_id_target(&args.target)?;
         let input_items = parse_collab_input(args.message, args.items)?;
         let prompt = render_input_preview(&input_items);
-        let receiver_agent = session
+        let local_agent_control = session
             .services
-            .agent_control
-            .get_agent_metadata(receiver_thread_id);
-        if receiver_agent.is_some() {
-            let resume_config = build_agent_resume_config(turn.as_ref())?;
-            session
-                .services
-                .agent_control
-                .ensure_v2_agent_loaded(resume_config, receiver_thread_id)
+            .local_agent_runtime
+            .control(session.session_id());
+        let receiver_agent = local_agent_control.get_agent_metadata(receiver_thread_id);
+        let residency_pin = if receiver_agent.is_some() {
+            let resume_config = build_agent_resume_config(turn.as_ref())
+                .map_err(FunctionCallError::RespondToModel)?;
+            local_agent_control
+                .ensure_v2_agent_loaded(resume_config, receiver_thread_id, /*parent*/ None)
                 .await
-                .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
-        }
+                .map_err(|err| collab_agent_error(receiver_thread_id, err))?
+        } else {
+            None
+        };
         let receiver_agent = receiver_agent.unwrap_or_default();
         if args.interrupt {
             session
                 .services
                 .agent_control
-                .interrupt_agent(receiver_thread_id)
+                .interrupt(
+                    session.thread_id,
+                    AgentTarget::Id(receiver_thread_id),
+                    MultiAgentVersion::V1,
+                )
                 .await
                 .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
         }
@@ -76,28 +87,31 @@ impl Handler {
                     sender_thread_id: session.thread_id,
                     receiver_thread_ids: vec![receiver_thread_id],
                     receiver_agents: Vec::new(),
+                    wait_outcome: None,
+                    queued_update_count: None,
                     prompt: Some(prompt.clone()),
                     model: None,
                     reasoning_effort: None,
-                    requested_model: None,
-                    requested_reasoning_effort: None,
                     agents_states: Default::default(),
-                    wake_notifications: None,
-                    completion_reason: None,
-                    wake_cause: None,
                 }),
             )
             .await;
-        let agent_control = session.services.agent_control.clone();
-        let result = agent_control
-            .send_input(receiver_thread_id, input_items)
+        let result = local_agent_control
+            .send_input(
+                receiver_thread_id,
+                input_items,
+                crate::TurnStartOptions {
+                    parent_turn_id: Some(turn.sub_id.clone()),
+                    root_turn_id: turn.turn_metadata_state.root_turn_id(),
+                    turn_trigger: turn.turn_metadata_state.current_turn_trigger(),
+                    cyber_access_program: turn.cyber_access_program,
+                    ..Default::default()
+                },
+            )
             .await
             .map_err(|err| collab_agent_error(receiver_thread_id, err));
-        let status = session
-            .services
-            .agent_control
-            .get_status(receiver_thread_id)
-            .await;
+        drop(residency_pin);
+        let status = local_agent_control.get_status(receiver_thread_id).await;
         session
             .emit_turn_item_completed(
                 &turn,
@@ -112,15 +126,12 @@ impl Handler {
                         agent_nickname: receiver_agent.agent_nickname,
                         agent_role: receiver_agent.agent_role,
                     }],
+                    wait_outcome: None,
+                    queued_update_count: None,
                     prompt: Some(prompt),
                     model: None,
                     reasoning_effort: None,
-                    requested_model: None,
-                    requested_reasoning_effort: None,
                     agents_states: [(receiver_thread_id, status)].into_iter().collect(),
-                    wake_notifications: None,
-                    completion_reason: None,
-                    wake_cause: None,
                 }),
             )
             .await;
@@ -151,7 +162,7 @@ pub(crate) struct SendInputResult {
 }
 
 impl ToolOutput for SendInputResult {
-    fn log_preview(&self) -> String {
+    fn log_output(&self) -> String {
         tool_output_json_text(self, "send_input")
     }
 

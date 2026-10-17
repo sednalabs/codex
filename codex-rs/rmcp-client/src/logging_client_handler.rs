@@ -8,15 +8,9 @@ use rmcp::model::CancelledNotificationParam;
 use rmcp::model::ClientInfo;
 use rmcp::model::ElicitRequestParams;
 use rmcp::model::ElicitResult;
-#[expect(
-    deprecated,
-    reason = "The negotiated legacy MCP protocol still supports logging notifications"
-)]
+#[allow(deprecated)]
 use rmcp::model::LoggingLevel;
-#[expect(
-    deprecated,
-    reason = "The negotiated legacy MCP protocol still supports logging notifications"
-)]
+#[allow(deprecated)]
 use rmcp::model::LoggingMessageNotificationParam;
 use rmcp::model::ProgressNotificationParam;
 use rmcp::model::ResourceUpdatedNotificationParam;
@@ -132,10 +126,7 @@ impl ClientHandler for LoggingClientHandler {
         self.client_info.clone()
     }
 
-    #[expect(
-        deprecated,
-        reason = "The negotiated legacy MCP protocol still supports logging notifications"
-    )]
+    #[allow(deprecated)]
     async fn on_logging_message(
         &self,
         params: LoggingMessageNotificationParam,

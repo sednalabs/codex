@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tarfile
 import tempfile
 import textwrap
@@ -17,6 +18,251 @@ MISMATCH_VERSION = "0.145.0"
 
 
 class InstallShTest(unittest.TestCase):
+    def test_sedna_self_update_refuses_macos_before_network(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            result, requests = run_installer_in(
+                Path(temp_dir),
+                "latest",
+                force_macos=True,
+                sedna_update=True,
+            )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(requests, [])
+        self.assertIn("only on Linux x86_64 and ARM64", result.stderr)
+        self.assertIn("https://github.com/sednalabs/codex/releases", result.stderr)
+
+    @unittest.skipUnless(sys.platform == "linux", "Sedna binary updates are Linux-only")
+    def test_sedna_metadata_rejects_prerelease_flag_channel_mismatch(self) -> None:
+        target = linux_target()
+        version = "0.163.0-alpha.1"
+        release_json, sedna_metadata = sedna_release_metadata(
+            version,
+            target,
+            native_version="0.162.0",
+            channel="prerelease",
+            prerelease=False,
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            result, requests = run_installer_in(
+                Path(temp_dir),
+                version,
+                metadata_json=release_json,
+                sedna_metadata_json=sedna_metadata,
+                sedna_update=True,
+                sedna_selection_channel="prerelease",
+                previous_package_version="0.146.0",
+                previous_native_version="0.162.0-sedna.dev.be2e129",
+            )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(any("RELEASE-METADATA-" in url for url in requests))
+        self.assertNotIn("codex-package_SHA256SUMS", "\n".join(requests))
+
+    @unittest.skipUnless(sys.platform == "linux", "Sedna binary updates are Linux-only")
+    def test_sedna_rejects_package_with_older_native_version_before_selection(
+        self,
+    ) -> None:
+        target = linux_target()
+        version = "0.163.0"
+        release_json, sedna_metadata = sedna_release_metadata(
+            version,
+            target,
+            native_version="0.161.9",
+            channel="stable",
+            prerelease=False,
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            standalone = root / "codex-home" / "packages" / "standalone"
+            current_release = standalone / "releases" / f"0.146.0-{target}"
+            current_release.mkdir(parents=True)
+            standalone.mkdir(parents=True, exist_ok=True)
+            (current_release / "keep").write_text("old", encoding="utf-8")
+            (standalone / "current").symlink_to(current_release)
+            (standalone / "auto-update-version").write_text(
+                current_release.name, encoding="utf-8"
+            )
+            result, requests = run_installer_in(
+                root,
+                "latest",
+                metadata_json=release_json,
+                sedna_metadata_json=sedna_metadata,
+                sedna_update=True,
+                sedna_selection_channel="stable",
+                previous_package_version="0.146.0",
+                previous_native_version="0.162.0-sedna.dev.be2e129",
+            )
+
+            self.assertEqual(os.readlink(standalone / "current"), str(current_release))
+            self.assertEqual(
+                (standalone / "auto-update-version").read_text(encoding="utf-8"),
+                current_release.name,
+            )
+            self.assertTrue((current_release / "keep").is_file())
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("native version is older", result.stderr)
+        self.assertNotIn("codex-package_SHA256SUMS", "\n".join(requests))
+
+    @unittest.skipUnless(sys.platform == "linux", "Sedna binary updates are Linux-only")
+    def test_sedna_rejects_binary_native_version_mismatch_before_selection(
+        self,
+    ) -> None:
+        target = linux_target()
+        version = "0.163.0"
+        expected_native_version = "0.162.0-sedna.dev.be2e129"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            archive, checksum, release_json, sedna_metadata = (
+                create_sedna_package_release(
+                    root,
+                    version,
+                    target,
+                    native_version=expected_native_version,
+                    binary_native_version="0.163.0",
+                )
+            )
+            standalone = root / "codex-home" / "packages" / "standalone"
+            current_release = standalone / "releases" / f"0.146.0-{target}"
+            current_release.mkdir(parents=True)
+            standalone.mkdir(parents=True, exist_ok=True)
+            (current_release / "keep").write_text("old", encoding="utf-8")
+            (standalone / "current").symlink_to(current_release)
+            marker = standalone / "auto-update-version"
+            marker.write_text(current_release.name, encoding="utf-8")
+            result, requests = run_installer_in(
+                root,
+                "latest",
+                metadata_json=release_json,
+                sedna_metadata_json=sedna_metadata,
+                archive_path=archive,
+                checksum_path=checksum,
+                sedna_update=True,
+                sedna_selection_channel="stable",
+                previous_package_version="0.146.0",
+                previous_native_version=expected_native_version,
+            )
+
+            self.assertEqual(os.readlink(standalone / "current"), str(current_release))
+            self.assertEqual(marker.read_text(encoding="utf-8"), current_release.name)
+            self.assertTrue((current_release / "keep").is_file())
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("expected native version", result.stderr)
+        self.assertIn("codex-package_SHA256SUMS", "\n".join(requests))
+
+    @unittest.skipUnless(sys.platform == "linux", "Sedna binary updates are Linux-only")
+    def test_prerelease_selection_chooses_newer_stable_release(self) -> None:
+        target = linux_target()
+        version = "0.163.0"
+        tag_metadata, sedna_metadata = sedna_release_metadata(
+            version,
+            target,
+            native_version="0.162.0-sedna.dev.be2e129",
+            channel="stable",
+            prerelease=False,
+        )
+        releases_json = json.dumps(
+            [
+                {"tag_name": "rust-v0.162.0-alpha.9", "prerelease": True},
+                {"tag_name": "rust-v0.162.0", "prerelease": False},
+                {"tag_name": "rust-v0.163.0", "prerelease": False},
+            ]
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            result, requests = run_installer_in(
+                Path(temp_dir),
+                "latest",
+                metadata_json=tag_metadata,
+                sedna_releases_json=releases_json,
+                sedna_metadata_json=sedna_metadata,
+                sedna_update=True,
+                sedna_selection_channel="prerelease",
+                previous_package_version="0.146.0",
+                previous_native_version="0.162.0-sedna.dev.be2e129",
+            )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "https://api.github.com/repos/sednalabs/codex/releases/tags/rust-v0.163.0",
+            requests,
+        )
+        self.assertNotIn("rust-v0.162.0-alpha.9", "\n".join(requests))
+
+    @unittest.skipUnless(sys.platform == "linux", "Sedna binary updates are Linux-only")
+    def test_deferred_same_version_sedna_install_stages_without_selecting(self) -> None:
+        target = linux_target()
+        version = "0.146.0"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            archive, checksum, release_json, sedna_metadata = (
+                create_sedna_package_release(
+                    root, version, target, native_version="0.162.0-sedna.dev.be2e129"
+                )
+            )
+            standalone = root / "codex-home" / "packages" / "app-server-daemon"
+            standalone.mkdir(parents=True)
+            marker = standalone / "auto-update-version"
+            marker.write_text("previous-selection", encoding="utf-8")
+            result, _requests = run_installer_in(
+                root,
+                "latest",
+                metadata_json=release_json,
+                sedna_metadata_json=sedna_metadata,
+                archive_path=archive,
+                checksum_path=checksum,
+                daemon_only=True,
+                sedna_update=True,
+                defer_selection=True,
+                previous_package_version="0.146.0",
+                previous_native_version="0.162.0-sedna.dev.be2e129",
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse((standalone / "current").exists())
+            self.assertEqual(marker.read_text(encoding="utf-8"), "previous-selection")
+            self.assertEqual(
+                (standalone / ".migration-current").resolve(),
+                standalone / "releases" / f"{version}-{target}",
+            )
+
+    @unittest.skipUnless(sys.platform == "linux", "Sedna binary updates are Linux-only")
+    def test_deferred_sedna_install_rejects_older_package_before_staging(self) -> None:
+        target = linux_target()
+        version = "0.146.0"
+        release_json, sedna_metadata = sedna_release_metadata(
+            version,
+            target,
+            native_version="0.162.0-sedna.dev.be2e129",
+            channel="stable",
+            prerelease=False,
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            dedicated = root / "codex-home" / "packages" / "app-server-daemon"
+            dedicated.mkdir(parents=True)
+            marker = dedicated / "auto-update-version"
+            marker.write_text("previous-selection", encoding="utf-8")
+            result, requests = run_installer_in(
+                root,
+                "latest",
+                metadata_json=release_json,
+                sedna_metadata_json=sedna_metadata,
+                daemon_only=True,
+                sedna_update=True,
+                defer_selection=True,
+                previous_package_version="0.147.0",
+                previous_native_version="0.162.0-sedna.dev.be2e129",
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("package version is older", result.stderr)
+            self.assertFalse((dedicated / ".migration-current").exists())
+            self.assertFalse((dedicated / "current").exists())
+            self.assertEqual(marker.read_text(encoding="utf-8"), "previous-selection")
+            self.assertNotIn("codex-package_SHA256SUMS", "\n".join(requests))
+
     def test_metadata_fetch_failure_is_not_reported_as_missing_assets(self) -> None:
         result, requests = run_installer(VERSION, metadata_failure=True)
 
@@ -75,26 +321,6 @@ class InstallShTest(unittest.TestCase):
                 "https://api.github.com/repos/openai/codex/releases/latest",
                 "https://github.com/openai/codex/releases/download/"
                 f"rust-v{VERSION}/codex-package_SHA256SUMS",
-            ],
-        )
-        self.assertIn(f"Resolved version: {VERSION}", result.stdout)
-
-    def test_custom_repository_and_tag_prefix_drive_latest_urls(self) -> None:
-        result, requests = run_installer(
-            "latest",
-            release_repository="example/codex",
-            release_tag_prefix="custom-v",
-            metadata_json=release_metadata(tag_prefix="custom-v"),
-            use_mirror=True,
-        )
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(
-            requests,
-            [
-                "https://api.github.com/repos/example/codex/releases/latest",
-                "https://github.com/example/codex/releases/download/"
-                f"custom-v{VERSION}/codex-package_SHA256SUMS",
             ],
         )
         self.assertIn(f"Resolved version: {VERSION}", result.stdout)
@@ -174,6 +400,195 @@ class InstallShTest(unittest.TestCase):
                     f"https://releases.openai.com/codex/releases/{VERSION}/codex-package_SHA256SUMS",
                     f"https://releases.openai.com/codex/releases/{VERSION}/codex-package-aarch64-apple-darwin.tar.gz",
                 ],
+            )
+
+    def test_daemon_install_preserves_visible_cli_and_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir).resolve()
+            archive, checksum, metadata = create_package_release(root)
+            options = dict(
+                metadata_json=metadata,
+                archive_path=archive,
+                checksum_path=checksum,
+                force_macos=True,
+            )
+            pinned, _ = run_installer_in(root, VERSION, **options)
+            self.assertEqual(pinned.returncode, 0, pinned.stderr)
+            visible = root / "install-bin/codex"
+            original = visible.resolve()
+            pending = visible.with_name(".codex.12345")
+            pending.symlink_to(original)
+            profile = root / "home/.profile"
+            profile.write_text("unchanged profile\n")
+
+            installed, _ = run_installer_in(root, "latest", daemon_only=True, **options)
+            self.assertEqual(installed.returncode, 0, installed.stderr)
+            daemon = root / "codex-home/packages/app-server-daemon"
+            release_name = f"{VERSION}-aarch64-apple-darwin"
+            self.assertEqual(
+                (daemon / "current").resolve(), daemon / "releases" / release_name
+            )
+            self.assertEqual((daemon / "auto-update-version").read_text(), release_name)
+            options["daemon_only"] = True
+            local = daemon / "releases/local-development"
+            local.mkdir()
+            (daemon / "current").unlink()
+            (daemon / "current").symlink_to(local)
+            marker = daemon / "auto-update-version"
+            marker.unlink()
+
+            scheduled, _ = run_installer_in(
+                root, "latest", update_guard_from_release=local.name, **options
+            )
+            self.assertEqual(scheduled.returncode, 0, scheduled.stderr)
+            self.assertEqual((daemon / "current").resolve(), local)
+            self.assertFalse(marker.exists())
+
+            raced, _ = run_installer_in(
+                root,
+                "latest",
+                update_guard_from_release="a-different-release",
+                manual_update=True,
+                **options,
+            )
+            self.assertNotEqual(raced.returncode, 0, raced.stderr)
+            self.assertEqual((daemon / "current").resolve(), local)
+            self.assertFalse(marker.exists())
+
+            binary = daemon / "releases" / release_name / "bin/codex"
+            contents = binary.read_text()
+            binary.write_text(
+                '#!/bin/sh\n[ "$1" = "--version" ] || exit 2\n'
+                f"echo codex-cli {VERSION}\n"
+            )
+            incompatible, _ = run_installer_in(
+                root,
+                "latest",
+                update_guard_from_release=local.name,
+                manual_update=True,
+                **options,
+            )
+            self.assertNotEqual(incompatible.returncode, 0)
+            self.assertIn("does not support daemon-owned packages", incompatible.stderr)
+            self.assertEqual((daemon / "current").resolve(), local)
+            self.assertFalse(marker.exists())
+            binary.write_text(contents)
+
+            restored, _ = run_installer_in(
+                root,
+                "latest",
+                update_guard_from_release=local.name,
+                manual_update=True,
+                **options,
+            )
+            self.assertEqual(restored.returncode, 0, restored.stderr)
+            self.assertEqual(
+                (daemon / "current").resolve(), daemon / "releases" / release_name
+            )
+            self.assertEqual(marker.read_text(), release_name)
+            self.assertEqual(visible.resolve(), original)
+            self.assertTrue(pending.is_symlink())
+            self.assertEqual(profile.read_text(), "unchanged profile\n")
+            self.assertFalse(
+                (root / "codex-home/packages/standalone/auto-update-version").exists()
+            )
+
+    def test_explicit_release_pins_even_the_current_latest_version(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            archive, checksum, metadata = create_package_release(root)
+            options = dict(
+                metadata_json=metadata,
+                archive_path=archive,
+                checksum_path=checksum,
+                force_macos=True,
+            )
+            marker = root / "codex-home/packages/standalone/auto-update-version"
+            latest, _ = run_installer_in(root, "latest", **options)
+            self.assertEqual(latest.returncode, 0, latest.stderr)
+            release_name = f"{VERSION}-aarch64-apple-darwin"
+            self.assertEqual(marker.read_text(), release_name)
+
+            pinned, _ = run_installer_in(root, VERSION, **options)
+            self.assertEqual(pinned.returncode, 0, pinned.stderr)
+            self.assertFalse(marker.exists())
+
+            updater_record = (
+                root / "codex-home/app-server-daemon/app-server-updater.pid"
+            )
+            updater_record.parent.mkdir(parents=True)
+            updater_record.write_text(
+                json.dumps(
+                    {"pid": os.getpid(), "processStartTime": process_start_time()}
+                )
+            )
+            old_updater, _ = run_installer_in(
+                root, "latest", old_updater_parent_pid=os.getpid(), **options
+            )
+            self.assertEqual(old_updater.returncode, 0, old_updater.stderr)
+            self.assertFalse(marker.exists())
+
+            skipped, _ = run_installer_in(
+                root, "latest", update_guard_from_release=release_name, **options
+            )
+            self.assertEqual(skipped.returncode, 0, skipped.stderr)
+            self.assertFalse(marker.exists())
+
+            updater_record.write_text(
+                json.dumps({"pid": os.getpid(), "processStartTime": "stale"})
+            )
+            latest_again, _ = run_installer_in(
+                root, "latest", old_updater_parent_pid=os.getpid(), **options
+            )
+            self.assertEqual(latest_again.returncode, 0, latest_again.stderr)
+            self.assertEqual(marker.read_text(), release_name)
+
+            managed = (
+                root
+                / f"codex-home/packages/standalone/releases/{release_name}/bin/codex"
+            )
+            managed.unlink()
+            guarded, _ = run_installer_in(
+                root,
+                "latest",
+                update_guard_from_release=release_name,
+                **options,
+            )
+            self.assertEqual(guarded.returncode, 0, guarded.stderr)
+            self.assertTrue(managed.exists())
+
+    def test_uninspectable_legacy_updater_does_not_clear_pin(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            archive, checksum, metadata = create_package_release(root)
+            options = dict(
+                metadata_json=metadata,
+                archive_path=archive,
+                checksum_path=checksum,
+                force_macos=True,
+            )
+            pinned, _ = run_installer_in(root, VERSION, **options)
+            self.assertEqual(pinned.returncode, 0, pinned.stderr)
+            updater_record = (
+                root / "codex-home/app-server-daemon/app-server-updater.pid"
+            )
+            updater_record.parent.mkdir(parents=True)
+            updater_record.write_text(
+                json.dumps(
+                    {"pid": os.getpid(), "processStartTime": process_start_time()}
+                )
+            )
+
+            attempted, _ = run_installer_in(
+                root,
+                "latest",
+                old_updater_parent_pid=os.getpid(),
+                fail_ps=True,
+                **options,
+            )
+            self.assertEqual(attempted.returncode, 0, attempted.stderr)
+            self.assertFalse(
+                (root / "codex-home/packages/standalone/auto-update-version").exists()
             )
 
     def test_releases_unusable_metadata_falls_back_to_github(self) -> None:
@@ -471,7 +886,7 @@ class InstallShTest(unittest.TestCase):
                 ],
             )
             self.assertIn(
-                f"did not report expected version {MISMATCH_VERSION}",
+                f"did not report expected native version {MISMATCH_VERSION}",
                 result.stderr,
             )
             self.assertNotIn("installed successfully", result.stdout)
@@ -530,8 +945,6 @@ def run_installer(
     *,
     metadata_failure: bool = False,
     metadata_json: str | None = None,
-    release_repository: str = "openai/codex",
-    release_tag_prefix: str = "rust-v",
     use_mirror: bool | None = False,
 ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -540,8 +953,6 @@ def run_installer(
             release,
             metadata_failure=metadata_failure,
             metadata_json=metadata_json,
-            release_repository=release_repository,
-            release_tag_prefix=release_tag_prefix,
             use_mirror=use_mirror,
         )
 
@@ -558,10 +969,20 @@ def run_installer_in(
     releases_checksum_path: Path | None = None,
     legacy_archive_path: Path | None = None,
     force_macos: bool = False,
-    release_repository: str = "openai/codex",
-    release_tag_prefix: str = "rust-v",
     use_mirror: bool | None = False,
     releases_mode: str = "",
+    update_guard_from_release: str | None = None,
+    old_updater_parent_pid: int | None = None,
+    fail_ps: bool = False,
+    daemon_only: bool = False,
+    manual_update: bool = False,
+    sedna_update: bool = False,
+    defer_selection: bool = False,
+    sedna_metadata_json: str | None = None,
+    sedna_releases_json: str | None = None,
+    sedna_selection_channel: str = "stable",
+    previous_package_version: str = VERSION,
+    previous_native_version: str = VERSION,
 ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
     bin_dir = root / "bin"
     bin_dir.mkdir(exist_ok=True)
@@ -586,12 +1007,27 @@ def run_installer_in(
             printf '%s\n' "$url" >>"$CODEX_TEST_REQUEST_LOG"
 
             case "$url" in
+              https://api.github.com/repos/sednalabs/codex/releases?per_page=100)
+                printf '%s\n' "$CODEX_TEST_SEDNA_RELEASES_JSON"
+                ;;
+              https://api.github.com/repos/sednalabs/codex/releases/tags/*)
+                printf '%s\n' "$CODEX_TEST_METADATA_JSON"
+                ;;
               https://api.github.com/*)
                 if [ "$CODEX_TEST_METADATA_FAILURE" = "1" ]; then
                   echo "curl: (22) The requested URL returned error: 403" >&2
                   exit 22
                 fi
                 printf '%s\n' "$CODEX_TEST_METADATA_JSON"
+                ;;
+              https://github.com/sednalabs/codex/releases/download/*/RELEASE-METADATA-*.json)
+                printf '%s\n' "$CODEX_TEST_SEDNA_METADATA_JSON" >"$output"
+                ;;
+              https://github.com/sednalabs/codex/releases/download/*/codex-package_SHA256SUMS)
+                cp "$CODEX_TEST_CHECKSUM_PATH" "$output"
+                ;;
+              https://github.com/sednalabs/codex/releases/download/*/codex-package-*.tar.gz)
+                cp "$CODEX_TEST_ARCHIVE_PATH" "$output"
                 ;;
               https://releases.openai.com/codex/channels/latest|https://releases.openai.com/codex/releases/*/release.json)
                 if [ "$CODEX_TEST_RELEASES_MODE" = "channel_failure" ]; then
@@ -628,7 +1064,7 @@ def run_installer_in(
                   exit 22
                 fi
                 ;;
-              https://github.com/*/releases/download/*/codex-package_SHA256SUMS)
+              https://github.com/openai/codex/releases/download/*/codex-package_SHA256SUMS)
                 if [ "$CODEX_TEST_RELEASES_MODE" = "corrupt_checksum_and_github" ]; then
                   printf '<html>proxy error</html>\n' >"$output"
                   exit 0
@@ -639,14 +1075,14 @@ def run_installer_in(
                   exit 22
                 fi
                 ;;
-              https://github.com/*/releases/download/*/codex-package-*.tar.gz)
+              https://github.com/openai/codex/releases/download/*/codex-package-*.tar.gz)
                 if [ -n "$CODEX_TEST_ARCHIVE_PATH" ]; then
                   cp "$CODEX_TEST_ARCHIVE_PATH" "$output"
                 else
                   exit 22
                 fi
                 ;;
-              https://github.com/*/releases/download/*/codex-npm-*.tgz)
+              https://github.com/openai/codex/releases/download/*/codex-npm-*.tgz)
                 if [ -n "$CODEX_TEST_LEGACY_ARCHIVE_PATH" ]; then
                   cp "$CODEX_TEST_LEGACY_ARCHIVE_PATH" "$output"
                 else
@@ -673,6 +1109,19 @@ def run_installer_in(
             encoding="utf-8",
         )
         fake_uname.chmod(0o755)
+    if old_updater_parent_pid is not None:
+        fake_ps = bin_dir / "ps"
+        fake_ps.write_text(
+            "#!/bin/sh\nexit 1\n"
+            if fail_ps
+            else "#!/bin/sh\n"
+            'case "$*" in\n'
+            '  *lstart*) printf "S %s\\n" "$CODEX_TEST_PARENT_START" ;;\n'
+            '  *) printf "%s\\n" "$CODEX_TEST_PARENT_PID" ;;\n'
+            "esac\n",
+            encoding="utf-8",
+        )
+        fake_ps.chmod(0o755)
 
     home = root / "home"
     home.mkdir(exist_ok=True)
@@ -683,8 +1132,8 @@ def run_installer_in(
             "CODEX_INSTALL_DIR": str(root / "install-bin"),
             "CODEX_NON_INTERACTIVE": "1",
             "CODEX_RELEASE": release,
-            "CODEX_RELEASE_REPOSITORY": release_repository,
-            "CODEX_RELEASE_TAG_PREFIX": release_tag_prefix,
+            "CODEX_INSTALL_DAEMON_ONLY": "1" if daemon_only else "0",
+            "CODEX_INSTALL_DEFER_SELECTION": "1" if defer_selection else "0",
             "CODEX_TEST_ARCHIVE_PATH": str(archive_path or ""),
             "CODEX_TEST_CHECKSUM_PATH": str(checksum_path or ""),
             "CODEX_TEST_RELEASES_CHECKSUM_PATH": str(
@@ -692,6 +1141,8 @@ def run_installer_in(
             ),
             "CODEX_TEST_LEGACY_ARCHIVE_PATH": str(legacy_archive_path or ""),
             "CODEX_TEST_METADATA_FAILURE": "1" if metadata_failure else "0",
+            "CODEX_TEST_SEDNA_METADATA_JSON": sedna_metadata_json or "{}",
+            "CODEX_TEST_SEDNA_RELEASES_JSON": sedna_releases_json or "[]",
             "CODEX_TEST_METADATA_JSON": (
                 metadata_json if metadata_json is not None else release_metadata()
             ),
@@ -709,6 +1160,21 @@ def run_installer_in(
             "SHELL": "/bin/sh",
         }
     )
+    env["CODEX_INSTALL_IF_CURRENT"] = "1" if manual_update else "0"
+    if sedna_update:
+        env["CODEX_SEDNA_UPDATE"] = "1"
+        env["CODEX_SEDNA_RELEASE_CHANNEL"] = sedna_selection_channel
+        env["CODEX_SEDNA_PREVIOUS_VERSION"] = previous_package_version
+        env["CODEX_SEDNA_PREVIOUS_NATIVE_VERSION"] = previous_native_version
+    if update_guard_from_release is None:
+        env.pop("CODEX_INSTALL_IF_LATEST", None)
+        env.pop("CODEX_UPDATE_FROM_RELEASE", None)
+    else:
+        env["CODEX_INSTALL_IF_LATEST"] = "0" if manual_update else "1"
+        env["CODEX_UPDATE_FROM_RELEASE"] = update_guard_from_release
+    if old_updater_parent_pid is not None:
+        env["CODEX_TEST_PARENT_PID"] = str(old_updater_parent_pid)
+        env["CODEX_TEST_PARENT_START"] = process_start_time()
     if use_mirror is None:
         env.pop("CODEX_INSTALLER_USE_RELEASES_OPENAI_COM", None)
     else:
@@ -728,6 +1194,13 @@ def run_installer_in(
         else []
     )
     return result, requests
+
+
+def process_start_time() -> str:
+    details = subprocess.check_output(
+        ["ps", "-p", str(os.getpid()), "-o", "stat=", "-o", "lstart="], text=True
+    ).strip()
+    return details.split(maxsplit=1)[1]
 
 
 def create_package_release(
@@ -807,12 +1280,7 @@ def write_executable(path: Path, contents: str) -> None:
     path.chmod(0o755)
 
 
-def release_metadata(
-    *,
-    compact: bool = False,
-    reorder: bool = False,
-    tag_prefix: str = "rust-v",
-) -> str:
+def release_metadata(*, compact: bool = False, reorder: bool = False) -> str:
     assets = [
         asset_metadata(
             f"codex-package-{target}.tar.gz",
@@ -835,14 +1303,119 @@ def release_metadata(
     )
     separators = (",", ":") if compact else None
     return json.dumps(
-        {
-            "assets": assets,
-            "body": "braces: { } [ ]",
-            "tag_name": f"{tag_prefix}{VERSION}",
-        },
+        {"assets": assets, "body": "braces: { } [ ]", "tag_name": f"rust-v{VERSION}"},
         indent=None if compact else 2,
         separators=separators,
     )
+
+
+def linux_target() -> str:
+    machine = os.uname().machine
+    return f"{machine}-unknown-linux-musl"
+
+
+def sedna_release_metadata(
+    version: str,
+    target: str,
+    *,
+    native_version: str,
+    channel: str,
+    prerelease: bool,
+    archive_digest: str = "b" * 64,
+    checksum_digest: str = "c" * 64,
+) -> tuple[str, str]:
+    archive_name = f"codex-package-{target}.tar.gz"
+    metadata_name = f"RELEASE-METADATA-{target}.json"
+    metadata = json.dumps(
+        {
+            "schemaVersion": 1,
+            "repository": "sednalabs/codex",
+            "releaseTag": f"rust-v{version}",
+            "packageVersion": version,
+            "nativeVersion": native_version,
+            "channel": channel,
+            "target": target,
+            "sourceCommit": "1" * 40,
+            "sourceTree": "2" * 40,
+            "workflowHostCommit": "3" * 40,
+            "workflowHostTree": "4" * 40,
+            "workflowRunId": "123",
+            "archive": {"name": archive_name, "sha256": archive_digest},
+        },
+        indent=2,
+    )
+    metadata_digest = hashlib.sha256(f"{metadata}\n".encode()).hexdigest()
+    api_metadata = json.dumps(
+        {
+            "tag_name": f"rust-v{version}",
+            "prerelease": prerelease,
+            "assets": [
+                {"name": metadata_name, "digest": f"sha256:{metadata_digest}"},
+                {"name": archive_name, "digest": f"sha256:{archive_digest}"},
+                {
+                    "name": "codex-package_SHA256SUMS",
+                    "digest": f"sha256:{checksum_digest}",
+                },
+            ],
+        }
+    )
+    return api_metadata, metadata
+
+
+def create_sedna_package_release(
+    root: Path,
+    version: str,
+    target: str,
+    *,
+    native_version: str,
+    binary_native_version: str | None = None,
+) -> tuple[Path, Path, str, str]:
+    package_dir = root / "sedna-package"
+    (package_dir / "bin").mkdir(parents=True)
+    (package_dir / "codex-path").mkdir()
+    (package_dir / "codex-resources").mkdir()
+    (package_dir / "codex-package.json").write_text(
+        json.dumps(
+            {
+                "layoutVersion": 1,
+                "version": version,
+                "nativeVersion": native_version,
+                "target": target,
+                "variant": "codex",
+                "entrypoint": "bin/codex",
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    write_executable(
+        package_dir / "bin" / "codex",
+        f"#!/bin/sh\nprintf 'codex {binary_native_version or native_version}\\n'\n",
+    )
+    write_executable(
+        package_dir / "bin" / "codex-code-mode-host", "#!/bin/sh\nexit 0\n"
+    )
+    write_executable(package_dir / "codex-path" / "rg", "#!/bin/sh\nexit 0\n")
+    write_executable(package_dir / "codex-resources" / "bwrap", "#!/bin/sh\nexit 0\n")
+    asset_name = f"codex-package-{target}.tar.gz"
+    archive_path = root / asset_name
+    with tarfile.open(archive_path, "w:gz") as archive:
+        for path in package_dir.iterdir():
+            archive.add(path, arcname=path.name)
+    archive_digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+    checksum_path = root / "codex-package_SHA256SUMS"
+    checksum_path.write_text(f"{archive_digest}  {asset_name}\n", encoding="utf-8")
+    checksum_digest = hashlib.sha256(checksum_path.read_bytes()).hexdigest()
+    release_json, metadata_json = sedna_release_metadata(
+        version,
+        target,
+        native_version=native_version,
+        channel="stable",
+        prerelease=False,
+        archive_digest=archive_digest,
+        checksum_digest=checksum_digest,
+    )
+    return archive_path, checksum_path, release_json, metadata_json
 
 
 def asset_metadata(name: str, digest: str, *, reorder: bool) -> dict[str, str]:

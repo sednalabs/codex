@@ -2,12 +2,13 @@
 source: tui/src/update_prompt.rs
 expression: terminal.backend()
 ---
-  ✨ Update available! 0.0.0 -> 9.9.9
 
-  Release notes: https://github.com/sednalabs/codex/releases/latest
+  Update available · 0.162.0-sedna.dev.be2e129 → 9.9.9
+  Release notes: https://github.com/sednalabs/codex/releases
 
-› 1. Update now (runs `npm install -g @openai/codex@latest`)                    
+› 1. Update now (runs `sh -c "echo 'Manual reinstall from https://github.com/   
+     sednalabs/codex/releases'; exit 1"`)                                       
   2. Skip
   3. Skip until next version
 
-  Press enter to continue
+  enter continue · esc skip

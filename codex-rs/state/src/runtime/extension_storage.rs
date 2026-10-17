@@ -1,4 +1,4 @@
-use codex_extension_api::ExtensionStorageId;
+use super::ExtensionStorageId;
 use sqlx::Row;
 use sqlx::SqlitePool;
 use std::time::SystemTime;
@@ -23,9 +23,9 @@ CREATE TABLE IF NOT EXISTS extension_migrations (
 "#;
 
 const PHASE2_ATTESTATION_ROOTS_SQL: &str =
-    include_str!("../../migrations/0024_phase2_attestation_roots.sql");
+    include_str!("../../migrations/8000000000000003_phase2_attestation_roots.sql");
 const PHASE2_ATTESTED_BASELINES_SQL: &str =
-    include_str!("../../migrations/0038_phase2_attested_baselines.sql");
+    include_str!("../../migrations/8000000000000000_phase2_attested_baselines.sql");
 
 const STATE_EXTENSION_MIGRATIONS: &[ExtensionStorageMigration] = &[
     ExtensionStorageMigration {
@@ -158,24 +158,18 @@ mod tests {
     use crate::runtime::test_support::unique_temp_dir;
     use codex_utils_absolute_path::test_support::PathExt;
     use pretty_assertions::assert_eq;
-    use sqlx::sqlite::SqliteConnectOptions;
-    use sqlx::sqlite::SqlitePoolOptions;
 
     #[tokio::test]
     async fn extension_storage_migrations_use_namespace_versions() -> anyhow::Result<()> {
         let codex_home = unique_temp_dir();
         let sqlite = crate::SqliteConfig::new_for_testing(codex_home.as_path().abs());
         let runtime = StateRuntime::init(sqlite.clone(), "test-provider".to_string()).await?;
+        runtime.close().await;
         drop(runtime);
         let state_db_path = sqlite.state_db_path();
 
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(
-                SqliteConnectOptions::new()
-                    .filename(state_db_path)
-                    .create_if_missing(false),
-            )
+        let pool = sqlite
+            .open_read_only_pool(&state_db_path, /*busy_timeout*/ None)
             .await?;
 
         let extension_versions = sqlx::query(

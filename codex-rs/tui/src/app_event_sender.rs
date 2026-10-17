@@ -4,14 +4,17 @@
 //! without duplicating event construction or session logging behavior.
 
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 
 use crate::app_command::AppCommand;
+use crate::app_command::UserVerificationResponse;
 use codex_app_server_protocol::CommandExecutionApprovalDecision;
 use codex_app_server_protocol::FileChangeApprovalDecision;
 use codex_app_server_protocol::McpServerElicitationAction;
 use codex_app_server_protocol::RequestId as AppServerRequestId;
 use codex_app_server_protocol::ReviewTarget;
-use codex_app_server_protocol::ThreadRealtimeAudioChunk;
 use codex_app_server_protocol::ToolRequestUserInputResponse;
 use codex_protocol::ThreadId;
 use codex_protocol::request_permissions::RequestPermissionsResponse;
@@ -23,16 +26,40 @@ use crate::session_log;
 #[derive(Clone, Debug)]
 pub(crate) struct AppEventSender {
     pub app_event_tx: UnboundedSender<AppEvent>,
+    pub(crate) voice_only: Arc<AtomicBool>,
 }
 
 impl AppEventSender {
     pub(crate) fn new(app_event_tx: UnboundedSender<AppEvent>) -> Self {
-        Self { app_event_tx }
+        Self {
+            app_event_tx,
+            voice_only: Arc::default(),
+        }
     }
 
     /// Send an event to the app event channel. If it fails, we swallow the
     /// error and log it.
     pub(crate) fn send(&self, event: AppEvent) {
+        // A parked voice owner keeps processing its session, but its UI and queued
+        // typed work must not act on the visible session. Thread-scoped metadata still applies.
+        if self.voice_only.load(Ordering::Relaxed)
+            && !matches!(
+                &event,
+                AppEvent::CodexOp(
+                    AppCommand::RealtimeConversationStart { .. }
+                        | AppCommand::RealtimeConversationStop { .. }
+                        | AppCommand::RealtimeConversationSpeech { .. }
+                ) | AppEvent::RealtimeWebrtcOfferCreated { .. }
+                    | AppEvent::RealtimeWebrtcConnected { .. }
+                    | AppEvent::StopRealtimeConversation { .. }
+                    | AppEvent::RealtimeConversationStateChanged
+                    | AppEvent::BackgroundVoiceError { .. }
+                    | AppEvent::SyncThreadGitBranch { .. }
+                    | AppEvent::RefreshRateLimits { .. }
+            )
+        {
+            return;
+        }
         // Record inbound events for high-fidelity session replay.
         // Avoid double-logging Ops; those are logged at the point of submission.
         if !matches!(event, AppEvent::CodexOp(_)) {
@@ -63,13 +90,6 @@ impl AppEventSender {
         self.send(AppEvent::CodexOp(AppCommand::list_skills(
             cwds,
             force_reload,
-        )));
-    }
-
-    #[cfg_attr(target_os = "linux", allow(dead_code))]
-    pub(crate) fn realtime_conversation_audio(&self, audio: ThreadRealtimeAudioChunk) {
-        self.send(AppEvent::CodexOp(AppCommand::realtime_conversation_audio(
-            audio,
         )));
     }
 
@@ -127,6 +147,19 @@ impl AppEventSender {
         self.send(AppEvent::SubmitThreadOp {
             thread_id,
             op: AppCommand::resolve_elicitation(server_name, request_id, decision, content, meta),
+        });
+    }
+
+    pub(crate) fn resolve_user_verification(
+        &self,
+        thread_id: ThreadId,
+        server_name: String,
+        request_id: AppServerRequestId,
+        response: UserVerificationResponse,
+    ) {
+        self.send(AppEvent::SubmitThreadOp {
+            thread_id,
+            op: AppCommand::resolve_user_verification(server_name, request_id, response),
         });
     }
 }

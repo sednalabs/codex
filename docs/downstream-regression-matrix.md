@@ -12,6 +12,24 @@ that should fail if the behavior regresses. Historical references to
 `carry/main` refer to the pre-cutover name for the maintained downstream
 branch.
 
+## Native computer-use provider adapters
+
+This focused matrix maps the native computer-use carry to its narrow source
+checks. Substantive Rust validation, generated lock verification, and builds
+run on standard GitHub-hosted runners only; the coordination workstation is
+not a validation host.
+
+| Outcome                 | Focused hosted proof                                                                                                                                                                                              | Required regression semantics                                                                                                                                                                                                                                                                    |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Android adapter         | Standard hosted execution of the `codex-android-computer-use` library target plus the TUI library's Android consumer fixtures. The exact catalog row and invocation belong to the hosted-route owner.             | Config aliases/defaults, MCP request mapping, ordered action batches, first-failure handling, install-build mapping, post-action/post-failure observation, native image requirement, same-turn request correlation, and abandoned-thread rejection before provider start.                        |
+| Desktop adapter         | Standard hosted TUI library validation for the exact candidate, including the Desktop provider unit tests and app-server consumer fixture. The exact catalog row and invocation belong to the hosted-route owner. | Config filenames and environment overrides, argv-only command launch, request/stdout/stderr/deadline bounds, owned-child timeout/cancellation cleanup, uncertain-result recovery, native image requirement, same-turn request correlation, and abandoned-thread rejection before provider start. |
+| Shared Browser boundary | Existing exact Browser source and hosted consumer lanes.                                                                                                                                                          | Preserve Browser hook signatures, its abandoned-thread guard, existing `codex_tui` and generic routing, and typed image completion.                                                                                                                                                              |
+
+The focused recipe is diagnostic and does not replace exact candidate-bound
+hosted inventory/execution, generated Cargo/Bazel lock checks, independent
+candidate review, or protected source publication. Never relabel predecessor
+CI as proof for a composed candidate.
+
 ## MCP Streamable HTTP cancellation
 
 `codex.rmcp-client-transport` runs the complete client suite, including a dedicated
@@ -38,14 +56,39 @@ Installed-host first use is a separate acceptance step after protected delivery.
 
 ## Core default path
 
-Exact-target V2 `wait_agent` ignores queue-only (`trigger_turn=false`) mailbox
-activity while preserving durable FIFO delivery and notification summaries;
-targetless waits retain broad mailbox wake behavior. The focused guardrail is
-`codex.core-multi-agent-orchestration-targeted`, covering
-`multi_agent_v2_wait_agent_accepts_target_and_timeout_arguments`,
-`multi_agent_v2_wait_agent_does_not_return_completed_content`,
-`multi_agent_v2_wait_agent_wakes_on_trigger_turn_mailbox_notification`, and
-`input_queue_tracks_pending_trigger_turn_mail`.
+V2 `send_message` without an explicit intent keeps ordinary queue-only delivery
+quiet and FIFO; explicit `progress` is quiet as well. Every explicit intent,
+including `progress`, requires an `idempotency_key` and retains the original
+message and scope in durable admission metadata. An identical retry returns
+its original receipt, changed requests cannot reuse the key, and `supersedes`
+may name only same-scope progress updates. Only `action_required` and
+`result_ready` are actionable and can wake an active
+V2 `wait_agent` only when the root wait explicitly targets the matching sender.
+The signal is body-free and matched against the sender/recipient identity and
+pending generation; subscription precedes the pending-message snapshot.
+Unmatched activity, progress, and legacy ID-bearing messages do not produce an
+actionable wake. Trigger-turn mailbox activity, operator steer, and target
+terminal status remain separate wait outcomes; this does not start a new turn or
+change follow-up/interrupt rules. A targetless wait is not a substitute for an
+explicit sender-targeted wait.
+
+The focused guardrail is `codex.core-multi-agent-orchestration-targeted`,
+covering `queue_only_mail_waits_for_followup_and_is_delivered_once`,
+`already_pending_queue_only_mail_does_not_complete_wait`,
+`multi_agent_v2_explicit_root_updates_are_durable_and_idempotent`,
+`active_wait_wakes_for_targeted_action_but_not_progress_unmatched_or_legacy_id`,
+`explicit_action_snapshot_is_targeted_and_subscribe_before_snapshot_is_wake_safe`,
+and `explicit_snapshot_catches_preexisting_matching_action_but_not_progress`.
+The retained rollout metadata contract is covered by
+`codex-history` lib test `explicit_inter_agent_admission_round_trips_on_existing_metadata_record`
+and `codex-thread-store` lib test
+`migration_keeps_admission_ledger_outside_bounded_subagent_context`. The
+`codex-core` lib selectors
+`explicit_communication_reconciles_post_append_metadata_failure_once`,
+`explicit_batch_retry_keeps_failed_message_before_suffix`,
+`explicit_retry_restores_persisted_envelope_not_regenerated_metadata`, and
+`explicit_retry_does_not_resurrect_rolled_back_compaction_history` cover
+checked persistence and retry/rollback reconciliation.
 
 Default broader local validation path when you intentionally want a repo-side
 gate:
@@ -81,6 +124,7 @@ Fast lanes used by `core-test-smoke` locally and by the remote smoke matrix:
 Focused targeted lanes for iterative work on the current carry seams:
 
 - `codex.agent-workflow-sanity`
+
   - Runs `test_gh_pr_watch.py` and compiles `gh_pr_watch.py`. The source
     contract covers exact-head decision and wake receipts, BLOCKED-versus-CLEAN
     readiness, pending checks, published/ignored review evidence, and active
@@ -101,10 +145,9 @@ Focused targeted lanes for iterative work on the current carry seams:
     `changing_configured_mode_hint_to_empty_appends_explicit_reset`, which
     proves the same replacement survives a resumed thread without retaining the
     removed custom policy as the active mode.
-  - Includes upstream
-    `queue_only_agent_mail_wakes_sleeping_root_and_persists_message`, which
-    proves queue-only child mail wakes a root thread only while it has a durable
-    sleep and that the message is persisted in thread history.
+  - Includes `queue_only_mail_waits_for_followup_and_is_delivered_once` and
+    `already_pending_queue_only_mail_does_not_complete_wait`, which preserve
+    quiet queue-only delivery and wait behavior.
 - `codex.blocking-waits-core-targeted`
 - `codex.blocking-waits-unified-exec-targeted`
 - `codex.blocking-waits-app-server-targeted`
@@ -120,6 +163,16 @@ Focused targeted lanes for iterative work on the current carry seams:
 - `codex.shell-tool-mcp-ci`
 - `codex.build-policy-sanity`
 - `codex.core-persisted-subagent-descendants-targeted`
+  - Recovery coverage spans the `codex-core` and `codex-agent-graph-store`
+    library targets. Bounded traversal excludes the root, terminates cycles,
+    filters edge status, and distinguishes an exact limit from overflow.
+    Restoration preflights all stored identities and commits registry metadata
+    atomically; a late path conflict must not consume slots or nicknames.
+    Cold V2 root resume retains descendant identities without eagerly reopening
+    their runtimes, and a later follow-up reloads the same child ID. Ordinary
+    failed-spawn and released-nickname history controls remain separate.
+    Source-library qualification and the packaged nested-recovery consumer are
+    complementary evidence, not substitutes for protected landing or live use.
 - `codex.code-mode-declaration-targeted`
 - `codex.core-context-serialization-targeted`
 - `codex.core-attestation-targeted`
@@ -834,7 +887,7 @@ acceptance and agent acknowledgement or completion.
 | Native computer-use thread items remain explicitly non-searchable alongside other tool calls while upstream occurrence search retains exhaustive downstream enum coverage                                                                                                                                                                                                                                                                                                                                                                                                 | `codex.app-server-computer-use-targeted`; Frontier `core` and `ui-protocol` lanes                                                                                                                                                                                | `codex-thread-store` compile coverage; exhaustive `searchable_text` classification in `local/thread_history/search.rs`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | Custom prompt discovery and review prompt flow                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | `codex.custom-prompts-targeted`                                                                                                                                                                                                                                  | `custom_prompts::tests::*`; `resolve_review_request_custom_target_trims_prompt_and_hint`; `resolve_review_request_custom_target_preserves_explicit_hint_while_trimming_instructions`; `review_popup_custom_prompt_action_sends_event`; `custom_prompt_submit_sends_review_op`; `custom_prompt_enter_empty_does_not_send`; `review_custom_prompt_escape_navigates_back_then_dismisses`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | MCP server safety policy extensions, OAuth fallback hardening, keyring backend preservation, and refresh scope hygiene                                                                                                                                                                                                                                                                                                                                                                                                                                                    | `codex.mcp-safety-targeted`; `codex.mcp-server-contract-targeted`                                                                                                                                                                                                | `blocking_replace_mcp_servers_round_trips`; `blocking_replace_mcp_servers_serializes_tool_approval_overrides`; `write_value_supports_custom_mcp_server_default_tool_approval_mode`; `load_oauth_tokens_ignores_empty_fallback_file`; `load_oauth_tokens_auto_ignores_corrupt_fallback_when_keyring_errors`; `refresh_expires_in_from_timestamp_marks_expired_tokens`; `refresh_credentials_do_not_expose_granted_scopes_to_rmcp`; `refreshes_expired_persisted_token_before_initialize`; `rejected_refresh_token_requires_reauthorization`; `transient_refresh_failure_does_not_require_reauthorization`; `malformed_refresh_failure_does_not_require_reauthorization`; `suite::rmcp_client::streamable_http_with_oauth_round_trip`; Streamable HTTP client constructor/connection-manager compile coverage for `AuthKeyringBackendKind` propagation                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| MCP OAuth device login for headless Streamable HTTP servers, including dynamic client registration when no public client id is configured                                                                                                                                                                                                                                                                                                                                                                                                                                 | `codex.mcp-device-login-targeted`; remote `validation-lab` targeted profile                                                                                                                                                                                      | `discover_streamable_http_oauth_returns_normalized_scopes`; `device_login_dynamic_registration_uses_device_grant_shape`; `device_login_dynamic_registration_omits_refresh_when_not_supported`; `device_login_configured_client_id_skips_dynamic_registration`; `device_login_polls_until_authorized`; `device_login_preserves_configured_and_discovered_scopes_on_rejection`; `device_login_expiry_bounds_an_unresponsive_token_endpoint`; `device_login_cancellation_drops_the_in_flight_poll`; `mcp_login_parses_device_auth_flag`; remote branch build for the Linux `codex` preview binary                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| MCP OAuth device login for headless Streamable HTTP servers, including dynamic client registration when no public client id is configured                                                                                                                                                                                                                                                                                                                                                                                                                                 | `codex.mcp-device-login-targeted`; remote `validation-lab` targeted profile                                                                                                                                                                                      | `discover_streamable_http_oauth_returns_normalized_scopes`; `device_login_dynamic_registration_uses_device_grant_shape`; `device_login_dynamic_registration_omits_refresh_when_not_supported`; `device_login_configured_client_id_skips_dynamic_registration`; `device_login_polls_until_authorized`; `device_login_preserves_configured_and_discovered_scopes_on_rejection`; `device_login_expiry_bounds_an_in_flight_token_response`; `device_login_cancellation_drops_the_in_flight_poll`; `mcp_login_parses_device_auth_flag`; remote branch build for the Linux `codex` preview binary                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | Agent-workflow helpers for PR babysitting, workflow dispatch/watch loops, and runtime-coupled subagent tail inspection                                                                                                                                                                                                                                                                                                                                                                                                                                                    | `codex.agent-workflow-sanity`                                                                                                                                                                                                                                    | `python3 -m py_compile` over `gh_pr_watch.py`, `gh_workflow_run_watch.py`, `gh_dispatch_and_watch.py`, and `inspect_subagent_tail.py`; `test_gh_workflow_run_watch.py` (assignment timeout); `test_gh_dispatch_and_watch.py`; `test_inspect_subagent_tail.py`; `inspect_subagent_tail.py --help                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | Shell tool MCP helper package CI and packaging sanity                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | `codex.shell-tool-mcp-ci`                                                                                                                                                                                                                                        | `pnpm --filter @openai/codex-shell-tool-mcp run format`; `pnpm --filter @openai/codex-shell-tool-mcp test`; `pnpm --filter @openai/codex-shell-tool-mcp run build`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | Build/config policy scripts, canonical config-schema ownership, installer release-origin isolation, and workspace guardrails                                                                                                                                                                                                                                                                                                                                                                                                                                              | `codex.build-policy-sanity`; hosted `blocking-ci` repo-checks, Cargo, and Bazel coverage                                                                                                                                                                         | `bash -n scripts/install/install.sh`; `test_custom_repository_and_tag_prefix_drive_latest_urls`; `test_releases_latest_installs_verified_package_by_default`; `test_releases_unusable_metadata_falls_back_to_github`; `test_releases_asset_download_falls_back_to_github`; `test_releases_corrupt_assets_fall_back_to_github`; `test_releases_wrong_checksum_digest_uses_github_metadata`; `test_releases_exact_rejects_wrong_binary_version`; `test_releases_exact_legacy_fallback_reuses_offline_install`; `verify_bazel_clippy_lints.py`; `verify_cargo_workspace_manifests.py`; `py_compile` for `stage_npm_packages.py` and the policy verifier scripts; `config_schema_matches_fixture`; `nullable_any_of_is_canonicalized_without_changing_other_unions`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
@@ -1190,3 +1243,26 @@ on a disposable hosted Linux runner. Ordinary non-Linux compile coverage must
 include the new crate and all production consumers. These fixture and compile
 lanes supplement the exact protected contribution checks; source inspection
 does not replace them.
+
+## Client instruction overlays
+
+The public behavior and limits are documented in
+[`docs/config.md`](config.md#client-instruction-overlays). The focused
+consumer map uses existing named-test targets: `codex-config` library for
+closed configuration, literal operations, bounds, and layer trust;
+`codex-core` library for source gating, request-copy transformation, atomic
+failure, role projection, and model-client construction; and the `codex-core`
+`all` integration target for lifecycle behavior across fresh requests, resume,
+fork, thread spawn, review, and configuration rollback. The `codex-cli` binary
+target covers the bounded configuration inspection projection and its stated
+overlay limitation. `config_schema_matches_fixture` covers the generated
+configuration schema contract. These names describe consumer coverage; this
+matrix does not assert that a hosted run passed.
+
+The canonical package consumer is
+`test_cli_instruction_overlays_in_synthetic_linux_package` in
+`scripts/codex_package/smoke_tests/test_codex_package.py`. It exercises the
+packaged CLI with synthetic configuration and a loopback Responses server,
+including ordered edit behavior, unchanged permissions, mismatch failure, and
+configuration rollback on the same binary. It is a source-level fixture until
+run on the applicable hosted package surface, not installed or live acceptance.

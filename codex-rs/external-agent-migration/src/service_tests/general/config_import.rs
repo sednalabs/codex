@@ -100,7 +100,6 @@ url = "https://example.com/mixed-transport"
     .await
     .expect("detect");
 
-    let repo_root = canonical_fixture_path(&repo_root);
     assert_eq!(
         items,
         vec![ExternalAgentConfigMigrationItem {
@@ -391,6 +390,7 @@ async fn import_local_plugins_returns_completed_status() {
                 cwd: None,
                 source: Some("cloudflare@my-plugins".to_string()),
                 target: Some("cloudflare@my-plugins".to_string()),
+                title: None,
             }],
             raw_errors: Vec::new(),
         }]

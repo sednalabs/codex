@@ -80,12 +80,12 @@ where
         async move {
             let start = Instant::now();
             let result = future.await;
-            if let Some(t) = telemetry.as_ref() {
-                let (status, err) = match &result {
-                    Ok(resp) => (Some(resp.status()), None),
-                    Err(err) => (http_status(err), Some(err)),
+            if let Some(telemetry) = telemetry.as_ref() {
+                let (status, error) = match &result {
+                    Ok(response) => (Some(response.status()), None),
+                    Err(error) => (http_status(error), Some(error)),
                 };
-                t.on_request(attempt, status, err, start.elapsed());
+                telemetry.on_request(attempt, status, error, start.elapsed());
             }
             result
         }

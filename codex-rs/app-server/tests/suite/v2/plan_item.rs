@@ -151,6 +151,7 @@ async fn start_plan_mode_turn(mcp: &mut TestAppServer) -> Result<codex_app_serve
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id,
                 client_user_message_id: None,
                 input: vec![V2UserInput::Text {

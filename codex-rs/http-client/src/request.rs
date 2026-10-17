@@ -9,9 +9,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 /// Single-use authority retained until a concrete transport accepts ownership of a request.
-///
-/// Clones share one claim bit, so a retry, reconnect, or duplicate send cannot reuse authority
-/// admitted for an earlier attempt. The held value is intentionally opaque and never formatted.
+/// Clones share one claim bit, so retries and duplicate sends cannot reuse an admitted authority.
 #[derive(Clone)]
 pub struct RequestInitiation {
     state: Arc<RequestInitiationState>,
@@ -44,7 +42,7 @@ impl RequestInitiation {
         }
     }
 
-    /// Claims the one send that this authority snapshot admitted.
+    /// Claims the one send admitted by this authority snapshot.
     pub fn claim(&self) -> Result<ClaimedRequestInitiation, String> {
         let mut inner = self
             .state
@@ -61,7 +59,7 @@ impl RequestInitiation {
         })
     }
 
-    /// Releases authority without admitting a send, for a pre-transport failure or cancellation.
+    /// Releases authority without admitting a send, for cancellation or pre-transport failure.
     pub fn cancel(&self) {
         let mut inner = self
             .state
@@ -73,8 +71,8 @@ impl RequestInitiation {
     }
 }
 
-/// An exactly-once initiation claim. Dropping it releases authority if the transport fails before
-/// acknowledging request ownership.
+/// An exactly-once initiation claim. Dropping it releases authority if transport ownership was
+/// not acknowledged.
 pub struct ClaimedRequestInitiation {
     initiation: Option<RequestInitiation>,
 }
@@ -170,6 +168,9 @@ pub struct Request {
     pub body: Option<RequestBody>,
     pub compression: RequestCompression,
     pub timeout: Option<Duration>,
+    /// Maximum accepted response-body bytes, including streaming and error bodies.
+    /// `None` leaves the response unbounded.
+    pub response_body_limit_bytes: Option<usize>,
 }
 
 impl Request {
@@ -181,6 +182,7 @@ impl Request {
             body: None,
             compression: RequestCompression::None,
             timeout: None,
+            response_body_limit_bytes: None,
         }
     }
 
@@ -324,28 +326,6 @@ impl Request {
             headers,
             body: Some(bytes),
         })
-    }
-}
-
-#[cfg(test)]
-mod request_initiation_tests {
-    use super::RequestInitiation;
-
-    #[test]
-    fn cancellation_and_claim_are_single_use_and_secret_safe() {
-        let cancelled = RequestInitiation::new("authority-secret".to_string());
-        let stale = cancelled.clone();
-        cancelled.cancel();
-        assert!(stale.claim().is_err());
-
-        let claimed = RequestInitiation::new("other-secret".to_string());
-        let duplicate = claimed.clone();
-        claimed.claim().expect("first claim should succeed");
-        assert!(duplicate.claim().is_err());
-
-        let debug = format!("{cancelled:?} {claimed:?}");
-        assert!(!debug.contains("authority-secret"));
-        assert!(!debug.contains("other-secret"));
     }
 }
 

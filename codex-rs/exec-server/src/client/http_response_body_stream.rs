@@ -19,6 +19,7 @@ use tokio::runtime::Handle;
 use tokio::sync::OwnedSemaphorePermit;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
+use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 use crate::client::ExecServerError;
@@ -75,14 +76,35 @@ enum HttpResponseBodyStreamInner {
 /// id until EOF or a terminal error.
 pub struct HttpResponseBodyStream {
     inner: HttpResponseBodyStreamInner,
+    cancellation: Option<CancellationToken>,
 }
 
 impl HttpResponseBodyStream {
+    /// Creates an in-memory response stream from pre-buffered chunks.
+    ///
+    /// This is useful for [`crate::HttpClient`] implementations that already
+    /// own the response bytes, including lightweight test clients.
+    #[doc(hidden)]
+    pub fn from_chunks(chunks: Vec<Vec<u8>>) -> Self {
+        let body = futures::stream::iter(
+            chunks
+                .into_iter()
+                .map(|chunk| Ok::<Bytes, HttpError>(chunk.into())),
+        );
+        Self {
+            inner: HttpResponseBodyStreamInner::Local {
+                body: Box::pin(body),
+            },
+            cancellation: None,
+        }
+    }
+
     pub(super) fn local(response: HttpResponse) -> Self {
         Self {
             inner: HttpResponseBodyStreamInner::Local {
                 body: Box::pin(response.bytes_stream()),
             },
+            cancellation: None,
         }
     }
 
@@ -100,7 +122,14 @@ impl HttpResponseBodyStream {
                 pending_eof: false,
                 closed: false,
             },
+            cancellation: None,
         }
+    }
+
+    /// Ends this stream when its owning request authority is revoked.
+    pub fn cancel_on(mut self, cancellation: CancellationToken) -> Self {
+        self.cancellation = Some(cancellation);
+        self
     }
 
     /// Receives the next response-body chunk.
@@ -108,6 +137,17 @@ impl HttpResponseBodyStream {
     /// Returns `Ok(None)` at EOF and converts sequence gaps or stream-side
     /// stream errors into protocol errors.
     pub async fn recv(&mut self) -> Result<Option<Vec<u8>>, ExecServerError> {
+        let Some(cancellation) = self.cancellation.clone() else {
+            return self.recv_inner().await;
+        };
+        tokio::select! {
+            biased;
+            () = cancellation.cancelled() => Ok(None),
+            result = self.recv_inner() => result,
+        }
+    }
+
+    async fn recv_inner(&mut self) -> Result<Option<Vec<u8>>, ExecServerError> {
         match &mut self.inner {
             HttpResponseBodyStreamInner::Local { body } => match body.next().await {
                 Some(chunk) => match chunk {

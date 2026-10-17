@@ -1,4 +1,12 @@
 load("@apple_support//xcode:xcode_config.bzl", "xcode_config")
+load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
+
+# Set for builds that need custom V8 C++ flags or source instrumentation.
+bool_flag(
+    name = "rusty_v8_from_source",
+    build_setting_default = False,
+    visibility = ["//visibility:public"],
+)
 
 xcode_config(name = "disable_xcode")
 
@@ -9,10 +17,51 @@ platform(
     name = "local_linux",
     constraint_values = [
         # We mark the local platform as glibc-compatible because musl-built rust cannot dlopen proc macros.
+        "@rules_rs//rs/platforms/constraints:glibc",
         "@llvm//constraints/libc:gnu.2.28",
     ],
     parents = ["@platforms//host"],
 )
+
+platform(
+    name = "linux_x86_64_gnu",
+    constraint_values = ["@llvm//constraints/libc:gnu.2.28"],
+    parents = ["@rules_rs//rs/platforms:x86_64-unknown-linux-gnu"],
+)
+
+platform(
+    name = "linux_aarch64_gnu",
+    constraint_values = ["@llvm//constraints/libc:gnu.2.28"],
+    parents = ["@rules_rs//rs/platforms:aarch64-unknown-linux-gnu"],
+)
+
+# GNU and static musl tests execute on the matching native GNU runner. Keep
+# the CPU explicit so a cross-built test cannot select the wrong host.
+[
+    toolchain(
+        name = "linux_" + cpu + "_" + libc + "_tests_toolchain",
+        exec_compatible_with = [
+            "@platforms//cpu:" + cpu,
+            "@platforms//os:linux",
+            "@rules_rs//rs/platforms/constraints:glibc",
+        ],
+        target_compatible_with = [
+            "@platforms//cpu:" + cpu,
+            "@platforms//os:linux",
+            "@rules_rs//rs/platforms/constraints:" + libc,
+        ],
+        toolchain = "@bazel_tools//tools/test:empty_toolchain",
+        toolchain_type = "@bazel_tools//tools/test:default_test_toolchain_type",
+    )
+    for cpu in [
+        "x86_64",
+        "aarch64",
+    ]
+    for libc in [
+        "glibc",
+        "musl",
+    ]
+]
 
 platform(
     name = "local_windows",
@@ -67,43 +116,12 @@ toolchain(
     toolchain_type = "@bazel_tools//tools/test:default_test_toolchain_type",
 )
 
-# The generated rules_rs wrapper remains the implementation of the Rust
-# toolchain. Keep this native selector's execution constraints explicit so the
-# ARM64 gnullvm health aquery cannot fall through to the same-CPU MSVC
-# toolchain. Keep this selector limited to non-BPF actions; the generated
-# wrapper supplies the target compatibility for the requested platform.
-toolchain(
-    name = "windows_aarch64_gnullvm_rust_toolchain_for_health",
-    exec_compatible_with = [
-        "@platforms//cpu:aarch64",
-        "@platforms//os:windows",
-        "@llvm//constraints/windows/abi:gnullvm",
-        "@llvm//constraints/windows/crt:msvcrt",
-    ],
-    target_settings = [
-        "@rules_rust//rust/private:bootstrapped",
-        "@rules_rust//rust/toolchain/channel:stable",
-        "@rules_rs//rs/toolchains:non_bpf_targets",
-    ],
-    toolchain = "@default_rust_toolchains//:windows_aarch64_gnullvm_1_95_0_rust_toolchain",
-    toolchain_type = "@rules_rust//rust:toolchain_type",
-)
-
 alias(
     name = "rbe",
     actual = "@rbe_platform",
 )
 
 exports_files([
-    "AGENTS.md",
     "workspace_root_test_launcher.bat.tpl",
     "workspace_root_test_launcher.sh.tpl",
 ])
-
-exports_files(
-    [
-        "scripts/codex_usage_report.py",
-        "scripts/test_codex_usage_report.py",
-    ],
-    visibility = ["//codex-rs/state:__pkg__"],
-)

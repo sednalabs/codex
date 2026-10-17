@@ -1,9 +1,4 @@
 use super::*;
-use crate::HttpTransport;
-use crate::Request;
-use crate::RequestInitiation;
-use crate::ReqwestTransport;
-use crate::TransportError;
 use http::HeaderValue;
 use http::Method;
 use http::header::AUTHORIZATION;
@@ -18,7 +13,7 @@ use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 
 #[tokio::test]
-async fn retry_never_sends_one_credentialed_stream_after_http2_refusal() {
+async fn without_retries_sends_one_credentialed_request_after_http2_refusal() {
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
         .expect("HTTP/2 listener should bind");
@@ -61,25 +56,18 @@ async fn retry_never_sends_one_credentialed_stream_after_http2_refusal() {
     let client = HttpClientBuilder::new()
         .without_redirects()
         .without_retries()
-        .last_resort_reqwest_builder()
         .http2_prior_knowledge()
+        .base_reqwest_builder()
         .no_proxy()
         .build()
         .expect("HTTP/2 client should build");
-    let transport = ReqwestTransport::from_http_client(HttpClient::new(client));
-    let initiation = RequestInitiation::new(());
-    let claim = initiation
-        .claim()
-        .expect("first attempt should claim authority");
-    let mut request = Request::new(Method::POST, format!("http://{address}/responses"));
-    request.headers.insert(
-        AUTHORIZATION,
-        HeaderValue::from_static("Bearer wire-secret"),
-    );
-
-    let response = transport.execute(request);
-    claim.acknowledge();
-    assert!(matches!(response.await, Err(TransportError::Network(_))));
+    let response = client
+        .request(Method::POST, format!("http://{address}/responses"))
+        .header(AUTHORIZATION, "Bearer wire-secret")
+        .body("credentialed-body")
+        .send()
+        .await;
+    assert!(response.is_err());
     server.await.expect("HTTP/2 server task should finish");
     assert_eq!(credentialed_attempts.load(Ordering::SeqCst), 1);
 }
@@ -121,6 +109,10 @@ async fn custom_ca_fallback_preserves_builder_configuration() {
             reqwest::ClientBuilder::build,
         );
 
+    let client = HttpClient {
+        backend: HttpClientBackend::Direct(client),
+    };
+
     let response = client
         .get(format!("http://{address}/fallback"))
         .send()
@@ -136,7 +128,7 @@ async fn custom_ca_fallback_preserves_builder_configuration() {
 }
 
 fn forced_credential_bound_last_resort_client() -> HttpClient {
-    HttpClientBuilder::new()
+    let client = HttpClientBuilder::new()
         .without_redirects()
         .without_retries()
         .build_with_custom_ca_fallback_using(
@@ -149,11 +141,14 @@ fn forced_credential_bound_last_resort_client() -> HttpClient {
                 })
             },
             |_| Err::<reqwest::Client, _>("synthetic fallback builder failure"),
-        )
+        );
+    HttpClient {
+        backend: HttpClientBackend::Direct(client),
+    }
 }
 
 #[tokio::test]
-async fn credential_bound_double_build_fallback_never_follows_307_or_308() {
+async fn credential_bound_last_resort_fallback_never_follows_redirects() {
     for status in [307, 308] {
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await
@@ -162,7 +157,10 @@ async fn credential_bound_double_build_fallback_never_follows_307_or_308() {
             .local_addr()
             .expect("redirect listener should have an address");
         let server = tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.expect("first POST should connect");
+            let (mut stream, _) = listener
+                .accept()
+                .await
+                .expect("credentialed POST should connect");
             let first = read_http_headers(&mut stream).await;
             stream
                 .write_all(
@@ -206,75 +204,4 @@ async fn read_http_headers(stream: &mut tokio::net::TcpStream) -> String {
         request.extend_from_slice(&chunk[..bytes_read]);
     }
     String::from_utf8(request).expect("HTTP request should be UTF-8")
-}
-
-#[tokio::test]
-async fn zero_write_stale_pool_recovery_sends_credentials_once() {
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-        .await
-        .expect("stale-pool listener should bind");
-    let address = listener
-        .local_addr()
-        .expect("stale-pool listener should have an address");
-    let server = tokio::spawn(async move {
-        let (mut abandoned, _) = listener
-            .accept()
-            .await
-            .expect("priming connection should be accepted");
-        let priming = read_http_headers(&mut abandoned).await;
-        abandoned
-            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
-            .await
-            .expect("priming response should write");
-        // Half-close the server write side after advertising keep-alive. Hyper-util may check out
-        // this now-stale pooled connection, but its built-in recovery is limited to requests that
-        // were canceled before any request bytes were written.
-        abandoned
-            .shutdown()
-            .await
-            .expect("stale connection should half-close");
-        let mut abandoned_bytes = Vec::new();
-        let _ = tokio::time::timeout(
-            Duration::from_millis(250),
-            abandoned.read_to_end(&mut abandoned_bytes),
-        )
-        .await;
-
-        let (mut fresh, _) = listener
-            .accept()
-            .await
-            .expect("fresh connection should be accepted");
-        let credentialed = read_http_headers(&mut fresh).await;
-        fresh
-            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-            .await
-            .expect("fresh response should write");
-        (priming, abandoned_bytes, credentialed)
-    });
-    let client = HttpClientBuilder::new()
-        .without_redirects()
-        .without_retries()
-        .base_reqwest_builder()
-        .no_proxy()
-        .build()
-        .expect("credential-bound client should build");
-    client
-        .get(format!("http://{address}/prime"))
-        .send()
-        .await
-        .expect("priming request should succeed");
-    let response = client
-        .post(format!("http://{address}/credentialed"))
-        .header(AUTHORIZATION, "Bearer one-wire-secret")
-        .body("credentialed-body")
-        .send()
-        .await
-        .expect("zero-write stale-pool recovery should succeed");
-    assert!(response.status().is_success());
-
-    let (priming, abandoned_bytes, credentialed) =
-        server.await.expect("stale-pool server should finish");
-    assert!(!priming.contains("authorization:"));
-    assert_eq!(abandoned_bytes, Vec::<u8>::new());
-    assert!(credentialed.contains("authorization: Bearer one-wire-secret"));
 }

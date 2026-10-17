@@ -4,13 +4,22 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use codex_utils_absolute_path::AbsolutePathBuf;
+use semver::Version;
+use serde::Deserialize;
 
 const BIN_DIRNAME: &str = "bin";
+const CODE_MODE_HOST_EXECUTABLE_NAME: &str = if cfg!(windows) {
+    "codex-code-mode-host.exe"
+} else {
+    "codex-code-mode-host"
+};
 const PACKAGE_METADATA_FILENAME: &str = "codex-package.json";
+const SEDNA_RELEASE_RECEIPT_FILENAME: &str = "sedna-release.json";
 const PATH_DIRNAME: &str = "codex-path";
 const RELEASES_DIRNAME: &str = "releases";
 const RESOURCES_DIRNAME: &str = "codex-resources";
 const STANDALONE_PACKAGES_DIRNAME: &str = "standalone";
+const APP_SERVER_DAEMON_PACKAGES_DIRNAME: &str = "app-server-daemon";
 const ZSH_DIRNAME: &str = "zsh";
 static INSTALL_CONTEXT: OnceLock<InstallContext> = OnceLock::new();
 
@@ -32,6 +41,48 @@ pub struct CodexPackageLayout {
     pub path_dir: Option<AbsolutePathBuf>,
 }
 
+/// Version metadata recorded in a bundled Codex runtime package.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub struct CodexPackageManifest {
+    pub version: Version,
+    #[serde(default, rename = "nativeVersion")]
+    pub native_version: Option<Version>,
+    #[serde(default)]
+    pub target: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SednaReleaseReceipt {
+    pub schema_version: u32,
+    pub selection_channel: String,
+    pub release: SednaReleaseMetadata,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SednaReleaseMetadata {
+    pub schema_version: u32,
+    pub repository: String,
+    pub release_tag: String,
+    pub package_version: Version,
+    pub native_version: Version,
+    pub channel: String,
+    pub target: String,
+    pub source_commit: String,
+    pub source_tree: String,
+    pub workflow_host_commit: String,
+    pub workflow_host_tree: String,
+    pub workflow_run_id: String,
+    pub archive: SednaReleaseArchive,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub struct SednaReleaseArchive {
+    pub name: String,
+    pub sha256: String,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InstallContext {
     pub method: InstallMethod,
@@ -41,11 +92,11 @@ pub struct InstallContext {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum InstallMethod {
     Standalone {
-        /// The managed standalone release directory. Legacy installs use paths
+        /// The managed package release directory. Legacy installs use paths
         /// such as
         /// `~/.codex/packages/standalone/releases/0.111.0-x86_64-unknown-linux-musl`.
-        /// Package-layout installs use the package root that contains `bin/`,
-        /// `codex-resources/`, and `codex-path/`.
+        /// Package-layout installs use the selected package root that contains
+        /// `bin/`, `codex-resources/`, and `codex-path/`.
         release_dir: AbsolutePathBuf,
         /// The bundled resource directory for managed dependencies.
         resources_dir: Option<AbsolutePathBuf>,
@@ -58,6 +109,8 @@ pub enum InstallMethod {
     Bun,
     /// A Codex binary launched through the pnpm-managed `codex.js` shim.
     Pnpm,
+    /// A Codex binary launched through the Vite+-managed `codex.js` shim.
+    VitePlus,
     /// A Codex binary that appears to come from a Homebrew install prefix.
     Brew,
     /// Any other execution environment.
@@ -80,6 +133,16 @@ impl InstallContext {
             method_override,
             codex_home.as_deref(),
         )
+    }
+
+    /// Resolve an executable using the Codex home already established by its owner.
+    pub fn from_exe_in_codex_home(
+        is_macos: bool,
+        current_exe: Option<&Path>,
+        method_override: Option<InstallMethod>,
+        codex_home: &Path,
+    ) -> Self {
+        Self::from_exe_with_codex_home(is_macos, current_exe, method_override, Some(codex_home))
     }
 
     fn from_exe_with_codex_home(
@@ -106,7 +169,9 @@ impl InstallContext {
     pub fn current() -> &'static Self {
         INSTALL_CONTEXT.get_or_init(|| {
             let current_exe = std::env::current_exe().ok();
-            let method_override = if std::env::var_os("CODEX_MANAGED_BY_PNPM").is_some() {
+            let method_override = if std::env::var_os("CODEX_MANAGED_BY_VITE_PLUS").is_some() {
+                Some(InstallMethod::VitePlus)
+            } else if std::env::var_os("CODEX_MANAGED_BY_PNPM").is_some() {
                 Some(InstallMethod::Pnpm)
             } else if std::env::var_os("CODEX_MANAGED_BY_NPM").is_some() {
                 Some(InstallMethod::Npm)
@@ -121,6 +186,66 @@ impl InstallContext {
                 method_override,
             )
         })
+    }
+
+    /// Read the manifest for the package that contains the current executable.
+    pub fn package_manifest(&self) -> Option<CodexPackageManifest> {
+        let package_layout = self.package_layout.as_ref()?;
+        let manifest =
+            std::fs::read_to_string(package_layout.package_dir.join(PACKAGE_METADATA_FILENAME))
+                .ok()?;
+        serde_json::from_str(&manifest).ok()
+    }
+
+    /// Read and cross-check installer provenance for a Sedna-managed package.
+    pub fn sedna_release_receipt(&self) -> Option<SednaReleaseReceipt> {
+        let InstallMethod::Standalone { release_dir, .. } = &self.method else {
+            return None;
+        };
+        let receipt = std::fs::read_to_string(release_dir.join(SEDNA_RELEASE_RECEIPT_FILENAME))
+            .ok()
+            .and_then(|contents| serde_json::from_str::<SednaReleaseReceipt>(&contents).ok())?;
+        let manifest = self.package_manifest()?;
+        let metadata = &receipt.release;
+        let target = manifest.target.as_deref()?;
+        let valid_hex = |value: &str| {
+            value.len() == 40
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        };
+        let valid_digest = |value: &str| {
+            value.len() == 64
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        };
+        (receipt.schema_version == 1
+            && metadata.schema_version == 1
+            && metadata.repository == "sednalabs/codex"
+            && manifest.version == metadata.package_version
+            && manifest.native_version.as_ref() == Some(&metadata.native_version)
+            && target == metadata.target
+            && matches!(receipt.selection_channel.as_str(), "stable" | "prerelease")
+            && matches!(metadata.channel.as_str(), "stable" | "prerelease")
+            && matches!(
+                metadata.target.as_str(),
+                "x86_64-unknown-linux-musl" | "aarch64-unknown-linux-musl"
+            )
+            && metadata.release_tag == format!("rust-v{}", metadata.package_version)
+            && !metadata.workflow_run_id.is_empty()
+            && metadata
+                .workflow_run_id
+                .bytes()
+                .all(|byte| byte.is_ascii_digit())
+            && metadata.workflow_run_id.bytes().any(|byte| byte != b'0')
+            && valid_hex(&metadata.source_commit)
+            && valid_hex(&metadata.source_tree)
+            && valid_hex(&metadata.workflow_host_commit)
+            && valid_hex(&metadata.workflow_host_tree)
+            && metadata.archive.name == format!("codex-package-{}.tar.gz", metadata.target)
+            && valid_digest(&metadata.archive.sha256))
+        .then_some(receipt)
     }
 
     pub fn rg_command(&self) -> PathBuf {
@@ -145,6 +270,38 @@ impl InstallContext {
         }
 
         default_rg_command()
+    }
+
+    pub fn code_mode_host_program(&self) -> PathBuf {
+        // prefer the one packed under codex-resources
+        self.bundled_resource(CODE_MODE_HOST_EXECUTABLE_NAME)
+            .map_or_else(
+                || self.code_mode_host_program_from_exe(std::env::current_exe().ok().as_deref()),
+                AbsolutePathBuf::into_path_buf,
+            )
+    }
+
+    fn code_mode_host_program_from_exe(&self, current_exe: Option<&Path>) -> PathBuf {
+        let executable_dir = if let Some(package_layout) = &self.package_layout {
+            Some(package_layout.bin_dir.clone())
+        } else if let InstallMethod::Standalone { release_dir, .. } = &self.method {
+            Some(release_dir.clone())
+        } else {
+            current_exe
+                .and_then(Path::parent)
+                .and_then(canonical_absolute_path)
+        };
+        if let Some(executable_dir) = executable_dir {
+            let executable = executable_dir.join(CODE_MODE_HOST_EXECUTABLE_NAME);
+            if executable.is_file() {
+                return executable.into_path_buf();
+            }
+        }
+
+        current_exe
+            .and_then(Path::parent)
+            .map(|parent| parent.join(CODE_MODE_HOST_EXECUTABLE_NAME))
+            .unwrap_or_else(|| PathBuf::from(CODE_MODE_HOST_EXECUTABLE_NAME))
     }
 
     pub fn bundled_resource(&self, file_name: impl AsRef<Path>) -> Option<AbsolutePathBuf> {
@@ -188,13 +345,47 @@ impl CodexPackageLayout {
     fn from_exe(exe_path: &Path) -> Option<Self> {
         let canonical_exe = canonical_absolute_path(exe_path)?;
         let exe_dir = canonical_exe.parent()?;
+        // WinGet preserves a target-qualified executable at the package root.
+        // Only recognize that layout when metadata names this exact executable.
+        #[cfg(windows)]
+        if let Ok(contents) = std::fs::read(exe_dir.join(PACKAGE_METADATA_FILENAME))
+            && let Ok(metadata) = serde_json::from_slice::<serde_json::Value>(&contents)
+            && metadata["layoutVersion"] == 1
+            && metadata["entrypoint"].as_str().map(OsStr::new) == canonical_exe.file_name()
+        {
+            return Some(Self {
+                resources_dir: existing_dir(exe_dir.join(RESOURCES_DIRNAME)),
+                path_dir: existing_dir(exe_dir.join(PATH_DIRNAME)),
+                package_dir: exe_dir.clone(),
+                bin_dir: exe_dir,
+            });
+        }
         match exe_dir.file_name() {
             Some(name) if name == OsStr::new(BIN_DIRNAME) => Self::from_package_bin_dir(exe_dir),
+            Some(name) if name == OsStr::new(RESOURCES_DIRNAME) => {
+                let package_dir = exe_dir.parent()?;
+                Self::from_package_bin_dir(package_dir.join(BIN_DIRNAME))
+            }
+            Some(name) if name == OsStr::new("MacOS") => {
+                // A provisioned CLI keeps helpers and metadata in the outer
+                // package. current_exe points inside the bundle, not at bin/codex.
+                let contents = exe_dir.parent()?;
+                let bundle = contents.parent()?;
+                if contents.file_name()? != OsStr::new("Contents")
+                    || bundle.file_name()? != OsStr::new("CodexCLI.app")
+                {
+                    return None;
+                }
+                Self::from_package_bin_dir(bundle.parent()?.join(BIN_DIRNAME))
+            }
             Some(_) | None => None,
         }
     }
 
     fn from_package_bin_dir(bin_dir: AbsolutePathBuf) -> Option<Self> {
+        if !bin_dir.is_dir() {
+            return None;
+        }
         let package_dir = bin_dir.parent()?;
         if !package_dir.join(PACKAGE_METADATA_FILENAME).is_file() {
             return None;
@@ -238,11 +429,19 @@ fn standalone_install_method(
     } else {
         canonical_absolute_path(exe_path)?.parent()?
     };
-    let releases_root = canonical_codex_home
-        .join("packages")
-        .join(STANDALONE_PACKAGES_DIRNAME)
-        .join(RELEASES_DIRNAME);
-    if !release_dir.starts_with(releases_root.as_path()) {
+    let packages_root = canonical_codex_home.join("packages");
+    let releases_roots = [
+        packages_root
+            .join(STANDALONE_PACKAGES_DIRNAME)
+            .join(RELEASES_DIRNAME),
+        packages_root
+            .join(APP_SERVER_DAEMON_PACKAGES_DIRNAME)
+            .join(RELEASES_DIRNAME),
+    ];
+    if !releases_roots
+        .iter()
+        .any(|releases_root| release_dir.starts_with(releases_root))
+    {
         return None;
     }
 
@@ -284,6 +483,10 @@ fn zsh_resource_path() -> PathBuf {
 }
 
 #[cfg(test)]
+#[path = "bundle_tests.rs"]
+mod bundle_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
@@ -292,15 +495,100 @@ mod tests {
     const TEST_RESOURCE_NAME: &str = "codex-test-helper";
 
     #[test]
+    fn code_mode_host_program_prefers_package_resource_over_legacy_binary() -> std::io::Result<()> {
+        let package_dir = tempfile::tempdir()?;
+        let bin_dir = package_dir.path().join(BIN_DIRNAME);
+        let resources_dir = package_dir.path().join(RESOURCES_DIRNAME);
+        fs::create_dir_all(&bin_dir)?;
+        fs::create_dir_all(&resources_dir)?;
+        fs::write(package_dir.path().join(PACKAGE_METADATA_FILENAME), "{}")?;
+        let exe_path = bin_dir.join(if cfg!(windows) { "codex.exe" } else { "codex" });
+        let resource_host = resources_dir.join(CODE_MODE_HOST_EXECUTABLE_NAME);
+        fs::write(&exe_path, "")?;
+        fs::write(bin_dir.join(CODE_MODE_HOST_EXECUTABLE_NAME), "legacy host")?;
+        fs::write(&resource_host, "managed host")?;
+
+        let context = InstallContext::from_exe(
+            /*is_macos*/ false,
+            /*current_exe*/ Some(&exe_path),
+            /*method_override*/ None,
+        );
+
+        assert_eq!(
+            context.code_mode_host_program(),
+            AbsolutePathBuf::from_absolute_path(resource_host.canonicalize()?)?.into_path_buf()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn code_mode_host_program_uses_package_resource_without_legacy_binary() -> std::io::Result<()> {
+        let package_dir = tempfile::tempdir()?;
+        let bin_dir = package_dir.path().join(BIN_DIRNAME);
+        let resources_dir = package_dir.path().join(RESOURCES_DIRNAME);
+        fs::create_dir_all(&bin_dir)?;
+        fs::create_dir_all(&resources_dir)?;
+        fs::write(package_dir.path().join(PACKAGE_METADATA_FILENAME), "{}")?;
+        let exe_path = bin_dir.join(if cfg!(windows) { "codex.exe" } else { "codex" });
+        let resource_host = resources_dir.join(CODE_MODE_HOST_EXECUTABLE_NAME);
+        fs::write(&exe_path, "")?;
+        fs::write(&resource_host, "managed host")?;
+
+        let context = InstallContext::from_exe(
+            /*is_macos*/ false,
+            /*current_exe*/ Some(&exe_path),
+            /*method_override*/ None,
+        );
+
+        assert_eq!(
+            context.code_mode_host_program(),
+            AbsolutePathBuf::from_absolute_path(resource_host.canonicalize()?)?.into_path_buf()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn code_mode_host_program_ignores_resource_directory_and_uses_legacy_binary()
+    -> std::io::Result<()> {
+        let package_dir = tempfile::tempdir()?;
+        let bin_dir = package_dir.path().join(BIN_DIRNAME);
+        let resources_dir = package_dir.path().join(RESOURCES_DIRNAME);
+        fs::create_dir_all(&bin_dir)?;
+        fs::create_dir_all(resources_dir.join(CODE_MODE_HOST_EXECUTABLE_NAME))?;
+        fs::write(package_dir.path().join(PACKAGE_METADATA_FILENAME), "{}")?;
+        let exe_path = bin_dir.join(if cfg!(windows) { "codex.exe" } else { "codex" });
+        let legacy_host = bin_dir.join(CODE_MODE_HOST_EXECUTABLE_NAME);
+        fs::write(&exe_path, "")?;
+        fs::write(&legacy_host, "legacy host")?;
+
+        let context = InstallContext::from_exe(
+            /*is_macos*/ false,
+            /*current_exe*/ Some(&exe_path),
+            /*method_override*/ None,
+        );
+
+        assert_eq!(
+            context.code_mode_host_program(),
+            AbsolutePathBuf::from_absolute_path(legacy_host.canonicalize()?)?.into_path_buf()
+        );
+        Ok(())
+    }
+
+    #[test]
     fn detects_standalone_install_from_release_layout() -> std::io::Result<()> {
         let codex_home = tempfile::tempdir()?;
         let release_dir = codex_home
             .path()
-            .join("packages/standalone/releases/1.2.3-x86_64-unknown-linux-musl");
+            .join("packages/standalone/releases/1.2.4-x86_64-unknown-linux-musl");
         let resources_dir = release_dir.join(RESOURCES_DIRNAME);
         fs::create_dir_all(&resources_dir)?;
         let exe_path = release_dir.join(if cfg!(windows) { "codex.exe" } else { "codex" });
         fs::write(&exe_path, "")?;
+        fs::write(release_dir.join(CODE_MODE_HOST_EXECUTABLE_NAME), "")?;
+        fs::write(
+            resources_dir.join(CODE_MODE_HOST_EXECUTABLE_NAME),
+            "managed host",
+        )?;
         fs::write(resources_dir.join(default_rg_command()), "")?;
         fs::write(resources_dir.join(TEST_RESOURCE_NAME), "")?;
         let canonical_release_dir =
@@ -318,12 +606,24 @@ mod tests {
             context,
             InstallContext {
                 method: InstallMethod::Standalone {
-                    release_dir: canonical_release_dir,
+                    release_dir: canonical_release_dir.clone(),
                     resources_dir: Some(canonical_resources_dir.clone()),
                     platform: standalone_platform(),
                 },
                 package_layout: None,
             }
+        );
+        assert_eq!(
+            context.code_mode_host_program_from_exe(Some(&exe_path)),
+            canonical_release_dir
+                .join(CODE_MODE_HOST_EXECUTABLE_NAME)
+                .into_path_buf()
+        );
+        assert_eq!(
+            context.code_mode_host_program(),
+            canonical_resources_dir
+                .join(CODE_MODE_HOST_EXECUTABLE_NAME)
+                .into_path_buf()
         );
         assert_eq!(
             context.bundled_resource(TEST_RESOURCE_NAME),
@@ -361,9 +661,22 @@ mod tests {
         fs::create_dir_all(&bin_dir)?;
         fs::create_dir_all(&resources_dir)?;
         fs::create_dir_all(&path_dir)?;
-        fs::write(package_dir.path().join(PACKAGE_METADATA_FILENAME), "{}")?;
+        fs::write(
+            package_dir.path().join(PACKAGE_METADATA_FILENAME),
+            r#"{
+  "layoutVersion": 1,
+  "version": "1.2.3",
+  "target": "x86_64-unknown-linux-musl",
+  "variant": "codex",
+  "entrypoint": "bin/codex",
+  "resourcesDir": "codex-resources",
+  "pathDir": "codex-path"
+}
+"#,
+        )?;
         let exe_path = bin_dir.join(if cfg!(windows) { "codex.exe" } else { "codex" });
         fs::write(&exe_path, "")?;
+        fs::write(bin_dir.join(CODE_MODE_HOST_EXECUTABLE_NAME), "")?;
         fs::write(resources_dir.join(TEST_RESOURCE_NAME), "")?;
         fs::write(path_dir.join(default_rg_command()), "")?;
         if !cfg!(windows) {
@@ -379,7 +692,7 @@ mod tests {
         let canonical_path_dir = AbsolutePathBuf::from_absolute_path(path_dir.canonicalize()?)?;
         let package_layout = CodexPackageLayout {
             package_dir: canonical_package_dir,
-            bin_dir: canonical_bin_dir,
+            bin_dir: canonical_bin_dir.clone(),
             resources_dir: Some(canonical_resources_dir.clone()),
             path_dir: Some(canonical_path_dir.clone()),
         };
@@ -396,6 +709,26 @@ mod tests {
                 method: InstallMethod::Other,
                 package_layout: Some(package_layout),
             }
+        );
+        assert_eq!(
+            context.package_manifest(),
+            Some(CodexPackageManifest {
+                version: Version::new(1, 2, 3),
+                native_version: None,
+                target: Some("x86_64-unknown-linux-musl".to_string()),
+            })
+        );
+        assert_eq!(
+            context.code_mode_host_program_from_exe(Some(&exe_path)),
+            canonical_bin_dir
+                .join(CODE_MODE_HOST_EXECUTABLE_NAME)
+                .into_path_buf()
+        );
+        assert_eq!(
+            context.code_mode_host_program(),
+            canonical_bin_dir
+                .join(CODE_MODE_HOST_EXECUTABLE_NAME)
+                .into_path_buf()
         );
         assert_eq!(
             context.rg_command(),
@@ -420,6 +753,36 @@ mod tests {
                 Some(canonical_resources_dir.join(ZSH_DIRNAME).join(BIN_DIRNAME))
             );
         }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn code_mode_host_program_accepts_symlinks_to_files() -> std::io::Result<()> {
+        let package_dir = tempfile::tempdir()?;
+        let bin_dir = package_dir.path().join(BIN_DIRNAME);
+        fs::create_dir_all(&bin_dir)?;
+        fs::write(package_dir.path().join(PACKAGE_METADATA_FILENAME), "{}")?;
+        let exe_path = bin_dir.join("codex");
+        let executable_target = package_dir.path().join("host-target");
+        let executable_path = bin_dir.join(CODE_MODE_HOST_EXECUTABLE_NAME);
+        fs::write(&exe_path, "")?;
+        fs::write(&executable_target, "")?;
+        std::os::unix::fs::symlink(&executable_target, &executable_path)?;
+        let canonical_bin_dir = AbsolutePathBuf::from_absolute_path(bin_dir.canonicalize()?)?;
+
+        let context = InstallContext::from_exe(
+            /*is_macos*/ false,
+            /*current_exe*/ Some(&exe_path),
+            /*method_override*/ None,
+        );
+
+        assert_eq!(
+            context.code_mode_host_program_from_exe(Some(&exe_path)),
+            canonical_bin_dir
+                .join(CODE_MODE_HOST_EXECUTABLE_NAME)
+                .into_path_buf()
+        );
         Ok(())
     }
 
@@ -537,11 +900,14 @@ mod tests {
         let resources_dir = package_dir.path().join(RESOURCES_DIRNAME);
         let path_dir = package_dir.path().join(PATH_DIRNAME);
         fs::create_dir_all(&bin_dir)?;
+        fs::create_dir_all(bin_dir.join(CODE_MODE_HOST_EXECUTABLE_NAME))?;
         fs::create_dir_all(resources_dir.join(TEST_RESOURCE_NAME))?;
         fs::create_dir_all(path_dir.join(default_rg_command()))?;
         fs::write(package_dir.path().join(PACKAGE_METADATA_FILENAME), "{}")?;
         let exe_path = bin_dir.join(if cfg!(windows) { "codex.exe" } else { "codex" });
         fs::write(&exe_path, "")?;
+        let fallback_exe_path = package_dir.path().join("fallback-codex");
+        fs::write(&fallback_exe_path, "")?;
 
         let context = InstallContext::from_exe_with_codex_home(
             /*is_macos*/ false,
@@ -549,13 +915,56 @@ mod tests {
             /*method_override*/ None,
             /*codex_home*/ None,
         );
+        assert_eq!(
+            context.code_mode_host_program_from_exe(Some(&fallback_exe_path)),
+            package_dir.path().join(CODE_MODE_HOST_EXECUTABLE_NAME)
+        );
         assert_eq!(context.rg_command(), default_rg_command());
         assert_eq!(context.bundled_resource(TEST_RESOURCE_NAME), None);
         Ok(())
     }
 
     #[test]
+    fn code_mode_host_program_is_next_to_the_executable_even_when_missing() {
+        let context = InstallContext {
+            method: InstallMethod::Other,
+            package_layout: None,
+        };
+
+        assert_eq!(
+            context.code_mode_host_program_from_exe(Some(Path::new("/opt/codex/bin/codex"))),
+            PathBuf::from("/opt/codex/bin").join(CODE_MODE_HOST_EXECUTABLE_NAME)
+        );
+    }
+
+    #[test]
+    fn code_mode_host_program_falls_back_to_its_name_when_executable_is_unknown() {
+        let context = InstallContext {
+            method: InstallMethod::Other,
+            package_layout: None,
+        };
+
+        assert_eq!(
+            context.code_mode_host_program_from_exe(/*current_exe*/ None),
+            PathBuf::from(CODE_MODE_HOST_EXECUTABLE_NAME)
+        );
+    }
+
+    #[test]
     fn package_manager_method_overrides_take_precedence() {
+        let vite_plus_context = InstallContext::from_exe(
+            /*is_macos*/ false,
+            /*current_exe*/ Some(Path::new("/tmp/codex")),
+            /*method_override*/ Some(InstallMethod::VitePlus),
+        );
+        assert_eq!(
+            vite_plus_context,
+            InstallContext {
+                method: InstallMethod::VitePlus,
+                package_layout: None,
+            }
+        );
+
         let pnpm_context = InstallContext::from_exe(
             /*is_macos*/ false,
             /*current_exe*/ Some(Path::new("/tmp/codex")),
@@ -611,5 +1020,48 @@ mod tests {
                 package_layout: None,
             }
         );
+    }
+
+    #[test]
+    fn explicit_codex_home_resolves_selected_package_receipt() -> std::io::Result<()> {
+        for package in [
+            STANDALONE_PACKAGES_DIRNAME,
+            APP_SERVER_DAEMON_PACKAGES_DIRNAME,
+        ] {
+            let codex_home = tempfile::tempdir()?;
+            let release_dir = codex_home
+                .path()
+                .join("packages")
+                .join(package)
+                .join("releases/1.2.3-x86_64-unknown-linux-musl");
+            let bin_dir = release_dir.join(BIN_DIRNAME);
+            fs::create_dir_all(&bin_dir)?;
+            let executable = bin_dir.join("codex");
+            fs::write(&executable, "")?;
+            fs::write(
+                release_dir.join(PACKAGE_METADATA_FILENAME),
+                r#"{"layoutVersion":1,"version":"1.2.4","nativeVersion":"1.2.3","target":"x86_64-unknown-linux-musl","variant":"codex","entrypoint":"bin/codex"}"#,
+            )?;
+            fs::write(
+                release_dir.join(SEDNA_RELEASE_RECEIPT_FILENAME),
+                r#"{"schemaVersion":1,"selectionChannel":"stable","release":{"schemaVersion":1,"repository":"sednalabs/codex","releaseTag":"rust-v1.2.4","packageVersion":"1.2.4","nativeVersion":"1.2.3","channel":"stable","target":"x86_64-unknown-linux-musl","sourceCommit":"1111111111111111111111111111111111111111","sourceTree":"2222222222222222222222222222222222222222","workflowHostCommit":"3333333333333333333333333333333333333333","workflowHostTree":"4444444444444444444444444444444444444444","workflowRunId":"123","archive":{"name":"codex-package-x86_64-unknown-linux-musl.tar.gz","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}"#,
+            )?;
+
+            let context = InstallContext::from_exe_in_codex_home(
+                /*is_macos*/ false,
+                Some(&executable),
+                /*method_override*/ None,
+                codex_home.path(),
+            );
+
+            assert!(matches!(context.method, InstallMethod::Standalone { .. }));
+            assert_eq!(
+                context
+                    .sedna_release_receipt()
+                    .map(|receipt| receipt.release.package_version),
+                Some(Version::new(1, 2, 4))
+            );
+        }
+        Ok(())
     }
 }

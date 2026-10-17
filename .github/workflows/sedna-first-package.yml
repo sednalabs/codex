@@ -15,6 +15,7 @@ on:
       - "MODULE.bazel.lock"
       - "codex-rs/**"
       - "justfile"
+      - "scripts/build_codex_package.py"
       - "scripts/codex_package/**"
       - "sdk/python/**"
       - ".github/actions/**"
@@ -132,7 +133,11 @@ jobs:
           else
             base_version="0.0.0-sedna.0"
           fi
-          package_version="${base_version}-ci.${GITHUB_RUN_NUMBER}+g${source_short}"
+          if [[ "${base_version}" == *+* ]]; then
+            package_version="${base_version}.ci.${GITHUB_RUN_NUMBER}.g${source_short}"
+          else
+            package_version="${base_version}-ci.${GITHUB_RUN_NUMBER}+g${source_short}"
+          fi
 
           required_package_paths=(
             "justfile"
@@ -141,12 +146,16 @@ jobs:
             "scripts/codex_package/smoke_tests/pyproject.toml"
             "scripts/codex_package/smoke_tests/uv.lock"
             "scripts/codex_package/smoke_tests/test_codex_package.py"
-            "scripts/codex_package/smoke_tests/first_binary/artifact.py"
-            "scripts/codex_package/smoke_tests/first_binary/conftest.py"
-            "scripts/codex_package/smoke_tests/first_binary/package_acceptance.py"
+            "scripts/codex_package/smoke_tests/fixtures.py"
+            "scripts/codex_package/smoke_tests/conftest.py"
             "scripts/codex_package/smoke_tests/first_binary/test_tui_package_version.py"
             "scripts/codex_package/smoke_tests/first_binary/test_tui_agents_acceptance.py"
+            "scripts/codex_package/smoke_tests/first_binary/test_agent_control_model_acceptance.py"
+            "scripts/codex_package/smoke_tests/first_binary/test_agent_control_tui_acceptance.py"
             "scripts/codex_package/smoke_tests/first_binary/tui_pty.py"
+            "sdk/python/tests/app_server_harness.py"
+            "sdk/python/tests/test_app_server_harness_request_routing.py"
+            "sdk/python/src/openai_codex/__init__.py"
           )
           missing_package_paths=()
           for path in "${required_package_paths[@]}"; do
@@ -223,6 +232,36 @@ jobs:
         with:
           targets: x86_64-unknown-linux-gnu
 
+      - name: Refresh source-matched Cargo lock
+        shell: bash
+        env:
+          EXPECTED_SOURCE_SHA: ${{ needs.identity.outputs.source_sha }}
+          EXPECTED_SOURCE_TREE: ${{ needs.identity.outputs.source_tree }}
+        run: |
+          set -euo pipefail
+          if [[ "$(git rev-parse HEAD)" != "${EXPECTED_SOURCE_SHA}" || "$(git rev-parse HEAD^{tree})" != "${EXPECTED_SOURCE_TREE}" ]]; then
+            echo "The lock refresh checkout does not match the frozen source identity." >&2
+            exit 1
+          fi
+          if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
+            echo "Refusing to refresh the lock from a dirty source checkout." >&2
+            git status --short >&2
+            exit 1
+          fi
+
+          (cd codex-rs && cargo update --workspace)
+          changed_paths="$(git diff --name-only HEAD)"
+          if [[ -n "${changed_paths}" && "${changed_paths}" != "codex-rs/Cargo.lock" ]]; then
+            echo "The lock refresh changed unexpected paths." >&2
+            printf '%s\n' "${changed_paths}" >&2
+            exit 1
+          fi
+          if [[ -n "$(git diff --cached --name-only)" || -n "$(git ls-files --others --exclude-standard)" ]]; then
+            echo "The lock refresh staged changes or created unexpected untracked files." >&2
+            git status --short >&2
+            exit 1
+          fi
+
       - name: Configure source-matched rusty_v8 artifacts
         uses: ./.github/actions/setup-rusty-v8
         with:
@@ -238,7 +277,7 @@ jobs:
         with:
           version: "0.11.3"
 
-      - name: Generate selected-source locks, schemas, and status snapshots
+      - name: Generate selected-source locks, schemas, and snapshots
         id: generate
         shell: bash
         env:
@@ -250,16 +289,38 @@ jobs:
             echo "The preparation checkout does not match the frozen source identity." >&2
             exit 1
           fi
-          if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
-            echo "Refusing to generate outputs from a dirty source checkout." >&2
+          changed_paths="$(git diff --name-only HEAD)"
+          if [[ -n "${changed_paths}" && "${changed_paths}" != "codex-rs/Cargo.lock" ]]; then
+            echo "Refusing to generate outputs after an unexpected tracked change." >&2
+            printf '%s\n' "${changed_paths}" >&2
+            exit 1
+          fi
+          if [[ -n "$(git diff --cached --name-only)" || -n "$(git ls-files --others --exclude-standard)" ]]; then
+            echo "Refusing to generate outputs after staged or untracked changes." >&2
             git status --short >&2
             exit 1
           fi
 
-          (cd codex-rs && cargo update --workspace)
           just write-config-schema
-          (cd codex-rs && INSTA_UPDATE=always cargo test -p codex-tui --lib status::tests)
+          (
+            cd codex-rs
+            RUST_MIN_STACK=16777216 INSTA_UPDATE=always cargo test -p codex-tui --lib \
+              status::tests::status_snapshot_shows_chatgpt_plan_without_email \
+              -- --exact --nocapture
+          )
+          (
+            cd codex-rs
+            INSTA_UPDATE=always cargo test -p codex-tui --lib status::tests \
+              -- --test-threads=1 --skip status::tests::status_snapshot_shows_chatgpt_plan_without_email
+          )
+          (
+            cd codex-rs
+            INSTA_UPDATE=always cargo test -p codex-tui --lib \
+              history_cell::tests::standalone_unix_update_available_history_cell_snapshot \
+              -- --exact --nocapture
+          )
           just write-app-server-schema
+          just write-app-server-schema --experimental
           just bazel-lock-update
 
           python3 scripts/codex_package/test_cargo.py
@@ -267,17 +328,22 @@ jobs:
           git diff --check
 
           untracked="$(git ls-files --others --exclude-standard)"
-          case "${untracked}" in
-            "") ;;
-            "codex-rs/app-server-protocol/schema/typescript/v2/WaitAgentOutcome.ts")
-              git add -- "${untracked}"
-              ;;
-            *)
-              echo "Unexpected untracked output from the fixed generators." >&2
-              printf '%s\n' "${untracked}" >&2
-              exit 1
-              ;;
-          esac
+          if [[ -n "${untracked}" ]]; then
+            while IFS= read -r path; do
+              case "${path}" in
+                "codex-rs/app-server-protocol/schema/typescript/v2/CollabAgentRef.ts"|"codex-rs/app-server-protocol/schema/typescript/v2/WaitAgentOutcome.ts"|"codex-rs/app-server-protocol/schema/typescript/AutomaticTurnContinuationRef.ts") ;;
+                *)
+                  echo "Unexpected untracked output from the fixed generators." >&2
+                  printf '%s\n' "${path}" >&2
+                  exit 1
+                  ;;
+              esac
+            done <<< "${untracked}"
+
+            while IFS= read -r path; do
+              git add -- "${path}"
+            done <<< "${untracked}"
+          fi
           git diff --check HEAD
 
           output_dir="${RUNNER_TEMP}/sedna-first-generated"
@@ -361,7 +427,6 @@ jobs:
       WORKFLOW_HOST_SHA: ${{ needs.identity.outputs.workflow_host_sha }}
       WORKFLOW_HOST_TREE: ${{ needs.identity.outputs.workflow_host_tree }}
       TARGET: ${{ matrix.target }}
-      DIST_DIR: ${{ runner.temp }}/sedna-first-dist
       BINARY_KIND: ${{ matrix.binary_kind }}
       LOADER: ${{ matrix.loader }}
     steps:
@@ -421,6 +486,8 @@ jobs:
       - name: Build canonical packages and shipped proxy
         working-directory: codex-rs
         shell: bash
+        env:
+          DIST_DIR: ${{ runner.temp }}/sedna-first-dist
         run: |
           set -euo pipefail
           if [[ "$(git rev-parse HEAD)" != "${SOURCE_SHA}" || "$(git rev-parse HEAD^{tree})" != "${SOURCE_TREE}" ]]; then
@@ -643,12 +710,22 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Enable existing Linux sandbox namespace prerequisite
+        shell: bash
+        run: |
+          # Match setup-ci's ephemeral Linux runner prerequisite; keep bwrap enabled.
+          sudo sysctl -w kernel.unprivileged_userns_clone=1
+          if sudo sysctl -a 2>/dev/null | grep -q '^kernel.apparmor_restrict_unprivileged_userns'; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
       - name: Install pinned uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           version: "0.11.3"
 
       - name: Run existing package and exact packaged TUI consumers
+        id: package_consumers
         shell: bash
         env:
           PYTHONPATH: sdk/python/src:sdk/python/tests
@@ -660,8 +737,52 @@ jobs:
             scripts/codex_package/smoke_tests/test_codex_package.py \
             scripts/codex_package/smoke_tests/first_binary/test_tui_package_version.py \
             scripts/codex_package/smoke_tests/first_binary/test_tui_agents_acceptance.py \
+            scripts/codex_package/smoke_tests/first_binary/test_agent_control_model_acceptance.py \
+            scripts/codex_package/smoke_tests/first_binary/test_agent_control_tui_acceptance.py \
+            sdk/python/tests/test_app_server_harness_request_routing.py \
+            --junitxml "${RUNNER_TEMP}/sedna-first-consumers.xml" \
             --compression gzip \
             --package-target "${TARGET}" \
             --cli-archive "dist/codex-cli-${TARGET}.tar.gz" \
             --app-server-archive "dist/codex-app-server-${TARGET}.tar.gz" \
             --symbols-archive "dist/symbols.tar.gz"
+
+      - name: Retain existing value-free Browser stage diagnostic
+        if: ${{ always() && steps.package_consumers.outcome != 'skipped' }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+
+          report = Path(os.environ["RUNNER_TEMP"]) / "sedna-first-consumers.xml"
+          observations = []
+          if report.exists():
+              for prop in ET.parse(report).iter("property"):
+                  if prop.get("name") == "browser_output_diagnostic_json":
+                      observations.append(json.loads(prop.attrib["value"]))
+          payload = {
+              "sourceCommit": os.environ["SOURCE_SHA"],
+              "sourceTree": os.environ["SOURCE_TREE"],
+              "workflowHostCommit": os.environ["WORKFLOW_HOST_SHA"],
+              "workflowHostTree": os.environ["WORKFLOW_HOST_TREE"],
+              "workflowRunId": os.environ["GITHUB_RUN_ID"],
+              "target": os.environ["TARGET"],
+              "diagnosticCount": len(observations),
+              "browserOutputDiagnostics": observations,
+          }
+          encoded = json.dumps(payload, sort_keys=True, indent=2) + "\n"
+          (Path(os.environ["RUNNER_TEMP"]) / "sedna-first-browser-diagnostic.json").write_text(encoded)
+          print(encoded)
+          PY
+
+      - name: Upload value-free Browser stage diagnostic
+        if: ${{ always() && steps.package_consumers.outcome != 'skipped' }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: sedna-first-browser-diagnostic-${{ needs.identity.outputs.source_short }}-${{ matrix.arch }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/sedna-first-browser-diagnostic.json
+          if-no-files-found: error
+          retention-days: 3

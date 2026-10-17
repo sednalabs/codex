@@ -72,7 +72,11 @@ jobs:
 
           branch_name="${DISPLAY_REF}"
           branch_slug="$(printf '%s' "${branch_name}" | tr '/:@ ' '-' | tr -cd '[:alnum:]._-' | cut -c1-48)"
-          preview_version="${base_version}-ci.${GITHUB_RUN_NUMBER}+g${short_sha}"
+          if [[ "${base_version}" == *+* ]]; then
+            preview_version="${base_version}.ci.${GITHUB_RUN_NUMBER}.g${short_sha}"
+          else
+            preview_version="${base_version}-ci.${GITHUB_RUN_NUMBER}+g${short_sha}"
+          fi
 
           {
             echo "checkout_ref=${checkout_ref}"
@@ -102,7 +106,6 @@ jobs:
             printf '%s\n' "${source_status}" >&2
             exit 1
           fi
-          source ../.github/scripts/validation-lanes/setup-rusty-v8.sh x86_64-unknown-linux-gnu
           cargo build --locked --target x86_64-unknown-linux-gnu --release --bin codex-code-mode-host
           mkdir -p ../dist
 

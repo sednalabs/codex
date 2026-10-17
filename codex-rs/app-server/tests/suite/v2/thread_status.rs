@@ -27,7 +27,7 @@ async fn thread_status_changed_emits_runtime_updates() -> Result<()> {
     let responses = vec![create_final_assistant_message_sse_response("done")?];
     let server = create_mock_responses_server_sequence(responses).await;
     MockResponsesConfig::new(&server.uri())
-        .with_approval_policy("untrusted")
+        .with_approval_policy("on-request")
         .enable_feature(Feature::CollaborationModes)
         .write(codex_home.path())?;
 
@@ -48,6 +48,7 @@ async fn thread_status_changed_emits_runtime_updates() -> Result<()> {
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id.clone(),
                 client_user_message_id: None,
                 input: vec![V2UserInput::Text {
@@ -131,7 +132,7 @@ async fn thread_status_changed_can_be_opted_out() -> Result<()> {
     let responses = vec![create_final_assistant_message_sse_response("done")?];
     let server = create_mock_responses_server_sequence(responses).await;
     MockResponsesConfig::new(&server.uri())
-        .with_approval_policy("untrusted")
+        .with_approval_policy("on-request")
         .enable_feature(Feature::CollaborationModes)
         .write(codex_home.path())?;
 
@@ -148,10 +149,12 @@ async fn thread_status_changed_can_be_opted_out() -> Result<()> {
                 version: "0.1.0".to_string(),
             },
             Some(InitializeCapabilities {
+                explicit_gateway_oauth: false,
                 experimental_api: true,
                 request_attestation: false,
                 opt_out_notification_methods: Some(vec!["thread/status/changed".to_string()]),
                 mcp_server_openai_form_elicitation: false,
+                extensions: None,
             }),
         ),
     )
@@ -171,6 +174,7 @@ async fn thread_status_changed_can_be_opted_out() -> Result<()> {
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                automatic_turn_continuation: None,
                 thread_id: thread.id,
                 client_user_message_id: None,
                 input: vec![V2UserInput::Text {

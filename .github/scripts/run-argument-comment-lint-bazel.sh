@@ -9,6 +9,7 @@ if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
   # lint aspect can run across the compatible crate graph instead of failing the
   # whole build after analysis.
   bazel_lint_args+=("--skip_incompatible_explicit_targets")
+  bazel_lint_args+=("--workspace_status_command=./scripts/workspace-status.cmd")
 fi
 
 read_query_labels() {

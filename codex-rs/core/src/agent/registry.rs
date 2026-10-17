@@ -1,33 +1,27 @@
-use crate::agent::AgentStatus;
-use crate::agent::lifecycle::AgentLifecycle;
-use crate::codex_thread::CodexThread;
+use crate::agent::types::AgentMetadata;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
+use codex_protocol::error::AgentErrorContext;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::Result;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
-use codex_utils_string::take_bytes_at_char_boundary;
+use codex_protocol::protocol::TurnEnvironmentSelection;
 use rand::prelude::IndexedRandom;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::hash_map::Entry;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::Weak;
-use std::sync::atomic::AtomicU8;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
-
-const COLD_STATUS_MAX_BYTES: usize = 128;
-const COLD_STATUS_TRUNCATION_MARKER: &str = "...[truncated]";
 
 /// This structure is used to add some limits on the multi-agent capabilities for Codex. In
 /// the current implementation, it limits:
 /// * Total number of sub-agents (i.e. threads) per user session
 ///
-/// This structure is shared by all agents in the same user session (because the `AgentControl`
+/// This structure is shared by all agents in the same user session (because the `LocalAgentControl`
 /// is).
 #[derive(Default)]
 pub(crate) struct AgentRegistry {
@@ -38,190 +32,31 @@ pub(crate) struct AgentRegistry {
 #[derive(Default)]
 struct ActiveAgents {
     agent_tree: HashMap<String, AgentMetadata>,
+    thread_paths: HashMap<ThreadId, RegisteredAgent>,
+    reserved_thread_ids: HashSet<ThreadId>,
     used_agent_nicknames: HashSet<String>,
     nickname_reset_count: usize,
-    spawn_publications: HashMap<SpawnPublicationKey, Arc<SpawnPublication>>,
 }
 
-/// Identifies the one tool call that is allowed to publish a spawned child.
-///
-/// The runtime creates this record before dispatching `spawn_agent`. The spawn owner and the
-/// cancellation path then share the same compare-and-swap decision rather than independently
-/// sampling cancellation and child liveness.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct SpawnPublicationKey {
-    parent_thread_id: ThreadId,
-    call_id: String,
-}
-
-impl SpawnPublicationKey {
-    pub(crate) fn new(parent_thread_id: ThreadId, call_id: impl Into<String>) -> Self {
-        Self {
-            parent_thread_id,
-            call_id: call_id.into(),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum SpawnPublicationDecision {
-    /// No tool-runtime record exists, so this is a direct control-plane spawn.
-    Untracked,
-    /// The runtime registered the call, but neither owner has reached its terminal decision.
-    Pending,
-    /// The spawn owner has claimed initial delivery. Cancellation must wait for the handler's
-    /// actual delivery result rather than returning an aborted parent while that delivery can
-    /// start a private child turn.
-    DeliveryOwned,
-    /// Initial delivery and the parent-visible publication both succeeded. Later cancellation
-    /// must preserve the successful tool result.
-    Published,
-    /// Cancellation won and owns reconciliation of the provisional child.
-    CancellationOwned,
-}
-
-const SPAWN_PUBLICATION_PENDING: u8 = 0;
-const SPAWN_PUBLICATION_DELIVERY_OWNED: u8 = 1;
-const SPAWN_PUBLICATION_PUBLISHED: u8 = 2;
-const SPAWN_PUBLICATION_CANCELLED: u8 = 3;
-
-struct SpawnPublication {
-    state: AtomicU8,
-}
-
-impl Default for SpawnPublication {
-    fn default() -> Self {
-        Self {
-            state: AtomicU8::new(SPAWN_PUBLICATION_PENDING),
-        }
-    }
-}
-
-impl SpawnPublication {
-    /// Claim the right to submit the child's initial input.
-    ///
-    /// This is deliberately separate from parent-visible publication. Once delivery owns this
-    /// transition, cancellation may no longer claim an aborted parent result because submitting
-    /// the input can begin a private child turn. The runtime instead waits for this handler to
-    /// publish or return its true delivery failure.
-    fn claim_delivery(&self) -> SpawnPublicationDecision {
-        match self.state.compare_exchange(
-            SPAWN_PUBLICATION_PENDING,
-            SPAWN_PUBLICATION_DELIVERY_OWNED,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        ) {
-            Ok(_) | Err(SPAWN_PUBLICATION_DELIVERY_OWNED) => {
-                SpawnPublicationDecision::DeliveryOwned
-            }
-            Err(SPAWN_PUBLICATION_PUBLISHED) => SpawnPublicationDecision::Published,
-            Err(SPAWN_PUBLICATION_CANCELLED) => SpawnPublicationDecision::CancellationOwned,
-            Err(state) => unreachable!("invalid spawn publication state: {state}"),
-        }
-    }
-
-    fn publish(&self) -> SpawnPublicationDecision {
-        match self.state.compare_exchange(
-            SPAWN_PUBLICATION_DELIVERY_OWNED,
-            SPAWN_PUBLICATION_PUBLISHED,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        ) {
-            Ok(_) | Err(SPAWN_PUBLICATION_PUBLISHED) => SpawnPublicationDecision::Published,
-            Err(SPAWN_PUBLICATION_PENDING) => SpawnPublicationDecision::Pending,
-            Err(SPAWN_PUBLICATION_DELIVERY_OWNED) => SpawnPublicationDecision::DeliveryOwned,
-            Err(SPAWN_PUBLICATION_CANCELLED) => SpawnPublicationDecision::CancellationOwned,
-            Err(state) => unreachable!("invalid spawn publication state: {state}"),
-        }
-    }
-
-    fn cancel(&self) -> SpawnPublicationDecision {
-        match self.state.compare_exchange(
-            SPAWN_PUBLICATION_PENDING,
-            SPAWN_PUBLICATION_CANCELLED,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        ) {
-            Ok(_) | Err(SPAWN_PUBLICATION_CANCELLED) => SpawnPublicationDecision::CancellationOwned,
-            Err(SPAWN_PUBLICATION_DELIVERY_OWNED) => SpawnPublicationDecision::DeliveryOwned,
-            Err(SPAWN_PUBLICATION_PUBLISHED) => SpawnPublicationDecision::Published,
-            Err(state) => unreachable!("invalid spawn publication state: {state}"),
-        }
-    }
-
-    fn decision(&self) -> SpawnPublicationDecision {
-        match self.state.load(Ordering::Acquire) {
-            SPAWN_PUBLICATION_PENDING => SpawnPublicationDecision::Pending,
-            SPAWN_PUBLICATION_DELIVERY_OWNED => SpawnPublicationDecision::DeliveryOwned,
-            SPAWN_PUBLICATION_PUBLISHED => SpawnPublicationDecision::Published,
-            SPAWN_PUBLICATION_CANCELLED => SpawnPublicationDecision::CancellationOwned,
-            state => unreachable!("invalid spawn publication state: {state}"),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Default)]
-pub(crate) struct AgentMetadata {
-    pub(crate) agent_id: Option<ThreadId>,
+pub(crate) struct RestoreAgentMetadata {
+    pub(crate) thread_id: ThreadId,
     pub(crate) agent_path: Option<AgentPath>,
-    pub(crate) agent_nickname: Option<String>,
     pub(crate) agent_role: Option<String>,
-    pub(in crate::agent) cold_status: Arc<Mutex<Option<ColdStatus>>>,
-    pub(in crate::agent) generation: Arc<()>,
-    pub(in crate::agent) lifecycle: AgentLifecycle,
+    pub(crate) preferred_nickname: Option<String>,
+    pub(crate) nickname_candidates: Vec<String>,
 }
 
-#[derive(Debug)]
-pub(in crate::agent) struct ColdStatus {
-    status: AgentStatus,
-    source: Weak<CodexThread>,
+struct RegisteredAgent {
+    path: String,
+    evicted_environments: Option<Vec<TurnEnvironmentSelection>>,
 }
 
-impl AgentMetadata {
-    fn cold_status(&self, live_thread: Option<&Arc<CodexThread>>) -> Option<AgentStatus> {
-        let mut cold_status = self
-            .cold_status
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let status = cold_status.as_ref()?;
-        if let Some(live_thread) = live_thread
-            && !status
-                .source
-                .upgrade()
-                .is_some_and(|source| Arc::ptr_eq(&source, live_thread))
-        {
-            *cold_status = None;
-            return None;
+impl RegisteredAgent {
+    fn new(path: String) -> Self {
+        Self {
+            path,
+            evicted_environments: None,
         }
-        Some(status.status.clone())
-    }
-
-    fn install_cold_status(&self, source: &Arc<CodexThread>, status: AgentStatus) {
-        let status = match status {
-            AgentStatus::Completed(message) => {
-                AgentStatus::Completed(message.map(bound_cold_status_text))
-            }
-            AgentStatus::Errored(message) => AgentStatus::Errored(bound_cold_status_text(message)),
-            AgentStatus::Interrupted => AgentStatus::Interrupted,
-            AgentStatus::PendingInit
-            | AgentStatus::Running
-            | AgentStatus::Shutdown
-            | AgentStatus::NotFound => return,
-        };
-        *self
-            .cold_status
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ColdStatus {
-            status,
-            source: Arc::downgrade(source),
-        });
-    }
-
-    pub(crate) fn clear_cold_status(&self) {
-        *self
-            .cold_status
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     }
 }
 
@@ -261,101 +96,16 @@ pub(crate) fn exceeds_thread_spawn_depth_limit(depth: i32, max_depth: i32) -> bo
 }
 
 impl AgentRegistry {
-    pub(crate) fn begin_spawn_publication(&self, key: SpawnPublicationKey) {
-        let mut active_agents = self
-            .active_agents
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        active_agents
-            .spawn_publications
-            .entry(key)
-            .or_insert_with(|| Arc::new(SpawnPublication::default()));
-    }
-
-    pub(crate) fn cancel_spawn_publication(
-        &self,
-        key: SpawnPublicationKey,
-    ) -> SpawnPublicationDecision {
-        let publication = {
-            let mut active_agents = self
-                .active_agents
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            Arc::clone(
-                active_agents
-                    .spawn_publications
-                    .entry(key)
-                    .or_insert_with(|| Arc::new(SpawnPublication::default())),
-            )
-        };
-        publication.cancel()
-    }
-
-    pub(crate) fn publish_spawn_publication(
-        &self,
-        key: &SpawnPublicationKey,
-    ) -> SpawnPublicationDecision {
-        let publication = self
-            .active_agents
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .spawn_publications
-            .get(key)
-            .cloned();
-        publication.map_or(SpawnPublicationDecision::Untracked, |publication| {
-            publication.publish()
-        })
-    }
-
-    pub(crate) fn claim_spawn_publication_delivery(
-        &self,
-        key: &SpawnPublicationKey,
-    ) -> SpawnPublicationDecision {
-        let publication = self
-            .active_agents
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .spawn_publications
-            .get(key)
-            .cloned();
-        publication.map_or(SpawnPublicationDecision::Untracked, |publication| {
-            publication.claim_delivery()
-        })
-    }
-
-    pub(crate) fn spawn_publication_decision(
-        &self,
-        key: &SpawnPublicationKey,
-    ) -> SpawnPublicationDecision {
-        let publication = self
-            .active_agents
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .spawn_publications
-            .get(key)
-            .cloned();
-        publication.map_or(SpawnPublicationDecision::Untracked, |publication| {
-            publication.decision()
-        })
-    }
-
-    pub(crate) fn finish_spawn_publication(&self, key: &SpawnPublicationKey) {
-        self.active_agents
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .spawn_publications
-            .remove(key);
-    }
-
     pub(crate) fn reserve_spawn_slot(
         self: &Arc<Self>,
         max_threads: Option<usize>,
     ) -> Result<SpawnReservation> {
         if let Some(max_threads) = max_threads {
             if !self.try_increment_spawned(max_threads) {
-                return Err(CodexErr::new(CodexErrorDetails::AgentLimitReached {
-                    max_threads,
-                }));
+                return Err(
+                    CodexErr::new(CodexErrorDetails::AgentLimitReached { max_threads })
+                        .with_agent_context(AgentErrorContext::RegistryCapacity),
+                );
             }
         } else {
             self.total_count.fetch_add(1, Ordering::AcqRel);
@@ -368,19 +118,73 @@ impl AgentRegistry {
         })
     }
 
+    /// Restore persisted agent identities as one registry transaction.
+    ///
+    /// All identifiers, paths, and slots are reserved before nicknames are consumed. The mutex
+    /// remains held through the single metadata commit, so readers cannot observe a partial tree.
+    pub(crate) fn restore_agent_metadata_batch(
+        &self,
+        entries: Vec<RestoreAgentMetadata>,
+    ) -> Result<()> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+
+        let mut active_agents = self
+            .active_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut thread_ids = HashSet::new();
+        let mut paths = HashSet::new();
+        for entry in &entries {
+            if !thread_ids.insert(entry.thread_id)
+                || active_agents.thread_paths.contains_key(&entry.thread_id)
+                || active_agents.reserved_thread_ids.contains(&entry.thread_id)
+            {
+                return Err(CodexErr::InvalidRequest(format!(
+                    "agent thread `{}` is already registered or reserved",
+                    entry.thread_id
+                )));
+            }
+            if entry.preferred_nickname.is_none() && entry.nickname_candidates.is_empty() {
+                return Err(CodexErr::InvalidRequest(format!(
+                    "no nickname candidates for restored agent {}",
+                    entry.thread_id
+                )));
+            }
+            if let Some(agent_path) = &entry.agent_path
+                && (!paths.insert(agent_path.to_string())
+                    || active_agents.agent_tree.contains_key(agent_path.as_str()))
+            {
+                return Err(CodexErr::InvalidRequest(format!(
+                    "stored agent path {agent_path} is duplicated or already registered"
+                )));
+            }
+        }
+
+        self.total_count
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                count.checked_add(entries.len())
+            })
+            .map_err(|_| CodexErr::InvalidRequest("agent registry slot count overflow".into()))?;
+
+        let mut reservation =
+            RestoreBatchReservation::new(&mut active_agents, &self.total_count, entries);
+        reservation.reserve_all();
+        reservation.allocate_nicknames_and_commit();
+        Ok(())
+    }
+
     pub(crate) fn release_spawned_thread(&self, thread_id: ThreadId) {
         let removed_counted_agent = {
             let mut active_agents = self
                 .active_agents
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let removed_key = active_agents
-                .agent_tree
-                .iter()
-                .find_map(|(key, metadata)| (metadata.agent_id == Some(thread_id)).then_some(key))
-                .cloned();
-            removed_key
-                .and_then(|key| active_agents.agent_tree.remove(key.as_str()))
+            active_agents
+                .thread_paths
+                .remove(&thread_id)
+                .and_then(|agent| active_agents.agent_tree.remove(agent.path.as_str()))
                 .is_some_and(|metadata| {
                     !metadata.agent_path.as_ref().is_some_and(AgentPath::is_root)
                 })
@@ -395,14 +199,21 @@ impl AgentRegistry {
             .active_agents
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        active_agents
+        let root_path = AgentPath::ROOT.to_string();
+        let root_thread_id = active_agents
             .agent_tree
-            .entry(AgentPath::ROOT.to_string())
+            .entry(root_path.clone())
             .or_insert_with(|| AgentMetadata {
                 agent_id: Some(thread_id),
                 agent_path: Some(AgentPath::root()),
                 ..Default::default()
-            });
+            })
+            .agent_id;
+        if let Some(root_thread_id) = root_thread_id {
+            active_agents
+                .thread_paths
+                .insert(root_thread_id, RegisteredAgent::new(root_path));
+        }
     }
 
     pub(crate) fn agent_id_for_path(&self, agent_path: &AgentPath) -> Option<ThreadId> {
@@ -415,27 +226,53 @@ impl AgentRegistry {
     }
 
     pub(crate) fn agent_metadata_for_thread(&self, thread_id: ThreadId) -> Option<AgentMetadata> {
-        self.active_agents
+        let active_agents = self
+            .active_agents
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .agent_tree
-            .values()
-            .find(|metadata| metadata.agent_id == Some(thread_id))
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        active_agents
+            .thread_paths
+            .get(&thread_id)
+            .and_then(|agent| active_agents.agent_tree.get(&agent.path))
             .cloned()
     }
 
-    pub(in crate::agent) fn metadata_is_current(
+    pub(crate) fn save_evicted_environments(
         &self,
         thread_id: ThreadId,
-        expected: &AgentMetadata,
-    ) -> bool {
-        self.active_agents
+        environments: Vec<TurnEnvironmentSelection>,
+    ) {
+        let mut active_agents = self
+            .active_agents
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .agent_tree
-            .values()
-            .find(|metadata| metadata.agent_id == Some(thread_id))
-            .is_some_and(|metadata| Arc::ptr_eq(&metadata.generation, &expected.generation))
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(agent) = active_agents.thread_paths.get_mut(&thread_id) {
+            agent.evicted_environments = Some(environments);
+        }
+    }
+
+    pub(crate) fn evicted_environments(
+        &self,
+        thread_id: ThreadId,
+    ) -> Option<Vec<TurnEnvironmentSelection>> {
+        let active_agents = self
+            .active_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        active_agents
+            .thread_paths
+            .get(&thread_id)
+            .and_then(|agent| agent.evicted_environments.clone())
+    }
+
+    pub(crate) fn clear_evicted_environments(&self, thread_id: ThreadId) {
+        let mut active_agents = self
+            .active_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(agent) = active_agents.thread_paths.get_mut(&thread_id) {
+            agent.evicted_environments = None;
+        }
     }
 
     pub(crate) fn live_agents(&self) -> Vec<AgentMetadata> {
@@ -452,46 +289,18 @@ impl AgentRegistry {
             .collect()
     }
 
-    pub(crate) fn cold_status(
-        &self,
-        thread_id: ThreadId,
-        live_thread: Option<&Arc<CodexThread>>,
-    ) -> Option<AgentStatus> {
-        self.agent_metadata_for_thread(thread_id)
-            .and_then(|metadata| metadata.cold_status(live_thread))
-    }
-
-    pub(crate) fn publish_cold_status_if_current(
-        &self,
-        thread_id: ThreadId,
-        expected: &AgentMetadata,
-        source: &Arc<CodexThread>,
-        status: AgentStatus,
-    ) {
-        let active_agents = self
-            .active_agents
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(metadata) = active_agents
-            .agent_tree
-            .values()
-            .find(|metadata| metadata.agent_id == Some(thread_id))
-        else {
-            return;
-        };
-        if Arc::ptr_eq(&metadata.generation, &expected.generation) {
-            metadata.install_cold_status(source, status);
-        }
-    }
-
     fn register_spawned_thread(&self, agent_metadata: AgentMetadata) {
-        let Some(thread_id) = agent_metadata.agent_id else {
-            return;
-        };
         let mut active_agents = self
             .active_agents
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Self::insert_spawned_thread(&mut active_agents, agent_metadata);
+    }
+
+    fn insert_spawned_thread(active_agents: &mut ActiveAgents, agent_metadata: AgentMetadata) {
+        let Some(thread_id) = agent_metadata.agent_id else {
+            return;
+        };
         let key = agent_metadata
             .agent_path
             .as_ref()
@@ -500,7 +309,21 @@ impl AgentRegistry {
         if let Some(agent_nickname) = agent_metadata.agent_nickname.clone() {
             active_agents.used_agent_nicknames.insert(agent_nickname);
         }
-        active_agents.agent_tree.insert(key, agent_metadata);
+        if let Some(previous_agent) = active_agents
+            .thread_paths
+            .insert(thread_id, RegisteredAgent::new(key.clone()))
+            && previous_agent.path != key
+        {
+            active_agents
+                .agent_tree
+                .remove(previous_agent.path.as_str());
+        }
+        if let Some(previous_metadata) = active_agents.agent_tree.insert(key, agent_metadata)
+            && let Some(previous_thread_id) = previous_metadata.agent_id
+            && previous_thread_id != thread_id
+        {
+            active_agents.thread_paths.remove(&previous_thread_id);
+        }
     }
 
     fn reserve_agent_nickname(&self, names: &[&str], preferred: Option<&str>) -> Option<String> {
@@ -508,6 +331,14 @@ impl AgentRegistry {
             .active_agents
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Self::reserve_agent_nickname_locked(&mut active_agents, names, preferred)
+    }
+
+    fn reserve_agent_nickname_locked(
+        active_agents: &mut ActiveAgents,
+        names: &[&str],
+        preferred: Option<&str>,
+    ) -> Option<String> {
         let agent_nickname = if let Some(preferred) = preferred {
             preferred.to_string()
         } else {
@@ -551,7 +382,8 @@ impl AgentRegistry {
         match active_agents.agent_tree.entry(agent_path.to_string()) {
             Entry::Occupied(_) => Err(CodexErr::UnsupportedOperation(format!(
                 "agent path `{agent_path}` already exists"
-            ))),
+            ))
+            .with_agent_context(AgentErrorContext::DuplicatePath)),
             Entry::Vacant(entry) => {
                 entry.insert(AgentMetadata {
                     agent_path: Some(agent_path.clone()),
@@ -595,14 +427,107 @@ impl AgentRegistry {
     }
 }
 
-fn bound_cold_status_text(message: String) -> String {
-    if message.len() <= COLD_STATUS_MAX_BYTES {
-        return message;
+struct RestoreBatchReservation<'a> {
+    active_agents: &'a mut ActiveAgents,
+    total_count: &'a AtomicUsize,
+    entries: Vec<RestoreAgentMetadata>,
+    committed: bool,
+}
+
+impl<'a> RestoreBatchReservation<'a> {
+    fn new(
+        active_agents: &'a mut ActiveAgents,
+        total_count: &'a AtomicUsize,
+        entries: Vec<RestoreAgentMetadata>,
+    ) -> Self {
+        Self {
+            active_agents,
+            total_count,
+            entries,
+            committed: false,
+        }
     }
-    let content_max_bytes = COLD_STATUS_MAX_BYTES - COLD_STATUS_TRUNCATION_MARKER.len();
-    let mut bounded = take_bytes_at_char_boundary(&message, content_max_bytes).to_string();
-    bounded.push_str(COLD_STATUS_TRUNCATION_MARKER);
-    bounded
+
+    fn reserve_all(&mut self) {
+        for entry in &self.entries {
+            let inserted = self
+                .active_agents
+                .reserved_thread_ids
+                .insert(entry.thread_id);
+            debug_assert!(inserted);
+            if let Some(agent_path) = &entry.agent_path {
+                let previous = self.active_agents.agent_tree.insert(
+                    agent_path.to_string(),
+                    AgentMetadata {
+                        agent_path: Some(agent_path.clone()),
+                        ..Default::default()
+                    },
+                );
+                debug_assert!(previous.is_none());
+            }
+        }
+    }
+
+    fn allocate_nicknames_and_commit(&mut self) {
+        let metadata = self
+            .entries
+            .iter()
+            .map(|entry| {
+                let candidate_names: Vec<&str> = entry
+                    .nickname_candidates
+                    .iter()
+                    .map(String::as_str)
+                    .collect();
+                let Some(agent_nickname) = AgentRegistry::reserve_agent_nickname_locked(
+                    self.active_agents,
+                    &candidate_names,
+                    entry.preferred_nickname.as_deref(),
+                ) else {
+                    unreachable!("restore batch nickname candidates were preflighted");
+                };
+                AgentMetadata {
+                    agent_id: Some(entry.thread_id),
+                    agent_path: entry.agent_path.clone(),
+                    agent_nickname: Some(agent_nickname),
+                    agent_role: entry.agent_role.clone(),
+                }
+            })
+            .collect::<Vec<_>>();
+
+        for entry in &self.entries {
+            self.active_agents
+                .reserved_thread_ids
+                .remove(&entry.thread_id);
+        }
+        for agent_metadata in metadata {
+            AgentRegistry::insert_spawned_thread(self.active_agents, agent_metadata);
+        }
+        self.committed = true;
+    }
+}
+
+impl Drop for RestoreBatchReservation<'_> {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        for entry in &self.entries {
+            self.active_agents
+                .reserved_thread_ids
+                .remove(&entry.thread_id);
+            if let Some(agent_path) = &entry.agent_path
+                && self
+                    .active_agents
+                    .agent_tree
+                    .get(agent_path.as_str())
+                    .is_some_and(|metadata| metadata.agent_id.is_none())
+            {
+                self.active_agents.agent_tree.remove(agent_path.as_str());
+            }
+        }
+        self.total_count
+            .fetch_sub(self.entries.len(), Ordering::AcqRel);
+    }
 }
 
 pub(crate) struct SpawnReservation {
@@ -623,6 +548,7 @@ impl SpawnReservation {
             .reserve_agent_nickname(names, preferred)
             .ok_or_else(|| {
                 CodexErr::UnsupportedOperation("no available agent nicknames".to_string())
+                    .with_agent_context(AgentErrorContext::NicknameUnavailable)
             })?;
         self.reserved_agent_nickname = Some(agent_nickname.clone());
         Ok(agent_nickname)

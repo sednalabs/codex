@@ -15,7 +15,6 @@ workspace = true
 [dependencies]
 codex-app-server-protocol = { workspace = true }
 codex-protocol = { workspace = true }
-codex-tools = { workspace = true }
 codex-utils-home-dir = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

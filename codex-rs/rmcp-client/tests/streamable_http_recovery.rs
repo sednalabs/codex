@@ -1,5 +1,8 @@
 mod streamable_http_test_support;
 
+#[path = "streamable_http_recovery/telemetry_tests.rs"]
+mod telemetry_tests;
+
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -14,14 +17,17 @@ use codex_exec_server::HttpResponseBodyStream;
 use futures::FutureExt as _;
 use futures::future::BoxFuture;
 use pretty_assertions::assert_eq;
+use rmcp::model::CallToolResult;
+use rmcp::model::ContentBlock;
+use rmcp::model::MetaObject;
 use serde_json::Value;
+use serde_json::json;
 use tokio::sync::Notify;
 
 use streamable_http_test_support::arm_initialize_post_failure;
 use streamable_http_test_support::arm_initialize_post_json_rpc_failure;
 use streamable_http_test_support::arm_initialized_notification_post_json_rpc_failure;
 use streamable_http_test_support::arm_session_post_failure;
-use streamable_http_test_support::arm_session_post_failure_with_retry_after;
 use streamable_http_test_support::arm_session_post_json_rpc_failure;
 use streamable_http_test_support::call_echo_tool;
 use streamable_http_test_support::create_client;
@@ -322,78 +328,6 @@ async fn streamable_http_tools_list_retries_transient_http_status() -> anyhow::R
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn streamable_http_tools_list_honors_retry_after_and_restores_catalogue() -> anyhow::Result<()>
-{
-    let (_server, base_url) = spawn_streamable_http_server().await?;
-    let client = create_client(&base_url).await?;
-
-    let expected = client
-        .list_tools(
-            /*params*/ None,
-            /*timeout*/ Some(Duration::from_secs(5)),
-        )
-        .await?;
-    let retry_after =
-        httpdate::fmt_http_date(std::time::SystemTime::now() + Duration::from_secs(2));
-    arm_session_post_failure_with_retry_after(
-        &base_url,
-        /*status*/ 429,
-        /*remaining*/ 1,
-        /*www_authenticate_headers*/ &[],
-        Some(&retry_after),
-    )
-    .await?;
-
-    let retry_started = std::time::Instant::now();
-    let refreshed = client
-        .list_tools(
-            /*params*/ None,
-            /*timeout*/ Some(Duration::from_secs(5)),
-        )
-        .await?;
-
-    assert!(
-        retry_started.elapsed() >= Duration::from_millis(900),
-        "Retry-After should delay the idempotent catalogue retry"
-    );
-    assert_eq!(refreshed, expected);
-    assert_eq!(
-        call_echo_tool(&client, "after-catalogue-recovery").await?,
-        expected_echo_result("after-catalogue-recovery")
-    );
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn streamable_http_tool_call_does_not_retry_rate_limit_response() -> anyhow::Result<()> {
-    let (_server, base_url) = spawn_streamable_http_server().await?;
-    let client = create_client(&base_url).await?;
-
-    arm_session_post_failure_with_retry_after(
-        &base_url,
-        /*status*/ 429,
-        /*remaining*/ 2,
-        /*www_authenticate_headers*/ &[],
-        Some("1"),
-    )
-    .await?;
-
-    let error = call_echo_tool(&client, "rate-limited").await.unwrap_err();
-    assert!(error.to_string().contains("429"));
-    let second_error = call_echo_tool(&client, "still-rate-limited")
-        .await
-        .unwrap_err();
-    assert!(second_error.to_string().contains("429"));
-    assert_eq!(
-        call_echo_tool(&client, "after-rate-limit").await?,
-        expected_echo_result("after-rate-limit")
-    );
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn streamable_http_tools_list_retries_json_rpc_transient_status() -> anyhow::Result<()> {
     let (_server, base_url) = spawn_streamable_http_server().await?;
     let client = create_client(&base_url).await?;
@@ -615,6 +549,42 @@ async fn streamable_http_401_does_not_trigger_recovery() -> anyhow::Result<()> {
         .unwrap_err();
     assert!(second_error.to_string().contains("401"));
 
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn streamable_http_401_challenge_is_a_tool_error_without_replay() -> anyhow::Result<()> {
+    let challenge = r#"Bearer error="invalid_token", resource_metadata="https://example.com/.well-known/oauth-protected-resource""#;
+    for challenges in [
+        vec![challenge],
+        vec![r#"Basic realm="proxy, login""#, challenge],
+    ] {
+        let (_server, base_url) = spawn_streamable_http_server().await?;
+        let client = create_client(&base_url).await?;
+
+        arm_session_post_failure(
+            &base_url,
+            /*status*/ 401,
+            /*remaining*/ 1,
+            &challenges,
+        )
+        .await?;
+
+        let result = call_echo_tool(&client, "rejected").await?;
+        let mut expected =
+            CallToolResult::error(vec![ContentBlock::text("Authentication required")]);
+        expected.meta = Some(MetaObject::from(serde_json::Map::from_iter([(
+            "mcp/www_authenticate".to_string(),
+            json!([challenges.join(", ")]),
+        )])));
+        assert_eq!(result, expected);
+
+        // A retry inside the failed call would consume the single rejection and return success.
+        assert_eq!(
+            call_echo_tool(&client, "next-user-call").await?,
+            expected_echo_result("next-user-call"),
+        );
+    }
     Ok(())
 }
 

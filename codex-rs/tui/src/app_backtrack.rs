@@ -1,31 +1,36 @@
-//! Backtracking and transcript overlay event routing.
+//! Backtracking and detailed transcript event routing.
 //!
 //! This file owns backtrack mode (Esc/Enter navigation in the transcript overlay) and also
 //! mediates a key rendering boundary for the transcript overlay.
 //!
 //! Overall goal: keep the main chat view and the transcript overlay in sync while allowing users
-//! to edit an earlier prompt on a source-preserving branch. Confirming a selection forks before
-//! the selected turn and restores its prompt in the new composer.
+//! to edit an earlier prompt in place. Confirming a selection reverts before
+//! the selected turn and restores its prompt in the composer.
 //!
 //! Backtrack operates as a small state machine:
 //! - The first `Esc` in the main view "primes" the feature and captures a base thread id.
-//! - A subsequent `Esc` opens the transcript overlay (`Ctrl+T`) and highlights a user message when
-//!   there is a prompt to reuse.
-//! - `Enter` requests a fork before the selected prompt and reopens it for editing.
+//! - A subsequent `Esc` starts compact transcript browsing and highlights the latest user prompt.
+//! - Left/Right choose prompts, Ctrl+T toggles details, and Esc restores the browsing origin.
+//! - `Enter` requests a revert before the selected prompt and reopens it for editing.
 //!
-//! The transcript overlay (`Ctrl+T`) renders committed transcript cells plus a render-only live
-//! tail derived from the current in-flight `ChatWidget.active_cell`.
+//! Owned sessions use the shared transcript viewport for `Ctrl+T`; inline sessions retain the
+//! overlay. Both render committed cells and a live tail from the current `ChatWidget.active_cell`.
 //!
 //! That live tail is kept in sync during `TuiEvent::Draw` handling for `Overlay::Transcript` by
 //! asking `ChatWidget` for an active-cell cache key and transcript lines and by passing them into
 //! `TranscriptOverlay::sync_live_tail`. This preserves the invariant that the overlay reflects
 //! both committed history and in-flight activity without changing flush or coalescing behavior.
 
+mod browsing;
+mod legacy_input;
+mod prompt_navigation;
+
 use std::any::TypeId;
 use std::sync::Arc;
 
 use crate::app::App;
 use crate::app_event::AppEvent;
+use crate::app_server_session::AppServerSession;
 use crate::bottom_pane::LocalImageAttachment;
 use crate::chatwidget::ChatWidget;
 use crate::chatwidget::UserMessage;
@@ -34,9 +39,9 @@ use crate::chatwidget::mention_bindings_from_user_inputs;
 use crate::history_cell::AgentMessageCell;
 use crate::history_cell::SessionInfoCell;
 use crate::history_cell::UserHistoryCell;
-use crate::key_hint::KeyBindingListExt;
+use crate::history_cell::sanitize_user_text;
 use crate::pager_overlay::Overlay;
-use crate::pager_overlay::TranscriptOverlayState;
+use crate::pager_overlay::TranscriptHistoryState;
 use crate::tui;
 use crate::tui::TuiEvent;
 use codex_app_server_protocol::ThreadItem;
@@ -70,9 +75,10 @@ pub(crate) struct BacktrackState {
     pub(crate) nth_user_message: usize,
     /// True when the transcript overlay is showing a backtrack preview.
     pub(crate) overlay_preview_active: bool,
+    origin: Option<browsing::BrowsingOrigin>,
 }
 
-/// A user-visible backtrack choice that can be reopened on a source-preserving branch.
+/// A user-visible backtrack choice that can be reopened in the current thread.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct BacktrackSelection {
     pub(crate) thread_id: ThreadId,
@@ -82,79 +88,22 @@ pub(crate) struct BacktrackSelection {
 }
 
 impl App {
-    /// Route overlay events while the transcript overlay is active.
+    /// Route overlay events, reserving backtracking for the transcript overlay.
     ///
-    /// If backtrack preview is active, Esc / previous-prompt steps selection, next-prompt steps
-    /// forward, Enter confirms. Otherwise, Esc or a prompt-selection key begins preview mode and
-    /// all other events are forwarded to the overlay.
+    /// If browsing is active, Left/Right steps selection, Esc cancels, and Enter
+    /// confirms. Otherwise, Esc begins preview mode and all other events are forwarded to the
+    /// overlay.
     pub(crate) async fn handle_backtrack_overlay_event(
         &mut self,
         tui: &mut tui::Tui,
+        app_server: &mut AppServerSession,
         event: TuiEvent,
     ) -> Result<bool> {
-        if self.backtrack.overlay_preview_active {
-            match event {
-                TuiEvent::Key(KeyEvent {
-                    code: KeyCode::Esc,
-                    kind: KeyEventKind::Press | KeyEventKind::Repeat,
-                    ..
-                }) => {
-                    self.overlay_step_backtrack(tui, event)?;
-                    Ok(true)
-                }
-                TuiEvent::Key(key_event)
-                    if self.keymap.pager.previous_user_prompt.is_pressed(key_event) =>
-                {
-                    self.overlay_step_backtrack(tui, event)?;
-                    Ok(true)
-                }
-                TuiEvent::Key(key_event)
-                    if self.keymap.pager.next_user_prompt.is_pressed(key_event) =>
-                {
-                    self.overlay_step_backtrack_forward(tui, event)?;
-                    Ok(true)
-                }
-                TuiEvent::Key(KeyEvent {
-                    code: KeyCode::Enter,
-                    kind: KeyEventKind::Press,
-                    ..
-                }) => {
-                    self.overlay_confirm_backtrack(tui);
-                    Ok(true)
-                }
-                _ => {
-                    self.overlay_forward_event(tui, event)?;
-                    Ok(true)
-                }
-            }
-        } else if let TuiEvent::Key(key_event) = event
-            && matches!(
-                key_event,
-                KeyEvent {
-                    code: KeyCode::Esc,
-                    kind: KeyEventKind::Press | KeyEventKind::Repeat,
-                    ..
-                }
-            )
-        {
-            // First Esc in transcript overlay: begin backtrack preview at latest user message.
-            self.begin_overlay_backtrack_preview(tui, OverlayBacktrackStart::Latest);
-            Ok(true)
-        } else if let TuiEvent::Key(key_event) = event
-            && self.keymap.pager.previous_user_prompt.is_pressed(key_event)
-        {
-            self.begin_overlay_backtrack_preview(tui, OverlayBacktrackStart::Previous);
-            Ok(true)
-        } else if let TuiEvent::Key(key_event) = event
-            && self.keymap.pager.next_user_prompt.is_pressed(key_event)
-        {
-            self.begin_overlay_backtrack_preview(tui, OverlayBacktrackStart::Next);
-            Ok(true)
-        } else {
-            // Not in backtrack mode: forward events to the overlay widget.
+        if !matches!(self.overlay, Some(Overlay::Transcript(_))) {
             self.overlay_forward_event(tui, event)?;
-            Ok(true)
+            return Ok(true);
         }
+        self.handle_legacy_transcript_event(tui, app_server, event)
     }
 
     /// Handle global Esc presses for backtracking when no overlay is present.
@@ -164,15 +113,14 @@ impl App {
         }
 
         if !self.backtrack.primed {
+            self.remember_browsing_origin(tui);
             self.prime_backtrack();
         } else if self.overlay.is_none() {
             self.open_backtrack_preview(tui);
-        } else if self.backtrack.overlay_preview_active {
-            self.step_backtrack_and_highlight(tui);
         }
     }
 
-    /// Request a source-preserving branch before the selected prompt.
+    /// Revert the current thread before the selected prompt.
     pub(crate) fn apply_backtrack_selection(&mut self, selection: BacktrackSelection) {
         if self.chat_widget.side_conversation_active() {
             self.reset_backtrack_state();
@@ -185,49 +133,65 @@ impl App {
             return;
         }
 
-        self.app_event_tx.send(AppEvent::ForkSessionForPromptEdit {
-            thread_id: selection.thread_id,
-            nth_user_message: selection.nth_user_message,
-            prompt: selection.prompt,
-        });
+        let Some(index) = nth_user_position(&self.transcript_cells, selection.nth_user_message)
+        else {
+            return;
+        };
+        self.app_event_tx
+            .send(AppEvent::RevertSessionForPromptEdit {
+                thread_id: selection.thread_id,
+                selected_cell: Arc::clone(&self.transcript_cells[index]),
+                prompt: selection.prompt,
+            });
     }
 
-    pub(crate) fn restore_backtrack_prompt_after_branch_error(
+    pub(crate) fn restore_backtrack_prompt_after_revert_error(
         &mut self,
         prompt: UserMessage,
         err: impl std::fmt::Display,
     ) {
         self.chat_widget.restore_user_message_to_composer(prompt);
-        self.chat_widget.add_error_message(format!(
-            "Failed to branch before the selected prompt: {err}"
-        ));
+        self.chat_widget
+            .add_error_message(format!("Failed to edit the selected prompt: {err:#}"));
     }
 
-    /// Open transcript overlay (enters alternate screen and shows full transcript).
+    /// Show detailed history in the owned viewport or the inline session's transcript overlay.
     pub(crate) fn open_transcript_overlay(&mut self, tui: &mut tui::Tui) {
+        if tui.is_owned_screen() {
+            self.transcript_view.set_presentation(
+                /*detailed*/ true,
+                self.chat_widget.history_render_mode(),
+            );
+            tui.frame_requester().schedule_frame();
+            return;
+        }
         let _ = tui.enter_alt_screen();
-        let transcript_overlay_state = transcript_overlay_state_for_open(
-            self.transcript_overlay_state,
-            &self.transcript_cells,
-        );
-        let mut overlay = Overlay::new_transcript(
+        self.overlay = Some(Overlay::new_transcript(
             self.transcript_cells.clone(),
             self.keymap.pager.clone(),
-            self.keymap.app.copy.clone(),
-            self.keymap.app.toggle_raw_output.clone(),
-            transcript_overlay_state,
-        );
-        if let Overlay::Transcript(transcript) = &mut overlay {
-            transcript.set_highlight_cell(transcript_overlay_state.highlight_cell);
+            self.local_settings
+                .copy_on_select(&codex_terminal_detection::terminal_info()),
+            self.local_settings.tui.mouse_scroll_speed.unwrap_or(1.0),
+        ));
+        if self.scrollback_has_older_history
+            && let Some(Overlay::Transcript(overlay)) = self.overlay.as_mut()
+        {
+            overlay.set_history_state(TranscriptHistoryState::Partial);
         }
-        self.overlay = Some(overlay);
         tui.frame_requester().schedule_frame();
     }
 
-    /// Close transcript overlay and restore normal UI.
+    /// Close the current overlay and restore normal UI, retaining Analytics navigation state.
     pub(crate) fn close_transcript_overlay(&mut self, tui: &mut tui::Tui) {
-        if let Some(Overlay::Transcript(transcript)) = &self.overlay {
-            self.transcript_overlay_state = transcript.state();
+        if tui.is_owned_screen() && self.overlay.is_none() {
+            self.transcript_view.set_presentation(
+                /*detailed*/ false,
+                self.chat_widget.history_render_mode(),
+            );
+            self.backtrack.overlay_preview_active = false;
+            self.reset_backtrack_state();
+            tui.frame_requester().schedule_frame();
+            return;
         }
         let _ = tui.leave_alt_screen();
         let was_backtrack = self.backtrack.overlay_preview_active;
@@ -238,7 +202,15 @@ impl App {
                 self.history_line_wrap_policy(),
             );
         }
-        self.overlay = None;
+        if let Some(Overlay::Analytics(mut view)) = self.overlay.take() {
+            view.cancel_loads();
+            self.retained_analytics = Some(view);
+        }
+        if self.pending_thread_usage_history_refresh
+            && let Err(err) = self.refresh_thread_usage_history_tail(tui)
+        {
+            tracing::warn!(error = %err, "failed to refresh thread usage after closing overlay");
+        }
         self.backtrack.overlay_preview_active = false;
         tui.frame_requester().schedule_frame();
         if was_backtrack {
@@ -259,7 +231,7 @@ impl App {
 
     /// Open overlay and begin backtrack preview flow (first step + highlight).
     fn open_backtrack_preview(&mut self, tui: &mut tui::Tui) {
-        if !has_backtrack_target(&self.transcript_cells) {
+        if !has_backtrack_target(&self.transcript_cells) && !self.scrollback_has_older_history {
             self.reset_backtrack_state();
             self.chat_widget
                 .add_info_message(NO_PREVIOUS_MESSAGE_TO_EDIT.to_string(), /*hint*/ None);
@@ -269,18 +241,15 @@ impl App {
 
         self.open_transcript_overlay(tui);
         self.backtrack.overlay_preview_active = true;
-        // Composer is hidden by overlay; clear its hint.
+        self.set_browsing_details(/*detailed*/ false);
+        // The selected prompt now supplies the backtrack context instead of the composer hint.
         self.chat_widget.clear_esc_backtrack_hint();
         self.step_backtrack_and_highlight(tui);
     }
 
-    /// When overlay is already open, begin preview mode and select the requested user message.
-    fn begin_overlay_backtrack_preview(
-        &mut self,
-        tui: &mut tui::Tui,
-        start: OverlayBacktrackStart,
-    ) {
-        if !has_backtrack_target(&self.transcript_cells) {
+    /// When overlay is already open, begin preview mode and select latest user message.
+    fn begin_overlay_backtrack_preview(&mut self, tui: &mut tui::Tui) {
+        if !has_backtrack_target(&self.transcript_cells) && !self.scrollback_has_older_history {
             self.close_transcript_overlay(tui);
             self.chat_widget
                 .add_info_message(NO_PREVIOUS_MESSAGE_TO_EDIT.to_string(), /*hint*/ None);
@@ -288,19 +257,22 @@ impl App {
             return;
         }
 
+        self.remember_browsing_origin(tui);
+        self.backtrack.nth_user_message = usize::MAX;
         self.backtrack.primed = true;
         self.backtrack.base_id = self.chat_widget.thread_id();
         self.backtrack.overlay_preview_active = true;
-        let count = self.current_transcript_user_count();
-        if let Some(nth_user_message) = initial_overlay_backtrack_selection(count, start) {
-            self.apply_backtrack_selection_internal(nth_user_message);
+        self.set_browsing_details(/*detailed*/ false);
+        let count = user_count(&self.transcript_cells);
+        if let Some(last) = count.checked_sub(1) {
+            self.apply_backtrack_selection_internal(last);
         }
         tui.frame_requester().schedule_frame();
     }
 
     /// Step selection to the next older user message and update overlay.
     fn step_backtrack_and_highlight(&mut self, tui: &mut tui::Tui) {
-        let count = self.current_transcript_user_count();
+        let count = user_count(&self.transcript_cells);
         if count == 0 {
             return;
         }
@@ -323,7 +295,7 @@ impl App {
 
     /// Step selection to the next newer user message and update overlay.
     fn step_forward_backtrack_and_highlight(&mut self, tui: &mut tui::Tui) {
-        let count = self.current_transcript_user_count();
+        let count = user_count(&self.transcript_cells);
         if count == 0 {
             return;
         }
@@ -343,28 +315,23 @@ impl App {
     }
 
     /// Apply a computed backtrack selection to the overlay and internal counter.
-    fn apply_backtrack_selection_internal(&mut self, nth_user_message: usize) {
-        if let Some(Overlay::Transcript(t)) = &mut self.overlay {
-            if t.set_highlighted_user_prompt(nth_user_message).is_some() {
-                self.backtrack.nth_user_message = nth_user_message;
-            } else {
-                self.backtrack.nth_user_message = usize::MAX;
-                t.set_highlight_cell(/*cell*/ None);
-            }
-            return;
-        }
-
-        if nth_user_position(&self.transcript_cells, nth_user_message).is_some() {
+    pub(crate) fn apply_backtrack_selection_internal(&mut self, nth_user_message: usize) {
+        if let Some(cell_idx) = nth_user_position(&self.transcript_cells, nth_user_message) {
             self.backtrack.nth_user_message = nth_user_message;
+            if let Some(Overlay::Transcript(t)) = &mut self.overlay {
+                t.set_highlight_cell(Some(cell_idx));
+            }
+            if self.overlay.is_none() {
+                self.transcript_view.set_highlight(Some(cell_idx));
+                self.transcript_view
+                    .ensure_entry_visible(&self.transcript_cells, cell_idx);
+            }
         } else {
             self.backtrack.nth_user_message = usize::MAX;
-        }
-    }
-
-    fn current_transcript_user_count(&self) -> usize {
-        match &self.overlay {
-            Some(Overlay::Transcript(t)) => t.user_prompt_count(),
-            _ => user_count(&self.transcript_cells),
+            if let Some(Overlay::Transcript(t)) = &mut self.overlay {
+                t.set_highlight_cell(/*cell*/ None);
+            }
+            self.transcript_view.set_highlight(/*index*/ None);
         }
     }
 
@@ -382,24 +349,51 @@ impl App {
     /// source of truth for the active cell and its cache invalidation key, and because `App` owns
     /// overlay lifecycle and frame scheduling for animations.
     fn overlay_forward_event(&mut self, tui: &mut tui::Tui, event: TuiEvent) -> Result<()> {
-        if matches!(&event, TuiEvent::Draw | TuiEvent::Resize)
+        let width = tui.terminal.last_known_screen_size.width.max(/*other*/ 1);
+        let footer = self.prompt_navigation_footer(width.saturating_sub(/*rhs*/ 2));
+        if let Some(Overlay::Transcript(overlay)) = &mut self.overlay {
+            overlay.browsing_footer =
+                footer.and_then(|footer| footer.text.lines.into_iter().next());
+        }
+        let input = matches!(&event, TuiEvent::Key(key) if key.kind != KeyEventKind::Release)
+            || matches!(&event, TuiEvent::Mouse(mouse) if mouse.kind != crossterm::event::MouseEventKind::Moved);
+        if (input
+            || matches!(
+                &event,
+                TuiEvent::Draw | TuiEvent::Resume | TuiEvent::Resize(_) | TuiEvent::FocusGained
+            ))
             && let Some(Overlay::Transcript(t)) = &mut self.overlay
         {
+            tui.set_overlay_input(tui::OverlayInput::Transcript)?;
+            t.motion = crate::motion::MotionMode::from_animations_enabled(
+                self.local_settings.tui.animations && self.local_settings.tui.effects.shimmer,
+            );
             let active_key = self.chat_widget.active_cell_transcript_key();
             let chat_widget = &self.chat_widget;
-            tui.draw(u16::MAX, |frame| {
-                let width = frame.area().width.max(1);
-                let render_mode = t.render_mode();
-                let detail_mode = t.detail_mode();
-                t.sync_live_tail(width, active_key, |w| {
-                    chat_widget.active_cell_transcript_hyperlink_lines_for_detail_mode(
-                        w,
-                        render_mode,
-                        detail_mode,
-                    )
-                });
-                t.render(frame.area(), frame.buffer);
-            })?;
+            let detailed = t.is_detailed();
+            let size = tui.prepare_draw_size()?;
+            t.sync_search_live_tail(size.width.max(/*other*/ 1), active_key, |width| {
+                chat_widget.active_cell_transcript_hyperlink_lines(width)
+            });
+            t.sync_live_tail(size.width.max(/*other*/ 1), active_key, |width| {
+                if detailed {
+                    chat_widget.active_cell_transcript_hyperlink_lines(width)
+                } else {
+                    chat_widget
+                        .active_cell_owned_transcript_lines(width, /*expanded*/ false)
+                        .map(|mut lines| {
+                            lines.activity.extend(lines.auxiliary);
+                            lines.activity
+                        })
+                }
+            });
+            // Refresh visible rows before selection captures this live revision.
+            let result =
+                if input { t.draw(tui) } else { Ok(()) }.and_then(|()| t.handle_event(tui, event));
+            if result.is_err() {
+                let _ = tui.set_overlay_input(tui::OverlayInput::Default);
+            }
+            result?;
             let close_overlay = t.is_done();
             if !close_overlay
                 && active_key.is_some_and(|key| key.animation_tick.is_some())
@@ -415,109 +409,25 @@ impl App {
             return Ok(());
         }
 
-        let (scroll_selection, copy_selection, copy_latest, close_overlay) = if let Some(overlay) =
-            &mut self.overlay
-        {
+        if let Some(overlay) = &mut self.overlay {
             overlay.handle_event(tui, event)?;
-            let (scroll_selection, copy_selection, copy_latest) = match overlay {
-                Overlay::Transcript(transcript) => {
-                    let scroll_selection = transcript.take_scroll_selected_user_cell();
-                    if transcript.take_copy_requested() {
-                        match transcript.selected_user_cell() {
-                            Some(user_cell_idx) => (scroll_selection, Some(user_cell_idx), false),
-                            None => (scroll_selection, None, true),
-                        }
-                    } else {
-                        (scroll_selection, None, false)
-                    }
-                }
-                Overlay::Static(_) => (None, None, false),
-            };
-            (
-                scroll_selection,
-                copy_selection,
-                copy_latest,
-                overlay.is_done(),
-            )
-        } else {
-            (None, None, false, false)
-        };
-        if let Some(user_cell_idx) = scroll_selection
-            && self
-                .transcript_cells
-                .get(user_cell_idx)
-                .is_some_and(|cell| cell.is_user_prompt())
-            && let Some(nth_user_message) =
-                user_count(&self.transcript_cells[..=user_cell_idx]).checked_sub(1)
-        {
-            self.backtrack.primed = true;
-            self.backtrack.base_id = self.chat_widget.thread_id();
-            self.backtrack.overlay_preview_active = true;
-            self.backtrack.nth_user_message = nth_user_message;
-        }
-        let copy_status = if let Some(user_cell_idx) = copy_selection {
-            Some(self.copy_transcript_turn(user_cell_idx))
-        } else if copy_latest {
-            Some(self.chat_widget.copy_last_agent_markdown_for_overlay())
-        } else {
-            None
-        };
-        if let Some(status) = copy_status
-            && let Some(Overlay::Transcript(transcript)) = &mut self.overlay
-        {
-            transcript.show_copy_status(&status, tui);
-        }
-        if close_overlay {
-            self.close_transcript_overlay(tui);
-            tui.frame_requester().schedule_frame();
+            if overlay.is_done() {
+                self.close_transcript_overlay(tui);
+                tui.frame_requester().schedule_frame();
+            }
         }
         Ok(())
-    }
-
-    fn copy_transcript_turn(&mut self, user_cell_idx: usize) -> crate::chatwidget::CopyStatus {
-        let Some((user_prompt, agent_markdown)) =
-            transcript_turn_copy_source(&self.transcript_cells, user_cell_idx)
-        else {
-            return self.chat_widget.copy_last_agent_markdown_for_overlay();
-        };
-        self.chat_widget
-            .copy_transcript_turn_markdown_for_overlay(&user_prompt, agent_markdown.as_deref())
     }
 
     /// Handle Enter in overlay backtrack preview: confirm selection and reset state.
     fn overlay_confirm_backtrack(&mut self, tui: &mut tui::Tui) {
         let nth_user_message = self.backtrack.nth_user_message;
-        let selection = self.backtrack_selection(nth_user_message);
+        let Some(selection) = self.backtrack_selection(nth_user_message) else {
+            return;
+        };
         self.close_transcript_overlay(tui);
-        if let Some(selection) = selection {
-            self.apply_backtrack_selection(selection);
-            tui.frame_requester().schedule_frame();
-        }
-    }
-
-    /// Handle Esc in overlay backtrack preview: step selection if armed, else forward.
-    fn overlay_step_backtrack(&mut self, tui: &mut tui::Tui, event: TuiEvent) -> Result<()> {
-        if self.backtrack.base_id.is_some() {
-            self.step_backtrack_and_highlight(tui);
-        } else {
-            self.overlay_forward_event(tui, event)?;
-        }
-        Ok(())
-    }
-
-    /// Handle next-prompt in overlay backtrack preview: step selection forward if armed, else
-    /// forward.
-    fn overlay_step_backtrack_forward(
-        &mut self,
-        tui: &mut tui::Tui,
-        event: TuiEvent,
-    ) -> Result<()> {
-        if self.backtrack.base_id.is_some() {
-            self.step_forward_backtrack_and_highlight(tui);
-        } else {
-            self.overlay_forward_event(tui, event)?;
-        }
-        Ok(())
+        self.apply_backtrack_selection(selection);
+        tui.frame_requester().schedule_frame();
     }
 
     /// Confirm a primed backtrack from the main view (no overlay visible).
@@ -530,9 +440,12 @@ impl App {
 
     /// Clear all backtrack-related state and composer hints.
     pub(crate) fn reset_backtrack_state(&mut self) {
+        self.backtrack.origin = None;
         self.backtrack.primed = false;
+        self.backtrack.overlay_preview_active = false;
         self.backtrack.base_id = None;
         self.backtrack.nth_user_message = usize::MAX;
+        self.transcript_view.set_highlight(/*index*/ None);
         // In case a hint is somehow still visible (e.g., race with overlay open/close).
         self.chat_widget.clear_esc_backtrack_hint();
     }
@@ -574,23 +487,63 @@ impl App {
 ///
 /// Replay hides review prompts and other display-empty inputs, so the selected ordinal must be
 /// resolved against the same visible projection before restoring its canonical mention bindings.
+/// `start_item` anchors a partially loaded transcript within authoritative history; earlier
+/// user inputs still establish whether the selected input was a mid-turn steer.
 ///
 /// A turn can contain multiple user messages when it was steered. Only its initial prompt can be
-/// reopened independently because app-server cannot fork in the middle of a turn.
-pub(crate) fn backtrack_fork_before_turn_id(
+/// reopened independently because app-server cannot revert in the middle of a turn.
+pub(crate) fn backtrack_revert_before_turn_id(
     turns: &[Turn],
+    start_item: Option<&(String, String)>,
     nth_user_message: usize,
     prompt: &mut UserMessage,
-) -> Result<Option<String>> {
+) -> Result<String> {
+    let (start_turn, start_item) = match start_item {
+        Some((turn_id, item_id)) => turns
+            .iter()
+            .position(|turn| turn.id == *turn_id)
+            .and_then(|index| {
+                turns[index]
+                    .items
+                    .iter()
+                    .position(|item| item.id() == item_id)
+                    .map(|item| (index, item))
+            })
+            .ok_or_else(|| {
+                color_eyre::eyre::eyre!("the loaded history boundary no longer exists")
+            })?,
+        None => (0, 0),
+    };
     let mut visible_user_messages_seen = 0_usize;
     let mut review_mode = false;
-    for (turn_index, turn) in turns.iter().enumerate() {
-        let hidden_nested_review_turn = turn_index
-            .checked_sub(/*rhs*/ 1)
-            .and_then(|index| turns.get(index))
-            .is_some_and(|previous| is_hidden_nested_review_turn(previous, turn));
-        let mut user_messages_in_turn = 0_usize;
-        for item in &turn.items {
+    for (turn_index, turn) in turns.iter().enumerate().skip(start_turn) {
+        let hidden_nested_review_turn = turn_index > start_turn
+            && turns.get(turn_index - 1).is_some_and(|previous| {
+                let previous_items = if turn_index - 1 == start_turn {
+                    &previous.items[start_item..]
+                } else {
+                    &previous.items
+                };
+                is_hidden_nested_review_turn(previous, turn)
+                    && previous_items
+                        .iter()
+                        .any(|item| matches!(item, ThreadItem::EnteredReviewMode { .. }))
+                    && previous_items
+                        .iter()
+                        .any(|item| matches!(item, ThreadItem::ExitedReviewMode { .. }))
+            });
+        let first_item = if turn_index == start_turn {
+            start_item
+        } else {
+            0
+        };
+        // Clipped items affect whether an input is a steer, but were never displayed and
+        // therefore must not change the transcript's review visibility or prompt ordinals.
+        let mut user_messages_in_turn = turn.items[..first_item]
+            .iter()
+            .filter(|item| matches!(item, ThreadItem::UserMessage { .. }))
+            .count();
+        for item in &turn.items[first_item..] {
             let content = match item {
                 ThreadItem::EnteredReviewMode { .. } => {
                     review_mode = true;
@@ -613,7 +566,9 @@ pub(crate) fn backtrack_fork_before_turn_id(
             if hidden_nested_review_turn {
                 continue;
             }
-            if display.message.trim().is_empty()
+            if sanitize_user_text((&display.message).into())
+                .trim()
+                .is_empty()
                 && display.text_elements.is_empty()
                 && display.local_images.is_empty()
                 && display.remote_image_urls.is_empty()
@@ -627,7 +582,7 @@ pub(crate) fn backtrack_fork_before_turn_id(
             }
 
             if is_steer {
-                bail!("the selected prompt is a steer and cannot be branched independently");
+                bail!("the selected prompt is a steer and cannot be edited independently");
             }
             if matches!(turn.status, TurnStatus::InProgress) {
                 bail!("the selected prompt belongs to a turn that is still in progress");
@@ -643,7 +598,7 @@ pub(crate) fn backtrack_fork_before_turn_id(
             }
             prompt.mention_bindings = mention_bindings_from_user_inputs(content, &display.message);
 
-            return Ok((turn_index > 0).then(|| turn.id.clone()));
+            return Ok(turn.id.clone());
         }
     }
 
@@ -685,59 +640,11 @@ pub(crate) fn user_count(cells: &[Arc<dyn crate::history_cell::HistoryCell>]) ->
     user_positions_iter(cells).count()
 }
 
-fn transcript_turn_copy_source(
-    cells: &[Arc<dyn crate::history_cell::HistoryCell>],
-    user_cell_idx: usize,
-) -> Option<(String, Option<String>)> {
-    let selected = cells.get(user_cell_idx)?;
-    if !selected.is_user_prompt() {
-        return None;
-    }
-    let user_cell = selected.as_any().downcast_ref::<UserHistoryCell>()?;
-    let markdown = cells
-        .iter()
-        .skip(user_cell_idx.saturating_add(1))
-        .take_while(|cell| {
-            !cell.is_user_prompt() && cell.as_any().downcast_ref::<SessionInfoCell>().is_none()
-        })
-        .filter_map(|cell| cell.transcript_copy_markdown())
-        .last()
-        .map(str::to_owned);
-
-    Some((user_cell.message.clone(), markdown))
-}
-
 fn has_backtrack_target(cells: &[Arc<dyn crate::history_cell::HistoryCell>]) -> bool {
     user_count(cells) > 0
 }
 
-#[derive(Clone, Copy)]
-enum OverlayBacktrackStart {
-    Latest,
-    Previous,
-    Next,
-}
-
-fn initial_overlay_backtrack_selection(
-    user_count: usize,
-    start: OverlayBacktrackStart,
-) -> Option<usize> {
-    let last = user_count.checked_sub(1)?;
-    Some(match start {
-        OverlayBacktrackStart::Latest | OverlayBacktrackStart::Next => last,
-        OverlayBacktrackStart::Previous => last.saturating_sub(1),
-    })
-}
-
-fn transcript_overlay_state_for_open(
-    mut state: TranscriptOverlayState,
-    cells: &[Arc<dyn crate::history_cell::HistoryCell>],
-) -> TranscriptOverlayState {
-    state.highlight_cell = user_positions_iter(cells).last();
-    state
-}
-
-fn nth_user_position(
+pub(crate) fn nth_user_position(
     cells: &[Arc<dyn crate::history_cell::HistoryCell>],
     nth: usize,
 ) -> Option<usize> {
@@ -761,7 +668,10 @@ fn user_positions_iter(
         .iter()
         .enumerate()
         .skip(start)
-        .filter_map(move |(idx, cell)| cell.is_user_prompt().then_some(idx))
+        .filter_map(|(idx, cell)| {
+            let user = cell.as_any().downcast_ref::<UserHistoryCell>()?;
+            user.has_visible_content().then_some(idx)
+        })
 }
 
 #[cfg(test)]
@@ -798,7 +708,6 @@ mod tests {
     use crate::bottom_pane::MentionBinding;
     use crate::history_cell::AgentMessageCell;
     use crate::history_cell::HistoryCell;
-    use crate::history_cell::HistoryRenderMode;
     use codex_app_server_protocol::UserInput;
     use pretty_assertions::assert_eq;
     use ratatui::prelude::Line;
@@ -817,25 +726,10 @@ mod tests {
             .collect()
     }
 
-    fn user_history_cell(message: &str) -> Arc<dyn HistoryCell> {
-        Arc::new(UserHistoryCell {
-            message: message.to_string(),
-            text_elements: Vec::new(),
-            local_image_paths: Vec::new(),
-            remote_image_urls: Vec::new(),
-        })
-    }
-
-    fn agent_markdown_cell(markdown: &str) -> Arc<dyn HistoryCell> {
-        Arc::new(crate::history_cell::AgentMarkdownCell::new(
-            markdown.to_string(),
-            PathBuf::from("/tmp").as_path(),
-        ))
-    }
-
     fn turn(turn_id: &str, status: TurnStatus, user_messages: usize) -> Turn {
         Turn {
             id: turn_id.to_string(),
+            root_turn_id: None,
             items: (0..user_messages)
                 .map(|index| ThreadItem::UserMessage {
                     id: format!("user-{index}"),
@@ -866,8 +760,17 @@ mod tests {
     }
 
     #[test]
-    fn backtrack_fork_before_turn_id_resolves_first_and_later_prompts() {
+    fn backtrack_revert_before_turn_id_resolves_first_and_later_prompts() {
+        let mut hidden = turn("hidden", TurnStatus::Completed, /*user_messages*/ 1);
+        let ThreadItem::UserMessage { content, .. } = &mut hidden.items[0] else {
+            unreachable!()
+        };
+        *content = vec![UserInput::Text {
+            text: "\u{0007}".into(),
+            text_elements: Vec::new(),
+        }];
         let turns = vec![
+            hidden,
             turn("turn-1", TurnStatus::Completed, /*user_messages*/ 1),
             turn(
                 "turn-compaction",
@@ -878,48 +781,72 @@ mod tests {
         ];
 
         assert_eq!(
-            backtrack_fork_before_turn_id(
+            backtrack_revert_before_turn_id(
                 &turns,
+                /*start_item*/ None,
                 /*nth_user_message*/ 0,
                 &mut prompt("turn-1-prompt-0"),
             )
             .expect("first prompt should resolve"),
-            None
+            "turn-1".to_string()
         );
         assert_eq!(
-            backtrack_fork_before_turn_id(
+            backtrack_revert_before_turn_id(
                 &turns,
+                /*start_item*/ None,
                 /*nth_user_message*/ 1,
                 &mut prompt("turn-2-prompt-0"),
             )
             .expect("later prompt should resolve"),
-            Some("turn-2".to_string())
+            "turn-2".to_string()
         );
     }
 
     #[test]
-    fn backtrack_fork_before_turn_id_rejects_mid_turn_steers() {
+    fn backtrack_revert_before_turn_id_rejects_mid_turn_steers() {
         let turns = vec![turn(
             "turn-1",
             TurnStatus::Completed,
             /*user_messages*/ 2,
         )];
 
-        let error = backtrack_fork_before_turn_id(
+        let error = backtrack_revert_before_turn_id(
             &turns,
+            /*start_item*/ None,
             /*nth_user_message*/ 1,
             &mut prompt("turn-1-prompt-1"),
         )
-        .expect_err("a steer cannot be branched independently");
+        .expect_err("a steer cannot be edited independently");
 
         assert_eq!(
             error.to_string(),
-            "the selected prompt is a steer and cannot be branched independently"
+            "the selected prompt is a steer and cannot be edited independently"
         );
     }
 
     #[test]
-    fn backtrack_fork_before_turn_id_rejects_in_progress_and_missing_prompts() {
+    fn backtrack_revert_partial_history_does_not_make_a_steer_editable() {
+        let turns = vec![turn(
+            "turn-1",
+            TurnStatus::Completed,
+            /*user_messages*/ 2,
+        )];
+        let start_item = (turns[0].id.clone(), turns[0].items[1].id().to_string());
+        let error = backtrack_revert_before_turn_id(
+            &turns,
+            Some(&start_item),
+            /*nth_user_message*/ 0,
+            &mut prompt("turn-1-prompt-1"),
+        )
+        .expect_err("the loaded page starts mid-turn");
+        assert_eq!(
+            error.to_string(),
+            "the selected prompt is a steer and cannot be edited independently"
+        );
+    }
+
+    #[test]
+    fn backtrack_revert_before_turn_id_rejects_in_progress_and_missing_prompts() {
         let turns = vec![turn(
             "turn-1",
             TurnStatus::InProgress,
@@ -927,22 +854,24 @@ mod tests {
         )];
 
         assert_eq!(
-            backtrack_fork_before_turn_id(
+            backtrack_revert_before_turn_id(
                 &turns,
+                /*start_item*/ None,
                 /*nth_user_message*/ 0,
                 &mut prompt("turn-1-prompt-0"),
             )
-            .expect_err("in-progress prompt cannot be branched")
+            .expect_err("in-progress prompt cannot be edited")
             .to_string(),
             "the selected prompt belongs to a turn that is still in progress"
         );
         assert_eq!(
-            backtrack_fork_before_turn_id(
+            backtrack_revert_before_turn_id(
                 &turns,
+                /*start_item*/ None,
                 /*nth_user_message*/ 1,
                 &mut prompt("missing prompt"),
             )
-            .expect_err("missing prompt cannot be branched")
+            .expect_err("missing prompt cannot be edited")
             .to_string(),
             "the selected prompt was not found in the persisted thread"
         );
@@ -953,19 +882,20 @@ mod tests {
             /*user_messages*/ 1,
         )];
         assert_eq!(
-            backtrack_fork_before_turn_id(
+            backtrack_revert_before_turn_id(
                 &completed_turns,
+                /*start_item*/ None,
                 /*nth_user_message*/ 0,
                 &mut prompt("different prompt"),
             )
-            .expect_err("a stale transcript prompt cannot be branched")
+            .expect_err("a stale transcript prompt cannot be edited")
             .to_string(),
             "the selected transcript prompt no longer matches the persisted thread"
         );
     }
 
     #[test]
-    fn backtrack_fork_before_turn_id_skips_hidden_review_prompts() {
+    fn backtrack_revert_before_turn_id_skips_hidden_review_prompts() {
         let mut review_turn = turn(
             "turn-review",
             TurnStatus::Completed,
@@ -989,18 +919,31 @@ mod tests {
         ];
 
         assert_eq!(
-            backtrack_fork_before_turn_id(
+            backtrack_revert_before_turn_id(
                 &turns,
+                /*start_item*/ None,
                 /*nth_user_message*/ 1,
                 &mut prompt("turn-2-prompt-0"),
             )
             .expect("the visible prompt after review should resolve"),
-            Some("turn-2".to_string())
+            "turn-2".to_string()
+        );
+        // This loaded page starts after the review marker, so its review prompt is visible.
+        let start_item = (turns[1].id.clone(), turns[1].items[1].id().to_string());
+        assert_eq!(
+            backtrack_revert_before_turn_id(
+                &turns,
+                Some(&start_item),
+                /*nth_user_message*/ 1,
+                &mut prompt("turn-2-prompt-0"),
+            )
+            .expect("ordinal must match the clipped transcript"),
+            "turn-2"
         );
     }
 
     #[test]
-    fn backtrack_fork_before_turn_id_skips_hidden_nested_review_prompts() {
+    fn backtrack_revert_before_turn_id_skips_hidden_nested_review_prompts() {
         let review_hint = "current changes";
         let review_prompt =
             "Review the current code changes (staged, unstaged, and untracked files).";
@@ -1058,18 +1001,19 @@ mod tests {
         ];
 
         assert_eq!(
-            backtrack_fork_before_turn_id(
+            backtrack_revert_before_turn_id(
                 &turns,
+                /*start_item*/ None,
                 /*nth_user_message*/ 0,
                 &mut prompt("turn-2-prompt-0"),
             )
             .expect("the visible prompt after a nested review should resolve"),
-            Some("turn-2".to_string())
+            "turn-2".to_string()
         );
     }
 
     #[test]
-    fn backtrack_fork_before_turn_id_restores_canonical_mention_bindings() {
+    fn backtrack_revert_before_turn_id_restores_canonical_mention_bindings() {
         let mut selected_turn = turn("turn-2", TurnStatus::Completed, /*user_messages*/ 1);
         selected_turn.items = vec![ThreadItem::UserMessage {
             id: "selected-prompt".to_string(),
@@ -1100,13 +1044,14 @@ mod tests {
         let mut selected_prompt = prompt("use $skill @sample $google-calendar");
 
         assert_eq!(
-            backtrack_fork_before_turn_id(
+            backtrack_revert_before_turn_id(
                 &turns,
+                /*start_item*/ None,
                 /*nth_user_message*/ 1,
                 &mut selected_prompt,
             )
             .expect("the selected prompt should resolve"),
-            Some("turn-2".to_string())
+            "turn-2".to_string()
         );
         assert_eq!(
             selected_prompt.mention_bindings,
@@ -1166,6 +1111,7 @@ mod tests {
         assert!(!has_backtrack_target(&cells));
 
         cells.push(Arc::new(UserHistoryCell {
+            spoken: false,
             message: "hello".to_string(),
             text_elements: Vec::new(),
             local_image_paths: Vec::new(),
@@ -1173,162 +1119,6 @@ mod tests {
         }) as Arc<dyn HistoryCell>);
 
         assert!(has_backtrack_target(&cells));
-    }
-
-    #[test]
-    fn transcript_overlay_open_selects_latest_user_prompt() {
-        let cells: Vec<Arc<dyn HistoryCell>> = vec![
-            Arc::new(UserHistoryCell {
-                message: "first".to_string(),
-                text_elements: Vec::new(),
-                local_image_paths: Vec::new(),
-                remote_image_urls: Vec::new(),
-            }) as Arc<dyn HistoryCell>,
-            Arc::new(AgentMessageCell::new(
-                vec![Line::from("assistant")],
-                /*is_first_line*/ true,
-            )) as Arc<dyn HistoryCell>,
-            Arc::new(UserHistoryCell {
-                message: "second".to_string(),
-                text_elements: Vec::new(),
-                local_image_paths: Vec::new(),
-                remote_image_urls: Vec::new(),
-            }) as Arc<dyn HistoryCell>,
-        ];
-        let stale_state = TranscriptOverlayState {
-            scroll_offset: 4,
-            highlight_cell: Some(0),
-            render_mode: HistoryRenderMode::Raw,
-            detail_mode: crate::history_cell::TranscriptDetailMode::Verbose,
-        };
-
-        let state = transcript_overlay_state_for_open(stale_state, &cells);
-
-        assert_eq!(
-            state,
-            TranscriptOverlayState {
-                scroll_offset: 4,
-                highlight_cell: Some(2),
-                render_mode: HistoryRenderMode::Raw,
-                detail_mode: crate::history_cell::TranscriptDetailMode::Verbose,
-            }
-        );
-    }
-
-    #[test]
-    fn transcript_turn_copy_source_stops_at_next_prompt_and_uses_latest_markdown() {
-        let cells = vec![
-            user_history_cell("first prompt"),
-            agent_markdown_cell("draft response"),
-            agent_markdown_cell("first response"),
-            user_history_cell("second prompt"),
-            agent_markdown_cell("second response"),
-        ];
-
-        assert_eq!(
-            transcript_turn_copy_source(&cells, /*user_cell_idx*/ 0),
-            Some((
-                "first prompt".to_string(),
-                Some("first response".to_string()),
-            ))
-        );
-    }
-
-    #[test]
-    fn transcript_turn_copy_source_supports_proposed_plan() {
-        let cells: Vec<Arc<dyn HistoryCell>> = vec![
-            user_history_cell("plan this"),
-            Arc::new(crate::history_cell::new_proposed_plan(
-                "1. Inspect\n2. Repair".to_string(),
-                PathBuf::from("/tmp").as_path(),
-            )),
-        ];
-
-        assert_eq!(
-            transcript_turn_copy_source(&cells, /*user_cell_idx*/ 0),
-            Some((
-                "plan this".to_string(),
-                Some("1. Inspect\n2. Repair".to_string()),
-            ))
-        );
-    }
-
-    #[test]
-    fn transcript_turn_copy_source_requires_finalized_markdown() {
-        let cells: Vec<Arc<dyn HistoryCell>> = vec![
-            user_history_cell("unfinished prompt"),
-            Arc::new(AgentMessageCell::new(
-                vec![Line::from("streaming response")],
-                /*is_first_line*/ true,
-            )),
-        ];
-
-        assert_eq!(
-            transcript_turn_copy_source(&cells, /*user_cell_idx*/ 0),
-            Some(("unfinished prompt".to_string(), None))
-        );
-    }
-
-    #[test]
-    fn transcript_overlay_open_clears_stale_selection_without_user_prompt() {
-        let cells: Vec<Arc<dyn HistoryCell>> = vec![Arc::new(AgentMessageCell::new(
-            vec![Line::from("assistant")],
-            /*is_first_line*/ true,
-        )) as Arc<dyn HistoryCell>];
-        let stale_state = TranscriptOverlayState {
-            scroll_offset: 4,
-            highlight_cell: Some(0),
-            render_mode: HistoryRenderMode::Raw,
-            detail_mode: crate::history_cell::TranscriptDetailMode::Verbose,
-        };
-
-        let state = transcript_overlay_state_for_open(stale_state, &cells);
-
-        assert_eq!(
-            state,
-            TranscriptOverlayState {
-                scroll_offset: 4,
-                highlight_cell: None,
-                render_mode: HistoryRenderMode::Raw,
-                detail_mode: crate::history_cell::TranscriptDetailMode::Verbose,
-            }
-        );
-    }
-
-    #[test]
-    fn first_previous_prompt_key_starts_on_previous_prompt() {
-        assert_eq!(
-            initial_overlay_backtrack_selection(
-                /*user_count*/ 3,
-                OverlayBacktrackStart::Previous,
-            ),
-            Some(1)
-        );
-        assert_eq!(
-            initial_overlay_backtrack_selection(
-                /*user_count*/ 3,
-                OverlayBacktrackStart::Latest
-            ),
-            Some(2)
-        );
-        assert_eq!(
-            initial_overlay_backtrack_selection(/*user_count*/ 3, OverlayBacktrackStart::Next),
-            Some(2)
-        );
-        assert_eq!(
-            initial_overlay_backtrack_selection(
-                /*user_count*/ 1,
-                OverlayBacktrackStart::Previous,
-            ),
-            Some(0)
-        );
-        assert_eq!(
-            initial_overlay_backtrack_selection(
-                /*user_count*/ 0,
-                OverlayBacktrackStart::Previous,
-            ),
-            None
-        );
     }
 
     #[test]

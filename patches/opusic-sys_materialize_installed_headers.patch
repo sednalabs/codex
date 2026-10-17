@@ -1,0 +1,39 @@
+diff --git a/build.rs b/build.rs
+--- a/build.rs
++++ b/build.rs
+@@ -236,1 +236,35 @@
+     let mut out_dir = cmake.build();
++
++    // Bazel tree outputs must not retain links to source input headers.
++    if std::env::var("CODEX_OPUS_MATERIALIZE_HEADERS").as_deref() == Ok("1") {
++        let sources = path::PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap())
++            .join("opus")
++            .join("include");
++        for name in [
++            "opus.h",
++            "opus_defines.h",
++            "opus_multistream.h",
++            "opus_projection.h",
++            "opus_types.h",
++            "opus_custom.h",
++        ] {
++            let installed = out_dir.join("include").join("opus").join(name);
++            let metadata = match std::fs::symlink_metadata(&installed) {
++                Ok(metadata) => metadata,
++                Err(error)
++                    if name == "opus_custom.h"
++                        && error.kind() == std::io::ErrorKind::NotFound =>
++                {
++                    continue;
++                }
++                Err(error) => panic!("Cannot inspect installed Opus header: {error}"),
++            };
++            if metadata.file_type().is_symlink() {
++                // Read first, then replace the link without writing through it.
++                let bytes = std::fs::read(sources.join(name))
++                    .expect("Cannot read declared Opus source header");
++                std::fs::remove_file(&installed).expect("Cannot remove Opus header link");
++                std::fs::write(&installed, bytes).expect("Cannot materialize Opus header");
++            }
++        }
++    }

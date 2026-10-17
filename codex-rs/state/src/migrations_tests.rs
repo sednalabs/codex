@@ -1,31 +1,19 @@
-use std::borrow::Cow;
-use std::collections::BTreeSet;
-
 use codex_utils_absolute_path::test_support::PathExt;
+use pretty_assertions::assert_eq;
 use sqlx::Connection;
 use sqlx::Row;
 use sqlx::migrate::Migration;
 use sqlx::migrate::Migrator;
+use std::borrow::Cow;
 
 use super::STATE_MIGRATOR;
 use super::THREAD_HISTORY_MIGRATOR;
-use super::USAGE_MIGRATOR;
-use super::repair_state_migration_version_collisions;
+use super::repair_legacy_recency_migration_version;
+use crate::PINNED_THREAD_SECTION_ID;
+use crate::PINNED_THREAD_SECTION_NAME;
+use crate::runtime::migration_repair::run_state_migrations;
 
-const PRE_RECENCY_MIGRATION_VERSION: i64 = 42;
-const LEGACY_RECENCY_MIGRATION_VERSION: i64 = 38;
-const CURRENT_RECENCY_MIGRATION_VERSION: i64 = 43;
-const LEGACY_VISIBLE_SORT_INDEXES_MIGRATION_VERSION: i64 = 40;
-const CURRENT_VISIBLE_SORT_INDEXES_MIGRATION_VERSION: i64 = 44;
-const LEGACY_REMOTE_CONTROL_ENABLED_MIGRATION_VERSION: i64 = 41;
-const CURRENT_REMOTE_CONTROL_ENABLED_MIGRATION_VERSION: i64 = 46;
-const PRE_CONFIGURED_IDENTITY_PROVENANCE_MIGRATION_VERSION: i64 = 44;
-const LEGACY_EXTERNAL_AGENT_CONFIG_IMPORTS_MIGRATION_VERSION: i64 = 42;
-const CURRENT_EXTERNAL_AGENT_CONFIG_IMPORTS_MIGRATION_VERSION: i64 = 47;
-const CURRENT_PINNED_THREADS_MIGRATION_VERSION: i64 = 48;
-const LEGACY_EXTERNAL_AGENT_CONFIG_IMPORTS_PROVIDER_ID_MIGRATION_VERSION: i64 = 44;
-const CURRENT_EXTERNAL_AGENT_CONFIG_IMPORTS_PROVIDER_ID_MIGRATION_VERSION: i64 = 49;
-const DEPLOYED_ORIGIN_MAIN_MIGRATION_VERSION: i64 = 45;
+const CUSTOM_THREAD_SECTION_ID: &str = "01984de2-8f74-7c91-a3b2-5c5e937cf317";
 
 fn migrator_through(version: i64) -> Migrator {
     Migrator {
@@ -45,175 +33,8 @@ fn migrator_through(version: i64) -> Migrator {
     }
 }
 
-fn origin_main_migrator() -> Migrator {
-    let remote_control_enabled_migration = STATE_MIGRATOR
-        .migrations
-        .iter()
-        .find(|migration| migration.version == CURRENT_REMOTE_CONTROL_ENABLED_MIGRATION_VERSION)
-        .expect("remote control enabled migration should exist");
-    let external_imports_migration = STATE_MIGRATOR
-        .migrations
-        .iter()
-        .find(|migration| {
-            migration.version == CURRENT_EXTERNAL_AGENT_CONFIG_IMPORTS_MIGRATION_VERSION
-        })
-        .expect("external agent config imports migration should exist");
-    let mut migrations = STATE_MIGRATOR
-        .migrations
-        .iter()
-        .filter(|migration| migration.version < LEGACY_REMOTE_CONTROL_ENABLED_MIGRATION_VERSION)
-        .cloned()
-        .collect::<Vec<_>>();
-    migrations.push(Migration::new(
-        LEGACY_REMOTE_CONTROL_ENABLED_MIGRATION_VERSION,
-        remote_control_enabled_migration.description.clone(),
-        remote_control_enabled_migration.migration_type,
-        remote_control_enabled_migration.sql.clone(),
-        remote_control_enabled_migration.no_tx,
-    ));
-    migrations.push(Migration::new(
-        LEGACY_EXTERNAL_AGENT_CONFIG_IMPORTS_MIGRATION_VERSION,
-        external_imports_migration.description.clone(),
-        external_imports_migration.migration_type,
-        external_imports_migration.sql.clone(),
-        external_imports_migration.no_tx,
-    ));
-    migrations.extend(
-        STATE_MIGRATOR
-            .migrations
-            .iter()
-            .filter(|migration| {
-                migration.version > LEGACY_EXTERNAL_AGENT_CONFIG_IMPORTS_MIGRATION_VERSION
-                    && migration.version <= DEPLOYED_ORIGIN_MAIN_MIGRATION_VERSION
-            })
-            .cloned(),
-    );
-    Migrator::with_migrations(migrations)
-}
-
-fn usage_migrator_through(version: i64) -> Migrator {
-    Migrator {
-        migrations: Cow::Owned(
-            USAGE_MIGRATOR
-                .migrations
-                .iter()
-                .filter(|migration| migration.version <= version)
-                .cloned()
-                .collect(),
-        ),
-        ignore_missing: USAGE_MIGRATOR.ignore_missing,
-        locking: USAGE_MIGRATOR.locking,
-        table_name: USAGE_MIGRATOR.table_name.clone(),
-        create_schemas: USAGE_MIGRATOR.create_schemas.clone(),
-        no_tx: USAGE_MIGRATOR.no_tx,
-    }
-}
-
-fn upstream_external_agent_import_provider_migrator() -> Migrator {
-    let external_imports_migration = STATE_MIGRATOR
-        .migrations
-        .iter()
-        .find(|migration| {
-            migration.version == CURRENT_EXTERNAL_AGENT_CONFIG_IMPORTS_MIGRATION_VERSION
-        })
-        .expect("external agent config imports migration should exist");
-    let provider_id_migration = STATE_MIGRATOR
-        .migrations
-        .iter()
-        .find(|migration| {
-            migration.version == CURRENT_EXTERNAL_AGENT_CONFIG_IMPORTS_PROVIDER_ID_MIGRATION_VERSION
-        })
-        .expect("external agent config imports provider-id migration should exist");
-    let mut migrations = STATE_MIGRATOR
-        .migrations
-        .iter()
-        .filter(|migration| {
-            migration.version < LEGACY_EXTERNAL_AGENT_CONFIG_IMPORTS_MIGRATION_VERSION
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    migrations.push(Migration::new(
-        LEGACY_EXTERNAL_AGENT_CONFIG_IMPORTS_MIGRATION_VERSION,
-        external_imports_migration.description.clone(),
-        external_imports_migration.migration_type,
-        external_imports_migration.sql.clone(),
-        external_imports_migration.no_tx,
-    ));
-    migrations.extend(
-        STATE_MIGRATOR
-            .migrations
-            .iter()
-            .filter(|migration| {
-                migration.version > LEGACY_EXTERNAL_AGENT_CONFIG_IMPORTS_MIGRATION_VERSION
-                    && migration.version
-                        < LEGACY_EXTERNAL_AGENT_CONFIG_IMPORTS_PROVIDER_ID_MIGRATION_VERSION
-            })
-            .cloned(),
-    );
-    migrations.push(Migration::new(
-        LEGACY_EXTERNAL_AGENT_CONFIG_IMPORTS_PROVIDER_ID_MIGRATION_VERSION,
-        provider_id_migration.description.clone(),
-        provider_id_migration.migration_type,
-        provider_id_migration.sql.clone(),
-        provider_id_migration.no_tx,
-    ));
-    Migrator::with_migrations(migrations)
-}
-
-async fn insert_old_binary_thread(pool: &sqlx::SqlitePool, id: &str, rollout_path: &str) {
-    sqlx::query(
-        r#"
-INSERT INTO threads (
-    id,
-    rollout_path,
-    created_at,
-    updated_at,
-    created_at_ms,
-    updated_at_ms,
-    source,
-    model_provider,
-    cwd,
-    title,
-    sandbox_policy,
-    approval_mode
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        "#,
-    )
-    .bind(id)
-    .bind(rollout_path)
-    .bind(1_700_000_000_i64)
-    .bind(1_700_000_100_i64)
-    .bind(1_700_000_000_123_i64)
-    .bind(1_700_000_100_456_i64)
-    .bind("cli")
-    .bind("openai")
-    .bind("/tmp")
-    .bind("")
-    .bind("read-only")
-    .bind("on-request")
-    .execute(pool)
-    .await
-    .expect("old-binary-shaped thread should insert");
-}
-
-#[test]
-fn state_migration_versions_are_unique() {
-    let mut seen = BTreeSet::new();
-    let mut duplicates = Vec::new();
-    for migration in STATE_MIGRATOR.iter() {
-        if !seen.insert(migration.version) {
-            duplicates.push(migration.version);
-        }
-    }
-    assert!(
-        duplicates.is_empty(),
-        "duplicate state migration versions: {duplicates:?}"
-    );
-}
-
 #[tokio::test]
-async fn configured_identity_provenance_migration_defaults_existing_and_old_binary_rows_to_unknown()
-{
+async fn guardian_metadata_cleanup_preserves_custom_names_and_titles() {
     let sqlite_home = crate::runtime::test_support::unique_temp_dir();
     tokio::fs::create_dir_all(&sqlite_home)
         .await
@@ -226,60 +47,110 @@ async fn configured_identity_provenance_migration_defaults_existing_and_old_bina
         .open_read_write_pool(&sqlite.state_db_path())
         .await
         .expect("sqlite database should open");
-    migrator_through(PRE_CONFIGURED_IDENTITY_PROVENANCE_MIGRATION_VERSION)
+    migrator_through(/*version*/ 56)
         .run(&pool)
         .await
-        .expect("pre-provenance migrations should apply");
-    insert_old_binary_thread(
-        &pool,
-        "00000000-0000-0000-0000-000000000011",
-        "/tmp/pre-v45.jsonl",
-    )
-    .await;
+        .expect("pre-cleanup migrations should apply");
 
-    STATE_MIGRATOR
-        .run(&pool)
+    sqlx::query(
+        r#"
+INSERT INTO threads (
+    id, rollout_path, created_at, updated_at, source, model_provider, cwd,
+    title, name, preview, sandbox_policy, approval_mode, first_user_message
+) VALUES
+    ('derived', '/tmp/guardian.jsonl', 1700000000, 1700000100,
+     '{"subagent":{"other":"guardian"}}', 'openai', '/tmp',
+     ' large guardian prompt ', NULL, 'large guardian prompt',
+     'read-only', 'on-request', 'large guardian prompt'),
+    ('empty', '/tmp/empty-guardian.jsonl', 1700000000, 1700000100,
+     '{"subagent":{"other":"guardian"}}', 'openai', '/tmp',
+     ' ', ' ', 'large guardian prompt',
+     'read-only', 'on-request', 'large guardian prompt'),
+    ('worker', '/tmp/worker.jsonl', 1700000000, 1700000100,
+     '{"subagent":{"other":"worker"}}', 'openai', '/tmp',
+     'worker title', 'worker name', 'worker preview',
+     'read-only', 'on-request', 'worker first message'),
+    ('custom-title', '/tmp/named-guardian.jsonl', 1700000000, 1700000100,
+     '{"subagent":{"other":"guardian"}}', 'openai', '/tmp',
+     'Named Guardian review', NULL, 'large guardian prompt',
+     'read-only', 'on-request', 'large guardian prompt'),
+    ('custom-name', '/tmp/explicitly-named-guardian.jsonl', 1700000000, 1700000100,
+     '{"subagent":{"other":"guardian"}}', 'openai', '/tmp',
+     'large guardian prompt', 'Explicit Guardian name', 'large guardian prompt',
+     'read-only', 'on-request', 'large guardian prompt')
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("legacy metadata rows should insert");
+
+    run_state_migrations(&pool, &STATE_MIGRATOR)
         .await
-        .expect("configured-identity provenance migration should apply");
-    let migrated_provenance: i64 =
-        sqlx::query_scalar("SELECT configured_identity_provenance FROM threads WHERE id = ?")
-            .bind("00000000-0000-0000-0000-000000000011")
-            .fetch_one(&pool)
-            .await
-            .expect("migrated provenance should load");
+        .expect("guardian metadata cleanup should apply");
 
-    insert_old_binary_thread(
-        &pool,
-        "00000000-0000-0000-0000-000000000012",
-        "/tmp/post-v45.jsonl",
-    )
-    .await;
-    let post_v45_old_binary_provenance: i64 =
-        sqlx::query_scalar("SELECT configured_identity_provenance FROM threads WHERE id = ?")
-            .bind("00000000-0000-0000-0000-000000000012")
-            .fetch_one(&pool)
+    let rows =
+        sqlx::query("SELECT id, title, name, preview, first_user_message FROM threads ORDER BY id")
+            .fetch_all(&pool)
             .await
-            .expect("old-binary provenance default should load");
-
+            .expect("cleaned metadata rows should load");
+    let actual = rows
+        .iter()
+        .map(|row| {
+            (
+                row.get::<&str, _>("id"),
+                row.get::<&str, _>("title"),
+                row.get::<Option<&str>, _>("name"),
+                row.get::<&str, _>("preview"),
+                row.get::<&str, _>("first_user_message"),
+            )
+        })
+        .collect::<Vec<_>>();
     assert_eq!(
-        (migrated_provenance, post_v45_old_binary_provenance),
-        (0, 0)
-    );
-    let invalid_update =
-        sqlx::query("UPDATE threads SET configured_identity_provenance = 3 WHERE id = ?")
-            .bind("00000000-0000-0000-0000-000000000011")
-            .execute(&pool)
-            .await;
-    assert!(
-        invalid_update.is_err(),
-        "invalid provenance must be rejected"
+        actual,
+        vec![
+            (
+                "custom-name",
+                "Guardian review",
+                Some("Explicit Guardian name"),
+                "Approval review",
+                ""
+            ),
+            (
+                "custom-title",
+                "Named Guardian review",
+                Some("Named Guardian review"),
+                "Approval review",
+                ""
+            ),
+            (
+                "derived",
+                "Guardian review",
+                Some("Guardian review"),
+                "Approval review",
+                ""
+            ),
+            (
+                "empty",
+                "Guardian review",
+                Some("Guardian review"),
+                "Approval review",
+                ""
+            ),
+            (
+                "worker",
+                "worker title",
+                Some("worker name"),
+                "worker preview",
+                "worker first message"
+            ),
+        ]
     );
 
     pool.close().await;
 }
 
 #[tokio::test]
-async fn pinned_threads_migration_defaults_existing_and_legacy_rows_to_unpinned() {
+async fn thread_section_migration_preserves_legacy_pin_compatibility() {
     let sqlite_home = crate::runtime::test_support::unique_temp_dir();
     tokio::fs::create_dir_all(&sqlite_home)
         .await
@@ -293,20 +164,24 @@ async fn pinned_threads_migration_defaults_existing_and_legacy_rows_to_unpinned(
         .open_read_write_pool(&state_path)
         .await
         .expect("sqlite database should open");
-    migrator_through(CURRENT_EXTERNAL_AGENT_CONFIG_IMPORTS_MIGRATION_VERSION)
+    migrator_through(/*version*/ 44)
         .run(&pool)
         .await
-        .expect("pre-pin migrations should apply");
+        .expect("released thread migrations should apply");
 
     for thread_id in [
         "00000000-0000-0000-0000-000000000043",
         "00000000-0000-0000-0000-000000000044",
     ] {
         if thread_id.ends_with("44") {
-            STATE_MIGRATOR
-                .run(&pool)
+            sqlx::query("UPDATE threads SET is_pinned = 1 WHERE id = ?")
+                .bind("00000000-0000-0000-0000-000000000043")
+                .execute(&pool)
                 .await
-                .expect("pin migration should apply");
+                .expect("legacy pin should remain writable before section migration");
+            run_state_migrations(&pool, &STATE_MIGRATOR)
+                .await
+                .expect("section migration should apply");
         }
         sqlx::query(
             r#"
@@ -343,35 +218,291 @@ INSERT INTO threads (
         .expect("legacy thread insert should succeed");
     }
 
-    let pinned_values = sqlx::query_scalar::<_, bool>("SELECT is_pinned FROM threads ORDER BY id")
-        .fetch_all(&pool)
-        .await
-        .expect("pin states should load");
-    assert_eq!(pinned_values, vec![false, false]);
-
-    let applied_versions = sqlx::query_scalar::<_, i64>(
-        "SELECT version FROM _sqlx_migrations WHERE version IN (?, ?) ORDER BY version",
+    let registered_sections = sqlx::query_as::<_, (String, String, Option<String>)>(
+        "SELECT id, name, appearance FROM thread_sections ORDER BY id",
     )
-    .bind(CURRENT_RECENCY_MIGRATION_VERSION)
-    .bind(CURRENT_PINNED_THREADS_MIGRATION_VERSION)
     .fetch_all(&pool)
     .await
-    .expect("recency and pin migrations should be recorded");
+    .expect("independent thread sections should load");
     assert_eq!(
-        applied_versions,
+        registered_sections,
+        vec![(
+            PINNED_THREAD_SECTION_ID.to_string(),
+            PINNED_THREAD_SECTION_NAME.to_string(),
+            None,
+        )]
+    );
+
+    let threads = sqlx::query_as::<_, (i64, Option<String>)>(
+        "SELECT is_pinned, thread_section_id FROM threads ORDER BY id",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("legacy and section-aware thread metadata should load");
+    assert_eq!(threads, vec![(1, None), (0, None)]);
+
+    sqlx::query("INSERT INTO thread_sections (id, name) VALUES (?, ?)")
+        .bind(CUSTOM_THREAD_SECTION_ID)
+        .bind("Custom section")
+        .execute(&pool)
+        .await
+        .expect("custom sections should have independent persisted identities");
+
+    let thread_id = "00000000-0000-0000-0000-000000000043";
+    sqlx::query("UPDATE threads SET thread_section_id = ? WHERE id = ?")
+        .bind(CUSTOM_THREAD_SECTION_ID)
+        .bind(thread_id)
+        .execute(&pool)
+        .await
+        .expect("threads should reference independently persisted sections");
+    sqlx::query("UPDATE threads SET is_pinned = 0 WHERE id = ?")
+        .bind(thread_id)
+        .execute(&pool)
+        .await
+        .expect("released binaries should still update the legacy pin column");
+    let thread = sqlx::query_as::<_, (i64, Option<String>)>(
+        "SELECT is_pinned, thread_section_id FROM threads WHERE id = ?",
+    )
+    .bind(thread_id)
+    .fetch_one(&pool)
+    .await
+    .expect("legacy pin updates should not overwrite the authoritative section");
+    assert_eq!(thread, (0, Some(CUSTOM_THREAD_SECTION_ID.to_string())));
+
+    sqlx::query("UPDATE threads SET thread_section_id = NULL WHERE id = ?")
+        .bind(thread_id)
+        .execute(&pool)
+        .await
+        .expect("threads should be removable from sections");
+
+    let registered_sections =
+        sqlx::query_as::<_, (String, String)>("SELECT id, name FROM thread_sections ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .expect("empty sections should remain independently discoverable");
+    assert_eq!(
+        registered_sections,
         vec![
-            CURRENT_RECENCY_MIGRATION_VERSION,
-            CURRENT_PINNED_THREADS_MIGRATION_VERSION,
+            (
+                CUSTOM_THREAD_SECTION_ID.to_string(),
+                "Custom section".to_string(),
+            ),
+            (
+                PINNED_THREAD_SECTION_ID.to_string(),
+                PINNED_THREAD_SECTION_NAME.to_string(),
+            ),
         ]
     );
 
-    let pinned_index_count = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_threads_pinned_recency_at_ms'",
+    let mut released_pin_migrator = migrator_through(/*version*/ 44);
+    released_pin_migrator.ignore_missing = true;
+    released_pin_migrator
+        .run(&pool)
+        .await
+        .expect("released pin-capable binaries should tolerate newer migrations");
+
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn thread_attachment_migration_preserves_existing_data() {
+    let sqlite_home = crate::runtime::test_support::unique_temp_dir();
+    tokio::fs::create_dir_all(&sqlite_home)
+        .await
+        .expect("sqlite home should be created");
+    let _cleanup = scopeguard::guard(sqlite_home.clone(), |sqlite_home| {
+        let _ = std::fs::remove_dir_all(sqlite_home);
+    });
+    let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
+    let pool = sqlite
+        .open_read_write_pool(&sqlite.state_db_path())
+        .await
+        .expect("sqlite database should open");
+    migrator_through(/*version*/ 51)
+        .run(&pool)
+        .await
+        .expect("released thread migrations should apply");
+    sqlx::query("UPDATE thread_sections SET appearance = ? WHERE id = ?")
+        .bind(r#"{"icon":"pin"}"#)
+        .bind(PINNED_THREAD_SECTION_ID)
+        .execute(&pool)
+        .await
+        .expect("released section appearance should remain writable");
+
+    let thread_id = "00000000-0000-0000-0000-000000000051";
+    sqlx::query(
+        "INSERT INTO threads (id, rollout_path, created_at, updated_at, source, model_provider, cwd, title, sandbox_policy, approval_mode) VALUES (?, 'rollout.jsonl', 1, 1, 'cli', 'openai', '/tmp', '', 'read-only', 'on-request')",
+    )
+    .bind(thread_id)
+    .execute(&pool)
+    .await
+    .expect("existing thread should be inserted");
+    sqlx::query(
+        "INSERT INTO thread_artifacts (id, thread_id, artifact_type, identity_key, payload, created_at) VALUES ('attachment-1', ?, 'pull_request', 'pr-123', '{}', 1)",
+    )
+    .bind(thread_id)
+    .execute(&pool)
+    .await
+    .expect("existing attachment should be inserted using the released schema");
+
+    run_state_migrations(&pool, &STATE_MIGRATOR)
+        .await
+        .expect("attachment migration should apply without rewriting released migrations");
+    let section = sqlx::query_as::<_, (String, String, Option<String>)>(
+        "SELECT id, name, appearance FROM thread_sections WHERE id = ?",
+    )
+    .bind(PINNED_THREAD_SECTION_ID)
+    .fetch_one(&pool)
+    .await
+    .expect("existing section metadata should remain available");
+    assert_eq!(
+        section,
+        (
+            PINNED_THREAD_SECTION_ID.to_string(),
+            PINNED_THREAD_SECTION_NAME.to_string(),
+            Some(r#"{"icon":"pin"}"#.to_string()),
+        )
+    );
+
+    let attachment = sqlx::query_as::<_, (String, String, String, String, String, i64)>(
+        "SELECT id, thread_id, attachment_type, identity_key, payload, created_at FROM thread_attachments",
     )
     .fetch_one(&pool)
     .await
-    .expect("pinned recency index should load");
-    assert_eq!(pinned_index_count, 1);
+    .expect("existing attachment should remain available under the renamed table and column");
+    assert_eq!(
+        attachment,
+        (
+            "attachment-1".to_string(),
+            thread_id.to_string(),
+            "pull_request".to_string(),
+            "pr-123".to_string(),
+            "{}".to_string(),
+            1,
+        )
+    );
+
+    let mut released_migrator = migrator_through(/*version*/ 50);
+    released_migrator.ignore_missing = true;
+    released_migrator
+        .run(&pool)
+        .await
+        .expect("released binaries should tolerate the attachment rename migration");
+}
+
+#[tokio::test]
+async fn thread_section_order_migration_backfills_stably() {
+    let sqlite_home = crate::runtime::test_support::unique_temp_dir();
+    tokio::fs::create_dir_all(&sqlite_home)
+        .await
+        .expect("sqlite home should be created");
+    let _cleanup = scopeguard::guard(sqlite_home.clone(), |sqlite_home| {
+        let _ = std::fs::remove_dir_all(sqlite_home);
+    });
+    let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
+    let pool = sqlite
+        .open_read_write_pool(&sqlite.state_db_path())
+        .await
+        .expect("sqlite database should open");
+    migrator_through(/*version*/ 45)
+        .run(&pool)
+        .await
+        .expect("pre-ordering migrations should apply");
+
+    sqlx::query("INSERT INTO thread_sections (id, name) VALUES (?, ?)")
+        .bind(CUSTOM_THREAD_SECTION_ID)
+        .bind("Custom section")
+        .execute(&pool)
+        .await
+        .expect("custom section should exist before threads reference it");
+
+    let older = "00000000-0000-0000-0000-000000000071";
+    let newer = "00000000-0000-0000-0000-000000000072";
+    let pinned = "00000000-0000-0000-0000-000000000073";
+    let unsectioned = "00000000-0000-0000-0000-000000000074";
+    for (thread_id, recency_at_ms, section) in [
+        (older, 1_700_000_001_000_i64, Some(CUSTOM_THREAD_SECTION_ID)),
+        (newer, 1_700_000_002_000, Some(CUSTOM_THREAD_SECTION_ID)),
+        (pinned, 1_700_000_003_000, Some(PINNED_THREAD_SECTION_ID)),
+        (unsectioned, 1_700_000_004_000, None),
+    ] {
+        sqlx::query(
+            r#"
+INSERT INTO threads (
+    id, rollout_path, created_at, updated_at, recency_at,
+    created_at_ms, updated_at_ms, recency_at_ms, source,
+    model_provider, cwd, title, preview, sandbox_policy, approval_mode, thread_section_id
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(thread_id)
+        .bind("/tmp/legacy.jsonl")
+        .bind(recency_at_ms / 1000)
+        .bind(recency_at_ms / 1000)
+        .bind(recency_at_ms / 1000)
+        .bind(recency_at_ms)
+        .bind(recency_at_ms)
+        .bind(recency_at_ms)
+        .bind("cli")
+        .bind("openai")
+        .bind("/tmp")
+        .bind("")
+        .bind("preview")
+        .bind("read-only")
+        .bind("on-request")
+        .bind(section)
+        .execute(&pool)
+        .await
+        .expect("legacy section row should insert");
+    }
+
+    run_state_migrations(&pool, &STATE_MIGRATOR)
+        .await
+        .expect("section ordering migration should apply");
+    let custom_order = sqlx::query_scalar::<_, String>(
+        "SELECT id FROM threads WHERE thread_section_id = ? ORDER BY section_position, id",
+    )
+    .bind(CUSTOM_THREAD_SECTION_ID)
+    .fetch_all(&pool)
+    .await
+    .expect("backfilled custom order should load");
+    assert_eq!(custom_order, vec![newer.to_string(), older.to_string()]);
+    let positions =
+        sqlx::query_scalar::<_, Option<i64>>("SELECT section_position FROM threads ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .expect("section positions should load");
+    assert_eq!(
+        positions,
+        vec![Some(2_000_000), Some(1_000_000), Some(1_000_000), None]
+    );
+    let entered = sqlx::query_scalar::<_, Option<i64>>(
+        "SELECT section_entered_at_ms FROM threads ORDER BY id",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("section entry timestamps should load");
+    assert_eq!(
+        entered,
+        vec![
+            Some(1_700_000_001_000),
+            Some(1_700_000_002_000),
+            Some(1_700_000_003_000),
+            None,
+        ]
+    );
+
+    let section_position_index = sqlx::query_scalar::<_, String>(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?",
+    )
+    .bind("idx_threads_section_position")
+    .fetch_optional(&pool)
+    .await
+    .expect("section position index should remain inspectable");
+    assert_eq!(
+        section_position_index,
+        Some("idx_threads_section_position".to_string())
+    );
 
     pool.close().await;
 }
@@ -445,6 +576,137 @@ INSERT INTO thread_items (thread_id, turn_id, item_id, rollout_ordinal, created_
 }
 
 #[tokio::test]
+async fn realtime_items_preserve_older_thread_history_writers() {
+    let sqlite_home = crate::runtime::test_support::unique_temp_dir();
+    tokio::fs::create_dir_all(&sqlite_home)
+        .await
+        .expect("sqlite home should be created");
+    let _cleanup = scopeguard::guard(sqlite_home.clone(), |sqlite_home| {
+        let _ = std::fs::remove_dir_all(sqlite_home);
+    });
+    let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
+    let older_migrator = Migrator {
+        migrations: Cow::Owned(
+            THREAD_HISTORY_MIGRATOR
+                .migrations
+                .iter()
+                .filter(|migration| migration.version < 5)
+                .cloned()
+                .collect(),
+        ),
+        ignore_missing: true,
+        locking: THREAD_HISTORY_MIGRATOR.locking,
+        table_name: THREAD_HISTORY_MIGRATOR.table_name.clone(),
+        create_schemas: THREAD_HISTORY_MIGRATOR.create_schemas.clone(),
+        no_tx: THREAD_HISTORY_MIGRATOR.no_tx,
+    };
+    let pool = sqlite
+        .open_thread_history_db(&older_migrator, /*telemetry_override*/ None)
+        .await
+        .expect("existing thread history migrations should apply");
+    sqlx::query(
+        "INSERT INTO thread_items (thread_id, turn_id, item_id, rollout_ordinal, created_at_ms, item_json) VALUES ('thread-1', 'turn-1', 'existing-item', 1, 100, '{}')",
+    )
+    .execute(&pool)
+    .await
+    .expect("existing turn-scoped item should be inserted");
+
+    sqlx::query("INSERT INTO thread_turns (thread_id, turn_id, rollout_ordinal, status) VALUES ('thread-1', 'turn-1', 0, 'completed')")
+        .execute(&pool)
+        .await
+        .expect("insert an existing turn before migration");
+    sqlx::query("INSERT INTO thread_history_projection_state (thread_id, next_rollout_byte_offset, next_rollout_ordinal) VALUES ('thread-1', 42, 3)")
+        .execute(&pool)
+        .await
+        .expect("insert an existing projection checkpoint");
+
+    THREAD_HISTORY_MIGRATOR
+        .run(&pool)
+        .await
+        .expect("realtime item migration should apply");
+    let turn_id_not_null = sqlx::query_scalar::<_, i64>(
+        "SELECT \"notnull\" FROM pragma_table_info('thread_items') WHERE name = 'turn_id'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("existing thread item schema should remain inspectable");
+    assert_eq!(turn_id_not_null, 1);
+
+    sqlx::query(
+        "INSERT INTO thread_realtime_items (thread_id, item_id, rollout_ordinal, created_at_ms, item_type, item_json) VALUES ('thread-1', 'realtime-item', 2, 200, 'realtime_session_started', '{}')",
+    )
+    .execute(&pool)
+    .await
+    .expect("thread-scoped realtime item should be inserted separately");
+    let checkpoint = sqlx::query_as::<_, (i64, i64)>(
+        "SELECT next_rollout_byte_offset, next_rollout_ordinal FROM thread_history_projection_state WHERE thread_id = 'thread-1'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("existing projection checkpoint survives migration");
+    assert_eq!(checkpoint, (42, 3));
+
+    let older_pool = sqlite
+        .open_thread_history_db(&older_migrator, /*telemetry_override*/ None)
+        .await
+        .expect("older binaries should tolerate the additive realtime migration");
+    sqlx::query(
+        "INSERT INTO thread_items (thread_id, turn_id, item_id, rollout_ordinal, created_at_ms, item_json) VALUES ('thread-1', 'turn-1', 'older-writer-item', 3, 300, '{}')",
+    )
+    .execute(&older_pool)
+    .await
+    .expect("older binaries should continue writing ordinary turn-scoped items");
+    sqlx::query("INSERT INTO thread_turns (thread_id, turn_id, rollout_ordinal, status) VALUES ('thread-1', 'turn-2', 4, 'completed')")
+        .execute(&older_pool)
+        .await
+        .expect("older writers can still insert turns without roots");
+    let roots = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT root_turn_id FROM thread_turns ORDER BY rollout_ordinal",
+    )
+    .fetch_all(&older_pool)
+    .await
+    .expect("old turns and older writers leave causal roots unknown");
+    assert_eq!(roots, vec![None, None]);
+    let ordinary_items = sqlx::query_as::<_, (String, String)>(
+        "SELECT item_id, turn_id FROM thread_items WHERE thread_id = ? ORDER BY rollout_ordinal",
+    )
+    .bind("thread-1")
+    .fetch_all(&older_pool)
+    .await
+    .expect("older binaries should never observe turnless realtime items");
+    assert_eq!(
+        ordinary_items,
+        vec![
+            ("existing-item".to_string(), "turn-1".to_string()),
+            ("older-writer-item".to_string(), "turn-1".to_string()),
+        ]
+    );
+    let lifecycle_timestamps = sqlx::query_as::<_, (Option<i64>, Option<i64>)>(
+        "SELECT started_at_ms, completed_at_ms FROM thread_items ORDER BY rollout_ordinal",
+    )
+    .fetch_all(&older_pool)
+    .await
+    .expect("old rows and older writers leave lifecycle timestamps unknown");
+    assert_eq!(lifecycle_timestamps, vec![(None, None), (None, None)]);
+    sqlx::query("DELETE FROM thread_history_projection_state WHERE thread_id = ?")
+        .bind("thread-1")
+        .execute(&older_pool)
+        .await
+        .expect("older binaries should delete their known projection checkpoint");
+    let remaining_realtime_items = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM thread_realtime_items WHERE thread_id = ?",
+    )
+    .bind("thread-1")
+    .fetch_one(&pool)
+    .await
+    .expect("read realtime items after an older writer deleted the thread");
+    assert_eq!(remaining_realtime_items, 0);
+
+    older_pool.close().await;
+    pool.close().await;
+}
+
+#[tokio::test]
 async fn agent_job_tables_are_dropped_when_upgrading() {
     let sqlite_home = crate::runtime::test_support::unique_temp_dir();
     tokio::fs::create_dir_all(&sqlite_home)
@@ -459,52 +721,10 @@ async fn agent_job_tables_are_dropped_when_upgrading() {
         .open_read_write_pool(&state_path)
         .await
         .expect("sqlite database should open");
-    origin_main_migrator()
+    migrator_through(/*version*/ 15)
         .run(&pool)
         .await
-        .expect("origin main migrations should apply");
-
-    insert_old_binary_thread(
-        &pool,
-        "00000000-0000-0000-0000-000000000021",
-        "/tmp/parent.jsonl",
-    )
-    .await;
-    insert_old_binary_thread(
-        &pool,
-        "00000000-0000-0000-0000-000000000022",
-        "/tmp/child.jsonl",
-    )
-    .await;
-    sqlx::query(
-        r#"
-INSERT INTO thread_spawn_edges (parent_thread_id, child_thread_id, status)
-VALUES (?, ?, ?)
-        "#,
-    )
-    .bind("00000000-0000-0000-0000-000000000021")
-    .bind("00000000-0000-0000-0000-000000000022")
-    .bind("completed")
-    .execute(&pool)
-    .await
-    .expect("thread spawn edge should insert");
-    sqlx::query(
-        r#"
-INSERT INTO external_agent_config_imports (
-    import_id,
-    completed_at_ms,
-    successes,
-    failures
-) VALUES (?, ?, ?, ?)
-        "#,
-    )
-    .bind("import-1")
-    .bind(1_700_000_000_123_i64)
-    .bind(r#"[{"item_type":"config"}]"#)
-    .bind("[]")
-    .execute(&pool)
-    .await
-    .expect("external agent import record should insert");
+        .expect("agent job migrations should apply");
 
     sqlx::query(
         r#"
@@ -559,14 +779,9 @@ INSERT INTO agent_job_items (
     .await
     .expect("legacy agent job item should insert");
 
-    pool.close().await;
-    let runtime = crate::StateRuntime::init(sqlite.clone(), "test-provider".to_string())
+    run_state_migrations(&pool, &STATE_MIGRATOR)
         .await
-        .expect("state runtime should repair and migrate the origin main database");
-    let pool = sqlite
-        .open_read_only_pool(&sqlite.state_db_path())
-        .await
-        .expect("migrated state database should reopen read-only");
+        .expect("current migrations should apply");
 
     let agent_job_tables = sqlx::query_scalar::<_, String>(
         r#"
@@ -580,252 +795,6 @@ ORDER BY name
     .await
     .expect("remaining agent job tables should load");
     assert_eq!(agent_job_tables, Vec::<String>::new());
-
-    let preserved_threads = sqlx::query_as::<_, (String, String)>(
-        "SELECT id, rollout_path FROM threads WHERE id IN (?, ?) ORDER BY id",
-    )
-    .bind("00000000-0000-0000-0000-000000000021")
-    .bind("00000000-0000-0000-0000-000000000022")
-    .fetch_all(&pool)
-    .await
-    .expect("preserved threads should load");
-    let preserved_spawn_edges = sqlx::query_as::<_, (String, String, String)>(
-        r#"
-SELECT parent_thread_id, child_thread_id, status
-FROM thread_spawn_edges
-ORDER BY child_thread_id
-        "#,
-    )
-    .fetch_all(&pool)
-    .await
-    .expect("preserved spawn edges should load");
-    let preserved_import = sqlx::query_as::<_, (String, i64, String, String)>(
-        r#"
-SELECT import_id, completed_at_ms, successes, failures
-FROM external_agent_config_imports
-WHERE import_id = ?
-        "#,
-    )
-    .bind("import-1")
-    .fetch_one(&pool)
-    .await
-    .expect("preserved external import should load");
-    assert_eq!(
-        (preserved_threads, preserved_spawn_edges, preserved_import),
-        (
-            vec![
-                (
-                    "00000000-0000-0000-0000-000000000021".to_string(),
-                    "/tmp/parent.jsonl".to_string(),
-                ),
-                (
-                    "00000000-0000-0000-0000-000000000022".to_string(),
-                    "/tmp/child.jsonl".to_string(),
-                ),
-            ],
-            vec![(
-                "00000000-0000-0000-0000-000000000021".to_string(),
-                "00000000-0000-0000-0000-000000000022".to_string(),
-                "completed".to_string(),
-            )],
-            (
-                "import-1".to_string(),
-                1_700_000_000_123_i64,
-                r#"[{"item_type":"config"}]"#.to_string(),
-                "[]".to_string(),
-            ),
-        )
-    );
-
-    pool.close().await;
-    runtime.close().await;
-}
-
-#[tokio::test]
-async fn repairs_external_agent_config_import_migration_that_was_applied_as_version_42() {
-    let sqlite_home = crate::runtime::test_support::unique_temp_dir();
-    tokio::fs::create_dir_all(&sqlite_home)
-        .await
-        .expect("sqlite home should be created");
-    let _cleanup = scopeguard::guard(sqlite_home.clone(), |sqlite_home| {
-        let _ = std::fs::remove_dir_all(sqlite_home);
-    });
-    let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
-    let pool = sqlite
-        .open_read_write_pool(&sqlite.state_db_path())
-        .await
-        .expect("sqlite database should open");
-    origin_main_migrator()
-        .run(&pool)
-        .await
-        .expect("origin main migrations should apply");
-
-    repair_state_migration_version_collisions(&pool, &STATE_MIGRATOR)
-        .await
-        .expect("external import migration history should be repaired");
-    STATE_MIGRATOR
-        .run(&pool)
-        .await
-        .expect("current migrations should apply after external import repair");
-
-    let applied = sqlx::query(
-        "SELECT version, checksum FROM _sqlx_migrations WHERE version >= 42 ORDER BY version",
-    )
-    .fetch_all(&pool)
-    .await
-    .expect("applied migrations should load")
-    .into_iter()
-    .map(|row| {
-        (
-            row.get::<i64, _>("version"),
-            row.get::<Vec<u8>, _>("checksum"),
-        )
-    })
-    .collect::<Vec<_>>();
-    let expected = STATE_MIGRATOR
-        .migrations
-        .iter()
-        .filter(|migration| migration.version >= 42)
-        .map(|migration| (migration.version, migration.checksum.to_vec()))
-        .collect::<Vec<_>>();
-    assert_eq!(applied, expected);
-
-    pool.close().await;
-}
-
-#[tokio::test]
-async fn external_agent_config_import_provider_migration_follows_table_creation_on_fresh_database()
-{
-    let sqlite_home = crate::runtime::test_support::unique_temp_dir();
-    tokio::fs::create_dir_all(&sqlite_home)
-        .await
-        .expect("sqlite home should be created");
-    let _cleanup = scopeguard::guard(sqlite_home.clone(), |sqlite_home| {
-        let _ = std::fs::remove_dir_all(sqlite_home);
-    });
-    let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
-    let pool = sqlite
-        .open_read_write_pool(&sqlite.state_db_path())
-        .await
-        .expect("sqlite database should open");
-
-    STATE_MIGRATOR
-        .run(&pool)
-        .await
-        .expect("fresh state migrations should apply in dependency order");
-
-    let provider_id_column = sqlx::query_scalar::<_, String>(
-        "SELECT name FROM pragma_table_info('external_agent_config_imports') WHERE name = 'provider_id'",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("external agent import table should include provider_id after migration");
-    assert_eq!(provider_id_column, "provider_id");
-
-    pool.close().await;
-}
-
-#[tokio::test]
-async fn repairs_external_agent_config_import_provider_migration_that_was_applied_as_version_44() {
-    let sqlite_home = crate::runtime::test_support::unique_temp_dir();
-    tokio::fs::create_dir_all(&sqlite_home)
-        .await
-        .expect("sqlite home should be created");
-    let _cleanup = scopeguard::guard(sqlite_home.clone(), |sqlite_home| {
-        let _ = std::fs::remove_dir_all(sqlite_home);
-    });
-    let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
-    let pool = sqlite
-        .open_read_write_pool(&sqlite.state_db_path())
-        .await
-        .expect("sqlite database should open");
-
-    upstream_external_agent_import_provider_migrator()
-        .run(&pool)
-        .await
-        .expect("legacy upstream import migrations should apply");
-    sqlx::query(
-        r#"
-INSERT INTO external_agent_config_imports (
-    import_id,
-    provider_id,
-    completed_at_ms,
-    successes,
-    failures
-) VALUES (?, ?, ?, ?, ?)
-        "#,
-    )
-    .bind("import-legacy-provider")
-    .bind("claude")
-    .bind(1_700_000_000_123_i64)
-    .bind(r#"[{"item_type":"config"}]"#)
-    .bind("[]")
-    .execute(&pool)
-    .await
-    .expect("legacy provider record should insert");
-
-    repair_state_migration_version_collisions(&pool, &STATE_MIGRATOR)
-        .await
-        .expect("legacy provider migration history should be repaired");
-    STATE_MIGRATOR
-        .run(&pool)
-        .await
-        .expect("current migrations should apply after provider migration repair");
-
-    let provider_id = sqlx::query_scalar::<_, Option<String>>(
-        "SELECT provider_id FROM external_agent_config_imports WHERE import_id = ?",
-    )
-    .bind("import-legacy-provider")
-    .fetch_one(&pool)
-    .await
-    .expect("legacy provider record should load");
-    assert_eq!(provider_id.as_deref(), Some("claude"));
-
-    let visible_indexes = sqlx::query_scalar::<_, String>(
-        "SELECT name FROM sqlite_master WHERE type = 'index' AND name IN ('idx_threads_visible_created_at_ms', 'idx_threads_visible_updated_at_ms') ORDER BY name",
-    )
-    .fetch_all(&pool)
-    .await
-    .expect("visible thread indexes should load");
-    assert_eq!(
-        visible_indexes,
-        vec![
-            "idx_threads_visible_created_at_ms".to_string(),
-            "idx_threads_visible_updated_at_ms".to_string(),
-        ]
-    );
-
-    let applied_visible_checksum =
-        sqlx::query_scalar::<_, Vec<u8>>("SELECT checksum FROM _sqlx_migrations WHERE version = ?")
-            .bind(CURRENT_VISIBLE_SORT_INDEXES_MIGRATION_VERSION)
-            .fetch_one(&pool)
-            .await
-            .expect("visible sort migration should be recorded at the downstream version");
-    let current_visible_checksum = STATE_MIGRATOR
-        .migrations
-        .iter()
-        .find(|migration| migration.version == CURRENT_VISIBLE_SORT_INDEXES_MIGRATION_VERSION)
-        .expect("current visible sort migration should exist")
-        .checksum
-        .to_vec();
-    assert_eq!(applied_visible_checksum, current_visible_checksum);
-
-    let applied_provider_checksum =
-        sqlx::query_scalar::<_, Vec<u8>>("SELECT checksum FROM _sqlx_migrations WHERE version = ?")
-            .bind(CURRENT_EXTERNAL_AGENT_CONFIG_IMPORTS_PROVIDER_ID_MIGRATION_VERSION)
-            .fetch_one(&pool)
-            .await
-            .expect("provider migration should be recorded at the downstream version");
-    let current_provider_checksum = STATE_MIGRATOR
-        .migrations
-        .iter()
-        .find(|migration| {
-            migration.version == CURRENT_EXTERNAL_AGENT_CONFIG_IMPORTS_PROVIDER_ID_MIGRATION_VERSION
-        })
-        .expect("current provider migration should exist")
-        .checksum
-        .to_vec();
-    assert_eq!(applied_provider_checksum, current_provider_checksum);
 
     pool.close().await;
 }
@@ -845,7 +814,7 @@ async fn recency_migration_backfills_and_seeds_old_binary_inserts() {
         .open_read_write_pool(&state_path)
         .await
         .expect("sqlite database should open");
-    migrator_through(PRE_RECENCY_MIGRATION_VERSION)
+    migrator_through(/*version*/ 37)
         .run(&pool)
         .await
         .expect("pre-recency migrations should apply");
@@ -884,8 +853,7 @@ INSERT INTO threads (
     .await
     .expect("legacy row should insert");
 
-    STATE_MIGRATOR
-        .run(&pool)
+    run_state_migrations(&pool, &STATE_MIGRATOR)
         .await
         .expect("recency migration should apply");
 
@@ -967,7 +935,7 @@ async fn repairs_recency_migration_that_was_applied_as_version_38() {
     let recency_migration = STATE_MIGRATOR
         .migrations
         .iter()
-        .find(|migration| migration.version == CURRENT_RECENCY_MIGRATION_VERSION)
+        .find(|migration| migration.version == 39)
         .expect("recency migration should exist");
     let mut legacy_migrations = STATE_MIGRATOR
         .migrations
@@ -976,7 +944,7 @@ async fn repairs_recency_migration_that_was_applied_as_version_38() {
         .cloned()
         .collect::<Vec<_>>();
     legacy_migrations.push(Migration::new(
-        LEGACY_RECENCY_MIGRATION_VERSION,
+        38,
         recency_migration.description.clone(),
         recency_migration.migration_type,
         recency_migration.sql.clone(),
@@ -988,11 +956,26 @@ async fn repairs_recency_migration_that_was_applied_as_version_38() {
         .await
         .expect("legacy recency migration should apply as version 38");
 
-    repair_state_migration_version_collisions(&pool, &STATE_MIGRATOR)
-        .await
-        .expect("legacy migration history should be repaired");
-    STATE_MIGRATOR
-        .run(&pool)
+    let legacy_identity = sqlx::query_as::<_, (String, Vec<u8>, i64)>(
+        "SELECT description, checksum, execution_time FROM _sqlx_migrations WHERE version = 38",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("unrepaired legacy recency identity");
+    sqlx::query(
+        "INSERT INTO threads (
+            id, rollout_path, created_at, updated_at, source, model_provider,
+            cwd, title, sandbox_policy, approval_mode
+         ) VALUES (
+            'legacy-recency-preservation', '/synthetic/recency.jsonl',
+            1700000000, 1700000001, 'cli', 'synthetic-provider',
+            '/synthetic', 'preserved legacy recency data', 'read-only', 'on-request'
+         )",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed synthetic legacy recency data");
+    run_state_migrations(&pool, &STATE_MIGRATOR)
         .await
         .expect("current migrations should apply after repair");
 
@@ -1018,163 +1001,67 @@ async fn repairs_recency_migration_that_was_applied_as_version_38() {
         .collect::<Vec<_>>();
     assert_eq!(applied, expected);
 
-    pool.close().await;
-}
-
-#[tokio::test]
-async fn repairs_visible_sort_indexes_migration_that_was_applied_as_version_40() {
-    let sqlite_home = crate::runtime::test_support::unique_temp_dir();
-    tokio::fs::create_dir_all(&sqlite_home)
-        .await
-        .expect("sqlite home should be created");
-    let _cleanup = scopeguard::guard(sqlite_home.clone(), |sqlite_home| {
-        let _ = std::fs::remove_dir_all(sqlite_home);
-    });
-    let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
-    let pool = sqlite
-        .open_read_write_pool(&sqlite.state_db_path())
-        .await
-        .expect("sqlite database should open");
-    migrator_through(/*version*/ 39)
-        .run(&pool)
-        .await
-        .expect("pre-visible-sort migrations should apply");
-
-    let visible_sort_migration = STATE_MIGRATOR
-        .migrations
-        .iter()
-        .find(|migration| migration.version == CURRENT_VISIBLE_SORT_INDEXES_MIGRATION_VERSION)
-        .expect("visible sort migration should exist");
-    let mut legacy_migrations = STATE_MIGRATOR
-        .migrations
-        .iter()
-        .filter(|migration| migration.version <= 39)
-        .cloned()
-        .collect::<Vec<_>>();
-    legacy_migrations.push(Migration::new(
-        LEGACY_VISIBLE_SORT_INDEXES_MIGRATION_VERSION,
-        visible_sort_migration.description.clone(),
-        visible_sort_migration.migration_type,
-        visible_sort_migration.sql.clone(),
-        visible_sort_migration.no_tx,
-    ));
-    let legacy_visible_sort_migrator = Migrator::with_migrations(legacy_migrations);
-    legacy_visible_sort_migrator
-        .run(&pool)
-        .await
-        .expect("legacy visible sort migration should apply as version 40");
-
-    repair_state_migration_version_collisions(&pool, &STATE_MIGRATOR)
-        .await
-        .expect("legacy visible sort migration history should be repaired");
-    STATE_MIGRATOR
-        .run(&pool)
-        .await
-        .expect("current migrations should apply after visible sort repair");
-
-    let applied = sqlx::query(
-        "SELECT version, checksum FROM _sqlx_migrations WHERE version >= 40 ORDER BY version",
+    let receipt = sqlx::query_as::<_, (i64, String, Vec<u8>, i64)>(
+        "SELECT new_version, old_description, checksum, execution_time
+         FROM state_migration_rekey_receipts WHERE old_version = 38",
     )
-    .fetch_all(&pool)
+    .fetch_one(&pool)
     .await
-    .expect("applied migrations should load")
-    .into_iter()
-    .map(|row| {
-        (
-            row.get::<i64, _>("version"),
-            row.get::<Vec<u8>, _>("checksum"),
+    .expect("bridge must receipt the intact legacy 38 to canonical 39 mapping");
+    assert_eq!(
+        receipt,
+        (39, legacy_identity.0, legacy_identity.1, legacy_identity.2)
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT title FROM threads WHERE id = 'legacy-recency-preservation'",
         )
-    })
-    .collect::<Vec<_>>();
-    let expected = STATE_MIGRATOR
-        .migrations
-        .iter()
-        .filter(|migration| migration.version >= 40)
-        .map(|migration| (migration.version, migration.checksum.to_vec()))
-        .collect::<Vec<_>>();
-    assert_eq!(applied, expected);
-
+        .fetch_one(&pool)
+        .await
+        .expect("legacy recency data after migration"),
+        "preserved legacy recency data"
+    );
     pool.close().await;
+    let reopened = sqlite
+        .open_read_write_pool(&state_path)
+        .await
+        .expect("legacy recency fixture should reopen");
+    run_state_migrations(&reopened, &STATE_MIGRATOR)
+        .await
+        .expect("legacy recency bridge must be idempotent on reopen");
+    assert_eq!(
+        sqlx::query_as::<_, (i64, Vec<u8>)>(
+            "SELECT version, checksum FROM _sqlx_migrations WHERE version >= 38 ORDER BY version",
+        )
+        .fetch_all(&reopened)
+        .await
+        .expect("canonical 38 and 39 and later checksums on reopen"),
+        expected
+    );
+    assert_eq!(
+        sqlx::query_as::<_, (i64, String, Vec<u8>, i64)>(
+            "SELECT new_version, old_description, checksum, execution_time
+             FROM state_migration_rekey_receipts WHERE old_version = 38",
+        )
+        .fetch_one(&reopened)
+        .await
+        .expect("durable recency receipt on reopen"),
+        receipt
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT title FROM threads WHERE id = 'legacy-recency-preservation'",
+        )
+        .fetch_one(&reopened)
+        .await
+        .expect("legacy recency data on reopen"),
+        "preserved legacy recency data"
+    );
+    reopened.close().await;
 }
 
 #[tokio::test]
-async fn repairs_remote_control_enabled_migration_that_was_applied_as_version_41() {
-    let sqlite_home = crate::runtime::test_support::unique_temp_dir();
-    tokio::fs::create_dir_all(&sqlite_home)
-        .await
-        .expect("sqlite home should be created");
-    let _cleanup = scopeguard::guard(sqlite_home.clone(), |sqlite_home| {
-        let _ = std::fs::remove_dir_all(sqlite_home);
-    });
-    let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
-    let pool = sqlite
-        .open_read_write_pool(&sqlite.state_db_path())
-        .await
-        .expect("sqlite database should open");
-    migrator_through(/*version*/ 40)
-        .run(&pool)
-        .await
-        .expect("pre-thread-name migrations should apply");
-
-    let remote_control_enabled_migration = STATE_MIGRATOR
-        .migrations
-        .iter()
-        .find(|migration| migration.version == CURRENT_REMOTE_CONTROL_ENABLED_MIGRATION_VERSION)
-        .expect("remote-control-enabled migration should exist");
-    let mut legacy_migrations = STATE_MIGRATOR
-        .migrations
-        .iter()
-        .filter(|migration| migration.version <= 40)
-        .cloned()
-        .collect::<Vec<_>>();
-    legacy_migrations.push(Migration::new(
-        LEGACY_REMOTE_CONTROL_ENABLED_MIGRATION_VERSION,
-        remote_control_enabled_migration.description.clone(),
-        remote_control_enabled_migration.migration_type,
-        remote_control_enabled_migration.sql.clone(),
-        remote_control_enabled_migration.no_tx,
-    ));
-    let legacy_remote_control_enabled_migrator = Migrator::with_migrations(legacy_migrations);
-    legacy_remote_control_enabled_migrator
-        .run(&pool)
-        .await
-        .expect("legacy remote-control-enabled migration should apply as version 41");
-
-    repair_state_migration_version_collisions(&pool, &STATE_MIGRATOR)
-        .await
-        .expect("legacy remote-control-enabled migration history should be repaired");
-    STATE_MIGRATOR
-        .run(&pool)
-        .await
-        .expect("current migrations should apply after remote-control-enabled repair");
-
-    let applied = sqlx::query(
-        "SELECT version, checksum FROM _sqlx_migrations WHERE version >= 41 ORDER BY version",
-    )
-    .fetch_all(&pool)
-    .await
-    .expect("applied migrations should load")
-    .into_iter()
-    .map(|row| {
-        (
-            row.get::<i64, _>("version"),
-            row.get::<Vec<u8>, _>("checksum"),
-        )
-    })
-    .collect::<Vec<_>>();
-    let expected = STATE_MIGRATOR
-        .migrations
-        .iter()
-        .filter(|migration| migration.version >= 41)
-        .map(|migration| (migration.version, migration.checksum.to_vec()))
-        .collect::<Vec<_>>();
-    assert_eq!(applied, expected);
-
-    pool.close().await;
-}
-
-#[tokio::test]
-async fn repair_state_migration_version_collisions_succeeds_while_writer_slot_is_held() {
+async fn repair_recency_migration_succeeds_while_another_connection_holds_writer_slot() {
     let sqlite_home = crate::runtime::test_support::unique_temp_dir();
     tokio::fs::create_dir_all(&sqlite_home)
         .await
@@ -1188,12 +1075,11 @@ async fn repair_state_migration_version_collisions_succeeds_while_writer_slot_is
         .open_read_write_pool(&state_path)
         .await
         .expect("database should open");
-    STATE_MIGRATOR
-        .run(&pool)
+    run_state_migrations(&pool, &STATE_MIGRATOR)
         .await
         .expect("current migrations should apply");
     let read_pool = sqlite
-        .open_read_only_pool(&state_path)
+        .open_read_only_pool(&state_path, /*busy_timeout*/ None)
         .await
         .expect("read-only pool should open");
     let mut write_connection = pool.acquire().await.expect("write connection should open");
@@ -1202,8 +1088,7 @@ async fn repair_state_migration_version_collisions_succeeds_while_writer_slot_is
         .await
         .expect("write transaction should acquire the writer slot");
 
-    let repair_result =
-        repair_state_migration_version_collisions(&read_pool, &STATE_MIGRATOR).await;
+    let repair_result = repair_legacy_recency_migration_version(&read_pool, &STATE_MIGRATOR).await;
 
     write_transaction
         .rollback()
@@ -1216,49 +1101,73 @@ async fn repair_state_migration_version_collisions_succeeds_while_writer_slot_is
 }
 
 #[tokio::test]
-async fn usage_automatic_turn_epochs_backfills_legacy_abort_occurrences() {
-    let sqlite_home = tempfile::tempdir().expect("sqlite home should be created");
-    let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.path().abs());
-    let usage_path = sqlite.usage_db_path();
-    let pool = sqlite
-        .open_read_write_pool(&usage_path)
-        .await
-        .expect("usage database should open");
-    usage_migrator_through(/*version*/ 11)
-        .run(&pool)
-        .await
-        .expect("pre-epochs usage migrations should apply");
+async fn writable_pool_reads_do_not_wait_for_an_existing_writer() {
+    let sqlite_home = crate::runtime::test_support::unique_temp_dir();
+    tokio::fs::create_dir_all(&sqlite_home).await.unwrap();
+    let _cleanup = scopeguard::guard(sqlite_home.clone(), |sqlite_home| {
+        let _ = std::fs::remove_dir_all(sqlite_home);
+    });
+    let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
 
-    sqlx::query(
-        "INSERT INTO usage_automatic_turns (thread_id, client_user_message_id, trigger_turn_id, turn_id, event_occurrence_id, origin, generation, capability, attempt, max_attempts, provenance_source, outcome) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind("thread-legacy")
-    .bind("client-legacy")
-    .bind("trigger-legacy")
-    .bind("turn-legacy")
-    .bind("occurrence-legacy")
-    .bind("policy_retry")
-    .bind(0_i64)
-    .bind("capability-legacy")
-    .bind(1_i64)
-    .bind(3_i64)
-    .bind("server_validated_client_user_message_id")
-    .bind("aborted")
-    .execute(&pool)
-    .await
-    .expect("legacy aborted row should insert");
+    for (index, (setup, expected_mode)) in [
+        ("PRAGMA auto_vacuum = INCREMENTAL", 2_i64),
+        ("PRAGMA auto_vacuum = FULL", 1),
+        ("PRAGMA auto_vacuum = NONE; VACUUM", 0),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let path = sqlite_home.join(format!("pool-{index}.sqlite"));
+        let pool = sqlite.open_read_write_pool(&path).await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("PRAGMA auto_vacuum")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            2,
+            "new databases must support incremental vacuum"
+        );
+        sqlx::query(setup).execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE sample (value INTEGER); INSERT INTO sample VALUES (7)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
 
-    USAGE_MIGRATOR
-        .run(&pool)
-        .await
-        .expect("epochs migration should apply");
-    let abort_occurrence: String = sqlx::query_scalar(
-        "SELECT abort_event_occurrence_id FROM usage_automatic_turns WHERE client_user_message_id = ?",
-    )
-    .bind("client-legacy")
-    .fetch_one(&pool)
-    .await
-    .expect("backfilled abort occurrence should load");
-    assert_eq!(abort_occurrence, "occurrence-legacy");
-    pool.close().await;
+        // Reopening preserves existing FULL and legacy NONE without taking a writer lock.
+        let pool = sqlite.open_read_write_pool(&path).await.unwrap();
+        let mut connection = pool.acquire().await.unwrap();
+        let writer = connection.begin_with("BEGIN IMMEDIATE").await.unwrap();
+        let read_result = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            let readers = sqlite.open_read_write_pool(&path).await.unwrap();
+            let mode = sqlx::query_scalar::<_, i64>("PRAGMA auto_vacuum")
+                .fetch_one(&readers)
+                .await
+                .unwrap();
+            let mut held_connections = Vec::new();
+            let mut values = Vec::new();
+            // Keep every connection checked out to exercise lazy pool expansion too.
+            for _ in 0..5 {
+                let mut reader = readers.acquire().await.unwrap();
+                values.push(
+                    sqlx::query_scalar::<_, i64>("SELECT value FROM sample")
+                        .fetch_one(&mut *reader)
+                        .await
+                        .unwrap(),
+                );
+                held_connections.push(reader);
+            }
+            drop(held_connections);
+            readers.close().await;
+            (mode, values)
+        })
+        .await;
+        writer.rollback().await.unwrap();
+        drop(connection);
+        pool.close().await;
+        assert_eq!(
+            read_result.expect("opening and expanding a read pool must not wait for a writer"),
+            (expected_mode, vec![7; 5])
+        );
+    }
 }

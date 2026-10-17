@@ -416,6 +416,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Initialize CodeQL
+        id: codeql_init
         uses: github/codeql-action/init@v4.37.9
         with:
           languages: ${{ matrix.language }}
@@ -423,20 +424,14 @@ jobs:
           config-file: ${{ matrix.config_file }}
           dependency-caching: ${{ github.event_name == 'pull_request' && 'restore' || 'full' }}
 
-      # The compare API truncates at 300 files, so codeql-action cannot build
-      # complete diff ranges for large upstream-sync pull requests by itself.
-      - name: Restore complete CodeQL diff ranges for large pull requests
-        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.changed_files >= 300 }}
+      - name: Run native visual query regression cases
+        if: ${{ github.event_name == 'workflow_dispatch' && matrix.language == 'rust' && matrix.scope == 'codex-rs-core' }}
         shell: bash
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CODEQL: ${{ steps.codeql_init.outputs.codeql-path }}
         run: |
           set -euo pipefail
-          git fetch --no-tags --depth=1 origin "${BASE_SHA}"
-          python3 .github/scripts/prepare_codeql_diff_ranges.py \
-            --base "${BASE_SHA}" \
-            --head "${GITHUB_SHA}" \
-            > "${RUNNER_TEMP}/pr-diff-range.json"
+          "${CODEQL}" test run --threads=2 --ram=4096 -- .github/codeql/rust-computer-use-contract/test
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4.37.9

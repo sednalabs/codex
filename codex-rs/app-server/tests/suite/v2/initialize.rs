@@ -240,10 +240,12 @@ async fn initialize_opt_out_notification_methods_filters_notifications() -> Resu
                 version: "0.1.0".to_string(),
             },
             Some(InitializeCapabilities {
+                explicit_gateway_oauth: false,
                 experimental_api: true,
                 request_attestation: false,
                 opt_out_notification_methods: Some(vec!["thread/started".to_string()]),
                 mcp_server_openai_form_elicitation: false,
+                extensions: None,
             }),
         ),
     )
@@ -332,6 +334,7 @@ async fn turn_start_notify_payload_includes_initialize_client_name() -> Result<(
 
     let turn_req = mcp
         .send_turn_start_request(TurnStartParams {
+            automatic_turn_continuation: None,
             thread_id: thread.id,
             client_user_message_id: None,
             input: vec![V2UserInput::Text {

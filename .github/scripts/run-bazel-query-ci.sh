@@ -26,6 +26,20 @@ run_bazel() {
 
 bazel_query_args=(query)
 
+if [[ "${RUNNER_OS:-}" == "Windows" && "${CODEX_BAZEL_WINDOWS_VOICE_TOOLS:-0}" == "1" ]]; then
+  if [[ -z "${VOICE_WINDOWS_BAZEL_REPOSITORY:-}" ]]; then
+    echo "Opted-in native Windows CI requires its verified tool repository." >&2
+    exit 1
+  fi
+  voice_tools_root="$(cygpath -u "$VOICE_WINDOWS_BAZEL_REPOSITORY")"
+  if [[ ! -f "$voice_tools_root/voice-tools.json" ]]; then
+    echo "Verified Windows voice tool manifest is missing." >&2
+    exit 1
+  fi
+  # Query accepts repository injection, not build-only environment or settings.
+  bazel_query_args+=("--inject_repository=voice_windows_tools=${VOICE_WINDOWS_BAZEL_REPOSITORY}")
+fi
+
 if [[ -n "${BAZEL_REPO_CONTENTS_CACHE:-}" ]]; then
   bazel_query_args+=("--repo_contents_cache=${BAZEL_REPO_CONTENTS_CACHE}")
 fi

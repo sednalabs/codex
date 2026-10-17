@@ -164,10 +164,11 @@ fn print_device_code_prompt(verification_url: &str, code: &str) {
 
 pub async fn request_device_code(opts: &ServerOptions) -> std::io::Result<DeviceCode> {
     let base_url = opts.issuer.trim_end_matches('/');
-    // The route selected for the issuer is reused for all device-auth endpoint paths; the endpoint
-    // paths are not resolved separately.
-    let client = create_raw_auth_client(base_url, &opts.auth_route_config)?;
     let api_base_url = format!("{base_url}/api/accounts");
+    let client = create_raw_auth_client(
+        &format!("{api_base_url}/deviceauth/usercode"),
+        &opts.auth_route_config,
+    )?;
     let uc = request_user_code(&client, &api_base_url, &opts.client_id).await?;
 
     Ok(DeviceCode {
@@ -182,32 +183,49 @@ pub async fn complete_device_code_login(
     opts: ServerOptions,
     device_code: DeviceCode,
 ) -> std::io::Result<()> {
-    let auth = complete_device_code_login_staged(opts.clone(), device_code).await?;
-    crate::server::persist_auth_dot_json_async(
-        &opts.codex_home,
-        auth,
-        opts.cli_auth_credentials_store_mode,
-        opts.auth_keyring_backend_kind,
-    )
-    .await
+    complete_device_code_login_inner(opts, device_code, /*cancel*/ None).await
 }
 
-pub async fn complete_device_code_login_staged(
+/// Complete a device-code login with cancellation only before credential persistence begins.
+/// Once the blocking auth writer is started, this future awaits it to completion so a caller
+/// holding an auth-transition gate can join the writer before reopening admission.
+#[doc(hidden)]
+pub async fn complete_device_code_login_with_cancel(
     opts: ServerOptions,
     device_code: DeviceCode,
-) -> std::io::Result<crate::auth::AuthDotJson> {
-    let base_url = opts.issuer.trim_end_matches('/');
-    let client = create_raw_auth_client(base_url, &opts.auth_route_config)?;
-    let api_base_url = format!("{base_url}/api/accounts");
+    cancel: &mut tokio::sync::oneshot::Receiver<()>,
+) -> std::io::Result<()> {
+    complete_device_code_login_inner(opts, device_code, Some(cancel)).await
+}
 
-    let code_resp = poll_for_token(
+async fn complete_device_code_login_inner(
+    opts: ServerOptions,
+    device_code: DeviceCode,
+    mut cancel: Option<&mut tokio::sync::oneshot::Receiver<()>>,
+) -> std::io::Result<()> {
+    let base_url = opts.issuer.trim_end_matches('/');
+    let api_base_url = format!("{base_url}/api/accounts");
+    let client = create_raw_auth_client(
+        &format!("{api_base_url}/deviceauth/token"),
+        &opts.auth_route_config,
+    )?;
+
+    let poll = poll_for_token(
         &client,
         &api_base_url,
         &device_code.device_auth_id,
         &device_code.user_code,
         device_code.interval,
-    )
-    .await?;
+    );
+    let code_resp = if let Some(cancel) = cancel.as_mut() {
+        tokio::select! {
+            biased;
+            _ = &mut **cancel => return Err(io::Error::other("Login was not completed")),
+            result = poll => result?,
+        }
+    } else {
+        poll.await?
+    };
 
     let pkce = PkceCodes {
         code_verifier: code_resp.code_verifier,
@@ -215,15 +233,23 @@ pub async fn complete_device_code_login_staged(
     };
     let redirect_uri = format!("{base_url}/deviceauth/callback");
 
-    let tokens = crate::server::exchange_code_for_tokens(
+    let exchange = crate::server::exchange_code_for_tokens(
         base_url,
         &opts.client_id,
         &redirect_uri,
         &pkce,
         &code_resp.authorization_code,
         &opts.auth_route_config,
-    )
-    .await
+    );
+    let (tokens, _) = if let Some(cancel) = cancel.as_mut() {
+        tokio::select! {
+            biased;
+            _ = &mut **cancel => return Err(io::Error::other("Login was not completed")),
+            result = exchange => result,
+        }
+    } else {
+        exchange.await
+    }
     .map_err(|err| std::io::Error::other(format!("device code exchange failed: {err}")))?;
 
     if let Err(message) = crate::server::ensure_workspace_allowed(
@@ -233,11 +259,25 @@ pub async fn complete_device_code_login_staged(
         return Err(io::Error::new(io::ErrorKind::PermissionDenied, message));
     }
 
-    crate::server::build_auth_from_tokens_async(
+    if let Some(cancel) = cancel.as_mut() {
+        match cancel.try_recv() {
+            Ok(()) | Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                return Err(io::Error::other("Login was not completed"));
+            }
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
+        }
+    }
+
+    // Do not race cancellation against this await: persist_tokens_async starts a blocking
+    // credential write, and dropping its JoinHandle would detach the writer from the gate owner.
+    crate::server::persist_tokens_async(
+        &opts.codex_home,
         /*api_key*/ None,
         tokens.id_token,
         tokens.access_token,
         tokens.refresh_token,
+        opts.cli_auth_credentials_store_mode,
+        opts.auth_keyring_backend_kind,
     )
     .await
 }

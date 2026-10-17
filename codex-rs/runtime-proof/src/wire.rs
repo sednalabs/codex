@@ -1,19 +1,33 @@
+#[cfg(any(test, target_os = "linux"))]
 use anyhow::Context;
+#[cfg(any(test, target_os = "linux"))]
 use anyhow::Result;
+#[cfg(any(test, target_os = "linux"))]
 use anyhow::bail;
+#[cfg(any(test, target_os = "linux"))]
 use base64::Engine;
+#[cfg(any(test, target_os = "linux"))]
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+#[cfg(any(test, target_os = "linux"))]
 use serde::Deserialize;
+#[cfg(any(test, target_os = "linux"))]
 use serde::Serialize;
+#[cfg(any(test, target_os = "linux"))]
 use serde_json::Value;
+#[cfg(any(test, target_os = "linux"))]
 use sha2::Sha256;
+#[cfg(any(test, target_os = "linux"))]
 use uuid::Uuid;
 
 pub const RESERVED_META_KEY: &str = "runtime/execution-proof";
+#[cfg(any(test, target_os = "linux"))]
 pub const MAX_CERTIFICATE_BYTES: usize = 16 * 1024;
+#[cfg(any(test, target_os = "linux"))]
 pub const MAX_CERTIFICATE_SECONDS: i64 = 30 * 60;
+#[cfg(any(test, target_os = "linux"))]
 pub const MAX_PROOF_SECONDS: i64 = 60;
 
+#[cfg(any(test, target_os = "linux"))]
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CertificateHeader {
@@ -22,6 +36,7 @@ pub(crate) struct CertificateHeader {
     pub kid: String,
 }
 
+#[cfg(any(test, target_os = "linux"))]
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CertificateClaims {
@@ -43,6 +58,7 @@ pub(crate) struct CertificateClaims {
     pub exp: i64,
 }
 
+#[cfg(any(test, target_os = "linux"))]
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct RequestHeader<'a> {
     pub alg: &'static str,
@@ -50,6 +66,7 @@ pub(crate) struct RequestHeader<'a> {
     pub kid: &'a str,
 }
 
+#[cfg(any(test, target_os = "linux"))]
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RequestClaims {
@@ -68,12 +85,14 @@ pub(crate) struct RequestClaims {
     pub exp: i64,
 }
 
+#[cfg(any(test, target_os = "linux"))]
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct ProofEnvelope<'a> {
     pub certificate: &'a str,
     pub proof: &'a str,
 }
 
+#[cfg(any(test, target_os = "linux"))]
 pub(crate) fn parse_certificate(
     certificate: &str,
 ) -> Result<(CertificateHeader, CertificateClaims)> {
@@ -97,6 +116,7 @@ pub(crate) fn parse_certificate(
     Ok((header, claims))
 }
 
+#[cfg(any(test, target_os = "linux"))]
 pub(crate) fn canonical_operation(tool: &str, parameters: &Value) -> Result<Vec<u8>> {
     let operation = serde_json::json!({
         "transport": "mcp",
@@ -111,6 +131,7 @@ pub(crate) fn canonical_operation(tool: &str, parameters: &Value) -> Result<Vec<
     Ok(canonical)
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn validate_numbers(value: &Value) -> Result<()> {
     match value {
         Value::Null | Value::Bool(_) | Value::String(_) => Ok(()),
@@ -135,6 +156,7 @@ fn validate_numbers(value: &Value) -> Result<()> {
 }
 
 /// Computes the certificate digest encoding used by the Ops runtime verifier.
+#[cfg(any(test, target_os = "linux"))]
 pub(crate) fn certificate_digest(bytes: &[u8]) -> String {
     use sha2::Digest as _;
     use std::fmt::Write as _;
@@ -146,6 +168,7 @@ pub(crate) fn certificate_digest(bytes: &[u8]) -> String {
     output
 }
 
+#[cfg(any(test, target_os = "linux"))]
 pub(crate) fn digest(bytes: &[u8]) -> String {
     let digest = certificate_digest(bytes);
     format!("sha256:{digest}")
