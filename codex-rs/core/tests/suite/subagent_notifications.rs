@@ -856,6 +856,15 @@ async fn subagent_stop_replaces_stop_and_skips_internal_subagents() -> Result<()
     let _ = wait_for_requests(&first_child_request).await?;
     let _ = wait_for_requests(&second_child_request).await?;
 
+    // A matched HTTP request only proves that the mock server received it. Wait
+    // for the child turn to finish before asserting its stop-hook side effects.
+    let child_id = wait_for_spawned_thread_id(&test).await?;
+    let child = test
+        .thread_manager
+        .get_thread(ThreadId::from_string(&child_id)?)
+        .await?;
+    wait_for_event(&child, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+
     let subagent_stop_inputs = wait_for_hook_log(
         test.codex_home_path(),
         "subagent_stop_hook_log.jsonl",

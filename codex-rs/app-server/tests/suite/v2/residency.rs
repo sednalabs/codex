@@ -80,17 +80,17 @@ async fn managed_residency_overrides_provider_headers(transport: ModelTransport)
         ]),
     )
     .await;
-    let websocket_server = responses::start_websocket_server(vec![vec![
-        vec![
+    let websocket_server = responses::start_websocket_server(vec![
+        vec![vec![
             responses::ev_response_created("prewarm-response"),
             responses::ev_completed("prewarm-response"),
-        ],
-        vec![
+        ]],
+        vec![vec![
             responses::ev_response_created("websocket-response"),
             responses::ev_assistant_message("websocket-message", "done"),
             responses::ev_completed("websocket-response"),
-        ],
-    ]])
+        ]],
+    ])
     .await;
     let model_base_url = match transport {
         ModelTransport::Http => http_server.uri(),
@@ -175,7 +175,11 @@ async fn managed_residency_overrides_provider_headers(transport: ModelTransport)
             )
         }
         ModelTransport::Websocket => {
-            let handshake = websocket_server.single_handshake();
+            let handshake = websocket_server
+                .handshakes()
+                .get(1)
+                .cloned()
+                .context("turn websocket handshake should be present")?;
             (
                 handshake.header(RESIDENCY_HEADER_NAME),
                 handshake.header("x-provider-header"),

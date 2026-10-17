@@ -40,22 +40,27 @@ async fn attestation_generate_round_trip_adds_header_to_responses_websocket_hand
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
-    let websocket_server = start_websocket_server_with_headers(vec![WebSocketConnectionConfig {
-        requests: vec![
-            vec![
+    let websocket_server = start_websocket_server_with_headers(vec![
+        WebSocketConnectionConfig {
+            requests: vec![vec![
                 responses::ev_response_created("warm-1"),
                 responses::ev_completed("warm-1"),
-            ],
-            vec![
+            ]],
+            response_headers: Vec::new(),
+            accept_delay: None,
+            close_after_requests: true,
+        },
+        WebSocketConnectionConfig {
+            requests: vec![vec![
                 responses::ev_response_created("resp-1"),
                 responses::ev_assistant_message("msg-1", "Done"),
                 responses::ev_completed("resp-1"),
-            ],
-        ],
-        response_headers: Vec::new(),
-        accept_delay: None,
-        close_after_requests: true,
-    }])
+            ]],
+            response_headers: Vec::new(),
+            accept_delay: None,
+            close_after_requests: true,
+        },
+    ])
     .await;
 
     let codex_home = TempDir::new()?;
@@ -165,14 +170,17 @@ async fn attestation_generate_round_trip_adds_header_to_responses_websocket_hand
 
     assert!(
         websocket_server
-            .wait_for_handshakes(/*expected*/ 1, DEFAULT_READ_TIMEOUT)
+            .wait_for_handshakes(/*expected*/ 2, DEFAULT_READ_TIMEOUT)
             .await
     );
-    let handshake = websocket_server.single_handshake();
-    assert_eq!(
-        handshake.header("x-oai-attestation").as_deref(),
-        Some(APP_SERVER_ATTESTATION_HEADER)
-    );
+    let handshakes = websocket_server.handshakes();
+    assert_eq!(handshakes.len(), 2);
+    for handshake in handshakes {
+        assert_eq!(
+            handshake.header("x-oai-attestation").as_deref(),
+            Some(APP_SERVER_ATTESTATION_HEADER)
+        );
+    }
 
     websocket_server.shutdown().await;
     Ok(())
