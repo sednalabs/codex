@@ -2951,6 +2951,7 @@ async fn make_explicit_test_session(
     async_channel::Receiver<codex_protocol::protocol::Event>,
     PathBuf,
 ) {
+    let retained_thread_store = Arc::clone(&thread_store);
     let (session, rx_event, _) = make_session_with_usage_state_and_agent_control_and_rx(
         InitialHistory::New,
         SessionSource::Exec,
@@ -2968,15 +2969,21 @@ async fn make_explicit_test_session(
         Some(MultiAgentVersion::V2),
         "explicit inter-agent tests must use the version selected by config"
     );
-    session
-        .try_ensure_rollout_materialized(PersistContext::Standard)
-        .await
-        .expect("persistent explicit inter-agent session should materialize its rollout");
-    let rollout_path = session
-        .current_rollout_path()
-        .await
-        .expect("load explicit inter-agent rollout path")
-        .expect("persistent explicit inter-agent session has a rollout path");
+    let rollout_path = match retained_thread_store
+        .as_any()
+        .downcast_ref::<FailOnceThreadStore>()
+    {
+        Some(store) => store
+            .inner
+            .live_rollout_path(session.thread_id())
+            .await
+            .expect("load explicit inter-agent rollout path from the wrapped local store"),
+        None => session
+            .current_rollout_path()
+            .await
+            .expect("load explicit inter-agent rollout path")
+            .expect("persistent explicit inter-agent session has a rollout path"),
+    };
     session
         .flush_rollout()
         .await
