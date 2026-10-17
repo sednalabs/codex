@@ -14,10 +14,8 @@ use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
-use codex_app_server_protocol::TurnCompletedNotification;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
-use codex_app_server_protocol::TurnStatus;
 use codex_app_server_protocol::UserInput;
 use pretty_assertions::assert_eq;
 use std::time::Duration;
@@ -515,12 +513,13 @@ async fn initialization_selects_legacy_or_explicit_gateway_login() -> Result<()>
                 ..Default::default()
             })
             .await?;
-        let _: TurnStartResponse = server.read_response(turn).await?;
-        let completed: TurnCompletedNotification =
-            timeout(TIMEOUT, server.read_notification("turn/completed")).await??;
-        assert_eq!(completed.turn.status, TurnStatus::Failed);
+        let error = server
+            .read_stream_until_error_message(RequestId::Integer(turn))
+            .await?;
+        assert_eq!(error.id, RequestId::Integer(turn));
+        assert_eq!(error.error.code, -32603);
         assert_eq!(
-            completed.turn.error.context("gateway failure")?.message,
+            error.error.message,
             if explicit {
                 "Gateway sign-in required. Choose Sign in or Reconnect, then retry your request"
             } else {
