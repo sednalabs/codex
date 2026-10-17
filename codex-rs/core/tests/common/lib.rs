@@ -48,6 +48,7 @@ pub(crate) use test_environment::test_environment;
 pub use test_environment::test_target_os;
 
 static TEST_ARG0_PATH_ENTRY: OnceLock<Option<Arg0PathEntryGuard>> = OnceLock::new();
+static TEST_STDIO_SERVER_BUILD: OnceLock<Result<(), String>> = OnceLock::new();
 
 #[ctor]
 fn enable_deterministic_unified_exec_process_ids_for_tests() {
@@ -426,8 +427,91 @@ pub fn format_with_current_shell_display_non_login(command: &str) -> String {
         .expect("serialize current shell command without login")
 }
 
+fn native_cargo_stdio_server_build_paths() -> Option<(PathBuf, PathBuf)> {
+    if codex_utils_cargo_bin::runfiles_available()
+        || std::env::var_os("CARGO_BUILD_TARGET").is_some()
+    {
+        return None;
+    }
+
+    let codex_rs_root = codex_utils_cargo_bin::repo_root().ok()?.join("codex-rs");
+    let codex_rs_root = codex_rs_root.canonicalize().ok()?;
+    if std::env::current_dir().ok()?.canonicalize().ok()? != codex_rs_root {
+        return None;
+    }
+
+    let current_exe = std::env::current_exe().ok()?;
+    let deps_dir = current_exe.parent()?;
+    if deps_dir.file_name()? != "deps" {
+        return None;
+    }
+    let debug_dir = deps_dir.parent()?;
+    if debug_dir.file_name()? != "debug" {
+        return None;
+    }
+    let target_dir = debug_dir.parent()?.canonicalize().ok()?;
+
+    let workspace_target_dir = codex_rs_root.join("target").canonicalize().ok()?;
+    if workspace_target_dir != target_dir {
+        return None;
+    }
+
+    Some((codex_rs_root, target_dir))
+}
+
+fn build_stdio_server_once(codex_rs_root: &Path, target_dir: &Path) -> Result<(), String> {
+    TEST_STDIO_SERVER_BUILD
+        .get_or_init(|| {
+            let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+            let status = std::process::Command::new(cargo)
+                .args([
+                    "build",
+                    "--locked",
+                    "-p",
+                    "codex-rmcp-client",
+                    "--bin",
+                    "test_stdio_server",
+                    "--target-dir",
+                ])
+                .arg(target_dir)
+                .current_dir(codex_rs_root)
+                .status()
+                .map_err(|error| format!("failed to start the MCP test-server build: {error}"))?;
+            if status.success() {
+                Ok(())
+            } else {
+                Err(format!("MCP test-server build exited with {status}"))
+            }
+        })
+        .clone()
+}
+
 pub fn stdio_server_bin() -> Result<String, CargoBinError> {
-    codex_utils_cargo_bin::cargo_bin("test_stdio_server").map(|p| p.to_string_lossy().to_string())
+    match codex_utils_cargo_bin::cargo_bin("test_stdio_server") {
+        Ok(path) => Ok(path.to_string_lossy().to_string()),
+        Err(error @ CargoBinError::NotFound { .. }) => {
+            let Some((codex_rs_root, target_dir)) = native_cargo_stdio_server_build_paths() else {
+                return Err(error);
+            };
+            if let Err(build_error) = build_stdio_server_once(&codex_rs_root, &target_dir) {
+                return Err(match error {
+                    CargoBinError::NotFound {
+                        name,
+                        env_keys,
+                        fallback,
+                    } => CargoBinError::NotFound {
+                        name,
+                        env_keys,
+                        fallback: format!("{fallback}; native Cargo fallback failed: {build_error}"),
+                    },
+                    other => other,
+                });
+            }
+            codex_utils_cargo_bin::cargo_bin("test_stdio_server")
+                .map(|path| path.to_string_lossy().to_string())
+        }
+        Err(error) => Err(error),
+    }
 }
 
 pub mod fs_wait {
