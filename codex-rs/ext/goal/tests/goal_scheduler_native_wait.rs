@@ -510,13 +510,13 @@ async fn run_goal_scheduler_wait(scenario: Scenario) -> Result<()> {
     let child = test.thread_manager.get_thread(child_id).await?;
     let mut activities = Vec::new();
     let initial_turn = child_complete(&child, child_id, &mut activities).await?;
-    let mut initial_goal_id = None;
-    let test = if matches!(scenario, Scenario::ResumedComplete) {
+    let (test, initial_goal_id) = if matches!(scenario, Scenario::ResumedComplete) {
         let db = state.lock().expect("state").clone().expect("DB");
         test.thread_manager
             .shutdown_all_threads_bounded(Duration::from_secs(5))
             .await;
-        db.thread_goals()
+        let seeded_goal = db
+            .thread_goals()
             .insert_thread_goal(
                 child_id,
                 "resumed real goal",
@@ -541,24 +541,21 @@ async fn run_goal_scheduler_wait(scenario: Scenario) -> Result<()> {
             .thread_manager
             .ensure_multi_agent_v2_child_loaded(child_id)
             .await?;
-        resumed
+        (resumed, seeded_goal.goal_id)
     } else {
         let marker = timeout(Duration::from_secs(10), marker_rx.recv())
             .await?
             .context("initial marker")?;
         assert_eq!(marker.turn_id, initial_turn);
         assert_eq!(marker.readiness, GoalTurnReadiness::Continuing);
-        initial_goal_id = Some(marker.goal_id);
-        test
+        (test, marker.goal_id)
     };
     let child = test.thread_manager.get_thread(child_id).await?;
     let first = timeout(Duration::from_secs(10), start_rx.recv())
         .await?
         .context("first automatic goal turn")?;
     assert_eq!(first.thread_id, child_id);
-    if let Some(goal_id) = initial_goal_id {
-        assert_eq!(first.goal_id, goal_id);
-    }
+    assert_eq!(first.goal_id, initial_goal_id);
     let db = state.lock().expect("state").clone().expect("DB");
     assert_eq!(
         db.thread_goals()
@@ -712,14 +709,38 @@ async fn run_goal_scheduler_wait(scenario: Scenario) -> Result<()> {
         .iter()
         .filter(|message| message.to_string().contains("Message Type: FINAL_ANSWER"))
         .collect::<Vec<_>>();
-    // The resumed fixture also preserves its pre-goal child completion.
-    assert_eq!(
-        handbacks.len(),
-        if matches!(scenario, Scenario::ResumedComplete) { 2 } else { 1 }
-    );
+    let mut payloads = Vec::new();
     for message in handbacks {
         assert_eq!(message["author"], "/root/worker");
         assert_eq!(message["recipient"], "/root");
+        assert_eq!(
+            message["content"].as_array().context("handback content")?.len(),
+            1
+        );
+        let text = message["content"][0]["text"]
+            .as_str()
+            .context("handback text")?;
+        payloads.push(
+            text.strip_prefix(
+                "Message Type: FINAL_ANSWER\nTask name: /root\nSender: /root/worker\nPayload:\n",
+            )
+            .context("exact child handback envelope")?,
+        );
+    }
+    match scenario {
+        Scenario::Error => {
+            assert_eq!(payloads.len(), 1);
+            let Some(AgentStatus::Errored(error)) = call.agents_states.get(&child_id) else {
+                unreachable!("the selected child's raw error was asserted above");
+            };
+            assert!(payloads[0].starts_with(&format!("Agent errored: {error}\n\n")));
+        }
+        // Preserve and distinguish the pre-goal completion across the restart.
+        Scenario::ResumedComplete => assert_eq!(payloads, vec!["ready for resume", "goal complete"]),
+        Scenario::FreshComplete
+        | Scenario::OperatorSteer
+        | Scenario::ActionRequired
+        | Scenario::ResultReady => assert_eq!(payloads, vec!["goal complete"]),
     }
     let progress = activities
         .iter()
