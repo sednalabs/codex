@@ -93,11 +93,14 @@ enum Scenario {
 }
 
 fn body_json(request: &Request) -> Value {
-    let compressed = request.headers.get("content-encoding").is_some_and(|value| {
-        value
-            .to_str()
-            .is_ok_and(|value| value.split(',').any(|part| part.trim() == "zstd"))
-    });
+    let compressed = request
+        .headers
+        .get("content-encoding")
+        .is_some_and(|value| {
+            value
+                .to_str()
+                .is_ok_and(|value| value.split(',').any(|part| part.trim() == "zstd"))
+        });
     let body = if compressed {
         zstd::stream::decode_all(std::io::Cursor::new(&request.body)).expect("decode request")
     } else {
@@ -203,10 +206,7 @@ fn builder_with_goal(
         })
         .with_config(|config| {
             config.features.enable(Feature::Collab).expect("collab");
-            config
-                .features
-                .enable(Feature::MultiAgentV2)
-                .expect("V2");
+            config.features.enable(Feature::MultiAgentV2).expect("V2");
             config.model_provider.request_max_retries = Some(0);
             config.model_provider.stream_max_retries = Some(0);
             config.model_provider.supports_websockets = false;
@@ -449,7 +449,12 @@ async fn child_complete(
 ) -> Result<String> {
     let turn_id = timeout(Duration::from_secs(10), async {
         loop {
-            match child.next_event().await.context("child event stream ended")?.msg {
+            match child
+                .next_event()
+                .await
+                .context("child event stream ended")?
+                .msg
+            {
                 EventMsg::ItemCompleted(event) => {
                     if let TurnItem::SubAgentActivity(activity) = event.item {
                         assert_eq!(event.thread_id, child_id);
@@ -488,9 +493,7 @@ async fn parent_request_count(server: &MockServer, parent: ThreadId) -> usize {
         .await
         .expect("requests")
         .iter()
-        .filter(|request| {
-            body_json(request)["client_metadata"]["thread_id"] == parent.to_string()
-        })
+        .filter(|request| body_json(request)["client_metadata"]["thread_id"] == parent.to_string())
         .count()
 }
 
@@ -622,12 +625,8 @@ async fn run_goal_scheduler_wait(
         .await?;
     timeout(Duration::from_secs(10), async {
         loop {
-            if let EventMsg::ItemStarted(event) = test
-                .codex
-                .next_event()
-                .await
-                .context("parent events")?
-                .msg
+            if let EventMsg::ItemStarted(event) =
+                test.codex.next_event().await.context("parent events")?.msg
                 && let TurnItem::CollabAgentToolCall(call) = event.item
                 && call.tool == CollabAgentTool::Wait
             {
@@ -664,7 +663,10 @@ async fn run_goal_scheduler_wait(
         completed = Some(timeout(Duration::from_secs(10), completed_wait(&test.codex)).await??);
     }
     let mut previous = first;
-    set_resumed_phase(&mut resumed_phase, "intermediate goal turns and quiet observations");
+    set_resumed_phase(
+        &mut resumed_phase,
+        "intermediate goal turns and quiet observations",
+    );
     for intermediate in 0..2 {
         gate.permits.add_permits(1);
         let turn_id = child_complete(&child, child_id, &mut activities).await?;
@@ -672,8 +674,16 @@ async fn run_goal_scheduler_wait(
             .await?
             .context("real continuing marker")?;
         assert_eq!(
-            (marker.goal_id.as_str(), marker.turn_id.as_str(), marker.readiness),
-            (previous.goal_id.as_str(), turn_id.as_str(), GoalTurnReadiness::Continuing)
+            (
+                marker.goal_id.as_str(),
+                marker.turn_id.as_str(),
+                marker.readiness
+            ),
+            (
+                previous.goal_id.as_str(),
+                turn_id.as_str(),
+                GoalTurnReadiness::Continuing
+            )
         );
         assert_eq!(turn_id, previous.turn_id);
         let next = timeout(Duration::from_secs(10), start_rx.recv())
@@ -683,8 +693,7 @@ async fn run_goal_scheduler_wait(
         assert_eq!(next.goal_id, previous.goal_id);
         assert_ne!(next.turn_id, previous.turn_id);
         previous = next;
-        if intermediate == 1
-            && matches!(scenario, Scenario::ActionRequired | Scenario::ResultReady)
+        if intermediate == 1 && matches!(scenario, Scenario::ActionRequired | Scenario::ResultReady)
         {
             completed = Some(timeout(Duration::from_secs(10), completed_wait(&test.codex)).await??);
             let goal = db
@@ -736,14 +745,23 @@ async fn run_goal_scheduler_wait(
             call.status,
             call.wait_outcome,
         ),
-        (WAIT_CALL, parent_id, vec![child_id], CollabAgentToolCallStatus::Completed, Some(expected))
+        (
+            WAIT_CALL,
+            parent_id,
+            vec![child_id],
+            CollabAgentToolCallStatus::Completed,
+            Some(expected)
+        )
     );
     if matches!(scenario, Scenario::Error) {
         assert!(
             matches!(call.agents_states.get(&child_id), Some(AgentStatus::Errored(message))
                 if message.contains("fixture goal failure"))
         );
-    } else if matches!(scenario, Scenario::FreshComplete | Scenario::ResumedComplete) {
+    } else if matches!(
+        scenario,
+        Scenario::FreshComplete | Scenario::ResumedComplete
+    ) {
         assert!(matches!(
             call.agents_states.get(&child_id),
             Some(AgentStatus::Completed(_))
@@ -751,8 +769,10 @@ async fn run_goal_scheduler_wait(
     } else {
         assert!(call.agents_states.is_empty());
     }
-    let EventMsg::TurnComplete(wait_turn) =
-        wait_for_event(&test.codex, |event| matches!(event, EventMsg::TurnComplete(_))).await
+    let EventMsg::TurnComplete(wait_turn) = wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await
     else {
         unreachable!("the matcher selects the root wait turn completion");
     };
@@ -770,7 +790,10 @@ async fn run_goal_scheduler_wait(
         .into_iter()
         .filter(|request| {
             request.body_json()["client_metadata"]["thread_id"].as_str() == Some(root_id.as_str())
-                && request.message_input_texts("user").last().map(String::as_str)
+                && request
+                    .message_input_texts("user")
+                    .last()
+                    .map(String::as_str)
                     == Some(output_prompt)
                 && request.function_call_output_text(WAIT_CALL).is_some()
         })
@@ -797,7 +820,10 @@ async fn run_goal_scheduler_wait(
         .into_iter()
         .filter(|request| {
             request.body_json()["client_metadata"]["thread_id"].as_str() == Some(root_id.as_str())
-                && request.message_input_texts("user").last().map(String::as_str)
+                && request
+                    .message_input_texts("user")
+                    .last()
+                    .map(String::as_str)
                     == Some(REPORT_PROMPT)
         })
         .collect::<Vec<_>>();
@@ -813,7 +839,10 @@ async fn run_goal_scheduler_wait(
         assert_eq!(message["author"], "/root/worker");
         assert_eq!(message["recipient"], "/root");
         assert_eq!(
-            message["content"].as_array().context("handback content")?.len(),
+            message["content"]
+                .as_array()
+                .context("handback content")?
+                .len(),
             1
         );
         let text = message["content"][0]["text"]
@@ -835,7 +864,9 @@ async fn run_goal_scheduler_wait(
             assert!(payloads[0].starts_with(&format!("Agent errored: {error}\n\n")));
         }
         // Preserve and distinguish the pre-goal completion across the restart.
-        Scenario::ResumedComplete => assert_eq!(payloads, vec!["ready for resume", "goal complete"]),
+        Scenario::ResumedComplete => {
+            assert_eq!(payloads, vec!["ready for resume", "goal complete"])
+        }
         Scenario::FreshComplete
         | Scenario::OperatorSteer
         | Scenario::ActionRequired
@@ -874,9 +905,10 @@ async fn run_goal_scheduler_wait(
         assert_eq!(update["author"], "/root/worker");
         assert_eq!(update["recipient"], "/root");
         test.codex.flush_rollout().await?;
-        let (items, stored_thread, parse_errors) =
-            RolloutRecorder::load_rollout_items(&test.codex.rollout_path().context("root rollout")?)
-                .await?;
+        let (items, stored_thread, parse_errors) = RolloutRecorder::load_rollout_items(
+            &test.codex.rollout_path().context("root rollout")?,
+        )
+        .await?;
         assert_eq!((stored_thread, parse_errors), (Some(parent_id), 0));
         let admissions = items
             .iter()
@@ -891,11 +923,18 @@ async fn run_goal_scheduler_wait(
         assert_eq!(admissions.len(), 1);
         let admission = admissions[0];
         assert_eq!(
-            (admission.root_thread_id, admission.sender_thread_id, admission.recipient_thread_id),
+            (
+                admission.root_thread_id,
+                admission.sender_thread_id,
+                admission.recipient_thread_id
+            ),
             (parent_id, child_id, parent_id)
         );
         assert_eq!(
-            (admission.sender_path.as_str(), admission.recipient_path.as_str()),
+            (
+                admission.sender_path.as_str(),
+                admission.recipient_path.as_str()
+            ),
             ("/root/worker", "/root")
         );
         assert_eq!(
@@ -911,7 +950,10 @@ async fn run_goal_scheduler_wait(
                         .metadata
                         .as_ref()
                         .and_then(|metadata| metadata.inter_agent_update_id.as_ref())
-                        == Some(&admission.update_id) => Some(response),
+                        == Some(&admission.update_id) =>
+                {
+                    Some(response)
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -927,18 +969,21 @@ async fn run_goal_scheduler_wait(
         expected_update.set_turn_id_if_missing(&wait_turn.turn_id);
         expected_update.set_create_time_if_missing(create_time);
         assert_eq!(recorded_update, &expected_update);
+        assert_eq!(*update, serde_json::to_value(expected_update)?);
         assert_eq!(
-            *update,
-            serde_json::to_value(expected_update)?
+            admission.original_communication.author,
+            admission.sender_path
         );
-        assert_eq!(admission.original_communication.author, admission.sender_path);
         assert_eq!(
             admission.original_communication.recipient,
             admission.recipient_path
         );
         assert!(admission.original_communication.content.is_empty());
         assert_eq!(
-            admission.original_communication.encrypted_content.as_deref(),
+            admission
+                .original_communication
+                .encrypted_content
+                .as_deref(),
             Some(UPDATE_BODY)
         );
         assert!(!admission.original_communication.trigger_turn);
@@ -961,8 +1006,8 @@ async fn fresh_goal_scheduler_keeps_native_wait_quiet_until_complete() -> Result
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn resumed_goal_scheduler_keeps_native_wait_quiet_until_complete(
-) -> std::result::Result<(), &'static str> {
+async fn resumed_goal_scheduler_keeps_native_wait_quiet_until_complete()
+-> std::result::Result<(), &'static str> {
     struct PanicPhase(&'static str);
 
     impl Drop for PanicPhase {
