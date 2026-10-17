@@ -615,7 +615,7 @@ jobs:
               "harness_tree": git_value(host, "rev-parse", "HEAD^{tree}"),
               "target_sha": git_value(target, "rev-parse", "HEAD"),
               "target_tree": git_value(target, "rev-parse", "HEAD^{tree}"),
-              "target_parent": git_value(target, "rev-parse", "HEAD^"),
+              "target_parent": git_value(target, "show", "-s", "--format=%P", "HEAD"),
               "base_sha": git_value(base, "rev-parse", "HEAD"),
               "base_tree": git_value(base, "rev-parse", "HEAD^{tree}"),
           }
