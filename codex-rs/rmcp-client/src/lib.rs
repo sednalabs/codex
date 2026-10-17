@@ -105,5 +105,6 @@ pub use service_error::mcp_error;
 pub use startup_error::is_authentication_required_error;
 pub use stdio_server_launcher::ExecutorStdioServerLauncher;
 pub use stdio_server_launcher::LocalStdioServerLauncher;
+pub use stdio_server_launcher::STDIO_CLOSE_POLICY_ENV;
 pub use stdio_server_launcher::StdioServerLauncher;
 pub use user_verification::UserVerificationReason;

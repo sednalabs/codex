@@ -29,6 +29,7 @@ pub use tool_catalog::tool_is_model_visible;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -41,16 +42,19 @@ use crate::mcp::CODEX_APPS_MCP_SERVER_NAME;
 use crate::mcp::ToolPluginContext;
 use crate::pagination::MAX_CODEX_APPS_TOOL_CATALOG_ITEMS;
 use crate::pagination::MAX_MCP_CATALOG_ITEMS;
+use crate::plugin_config::STDIO_CLOSE_POLICY_ENV;
 use crate::rmcp_client::AsyncManagedClient;
 use crate::rmcp_client::DEFAULT_STARTUP_TIMEOUT;
 use crate::rmcp_client::DEFAULT_TOOL_TIMEOUT;
 use crate::rmcp_client::ManagedClient;
+use crate::rmcp_client::ManagedClientFuture;
 use crate::rmcp_client::StartupOutcomeError;
 use crate::rmcp_client::prepare_codex_apps_tools_for_model;
 use crate::rmcp_client::prepare_regular_mcp_tools_for_model;
 use crate::runtime::McpPublicationGate;
 use crate::runtime::McpRuntimeInput;
 use crate::runtime::McpStartupPolicy;
+use crate::server::McpCredentialPolicy;
 use crate::server::McpServerConnectionIdentity;
 use crate::server::McpServerMetadata;
 use crate::tool_catalog_cache::McpToolCatalogCacheContext;
@@ -63,6 +67,7 @@ use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
 use anyhow::bail;
+use codex_config::McpServerConfig;
 use codex_config::McpServerTransportConfig;
 use codex_config::McpStartupReadiness;
 use codex_diagnostics::Gauge;
@@ -78,11 +83,77 @@ use codex_protocol::protocol::McpStartupFailureReason;
 use codex_protocol::protocol::McpStartupStatus;
 use codex_protocol::protocol::McpStartupUpdateEvent;
 use codex_rmcp_client::determine_streamable_http_auth_status_from_credentials;
+use futures::FutureExt;
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 use tracing::warn;
 
 static LIVE_CONNECTIONS: Gauge = Gauge::new("mcp.connections.live");
+
+const COOPERATIVE_STDIO_CLOSE_POLICY: &str = "cooperative-local-v1";
+
+fn stdio_close_policy_setting(
+    config: &McpServerConfig,
+) -> std::result::Result<Option<&str>, &'static str> {
+    let McpServerTransportConfig::Stdio { env, env_vars, .. } = &config.transport else {
+        return Ok(None);
+    };
+    if env_vars
+        .iter()
+        .any(|variable| variable.name().eq_ignore_ascii_case(STDIO_CLOSE_POLICY_ENV))
+    {
+        return Err("reserved stdio close policy must be a literal host configuration value");
+    }
+    let Some(env) = env else {
+        return Ok(None);
+    };
+    let mut matching = env
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case(STDIO_CLOSE_POLICY_ENV));
+    let Some((name, value)) = matching.next() else {
+        return Ok(None);
+    };
+    if matching.next().is_some() || name.as_str() != STDIO_CLOSE_POLICY_ENV {
+        return Err("reserved stdio close policy key is ambiguous or has unsupported casing");
+    }
+    Ok(Some(value))
+}
+
+fn validate_cooperative_stdio_close_policy(
+    configured: &McpServerConfig,
+    registration: Option<&crate::ResolvedMcpServer>,
+) -> std::result::Result<(), &'static str> {
+    let configured_value = stdio_close_policy_setting(configured)?;
+    let registered = registration.map(crate::ResolvedMcpServer::config);
+    let registered_value = registered
+        .map(stdio_close_policy_setting)
+        .transpose()?
+        .flatten();
+    if configured_value.is_none() && registered_value.is_none() {
+        return Ok(());
+    }
+    if configured_value != registered_value {
+        return Err("reserved stdio close policy does not match the resolved server configuration");
+    }
+    if configured_value != Some(COOPERATIVE_STDIO_CLOSE_POLICY) {
+        return Err("reserved stdio close policy value is unsupported");
+    }
+    let Some(registration) = registration else {
+        return Err("cooperative stdio close requires a trusted host configuration registration");
+    };
+    if registration.source() != &McpServerSource::Config
+        || registration.credential_policy() != McpCredentialPolicy::HostFallbackAllowed
+    {
+        return Err("cooperative stdio close requires host-configured local stdio");
+    }
+    if registration.config().transport != configured.transport
+        || registration.config().environment_id != configured.environment_id
+        || !configured.is_local_environment()
+    {
+        return Err("cooperative stdio close requires matching local stdio configuration");
+    }
+    Ok(())
+}
 
 pub(crate) struct McpServerConnection {
     identity: Option<McpServerConnectionIdentity>,
@@ -342,6 +413,8 @@ impl McpConnectionSet {
             };
             let metadata = McpServerMetadata::from(&server);
             let configured_config = server.config().clone();
+            let close_policy_validation =
+                validate_cooperative_stdio_close_policy(&configured_config, registration);
             let protocol_mode = if matches!(
                 &configured_config.transport,
                 McpServerTransportConfig::StreamableHttp { .. }
@@ -378,7 +451,8 @@ impl McpConnectionSet {
                 McpServerTransportConfig::Stdio { .. } => false,
             };
             // Filtered catalogs must not read or populate an unrestricted shared cache.
-            let shares_codex_apps_tools_cache = is_host_owned_codex_apps
+            let shares_codex_apps_tools_cache = close_policy_validation.is_ok()
+                && is_host_owned_codex_apps
                 && !server.requires_read_only_mcp_tools()
                 && should_share_codex_apps_tools_cache(&server_name, uses_env_bearer_token);
             let codex_apps_tools_cache_context = shares_codex_apps_tools_cache.then(|| {
@@ -477,8 +551,9 @@ impl McpConnectionSet {
                     Some(_) => None,
                 },
             };
-            if let Some(previous_view) =
-                reusable_previous.and_then(|previous| previous.servers.get(&server_name))
+            if close_policy_validation.is_ok()
+                && let Some(previous_view) =
+                    reusable_previous.and_then(|previous| previous.servers.get(&server_name))
             {
                 let connection = Arc::clone(&previous_view.connection);
                 let reusable_pending_startup = connection.identity.as_ref()
@@ -582,7 +657,9 @@ impl McpConnectionSet {
                 }
             }
             let cancel_token = startup_cancellation_token.child_token();
-            let tool_catalog_cache_context = if server_name == CODEX_APPS_MCP_SERVER_NAME
+            let tool_catalog_cache_context = if close_policy_validation.is_err() {
+                None
+            } else if server_name == CODEX_APPS_MCP_SERVER_NAME
                 || server.requires_read_only_mcp_tools()
             {
                 None
@@ -603,35 +680,53 @@ impl McpConnectionSet {
                 None
             };
             let has_runtime_auth = runtime_auth_provider.is_some();
-            let async_managed_client = AsyncManagedClient::new(
-                server_name.clone(),
-                startup_submit_id.clone(),
-                server,
-                store_mode,
-                keyring_backend_kind,
-                oauth_refresh_mode,
-                cancel_token.clone(),
-                tx_event.clone(),
-                elicitation_requests.clone(),
-                codex_apps_tools_cache_context,
-                tool_catalog_cache_context,
-                runtime_context.clone(),
-                resolved_environment,
-                runtime_auth_provider,
-                client_elicitation_capability.clone(),
-                client_mcp_extensions.clone(),
-                auth_manager
-                    .as_ref()
-                    .filter(|_| {
-                        matches!(
-                            &configured_config.transport,
-                            McpServerTransportConfig::Stdio { .. }
-                        )
-                    })
-                    .map(|manager| manager.auth_change_state_receiver()),
-                protocol_mode,
-                catalog_item_limit,
-            );
+            let async_managed_client = match close_policy_validation {
+                Err(error) => {
+                    let startup_error = StartupOutcomeError::from(anyhow!(error));
+                    let client: ManagedClientFuture =
+                        futures::future::ready(Err(startup_error)).boxed().shared();
+                    AsyncManagedClient {
+                        client,
+                        is_codex_apps_mcp_server: server_name == CODEX_APPS_MCP_SERVER_NAME,
+                        cached_server_info: None,
+                        server_capabilities: Arc::new(std::sync::Mutex::new(None)),
+                        codex_apps_tools_cache_context: None,
+                        tool_catalog_cache_context: None,
+                        startup_complete: Arc::new(AtomicBool::new(true)),
+                        startup_reconnect: None,
+                        cancel_token: cancel_token.clone(),
+                    }
+                }
+                Ok(()) => AsyncManagedClient::new(
+                    server_name.clone(),
+                    startup_submit_id.clone(),
+                    server,
+                    store_mode,
+                    keyring_backend_kind,
+                    oauth_refresh_mode,
+                    cancel_token.clone(),
+                    tx_event.clone(),
+                    elicitation_requests.clone(),
+                    codex_apps_tools_cache_context,
+                    tool_catalog_cache_context,
+                    runtime_context.clone(),
+                    resolved_environment,
+                    runtime_auth_provider,
+                    client_elicitation_capability.clone(),
+                    client_mcp_extensions.clone(),
+                    auth_manager
+                        .as_ref()
+                        .filter(|_| {
+                            matches!(
+                                &configured_config.transport,
+                                McpServerTransportConfig::Stdio { .. }
+                            )
+                        })
+                        .map(|manager| manager.auth_change_state_receiver()),
+                    protocol_mode,
+                    catalog_item_limit,
+                ),
+            };
             let defer_startup = allow_deferred_startup
                 && !tool_plugin_context.is_selected_plugin_mcp_server(&server_name)
                 && async_managed_client

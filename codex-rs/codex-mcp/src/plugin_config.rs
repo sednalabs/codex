@@ -16,6 +16,28 @@ mod agent_plugin_config;
 
 pub use agent_plugin_config::parse_agent_plugin_mcp_config;
 
+pub(crate) use codex_rmcp_client::STDIO_CLOSE_POLICY_ENV;
+
+fn reject_plugin_stdio_close_policy(config: &McpServerConfig) -> Result<(), String> {
+    let McpServerTransportConfig::Stdio { env, env_vars, .. } = &config.transport else {
+        return Ok(());
+    };
+    let declared_in_env = env.as_ref().is_some_and(|variables| {
+        variables
+            .keys()
+            .any(|name| name.eq_ignore_ascii_case(STDIO_CLOSE_POLICY_ENV))
+    });
+    let declared_in_env_vars = env_vars
+        .iter()
+        .any(|variable| variable.name().eq_ignore_ascii_case(STDIO_CLOSE_POLICY_ENV));
+    if declared_in_env || declared_in_env_vars {
+        return Err(
+            "plugin MCP declarations cannot select the host-only stdio close policy".into(),
+        );
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug)]
 enum PluginMcpSource<'a> {
     Host {
@@ -156,6 +178,7 @@ fn normalize_plugin_mcp_server(
 
     let mut config = serde_json::from_value::<McpServerConfig>(JsonValue::Object(object))
         .map_err(|err| err.to_string())?;
+    reject_plugin_stdio_close_policy(&config)?;
     if matches!(config.auth, McpServerAuth::EmaAuth) {
         return Err(
             "plugin MCP declarations cannot select ema_auth; configure enterprise authentication in host policy"

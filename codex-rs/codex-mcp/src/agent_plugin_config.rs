@@ -144,7 +144,10 @@ fn normalize_agent_plugin_mcp_server(
             return Err("Agent Plugins legacy SSE transport is not supported by Codex".to_string());
         }
     };
-    serde_json::from_value(JsonValue::Object(object)).map_err(|err| err.to_string())
+    let config =
+        serde_json::from_value(JsonValue::Object(object)).map_err(|err| err.to_string())?;
+    super::reject_plugin_stdio_close_policy(&config)?;
+    Ok(config)
 }
 
 fn normalize_agent_plugin_stdio_server(

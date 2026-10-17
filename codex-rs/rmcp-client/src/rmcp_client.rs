@@ -60,6 +60,7 @@ use rmcp::service::RunningService;
 use rmcp::service::ServiceError;
 use rmcp::transport::AuthorizationManager;
 use rmcp::transport::StreamableHttpClientTransport;
+use rmcp::transport::Transport;
 use rmcp::transport::auth::AuthClient;
 use rmcp::transport::auth::AuthError;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
@@ -96,6 +97,10 @@ use crate::oauth_refresh_mode::McpOAuthRefreshMode;
 use crate::protocol_mode::McpProtocolMode;
 use crate::request_cancellation_guard::RequestCancellationGuard;
 use crate::startup_error::is_authentication_required_error;
+use crate::stdio_server_launcher::COOPERATIVE_STDIO_CLOSE_TIMEOUT;
+use crate::stdio_server_launcher::STDIO_CLOSE_POLICY_ENV;
+use crate::stdio_server_launcher::StdioServerCloseOutcome;
+use crate::stdio_server_launcher::StdioServerClosePolicy;
 use crate::stdio_server_launcher::StdioServerCommand;
 use crate::stdio_server_launcher::StdioServerLauncher;
 use crate::stdio_server_launcher::StdioServerProcessHandle;
@@ -111,6 +116,58 @@ use self::streamable_http_retry::STREAMABLE_HTTP_RETRY_DELAYS_MS;
 use self::streamable_http_retry::sleep_with_retry_deadline;
 
 const READ_ONLY_TOOLS_META_KEY: &str = "openai/readOnly";
+
+fn parse_stdio_close_policy(
+    env: &mut Option<HashMap<OsString, OsString>>,
+    env_vars: &[McpServerEnvVar],
+) -> io::Result<StdioServerClosePolicy> {
+    if env_vars
+        .iter()
+        .any(|variable| variable.name().eq_ignore_ascii_case(STDIO_CLOSE_POLICY_ENV))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "MCP stdio close policy must be a literal host configuration value",
+        ));
+    }
+
+    let matching_keys = env
+        .as_ref()
+        .into_iter()
+        .flat_map(HashMap::keys)
+        .filter(|key| {
+            key.to_string_lossy()
+                .eq_ignore_ascii_case(STDIO_CLOSE_POLICY_ENV)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let Some(key) = matching_keys.first() else {
+        return Ok(StdioServerClosePolicy::Legacy);
+    };
+    if matching_keys.len() != 1 || key != OsStr::new(STDIO_CLOSE_POLICY_ENV) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "MCP stdio close policy key is ambiguous or has unsupported casing",
+        ));
+    }
+
+    let value = env
+        .as_mut()
+        .and_then(|variables| variables.remove(OsStr::new(STDIO_CLOSE_POLICY_ENV)))
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "MCP stdio close policy value is missing",
+            )
+        })?;
+    if value != OsStr::new("cooperative-local-v1") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "MCP stdio close policy value is unsupported",
+        ));
+    }
+    Ok(StdioServerClosePolicy::CooperativeLocal)
+}
 
 enum PendingTransport {
     InProcess {
@@ -503,6 +560,7 @@ impl RmcpClient {
         launcher: Arc<dyn StdioServerLauncher>,
         protocol_mode: McpProtocolMode,
     ) -> io::Result<Self> {
+        let close_policy = parse_stdio_close_policy(&mut env, env_vars)?;
         let requested_stdio_version = match protocol_mode {
             McpProtocolMode::Legacy => None,
             McpProtocolMode::V20260728 => env
@@ -518,6 +576,7 @@ impl RmcpClient {
                 env_vars.to_vec(),
                 cwd,
                 protocol_mode,
+                close_policy,
             ),
             launcher,
         };
@@ -1157,15 +1216,58 @@ impl RmcpClient {
 
     /// Stop the MCP transport and any stdio server process owned by this client.
     pub async fn shutdown(&self) {
-        let previous_state = {
+        let mut previous_state = {
             let mut guard = self.state.lock().await;
             std::mem::replace(&mut *guard, ClientState::Closed)
         };
 
-        if let Some(process) = &self.stdio_process
-            && let Err(error) = process.terminate().await
-        {
-            warn!("failed to terminate MCP stdio server process: {error}");
+        if let Some(process) = &self.stdio_process {
+            if process.close_policy() == StdioServerClosePolicy::CooperativeLocal {
+                match &mut previous_state {
+                    ClientState::Ready { service, .. } => {
+                        service.cancellation_token().cancel();
+                    }
+                    ClientState::Connecting {
+                        transport: Some(PendingTransport::Stdio { transport }),
+                    } => {
+                        if let Err(error) = transport.close().await {
+                            warn!("cooperative MCP stdio transport close failed: {error}");
+                        }
+                    }
+                    ClientState::Connecting { .. }
+                    | ClientState::Expired { .. }
+                    | ClientState::Closed => {}
+                }
+
+                let wait_timeout = COOPERATIVE_STDIO_CLOSE_TIMEOUT + Duration::from_secs(3);
+                match process.wait_for_close(wait_timeout).await {
+                    Some(StdioServerCloseOutcome::Exited) => {}
+                    Some(StdioServerCloseOutcome::Forced) => {
+                        warn!("cooperative MCP stdio close required direct-child termination");
+                    }
+                    Some(StdioServerCloseOutcome::Failed) => {
+                        warn!("cooperative MCP stdio close did not complete cleanly");
+                        if let Err(error) = process.terminate().await {
+                            warn!(
+                                "failed to terminate owned MCP stdio child after close failure: {error}"
+                            );
+                        }
+                    }
+                    None => {
+                        warn!("timed out waiting for cooperative MCP stdio close to finish");
+                        if let Err(error) = process.terminate().await {
+                            warn!(
+                                "failed to terminate owned MCP stdio child after close failure: {error}"
+                            );
+                        }
+                    }
+                    Some(StdioServerCloseOutcome::Pending) => {
+                        unreachable!("wait_for_close does not return a pending outcome")
+                    }
+                }
+            } else if let Err(error) = process.terminate().await {
+                warn!("failed to terminate MCP stdio server process: {error}");
+            }
         }
 
         drop(previous_state);
