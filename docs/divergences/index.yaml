@@ -429,14 +429,14 @@
         "test_cli_instruction_overlays_in_synthetic_linux_package"
       ],
       "owner": "downstream",
-      "notes": "The contract is documented in docs/config.md. Limits are 64 operations, 32 KiB per literal, 256 KiB aggregate selected literals, 256 KiB per transformed component body, 64 selected text instances, and 4 MiB combined final selected text per request. Internal, Guardian, compact, memory-consolidation, custom, unknown, and other non-eligible sources remain unchanged; review requests can select only review_baseline. Managed, administrative, security, provider-enforced, and unclassified content is not selected. The edits are literal rather than regex-based, operate on request copies, and do not rewrite saved history. Rollback reconstructs configuration in a new process/session. Source, synthetic consumer fixtures, schema, and package tests are not claims of installed or live acceptance.",
+      "notes": "The contract is documented in docs/config.md. Limits are 64 operations, 32 KiB per literal, 256 KiB aggregate configured literals across applicable components, 256 KiB per transformed component body, 64 selected text instances, and 4 MiB combined final selected text per request. Internal, Guardian, compact, memory-consolidation, SessionSource::Custom, unknown, and other non-eligible sources remain unchanged; review requests can select only review_baseline. This source gate is distinct from custom operator-defined agent roles, which remain included on otherwise eligible root and ThreadSpawn requests. Managed, administrative, security, provider-enforced, and unclassified content is not selected. The edits are literal rather than regex-based, operate on request copies, and do not rewrite saved history. Rollback reconstructs configuration in a new process/session. Source, synthetic consumer fixtures, schema, and package tests are not claims of installed or live acceptance.",
       "upstreamability_tier": "neutral-seam",
       "boundary_type": "runtime-extension",
       "hotspot_files": [
         "codex-rs/core/src/client/instruction_overlays.rs",
         "codex-rs/config/src/instruction_overlays.rs"
       ],
-      "extraction_target": "generic bounded client instruction transformation seam"
+      "extraction_target": "existing client request-copy and configuration seams"
     }
   ],
   "superseded_hunks": [

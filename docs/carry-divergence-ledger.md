@@ -546,9 +546,11 @@ operations are bounded and atomic on eligible outgoing request copies; strict
 selection applies counts independently to each known instance. It does not
 infer a latest/current instance, change runtime controls or permissions, or
 rewrite stored history. Internal, Guardian, compact, memory-consolidation,
-custom, unknown, and other non-eligible sources are unchanged; review requests
-may select only the review baseline. Managed, administrative, security,
-provider-enforced, and unclassified content is excluded.
+`SessionSource::Custom`, unknown, and other non-eligible sources are unchanged;
+review requests may select only the review baseline. This source gate is
+distinct from operator-defined agent roles: those roles remain included on
+otherwise eligible root and ThreadSpawn requests. Managed, administrative,
+security, provider-enforced, and unclassified content is excluded.
 
 Rollback is configuration reconstruction: restore or remove the setting at
 its existing layer and start a new process/session. This source carry and its
