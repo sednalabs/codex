@@ -1,8 +1,7 @@
 # Carry Divergence Ledger
 
-This ledger records the current source contract for the computer-use provider
-adapter carry. It is source documentation, not provider activation or delivery
-acceptance.
+This ledger records current source contracts for downstream carries. It is
+source documentation, not provider activation or delivery acceptance.
 
 ## Namespaced native computer-use provider adapters
 
@@ -557,3 +556,28 @@ its existing layer and start a new process/session. This source carry and its
 synthetic tests do not claim installed or live acceptance. The instruction
 inspection command reports that it does not evaluate these overlays and is not
 proof of a transformed provider request.
+
+## V2 root-directed agent updates
+
+The V2 `send_message` surface preserves quiet FIFO delivery for ordinary
+messages and explicit `progress`. `action_required` and `result_ready` are
+additive root-directed intents: they require an `idempotency_key`, keep the
+original communication and scope in durable admission metadata, and permit
+superseding same-scope progress updates only. Identical retries return the
+original receipt; a changed request cannot reuse its key.
+
+Only a matching explicit action/result can wake an active V2 wait, and only
+when that wait names the sender. The body-free activity carries the update and
+sender/recipient identity plus pending generation; the receiver subscribes
+before checking already-pending mail. This does not make plain messages or
+progress wakeable, start a new turn, or change follow-up/interrupt authority.
+Goal-aware terminal handback remains a separate producer/consumer contract.
+
+Primary sources and guardrails: `codex-rs/core/src/tools/handlers/multi_agents_spec.rs`,
+`codex-rs/core/src/agent/control/delivery.rs`,
+`codex-rs/history/src/lib.rs`,
+`codex-rs/core/src/session/input_queue.rs`,
+`codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs`, and
+`codex-rs/core/src/tools/handlers/multi_agents_tests.rs`. See the
+[focused regression contract](downstream-regression-matrix.md#core-default-path)
+for the behavior selectors.
