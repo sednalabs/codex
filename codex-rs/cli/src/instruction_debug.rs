@@ -281,7 +281,7 @@ fn file_source(kind: &str, file: &AbsolutePathBuf) -> JsonValue {
 
 fn requirement_source_metadata(source: &RequirementSource) -> JsonValue {
     let mut remaining = MAX_REQUIREMENT_SOURCE_ENTRIES;
-    requirement_source_metadata_bounded(source, 0, &mut remaining)
+    requirement_source_metadata_bounded(source, /*depth*/ 0, &mut remaining)
 }
 
 fn requirement_source_metadata_bounded(
@@ -532,12 +532,12 @@ mod tests {
             }
         }
         assert!(
-            read_optional_input(false, PanicReader)
+            read_optional_input(/*enabled*/ false, PanicReader)
                 .expect("disabled input")
                 .is_none()
         );
         assert_eq!(
-            read_optional_input(true, Cursor::new(b"caller text".to_vec()))
+            read_optional_input(/*enabled*/ true, Cursor::new(b"caller text".to_vec()))
                 .expect("input")
                 .as_deref(),
             Some("caller text")
@@ -546,8 +546,14 @@ mod tests {
 
     #[test]
     fn stdin_rejects_oversize_and_non_utf8_before_reporting() {
-        assert!(read_optional_input(true, Cursor::new(vec![b'a'; MAX_INPUT_BYTES])).is_err());
-        assert!(read_optional_input(true, Cursor::new(vec![0xff])).is_err());
+        assert!(
+            read_optional_input(
+                /*enabled*/ true,
+                Cursor::new(vec![b'a'; MAX_INPUT_BYTES])
+            )
+            .is_err()
+        );
+        assert!(read_optional_input(/*enabled*/ true, Cursor::new(vec![0xff])).is_err());
     }
 
     #[test]
@@ -555,7 +561,7 @@ mod tests {
         let worst_case_text = "\0".repeat(MAX_CONTENT_BYTES);
         let report = build_report(
             &codex_config::ConfigLayerStack::default(),
-            true,
+            /*show_content*/ true,
             Some(&worst_case_text),
         )
         .expect("complete report assembly");
@@ -669,7 +675,10 @@ features.multi_agent_v2.multi_agent_mode_hint_text = "project mode hint""#,
             ConfigLayerSource::Project { .. }
         ));
 
-        let default_report = build_report(&layers, false, None).expect("default report");
+        let default_report = build_report(
+            &layers, /*show_content*/ false, /*stdin_text*/ None,
+        )
+        .expect("default report");
         let default_json = serde_json::to_string(&default_report).expect("default JSON");
         assert!(!default_json.contains("project instruction"));
         assert!(!default_json.contains("profile developer text"));
@@ -692,8 +701,12 @@ features.multi_agent_v2.multi_agent_mode_hint_text = "project mode hint""#,
                 .contains("requirements.toml")
         );
         assert!(!default_json.contains("MANAGED_CONTENT_MUST_NEVER_LEAK"));
-        let stdin_hidden_report = build_report(&layers, false, Some("caller-supplied text"))
-            .expect("hidden stdin report");
+        let stdin_hidden_report = build_report(
+            &layers,
+            /*show_content*/ false,
+            Some("caller-supplied text"),
+        )
+        .expect("hidden stdin report");
         assert!(
             stdin_hidden_report["caller_supplied_text"]["present"]
                 .as_bool()
@@ -705,8 +718,12 @@ features.multi_agent_v2.multi_agent_mode_hint_text = "project mode hint""#,
                 .is_none()
         );
 
-        let content_report =
-            build_report(&layers, true, Some("caller-supplied text")).expect("content report");
+        let content_report = build_report(
+            &layers,
+            /*show_content*/ true,
+            Some("caller-supplied text"),
+        )
+        .expect("content report");
         let content_json = serde_json::to_string(&content_report).expect("content JSON");
         assert!(content_json.contains("project instruction"));
         assert!(content_json.contains("profile developer text"));
