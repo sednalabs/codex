@@ -106,17 +106,20 @@ fn fork_turn_positions_in_rollout(items: &[RolloutItem]) -> Vec<ForkTurnPosition
             }
             RolloutItem::ResponseItem(response_item) => {
                 let position = ForkTurnPosition::TopLevel(index);
-                let has_delivery_metadata =
+                let has_legacy_delivery_metadata =
                     matches!(&response_item.item, ResponseItem::AgentMessage { .. })
                         && index.checked_sub(1).is_some_and(|previous_index| {
                             matches!(
                                 items.get(previous_index),
-                                Some(RolloutItem::InterAgentCommunicationMetadata { .. })
+                                Some(RolloutItem::InterAgentCommunicationMetadata {
+                                    admission: None,
+                                    ..
+                                })
                             )
                         });
                 if (is_user_turn_boundary(response_item)
                     || is_trigger_turn_boundary(&response_item.item))
-                    && !has_delivery_metadata
+                    && !has_legacy_delivery_metadata
                 {
                     rollback_turn_positions.push(position);
                 }
@@ -134,11 +137,16 @@ fn fork_turn_positions_in_rollout(items: &[RolloutItem]) -> Vec<ForkTurnPosition
                     fork_turn_positions.push(position);
                 }
             }
-            RolloutItem::InterAgentCommunicationMetadata { trigger_turn } => {
-                let position = ForkTurnPosition::TopLevel(index);
-                rollback_turn_positions.push(position);
-                if *trigger_turn {
-                    fork_turn_positions.push(position);
+            RolloutItem::InterAgentCommunicationMetadata {
+                trigger_turn,
+                admission,
+            } => {
+                if admission.is_none() {
+                    let position = ForkTurnPosition::TopLevel(index);
+                    rollback_turn_positions.push(position);
+                    if *trigger_turn {
+                        fork_turn_positions.push(position);
+                    }
                 }
             }
             RolloutItem::EventMsg(EventMsg::ThreadRolledBack(rollback)) => {
@@ -227,25 +235,33 @@ fn normalize_rollbacks_in_fork_suffix(items: &mut Vec<RolloutItem>) {
                     }
                 }
                 RolloutItem::ResponseItem(response_item) => {
-                    let has_delivery_metadata =
+                    let has_legacy_delivery_metadata =
                         matches!(&response_item.item, ResponseItem::AgentMessage { .. })
                             && index.checked_sub(1).is_some_and(|previous_index| {
                                 matches!(
                                     items.get(previous_index),
-                                    Some(RolloutItem::InterAgentCommunicationMetadata { .. })
+                                    Some(RolloutItem::InterAgentCommunicationMetadata {
+                                        admission: None,
+                                        ..
+                                    })
                                 )
                             });
                     if (is_user_turn_boundary(response_item)
                         || is_trigger_turn_boundary(&response_item.item))
-                        && !has_delivery_metadata
+                        && !has_legacy_delivery_metadata
                     {
                         boundaries.push(ForkTurnPosition::TopLevel(index));
                     }
                 }
-                RolloutItem::InterAgentCommunication(_)
-                | RolloutItem::InterAgentCommunicationMetadata { .. } => {
+                RolloutItem::InterAgentCommunication(_) => {
                     boundaries.push(ForkTurnPosition::TopLevel(index));
                 }
+                RolloutItem::InterAgentCommunicationMetadata {
+                    admission: None, ..
+                } => boundaries.push(ForkTurnPosition::TopLevel(index)),
+                RolloutItem::InterAgentCommunicationMetadata {
+                    admission: Some(_), ..
+                } => {}
                 _ => {}
             }
         }

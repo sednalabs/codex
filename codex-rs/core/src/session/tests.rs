@@ -127,6 +127,9 @@ use codex_protocol::turn_input::TurnInputSubmission;
 use codex_tools::ToolSpec;
 use codex_utils_path_uri::PathUri;
 use std::collections::BTreeMap;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use tracing::Span;
 
 use crate::connectors::AppInfo;
@@ -161,6 +164,8 @@ use codex_execpolicy::Policy;
 use codex_history::CodexHarnessMetadata;
 use codex_history::CompactedItem;
 use codex_history::InitialHistory;
+use codex_history::InterAgentCommunicationAdmission;
+use codex_history::InterAgentCommunicationIntent;
 use codex_history::ResponseItemEnvelope;
 use codex_history::ResumedHistory;
 use codex_history::RolloutItem;
@@ -259,6 +264,151 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration as StdDuration;
+
+struct FailOnceMetadataThreadStore {
+    inner: codex_thread_store::LocalThreadStore,
+    fail_next_metadata_update: AtomicBool,
+    metadata_failures: AtomicUsize,
+}
+
+impl FailOnceMetadataThreadStore {
+    fn new(inner: codex_thread_store::LocalThreadStore) -> Self {
+        Self {
+            inner,
+            fail_next_metadata_update: AtomicBool::new(false),
+            metadata_failures: AtomicUsize::new(0),
+        }
+    }
+
+    fn fail_next_metadata_update(&self) {
+        self.fail_next_metadata_update.store(true, Ordering::SeqCst);
+    }
+}
+
+impl codex_thread_store::ThreadStore for FailOnceMetadataThreadStore {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn default_history_mode(&self) -> codex_protocol::protocol::ThreadHistoryMode {
+        codex_thread_store::ThreadStore::default_history_mode(&self.inner)
+    }
+
+    fn create_thread(
+        &self,
+        params: codex_thread_store::CreateThreadParams,
+    ) -> codex_thread_store::ThreadStoreFuture<'_, ()> {
+        codex_thread_store::ThreadStore::create_thread(&self.inner, params)
+    }
+
+    fn resume_thread(
+        &self,
+        params: codex_thread_store::ResumeThreadParams,
+    ) -> codex_thread_store::ThreadStoreFuture<'_, Arc<Vec<RolloutItem>>> {
+        codex_thread_store::ThreadStore::resume_thread(&self.inner, params)
+    }
+
+    fn append_items(
+        &self,
+        params: codex_thread_store::AppendThreadItemsParams,
+    ) -> codex_thread_store::ThreadStoreFuture<'_, ()> {
+        codex_thread_store::ThreadStore::append_items(&self.inner, params)
+    }
+
+    fn record_thread_metadata(
+        &self,
+        params: codex_thread_store::UpdateThreadMetadataParams,
+    ) -> codex_thread_store::ThreadStoreFuture<'_, ()> {
+        if self.fail_next_metadata_update.swap(false, Ordering::SeqCst) {
+            self.metadata_failures.fetch_add(1, Ordering::SeqCst);
+            return Box::pin(async {
+                Err(codex_thread_store::ThreadStoreError::Internal {
+                    message: "injected one-shot metadata update failure".to_string(),
+                })
+            });
+        }
+        codex_thread_store::ThreadStore::record_thread_metadata(&self.inner, params)
+    }
+
+    fn persist_thread(
+        &self,
+        thread_id: ThreadId,
+        context: codex_thread_store::PersistContext,
+    ) -> codex_thread_store::ThreadStoreFuture<'_, ()> {
+        codex_thread_store::ThreadStore::persist_thread(&self.inner, thread_id, context)
+    }
+
+    fn flush_thread(&self, thread_id: ThreadId) -> codex_thread_store::ThreadStoreFuture<'_, ()> {
+        codex_thread_store::ThreadStore::flush_thread(&self.inner, thread_id)
+    }
+
+    fn shutdown_thread(
+        &self,
+        thread_id: ThreadId,
+    ) -> codex_thread_store::ThreadStoreFuture<'_, ()> {
+        codex_thread_store::ThreadStore::shutdown_thread(&self.inner, thread_id)
+    }
+
+    fn discard_thread(&self, thread_id: ThreadId) -> codex_thread_store::ThreadStoreFuture<'_, ()> {
+        codex_thread_store::ThreadStore::discard_thread(&self.inner, thread_id)
+    }
+
+    fn load_history(
+        &self,
+        params: codex_thread_store::LoadThreadHistoryParams,
+    ) -> codex_thread_store::ThreadStoreFuture<'_, codex_thread_store::StoredThreadHistory> {
+        codex_thread_store::ThreadStore::load_history(&self.inner, params)
+    }
+
+    fn read_thread(
+        &self,
+        params: codex_thread_store::ReadThreadParams,
+    ) -> codex_thread_store::ThreadStoreFuture<'_, codex_thread_store::StoredThread> {
+        codex_thread_store::ThreadStore::read_thread(&self.inner, params)
+    }
+
+    fn read_thread_by_rollout_path(
+        &self,
+        params: codex_thread_store::ReadThreadByRolloutPathParams,
+    ) -> codex_thread_store::ThreadStoreFuture<'_, codex_thread_store::StoredThread> {
+        codex_thread_store::ThreadStore::read_thread_by_rollout_path(&self.inner, params)
+    }
+
+    fn list_threads(
+        &self,
+        params: codex_thread_store::ListThreadsParams,
+    ) -> codex_thread_store::ThreadStoreFuture<'_, codex_thread_store::ThreadPage> {
+        codex_thread_store::ThreadStore::list_threads(&self.inner, params)
+    }
+
+    fn update_thread_metadata(
+        &self,
+        params: codex_thread_store::UpdateThreadMetadataParams,
+    ) -> codex_thread_store::ThreadStoreFuture<'_, Option<codex_thread_store::StoredThread>> {
+        codex_thread_store::ThreadStore::update_thread_metadata(&self.inner, params)
+    }
+
+    fn archive_thread(
+        &self,
+        params: codex_thread_store::ArchiveThreadParams,
+    ) -> codex_thread_store::ThreadStoreFuture<'_, ()> {
+        codex_thread_store::ThreadStore::archive_thread(&self.inner, params)
+    }
+
+    fn unarchive_thread(
+        &self,
+        params: codex_thread_store::ArchiveThreadParams,
+    ) -> codex_thread_store::ThreadStoreFuture<'_, codex_thread_store::StoredThread> {
+        codex_thread_store::ThreadStore::unarchive_thread(&self.inner, params)
+    }
+
+    fn delete_thread(
+        &self,
+        params: codex_thread_store::DeleteThreadParams,
+    ) -> codex_thread_store::ThreadStoreFuture<'_, ()> {
+        codex_thread_store::ThreadStore::delete_thread(&self.inner, params)
+    }
+}
 
 pub(crate) fn mcp_config_for_test(config: &crate::config::Config) -> Arc<codex_mcp::McpConfig> {
     Arc::new(config.to_mcp_config_with_loaded_plugins(
@@ -2683,7 +2833,7 @@ async fn inter_agent_communication_waits_for_confirmed_delivery_persistence() {
                 turn_context.model_info(),
                 communication,
             )
-            .await;
+            .await
     });
     assert!(
         tokio::time::timeout(
@@ -2704,6 +2854,7 @@ async fn inter_agent_communication_waits_for_confirmed_delivery_persistence() {
     recording.await.expect("confirmed delivery persisted");
     communication_task
         .await
+        .expect("communication task completed")
         .expect("communication persisted after delivery");
     later.await.expect("later delivery persisted");
     session.flush_rollout().await.expect("rollout flushed");
@@ -2776,6 +2927,571 @@ async fn inter_agent_communication_waits_for_confirmed_delivery_persistence() {
     assert_eq!(messages, vec![message]);
 }
 
+async fn make_explicit_test_session(
+    codex_home: &Path,
+    thread_store: Arc<dyn codex_thread_store::ThreadStore>,
+) -> (
+    Arc<Session>,
+    async_channel::Receiver<codex_protocol::protocol::Event>,
+    PathBuf,
+) {
+    let (session, rx_event, _) = make_session_with_usage_state_and_agent_control_and_rx(
+        InitialHistory::New,
+        SessionSource::Exec,
+        LocalAgentControl::default(),
+        codex_home,
+        /*enable_usage_state*/ true,
+        /*parent_thread_id*/ None,
+        Some(thread_store),
+        /*enable_multi_agent_v2*/ true,
+    )
+    .await
+    .expect("create explicit inter-agent test session");
+    assert_eq!(
+        session.multi_agent_version(),
+        Some(MultiAgentVersion::V2),
+        "explicit inter-agent tests must use the version selected by config"
+    );
+    let rollout_path = session
+        .current_rollout_path()
+        .await
+        .expect("load explicit inter-agent rollout path")
+        .expect("persistent explicit inter-agent session has a rollout path");
+    session
+        .flush_rollout()
+        .await
+        .expect("new explicit inter-agent session should flush");
+    (session, rx_event, rollout_path)
+}
+
+fn explicit_test_communication(update_id: &str, content: &str) -> InterAgentCommunication {
+    let mut communication = InterAgentCommunication::new(
+        AgentPath::try_from("/root/worker").expect("worker path"),
+        AgentPath::root(),
+        Vec::new(),
+        content.to_string(),
+        /*trigger_turn*/ false,
+    );
+    communication.id = Some(ResponseItemId::new(update_id));
+    communication
+}
+
+fn explicit_test_admission(
+    root_thread_id: ThreadId,
+    communication: &InterAgentCommunication,
+) -> InterAgentCommunicationAdmission {
+    let update_id = communication
+        .id
+        .clone()
+        .expect("explicit test communication has an update ID");
+    InterAgentCommunicationAdmission {
+        update_id: update_id.clone(),
+        idempotency_key: format!("test-key-{update_id}"),
+        intent: InterAgentCommunicationIntent::Progress,
+        original_communication: communication.clone(),
+        root_thread_id,
+        sender_thread_id: ThreadId::new(),
+        recipient_thread_id: root_thread_id,
+        sender_path: communication.author.clone(),
+        recipient_path: communication.recipient.clone(),
+        supersedes: Vec::new(),
+        represented_response_id: None,
+    }
+}
+
+async fn persist_explicit_test_admission(
+    session: &Session,
+    admission: &InterAgentCommunicationAdmission,
+) {
+    session
+        .live_thread()
+        .expect("explicit test session has a live thread")
+        .append_items(&[RolloutItem::InterAgentCommunicationMetadata {
+            trigger_turn: false,
+            admission: Some(admission.clone()),
+        }])
+        .await
+        .expect("persist explicit test admission");
+    session.flush_rollout().await.expect("flush test admission");
+}
+
+fn drain_raw_response_items(
+    rx_event: &async_channel::Receiver<codex_protocol::protocol::Event>,
+) -> Vec<ResponseItem> {
+    let mut items = Vec::new();
+    while let Ok(event) = rx_event.try_recv() {
+        if let codex_protocol::protocol::EventMsg::RawResponseItem(event) = event.msg {
+            items.push(event.item);
+        }
+    }
+    items
+}
+
+#[tokio::test]
+async fn explicit_communication_reconciles_post_append_metadata_failure_once() {
+    let codex_home = tempfile::tempdir().expect("create failure fixture home");
+    let config = build_test_config(codex_home.path()).await;
+    let store = Arc::new(FailOnceMetadataThreadStore::new(
+        codex_thread_store::LocalThreadStore::new(
+            codex_thread_store::LocalThreadStoreConfig::from_config(&config),
+            /*state_db*/ None,
+        ),
+    ));
+    let store_handle: Arc<dyn codex_thread_store::ThreadStore> = store.clone();
+    let (session, rx_event, rollout_path) =
+        make_explicit_test_session(codex_home.path(), store_handle).await;
+    let communication = explicit_test_communication(
+        "metadata-failure-update",
+        "canonical response survives metadata failure",
+    );
+    let admission = explicit_test_admission(session.thread_id, &communication);
+    persist_explicit_test_admission(&session, &admission).await;
+    let turn_context = session.new_default_turn().await;
+    let _ = drain_raw_response_items(&rx_event);
+
+    // ThreadMetadataSync coalesces updated-at touches for five seconds. Age that
+    // checkpoint so the next append reaches the injected post-canonical metadata error.
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    store.fail_next_metadata_update();
+    session
+        .record_inter_agent_communication(
+            &turn_context,
+            turn_context.model_info(),
+            communication.clone(),
+        )
+        .await
+        .expect("canonical response readback should complete delivery");
+    assert_eq!(store.metadata_failures.load(Ordering::SeqCst), 1);
+
+    let update_id = communication.id.as_ref().expect("update ID");
+    let active_items = raw_history_items(&session.clone_history().await);
+    assert_eq!(
+        active_items
+            .iter()
+            .filter(|item| item.id() == Some(update_id))
+            .count(),
+        1,
+        "the durable response is restored to active history exactly once"
+    );
+    let first_raw_events = drain_raw_response_items(&rx_event);
+    assert_eq!(first_raw_events.len(), 1);
+    assert_eq!(first_raw_events[0].id(), Some(update_id));
+
+    let (items, stored_thread_id, parse_errors) =
+        RolloutRecorder::load_rollout_items(&rollout_path)
+            .await
+            .expect("read canonical rollout");
+    assert_eq!(stored_thread_id, Some(session.thread_id));
+    assert_eq!(parse_errors, 0);
+    assert_eq!(
+        items
+            .iter()
+            .filter(|item| matches!(
+                item,
+                RolloutItem::ResponseItem(response)
+                    if response.item.id() == Some(update_id)
+                        && response
+                            .metadata
+                            .as_ref()
+                            .and_then(|metadata| metadata.inter_agent_update_id.as_ref())
+                            == Some(update_id)
+            ))
+            .count(),
+        1,
+        "the failed metadata update must not cause a duplicate canonical append"
+    );
+
+    let retry_turn = session.new_default_turn().await;
+    session
+        .record_inter_agent_communication(
+            &retry_turn,
+            retry_turn.model_info(),
+            communication.clone(),
+        )
+        .await
+        .expect("a later retry should reconcile the committed response");
+    assert_eq!(
+        raw_history_items(&session.clone_history().await)
+            .iter()
+            .filter(|item| item.id() == Some(update_id))
+            .count(),
+        1,
+        "retry keeps exactly one active copy of the explicit response"
+    );
+    assert!(
+        drain_raw_response_items(&rx_event).is_empty(),
+        "the retry must not emit a duplicate raw response event"
+    );
+}
+
+#[tokio::test]
+async fn explicit_retry_restores_persisted_envelope_not_regenerated_metadata() {
+    let codex_home = tempfile::tempdir().expect("create retry fixture home");
+    let config = build_test_config(codex_home.path()).await;
+    let store: Arc<dyn codex_thread_store::ThreadStore> =
+        Arc::new(codex_thread_store::LocalThreadStore::new(
+            codex_thread_store::LocalThreadStoreConfig::from_config(&config),
+            /*state_db*/ None,
+        ));
+    let (session, rx_event, rollout_path) =
+        make_explicit_test_session(codex_home.path(), store).await;
+    let mut communication = explicit_test_communication(
+        "retry-persisted-envelope-update",
+        "recover the canonical envelope",
+    );
+    communication.internal_chat_message_metadata_passthrough =
+        Some(InternalChatMessageMetadataPassthrough {
+            turn_id: Some("persisted-turn-id".to_string()),
+            ..Default::default()
+        });
+    let admission = explicit_test_admission(session.thread_id, &communication);
+    persist_explicit_test_admission(&session, &admission).await;
+    let update_id = communication.id.as_ref().expect("update ID").clone();
+    let persisted_envelope = ResponseItemEnvelope {
+        item: communication.to_model_input_item(),
+        metadata: Some(CodexHarnessMetadata {
+            user_input_order: Some(7),
+            inter_agent_update_id: Some(update_id.clone()),
+            ..Default::default()
+        }),
+    };
+    session
+        .live_thread()
+        .expect("explicit test session has a live thread")
+        .append_items(&[RolloutItem::ResponseItem(persisted_envelope.clone())])
+        .await
+        .expect("persist canonical explicit response");
+    session
+        .flush_rollout()
+        .await
+        .expect("flush canonical response");
+    let turn_context = session.new_default_turn().await;
+    assert_ne!(turn_context.sub_id, "persisted-turn-id");
+    let _ = drain_raw_response_items(&rx_event);
+
+    session
+        .record_inter_agent_communication(
+            &turn_context,
+            turn_context.model_info(),
+            communication.clone(),
+        )
+        .await
+        .expect("retry should reconstruct from the persisted response");
+
+    let active_history = session.clone_history().await;
+    let active_envelopes = active_history
+        .annotated_items()
+        .iter()
+        .filter(|envelope| envelope.item.id() == Some(&update_id))
+        .collect::<Vec<_>>();
+    assert_eq!(active_envelopes.len(), 1);
+    assert_eq!(active_envelopes[0], &persisted_envelope);
+    let raw_events = drain_raw_response_items(&rx_event);
+    assert_eq!(raw_events.len(), 1);
+    assert_eq!(raw_events[0].id(), Some(&update_id));
+
+    let duplicate_turn = session.new_default_turn().await;
+    session
+        .record_inter_agent_communication(
+            &duplicate_turn,
+            duplicate_turn.model_info(),
+            communication,
+        )
+        .await
+        .expect("repeated retry should be idempotent");
+    assert_eq!(
+        session
+            .clone_history()
+            .await
+            .annotated_items()
+            .iter()
+            .filter(|envelope| envelope.item.id() == Some(&update_id))
+            .count(),
+        1
+    );
+    assert!(drain_raw_response_items(&rx_event).is_empty());
+    let (items, _, _) = RolloutRecorder::load_rollout_items(&rollout_path)
+        .await
+        .expect("read canonical rollout after retry");
+    assert_eq!(
+        items
+            .iter()
+            .filter(|item| matches!(
+                item,
+                RolloutItem::ResponseItem(response)
+                    if response.item.id() == Some(&update_id)
+            ))
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn explicit_retry_does_not_resurrect_rolled_back_compaction_history() {
+    let codex_home = tempfile::tempdir().expect("create rollback fixture home");
+    let config = build_test_config(codex_home.path()).await;
+    let store: Arc<dyn codex_thread_store::ThreadStore> =
+        Arc::new(codex_thread_store::LocalThreadStore::new(
+            codex_thread_store::LocalThreadStoreConfig::from_config(&config),
+            /*state_db*/ None,
+        ));
+    let (session, rx_event, _rollout_path) =
+        make_explicit_test_session(codex_home.path(), store).await;
+    let communication = explicit_test_communication(
+        "rolled-back-explicit-update",
+        "do not reinsert this rolled-back response",
+    );
+    let admission = explicit_test_admission(session.thread_id, &communication);
+    persist_explicit_test_admission(&session, &admission).await;
+    let update_id = communication.id.as_ref().expect("update ID").clone();
+    let persisted_envelope = ResponseItemEnvelope {
+        item: communication.to_model_input_item(),
+        metadata: Some(CodexHarnessMetadata {
+            user_input_order: Some(4),
+            inter_agent_update_id: Some(update_id.clone()),
+            ..Default::default()
+        }),
+    };
+    let user_boundary = ResponseItemEnvelope::new(ResponseItem::Message {
+        id: Some(ResponseItemId::new("rolled-back-user-boundary")),
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "a turn that is later rolled back".to_string(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    });
+    let mut compacted: CompactedItem =
+        serde_json::from_value(json!({"message": "compacted checkpoint"}))
+            .expect("create compaction fixture");
+    compacted.window_number = Some(1);
+    compacted.replacement_history = Some(vec![user_boundary, persisted_envelope.clone()]);
+    session
+        .live_thread()
+        .expect("explicit test session has a live thread")
+        .append_items(&[
+            RolloutItem::ResponseItem(persisted_envelope),
+            RolloutItem::Compacted(compacted),
+            RolloutItem::EventMsg(codex_protocol::protocol::EventMsg::ThreadRolledBack(
+                codex_protocol::protocol::ThreadRolledBackEvent { num_turns: 1 },
+            )),
+        ])
+        .await
+        .expect("persist compacted and rolled-back representation");
+    session
+        .flush_rollout()
+        .await
+        .expect("flush rollback fixture");
+    let mut turn_context = session.new_default_turn().await;
+    Arc::get_mut(&mut turn_context)
+        .expect("turn context should be uniquely owned")
+        .history_mode = codex_protocol::protocol::ThreadHistoryMode::Paginated;
+    let _ = drain_raw_response_items(&rx_event);
+
+    session
+        .record_inter_agent_communication(&turn_context, turn_context.model_info(), communication)
+        .await
+        .expect("inactive persisted representation remains idempotent");
+
+    assert!(
+        session
+            .clone_history()
+            .await
+            .raw_items()
+            .all(|item| item.id() != Some(&update_id)),
+        "rollback keeps the represented response outside active history"
+    );
+    assert!(
+        drain_raw_response_items(&rx_event).is_empty(),
+        "a rolled-back representation must not be emitted as a new raw response"
+    );
+}
+
+#[tokio::test]
+async fn explicit_retry_rejects_hidden_representation_with_changed_payload() {
+    let codex_home = tempfile::tempdir().expect("create hidden mismatch fixture home");
+    let config = build_test_config(codex_home.path()).await;
+    let store: Arc<dyn codex_thread_store::ThreadStore> =
+        Arc::new(codex_thread_store::LocalThreadStore::new(
+            codex_thread_store::LocalThreadStoreConfig::from_config(&config),
+            /*state_db*/ None,
+        ));
+    let (session, rx_event, _) = make_explicit_test_session(codex_home.path(), store).await;
+    let communication =
+        explicit_test_communication("rolled-back-tampered-update", "original admitted content");
+    let admission = explicit_test_admission(session.thread_id, &communication);
+    persist_explicit_test_admission(&session, &admission).await;
+    let update_id = communication.id.as_ref().expect("update ID").clone();
+    let persisted_envelope = ResponseItemEnvelope {
+        item: communication.to_model_input_item(),
+        metadata: Some(CodexHarnessMetadata {
+            user_input_order: Some(5),
+            inter_agent_update_id: Some(update_id.clone()),
+            ..Default::default()
+        }),
+    };
+    let mut altered_snapshot = persisted_envelope.clone();
+    let ResponseItem::AgentMessage { content, .. } = &mut altered_snapshot.item else {
+        panic!("explicit communication should produce an agent message");
+    };
+    let Some(AgentMessageInputContent::InputText { text }) = content.first_mut() else {
+        panic!("explicit fixture should have text content");
+    };
+    *text = "altered content hidden by rollback".to_string();
+    let user_boundary = ResponseItemEnvelope::new(ResponseItem::Message {
+        id: Some(ResponseItemId::new("tampered-rollback-user-boundary")),
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "a turn that is later rolled back".to_string(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    });
+    let mut compacted: CompactedItem =
+        serde_json::from_value(json!({"message": "compacted checkpoint"}))
+            .expect("create compaction fixture");
+    compacted.window_number = Some(1);
+    compacted.replacement_history = Some(vec![user_boundary, altered_snapshot]);
+    session
+        .live_thread()
+        .expect("explicit test session has a live thread")
+        .append_items(&[
+            RolloutItem::ResponseItem(persisted_envelope),
+            RolloutItem::Compacted(compacted),
+            RolloutItem::EventMsg(codex_protocol::protocol::EventMsg::ThreadRolledBack(
+                codex_protocol::protocol::ThreadRolledBackEvent { num_turns: 1 },
+            )),
+        ])
+        .await
+        .expect("persist hidden mismatched representation");
+    session
+        .flush_rollout()
+        .await
+        .expect("flush mismatched rollback fixture");
+    let mut turn_context = session.new_default_turn().await;
+    Arc::get_mut(&mut turn_context)
+        .expect("turn context should be uniquely owned")
+        .history_mode = codex_protocol::protocol::ThreadHistoryMode::Paginated;
+    let _ = drain_raw_response_items(&rx_event);
+
+    let result = session
+        .record_inter_agent_communication(&turn_context, turn_context.model_info(), communication)
+        .await;
+
+    assert!(result.is_err(), "hidden payload mismatch must fail closed");
+    assert!(
+        session
+            .clone_history()
+            .await
+            .raw_items()
+            .all(|item| item.id() != Some(&update_id)),
+        "mismatched persisted content must not enter active history"
+    );
+    assert!(
+        drain_raw_response_items(&rx_event).is_empty(),
+        "mismatched persisted content must not be emitted as a raw response"
+    );
+}
+
+#[tokio::test]
+async fn explicit_retry_rejects_duplicate_active_representations() {
+    let codex_home = tempfile::tempdir().expect("create duplicate fixture home");
+    let config = build_test_config(codex_home.path()).await;
+    let store: Arc<dyn codex_thread_store::ThreadStore> =
+        Arc::new(codex_thread_store::LocalThreadStore::new(
+            codex_thread_store::LocalThreadStoreConfig::from_config(&config),
+            /*state_db*/ None,
+        ));
+    let (session, rx_event, _) = make_explicit_test_session(codex_home.path(), store).await;
+    let communication =
+        explicit_test_communication("duplicate-active-update", "one logical response only");
+    let admission = explicit_test_admission(session.thread_id, &communication);
+    persist_explicit_test_admission(&session, &admission).await;
+    let update_id = communication.id.as_ref().expect("update ID").clone();
+    let response = ResponseItemEnvelope {
+        item: communication.to_model_input_item(),
+        metadata: Some(CodexHarnessMetadata {
+            inter_agent_update_id: Some(update_id.clone()),
+            ..Default::default()
+        }),
+    };
+    session
+        .live_thread()
+        .expect("explicit test session has a live thread")
+        .append_items(&[
+            RolloutItem::ResponseItem(response.clone()),
+            RolloutItem::ResponseItem(response),
+        ])
+        .await
+        .expect("persist duplicate active representations");
+    session
+        .flush_rollout()
+        .await
+        .expect("flush duplicate active representations");
+    let turn_context = session.new_default_turn().await;
+    let _ = drain_raw_response_items(&rx_event);
+
+    let result = session
+        .record_inter_agent_communication(&turn_context, turn_context.model_info(), communication)
+        .await;
+
+    assert!(result.is_err(), "two active copies must fail closed");
+    assert_eq!(
+        session
+            .clone_history()
+            .await
+            .raw_items()
+            .filter(|item| item.id() == Some(&update_id))
+            .count(),
+        0,
+        "duplicate active persisted items must not be newly recorded"
+    );
+    assert!(
+        drain_raw_response_items(&rx_event).is_empty(),
+        "duplicate active persisted items must not be emitted"
+    );
+}
+
+#[tokio::test]
+async fn explicit_retry_rejects_receipt_with_unrelated_response_id() {
+    let codex_home = tempfile::tempdir().expect("create receipt fixture home");
+    let config = build_test_config(codex_home.path()).await;
+    let store: Arc<dyn codex_thread_store::ThreadStore> =
+        Arc::new(codex_thread_store::LocalThreadStore::new(
+            codex_thread_store::LocalThreadStoreConfig::from_config(&config),
+            /*state_db*/ None,
+        ));
+    let (session, rx_event, _) = make_explicit_test_session(codex_home.path(), store).await;
+    let communication = explicit_test_communication(
+        "receipt-response-id-update",
+        "the receipt must identify this response",
+    );
+    let mut admission = explicit_test_admission(session.thread_id, &communication);
+    admission.represented_response_id = Some(ResponseItemId::new("unrelated-response"));
+    persist_explicit_test_admission(&session, &admission).await;
+    let update_id = communication.id.as_ref().expect("update ID").clone();
+    let turn_context = session.new_default_turn().await;
+    let _ = drain_raw_response_items(&rx_event);
+
+    let result = session
+        .record_inter_agent_communication(&turn_context, turn_context.model_info(), communication)
+        .await;
+
+    assert!(result.is_err(), "unrelated receipt ID must fail closed");
+    assert!(
+        session
+            .clone_history()
+            .await
+            .raw_items()
+            .all(|item| item.id() != Some(&update_id)),
+        "unverified receipt must not enter active history"
+    );
+    assert!(
+        drain_raw_response_items(&rx_event).is_empty(),
+        "unverified receipt must not be emitted"
+    );
+}
+
 #[tokio::test]
 async fn record_inter_agent_communication_sets_turn_id_in_rollout_and_resume() {
     let (mut session, turn_context) = make_session_and_context().await;
@@ -2792,7 +3508,8 @@ async fn record_inter_agent_communication_sets_turn_id_in_rollout_and_resume() {
 
     session
         .record_inter_agent_communication(&turn_context, turn_context.model_info(), communication)
-        .await;
+        .await
+        .expect("communication should be recorded");
 
     let recorded_history = session.clone_history().await;
     let recorded_items = raw_history_items(&recorded_history);
@@ -2831,6 +3548,7 @@ async fn record_inter_agent_communication_sets_turn_id_in_rollout_and_resume() {
     let expected_persisted_items = vec![
         RolloutItem::InterAgentCommunicationMetadata {
             trigger_turn: false,
+            admission: None,
         },
         RolloutItem::ResponseItem(ResponseItemEnvelope {
             item: expected_item.clone(),
@@ -2866,17 +3584,19 @@ async fn record_inter_agent_communication_preserves_item_id_in_rollout_and_resum
     .await;
     let rollout_path =
         attach_thread_persistence(Arc::get_mut(&mut session).expect("unique session")).await;
-    let communication = InterAgentCommunication::new(
+    let mut communication = InterAgentCommunication::new(
         AgentPath::root().join("worker").expect("worker path"),
         AgentPath::root(),
         Vec::new(),
         "child done".to_string(),
         /*trigger_turn*/ false,
     );
+    communication.id = Some(ResponseItemId::new("legacy-public-message-id"));
 
     session
         .record_inter_agent_communication(&turn_context, turn_context.model_info(), communication)
-        .await;
+        .await
+        .expect("communication should be recorded");
 
     let live_history = session.clone_history().await;
     let live_items = raw_history_items(&live_history);
@@ -2887,7 +3607,7 @@ async fn record_inter_agent_communication_preserves_item_id_in_rollout_and_resum
         .id()
         .expect("live agent message should have an item id")
         .to_string();
-    assert!(live_item_id.starts_with("amsg_"));
+    assert_eq!(live_item_id, "legacy-public-message-id");
 
     session.flush_rollout().await.expect("rollout should flush");
     let InitialHistory::Resumed(resumed) = RolloutRecorder::get_rollout_history(&rollout_path)
@@ -2907,6 +3627,24 @@ async fn record_inter_agent_communication_preserves_item_id_in_rollout_and_resum
     assert_eq!(
         persisted_item_id.map(ResponseItemId::as_str),
         Some(live_item_id.as_str())
+    );
+    assert!(
+        resumed
+            .history
+            .iter()
+            .filter_map(|item| match item {
+                RolloutItem::ResponseItem(item)
+                    if matches!(&item.item, ResponseItem::AgentMessage { .. }) =>
+                {
+                    Some(
+                        item.metadata
+                            .as_ref()
+                            .and_then(|metadata| metadata.inter_agent_update_id.as_ref()),
+                    )
+                }
+                _ => None,
+            })
+            .all(|update_id| update_id.is_none())
     );
 
     let (resumed_session, _resumed_turn_context, _rx) =
@@ -7086,11 +7824,14 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
 
     let session = Session {
         thread_id,
+        rollout_path: None,
         execution_nonce: Uuid::new_v4(),
         installation_id: "11111111-1111-4111-8111-111111111111".to_string(),
         tx_event,
         agent_status: agent_status_tx,
         state: Mutex::new(state),
+        explicit_inter_agent_admission: tokio::sync::Mutex::new(()),
+        delivered_explicit_inter_agent_updates: std::sync::Mutex::new(HashSet::new()),
         thread_settings_persistence: Semaphore::new(/*permits*/ 1),
         code_mode_message_tasks: Default::default(),
         managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
@@ -7339,6 +8080,7 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
             /*enable_usage_state*/ false,
             /*parent_thread_id*/ None,
             /*shared_thread_store*/ None,
+            /*enable_multi_agent_v2*/ false,
         )
         .await?;
     Ok((session, rx_event))
@@ -7352,6 +8094,7 @@ async fn make_session_with_usage_state_and_agent_control_and_rx(
     enable_usage_state: bool,
     parent_thread_id: Option<ThreadId>,
     shared_thread_store: Option<Arc<dyn codex_thread_store::ThreadStore>>,
+    enable_multi_agent_v2: bool,
 ) -> anyhow::Result<(
     Arc<Session>,
     async_channel::Receiver<Event>,
@@ -7359,6 +8102,9 @@ async fn make_session_with_usage_state_and_agent_control_and_rx(
 )> {
     let mut config = build_test_config(codex_home).await;
     config.ephemeral = !enable_usage_state;
+    if enable_multi_agent_v2 {
+        let _ = config.features.enable(Feature::MultiAgentV2);
+    }
     let config = Arc::new(config);
     let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("Test API Key"));
     let models_manager = models_manager_with_provider(
@@ -7507,6 +8253,7 @@ async fn completed_response_usage_joins_real_session_lineage_and_survives_writer
         /*enable_usage_state*/ true,
         /*parent_thread_id*/ None,
         /*shared_thread_store*/ None,
+        /*enable_multi_agent_v2*/ false,
     )
     .await
     .expect("create persistent root session");
@@ -7526,6 +8273,7 @@ async fn completed_response_usage_joins_real_session_lineage_and_survives_writer
             /*enable_usage_state*/ true,
             /*parent_thread_id*/ Some(root.thread_id()),
             /*shared_thread_store*/ Some(thread_store),
+            /*enable_multi_agent_v2*/ false,
         )
         .await
         .expect("create child session on shared state store");
@@ -9617,11 +10365,14 @@ where
 
     let session = Arc::new(Session {
         thread_id,
+        rollout_path: None,
         execution_nonce: Uuid::new_v4(),
         installation_id: "11111111-1111-4111-8111-111111111111".to_string(),
         tx_event,
         agent_status: agent_status_tx,
         state: Mutex::new(state),
+        explicit_inter_agent_admission: tokio::sync::Mutex::new(()),
+        delivered_explicit_inter_agent_updates: std::sync::Mutex::new(HashSet::new()),
         thread_settings_persistence: Semaphore::new(/*permits*/ 1),
         code_mode_message_tasks: Default::default(),
         managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),

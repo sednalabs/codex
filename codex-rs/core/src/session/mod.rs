@@ -20,6 +20,7 @@ use crate::agent::api::AgentTurnOutcome;
 use crate::agent::api::GoalTurnMarker;
 use crate::agent::api::GoalTurnReadiness;
 use crate::agent::control::AgentControlInit;
+use crate::agent::control::explicit_admission_for_communication;
 use crate::agents_md_manager::SessionInstructions;
 use crate::attestation::AttestationProvider;
 use crate::compact;
@@ -285,7 +286,7 @@ pub(crate) use self::environment::ThreadEnvironmentDefaults;
 #[cfg(test)]
 use self::handlers::submission_dispatch_span;
 use self::handlers::submission_loop;
-#[cfg(test)]
+pub(crate) use self::input_queue::ExplicitMailboxActivity;
 pub(crate) use self::input_queue::InputQueue;
 pub(crate) use self::input_queue::InputQueueActivity;
 pub(crate) use self::input_queue::TurnInput;
@@ -352,6 +353,7 @@ use codex_history::CodexHarnessMetadata;
 use codex_history::CompactedItem;
 use codex_history::CompactionResumeMetadata;
 use codex_history::InitialHistory;
+use codex_history::InterAgentCommunicationAdmission;
 pub(crate) use codex_history::PreviousTurnSettings;
 use codex_history::ResponseItemEnvelope;
 use codex_mcp::McpConfig;
@@ -4096,7 +4098,165 @@ impl Session {
         turn_context: &TurnContext,
         model_info: &ModelInfo,
         communication: InterAgentCommunication,
-    ) {
+    ) -> CodexResult<()> {
+        let update_id = communication.id.clone();
+        let admission_guard = if update_id.is_some() {
+            Some(self.explicit_inter_agent_admission.lock().await)
+        } else {
+            None
+        };
+        let admitted_queue_provenance = update_id.as_ref().is_some_and(|update_id| {
+            self.delivered_explicit_inter_agent_updates
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains(update_id)
+        });
+        let explicit_admission = if update_id.is_some()
+            && self.multi_agent_version() == Some(MultiAgentVersion::V2)
+        {
+            let rollout_path = match self.current_rollout_path().await {
+                Ok(path) => path,
+                Err(_) if admitted_queue_provenance => {
+                    self.input_queue
+                        .enqueue_mailbox_communication(communication.clone(), Default::default())
+                        .await;
+                    return Err(CodexErr::Fatal(
+                        "failed to locate explicit inter-agent rollout".into(),
+                    ));
+                }
+                Err(_) => None,
+            };
+            match rollout_path {
+                Some(path) => {
+                    match explicit_admission_for_communication(
+                        &path,
+                        self.thread_id,
+                        &communication,
+                    )
+                    .await
+                    {
+                        Ok(admission) => admission,
+                        Err(err) if admitted_queue_provenance => {
+                            self.input_queue
+                                .enqueue_mailbox_communication(
+                                    communication.clone(),
+                                    Default::default(),
+                                )
+                                .await;
+                            return Err(err);
+                        }
+                        Err(err) if matches!(err.details(), CodexErrorDetails::Fatal(_)) => None,
+                        Err(err) => return Err(err),
+                    }
+                }
+                None if admitted_queue_provenance => {
+                    self.input_queue
+                        .enqueue_mailbox_communication(communication.clone(), Default::default())
+                        .await;
+                    return Err(CodexErr::Fatal(
+                        "explicit inter-agent admission has no retained rollout".into(),
+                    ));
+                }
+                None => None,
+            }
+        } else {
+            None
+        };
+        let explicit_admission = match explicit_admission {
+            Some((admission, Some(_), _, _)) => {
+                let boundary = self
+                    .code_mode_message_tasks
+                    .communication_boundary
+                    .acquire()
+                    .await
+                    .unwrap_or_else(|_| unreachable!("communication boundary remains open"));
+                let refreshed_snapshot = match self.current_rollout_path().await {
+                    Ok(Some(path)) => {
+                        explicit_admission_for_communication(&path, self.thread_id, &communication)
+                            .await
+                    }
+                    _ => Err(CodexErr::Fatal(
+                        "failed to locate explicit inter-agent rollout".into(),
+                    )),
+                };
+                let (refreshed_admission, response_id, rollout_items) = match refreshed_snapshot {
+                    Ok(Some((refreshed_admission, Some(response_id), rollout_items, _)))
+                        if refreshed_admission == admission =>
+                    {
+                        (refreshed_admission, response_id, rollout_items)
+                    }
+                    Ok(_) => {
+                        self.input_queue
+                            .enqueue_mailbox_communication(
+                                communication.clone(),
+                                Default::default(),
+                            )
+                            .await;
+                        return Err(CodexErr::Fatal(
+                            "explicit inter-agent representation could not be verified".into(),
+                        ));
+                    }
+                    Err(err) => {
+                        self.input_queue
+                            .enqueue_mailbox_communication(
+                                communication.clone(),
+                                Default::default(),
+                            )
+                            .await;
+                        return Err(err);
+                    }
+                };
+                let items = match self
+                    .reconcile_persisted_explicit_response(
+                        turn_context,
+                        model_info,
+                        &refreshed_admission,
+                        &response_id,
+                        &rollout_items,
+                    )
+                    .await
+                {
+                    Ok(items) => items,
+                    Err(err) => {
+                        self.input_queue
+                            .enqueue_mailbox_communication(
+                                communication.clone(),
+                                Default::default(),
+                            )
+                            .await;
+                        return Err(err);
+                    }
+                };
+                self.delivered_explicit_inter_agent_updates
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(&refreshed_admission.update_id);
+                drop(admission_guard);
+                drop(boundary);
+                if !items.is_empty() {
+                    self.send_raw_response_items(turn_context, &items).await;
+                }
+                return Ok(());
+            }
+            Some((admission, None, _, true)) => {
+                self.delivered_explicit_inter_agent_updates
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(&admission.update_id);
+                drop(admission_guard);
+                return Ok(());
+            }
+            Some((admission, None, _, false)) => Some(admission),
+            None if admitted_queue_provenance => {
+                self.input_queue
+                    .enqueue_mailbox_communication(communication.clone(), Default::default())
+                    .await;
+                return Err(CodexErr::Fatal(
+                    "queued explicit inter-agent message has no matching admission".into(),
+                ));
+            }
+            None => None,
+        };
         let response_item = communication.to_model_input_item();
         let (items, _) = self
             .prepare_conversation_items_for_history(
@@ -4128,8 +4288,102 @@ impl Session {
             .metadata
             .get_or_insert_default()
             .user_input_order = Some(order);
+        if let Some(admission) = explicit_admission.as_ref() {
+            response_item
+                .metadata
+                .get_or_insert_default()
+                .inter_agent_update_id = Some(admission.update_id.clone());
+        }
         for mut recording in pending {
             let _ = recording.changed().await;
+        }
+
+        if explicit_admission.is_some() {
+            let Some(live_thread) = self.live_thread() else {
+                self.input_queue
+                    .enqueue_mailbox_communication(communication.clone(), Default::default())
+                    .await;
+                return Err(CodexErr::Fatal(
+                    "explicit inter-agent representation requires a retained rollout".into(),
+                ));
+            };
+            let append_result = live_thread
+                .append_items(&[RolloutItem::ResponseItem(response_item.clone())])
+                .await;
+            let failure = match append_result {
+                Ok(()) => self
+                    .flush_rollout()
+                    .await
+                    .err()
+                    .map(|_| "failed to flush explicit inter-agent representation"),
+                Err(_) => Some("failed to append explicit inter-agent representation"),
+            };
+            if let Some(failure) = failure {
+                let readback = match self.current_rollout_path().await {
+                    Ok(Some(path)) => {
+                        explicit_admission_for_communication(&path, self.thread_id, &communication)
+                            .await
+                    }
+                    _ => Err(CodexErr::Fatal(
+                        "failed to read back explicit inter-agent representation".into(),
+                    )),
+                };
+                let Some((admission, Some(response_id), rollout_items, _)) =
+                    readback.ok().flatten()
+                else {
+                    self.input_queue
+                        .enqueue_mailbox_communication(communication.clone(), Default::default())
+                        .await;
+                    return Err(CodexErr::Fatal(failure.into()));
+                };
+                let Some(expected_admission) = explicit_admission.as_ref() else {
+                    unreachable!("explicit response has an admission")
+                };
+                if &admission != expected_admission
+                    || response_item.item.id() != Some(&response_id)
+                    || !rollout_contains_exact_explicit_response(
+                        &rollout_items,
+                        &response_item,
+                        &admission.update_id,
+                    )
+                {
+                    self.input_queue
+                        .enqueue_mailbox_communication(communication.clone(), Default::default())
+                        .await;
+                    return Err(CodexErr::Fatal(failure.into()));
+                }
+                let items = match self
+                    .reconcile_persisted_explicit_response(
+                        turn_context,
+                        model_info,
+                        &admission,
+                        &response_id,
+                        &rollout_items,
+                    )
+                    .await
+                {
+                    Ok(items) => items,
+                    Err(err) => {
+                        self.input_queue
+                            .enqueue_mailbox_communication(
+                                communication.clone(),
+                                Default::default(),
+                            )
+                            .await;
+                        return Err(err);
+                    }
+                };
+                self.delivered_explicit_inter_agent_updates
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(&admission.update_id);
+                drop(admission_guard);
+                drop(boundary);
+                if !items.is_empty() {
+                    self.send_raw_response_items(turn_context, &items).await;
+                }
+                return Ok(());
+            }
         }
         {
             let mut state = self.state.lock().await;
@@ -4139,15 +4393,100 @@ impl Session {
                 model_info.truncation_policy.into(),
             );
         }
-        self.persist_rollout_items(&[
-            RolloutItem::InterAgentCommunicationMetadata {
-                trigger_turn: communication.trigger_turn,
-            },
-            RolloutItem::ResponseItem(response_item),
-        ])
-        .await;
+        let persisted = if explicit_admission.is_some() {
+            true
+        } else {
+            self.persist_rollout_items(&[
+                RolloutItem::InterAgentCommunicationMetadata {
+                    trigger_turn: communication.trigger_turn,
+                    admission: None,
+                },
+                RolloutItem::ResponseItem(response_item),
+            ])
+            .await
+        };
+        if persisted && let Some(admission) = explicit_admission.as_ref() {
+            self.delivered_explicit_inter_agent_updates
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&admission.update_id);
+        }
+        drop(admission_guard);
         drop(boundary);
         self.send_raw_response_items(turn_context, items).await;
+        Ok(())
+    }
+
+    async fn reconcile_persisted_explicit_response(
+        &self,
+        turn_context: &TurnContext,
+        model_info: &ModelInfo,
+        admission: &InterAgentCommunicationAdmission,
+        response_id: &ResponseItemId,
+        rollout_items: &[RolloutItem],
+    ) -> CodexResult<Vec<ResponseItem>> {
+        let reconstructed = self
+            .reconstruct_history_from_rollout(turn_context, rollout_items)
+            .await;
+        let mut represented = None;
+        for envelope in &reconstructed.history {
+            let item_id = envelope.item.id();
+            let update_id = envelope
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.inter_agent_update_id.as_ref());
+            if item_id == Some(response_id) || update_id == Some(&admission.update_id) {
+                if item_id != Some(response_id)
+                    || update_id != Some(&admission.update_id)
+                    || !explicit_response_matches_admission(
+                        &envelope.item,
+                        response_id,
+                        &admission.original_communication,
+                    )
+                    || represented.replace(envelope).is_some()
+                {
+                    return Err(CodexErr::Fatal(
+                        "persisted explicit inter-agent representation is inconsistent".into(),
+                    ));
+                }
+            }
+        }
+        let Some(envelope) = represented else {
+            // The durable admission may outlive a representation hidden by rollback or
+            // compaction. It remains represented and must not be resurrected into history.
+            return Ok(Vec::new());
+        };
+
+        let mut state = self.state.lock().await;
+        let existing: Vec<_> = state
+            .history
+            .raw_items()
+            .filter(|item| item.id() == Some(response_id))
+            .collect();
+        if !existing.is_empty() {
+            if existing.len() != 1
+                || !explicit_response_matches_admission(
+                    existing[0],
+                    response_id,
+                    &admission.original_communication,
+                )
+            {
+                return Err(CodexErr::Fatal(
+                    "active explicit inter-agent history conflicts with its persisted receipt"
+                        .into(),
+                ));
+            }
+            return Ok(Vec::new());
+        }
+
+        let mut restored = envelope.clone();
+        let items = vec![restored.item.clone()];
+        state.current_time_reminder.note_recorded_items(&items);
+        state.history.record_annotated_items(
+            std::slice::from_mut(&mut restored),
+            model_info.truncation_policy.into(),
+        );
+        Ok(items)
     }
 
     async fn maybe_warn_on_server_model_mismatch(
@@ -5286,6 +5625,9 @@ impl Session {
     }
 
     pub(crate) async fn current_rollout_path(&self) -> anyhow::Result<Option<PathBuf>> {
+        if self.rollout_path.is_some() {
+            return Ok(self.rollout_path.clone());
+        }
         let Some(live_thread) = self.live_thread() else {
             return Ok(None);
         };
@@ -5430,6 +5772,76 @@ async fn build_hooks_config(
         shell_program: hook_shell_program,
         shell_args: hook_shell_argv,
     }
+}
+
+fn explicit_response_matches_admission(
+    item: &ResponseItem,
+    response_id: &ResponseItemId,
+    communication: &InterAgentCommunication,
+) -> bool {
+    let expected = communication.to_model_input_item();
+    let (
+        ResponseItem::AgentMessage {
+            id: expected_id,
+            author: expected_author,
+            recipient: expected_recipient,
+            content: expected_content,
+            ..
+        },
+        ResponseItem::AgentMessage {
+            id,
+            author,
+            recipient,
+            content,
+            ..
+        },
+    ) = (&expected, item)
+    else {
+        return false;
+    };
+    id.as_ref() == Some(response_id)
+        && expected_id.as_ref() == Some(response_id)
+        && author == expected_author
+        && recipient == expected_recipient
+        && content == expected_content
+}
+
+fn rollout_contains_exact_explicit_response(
+    rollout_items: &[RolloutItem],
+    candidate: &ResponseItemEnvelope,
+    update_id: &ResponseItemId,
+) -> bool {
+    let Some(candidate_id) = candidate.item.id() else {
+        return false;
+    };
+    let mut found = false;
+    let mut consider = |envelope: &ResponseItemEnvelope| {
+        let represented_update_id = envelope
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.inter_agent_update_id.as_ref());
+        if envelope.item.id() == Some(candidate_id) || represented_update_id == Some(update_id) {
+            if envelope != candidate || envelope.item.id() != Some(candidate_id) {
+                return false;
+            }
+            found = true;
+        }
+        true
+    };
+    for item in rollout_items {
+        match item {
+            RolloutItem::ResponseItem(envelope) if !consider(envelope) => return false,
+            RolloutItem::Compacted(compacted) => {
+                for envelope in compacted.replacement_history.iter().flatten() {
+                    if !consider(envelope) {
+                        return false;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    found
 }
 
 fn completed_turn_readiness(

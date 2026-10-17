@@ -14,7 +14,9 @@ use crate::codex_thread::GuardianRootSnapshot;
 use crate::codex_thread::ThreadConfigSnapshot;
 use crate::config::Config;
 use crate::rollout_budget::RolloutBudgetReminder;
+use codex_history::InterAgentCommunicationIntent;
 use codex_protocol::AgentPath;
+use codex_protocol::ResponseItemId;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
 use codex_protocol::error::Result;
@@ -226,7 +228,17 @@ pub struct SendRequest {
     /// Captured caller settings used if the recipient must be restored.
     pub resume_config: Config,
     pub input: AgentInput,
+    /// Explicit, durable root-directed update semantics for queue-only V2 messages.
+    /// `None` preserves the existing ordinary-message behavior.
+    pub explicit_update: Option<ExplicitInterAgentUpdate>,
     pub start_options: TurnStartOptions,
+}
+
+#[derive(Clone, Debug)]
+pub struct ExplicitInterAgentUpdate {
+    pub idempotency_key: String,
+    pub intent: InterAgentCommunicationIntent,
+    pub supersedes: Vec<ResponseItemId>,
 }
 
 pub struct DeliveryReceipt {
