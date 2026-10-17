@@ -111,8 +111,8 @@ jobs:
             printf 'changed_paths:\n'
             sed 's/^...//' "$RUNNER_TEMP/zip-prep-status.txt"
             printf 'postimage_sha256:\n'
-            sha256sum "$out/Cargo.lock" "$out/MODULE.bazel.lock" \
-              "$out/startup_sync.rs" "$out/startup_sync_tests.rs"
+            (cd "$out" && sha256sum Cargo.lock MODULE.bazel.lock \
+              startup_sync.rs startup_sync_tests.rs)
           } > "$out/receipt.txt"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
