@@ -195,10 +195,46 @@ async fn shutdown_kills_initialized_stdio_server_with_in_flight_operation() -> R
 async fn cooperative_close_waits_for_local_server_ack_and_reaps_owned_child() -> Result<()> {
     let temp_dir = tempfile::tempdir()?;
     let server_pid_file = temp_dir.path().join("server.pid");
+    let initialize_request_file = temp_dir.path().join("initialize-request.received");
+    let initialize_response_file = temp_dir.path().join("initialize-response.sent");
     let wrapper_pid_file = temp_dir.path().join("wrapper.pid");
     let close_ack_file = temp_dir.path().join("close.ack");
     let policy_leak_file = temp_dir.path().join("policy-leaked");
     let wrapper = temp_dir.path().join("wrapper");
+    let server = temp_dir.path().join("stdio-server");
+    codex_utils_cargo_bin::write_executable(
+        &server,
+        r##"#!/usr/bin/env python3
+import json
+import os
+import sys
+
+with open(os.environ["MCP_TEST_PID_FILE"], "w") as pid_file:
+    pid_file.write(str(os.getpid()))
+request = json.loads(sys.stdin.readline())
+if request.get("jsonrpc") != "2.0" or request.get("method") != "initialize":
+    sys.exit(2)
+with open(os.environ["INITIALIZE_REQUEST_FILE"], "w") as marker:
+    marker.write("received")
+print(json.dumps({
+    "jsonrpc": "2.0",
+    "id": request["id"],
+    "result": {
+        "protocolVersion": "2025-06-18",
+        "capabilities": {},
+        "serverInfo": {"name": "cooperative-close-test-server", "version": "1"},
+    },
+}), flush=True)
+with open(os.environ["INITIALIZE_RESPONSE_FILE"], "w") as marker:
+    marker.write("sent")
+for line in sys.stdin:
+    message = json.loads(line)
+    if message.get("method") == "shutdown" and "id" in message:
+        print(json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": {}}), flush=True)
+    if message.get("method") == "exit":
+        break
+"##,
+    )?;
     codex_utils_cargo_bin::write_executable(
         &wrapper,
         "#!/bin/sh\n\
@@ -211,7 +247,6 @@ async fn cooperative_close_waits_for_local_server_ack_and_reaps_owned_child() ->
          printf acknowledged > \"$CLOSE_ACK_FILE\"\n",
     )?;
 
-    let server = stdio_server_bin()?;
     let client = RmcpClient::new_stdio_client(
         OsString::from("./wrapper"),
         Vec::<OsString>::new(),
@@ -227,6 +262,14 @@ async fn cooperative_close_waits_for_local_server_ack_and_reaps_owned_child() ->
             (
                 OsString::from("MCP_TEST_PID_FILE"),
                 OsString::from(server_pid_file.to_string_lossy().into_owned()),
+            ),
+            (
+                OsString::from("INITIALIZE_REQUEST_FILE"),
+                OsString::from(initialize_request_file.to_string_lossy().into_owned()),
+            ),
+            (
+                OsString::from("INITIALIZE_RESPONSE_FILE"),
+                OsString::from(initialize_response_file.to_string_lossy().into_owned()),
             ),
             (
                 OsString::from("MCP_SERVER"),
@@ -247,7 +290,7 @@ async fn cooperative_close_waits_for_local_server_ack_and_reaps_owned_child() ->
     )
     .await?;
 
-    client
+    let initialize_result = client
         .initialize(
             init_params(),
             Some(Duration::from_secs(5)),
@@ -262,7 +305,17 @@ async fn cooperative_close_waits_for_local_server_ack_and_reaps_owned_child() ->
                 .boxed()
             }),
         )
-        .await?;
+        .await;
+    if initialize_result.is_err() {
+        drop(client);
+        anyhow::bail!(
+            "test MCP server initialization stage: started={}, request_received={}, response_sent={}",
+            server_pid_file.is_file(),
+            initialize_request_file.is_file(),
+            initialize_response_file.is_file()
+        );
+    }
+    initialize_result?;
 
     let wrapper_pid = wait_for_pid_file(&wrapper_pid_file).await?;
     let server_pid = wait_for_pid_file(&server_pid_file).await?;
@@ -329,6 +382,8 @@ async fn cooperative_drop_closes_stdin_before_owned_child_fallback() -> Result<(
 async fn cooperative_close_times_out_reaps_owned_child_and_prevents_reuse() -> Result<()> {
     let temp_dir = tempfile::tempdir()?;
     let server_pid_file = temp_dir.path().join("server.pid");
+    let initialize_request_file = temp_dir.path().join("initialize-request.received");
+    let initialize_response_file = temp_dir.path().join("initialize-response.sent");
     let server = temp_dir.path().join("unresponsive-server");
     codex_utils_cargo_bin::write_executable(
         &server,
@@ -340,6 +395,10 @@ async fn cooperative_close_times_out_reaps_owned_child_and_prevents_reuse() -> R
          with open(os.environ['SERVER_PID_FILE'], 'w') as pid_file:\n\
              pid_file.write(str(os.getpid()))\n\
          request = json.loads(sys.stdin.readline())\n\
+         if request.get('jsonrpc') != '2.0' or request.get('method') != 'initialize':\n\
+             sys.exit(2)\n\
+         with open(os.environ['INITIALIZE_REQUEST_FILE'], 'w') as marker:\n\
+             marker.write('received')\n\
          print(json.dumps({\n\
              'jsonrpc': '2.0',\n\
              'id': request['id'],\n\
@@ -349,6 +408,8 @@ async fn cooperative_close_times_out_reaps_owned_child_and_prevents_reuse() -> R
                  'serverInfo': {'name': 'unresponsive-test-server', 'version': '1'},\n\
              },\n\
          }), flush=True)\n\
+         with open(os.environ['INITIALIZE_RESPONSE_FILE'], 'w') as marker:\n\
+             marker.write('sent')\n\
          time.sleep(300)\n",
     )?;
 
@@ -364,6 +425,14 @@ async fn cooperative_close_times_out_reaps_owned_child_and_prevents_reuse() -> R
                 OsString::from("SERVER_PID_FILE"),
                 OsString::from(server_pid_file.to_string_lossy().into_owned()),
             ),
+            (
+                OsString::from("INITIALIZE_REQUEST_FILE"),
+                OsString::from(initialize_request_file.to_string_lossy().into_owned()),
+            ),
+            (
+                OsString::from("INITIALIZE_RESPONSE_FILE"),
+                OsString::from(initialize_response_file.to_string_lossy().into_owned()),
+            ),
         ])),
         &[],
         Some(temp_dir.path().to_string_lossy().into_owned()),
@@ -371,7 +440,7 @@ async fn cooperative_close_times_out_reaps_owned_child_and_prevents_reuse() -> R
     )
     .await?;
 
-    client
+    let initialize_result = client
         .initialize(
             init_params(),
             Some(Duration::from_secs(5)),
@@ -386,7 +455,17 @@ async fn cooperative_close_times_out_reaps_owned_child_and_prevents_reuse() -> R
                 .boxed()
             }),
         )
-        .await?;
+        .await;
+    if initialize_result.is_err() {
+        drop(client);
+        anyhow::bail!(
+            "test MCP server initialization stage: started={}, request_received={}, response_sent={}",
+            server_pid_file.is_file(),
+            initialize_request_file.is_file(),
+            initialize_response_file.is_file()
+        );
+    }
+    initialize_result?;
 
     let server_pid = wait_for_pid_file(&server_pid_file).await?;
     assert!(process_exists(server_pid));
