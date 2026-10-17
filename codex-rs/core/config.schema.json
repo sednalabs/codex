@@ -2309,6 +2309,197 @@
       },
       "type": "object"
     },
+    "InstructionOverlayComponentToml": {
+      "additionalProperties": false,
+      "properties": {
+        "edits": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/InstructionOverlayEdit"
+          },
+          "type": "array"
+        },
+        "on_absent": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/InstructionOverlayOnAbsent"
+            }
+          ],
+          "default": "error"
+        },
+        "selection": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/InstructionOverlaySelection"
+            }
+          ],
+          "default": "unique"
+        }
+      },
+      "type": "object"
+    },
+    "InstructionOverlayEdit": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "op": {
+              "enum": [
+                "prepend"
+              ],
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "op": {
+              "enum": [
+                "append"
+              ],
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "op": {
+              "enum": [
+                "replace"
+              ],
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "expected_matches": {
+              "format": "uint",
+              "minimum": 1.0,
+              "type": "integer"
+            },
+            "from": {
+              "type": "string"
+            },
+            "op": {
+              "enum": [
+                "replace_exact"
+              ],
+              "type": "string"
+            },
+            "to": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "expected_matches",
+            "from",
+            "op",
+            "to"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "expected_matches": {
+              "format": "uint",
+              "minimum": 1.0,
+              "type": "integer"
+            },
+            "op": {
+              "enum": [
+                "remove_exact"
+              ],
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "expected_matches",
+            "op",
+            "text"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "InstructionOverlayOnAbsent": {
+      "enum": [
+        "error",
+        "skip"
+      ],
+      "type": "string"
+    },
+    "InstructionOverlaySelection": {
+      "enum": [
+        "unique",
+        "all_classified"
+      ],
+      "type": "string"
+    },
+    "InstructionOverlaysToml": {
+      "additionalProperties": false,
+      "properties": {
+        "collaboration_guidance": {
+          "$ref": "#/definitions/InstructionOverlayComponentToml"
+        },
+        "developer_guidance": {
+          "$ref": "#/definitions/InstructionOverlayComponentToml"
+        },
+        "model_baseline": {
+          "$ref": "#/definitions/InstructionOverlayComponentToml"
+        },
+        "model_switch_guidance": {
+          "$ref": "#/definitions/InstructionOverlayComponentToml"
+        },
+        "multi_agent_mode": {
+          "$ref": "#/definitions/InstructionOverlayComponentToml"
+        },
+        "multi_agent_role": {
+          "$ref": "#/definitions/InstructionOverlayComponentToml"
+        },
+        "multi_agent_usage_hint": {
+          "$ref": "#/definitions/InstructionOverlayComponentToml"
+        },
+        "persistent_guidance": {
+          "$ref": "#/definitions/InstructionOverlayComponentToml"
+        },
+        "review_baseline": {
+          "$ref": "#/definitions/InstructionOverlayComponentToml"
+        }
+      },
+      "type": "object"
+    },
     "KeybindingsSpec": {
       "anyOf": [
         {
@@ -7617,8 +7808,17 @@
       "description": "Whether to inject the `<permissions instructions>` developer block.",
       "type": "boolean"
     },
+    "instruction_overlays": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/InstructionOverlaysToml"
+        }
+      ],
+      "default": null,
+      "description": "Bounded literal edits for explicitly selected client-owned instruction components."
+    },
     "instructions": {
-      "description": "System instructions.",
+      "description": "Client-provided base instructions (sent as developer guidance in normal Responses requests).",
       "type": "string"
     },
     "log_dir": {
