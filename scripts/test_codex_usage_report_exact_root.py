@@ -167,6 +167,18 @@ def _create_database(path: Path, *, current_indexes: bool) -> None:
         )
         connection.executemany(
             """
+            INSERT INTO usage_spawn_requests(
+                spawn_request_id, parent_thread_id, child_thread_id, status
+            ) VALUES (?, ?, ?, 'complete')
+            """,
+            (
+                ("spawn-sentinel", ROOT_THREAD, "synthetic-child"),
+                ("spawn-child-grandchild", "synthetic-child", "synthetic-grandchild"),
+                ("spawn-child-zero-leaf", "synthetic-child", "synthetic-zero-call-leaf"),
+            ),
+        )
+        connection.executemany(
+            """
             INSERT INTO usage_provider_calls(
                 provider_call_id, thread_id, provider, requested_model,
                 actual_model_used, actual_service_tier, actual_service_tier_source,
@@ -487,7 +499,10 @@ def _check_report_shape(database: Path) -> dict[str, Any]:
     after = hashlib.sha256(database.read_bytes()).hexdigest()
     _assert(before == after, "read-only report changed its selected ledger")
     _assert(result["status"] == "incomplete", "unknown actual model remains explicit")
-    _assert(result["summary"]["provider_call_count"] == 6, "all six calls are included")
+    _assert(
+        result["summary"]["provider_call_count"] == 5,
+        "only spawn-confirmed tree calls are included",
+    )
     _assert(
         result["scope_contributions"]["own"]["provider_call_count"] == 1,
         "root own-call count",
@@ -496,12 +511,12 @@ def _check_report_shape(database: Path) -> dict[str, Any]:
         result["scope_contributions"]["descendants_excluding_anchor"][
             "provider_call_count"
         ]
-        == 5,
+        == 4,
         "all descendant-call count",
     )
     _assert(
-        result["lineage_coverage"]["unresolved_thread_count"] == 1,
-        "root-tagged rows with missing parent history remain explicitly unresolved",
+        result["lineage_coverage"]["unresolved_thread_count"] == 0,
+        "only exact spawn-confirmed descendants participate",
     )
     _assert(
         result["lineage_coverage"]["known_zero_call_thread_count"] == 1,
@@ -514,7 +529,6 @@ def _check_report_shape(database: Path) -> dict[str, Any]:
     )
     for descendant_id in (
         "synthetic-child",
-        "synthetic-root-tagged-detached-child",
         "synthetic-grandchild",
         "synthetic-zero-call-leaf",
     ):
@@ -525,9 +539,8 @@ def _check_report_shape(database: Path) -> dict[str, Any]:
         "subtree output exposes only the requested root row",
     )
     _assert(
-        result["lineage_coverage"]["lineage_status_counts"]["recorded_root_unverified"]
-        == 1,
-        "detached root-tagged membership remains explicitly unresolved without its ID",
+        "synthetic-root-tagged-detached-child" not in serialized,
+        "detached root-tagged rows are not included without a spawn edge",
     )
     _assert(
         result["resolved_root_buckets"]["requested_root"]["provider_call_count"] == 5,
@@ -679,11 +692,11 @@ def _check_report_shape(database: Path) -> dict[str, Any]:
     )
     _assert(
         coverage["selected_window_provider_call_bounds_utc"]["latest_started_at_utc"]
-        == "2026-09-30T00:05:00.000000Z",
-        "observed upper date bound in selected window",
+        == "2026-09-30T00:04:00.000000Z",
+        "detached root-tag-only calls are excluded from the exact tree",
     )
     _assert(
-        diagnostic.get("selected_call_rows") == 6,
+        diagnostic.get("selected_call_rows") == 5,
         "diagnostics report selected row count",
     )
     indexed_plans = [
@@ -693,7 +706,7 @@ def _check_report_shape(database: Path) -> dict[str, Any]:
     ]
     _assert(
         any(
-            "USING INDEX usage_threads_root_thread_idx" in detail
+            "USING INDEX usage_spawn_requests_parent_idx" in detail
             for detail in indexed_plans
         ),
         "normal family membership uses the exact root index",
@@ -701,22 +714,17 @@ def _check_report_shape(database: Path) -> dict[str, Any]:
     return result
 
 
-def _check_bounded_fallback(temporary: Path) -> None:
+def _check_indexed_spawn_walk_without_optional_call_indexes(temporary: Path) -> None:
     legacy = temporary / "legacy-no-reporting-indexes.sqlite"
     _create_database(legacy, current_indexes=False)
     result, diagnostic = _run_report(legacy)
     _assert(
-        result["summary"]["provider_call_count"] == 6,
-        "bounded fallback retains all fixture calls",
+        result["summary"]["provider_call_count"] == 5,
+        "spawn-index walk retains exact-root fixture calls",
     )
     _assert(
-        result["lineage_coverage"]["strategy"]
-        == "bounded_single_pass_metadata_snapshot",
-        "missing reporting indexes use one bounded snapshot",
-    )
-    _assert(
-        result["lineage_coverage"]["metadata_snapshot_rows"] == 5,
-        "fallback reads only the synthetic metadata rows",
+        result["lineage_coverage"]["strategy"] == "indexed_spawn_request_breadth_first",
+        "lineage uses the indexed spawn-request frontier",
     )
     plans = [
         detail
@@ -724,8 +732,8 @@ def _check_bounded_fallback(temporary: Path) -> None:
         for detail in query.get("details", [])
     ]
     _assert(
-        any("SCAN usage_threads" in detail for detail in plans),
-        "fallback scan is visible and bounded by the report cap",
+        not any("SCAN usage_threads" in detail for detail in plans),
+        "lineage never falls back to scanning usage_threads",
     )
     _assert(
         any(
@@ -734,36 +742,6 @@ def _check_bounded_fallback(temporary: Path) -> None:
         "exact-thread call fallback uses the existing thread index",
     )
 
-    original_row_cap = report.MAX_LINEAGE_SCAN_ROWS
-    report.MAX_LINEAGE_SCAN_ROWS = 3
-    reporter = report.UsageReporter(
-        legacy,
-        report.parse_utc(START),
-        report.parse_utc(END),
-        report.UTC,
-        "UTC",
-        "subtree",
-        ROOT_THREAD,
-        "none",
-        False,
-    )
-    try:
-        partial = reporter.run()
-        _assert(
-            partial["status"] == "incomplete"
-            and "lineage_scan_row_limit_exceeded" in partial["incomplete_reasons"],
-            "oversized lineage remains explicitly incomplete at the fixed scan cap",
-        )
-        _assert(
-            partial["lineage_coverage"]["metadata_snapshot_rows"] == 3,
-            "partial lineage retains only the bounded metadata prefix",
-        )
-        _assert(
-            partial["summary"]["provider_call_count"] > 0,
-            "bounded lineage failure still returns an identified partial subtotal",
-        )
-    finally:
-        report.MAX_LINEAGE_SCAN_ROWS = original_row_cap
 
 
 def _check_call_limit_partial(temporary: Path) -> None:
@@ -823,6 +801,14 @@ def _check_cycle_is_incomplete(temporary: Path) -> None:
             "UPDATE usage_threads SET parent_thread_id = 'cycle-b' WHERE thread_id = ?",
             (ROOT_THREAD,),
         )
+        connection.executemany(
+            "INSERT INTO usage_spawn_requests(spawn_request_id, parent_thread_id, child_thread_id, status) VALUES (?, ?, ?, 'complete')",
+            (
+                ("cycle-root-a", ROOT_THREAD, "cycle-a"),
+                ("cycle-a-b", "cycle-a", "cycle-b"),
+                ("cycle-b-root", "cycle-b", ROOT_THREAD),
+            ),
+        )
         connection.commit()
     finally:
         connection.close()
@@ -831,6 +817,92 @@ def _check_cycle_is_incomplete(temporary: Path) -> None:
         "lineage_cycle" in result["incomplete_reasons"],
         "cycles remain an explicit incomplete condition",
     )
+
+
+def _check_streaming_query_indexes(temporary: Path) -> None:
+    database = temporary / "streaming-index-plans.sqlite"
+    _create_database(database, current_indexes=True)
+    reporter = report.UsageReporter(
+        database,
+        report.parse_utc(START),
+        report.parse_utc(END),
+        report.UTC,
+        "UTC",
+        "subtree",
+        ROOT_THREAD,
+        "none",
+        True,
+        all_time=True,
+        token_only_projection=True,
+    )
+    try:
+        state = _prepare_stream_reporter(reporter)
+        scope_ids = sorted(state["scope_nodes"])
+        ids = reporter._selected_token_call_ids(scope_ids)
+        _assert("root-alpha" in ids, "exact thread selection collects stable IDs only")
+        row = next(reporter._iter_token_calls(scope_ids, reporter.selected_rows))
+        probe = reporter._probe_token_call(str(row["provider_call_id"]))
+        _assert(probe is not None, "stable call ID probe finds one exact row")
+        details = [
+            detail
+            for query in reporter.query_plans
+            for detail in query["details"]
+        ]
+        _assert(
+            any("SEARCH" in detail and "usage_provider_calls" in detail for detail in details),
+            "the selected-call stream uses an exact thread index",
+        )
+        _assert(
+            any("SEARCH" in detail and "provider_call_id" in detail for detail in details),
+            "cross-ledger reconciliation uses an indexed provider-call ID probe",
+        )
+    finally:
+        if reporter.conn is not None:
+            reporter.conn.rollback()
+            reporter.conn.close()
+            reporter.conn = None
+
+
+def _check_streaming_missing_call_id(temporary: Path) -> None:
+    database = temporary / "streaming-missing-call-id.sqlite"
+    _create_database(database, current_indexes=True)
+    connection = sqlite3.connect(database)
+    try:
+        connection.execute(
+            "UPDATE usage_provider_calls SET provider_call_id = NULL WHERE provider_call_id = ?",
+            ("root-alpha",),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    result = report._run_multi_ledger_report(
+        SimpleNamespace(
+            database=database,
+            historical_database=None,
+            all_time=True,
+            start=report.parse_utc(START),
+            end=report.parse_utc(END),
+            timezone="UTC",
+            timezone_value=report.UTC,
+            scope="subtree",
+            thread_id=ROOT_THREAD,
+            credit_mode="none",
+            diagnostics=False,
+        )
+    )
+    _assert(
+        result["status"] == "incomplete"
+        and "physical_call_deduplication_incomplete" in result["incomplete_reasons"],
+        "a selected call with no stable ID is reported as incomplete",
+    )
+    _assert(
+        result["deduplication"]["rows_excluded_for_missing_call_id"] == 1,
+        "missing stable IDs remain an explicit exclusion count",
+    )
+
+
+def _prepare_stream_reporter(reporter: report.UsageReporter) -> dict[str, Any]:
+    return report._prepare_exact_root_reporter(reporter, ROOT_THREAD)
 
 
 def _check_multi_ledger_reconciliation(temporary: Path) -> None:
@@ -846,15 +918,8 @@ def _check_multi_ledger_reconciliation(temporary: Path) -> None:
                 ("spawn-sentinel", "child-sentinel-literal"),
             )
             connection.execute(
-                "INSERT INTO usage_spawn_requests(spawn_request_id, parent_thread_id, child_thread_id, requested_model, requested_reasoning_effort, status) VALUES (?, ?, ?, ?, ?, ?)",
-                (
-                    "spawn-sentinel",
-                    ROOT_THREAD,
-                    "synthetic-child",
-                    "configured-beta",
-                    "medium",
-                    "complete",
-                ),
+                "UPDATE usage_spawn_requests SET requested_model = ?, requested_reasoning_effort = ? WHERE spawn_request_id = ?",
+                ("configured-beta", "medium", "spawn-sentinel"),
             )
             connection.commit()
         finally:
@@ -878,6 +943,10 @@ def _check_multi_ledger_reconciliation(temporary: Path) -> None:
     historical_connection = sqlite3.connect(historical)
     try:
         # Five exact mirrors, one conflicting call ID, and one genuinely new call.
+        historical_connection.execute(
+            "UPDATE usage_provider_calls SET thread_id = ? WHERE provider_call_id = ?",
+            ("synthetic-root-tagged-detached-child", "root-alpha"),
+        )
         historical_connection.execute(
             "UPDATE usage_provider_calls SET output_tokens = 99 WHERE provider_call_id = ?",
             ("child-beta",),
@@ -915,10 +984,10 @@ def _check_multi_ledger_reconciliation(temporary: Path) -> None:
         "the two explicit source roles are preserved",
     )
     dedupe = result["deduplication"]
-    _assert(dedupe["selected_provider_call_rows"] == 13, "both indexed selections are counted")
+    _assert(dedupe["selected_provider_call_rows"] == 10, "both indexed selections are counted")
     _assert(
-        dedupe["identical_mirrored_rows_collapsed"] == 5,
-        "five exact mirrored rows are each counted once",
+        dedupe["identical_mirrored_rows_collapsed"] == 3,
+        "three exact in-scope mirrored rows are each counted once",
     )
     _assert(dedupe["conflicting_call_id_count"] == 1, "conflicting call IDs are surfaced")
     _assert(dedupe["rows_excluded_for_conflicting_call_ids"] == 2, "both conflict copies are excluded")
@@ -952,9 +1021,9 @@ def _check_multi_ledger_reconciliation(temporary: Path) -> None:
         ),
         "the shared budget measures only output model attribution strings",
     )
-    _assert(result["summary"]["provider_call_count"] == 6, "only unambiguous calls contribute")
+    _assert(result["summary"]["provider_call_count"] == 5, "only unambiguous calls contribute")
     _assert(
-        result["summary"]["token_sums_known_subtotal"]["uncached_input_tokens"] == 39,
+        result["summary"]["token_sums_known_subtotal"]["uncached_input_tokens"] == 36,
         "exact mirror is counted once and conflicting call tokens are excluded",
     )
     _assert(result["scope_totals"]["requested_root"]["provider_call_count"] == 1, "root usage stays separate")
@@ -963,8 +1032,8 @@ def _check_multi_ledger_reconciliation(temporary: Path) -> None:
         "only lineage-resolved nested descendants are included",
     )
     _assert(
-        result["scope_totals"]["conflicting_root"]["provider_call_count"] == 1,
-        "a root-tagged record without a parent edge remains conflicting",
+        result["scope_totals"]["conflicting_root"]["provider_call_count"] == 0,
+        "detached root-tag-only records are excluded",
     )
     _assert(
         result["scope_totals"]["unresolved_lineage"]["provider_call_count"] == 0,
@@ -1117,9 +1186,9 @@ def _check_requested_subtree_without_recorded_root(temporary: Path) -> None:
         )
     )
     _assert(
-        result["status"] == "incomplete"
-        and "lineage_incomplete" in result["incomplete_reasons"],
-        "relative attribution does not hide missing recorded-root lineage",
+        result["status"] == "complete"
+        and "lineage_incomplete" not in result["incomplete_reasons"],
+        "the indexed spawn path proves descendants without recorded root tags",
     )
     _assert(
         result["scope_totals"]["requested_root"]["provider_call_count"] == 1,
@@ -1127,14 +1196,14 @@ def _check_requested_subtree_without_recorded_root(temporary: Path) -> None:
     )
     _assert(
         result["scope_totals"]["all_descendants"]["provider_call_count"] == 4,
-        "parent/fork reachability attributes nested descendants to the anchor",
+        "spawn-confirmed nested descendants remain separate from the anchor",
     )
     _assert(
         result["scope_totals"]["unresolved_lineage"]["provider_call_count"] == 0,
         "unrecorded reachable descendants are separated from resolved role buckets",
     )
     _assert(
-        result["scope_totals"]["conflicting_root"]["provider_call_count"] == 1,
+        result["scope_totals"]["conflicting_root"]["provider_call_count"] == 0,
         "a disconnected root-tagged record is not misattributed as a descendant",
     )
     serialized = json.dumps(result, sort_keys=True)
@@ -1153,10 +1222,18 @@ def _check_large_subtree_uses_compact_projection(temporary: Path) -> None:
     _create_database(database, current_indexes=True)
     connection = sqlite3.connect(database)
     try:
+        children = tuple(
+            (f"synthetic-detached-{index:04d}", ROOT_THREAD, ROOT_THREAD)
+            for index in range(report.MAX_OUTPUT_GROUPS + 1)
+        )
         connection.executemany(
-            "INSERT INTO usage_threads(thread_id, root_thread_id) VALUES (?, ?)",
+            "INSERT INTO usage_threads(thread_id, parent_thread_id, root_thread_id) VALUES (?, ?, ?)",
+            children,
+        )
+        connection.executemany(
+            "INSERT INTO usage_spawn_requests(spawn_request_id, parent_thread_id, child_thread_id, status) VALUES (?, ?, ?, 'complete')",
             (
-                (f"synthetic-detached-{index:04d}", ROOT_THREAD)
+                (f"spawn-large-{index:04d}", ROOT_THREAD, f"synthetic-detached-{index:04d}")
                 for index in range(report.MAX_OUTPUT_GROUPS + 1)
             ),
         )
@@ -1203,9 +1280,11 @@ def main() -> int:
         current = temporary / "current-indexes.sqlite"
         _create_database(current, current_indexes=True)
         _check_report_shape(current)
-        _check_bounded_fallback(temporary)
+        _check_indexed_spawn_walk_without_optional_call_indexes(temporary)
         _check_call_limit_partial(temporary)
         _check_cycle_is_incomplete(temporary)
+        _check_streaming_query_indexes(temporary)
+        _check_streaming_missing_call_id(temporary)
         _check_shared_text_pool()
         _check_multi_ledger_reconciliation(temporary)
         _check_multi_ledger_postprocessing_deadline()

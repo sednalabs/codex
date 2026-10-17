@@ -31,8 +31,6 @@ MAX_VM_INSTRUCTIONS = 8_000_000
 MAX_CALLS = 25_000
 MAX_LINEAGE_NODES = 4_096
 MAX_LINEAGE_DEPTH = 128
-MAX_LINEAGE_SCAN_ROWS = 16_384
-MAX_LINEAGE_SCAN_TEXT_CHARS = 4_000_000
 MAX_RATE_POLICY_ROWS = 512
 MAX_OUTPUT_GROUPS = 1_000
 MAX_OUTPUT_BYTES = 16 * 1024 * 1024
@@ -52,7 +50,13 @@ MAX_MULTI_LEDGER_INTERNAL_TEXT_CHARS = {
     "status": 32,
 }
 MULTI_LEDGER_ATTRIBUTION_TEXT_COLUMNS = frozenset(
-    {"requested_model", "actual_model_used", "requested_reasoning_effort"}
+    {
+        "requested_model",
+        "actual_model_used",
+        "requested_reasoning_effort",
+        "_configured_model",
+        "_configured_effort",
+    }
 )
 MAX_SQLITE_ROW_BYTES = 1024 * 1024
 SQL_CHUNK = 250
@@ -60,9 +64,6 @@ PROGRESS_INTERVAL = 1_000
 
 STARTED_INDEX = "usage_provider_calls_started_at_idx"
 THREAD_STARTED_INDEX = "usage_provider_calls_thread_started_at_idx"
-PARENT_INDEX = "usage_threads_reporting_parent_idx"
-ROOT_INDEX = "usage_threads_root_thread_idx"
-PARENT_EXPR = "COALESCE(NULLIF(parent_thread_id,''), NULLIF(fork_parent_thread_id,''))"
 
 CALL_COLUMNS = (
     "provider_call_id, thread_id, spawn_request_id, provider, requested_model, actual_model_used, "
@@ -635,6 +636,8 @@ class UsageReporter:
         max_vm_instructions: int = MAX_VM_INSTRUCTIONS,
         shared_text_pool: dict[str, str] | None = None,
         shared_attribution_text: set[str] | None = None,
+        shared_text_counter: dict[str, int] | None = None,
+        shared_vm_counter: dict[str, int] | None = None,
     ) -> None:
         self.database = database
         self.start = start
@@ -659,21 +662,26 @@ class UsageReporter:
         self.max_vm_instructions = max_vm_instructions
         self.shared_text_pool = shared_text_pool
         self.shared_attribution_text = shared_attribution_text
+        self.shared_text_counter = shared_text_counter
+        self.shared_vm_counter = shared_vm_counter
         self.vm_instructions = 0
         self.vm_stop_reason: str | None = None
         self.query_plans: list[dict[str, Any]] = []
         self.selected_rows = 0
         self.rate_policy_rows = 0
         self.lineage_nodes = 0
-        self.lineage_strategy = "indexed_root_and_parent_lookup"
+        self.lineage_strategy = "exact_thread_metadata"
         self.lineage_scan_rows = 0
         self.lineage_scan_text_chars = 0
         self.lineage_snapshot_truncated = False
+        self.lineage_walk_incomplete = False
         self.call_selection_truncated = False
         self.output_text_chars = 0
         self.selected_call_rows: list[dict[str, Any]] = []
         self.spawn_request_metadata: dict[str, dict[str, Any]] = {}
         self.conn: sqlite3.Connection | None = None
+        self._verified_call_thread_index: str | None = None
+        self._verified_call_id_index = False
 
     def check_deadline(self) -> None:
         if time.monotonic() >= self.deadline:
@@ -682,7 +690,14 @@ class UsageReporter:
 
     def progress(self) -> int:
         self.vm_instructions += PROGRESS_INTERVAL
-        if self.vm_instructions >= self.max_vm_instructions:
+        if self.shared_vm_counter is not None:
+            self.shared_vm_counter["instructions"] += PROGRESS_INTERVAL
+        instruction_count = (
+            self.shared_vm_counter["instructions"]
+            if self.shared_vm_counter is not None
+            else self.vm_instructions
+        )
+        if instruction_count >= self.max_vm_instructions:
             self.vm_stop_reason = "instruction_limit_exceeded"
             return 1
         if time.monotonic() >= self.deadline:
@@ -774,7 +789,12 @@ class UsageReporter:
                     )
                 if value not in self.shared_attribution_text:
                     self.output_text_chars += len(value)
-                    if self.output_text_chars > self.max_selected_text_chars:
+                    if self.shared_text_counter is not None:
+                        self.shared_text_counter["characters"] += len(value)
+                        text_count = self.shared_text_counter["characters"]
+                    else:
+                        text_count = self.output_text_chars
+                    if text_count > self.max_selected_text_chars:
                         raise WorkLimitReached(
                             "selected_attribution_text_limit_exceeded"
                         )
@@ -799,211 +819,114 @@ class UsageReporter:
         row = self._execute("thread_anchor", sql, (thread_id,)).fetchone()
         return self._account_output_text(row) if row is not None else None
 
-    def _fetch_children(
-        self, parent_ids: Sequence[str], remaining: int
-    ) -> list[dict[str, Any]]:
-        children: list[dict[str, Any]] = []
-        for batch in _sql_chunks(sorted(set(parent_ids))):
-            if not batch:
-                continue
-            self.check_deadline()
-            batch_count = 0
-            placeholders = ",".join("?" for _ in batch)
-            sql = (
-                f"SELECT {self.thread_columns} FROM usage_threads INDEXED BY {PARENT_INDEX} "
-                f"WHERE {PARENT_EXPR} IN ({placeholders}) LIMIT ?"
-            )
-            cursor = self._execute("lineage_children", sql, (*batch, remaining + 1))
-            for row in cursor:
-                self.check_deadline()
-                if batch_count >= remaining:
-                    raise WorkLimitReached("lineage_node_limit_exceeded")
-                values = self._account_output_text(row)
-                batch_count += 1
-                children.append(values)
-            remaining -= batch_count
-        return children
-
-    def _fetch_root_tagged(
-        self, root_thread_id: str, remaining: int
-    ) -> list[dict[str, Any]]:
-        rows: list[dict[str, Any]] = []
-        sql = (
-            f"SELECT {self.thread_columns} FROM usage_threads INDEXED BY {ROOT_INDEX} "
-            "WHERE root_thread_id = ? LIMIT ?"
-        )
-        cursor = self._execute(
-            "lineage_root_tagged_threads", sql, (root_thread_id, remaining + 1)
-        )
-        for row in cursor:
-            self.check_deadline()
-            if len(rows) >= remaining:
-                raise WorkLimitReached("lineage_node_limit_exceeded")
-            rows.append(self._account_output_text(row))
-        return rows
-
     def _walk_subtree(
         self, anchor: dict[str, Any]
     ) -> tuple[dict[str, dict[str, Any]], bool]:
+        """Walk only spawn-confirmed descendants from the exact requested root."""
         root_id = anchor["thread_id"]
         nodes = {root_id: anchor}
-        try:
-            root_tagged = self._fetch_root_tagged(root_id, MAX_LINEAGE_NODES)
-        except sqlite3.OperationalError as exc:
-            if "no such index" not in str(exc).lower() or ROOT_INDEX not in str(exc):
-                raise
-            return self._walk_subtree_bounded_snapshot(anchor)
-        for row in root_tagged:
-            thread_id = row["thread_id"]
-            if thread_id not in nodes:
-                if len(nodes) >= MAX_LINEAGE_NODES:
-                    raise WorkLimitReached("lineage_node_limit_exceeded")
-                nodes[thread_id] = row
-        # Root tags are the indexed family membership surface. Seeding all
-        # such rows recovers resumed records whose old parent edge is absent;
-        # parent/fork traversal then fills in untagged descendants.
-        frontier = list(nodes)
+        seen_requests: set[str] = set()
+        seen_children: dict[str, str] = {}
+        parent_by_child: dict[str, str] = {}
+        frontier = [root_id]
         depth = 0
+        cycle_seen = False
         while frontier:
             self.check_deadline()
-            try:
-                children = self._fetch_children(
-                    frontier, MAX_LINEAGE_NODES - len(nodes)
-                )
-            except sqlite3.OperationalError as exc:
-                # Some older local ledgers have not received the reporting-index
-                # migration. A single bounded metadata snapshot is preferable to
-                # either mutating that ledger or repeating an unindexed recursive
-                # lookup once per depth. The fallback is deliberately not used for
-                # unrelated planner/schema failures.
-                if "no such index" not in str(exc).lower() or PARENT_INDEX not in str(
-                    exc
-                ):
-                    raise
-                return self._walk_subtree_bounded_snapshot(anchor)
+            batch_ids = sorted(set(frontier))
             next_frontier: list[str] = []
-            for child in children:
-                child_id = child["thread_id"]
-                if child_id in nodes:
-                    continue
-                if len(nodes) >= MAX_LINEAGE_NODES:
-                    raise WorkLimitReached("lineage_node_limit_exceeded")
-                nodes[child_id] = child
-                next_frontier.append(child_id)
+            for batch in _sql_chunks(batch_ids):
+                placeholders = ",".join("?" for _ in batch)
+                sql = (
+                    "SELECT spawn_request_id, parent_thread_id, child_thread_id, status "
+                    "FROM usage_spawn_requests INDEXED BY usage_spawn_requests_parent_idx "
+                    f"WHERE parent_thread_id IN ({placeholders}) LIMIT ?"
+                )
+                params = (*batch, MAX_LINEAGE_NODES - len(seen_requests) + 1)
+                try:
+                    cursor = self._execute("lineage_spawn_edges", sql, params)
+                except sqlite3.OperationalError as exc:
+                    diagnostic = str(exc).lower()
+                    if any(
+                        marker in diagnostic
+                        for marker in (
+                            "no such index",
+                            "no such table",
+                            "no such column",
+                        )
+                    ):
+                        raise ReportProblem(
+                            "incomplete", "required_spawn_request_index_missing"
+                        ) from exc
+                    raise
+                for edge in cursor:
+                    self.check_deadline()
+                    request_id = _blank_to_none(edge["spawn_request_id"])
+                    child_id = _blank_to_none(edge["child_thread_id"])
+                    parent_id = _blank_to_none(edge["parent_thread_id"])
+                    if request_id is None or parent_id is None or request_id in seen_requests:
+                        self.lineage_walk_incomplete = True
+                        continue
+                    if len(seen_requests) >= MAX_LINEAGE_NODES:
+                        raise WorkLimitReached("lineage_node_limit_exceeded")
+                    seen_requests.add(request_id)
+                    if child_id is None:
+                        # Pending/failed requests are evidence that lineage may
+                        # be incomplete; they never identify a reportable child.
+                        self.lineage_walk_incomplete = True
+                        continue
+                    previous_parent = seen_children.get(child_id)
+                    if previous_parent is not None and previous_parent != parent_id:
+                        self.lineage_walk_incomplete = True
+                        continue
+                    seen_children[child_id] = parent_id
+                    if child_id in nodes:
+                        self.lineage_walk_incomplete = True
+                        ancestor: str | None = parent_id
+                        while ancestor is not None:
+                            if ancestor == child_id:
+                                cycle_seen = True
+                                break
+                            ancestor = parent_by_child.get(ancestor)
+                        continue
+                    if len(nodes) >= MAX_LINEAGE_NODES:
+                        raise WorkLimitReached("lineage_node_limit_exceeded")
+                    # Fetch each edge's child by exact primary-key ID, then
+                    # require recorded parent/root/fork metadata to agree.
+                    child = self._fetch_threads([child_id]).get(child_id)
+                    if child is None:
+                        self.lineage_walk_incomplete = True
+                        continue
+                    metadata_parent, _source = self._effective_parent(child)
+                    recorded_root = _blank_to_none(child.get("root_thread_id"))
+                    recorded_parent = _blank_to_none(child.get("parent_thread_id"))
+                    recorded_fork_parent = _blank_to_none(
+                        child.get("fork_parent_thread_id")
+                    )
+                    if (
+                        metadata_parent != parent_id
+                        or (recorded_parent is not None and recorded_parent != parent_id)
+                        or (
+                            recorded_fork_parent is not None
+                            and recorded_fork_parent != parent_id
+                        )
+                        or (recorded_root is not None and recorded_root != root_id)
+                    ):
+                        self.lineage_walk_incomplete = True
+                        continue
+                    nodes[child_id] = child
+                    parent_by_child[child_id] = parent_id
+                    next_frontier.append(child_id)
             if not next_frontier:
                 break
             depth += 1
             if depth > MAX_LINEAGE_DEPTH:
-                raise WorkLimitReached("lineage_depth_limit_exceeded")
-            frontier = next_frontier
-        return nodes, False
-
-    def _walk_subtree_bounded_snapshot(
-        self, anchor: dict[str, Any]
-    ) -> tuple[dict[str, dict[str, Any]], bool]:
-        """Resolve one exact tree from one bounded metadata-only table pass."""
-        self.lineage_strategy = "bounded_single_pass_metadata_snapshot"
-        rows_by_id: dict[str, dict[str, Any]] = {}
-        children_by_parent: dict[str, list[str]] = defaultdict(list)
-        root_id = str(anchor["thread_id"])
-        root_tagged_ids: set[str] = set()
-        scan_sql = (
-            "SELECT thread_id, parent_thread_id, root_thread_id, "
-            "fork_parent_thread_id FROM usage_threads LIMIT ?"
-        )
-        cursor = self._execute(
-            "lineage_snapshot_scan", scan_sql, (MAX_LINEAGE_SCAN_ROWS + 1,)
-        )
-        for row in cursor:
-            self.check_deadline()
-            if self.lineage_scan_rows >= MAX_LINEAGE_SCAN_ROWS:
-                # Keep the bounded prefix useful, but never present it as a
-                # complete lineage snapshot. The caller carries this explicit
-                # incomplete reason into the report.
-                self.lineage_snapshot_truncated = True
+                self.lineage_walk_incomplete = True
                 break
-            source_row = (
-                self._account_output_text(row)
-                if self.shared_text_pool is not None
-                else row
-            )
-            values: dict[str, str | None] = {}
-            for column in (
-                "thread_id",
-                "parent_thread_id",
-                "root_thread_id",
-                "fork_parent_thread_id",
-            ):
-                raw = source_row[column]
-                if raw is not None and not isinstance(raw, str):
-                    raise WorkLimitReached("lineage_metadata_invalid")
-                value = _blank_to_none(raw)
-                if value is not None and len(value) > MAX_TEXT_FIELD_CHARS:
-                    raise WorkLimitReached("lineage_scan_text_limit_exceeded")
-                if value is not None:
-                    self.lineage_scan_text_chars += len(value)
-                    if self.lineage_scan_text_chars > MAX_LINEAGE_SCAN_TEXT_CHARS:
-                        raise WorkLimitReached("lineage_scan_text_limit_exceeded")
-                values[column] = value
-            thread_id = values["thread_id"]
-            if thread_id is None:
-                raise WorkLimitReached("lineage_metadata_invalid")
-            if thread_id in rows_by_id:
-                raise WorkLimitReached("lineage_metadata_duplicate_id")
-            metadata = {
-                "thread_id": thread_id,
-                "parent_thread_id": values["parent_thread_id"],
-                "root_thread_id": values["root_thread_id"],
-                "fork_parent_thread_id": values["fork_parent_thread_id"],
-            }
-            rows_by_id[thread_id] = metadata
-            if values["root_thread_id"] == root_id:
-                root_tagged_ids.add(thread_id)
-            parent, _parent_source = self._effective_parent(metadata)
-            if parent is not None:
-                children_by_parent[parent].append(thread_id)
-            self.lineage_scan_rows += 1
-
-        if root_id not in rows_by_id:
-            # The exact anchor was fetched through the thread primary key
-            # before the bounded snapshot. Retain it even when the scan cap
-            # lands before that row in the table.
-            rows_by_id[root_id] = {
-                "thread_id": root_id,
-                "parent_thread_id": anchor.get("parent_thread_id"),
-                "root_thread_id": anchor.get("root_thread_id"),
-                "fork_parent_thread_id": anchor.get("fork_parent_thread_id"),
-            }
-
-        # Start with the anchor and all rows explicitly tagged to it. This keeps
-        # disconnected-but-tagged records visible as unresolved instead of
-        # silently dropping them; the adjacency closure also finds descendants
-        # whose root tag is absent but whose parent edge is present.
-        seeds = [root_id, *sorted(root_tagged_ids - {root_id})]
-        included: set[str] = set()
-        frontier = [(thread_id, 0) for thread_id in seeds]
-        while frontier:
-            self.check_deadline()
-            next_frontier: list[tuple[str, int]] = []
-            for thread_id, depth in frontier:
-                if thread_id in included:
-                    continue
-                if len(included) >= MAX_LINEAGE_NODES:
-                    raise WorkLimitReached("lineage_node_limit_exceeded")
-                included.add(thread_id)
-                for child_id in children_by_parent.get(thread_id, ()):
-                    if child_id not in included:
-                        if depth >= MAX_LINEAGE_DEPTH:
-                            raise WorkLimitReached("lineage_depth_limit_exceeded")
-                        next_frontier.append((child_id, depth + 1))
             frontier = next_frontier
-
-        full_metadata = self._fetch_threads(sorted(included))
-        missing = included - set(full_metadata)
-        if missing:
-            raise WorkLimitReached("lineage_metadata_changed_during_snapshot")
-        self.lineage_nodes = len(full_metadata)
-        return full_metadata, False
+        self.lineage_strategy = "indexed_spawn_request_breadth_first"
+        self.lineage_nodes = len(nodes)
+        return nodes, cycle_seen
 
     def _fetch_calls(
         self,
@@ -1084,6 +1007,137 @@ class UsageReporter:
                 break
         self.selected_rows = len(calls)
         return calls
+
+    def _token_call_select(self, alias: str = "call") -> str:
+        columns = ", ".join(
+            f"{alias}.{column.strip()}" for column in TOKEN_CALL_COLUMNS.split(",")
+        )
+        return (
+            f"{columns}, spawn.requested_model AS _configured_model, "
+            "spawn.requested_reasoning_effort AS _configured_effort"
+        )
+
+    def _token_call_from(self, index: str) -> str:
+        return (
+            "FROM usage_provider_calls AS call INDEXED BY "
+            f"{index} LEFT JOIN usage_spawn_requests AS spawn "
+            "ON spawn.spawn_request_id = call.spawn_request_id"
+        )
+
+    def _token_call_thread_sql(
+        self, thread_ids: Sequence[str], *, limit: int, columns_only: bool = False
+    ) -> tuple[str, tuple[Any, ...]]:
+        placeholders = ",".join("?" for _ in thread_ids)
+        select = "call.provider_call_id, call.thread_id" if columns_only else self._token_call_select()
+        params: tuple[Any, ...] = (*thread_ids, limit)
+        for index in (THREAD_STARTED_INDEX, "usage_provider_calls_thread_idx"):
+            sql = (
+                f"SELECT {select} {self._token_call_from(index)} "
+                f"WHERE call.thread_id IN ({placeholders}) LIMIT ?"
+            )
+            assert self.conn is not None
+            try:
+                plan = self.conn.execute("EXPLAIN QUERY PLAN " + sql, params).fetchall()
+            except sqlite3.OperationalError as exc:
+                if "no such index" in str(exc).lower() and index == THREAD_STARTED_INDEX:
+                    continue
+                raise
+            details = [str(row["detail"]) for row in plan]
+            if not any("SEARCH" in detail and "usage_provider_calls" in detail for detail in details):
+                raise ReportProblem("unavailable", "required_reporting_index_missing")
+            if self.diagnostics_enabled:
+                self.query_plans.append(
+                    {"query": "exact_root_thread_call_stream", "details": details}
+                )
+            self._verified_call_thread_index = index
+            return sql, params
+        raise ReportProblem("incomplete", "required_reporting_index_missing")
+
+    def _selected_token_call_ids(
+        self, scope_thread_ids: Sequence[str]
+    ) -> set[str]:
+        """Retain only the bounded ID frontier, never selected call rows."""
+        selected: set[str] = set()
+        rows_seen = 0
+        remaining = self.max_calls
+        for batch in _sql_chunks(sorted(set(scope_thread_ids))):
+            if not batch:
+                break
+            self.check_deadline()
+            sql, params = self._token_call_thread_sql(
+                batch, limit=max(1, remaining + 1), columns_only=True
+            )
+            cursor = self._execute("exact_root_thread_call_ids", sql, params)
+            for row in cursor:
+                self.check_deadline()
+                if rows_seen >= self.max_calls:
+                    self.call_selection_truncated = True
+                    break
+                values = self._account_output_text(row)
+                rows_seen += 1
+                remaining -= 1
+                call_id = _blank_to_none(values.get("provider_call_id"))
+                if call_id is not None:
+                    selected.add(call_id)
+            if self.call_selection_truncated:
+                break
+        self.selected_rows = rows_seen
+        return selected
+
+    def _probe_token_call(self, provider_call_id: str) -> dict[str, Any] | None:
+        columns = self._token_call_select()
+        sql = (
+            f"SELECT {columns} FROM usage_provider_calls AS call "
+            "LEFT JOIN usage_spawn_requests AS spawn "
+            "ON spawn.spawn_request_id = call.spawn_request_id "
+            "WHERE call.provider_call_id = ?"
+        )
+        assert self.conn is not None
+        if not self._verified_call_id_index:
+            plan = self.conn.execute("EXPLAIN QUERY PLAN " + sql, (provider_call_id,)).fetchall()
+            if not any(
+                "SEARCH" in str(row["detail"])
+                and "provider_call_id" in str(row["detail"])
+                for row in plan
+            ):
+                raise ReportProblem("unavailable", "required_reporting_index_missing")
+            if self.diagnostics_enabled:
+                self.query_plans.append(
+                    {
+                        "query": "exact_provider_call_id_probe",
+                        "details": [str(row["detail"]) for row in plan],
+                    }
+                )
+            self._verified_call_id_index = True
+        row = self._execute("exact_provider_call_id_probe", sql, (provider_call_id,)).fetchone()
+        return self._account_output_text(row) if row is not None else None
+
+    def _iter_token_calls(
+        self, scope_thread_ids: Sequence[str], selected_rows: int
+    ) -> Iterator[dict[str, Any]]:
+        rows_yielded = 0
+        remaining = selected_rows
+        for batch in _sql_chunks(sorted(set(scope_thread_ids))):
+            if not batch or remaining <= 0:
+                break
+            self.check_deadline()
+            sql, params = self._token_call_thread_sql(batch, limit=remaining)
+            cursor = self._execute("exact_root_thread_call_rows", sql, params)
+            for row in cursor:
+                self.check_deadline()
+                values = self._account_output_text(row)
+                for column in TOKEN_FIELDS.values():
+                    values[column] = _nonnegative_integer(values.get(column))
+                try:
+                    values["_started_at_parsed"] = _supported_utc_text(
+                        str(values.get("started_at"))
+                    )
+                except (ValueError, TypeError):
+                    raise WorkLimitReached("unsupported_timestamp_encoding")
+                rows_yielded += 1
+                remaining -= 1
+                yield values
+        self.selected_rows = rows_yielded
 
     def _fetch_spawn_requests(
         self, calls: Sequence[dict[str, Any]]
@@ -2001,6 +2055,9 @@ class UsageReporter:
             if cycle_seen:
                 report_status = "incomplete"
                 reasons.append("lineage_cycle")
+            if self.lineage_walk_incomplete:
+                report_status = "incomplete"
+                reasons.append("lineage_incomplete")
             if self.lineage_snapshot_truncated:
                 report_status = "incomplete"
                 reasons.append("lineage_scan_row_limit_exceeded")
@@ -2070,7 +2127,9 @@ class UsageReporter:
                     "selected_ledger_scope": "only the exact --database input",
                     "selected_provider_call_rows": self.selected_rows,
                     "call_selection_complete": not self.call_selection_truncated,
-                    "lineage_snapshot_complete": not self.lineage_snapshot_truncated,
+                    "lineage_snapshot_complete": not (
+                        self.lineage_snapshot_truncated or self.lineage_walk_incomplete
+                    ),
                     "requested_window_utc": {
                         "kind": "all_time" if self.all_time else "bounded",
                         "start_inclusive": (
@@ -2634,12 +2693,441 @@ def _merge_exact_root_ledgers(
     return result
 
 
+class _ExactRootTokenAccumulator:
+    def __init__(self, root_thread_id: str) -> None:
+        self.root_thread_id = root_thread_id
+        self.overall = _new_token_metrics()
+        self.roles = {
+            "requested_root": _new_token_metrics(),
+            "all_descendants": _new_token_metrics(),
+            "unresolved_lineage": _new_token_metrics(),
+            "conflicting_root": _new_token_metrics(),
+        }
+        self.models: dict[str | None, dict[str, Any]] = defaultdict(_new_token_metrics)
+        self.role_models: dict[str, dict[str | None, dict[str, Any]]] = {
+            role: defaultdict(_new_token_metrics) for role in self.roles
+        }
+        self.earliest: dt.datetime | None = None
+        self.latest: dt.datetime | None = None
+        self.count = 0
+
+    def add(self, row: dict[str, Any]) -> None:
+        _add_token_row(self.overall, row)
+        actual = _blank_to_none(row.get("actual_model_used"))
+        _add_token_row(self.models[actual], row)
+        resolved_root = _blank_to_none(row.get("_resolved_root_thread_id"))
+        lineage_status = row.get("_lineage_status")
+        thread_id = _blank_to_none(row.get("thread_id"))
+        if resolved_root is not None and resolved_root != self.root_thread_id:
+            role = "conflicting_root"
+        elif lineage_status in {"conflicting_recorded_roots", "recorded_root_unverified"}:
+            role = "conflicting_root"
+        elif thread_id == self.root_thread_id:
+            role = "requested_root"
+        elif resolved_root == self.root_thread_id:
+            role = "all_descendants"
+        elif row.get("_requested_subtree_member") and lineage_status == "root_unrecorded":
+            role = "all_descendants"
+        elif resolved_root is None:
+            role = "unresolved_lineage"
+        else:
+            role = "conflicting_root"
+        _add_token_row(self.roles[role], row)
+        _add_token_row(self.role_models[role][actual], row)
+        at = row.get("_started_at_parsed")
+        if isinstance(at, dt.datetime):
+            if self.earliest is None or at < self.earliest:
+                self.earliest = at
+            if self.latest is None or at > self.latest:
+                self.latest = at
+        self.count += 1
+
+    @staticmethod
+    def _model_rows(source: dict[str | None, dict[str, Any]]) -> list[dict[str, Any]]:
+        return [
+            {"actual_model_used": model, **_serialize_token_metrics(metrics)}
+            for model, metrics in sorted(
+                source.items(), key=lambda item: (item[0] is None, item[0] or "")
+            )
+        ]
+
+    def report(self, counters: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "summary": _serialize_token_metrics(self.overall),
+            "by_actual_model": self._model_rows(self.models),
+            "root_vs_descendants_by_actual_model": {
+                role: self._model_rows(metrics)
+                for role, metrics in self.role_models.items()
+            },
+            "scope_totals": {
+                role: _serialize_token_metrics(metrics)
+                for role, metrics in self.roles.items()
+            },
+            "selected_provider_call_rows": counters["selected_provider_call_rows"],
+            "deduplicated_provider_call_count": self.count,
+            "selected_window_provider_call_bounds_utc": (
+                {
+                    "earliest_started_at_utc": _iso_utc(self.earliest),
+                    "latest_started_at_utc": _iso_utc(self.latest),
+                }
+                if self.earliest is not None and self.latest is not None
+                else None
+            ),
+            **counters,
+            "physical_call_deduplication": (
+                "same stable provider_call_id counted once only when every selected token-report provider-call field, including exact thread/provider/time/model/token identity, matches; conflicting or unidentified rows are excluded"
+            ),
+            "configured_model_source": (
+                "usage_spawn_requests.requested_model and requested_reasoning_effort joined only by exact provider-call spawn_request_id; missing values remain unrecorded, and cross-ledger disagreement is reported without choosing a value"
+            ),
+        }
+
+
+def _prepare_exact_root_reporter(
+    reporter: UsageReporter, root_thread_id: str
+) -> dict[str, Any]:
+    reporter.open()
+    anchor = reporter._fetch_anchor(root_thread_id)
+    if anchor is None:
+        raise ReportProblem("unavailable", "unknown_thread_id")
+    nodes, cycle_seen = reporter._walk_subtree(anchor)
+    reporter.lineage_nodes = len(nodes)
+    return {
+        "scope_nodes": nodes,
+        "cycle_seen": cycle_seen,
+    }
+
+
+def _annotate_exact_root_call(
+    row: dict[str, Any], reporter: UsageReporter, root_thread_id: str
+) -> dict[str, Any]:
+    call = dict(row)
+    thread_id = str(call.get("thread_id"))
+    call["_requested_subtree_member"] = thread_id != root_thread_id
+    call["_resolved_root_thread_id"] = root_thread_id
+    call["_lineage_status"] = (
+        "resolved_self_root" if thread_id == root_thread_id else "resolved_via_spawn_path"
+    )
+    return call
+
+
+def _merge_configured_attribution(
+    first: dict[str, Any], second: dict[str, Any]
+) -> tuple[dict[str, Any], bool]:
+    merged = dict(first)
+    configurations = {
+        (row.get("_configured_model"), row.get("_configured_effort"))
+        for row in (first, second)
+        if row.get("_configured_model") is not None
+        or row.get("_configured_effort") is not None
+    }
+    if len(configurations) > 1:
+        merged["_configured_model"] = None
+        merged["_configured_effort"] = None
+        merged["_configured_attribution_conflict"] = True
+        return merged, True
+    if configurations:
+        model, effort = next(iter(configurations))
+        merged["_configured_model"] = model
+        merged["_configured_effort"] = effort
+    return merged, False
+
+
+def _run_exact_root_stream_report(
+    args: argparse.Namespace,
+    *,
+    deadline: float | None = None,
+    check_deadline: Callable[[], None] | None = None,
+) -> dict[str, Any]:
+    """Reconcile an exact-root all-time report without retaining call rows."""
+    deadline = deadline if deadline is not None else time.monotonic() + MAX_SECONDS
+    check_deadline = check_deadline or _deadline_checker(deadline)
+    ledger_inputs = [("current", Path(args.database))]
+    if args.historical_database:
+        ledger_inputs.append(("historical", Path(args.historical_database)))
+    shared_text_pool: dict[str, str] = {}
+    shared_attribution_text: set[str] = set()
+    shared_text_counter = {"characters": 0}
+    shared_vm_counter = {"instructions": 0}
+    reporters: list[UsageReporter] = []
+    prepared: list[dict[str, Any]] = []
+    selected_ids: list[set[str]] = []
+    source_rows: list[int] = []
+    remaining_calls = MAX_CALLS
+    ledgers: list[dict[str, Any]] = []
+    try:
+        for index, (source_name, database) in enumerate(ledger_inputs):
+            check_deadline()
+            remaining_sources = len(ledger_inputs) - index
+            source_call_budget = (remaining_calls + remaining_sources - 1) // remaining_sources
+            reporter = UsageReporter(
+                database=database,
+                start=args.start,
+                end=args.end,
+                timezone=args.timezone_value,
+                timezone_name=args.timezone,
+                scope="subtree",
+                thread_id=args.thread_id,
+                credit_mode="none",
+                diagnostics=args.diagnostics,
+                all_time=True,
+                token_only_projection=True,
+                deadline=deadline,
+                max_calls=source_call_budget,
+                max_selected_text_chars=MAX_MULTI_LEDGER_ATTRIBUTION_TEXT_CHARS,
+                max_vm_instructions=MAX_VM_INSTRUCTIONS,
+                shared_text_pool=shared_text_pool,
+                shared_attribution_text=shared_attribution_text,
+                shared_text_counter=shared_text_counter,
+                shared_vm_counter=shared_vm_counter,
+            )
+            reporters.append(reporter)
+            state = _prepare_exact_root_reporter(reporter, args.thread_id)
+            scope_ids = sorted(state["scope_nodes"])
+            ids = reporter._selected_token_call_ids(scope_ids)
+            selected_rows = reporter.selected_rows
+            prepared.append(state)
+            selected_ids.append(ids)
+            source_rows.append(selected_rows)
+            remaining_calls = max(0, remaining_calls - selected_rows)
+            reasons: list[str] = []
+            status = "complete"
+            if reporter.lineage_walk_incomplete:
+                status = "incomplete"
+                reasons.append("lineage_incomplete")
+            if state["cycle_seen"]:
+                status = "incomplete"
+                reasons.append("lineage_cycle")
+            if reporter.call_selection_truncated:
+                status = "incomplete"
+                reasons.append("call_limit_exceeded")
+            ledgers.append(
+                {
+                    "source": source_name,
+                    "status": status,
+                    "incomplete_reasons": reasons,
+                    "selected_provider_call_rows": selected_rows,
+                    "call_selection_complete": not reporter.call_selection_truncated,
+                    "lineage_snapshot_complete": not (
+                        reporter.lineage_walk_incomplete or state["cycle_seen"]
+                    ),
+                    "thread_count": len(scope_ids),
+                    "descendant_thread_count": max(0, len(scope_ids) - 1),
+                    "unresolved_thread_count": 0,
+                    "lineage_strategy": reporter.lineage_strategy,
+                    "metadata_snapshot_rows": 0,
+                    "metadata_snapshot_text_chars": 0,
+                    "selected_window_provider_call_bounds_utc": None,
+                }
+            )
+
+        counters: dict[str, Any] = {
+            "selected_provider_call_rows": sum(source_rows),
+            "identical_mirrored_rows_collapsed": 0,
+            "conflicting_call_id_count": 0,
+            "rows_excluded_for_conflicting_call_ids": 0,
+            "rows_excluded_for_missing_call_id": 0,
+            "configured_attribution_conflict_provider_call_count": 0,
+        }
+        accumulator = _ExactRootTokenAccumulator(args.thread_id)
+
+        def process_source(index: int) -> None:
+            reporter = reporters[index]
+            scope_ids = sorted(prepared[index]["scope_nodes"])
+            other_index = 1 - index if len(reporters) == 2 else None
+            earliest: dt.datetime | None = None
+            latest: dt.datetime | None = None
+            for raw_row in reporter._iter_token_calls(scope_ids, source_rows[index]):
+                check_deadline()
+                at = raw_row.get("_started_at_parsed")
+                if isinstance(at, dt.datetime):
+                    if earliest is None or at < earliest:
+                        earliest = at
+                    if latest is None or at > latest:
+                        latest = at
+                row = _annotate_exact_root_call(raw_row, reporter, args.thread_id)
+                call_id = _blank_to_none(row.get("provider_call_id"))
+                if call_id is None:
+                    counters["rows_excluded_for_missing_call_id"] += 1
+                    continue
+                if (
+                    other_index is not None
+                    and index == 0
+                    and call_id in selected_ids[other_index]
+                ):
+                    counterpart = reporters[other_index]._probe_token_call(call_id)
+                    if (
+                        counterpart is not None
+                        and str(counterpart.get("thread_id"))
+                        in prepared[other_index]["scope_nodes"]
+                    ):
+                        counterpart = _annotate_exact_root_call(
+                            counterpart, reporters[other_index], args.thread_id
+                        )
+                        if _call_signature(row) != _call_signature(counterpart):
+                            counters["conflicting_call_id_count"] += 1
+                            counters["rows_excluded_for_conflicting_call_ids"] += 2
+                            continue
+                        canonical, configured_conflict = _merge_configured_attribution(
+                            row, counterpart
+                        )
+                        if configured_conflict:
+                            counters[
+                                "configured_attribution_conflict_provider_call_count"
+                            ] += 1
+                        counters["identical_mirrored_rows_collapsed"] += 1
+                        accumulator.add(canonical)
+                        continue
+                elif (
+                    other_index is not None
+                    and index == 1
+                    and call_id in selected_ids[0]
+                ):
+                    counterpart = reporters[0]._probe_token_call(call_id)
+                    if (
+                        counterpart is not None
+                        and str(counterpart.get("thread_id"))
+                        in prepared[0]["scope_nodes"]
+                    ):
+                        continue
+                accumulator.add(row)
+            if earliest is not None and latest is not None:
+                ledgers[index]["selected_window_provider_call_bounds_utc"] = {
+                    "earliest_started_at_utc": _iso_utc(earliest),
+                    "latest_started_at_utc": _iso_utc(latest),
+                }
+
+        process_source(0)
+        if len(reporters) == 2:
+            process_source(1)
+
+        if shared_text_counter["characters"] > MAX_MULTI_LEDGER_ATTRIBUTION_TEXT_CHARS:
+            raise WorkLimitReached("selected_attribution_text_limit_exceeded")
+        if shared_vm_counter["instructions"] > MAX_VM_INSTRUCTIONS:
+            raise WorkLimitReached("instruction_limit_exceeded")
+
+        merged = accumulator.report(counters)
+        reasons = sorted(
+            {reason for ledger in ledgers for reason in ledger["incomplete_reasons"]}
+        )
+        status = (
+            "incomplete"
+            if any(ledger["status"] != "complete" for ledger in ledgers)
+            else "complete"
+        )
+        source_selection_complete = all(
+            ledger["call_selection_complete"] and ledger["lineage_snapshot_complete"]
+            for ledger in ledgers
+        )
+        if not source_selection_complete:
+            status = "incomplete"
+            reasons.append("cross_ledger_reconciliation_limited_by_source_coverage")
+        if merged["conflicting_call_id_count"] or merged["rows_excluded_for_missing_call_id"]:
+            status = "incomplete"
+            reasons.append("physical_call_deduplication_incomplete")
+        if merged["configured_attribution_conflict_provider_call_count"]:
+            status = "incomplete"
+            reasons.append("configured_model_attribution_conflict")
+        if any(value > 0 for value in merged["summary"]["token_missing_call_count"].values()):
+            status = "incomplete"
+            reasons.append("token_coverage_incomplete")
+        check_deadline()
+        return {
+            "schema_version": "codex-local-usage-report/v2",
+            "status": status,
+            "incomplete_reasons": sorted(set(reasons)),
+            "scope": {"kind": "subtree", "thread_id": args.thread_id},
+            "window": {
+                "kind": "all_time",
+                "start_utc_inclusive": None,
+                "end_utc_exclusive": None,
+                "presentation_timezone": args.timezone,
+            },
+            "snapshot": {
+                "captured_at_utc": _iso_utc(dt.datetime.now(UTC)),
+                "provider_freshness": "not_asserted",
+            },
+            "source_coverage": {
+                "ledger_sources": ledgers,
+                "recorder_completeness": "unknown; reports cover recorded ledger rows only",
+                "timestamp_encoding_coverage": "all selected rows must use supported UTC Z or +00:00 encodings; unsupported rows fail closed",
+                "configured_model_and_effort": merged["configured_model_source"],
+                "deduplication": merged["physical_call_deduplication"],
+                "limits": {
+                    "combined_selected_call_rows": MAX_CALLS,
+                    "selected_attribution_text_characters": MAX_MULTI_LEDGER_ATTRIBUTION_TEXT_CHARS,
+                    "selected_attribution_text_accounting": "unique requested, actual, configured model and effort strings are interned and budgeted once; identity, lineage, provider, timestamp and status strings use fixed per-field bounds and selected-row limits",
+                    "sqlite_vm_instructions": MAX_VM_INSTRUCTIONS,
+                    "elapsed_seconds": MAX_SECONDS,
+                    "lineage_nodes_per_ledger": MAX_LINEAGE_NODES,
+                },
+            },
+            "summary": merged["summary"],
+            "by_actual_model": merged["by_actual_model"],
+            "root_vs_descendants_by_actual_model": merged[
+                "root_vs_descendants_by_actual_model"
+            ],
+            "scope_totals": merged["scope_totals"],
+            "deduplication": {
+                "source_selection_complete": source_selection_complete,
+                **{
+                    key: merged[key]
+                    for key in (
+                        "selected_provider_call_rows",
+                        "deduplicated_provider_call_count",
+                        "identical_mirrored_rows_collapsed",
+                        "conflicting_call_id_count",
+                        "rows_excluded_for_conflicting_call_ids",
+                        "rows_excluded_for_missing_call_id",
+                        "configured_attribution_conflict_provider_call_count",
+                        "physical_call_deduplication",
+                    )
+                },
+            },
+            "selected_window_provider_call_bounds_utc": merged[
+                "selected_window_provider_call_bounds_utc"
+            ],
+        }
+    except sqlite3.Error as exc:
+        stop_reason = next(
+            (reporter.vm_stop_reason for reporter in reporters if reporter.vm_stop_reason),
+            None,
+        )
+        if stop_reason is not None:
+            raise WorkLimitReached(stop_reason) from exc
+        message = str(exc).lower()
+        if "no such index" in message or "no query solution" in message:
+            raise ReportProblem(
+                "incomplete", "required_reporting_index_missing"
+            ) from exc
+        if "no such table" in message or "no such column" in message:
+            raise ReportProblem(
+                "incomplete", "required_spawn_request_index_missing"
+            ) from exc
+        if "locked" in message or "busy" in message:
+            raise ReportProblem("unavailable", "ledger_busy") from exc
+        raise ReportProblem("unavailable", "sqlite_read_failed") from exc
+    finally:
+        for reporter in reporters:
+            if reporter.conn is not None:
+                try:
+                    reporter.conn.rollback()
+                except sqlite3.Error:
+                    pass
+                reporter.conn.close()
+                reporter.conn = None
+
+
 def _run_multi_ledger_report(
     args: argparse.Namespace,
     *,
     deadline: float | None = None,
     check_deadline: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
+    if args.all_time and args.scope == "subtree":
+        return _run_exact_root_stream_report(
+            args, deadline=deadline, check_deadline=check_deadline
+        )
     deadline = deadline if deadline is not None else time.monotonic() + MAX_SECONDS
     check_deadline = check_deadline or _deadline_checker(deadline)
     ledger_inputs = [("current", Path(args.database))]
@@ -2690,7 +3178,10 @@ def _run_multi_ledger_report(
                         "participating_thread_count"
                     ],
                     "call_selection_complete": not reporter.call_selection_truncated,
-                    "lineage_snapshot_complete": not reporter.lineage_snapshot_truncated,
+                    "lineage_snapshot_complete": not (
+                        reporter.lineage_snapshot_truncated
+                        or reporter.lineage_walk_incomplete
+                    ),
                     "descendant_thread_count": report["lineage_coverage"][
                         "descendant_thread_count"
                     ],
@@ -2717,7 +3208,10 @@ def _run_multi_ledger_report(
                     "incomplete_reasons": [exc.reason],
                     "selected_provider_call_rows": reporter.selected_rows,
                     "call_selection_complete": not reporter.call_selection_truncated,
-                    "lineage_snapshot_complete": not reporter.lineage_snapshot_truncated,
+                    "lineage_snapshot_complete": not (
+                        reporter.lineage_snapshot_truncated
+                        or reporter.lineage_walk_incomplete
+                    ),
                     "thread_count": reporter.lineage_nodes,
                     "descendant_thread_count": None,
                     "unresolved_thread_count": None,
@@ -2803,8 +3297,6 @@ def _run_multi_ledger_report(
                 ),
                 "sqlite_vm_instructions": MAX_VM_INSTRUCTIONS,
                 "elapsed_seconds": MAX_SECONDS,
-                "metadata_scan_rows_per_ledger": MAX_LINEAGE_SCAN_ROWS,
-                "metadata_scan_text_characters_per_ledger": MAX_LINEAGE_SCAN_TEXT_CHARS,
                 "lineage_nodes_per_ledger": MAX_LINEAGE_NODES,
             },
         },
@@ -2844,7 +3336,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         args = _args(argv)
         output_deadline_check = None
         with decimal.localcontext(DECIMAL_CONTEXT):
-            if args.historical_database:
+            if args.historical_database or (args.all_time and args.scope == "subtree"):
                 deadline = time.monotonic() + MAX_SECONDS
                 output_deadline_check = _deadline_checker(deadline)
                 report = _run_multi_ledger_report(
