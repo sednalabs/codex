@@ -809,13 +809,12 @@ mod tests {
         )
         .expect("bounded replacements shrink oversized source fragments");
         assert_eq!(baseline, "short scalar");
-        assert_eq!(
-            output,
-            vec![developer_fragment(
-                "generic.developer_instructions",
-                "short typed"
-            )]
-        );
+        let mut expected = developer_fragment("generic.developer_instructions", "short typed");
+        let ResponseItem::Message { id, .. } = &mut expected else {
+            unreachable!("developer fragment is a message")
+        };
+        *id = None;
+        assert_eq!(output, vec![expected]);
         assert_eq!(raw, original);
     }
 
@@ -957,7 +956,7 @@ mod tests {
         };
         let raw = vec![
             developer_fragment("generic.developer_instructions", "match"),
-            developer_fragment("generic.developer_instructions", "no-match"),
+            developer_fragment("generic.developer_instructions", "unrelated"),
         ];
         assert!(transform_request(&SessionSource::Cli, &plan, "base", &raw).is_err());
         assert_eq!(

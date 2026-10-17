@@ -495,7 +495,7 @@ mod instruction_overlay_role_tests {
             .expect("write project config layer");
         tokio::fs::write(
             agents.join("project-role.toml"),
-            "name = \"project-role\"\ndescription = \"synthetic project role\"\n[instruction_overlays.developer_guidance]\nedits = [{ op = \"append\", text = \" project role guidance\" }]",
+            "name = \"project-role\"\ndescription = \"synthetic project role\"\ndeveloper_instructions = \"PROJECT_ROLE_SOURCE\"\n[instruction_overlays.developer_guidance]\nedits = [{ op = \"append\", text = \" project role guidance\" }]",
         )
         .await
         .expect("write synthetic project role");
