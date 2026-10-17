@@ -116,7 +116,14 @@ class NamedRustTests(TestCase):
                 )
 
     def test_inventory_failure_preserves_actionable_bounded_diagnostics(self) -> None:
-        inventory = self.completed(stderr="manifest could not be loaded", code=101)
+        inventory = self.completed(
+            stderr=(
+                "manifest could not be loaded\n"
+                "error[E0599]: hidden compiler message\n"
+                " --> core/src/lib.rs:88:13\n"
+            ),
+            code=101,
+        )
         with (
             mock.patch.object(MODULE.subprocess, "run", return_value=inventory),
             mock.patch.object(MODULE, "load_manifest", return_value=MANIFEST),
@@ -126,6 +133,61 @@ class NamedRustTests(TestCase):
         self.assertEqual(result["status"], "failure")
         self.assertEqual(result["failure_code"], "inventory_failed")
         self.assertIn("manifest could not be loaded", result["inventory"]["diagnostics"]["stderr_tail"])
+        self.assertEqual(
+            result["inventory"]["diagnostics"]["rustc_error_locations"],
+            [{"code": "E0599", "location": "codex-rs/core/src/lib.rs:88:13"}],
+        )
+
+    def test_rustc_synopsis_keeps_only_error_codes_and_primary_repo_locations(self) -> None:
+        stderr = """error[E0505]: private compiler prose
+ --> /home/runner/work/codex/codex/codex-rs/core/src/session/tests.rs:3098:19
+  ::: /home/runner/work/codex/codex/codex-rs/core/src/session/tests.rs:3000:7
+error[E0382]: another private compiler message
+ --> core/src/tools/handlers/multi_agents_v2/wait.rs:1135:31
+"""
+
+        summary = MODULE.rustc_error_locations(stderr)
+
+        self.assertEqual(
+            summary,
+            {
+                "entries": [
+                    {
+                        "code": "E0505",
+                        "location": "codex-rs/core/src/session/tests.rs:3098:19",
+                    },
+                    {
+                        "code": "E0382",
+                        "location": "codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs:1135:31",
+                    },
+                ],
+                "truncated": False,
+            },
+        )
+        rendered = json.dumps(summary)
+        self.assertNotIn("/home/runner", rendered)
+        self.assertNotIn("private compiler", rendered)
+
+    def test_rustc_synopsis_discards_unrelated_absolute_paths(self) -> None:
+        stderr = """error[E0425]: private path must not escape
+ --> /tmp/private-checkout/src/lib.rs:77:9
+"""
+
+        self.assertEqual(
+            MODULE.rustc_error_locations(stderr),
+            {"entries": [], "truncated": False},
+        )
+
+    def test_rustc_synopsis_caps_entries_and_marks_truncation(self) -> None:
+        stderr = "".join(
+            f"error[E0001]: hidden {index}\n --> core/src/lib.rs:{index + 1}:1\n"
+            for index in range(MODULE.MAX_COMPILER_DIAGNOSTICS + 1)
+        )
+
+        summary = MODULE.rustc_error_locations(stderr)
+
+        self.assertEqual(len(summary["entries"]), MODULE.MAX_COMPILER_DIAGNOSTICS)
+        self.assertTrue(summary["truncated"])
 
     def test_diagnostic_tail_is_bounded(self) -> None:
         value = MODULE.bounded_diagnostic("x" * (MODULE.MAX_DIAGNOSTIC_CHARS + 100))

@@ -32,6 +32,12 @@ MANIFEST_NAME = "validation-named-tests.json"
 MAX_TESTS = 64
 MAX_REQUEST_CHARS = 32768
 MAX_DIAGNOSTIC_CHARS = 4096
+MAX_COMPILER_DIAGNOSTICS = 64
+RUSTC_ERROR_HEADER_RE = re.compile(r"^\s*error\[(?P<code>E\d{4})\]:")
+RUSTC_PRIMARY_LOCATION_RE = re.compile(
+    r"^\s*-->\s+(?P<path>.+?):(?P<line>\d+):(?P<column>\d+)\s*$"
+)
+SAFE_REPO_PATH_COMPONENT_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 TEST_RESULT_RE = re.compile(
     r"test result:\s+\w+\.\s+"
     r"(?P<passed>\d+) passed;\s+"
@@ -60,10 +66,76 @@ def bounded_diagnostic(value: str | None) -> str:
 
 
 def command_diagnostics(completed: subprocess.CompletedProcess[str]) -> dict[str, Any]:
+    compiler_summary = rustc_error_locations(completed.stderr)
     return {
         "exit_code": completed.returncode,
         "stdout_tail": bounded_diagnostic(completed.stdout),
         "stderr_tail": bounded_diagnostic(completed.stderr),
+        "rustc_error_locations": compiler_summary["entries"],
+        "rustc_error_locations_truncated": compiler_summary["truncated"],
+    }
+
+
+def safe_repo_source_path(path: str) -> str | None:
+    """Return a Rust source path without runner or user-specific prefixes."""
+
+    normalized = path.replace("\\", "/").strip()
+    parts = normalized.split("/")
+    if "codex-rs" in parts:
+        parts = parts[parts.index("codex-rs") :]
+    elif not normalized.startswith("/") and not re.match(r"^[A-Za-z]:/", normalized):
+        # Cargo runs with codex-rs as its working directory. Relative compiler
+        # paths are therefore rooted there, regardless of runner location.
+        parts = ["codex-rs", *parts]
+    else:
+        return None
+    if (
+        len(parts) < 2
+        or parts[0] != "codex-rs"
+        or any(part in {"", ".", ".."} for part in parts)
+        or not all(SAFE_REPO_PATH_COMPONENT_RE.fullmatch(part) for part in parts)
+        or not parts[-1].endswith(".rs")
+    ):
+        return None
+    return "/".join(parts)
+
+
+def rustc_error_locations(stderr: str | None) -> dict[str, Any]:
+    """Extract bounded Rust error codes and primary repository-relative spans.
+
+    This intentionally omits compiler prose and source excerpts. Absolute
+    runner paths are reduced to the checked-out ``codex-rs`` suffix; unrelated
+    absolute paths are discarded.
+    """
+
+    entries: list[dict[str, str]] = []
+    current_code: str | None = None
+    for line in str(stderr or "").splitlines():
+        header = RUSTC_ERROR_HEADER_RE.match(line)
+        if header:
+            current_code = header.group("code")
+            continue
+        if current_code is None:
+            continue
+        location = RUSTC_PRIMARY_LOCATION_RE.match(line)
+        if not location:
+            continue
+        source_path = safe_repo_source_path(location.group("path"))
+        if source_path is not None:
+            entries.append(
+                {
+                    "code": current_code,
+                    "location": (
+                        f"{source_path}:{location.group('line')}:{location.group('column')}"
+                    ),
+                }
+            )
+        current_code = None
+        if len(entries) > MAX_COMPILER_DIAGNOSTICS:
+            break
+    return {
+        "entries": entries[:MAX_COMPILER_DIAGNOSTICS],
+        "truncated": len(entries) > MAX_COMPILER_DIAGNOSTICS,
     }
 
 
