@@ -67,6 +67,7 @@ mod exec_server_args_tests;
 mod exec_server_auth;
 mod exec_server_command;
 mod exec_server_telemetry;
+mod instruction_debug;
 mod marketplace_cmd;
 mod mcp_cmd;
 mod mcp_login;
@@ -266,6 +267,9 @@ enum DebugSubcommand {
 
     /// Render the model-visible prompt input list as JSON.
     PromptInput(DebugPromptInputCommand),
+
+    /// Inspect selected local instruction configuration inputs as JSON.
+    Instructions(instruction_debug::DebugInstructionsCommand),
 
     /// Replay a rollout trace bundle and write reduced state JSON.
     #[clap(hide = true)]
@@ -1755,6 +1759,22 @@ async fn cli_main(
                 )
                 .await?;
             }
+            DebugSubcommand::Instructions(cmd) => {
+                reject_remote_mode_for_subcommand(
+                    root_remote.as_deref(),
+                    root_remote_auth_token_env.as_deref(),
+                    "debug instructions",
+                )?;
+                let loader_overrides =
+                    loader_overrides_for_profile(interactive.config_profile_v2.as_ref())?;
+                instruction_debug::run(
+                    cmd,
+                    root_config_overrides,
+                    interactive.cwd.clone(),
+                    loader_overrides,
+                )
+                .await?;
+            }
             DebugSubcommand::TraceReduce(cmd) => {
                 reject_remote_mode_for_subcommand(
                     root_remote.as_deref(),
@@ -1900,8 +1920,11 @@ fn profile_v2_for_subcommand<'a>(
         | Subcommand::Debug(DebugCommand {
             subcommand: DebugSubcommand::PromptInput(_),
         }) => Ok(Some(profile_v2)),
+        Subcommand::Debug(DebugCommand {
+            subcommand: DebugSubcommand::Instructions(_),
+        }) => Ok(Some(profile_v2)),
         _ => anyhow::bail!(
-            "--profile only applies to runtime commands and `codex mcp`: `codex`, `codex exec`, `codex review`, `codex resume`, `codex queue`, `codex archive`, `codex delete`, `codex unarchive`, `codex fork`, `codex mcp`, `codex sandbox`, and `codex debug prompt-input`."
+            "--profile only applies to runtime commands and `codex mcp`: `codex`, `codex exec`, `codex review`, `codex resume`, `codex queue`, `codex archive`, `codex delete`, `codex unarchive`, `codex fork`, `codex mcp`, `codex sandbox`, `codex debug prompt-input`, and `codex debug instructions`."
         ),
     }
 }
@@ -3395,6 +3418,33 @@ mod tests {
         assert_eq!(
             cmd.images,
             vec![PathBuf::from("/tmp/a.png"), PathBuf::from("/tmp/b.png")]
+        );
+    }
+
+    #[test]
+    fn debug_instructions_parses_opt_in_content_flags() {
+        let cli = MultitoolCli::try_parse_from([
+            "codex",
+            "--profile",
+            "inspection",
+            "-C",
+            "/tmp/instruction-fixture",
+            "debug",
+            "instructions",
+            "--show-content",
+            "--client-instructions-stdin",
+        ])
+        .expect("parse");
+        assert!(matches!(
+            cli.subcommand,
+            Some(Subcommand::Debug(DebugCommand {
+                subcommand: DebugSubcommand::Instructions(_)
+            }))
+        ));
+        assert_eq!(cli.interactive.config_profile_v2.as_deref(), Some("inspection"));
+        assert_eq!(
+            cli.interactive.cwd.as_deref(),
+            Some(std::path::Path::new("/tmp/instruction-fixture"))
         );
     }
 
