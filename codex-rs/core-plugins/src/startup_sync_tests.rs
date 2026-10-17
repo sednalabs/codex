@@ -31,14 +31,27 @@ fn extracted_zip_permissions_mask_suid_and_sgid_but_keep_executable_bits() {
 
     let tmp = tempdir().expect("tempdir");
     let archive = zipball_with_suid_sgid_file();
+    let central_directory = archive
+        .windows(4)
+        .position(|window| window == b"PK\x01\x02")
+        .expect("central directory entry");
+    let external_attributes = u32::from_le_bytes(
+        archive[central_directory + 38..central_directory + 42]
+            .try_into()
+            .expect("central directory external attributes"),
+    );
+    assert_eq!(external_attributes >> 16, 0o106755);
+
     let mut zip = ZipArchive::new(std::io::Cursor::new(&archive)).expect("open fixture archive");
+    let parsed_mode = zip
+        .by_index(0)
+        .expect("read fixture entry")
+        .unix_mode()
+        .expect("fixture unix mode");
     assert_eq!(
-        zip.by_index(0)
-            .expect("read fixture entry")
-            .unix_mode()
-            .expect("fixture unix mode")
-            & 0o7777,
-        0o6755
+        parsed_mode & 0o7777,
+        0o755,
+        "zip 9.0.4 clears SUID/SGID while parsing unix_mode"
     );
 
     extract_zipball_to_dir(&archive, tmp.path()).expect("extract archive");
@@ -49,6 +62,15 @@ fn extracted_zip_permissions_mask_suid_and_sgid_but_keep_executable_bits() {
         .permissions()
         .mode();
     assert_eq!(mode & 0o7777, 0o755);
+
+    let helper_file = tmp.path().join("mask-helper-control");
+    std::fs::write(&helper_file, b"helper control").expect("write mask helper control");
+    apply_zip_permissions(Some(0o106755), &helper_file).expect("apply masked helper permissions");
+    let helper_mode = std::fs::metadata(helper_file)
+        .expect("metadata for mask helper control")
+        .permissions()
+        .mode();
+    assert_eq!(helper_mode & 0o7777, 0o755);
 }
 
 #[cfg(unix)]
