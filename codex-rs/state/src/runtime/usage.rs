@@ -3,6 +3,10 @@ use anyhow::ensure;
 use sqlx::Row;
 use sqlx::Sqlite;
 use sqlx::Transaction;
+use uuid::Uuid;
+
+const MAX_SPAWN_IDENTITY_COMPONENT_BYTES: usize = 128;
+const MAX_SPAWN_METADATA_BYTES: usize = 8_192;
 
 /// Outcome of writing one completed provider response to the durable ledger.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -57,6 +61,28 @@ pub struct UsageThreadRecord {
     pub root_thread_id: Option<String>,
     pub fork_parent_thread_id: Option<String>,
     pub source: Option<String>,
+}
+
+/// One successful V2 spawn observed after the child thread was created.
+///
+/// The parent turn and tool call participate in the stable key but are not
+/// persisted because the existing usage schema has no columns for them.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SpawnRequestUsageRecord {
+    pub parent_thread_id: String,
+    pub parent_turn_id: String,
+    pub tool_call_id: String,
+    pub child_thread_id: String,
+    pub requested_model: Option<String>,
+    pub requested_role: Option<String>,
+    pub requested_reasoning_effort: Option<String>,
+}
+
+/// Outcome of writing one successful spawn edge.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SpawnRequestUsageWriteOutcome {
+    Inserted,
+    Duplicate,
 }
 
 impl StateRuntime {
@@ -341,6 +367,135 @@ impl StateRuntime {
         transaction.commit().await?;
         Ok(())
     }
+
+    /// Persist a successful spawn edge using only the existing usage schema.
+    ///
+    /// This is best-effort telemetry: callers must not fail a successfully
+    /// created child when this write fails. Identical replays preserve the
+    /// original database-created timestamp; conflicting replays are rejected.
+    pub async fn record_spawn_request_usage(
+        &self,
+        record: &SpawnRequestUsageRecord,
+    ) -> anyhow::Result<SpawnRequestUsageWriteOutcome> {
+        let spawn_request_id = spawn_request_usage_id(record)?;
+
+        let mut transaction = self.usage_pool.begin().await?;
+        // Begin with a write so SQLite serializes concurrent observations
+        // before either writer verifies or inserts this identity.
+        let insert = sqlx::query(
+            "INSERT OR IGNORE INTO usage_spawn_requests (spawn_request_id, parent_thread_id, child_thread_id, requested_model, requested_role, requested_reasoning_effort, status, completed_at) VALUES (?, ?, ?, ?, ?, ?, 'spawned', NULL)",
+        )
+        .bind(&spawn_request_id)
+        .bind(&record.parent_thread_id)
+        .bind(&record.child_thread_id)
+        .bind(&record.requested_model)
+        .bind(&record.requested_role)
+        .bind(&record.requested_reasoning_effort)
+        .execute(&mut *transaction)
+        .await?;
+
+        if insert.rows_affected() > 0 {
+            transaction.commit().await?;
+            return Ok(SpawnRequestUsageWriteOutcome::Inserted);
+        }
+
+        let existing = sqlx::query(
+            "SELECT parent_thread_id, child_thread_id, requested_model, requested_role, requested_reasoning_effort, status, completed_at FROM usage_spawn_requests WHERE spawn_request_id = ?",
+        )
+        .bind(&spawn_request_id)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let Some(existing) = existing else {
+            anyhow::bail!("spawn request identity was ignored without an existing row");
+        };
+        ensure!(
+            existing.try_get::<String, _>("parent_thread_id")? == record.parent_thread_id
+                && existing
+                    .try_get::<Option<String>, _>("child_thread_id")?
+                    .as_deref()
+                    == Some(record.child_thread_id.as_str())
+                && existing.try_get::<Option<String>, _>("requested_model")?
+                    == record.requested_model
+                && existing.try_get::<Option<String>, _>("requested_role")?
+                    == record.requested_role
+                && existing.try_get::<Option<String>, _>("requested_reasoning_effort")?
+                    == record.requested_reasoning_effort
+                && existing.try_get::<Option<String>, _>("status")?.as_deref() == Some("spawned")
+                && existing
+                    .try_get::<Option<String>, _>("completed_at")?
+                    .is_none(),
+            "conflicting payload for an existing spawn request identity"
+        );
+        transaction.commit().await?;
+        Ok(SpawnRequestUsageWriteOutcome::Duplicate)
+    }
+}
+
+fn validate_spawn_request_usage_record(record: &SpawnRequestUsageRecord) -> anyhow::Result<()> {
+    for value in [
+        record.parent_thread_id.as_str(),
+        record.parent_turn_id.as_str(),
+        record.tool_call_id.as_str(),
+        record.child_thread_id.as_str(),
+    ] {
+        ensure!(
+            !value.trim().is_empty(),
+            "spawn identity component is required"
+        );
+        ensure!(
+            value.len() <= MAX_SPAWN_IDENTITY_COMPONENT_BYTES,
+            "spawn identity component exceeds the supported size"
+        );
+        ensure!(
+            !value.contains('\0'),
+            "spawn identity component contains an unsupported character"
+        );
+    }
+    ensure!(
+        record.parent_thread_id != record.child_thread_id,
+        "spawn child cannot equal its parent thread"
+    );
+    for value in [
+        record.requested_model.as_deref(),
+        record.requested_role.as_deref(),
+        record.requested_reasoning_effort.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        ensure!(
+            !value.trim().is_empty(),
+            "spawn metadata cannot be empty when supplied"
+        );
+        ensure!(
+            value.len() <= MAX_SPAWN_METADATA_BYTES,
+            "spawn metadata exceeds the supported size"
+        );
+        ensure!(
+            !value.contains('\0'),
+            "spawn metadata contains an unsupported character"
+        );
+    }
+    Ok(())
+}
+
+fn spawn_request_usage_id(record: &SpawnRequestUsageRecord) -> anyhow::Result<String> {
+    validate_spawn_request_usage_record(record)?;
+    let mut identity = b"codex-usage-spawn-v1\0".to_vec();
+    for component in [
+        record.parent_thread_id.as_bytes(),
+        record.parent_turn_id.as_bytes(),
+        record.tool_call_id.as_bytes(),
+    ] {
+        let length =
+            u32::try_from(component.len()).expect("spawn identity component bound fits in u32");
+        identity.extend_from_slice(&length.to_be_bytes());
+        identity.extend_from_slice(component);
+    }
+    Ok(format!(
+        "spawn-v1:{}",
+        Uuid::new_v5(&Uuid::NAMESPACE_URL, &identity)
+    ))
 }
 
 fn ensure_lineage_compatible(
@@ -435,6 +590,8 @@ async fn provider_call_response_matches(
 mod tests {
     use super::ProviderCallUsageRecord;
     use super::ProviderCallUsageWriteOutcome;
+    use super::SpawnRequestUsageRecord;
+    use super::SpawnRequestUsageWriteOutcome;
     use super::UsageThreadRecord;
     use crate::SqliteConfig;
     use crate::StateRuntime;
@@ -474,6 +631,170 @@ mod tests {
             total_tokens: usage.map(|usage| usage.4),
             status,
         }
+    }
+
+    fn spawn_record() -> SpawnRequestUsageRecord {
+        SpawnRequestUsageRecord {
+            parent_thread_id: "parent-thread".to_string(),
+            parent_turn_id: "parent-turn".to_string(),
+            tool_call_id: "spawn-call".to_string(),
+            child_thread_id: "child-thread".to_string(),
+            requested_model: Some("gpt-6-luna".to_string()),
+            requested_role: Some("default".to_string()),
+            requested_reasoning_effort: Some("medium".to_string()),
+        }
+    }
+
+    #[tokio::test]
+    async fn spawn_request_usage_replay_is_idempotent_and_conflicts_are_rejected() {
+        let codex_home = unique_temp_dir();
+        let sqlite = SqliteConfig::new_for_testing(codex_home.as_path().abs());
+        let runtime = StateRuntime::init(sqlite, "openai".to_string())
+            .await
+            .expect("initialize isolated state runtime");
+        let record = spawn_record();
+
+        assert_eq!(
+            runtime
+                .record_spawn_request_usage(&record)
+                .await
+                .expect("record successful spawn edge"),
+            SpawnRequestUsageWriteOutcome::Inserted
+        );
+        let first = sqlx::query(
+            "SELECT spawn_request_id, parent_thread_id, child_thread_id, requested_model, requested_role, requested_reasoning_effort, status, created_at, completed_at FROM usage_spawn_requests",
+        )
+        .fetch_one(runtime.usage_pool().as_ref())
+        .await
+        .expect("read the persisted successful spawn edge");
+        let first_created_at: String = first
+            .try_get("created_at")
+            .expect("read first-observation timestamp");
+        assert!(first_created_at.contains('T'));
+        assert!(
+            first
+                .try_get::<String, _>("spawn_request_id")
+                .expect("read stable spawn request ID")
+                .starts_with("spawn-v1:")
+        );
+        assert_eq!(
+            first
+                .try_get::<String, _>("parent_thread_id")
+                .expect("read parent thread"),
+            record.parent_thread_id
+        );
+        assert_eq!(
+            first
+                .try_get::<Option<String>, _>("child_thread_id")
+                .expect("read child thread")
+                .as_deref(),
+            Some(record.child_thread_id.as_str())
+        );
+        assert_eq!(
+            first
+                .try_get::<Option<String>, _>("requested_model")
+                .expect("read requested model"),
+            record.requested_model
+        );
+        assert_eq!(
+            first
+                .try_get::<Option<String>, _>("requested_role")
+                .expect("read requested role"),
+            record.requested_role
+        );
+        assert_eq!(
+            first
+                .try_get::<Option<String>, _>("requested_reasoning_effort")
+                .expect("read requested reasoning effort"),
+            record.requested_reasoning_effort
+        );
+        assert_eq!(
+            first
+                .try_get::<Option<String>, _>("status")
+                .expect("read successful spawn status")
+                .as_deref(),
+            Some("spawned")
+        );
+        assert_eq!(
+            first
+                .try_get::<Option<String>, _>("completed_at")
+                .expect("read completion timestamp"),
+            None
+        );
+
+        assert_eq!(
+            runtime
+                .record_spawn_request_usage(&record)
+                .await
+                .expect("identical replay is harmless"),
+            SpawnRequestUsageWriteOutcome::Duplicate
+        );
+        let replayed_created_at: String =
+            sqlx::query_scalar("SELECT created_at FROM usage_spawn_requests")
+                .fetch_one(runtime.usage_pool().as_ref())
+                .await
+                .expect("read retained first-observation timestamp");
+        assert_eq!(replayed_created_at, first_created_at);
+
+        let mut conflict = record.clone();
+        conflict.requested_model = Some("different-explicit-model".to_string());
+        assert!(runtime.record_spawn_request_usage(&conflict).await.is_err());
+        let after_conflict = sqlx::query(
+            "SELECT requested_model, created_at, completed_at FROM usage_spawn_requests",
+        )
+        .fetch_one(runtime.usage_pool().as_ref())
+        .await
+        .expect("read unchanged row after conflicting replay");
+        assert_eq!(
+            after_conflict
+                .try_get::<Option<String>, _>("requested_model")
+                .expect("read original requested model"),
+            record.requested_model
+        );
+        assert_eq!(
+            after_conflict
+                .try_get::<String, _>("created_at")
+                .expect("read original timestamp"),
+            first_created_at
+        );
+        assert_eq!(
+            after_conflict
+                .try_get::<Option<String>, _>("completed_at")
+                .expect("read unchanged completion timestamp"),
+            None
+        );
+        let row_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM usage_spawn_requests")
+            .fetch_one(runtime.usage_pool().as_ref())
+            .await
+            .expect("count stable spawn rows");
+        assert_eq!(row_count, 1);
+
+        runtime.close().await;
+    }
+
+    #[test]
+    fn spawn_request_usage_identity_is_scoped_and_bounded() {
+        let mut left = spawn_record();
+        left.parent_thread_id = "ab".to_string();
+        left.parent_turn_id = "c".to_string();
+        left.tool_call_id = "d".to_string();
+        let mut right = left.clone();
+        right.parent_thread_id = "a".to_string();
+        right.parent_turn_id = "bc".to_string();
+        assert_ne!(
+            super::spawn_request_usage_id(&left).expect("form left scoped identity"),
+            super::spawn_request_usage_id(&right).expect("form right scoped identity")
+        );
+        let identity =
+            super::spawn_request_usage_id(&spawn_record()).expect("form bounded spawn identity");
+        assert!(identity.len() <= 128);
+
+        let mut oversized_component = spawn_record();
+        oversized_component.tool_call_id = "x".repeat(129);
+        assert!(super::spawn_request_usage_id(&oversized_component).is_err());
+        let mut oversized_metadata = spawn_record();
+        oversized_metadata.requested_model = Some("m".repeat(8_193));
+        assert!(super::spawn_request_usage_id(&oversized_metadata).is_err());
     }
 
     async fn account_scope_order_fixture(account_first: bool) {

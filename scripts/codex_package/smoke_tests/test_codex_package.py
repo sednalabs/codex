@@ -21,9 +21,11 @@ Each package contains one entrypoint, not both codex and codex-app-server.
 import hashlib
 import json
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tomllib
+from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
 
@@ -31,7 +33,9 @@ import pytest
 from app_server_harness import (
     CapturedResponsesRequest,
     MockResponsesServer,
+    ev_assistant_message,
     ev_completed,
+    ev_completed_with_usage,
     ev_response_created,
     sse,
 )
@@ -85,6 +89,8 @@ def test_cli_instruction_inspection_with_synthetic_linux_configuration(
         for key in ("PATH", "SystemRoot", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT")
         if key in package.environment
     }
+    if "PATH" not in environment:
+        pytest.fail("Packaged CLI PATH is unavailable", pytrace=False)
     environment.update(
         CODEX_HOME=str(config_home),
         HOME=str(home),
@@ -96,6 +102,8 @@ def test_cli_instruction_inspection_with_synthetic_linux_configuration(
         TMPDIR=str(temporary),
         TMP=str(temporary),
         TEMP=str(temporary),
+        NO_PROXY="127.0.0.1,localhost",
+        no_proxy="127.0.0.1,localhost",
     )
     isolated = replace(package, directory=workspace, environment=environment)
     config_path = config_home / "config.toml"
@@ -215,7 +223,6 @@ def test_cli_instruction_inspection_with_synthetic_linux_configuration(
     )
     if not all(explicit_checks):
         pytest.fail("Explicit packaged instruction projection failed", pytrace=False)
-
     state_created = any(
         path.name in {"auth.json", "history.jsonl", "sessions"}
         or ".sqlite" in path.name
@@ -227,6 +234,408 @@ def test_cli_instruction_inspection_with_synthetic_linux_configuration(
     assert not state_created, "Instruction inspection created auth or session state"
     assert config_unchanged, "Instruction inspection changed its synthetic config"
     assert target_unopened, "Instruction inspection created its configured target"
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="Usage lineage consumer is scoped to the disposable Linux package runner",
+)
+def test_packaged_usage_report_covers_recorded_synthetic_spawn_tree(
+    package: SmokePackage,
+    tmp_path: Path,
+) -> None:
+    """A packaged root/child spawn is visible to the adjacent bounded reporter."""
+    home = tmp_path / "home"
+    codex_home = home / "codex"
+    workspace = tmp_path / "workspace"
+    temporary = tmp_path / "temporary"
+    for directory in (codex_home, workspace, temporary):
+        directory.mkdir(parents=True)
+    (workspace / ".git").mkdir()
+    (workspace / ".git" / "HEAD").write_text(
+        "ref: refs/heads/main\n", encoding="utf-8"
+    )
+
+    environment = {
+        key: package.environment[key]
+        for key in ("PATH", "SystemRoot", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT")
+        if key in package.environment
+    }
+    environment.update(
+        CODEX_HOME=str(codex_home),
+        HOME=str(home),
+        USERPROFILE=str(home),
+        XDG_CONFIG_HOME=str(home / "xdg-config"),
+        APPDATA=str(home / "app-data"),
+        LOCALAPPDATA=str(home / "local-app-data"),
+        PROGRAMDATA=str(home / "program-data"),
+        TMPDIR=str(temporary),
+        TMP=str(temporary),
+        TEMP=str(temporary),
+    )
+    config_path = codex_home / "config.toml"
+
+    def require_system_configuration_absent() -> None:
+        for name in ("config.toml", "requirements.toml", "managed_config.toml"):
+            try:
+                (Path("/etc/codex") / name).lstat()
+            except FileNotFoundError:
+                continue
+            except OSError:
+                pytest.fail("System configuration absence is unverified", pytrace=False)
+            pytest.fail(
+                "Packaged usage consumer requires absent system configuration",
+                pytrace=False,
+            )
+
+    def request_thread_id(request: CapturedResponsesRequest) -> str | None:
+        metadata = request.body_json().get("client_metadata")
+        return metadata.get("thread_id") if isinstance(metadata, dict) else None
+
+    def has_call_output(request: CapturedResponsesRequest, call_id: str) -> bool:
+        return any(
+            item.get("type") == "function_call_output"
+            and item.get("call_id") == call_id
+            for item in request.input()
+        )
+
+    def function_call(
+        call_id: str, name: str, arguments: dict[str, object]
+    ) -> dict[str, object]:
+        return {
+            "type": "response.output_item.done",
+            "item": {
+                "type": "function_call",
+                "call_id": call_id,
+                "name": name,
+                "arguments": json.dumps(arguments, sort_keys=True),
+                "namespace": "collaboration",
+            },
+        }
+
+    config_path.write_text(
+        'model = "package-smoke"\n'
+        'model_provider = "package_smoke"\n'
+        'model_reasoning_effort = "medium"\n'
+        'approval_policy = "never"\n'
+        'sandbox_mode = "workspace-write"\n'
+        "[features]\n"
+        "code_mode_only = false\n"
+        "code_mode_host = true\n"
+        "memories = false\n"
+        "apps = false\n"
+        "plugins = false\n"
+        "[features.multi_agent_v2]\n"
+        "enabled = true\n"
+        "hide_spawn_agent_metadata = false\n"
+        "non_code_mode_only = true\n"
+        "[model_providers.package_smoke]\n"
+        'name = "package smoke"\n'
+        'wire_api = "responses"\n'
+        "request_max_retries = 0\n"
+        "stream_max_retries = 0\n",
+        encoding="utf-8",
+    )
+
+    with MockResponsesServer() as server:
+        with config_path.open("a", encoding="utf-8") as config_file:
+            config_file.write(f'base_url = "{server.url}/v1"\n')
+        require_system_configuration_absent()
+        with Codex(
+            config=CodexConfig(
+                codex_bin=str(package.cli),
+                cwd=str(workspace),
+                env=environment,
+            )
+        ) as client:
+            root = client.thread_start(
+                ephemeral=False,
+                approval_mode=ApprovalMode.deny_all,
+                sandbox=Sandbox.workspace_write,
+            )
+            root_id = str(root.id)
+            spawn_call_id = "usage-spawn-call"
+            wait_call_id = "usage-wait-call"
+            spawn_marker = "SYNTHETIC_USAGE_ROOT_MARKER"
+            child_marker = "SYNTHETIC_USAGE_CHILD_MARKER"
+
+            server.enqueue_sse_for_request(
+                lambda request: (
+                    request_thread_id(request) == root_id
+                    and spawn_marker in json.dumps(request.input())
+                    and not has_call_output(request, spawn_call_id)
+                ),
+                sse(
+                    [
+                        ev_response_created("usage-root-spawn"),
+                        function_call(
+                            spawn_call_id,
+                            "spawn_agent",
+                            {
+                                "task_name": "usage-worker",
+                                "message": child_marker,
+                                "agent_type": "default",
+                                "model": "gpt-6-luna",
+                                "reasoning_effort": "medium",
+                                "fork_turns": "none",
+                            },
+                        ),
+                        ev_completed_with_usage(
+                            "usage-root-spawn",
+                            input_tokens=2,
+                            cached_input_tokens=0,
+                            output_tokens=3,
+                            reasoning_output_tokens=0,
+                            total_tokens=5,
+                        ),
+                    ]
+                ),
+            )
+            server.enqueue_sse_for_request(
+                lambda request: (
+                    request_thread_id(request) == root_id
+                    and has_call_output(request, spawn_call_id)
+                    and not has_call_output(request, wait_call_id)
+                ),
+                sse(
+                    [
+                        ev_response_created("usage-root-wait"),
+                        function_call(
+                            wait_call_id,
+                            "wait_agent",
+                            {
+                                "targets": ["/root/usage-worker"],
+                                "return_when": "all",
+                                "timeout_ms": 20_000,
+                            },
+                        ),
+                        ev_completed_with_usage(
+                            "usage-root-wait",
+                            input_tokens=2,
+                            cached_input_tokens=0,
+                            output_tokens=3,
+                            reasoning_output_tokens=0,
+                            total_tokens=5,
+                        ),
+                    ]
+                ),
+            )
+            server.enqueue_sse_for_request(
+                lambda request: (
+                    request_thread_id(request) == root_id
+                    and has_call_output(request, wait_call_id)
+                ),
+                sse(
+                    [
+                        ev_response_created("usage-root-final"),
+                        ev_assistant_message("usage-root-answer", "root complete"),
+                        ev_completed_with_usage(
+                            "usage-root-final",
+                            input_tokens=2,
+                            cached_input_tokens=0,
+                            output_tokens=3,
+                            reasoning_output_tokens=0,
+                            total_tokens=5,
+                        ),
+                    ]
+                ),
+            )
+            server.enqueue_sse_for_request(
+                lambda request: (
+                    request.header("x-codex-parent-thread-id") == root_id
+                    and child_marker in json.dumps(request.input())
+                ),
+                sse(
+                    [
+                        ev_response_created("usage-child-final"),
+                        ev_assistant_message("usage-child-answer", "child complete"),
+                        ev_completed_with_usage(
+                            "usage-child-final",
+                            input_tokens=2,
+                            cached_input_tokens=0,
+                            output_tokens=3,
+                            reasoning_output_tokens=0,
+                            total_tokens=5,
+                        ),
+                    ]
+                ),
+            )
+
+            turn = root.run(f"{spawn_marker}: start a child and wait for it.")
+            if turn.final_response != "root complete":
+                pytest.fail("Packaged root/child smoke did not complete", pytrace=False)
+
+        child_requests = [
+            request
+            for request in server.requests()
+            if request.path == "/v1/responses"
+            and request.header("x-codex-parent-thread-id") == root_id
+        ]
+        child_ids = {
+            request_thread_id(request)
+            for request in child_requests
+            if request_thread_id(request) is not None
+        }
+        if len(child_ids) != 1:
+            pytest.fail(
+                "Synthetic child identity was not uniquely observed", pytrace=False
+            )
+        child_id = next(iter(child_ids))
+
+    database_path = codex_home / "usage_1.sqlite"
+    if not database_path.is_file():
+        pytest.fail("Packaged usage database was not created", pytrace=False)
+    try:
+        with closing(
+            sqlite3.connect(f"file:{database_path.as_posix()}?mode=ro", uri=True)
+        ) as database:
+            database.row_factory = sqlite3.Row
+            edges = database.execute(
+                "SELECT spawn_request_id, parent_thread_id, child_thread_id, "
+                "requested_model, requested_role, requested_reasoning_effort, "
+                "status, created_at, completed_at FROM usage_spawn_requests "
+                "WHERE parent_thread_id = ?",
+                (root_id,),
+            ).fetchall()
+            call_rows = database.execute(
+                "SELECT thread_id, COUNT(*) AS call_count, "
+                "SUM(total_tokens) AS total_tokens FROM usage_provider_calls "
+                "WHERE thread_id IN (?, ?) GROUP BY thread_id",
+                (root_id, child_id),
+            ).fetchall()
+    except sqlite3.Error:
+        pytest.fail(
+            "Synthetic packaged usage database could not be read", pytrace=False
+        )
+    if len(edges) != 1:
+        pytest.fail(
+            "Successful spawn edge was not recorded exactly once", pytrace=False
+        )
+    edge = edges[0]
+    if not (
+        isinstance(edge["spawn_request_id"], str)
+        and edge["spawn_request_id"].startswith("spawn-v1:")
+        and len(edge["spawn_request_id"]) <= 128
+        and edge["parent_thread_id"] == root_id
+        and edge["child_thread_id"] == child_id
+        and edge["requested_model"] == "gpt-6-luna"
+        and edge["requested_role"] == "default"
+        and edge["requested_reasoning_effort"] == "medium"
+        and edge["status"] == "spawned"
+        and isinstance(edge["created_at"], str)
+        and edge["completed_at"] is None
+    ):
+        pytest.fail(
+            "Recorded spawn edge did not match the successful call", pytrace=False
+        )
+    calls_by_thread = {
+        row["thread_id"]: (row["call_count"], row["total_tokens"])
+        for row in call_rows
+    }
+    if calls_by_thread != {root_id: (3, 15), child_id: (1, 5)}:
+        pytest.fail("Synthetic provider-call totals were not preserved", pytrace=False)
+
+    script = next(
+        parent / "scripts/codex_usage_report.py"
+        for parent in Path(__file__).resolve().parents
+        if (parent / "scripts/codex_usage_report.py").is_file()
+    )
+    require_system_configuration_absent()
+    try:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(script),
+                "--database",
+                str(database_path),
+                "--all-time",
+                "--timezone",
+                "UTC",
+                "--scope",
+                "subtree",
+                "--thread-id",
+                root_id,
+                "--credit-mode",
+                "none",
+            ],
+            cwd=workspace,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+        )
+        report = json.loads(completed.stdout)
+    except (OSError, subprocess.SubprocessError, UnicodeError, ValueError):
+        pytest.fail("Bounded packaged usage report failed", pytrace=False)
+    if not isinstance(report, dict):
+        pytest.fail("Bounded packaged usage report had an invalid shape", pytrace=False)
+    contributions = report.get("scope_contributions")
+    coverage = report.get("lineage_coverage")
+    summary = report.get("summary")
+    root_descendant_models = (
+        contributions.get("root_vs_descendants_by_actual_model")
+        if isinstance(contributions, dict)
+        else None
+    )
+    root_models = (
+        root_descendant_models.get("requested_root")
+        if isinstance(root_descendant_models, dict)
+        else None
+    )
+    descendant_models = (
+        root_descendant_models.get("all_descendants")
+        if isinstance(root_descendant_models, dict)
+        else None
+    )
+    own_contribution = (
+        contributions.get("own") if isinstance(contributions, dict) else None
+    )
+    descendant_contribution = (
+        contributions.get("descendants_excluding_anchor")
+        if isinstance(contributions, dict)
+        else None
+    )
+    token_subtotals = (
+        summary.get("token_sums_known_subtotal") if isinstance(summary, dict) else None
+    )
+
+    def model_call_count(rows: object) -> int | None:
+        if not isinstance(rows, list) or any(
+            not isinstance(row, dict)
+            or not isinstance(row.get("provider_call_count"), int)
+            for row in rows
+        ):
+            return None
+        return sum(row["provider_call_count"] for row in rows)
+
+    report_checks = (
+        completed.returncode == 0,
+        report.get("status") == "complete",
+        report.get("recorder_completeness")
+        == "unknown; report covers recorded ledger rows only",
+        report.get("scope") == {"kind": "subtree", "thread_id": root_id},
+        isinstance(coverage, dict)
+        and coverage.get("participating_thread_count") == 2
+        and coverage.get("descendant_thread_count") == 1
+        and coverage.get("unresolved_thread_count") == 0,
+        isinstance(summary, dict)
+        and summary.get("provider_call_count") == 4
+        and summary.get("configured_model_unrecorded_call_count") == 4
+        and isinstance(token_subtotals, dict)
+        and token_subtotals.get("total_tokens") == 20,
+        isinstance(contributions, dict)
+        and contributions.get("anchor_thread_id") == root_id
+        and isinstance(own_contribution, dict)
+        and own_contribution.get("provider_call_count") == 3
+        and isinstance(descendant_contribution, dict)
+        and descendant_contribution.get("provider_call_count") == 1
+        and contributions.get("disjoint_call_counts_reconcile") is True,
+        model_call_count(root_models) == 3,
+        model_call_count(descendant_models) == 1,
+    )
+    if not all(report_checks):
+        pytest.fail("Packaged root/child usage report did not reconcile", pytrace=False)
 
 
 @pytest.mark.skipif(
