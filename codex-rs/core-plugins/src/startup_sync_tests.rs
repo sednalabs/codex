@@ -26,6 +26,55 @@ const TEST_CURATED_PLUGIN_SHA: &str = "0123456789abcdef0123456789abcdef01234567"
 
 #[cfg(unix)]
 #[test]
+fn extracted_zip_permissions_mask_suid_and_sgid_but_keep_executable_bits() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempdir().expect("tempdir");
+    let archive = zipball_with_suid_sgid_file();
+    let central_directory = archive
+        .windows(4)
+        .position(|window| window == b"PK\x01\x02")
+        .expect("central directory entry");
+    let external_attributes = u32::from_le_bytes(
+        archive[central_directory + 38..central_directory + 42]
+            .try_into()
+            .expect("central directory external attributes"),
+    );
+    assert_eq!(external_attributes >> 16, 0o106755);
+
+    let mut zip = ZipArchive::new(std::io::Cursor::new(&archive)).expect("open fixture archive");
+    let parsed_mode = zip
+        .by_index(0)
+        .expect("read fixture entry")
+        .unix_mode()
+        .expect("fixture unix mode");
+    assert_eq!(
+        parsed_mode & 0o7777,
+        0o755,
+        "zip 9.0.4 clears SUID/SGID while parsing unix_mode"
+    );
+
+    extract_zipball_to_dir(&archive, tmp.path()).expect("extract archive");
+
+    let extracted_file = tmp.path().join("bin/tool");
+    let mode = std::fs::metadata(extracted_file)
+        .expect("metadata for extracted file")
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o7777, 0o755);
+
+    let helper_file = tmp.path().join("mask-helper-control");
+    std::fs::write(&helper_file, b"helper control").expect("write mask helper control");
+    apply_zip_permissions(Some(0o106755), &helper_file).expect("apply masked helper permissions");
+    let helper_mode = std::fs::metadata(helper_file)
+        .expect("metadata for mask helper control")
+        .permissions()
+        .mode();
+    assert_eq!(helper_mode & 0o7777, 0o755);
+}
+
+#[cfg(unix)]
+#[test]
 fn pretrust_startup_sync_uses_installed_git_with_hostile_path() {
     const CHILD_HOME: &str = "CODEX_TEST_CURATED_SYNC_HOME";
     if let Some(home) = std::env::var_os(CHILD_HOME) {
@@ -1416,6 +1465,28 @@ fn curated_repo_zipball_bytes(sha: &str) -> Vec<u8> {
         .expect("write plugin manifest");
 
     writer.finish().expect("finish zip writer").into_inner()
+}
+
+#[cfg(unix)]
+fn zipball_with_suid_sgid_file() -> Vec<u8> {
+    let cursor = std::io::Cursor::new(Vec::new());
+    let mut writer = ZipWriter::new(cursor);
+    let options = SimpleFileOptions::default().unix_permissions(0o755);
+    writer
+        .start_file("openai-plugins-test/bin/tool", options)
+        .expect("start executable entry");
+    writer.write_all(b"tool").expect("write executable entry");
+    let mut bytes = writer.finish().expect("finish zip writer").into_inner();
+
+    // ZipWriter's unix_permissions option masks special bits, so encode them
+    // directly in the central-directory external attributes for this fixture.
+    let central_directory = bytes
+        .windows(4)
+        .position(|window| window == b"PK\x01\x02")
+        .expect("central directory entry");
+    let mode: u32 = (0o100000 | 0o6755) << 16;
+    bytes[central_directory + 38..central_directory + 42].copy_from_slice(&mode.to_le_bytes());
+    bytes
 }
 
 fn curated_repo_backup_archive_zip_bytes(sha: &str) -> Vec<u8> {
