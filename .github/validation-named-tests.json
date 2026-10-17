@@ -184,6 +184,14 @@
       "profiles": ["rust_minimal", "rust_integration"],
       "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-tui", "--test", "all", "--", "--list"],
       "execution_argv": ["cargo", "test", "--locked", "-p", "codex-tui", "--test", "all", "--", "--test-threads=1"]
+    },
+    {
+      "package": "codex-utils-cargo-bin",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-utils-cargo-bin", "--lib", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-utils-cargo-bin", "--lib", "--", "--test-threads=1"]
     }
   ]
 }
