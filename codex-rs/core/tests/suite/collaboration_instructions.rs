@@ -360,7 +360,7 @@ async fn review_uses_review_baseline_and_does_not_apply_normal_baseline() -> Res
     let server = start_mock_server().await;
     let mock = mount_sse_sequence(
         &server,
-        [
+        vec![
             sse(vec![ev_response_created("resp-1"), ev_completed("resp-1")]),
             sse(vec![
                 ev_response_created("resp-2"),
@@ -439,7 +439,7 @@ async fn fork_reconstructs_the_configured_overlay_on_its_child_client() -> Resul
     let server = start_mock_server().await;
     let mock = mount_sse_sequence(
         &server,
-        [
+        vec![
             sse(vec![ev_response_created("resp-1"), ev_completed("resp-1")]),
             sse(vec![ev_response_created("resp-2"), ev_completed("resp-2")]),
         ],
@@ -493,7 +493,7 @@ async fn resume_and_config_rollback_change_only_new_outgoing_requests() -> Resul
     let server = start_mock_server().await;
     let mock = mount_sse_sequence(
         &server,
-        [
+        vec![
             sse(vec![ev_response_created("resp-1"), ev_completed("resp-1")]),
             sse(vec![ev_response_created("resp-2"), ev_completed("resp-2")]),
             sse(vec![ev_response_created("resp-3"), ev_completed("resp-3")]),

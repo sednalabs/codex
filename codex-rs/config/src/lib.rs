@@ -150,6 +150,7 @@ pub use instruction_overlays::InstructionOverlayError;
 pub use instruction_overlays::InstructionOverlayOnAbsent;
 pub use instruction_overlays::InstructionOverlaysToml;
 pub use instruction_overlays::InstructionOverlaySelection;
+pub use instruction_overlays::MAX_INSTRUCTION_OVERLAY_BODY_BYTES;
 pub use instruction_overlays::MAX_INSTRUCTION_OVERLAY_INSTANCES;
 pub use instruction_overlays::MAX_INSTRUCTION_OVERLAY_REQUEST_BYTES;
 pub use constraint::Constrained;

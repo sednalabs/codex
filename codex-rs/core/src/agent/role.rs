@@ -487,7 +487,9 @@ mod instruction_overlay_role_tests {
         .await
         .expect("write synthetic project trust config");
         let agents = project.path().join(".codex/agents");
-        tokio::fs::create_dir_all(&agents).await.expect("create project role directory");
+        tokio::fs::create_dir_all(&agents)
+            .await
+            .expect("create project role directory");
         tokio::fs::write(project.path().join(".codex/config.toml"), "")
             .await
             .expect("write project config layer");
@@ -514,10 +516,13 @@ mod instruction_overlay_role_tests {
             .await
             .expect("trusted project-discovered role applies");
         assert_eq!(
-            trusted.instruction_overlays.apply_component(
-                InstructionOverlayComponent::DeveloperGuidance,
-                /*body*/ Some("source"),
-            ).expect("project role overlay"),
+            trusted
+                .instruction_overlays
+                .apply_component(
+                    InstructionOverlayComponent::DeveloperGuidance,
+                    /*body*/ Some("source"),
+                )
+                .expect("project role overlay"),
             Some("source project role guidance".to_string())
         );
         let (_home, _project, untrusted) = project_role_config("untrusted").await;
@@ -559,7 +564,7 @@ mod instruction_overlay_role_tests {
         )
         .await;
         let model_before_role = config.model.clone();
-        let effort_before_role = config.model_reasoning_effort;
+        let effort_before_role = config.model_reasoning_effort.clone();
         apply_role_to_config(&mut config, /*role_name*/ Some("custom"))
             .await
             .expect("selected role overlays apply");
