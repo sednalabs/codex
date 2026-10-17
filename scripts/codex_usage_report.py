@@ -873,6 +873,14 @@ class UsageReporter:
                     raw_child_id = edge["child_thread_id"]
                     raw_parent_id = edge["parent_thread_id"]
                     if any(
+                        value is not None and not isinstance(value, str)
+                        for value in (raw_request_id, raw_parent_id, raw_child_id)
+                    ):
+                        # Do not stringify SQLite BLOB/numeric identifiers:
+                        # their size and identity are not covered by text caps.
+                        self.lineage_walk_incomplete = True
+                        continue
+                    if any(
                         isinstance(value, str)
                         and len(value) > MAX_MULTI_LEDGER_INTERNAL_TEXT_CHARS[column]
                         for column, value in (
