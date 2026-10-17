@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import subprocess
 from pathlib import Path
 from unittest import TestCase, main, mock
@@ -160,6 +161,50 @@ class NamedRustTests(TestCase):
                 "--test-threads=1",
             ],
         )
+
+    def test_bin_target_commands_are_catalog_owned(self) -> None:
+        request = {
+            **REQUEST,
+            "package": "codex-cli",
+            "target_kind": "bin",
+            "target": "codex",
+        }
+        record = {
+            "package": "codex-cli",
+            "target_kind": "bin",
+            "target": "codex",
+            "profiles": ("rust_minimal",),
+            "inventory_argv": tuple(
+                MODULE.expected_commands("codex-cli", "bin", "codex")[0]
+            ),
+            "execution_argv": tuple(
+                MODULE.expected_commands("codex-cli", "bin", "codex")[1]
+            ),
+        }
+        self.assertEqual(
+            MODULE.cargo_args(request, list_only=True, command_record=record),
+            ["cargo", "test", "--locked", "-p", "codex-cli", "--bin", "codex", "--", "--list"],
+        )
+        self.assertEqual(
+            MODULE.cargo_args(request, list_only=False, command_record=record),
+            [
+                "cargo", "test", "--locked", "-p", "codex-cli", "--bin", "codex",
+                "--", "--test-threads=1",
+            ],
+        )
+
+    def test_bin_request_requires_a_safe_catalog_target(self) -> None:
+        request = {**REQUEST, "target_kind": "bin", "target": "--workspace"}
+        with mock.patch.dict(
+            MODULE.os.environ,
+            {
+                "RUST_TEST_REQUEST_JSON": json.dumps(request),
+                "VALIDATION_PROFILE": "rust_minimal",
+            },
+        ):
+            result, error = MODULE.load_request()
+        self.assertIsNone(result)
+        self.assertEqual(error["failure_code"], "target_invalid")
 
     def test_exact_mode_runs_only_inventory_confirmed_selectors(self) -> None:
         request = {
