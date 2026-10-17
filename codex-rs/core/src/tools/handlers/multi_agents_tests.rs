@@ -30,6 +30,7 @@ use crate::turn_diff_tracker::TurnDiffTracker;
 use codex_extension_api::empty_extension_registry;
 use codex_features::Feature;
 use codex_history::InitialHistory;
+use codex_history::InterAgentCommunicationIntent;
 use codex_history::RolloutItem;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
@@ -73,10 +74,12 @@ use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
+use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::user_input::UserInput;
+use codex_rollout::RolloutRecorder;
 use codex_state::DirectionalThreadSpawnEdgeStatus;
 use core_test_support::TempDirExt;
 use opentelemetry_sdk::metrics::InMemoryMetricExporter;
@@ -87,6 +90,7 @@ use serde::Deserialize;
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -158,6 +162,18 @@ fn thread_manager() -> ThreadManager {
         CodexAuth::from_api_key("dummy"),
         built_in_model_providers(/* openai_base_url */ /*openai_base_url*/ None)["openai"].clone(),
     )
+}
+
+async fn full_rollout_items(thread: &crate::CodexThread) -> Vec<RolloutItem> {
+    let path = thread
+        .rollout_path()
+        .expect("thread should retain its rollout path");
+    let (items, stored_thread_id, parse_errors) = RolloutRecorder::load_rollout_items(&path)
+        .await
+        .expect("read full retained rollout stream");
+    assert_eq!(stored_thread_id, Some(thread.session.thread_id));
+    assert_eq!(parse_errors, 0);
+    items
 }
 
 async fn install_role_with_model_override(turn: &mut TurnContext) -> String {
@@ -1476,6 +1492,632 @@ async fn multi_agent_v2_send_message_accepts_root_target_from_child() {
 }
 
 #[tokio::test]
+async fn multi_agent_v2_explicit_root_updates_are_durable_and_idempotent() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config);
+    let root = manager
+        .start_thread(StartThreadOptions {
+            history_mode: Some(ThreadHistoryMode::Paginated),
+            ..StartThreadOptions::new((*turn.config).clone())
+        })
+        .await
+        .expect("root thread should start");
+    assert_eq!(
+        root.thread.config_snapshot().await.history_mode,
+        ThreadHistoryMode::Paginated
+    );
+    session.thread_id = root.thread_id;
+    let root_thread = manager
+        .get_thread(root.thread_id)
+        .await
+        .expect("root thread should remain loaded");
+    let root_rollout_path = root_thread
+        .rollout_path()
+        .expect("root should retain its rollout path");
+    assert!(
+        codex_rollout::existing_rollout_path(&root_rollout_path)
+            .await
+            .is_none(),
+        "a fresh root should not have a materialized rollout before its first update"
+    );
+    // Keep the child fixture in the root's registry; a fresh manager control is another tree.
+    let root_agent_control = root_thread
+        .session
+        .services
+        .local_agent_runtime
+        .control(root_thread.session.session_id());
+    set_agent_control(&mut session, root_agent_control);
+
+    let child_path = AgentPath::try_from("/root/worker").expect("agent path");
+    let child_thread_id = session
+        .services
+        .local_agent_runtime
+        .control(session.session_id())
+        .spawn_agent_with_metadata(
+            (*turn.config).clone(),
+            vec![UserInput::Text {
+                text: "inspect this repo".to_string(),
+                text_elements: Vec::new(),
+            }],
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.thread_id,
+                depth: 1,
+                agent_path: Some(child_path.clone()),
+                agent_nickname: None,
+                agent_role: None,
+            }),
+            crate::agent::types::SpawnAgentOptions::default(),
+        )
+        .await
+        .expect("worker spawn should succeed")
+        .thread_id;
+    session.thread_id = child_thread_id;
+    turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id: root.thread_id,
+        depth: 1,
+        agent_path: Some(child_path.clone()),
+        agent_nickname: None,
+        agent_role: None,
+    });
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    assert_eq!(
+        root_thread.multi_agent_version(),
+        Some(MultiAgentVersion::V2)
+    );
+    assert!(root_thread.session.active_turn.lock().await.is_none());
+    assert_eq!(
+        root_thread
+            .session
+            .clone_history()
+            .await
+            .raw_items()
+            .count(),
+        0
+    );
+
+    SendMessageHandlerV2
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "send_message",
+            function_payload(json!({
+                "target": "/root",
+                "message": "completed the first step",
+                "intent": "progress",
+                "idempotency_key": "worker-progress-1"
+            })),
+        ))
+        .await
+        .expect("explicit progress should be admitted");
+
+    assert!(root_thread.session.active_turn.lock().await.is_none());
+    assert_eq!(
+        root_thread
+            .session
+            .clone_history()
+            .await
+            .raw_items()
+            .count(),
+        0
+    );
+    assert!(
+        codex_rollout::existing_rollout_path(&root_rollout_path)
+            .await
+            .is_some(),
+        "the first explicit update should materialize the durable root rollout"
+    );
+    let history_items = full_rollout_items(&root_thread).await;
+    let progress = history_items.iter().find_map(|item| match item {
+        RolloutItem::InterAgentCommunicationMetadata {
+            admission: Some(admission),
+            ..
+        } if admission.idempotency_key == "worker-progress-1" => Some(admission),
+        _ => None,
+    });
+    let progress = progress.expect("progress admission should be persisted");
+    let progress_update_id = progress.update_id.clone();
+    assert_eq!(progress.intent, InterAgentCommunicationIntent::Progress);
+    assert_eq!(progress.sender_thread_id, child_thread_id);
+    assert_eq!(progress.recipient_thread_id, root.thread_id);
+    assert_eq!(progress.sender_path, child_path);
+    assert_eq!(progress.recipient_path, AgentPath::root());
+    assert_eq!(
+        progress.original_communication.author,
+        AgentPath::try_from("/root/worker").unwrap()
+    );
+    assert_eq!(progress.original_communication.recipient, AgentPath::root());
+    assert_eq!(
+        progress.original_communication.id.as_ref(),
+        Some(&progress.update_id)
+    );
+    let mut unrelated_id_bearing_communication = progress.original_communication.clone();
+    unrelated_id_bearing_communication.content = "legacy message with a public ID".to_string();
+    assert!(
+        crate::agent::control::explicit_admission_for_communication(
+            &root_rollout_path,
+            root.thread_id,
+            &unrelated_id_bearing_communication,
+        )
+        .await
+        .expect("unrelated public IDs are not corrupt admission records")
+        .is_none(),
+        "an ID alone must not establish explicit-message provenance"
+    );
+    let mut legacy_id_bearing_message = InterAgentCommunication::new(
+        child_path.clone(),
+        AgentPath::root(),
+        Vec::new(),
+        "legacy V2 message with a public ID".to_string(),
+        /*trigger_turn*/ false,
+    );
+    let legacy_message_id = codex_protocol::ResponseItemId::new("legacy-v2-public-id");
+    legacy_id_bearing_message.id = Some(legacy_message_id.clone());
+    let root_turn = root_thread.session.new_default_turn().await;
+    root_thread
+        .session
+        .record_inter_agent_communication(
+            root_turn.as_ref(),
+            root_turn.model_info(),
+            legacy_id_bearing_message,
+        )
+        .await
+        .expect("unmatched public message IDs retain legacy behavior");
+    let root_items = full_rollout_items(&root_thread).await;
+    assert!(root_items.windows(2).any(|pair| {
+        matches!(
+            pair,
+            [
+                RolloutItem::InterAgentCommunicationMetadata {
+                    admission: None,
+                    ..
+                },
+                RolloutItem::ResponseItem(response)
+            ] if response.item.id() == Some(&legacy_message_id)
+                && response
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.inter_agent_update_id.as_ref())
+                    .is_none()
+        )
+    }));
+
+    let queued_progress = root_thread.session.input_queue.drain_mailbox().await;
+    let [queued_progress] = queued_progress.as_slice() else {
+        panic!("expected exactly one queued progress update");
+    };
+    let root_turn = root_thread.session.new_default_turn().await;
+    root_thread
+        .session
+        .record_inter_agent_communication(
+            root_turn.as_ref(),
+            root_turn.model_info(),
+            queued_progress.communication.clone(),
+        )
+        .await
+        .expect("matching durable admission should be represented");
+    let representation_id = full_rollout_items(&root_thread)
+        .await
+        .into_iter()
+        .find_map(|item| match item {
+            RolloutItem::ResponseItem(response)
+                if response
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.inter_agent_update_id.as_ref())
+                    == Some(&progress_update_id) =>
+            {
+                response.item.id().cloned()
+            }
+            _ => None,
+        });
+    assert_eq!(representation_id, Some(progress_update_id.clone()));
+    assert!(
+        !root_thread
+            .session
+            .input_queue
+            .has_pending_mailbox_items()
+            .await,
+        "successfully represented explicit mail is no longer pending"
+    );
+
+    let pending_progress_watermark = root_thread
+        .session
+        .input_queue
+        .mailbox_enqueue_watermark()
+        .await;
+    SendMessageHandlerV2
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "send_message",
+            function_payload(json!({
+                "target": "/root",
+                "message": "a newer intermediate update is available",
+                "intent": "progress",
+                "idempotency_key": "worker-progress-pending-1"
+            })),
+        ))
+        .await
+        .expect("the intermediate progress admission should be durable");
+    let pending_progress_update_id = full_rollout_items(&root_thread)
+        .await
+        .iter()
+        .find_map(|item| match item {
+            RolloutItem::InterAgentCommunicationMetadata {
+                admission: Some(admission),
+                ..
+            } if admission.idempotency_key == "worker-progress-pending-1" => {
+                Some(admission.update_id.clone())
+            }
+            _ => None,
+        })
+        .expect("the intermediate progress admission should be readable");
+    let drained_pending_progress = root_thread.session.input_queue.drain_mailbox().await;
+    let [drained_pending_progress] = drained_pending_progress.as_slice() else {
+        panic!("expected the admitted intermediate progress to be queued");
+    };
+    assert_eq!(
+        drained_pending_progress.communication.id.as_ref(),
+        Some(&pending_progress_update_id)
+    );
+
+    SendMessageHandlerV2
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "send_message",
+            function_payload(json!({
+                "target": "/root",
+                "message": "one more pending progress update",
+                "intent": "progress",
+                "idempotency_key": "worker-progress-queued-1"
+            })),
+        ))
+        .await
+        .expect("the queued progress admission should be durable");
+    let queued_progress_update_id = full_rollout_items(&root_thread)
+        .await
+        .iter()
+        .find_map(|item| match item {
+            RolloutItem::InterAgentCommunicationMetadata {
+                admission: Some(admission),
+                ..
+            } if admission.idempotency_key == "worker-progress-queued-1" => {
+                Some(admission.update_id.clone())
+            }
+            _ => None,
+        })
+        .expect("the queued progress admission should be readable");
+    assert_eq!(
+        root_thread
+            .session
+            .input_queue
+            .pending_mailbox_communication_count_since(pending_progress_watermark)
+            .await,
+        Some(1)
+    );
+
+    SendMessageHandlerV2
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "send_message",
+            function_payload(json!({
+                "target": "/root",
+                "message": "the result is ready",
+                "intent": "result_ready",
+                "idempotency_key": "worker-result-1",
+                "supersedes": [
+                    progress.update_id.as_str(),
+                    pending_progress_update_id.as_str(),
+                    queued_progress_update_id.as_str()
+                ]
+            })),
+        ))
+        .await
+        .expect("result admission should supersede same-scope progress");
+
+    let history_items = full_rollout_items(&root_thread).await;
+    let admissions = history_items
+        .iter()
+        .filter_map(|item| match item {
+            RolloutItem::InterAgentCommunicationMetadata {
+                admission: Some(admission),
+                ..
+            } => Some(admission),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(admissions.len(), 4);
+    let result = admissions
+        .iter()
+        .find(|admission| admission.idempotency_key == "worker-result-1")
+        .expect("result admission should be persisted");
+    let result_update_id = result.update_id.clone();
+    assert_eq!(result.intent, InterAgentCommunicationIntent::ResultReady);
+    assert_eq!(
+        result.supersedes,
+        vec![
+            progress.update_id.clone(),
+            pending_progress_update_id.clone(),
+            queued_progress_update_id.clone()
+        ]
+    );
+    assert_eq!(
+        root_thread
+            .session
+            .input_queue
+            .pending_mailbox_communication_count_since(pending_progress_watermark)
+            .await,
+        Some(1),
+        "superseding a queued progress message retains only the actionable result"
+    );
+    let root_turn = root_thread.session.new_default_turn().await;
+    let unavailable_rollout_path = root_rollout_path.with_extension("temporarily-unavailable");
+    std::fs::rename(&root_rollout_path, &unavailable_rollout_path)
+        .expect("test should make the retained admission stream unavailable");
+    let failed_readback = root_thread
+        .session
+        .record_inter_agent_communication(
+            root_turn.as_ref(),
+            root_turn.model_info(),
+            drained_pending_progress.communication.clone(),
+        )
+        .await;
+    std::fs::rename(&unavailable_rollout_path, &root_rollout_path)
+        .expect("test should restore the retained admission stream");
+    assert!(
+        failed_readback.is_err(),
+        "a drained update keeps admitted provenance and must fail closed when its index is unavailable"
+    );
+    root_thread
+        .session
+        .record_inter_agent_communication(
+            root_turn.as_ref(),
+            root_turn.model_info(),
+            drained_pending_progress.communication.clone(),
+        )
+        .await
+        .expect("a superseded progress drained before admission is not represented");
+    assert!(
+        !full_rollout_items(&root_thread).await.iter().any(|item| {
+            matches!(
+                item,
+                RolloutItem::ResponseItem(response)
+                    if response
+                        .metadata
+                        .as_ref()
+                        .and_then(|metadata| metadata.inter_agent_update_id.as_ref())
+                        == Some(&pending_progress_update_id)
+            )
+        }),
+        "a drained but unrepresented progress update is suppressed after supersession"
+    );
+
+    SendMessageHandlerV2
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "send_message",
+            function_payload(json!({
+                "target": "/root",
+                "message": "the result is ready",
+                "intent": "result_ready",
+                "idempotency_key": "worker-result-1",
+                "supersedes": [
+                    progress.update_id.as_str(),
+                    pending_progress_update_id.as_str(),
+                    queued_progress_update_id.as_str()
+                ]
+            })),
+        ))
+        .await
+        .expect("identical idempotent retry should return the original receipt");
+    let retried_history_items = full_rollout_items(&root_thread).await;
+    assert_eq!(
+        retried_history_items
+            .iter()
+            .filter(|item| matches!(
+                item,
+                RolloutItem::InterAgentCommunicationMetadata {
+                    admission: Some(_),
+                    ..
+                }
+            ))
+            .count(),
+        4,
+        "same-key retries do not append a second admission"
+    );
+    assert!(
+        root_thread
+            .session
+            .input_queue
+            .has_pending_mailbox_items()
+            .await,
+        "explicit updates remain queued without starting a turn"
+    );
+    assert!(
+        !root_thread
+            .session
+            .input_queue
+            .has_trigger_turn_mailbox_items()
+            .await,
+        "explicit updates do not use follow-up turn-start behavior"
+    );
+
+    let root_turn = root_thread.session.new_default_turn().await;
+    let Err(root_self_error) = SendMessageHandlerV2
+        .handle(invocation(
+            Arc::clone(&root_thread.session),
+            root_turn,
+            "send_message",
+            function_payload(json!({
+                "target": "/root",
+                "message": "root cannot admit its own update",
+                "intent": "progress",
+                "idempotency_key": "root-self-1"
+            })),
+        ))
+        .await
+    else {
+        panic!("the root must not be admitted as an explicit sender");
+    };
+    assert!(matches!(
+        root_self_error,
+        FunctionCallError::RespondToModel(message) if message.contains("non-root sender")
+    ));
+    assert_eq!(
+        full_rollout_items(&root_thread)
+            .await
+            .iter()
+            .filter(|item| matches!(
+                item,
+                RolloutItem::InterAgentCommunicationMetadata {
+                    admission: Some(_),
+                    ..
+                }
+            ))
+            .count(),
+        4,
+        "root-self rejection appends no admission"
+    );
+
+    let Err(error) = SendMessageHandlerV2
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "send_message",
+            function_payload(json!({
+                "target": "/root",
+                "message": "changed body under the old key",
+                "intent": "result_ready",
+                "idempotency_key": "worker-result-1",
+                "supersedes": [
+                    progress.update_id.as_str(),
+                    pending_progress_update_id.as_str(),
+                    queued_progress_update_id.as_str()
+                ]
+            })),
+        ))
+        .await
+    else {
+        panic!("changed payload must not reuse the previous idempotency key");
+    };
+    assert!(
+        matches!(error, FunctionCallError::RespondToModel(message) if message.contains("reused for a changed request"))
+    );
+
+    manager
+        .agent_control()
+        .shutdown_live_agent(root.thread_id)
+        .await
+        .expect("root shutdown should complete before resume");
+    let resumed_root_id = manager
+        .agent_control()
+        .resume_agent_from_rollout((*turn.config).clone(), root.thread_id, SessionSource::Exec)
+        .await
+        .expect("root should resume from its retained rollout");
+    assert_eq!(resumed_root_id, root.thread_id);
+    let resumed_root_thread = manager
+        .get_thread(root.thread_id)
+        .await
+        .expect("resumed root should be loaded");
+    let restored_mail = resumed_root_thread
+        .session
+        .input_queue
+        .drain_mailbox()
+        .await;
+    assert_eq!(
+        restored_mail.len(),
+        1,
+        "root resume restores only the unrepresented admission without another send"
+    );
+    let restored_ids = restored_mail
+        .iter()
+        .filter_map(|mail| mail.communication.id.as_ref().cloned())
+        .collect::<HashSet<_>>();
+    assert!(restored_ids.contains(&result_update_id));
+    assert!(!restored_ids.contains(&progress_update_id));
+    assert!(!restored_ids.contains(&pending_progress_update_id));
+    assert!(!restored_ids.contains(&queued_progress_update_id));
+    for mail in restored_mail {
+        resumed_root_thread
+            .session
+            .input_queue
+            .enqueue_mailbox_communication(mail.communication, Default::default())
+            .await;
+    }
+
+    let queued_mail = resumed_root_thread
+        .session
+        .input_queue
+        .drain_mailbox()
+        .await;
+    let mut failed_representation = None;
+    for queued in queued_mail {
+        if queued.communication.id.as_ref() == Some(&result_update_id) {
+            failed_representation = Some(queued.communication);
+        } else {
+            resumed_root_thread
+                .session
+                .input_queue
+                .enqueue_mailbox_communication(queued.communication, Default::default())
+                .await;
+        }
+    }
+    let failed_representation = failed_representation.expect("result should remain queued");
+    let history_before_failed_append = resumed_root_thread.session.clone_history().await;
+    let _ = resumed_root_thread
+        .session
+        .live_thread()
+        .expect("root has retained persistence")
+        .shutdown()
+        .await;
+    let root_turn = resumed_root_thread.session.new_default_turn().await;
+    assert!(
+        resumed_root_thread
+            .session
+            .record_inter_agent_communication(
+                root_turn.as_ref(),
+                root_turn.model_info(),
+                failed_representation,
+            )
+            .await
+            .is_err(),
+        "a failed explicit append must be returned to the caller"
+    );
+    assert_eq!(
+        history_before_failed_append.raw_items().count(),
+        resumed_root_thread
+            .session
+            .clone_history()
+            .await
+            .raw_items()
+            .count(),
+        "failed explicit persistence must not change model-visible history"
+    );
+    let pending_ids = resumed_root_thread
+        .session
+        .input_queue
+        .drain_mailbox()
+        .await
+        .into_iter()
+        .filter_map(|mail| mail.communication.id)
+        .collect::<HashSet<_>>();
+    assert!(
+        pending_ids.contains(&result_update_id),
+        "failed explicit persistence must leave the original message pending"
+    );
+}
+
+#[tokio::test]
 async fn multi_agent_v2_followup_task_rejects_root_target_from_child() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
@@ -1971,9 +2613,7 @@ async fn multi_agent_v2_send_message_rejects_interrupt_parameter() {
     let FunctionCallError::RespondToModel(message) = err else {
         panic!("expected model-facing parse error");
     };
-    assert!(message.starts_with(
-        "failed to parse function arguments: unknown field `interrupt`, expected `target` or `message`"
-    ));
+    assert!(message.contains("unknown field `interrupt`"));
 
     let ops = manager.captured_ops();
     let ops_for_agent: Vec<&Op> = ops

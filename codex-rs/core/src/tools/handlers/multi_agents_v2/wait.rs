@@ -3,6 +3,8 @@ use crate::agent::agent_resolver::resolve_agent_target;
 use crate::agent::api::AgentWaitRegistration;
 use crate::agent::api::AgentWaitResult;
 use crate::agent::api::AgentWaitReturnWhen;
+use crate::session::ExplicitMailboxActivity;
+use crate::session::InputQueue;
 use crate::session::InputQueueActivity;
 use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
 use crate::tools::handlers::multi_agents_spec::create_wait_agent_tool_v2;
@@ -12,6 +14,7 @@ use codex_protocol::protocol::AgentStatus;
 use codex_tools::ToolSpec;
 use std::collections::HashMap;
 use std::time::Duration;
+use tokio::sync::watch;
 use tokio::time::Instant;
 
 #[derive(Default)]
@@ -85,6 +88,7 @@ impl Handler {
                 .agent_metadata(session.thread_id)
                 .and_then(|metadata| metadata.agent_path)
         });
+        let mut explicit_target_paths = Vec::with_capacity(targets.len());
         for target in &targets {
             let target_agent_path = session
                 .services
@@ -95,6 +99,9 @@ impl Handler {
                 reverse_wait_error(current_agent_path.as_ref(), target_agent_path.as_ref())
             {
                 return Err(FunctionCallError::RespondToModel(message));
+            }
+            if let Some(target_path) = target_agent_path {
+                explicit_target_paths.push((*target, target_path));
             }
         }
         let timeout_ms = match requested_timeout_ms {
@@ -116,6 +123,7 @@ impl Handler {
             .input_queue
             .subscribe_activity(turn_state.as_deref())
             .await;
+        let explicit_activity_rx = session.input_queue.subscribe_explicit_activity();
         let return_when = match args.return_when {
             ReturnWhen::Any => AgentWaitReturnWhen::Any,
             ReturnWhen::All => AgentWaitReturnWhen::All,
@@ -167,11 +175,18 @@ impl Handler {
         let outcome = if let Some(outcome) = initial_agent_outcome {
             WaitOutcome::TargetTerminal(outcome)
         } else {
-            wait_for_activity(
+            wait_for_activity_with_explicit(
                 &mut activity_rx,
                 pending_activity,
                 deadline,
                 &mut agent_wait,
+                Some(ExplicitActivityWait {
+                    activity_rx: explicit_activity_rx,
+                    input_queue: &session.input_queue,
+                    recipient_thread_id: session.thread_id,
+                    target_agents: &explicit_target_paths,
+                    turn_state: turn_state.as_deref(),
+                }),
             )
             .await
         };
@@ -191,6 +206,7 @@ impl Handler {
                 "outcome",
                 match &outcome {
                     WaitOutcome::MailboxActivity => "mailbox",
+                    WaitOutcome::ExplicitActionableMessage(_) => "explicit_actionable_message",
                     WaitOutcome::Steered => "steered",
                     WaitOutcome::TargetTerminal(_) => "target_terminal",
                     WaitOutcome::TimedOut => "timed_out",
@@ -257,6 +273,9 @@ impl WaitAgentResult {
     ) -> Self {
         let message = match outcome {
             WaitOutcome::MailboxActivity => "Wait completed.",
+            WaitOutcome::ExplicitActionableMessage(_) => {
+                "Wait completed for a targeted actionable update."
+            }
             WaitOutcome::Steered => "Wait interrupted by new input.",
             WaitOutcome::TargetTerminal(_) => "Target agent completion is actionable.",
             WaitOutcome::TimedOut => "Wait timed out.",
@@ -297,6 +316,7 @@ impl ToolOutput for WaitAgentResult {
 #[derive(Clone, Debug)]
 enum WaitOutcome {
     MailboxActivity,
+    ExplicitActionableMessage(ExplicitMailboxActivity),
     Steered,
     TargetTerminal(AgentWaitResult),
     TimedOut,
@@ -307,6 +327,7 @@ impl WaitOutcome {
     fn protocol_outcome(&self) -> WaitAgentOutcome {
         match self {
             Self::MailboxActivity => WaitAgentOutcome::UnattributedMailboxActivity,
+            Self::ExplicitActionableMessage(_) => WaitAgentOutcome::ExactTargetActionableMessage,
             Self::Steered => WaitAgentOutcome::OperatorSteer,
             Self::TargetTerminal(result) if result.all_targets => {
                 WaitAgentOutcome::TargetTerminalAll
@@ -349,18 +370,122 @@ async fn wait_for_activity(
     deadline: Instant,
     agent_wait: &mut Option<AgentWaitRegistration>,
 ) -> WaitOutcome {
-    if let Some(activity) = pending_activity {
-        return activity_wake_outcome(activity, agent_wait);
+    wait_for_activity_with_explicit(activity_rx, pending_activity, deadline, agent_wait, None).await
+}
+
+struct ExplicitActivityWait<'a> {
+    activity_rx: watch::Receiver<Option<u64>>,
+    input_queue: &'a InputQueue,
+    recipient_thread_id: ThreadId,
+    target_agents: &'a [(ThreadId, codex_protocol::AgentPath)],
+    turn_state: Option<&'a tokio::sync::Mutex<crate::state::TurnState>>,
+}
+
+struct ExplicitActivityMatcher<'a> {
+    input_queue: &'a InputQueue,
+    recipient_thread_id: ThreadId,
+    target_agents: &'a [(ThreadId, codex_protocol::AgentPath)],
+    turn_state: Option<&'a tokio::sync::Mutex<crate::state::TurnState>>,
+}
+
+async fn wait_for_activity_with_explicit(
+    activity_rx: &mut watch::Receiver<InputQueueActivity>,
+    pending_activity: Option<InputQueueActivity>,
+    deadline: Instant,
+    agent_wait: &mut Option<AgentWaitRegistration>,
+    explicit_wait: Option<ExplicitActivityWait<'_>>,
+) -> WaitOutcome {
+    let (mut explicit_activity_rx, explicit_matcher) = match explicit_wait {
+        Some(wait) => (
+            Some(wait.activity_rx),
+            Some(ExplicitActivityMatcher {
+                input_queue: wait.input_queue,
+                recipient_thread_id: wait.recipient_thread_id,
+                target_agents: wait.target_agents,
+                turn_state: wait.turn_state,
+            }),
+        ),
+        None => (None, None),
+    };
+    if pending_activity == Some(InputQueueActivity::Steer)
+        || pending_turn_steer(explicit_matcher.as_ref()).await
+    {
+        return WaitOutcome::Steered;
     }
     if let Some(outcome) = agent_wait.as_mut().and_then(AgentWaitRegistration::current) {
         return WaitOutcome::TargetTerminal(outcome);
     }
+    if let Some(matcher) = explicit_matcher.as_ref()
+        && let Some(activity) = matcher
+            .input_queue
+            .pending_explicit_activity_for_targets(
+                matcher.recipient_thread_id,
+                matcher.target_agents,
+            )
+            .await
+    {
+        return WaitOutcome::ExplicitActionableMessage(activity);
+    }
+    if let Some(activity) = pending_activity {
+        return activity_wake_outcome(activity, agent_wait);
+    }
     let has_agent_wait = agent_wait.is_some();
+    let has_explicit_wait = explicit_activity_rx.is_some();
     loop {
         tokio::select! {
             _ = tokio::time::sleep_until(deadline) => return WaitOutcome::TimedOut,
             activity = activity_rx.changed() => match activity {
-                Ok(()) => return activity_wake_outcome(*activity_rx.borrow_and_update(), agent_wait),
+                Ok(()) => {
+                    let observed_activity = *activity_rx.borrow_and_update();
+                    if observed_activity == InputQueueActivity::Steer {
+                        return WaitOutcome::Steered;
+                    }
+                    if pending_turn_steer(explicit_matcher.as_ref()).await {
+                        return WaitOutcome::Steered;
+                    }
+                    if let Some(outcome) = agent_wait.as_mut().and_then(AgentWaitRegistration::current) {
+                        return WaitOutcome::TargetTerminal(outcome);
+                    }
+                    if let Some(matcher) = explicit_matcher.as_ref()
+                        && let Some(activity) = matcher
+                            .input_queue
+                            .pending_explicit_activity_for_targets(
+                                matcher.recipient_thread_id,
+                                matcher.target_agents,
+                            )
+                            .await
+                    {
+                        return WaitOutcome::ExplicitActionableMessage(activity);
+                    }
+                    return activity_wake_outcome(observed_activity, agent_wait);
+                }
+                Err(_) => return WaitOutcome::SubscriptionLoss,
+            },
+            explicit = async {
+                match explicit_activity_rx.as_mut() {
+                    Some(activity_rx) => activity_rx.changed().await,
+                    None => std::future::pending().await,
+                }
+            }, if has_explicit_wait => match explicit {
+                Ok(()) => {
+                    if pending_turn_steer(explicit_matcher.as_ref()).await {
+                        return WaitOutcome::Steered;
+                    }
+                    if let Some(outcome) = agent_wait.as_mut().and_then(AgentWaitRegistration::current) {
+                        return WaitOutcome::TargetTerminal(outcome);
+                    }
+                    if let Some(matcher) = explicit_matcher.as_ref()
+                        && let Some(activity) = matcher
+                            .input_queue
+                            .pending_explicit_activity_for_targets(
+                                matcher.recipient_thread_id,
+                                matcher.target_agents,
+                            )
+                            .await
+                    {
+                        return WaitOutcome::ExplicitActionableMessage(activity);
+                    }
+                }
                 Err(_) => return WaitOutcome::SubscriptionLoss,
             },
             agent = async {
@@ -375,6 +500,17 @@ async fn wait_for_activity(
             }
         }
     }
+}
+
+async fn pending_turn_steer(matcher: Option<&ExplicitActivityMatcher<'_>>) -> bool {
+    let Some(matcher) = matcher else {
+        return false;
+    };
+    matcher
+        .input_queue
+        .pending_turn_input_activity(matcher.turn_state)
+        .await
+        == Some(InputQueueActivity::Steer)
 }
 
 fn activity_wake_outcome(
@@ -446,8 +582,11 @@ mod tests {
     use crate::agent::api::AgentWaitRegistry;
     use crate::agent::api::AgentWaitReturnWhen;
     use crate::agent::api::register_agent_wait;
+    use crate::session::ExplicitMailboxActivity;
     use crate::session::InputQueue;
+    use codex_history::InterAgentCommunicationIntent;
     use codex_protocol::AgentPath;
+    use codex_protocol::ResponseItemId;
     use codex_protocol::protocol::AgentStatus;
     use std::sync::Arc;
     use std::sync::Mutex;
@@ -494,6 +633,40 @@ mod tests {
             content.to_string(),
             trigger_turn,
         )
+    }
+
+    fn explicit_wait_mail(
+        update_id: ResponseItemId,
+        sender_path: AgentPath,
+        content: &str,
+    ) -> codex_protocol::protocol::InterAgentCommunication {
+        let mut communication = codex_protocol::protocol::InterAgentCommunication::new(
+            sender_path,
+            AgentPath::root(),
+            Vec::new(),
+            content.to_string(),
+            /*trigger_turn*/ false,
+        );
+        communication.id = Some(update_id);
+        communication
+    }
+
+    fn explicit_wait_activity(
+        update_id: ResponseItemId,
+        intent: InterAgentCommunicationIntent,
+        sender_thread_id: ThreadId,
+        recipient_thread_id: ThreadId,
+        sender_path: AgentPath,
+    ) -> ExplicitMailboxActivity {
+        ExplicitMailboxActivity {
+            update_id,
+            intent,
+            sender_thread_id,
+            recipient_thread_id,
+            sender_path,
+            recipient_path: AgentPath::root(),
+            generation: None,
+        }
     }
 
     #[tokio::test]
@@ -648,6 +821,320 @@ mod tests {
             .await;
         assert!(matches!(wait.await, WaitOutcome::Steered));
         assert_eq!(input_queue.drain_mailbox().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn active_wait_wakes_for_targeted_action_but_not_progress_unmatched_or_legacy_id() {
+        let input_queue = InputQueue::new();
+        let target = ThreadId::new();
+        let unrelated = ThreadId::new();
+        let recipient = ThreadId::new();
+        let worker_path = AgentPath::try_from("/root/worker").expect("worker path");
+        let unrelated_path = AgentPath::try_from("/root/unrelated").expect("other path");
+        let explicit_targets = vec![(target, worker_path.clone())];
+        let (mut activity_rx, pending_activity) =
+            input_queue.subscribe_activity(/*turn_state*/ None).await;
+        let explicit_activity_rx = input_queue.subscribe_explicit_activity();
+        assert_eq!(
+            input_queue
+                .pending_explicit_activity_for_targets(recipient, &explicit_targets)
+                .await,
+            None
+        );
+        let mut agent_wait = None;
+        let mut wait = Box::pin(wait_for_activity_with_explicit(
+            &mut activity_rx,
+            pending_activity,
+            Instant::now() + Duration::from_secs(60),
+            &mut agent_wait,
+            Some(ExplicitActivityWait {
+                activity_rx: explicit_activity_rx,
+                input_queue: &input_queue,
+                recipient_thread_id: recipient,
+                target_agents: &explicit_targets,
+                turn_state: None,
+            }),
+        ));
+        assert!(futures::poll!(wait.as_mut()).is_pending());
+
+        let legacy_id = ResponseItemId::new("legacy-public-id");
+        input_queue
+            .enqueue_mailbox_communication(
+                explicit_wait_mail(legacy_id, worker_path.clone(), "legacy body"),
+                Default::default(),
+            )
+            .await;
+        assert!(futures::poll!(wait.as_mut()).is_pending());
+
+        let progress_id = ResponseItemId::new("progress-quiet");
+        input_queue
+            .enqueue_explicit_mailbox_communication(
+                explicit_wait_mail(progress_id.clone(), worker_path.clone(), "progress body"),
+                Default::default(),
+                explicit_wait_activity(
+                    progress_id,
+                    InterAgentCommunicationIntent::Progress,
+                    target,
+                    recipient,
+                    worker_path.clone(),
+                ),
+            )
+            .await;
+        assert!(futures::poll!(wait.as_mut()).is_pending());
+
+        let unrelated_id = ResponseItemId::new("unmatched-action");
+        input_queue
+            .enqueue_explicit_mailbox_communication(
+                explicit_wait_mail(unrelated_id.clone(), unrelated_path.clone(), "other body"),
+                Default::default(),
+                explicit_wait_activity(
+                    unrelated_id,
+                    InterAgentCommunicationIntent::ActionRequired,
+                    unrelated,
+                    recipient,
+                    unrelated_path,
+                ),
+            )
+            .await;
+        assert!(futures::poll!(wait.as_mut()).is_pending());
+
+        let action_id = ResponseItemId::new("matched-action");
+        input_queue
+            .enqueue_explicit_mailbox_communication(
+                explicit_wait_mail(action_id.clone(), worker_path.clone(), "action body"),
+                Default::default(),
+                explicit_wait_activity(
+                    action_id.clone(),
+                    InterAgentCommunicationIntent::ActionRequired,
+                    target,
+                    recipient,
+                    worker_path.clone(),
+                ),
+            )
+            .await;
+
+        let WaitOutcome::ExplicitActionableMessage(activity) = wait.await else {
+            panic!("the addressed action should wake the exact-target wait");
+        };
+        assert_eq!(activity.update_id, action_id);
+        assert_eq!(activity.sender_thread_id, target);
+        assert_eq!(activity.recipient_thread_id, recipient);
+        assert_eq!(activity.sender_path, worker_path);
+        assert_eq!(activity.recipient_path, AgentPath::root());
+        assert_eq!(
+            activity.intent,
+            InterAgentCommunicationIntent::ActionRequired
+        );
+        assert_eq!(activity.generation, Some(3));
+        assert_eq!(
+            WaitOutcome::ExplicitActionableMessage(activity.clone()).protocol_outcome(),
+            WaitAgentOutcome::ExactTargetActionableMessage
+        );
+        assert!(input_queue.has_pending_mailbox_items().await);
+    }
+
+    #[tokio::test]
+    async fn pending_explicit_action_does_not_override_already_pending_steer() {
+        let input_queue = InputQueue::new();
+        let target = ThreadId::new();
+        let recipient = ThreadId::new();
+        let target_path = AgentPath::try_from("/root/worker").expect("worker path");
+        let target_agents = vec![(target, target_path.clone())];
+        let turn_state = tokio::sync::Mutex::new(crate::state::TurnState::default());
+        input_queue
+            .notify_operator_steer_for_test(&turn_state)
+            .await;
+        let update_id = ResponseItemId::new("pending-action-with-steer");
+        input_queue
+            .enqueue_explicit_mailbox_communication(
+                explicit_wait_mail(update_id.clone(), target_path.clone(), "body"),
+                Default::default(),
+                explicit_wait_activity(
+                    update_id,
+                    InterAgentCommunicationIntent::ActionRequired,
+                    target,
+                    recipient,
+                    target_path,
+                ),
+            )
+            .await;
+
+        let (mut activity_rx, pending_activity) =
+            input_queue.subscribe_activity(Some(&turn_state)).await;
+        let explicit_activity_rx = input_queue.subscribe_explicit_activity();
+        assert!(
+            input_queue
+                .pending_explicit_activity_for_targets(recipient, &target_agents)
+                .await
+                .is_some()
+        );
+        let mut agent_wait = None;
+        let outcome = wait_for_activity_with_explicit(
+            &mut activity_rx,
+            pending_activity,
+            Instant::now() + Duration::from_secs(60),
+            &mut agent_wait,
+            Some(ExplicitActivityWait {
+                activity_rx: explicit_activity_rx,
+                input_queue: &input_queue,
+                recipient_thread_id: recipient,
+                target_agents: &target_agents,
+                turn_state: Some(&turn_state),
+            }),
+        )
+        .await;
+        assert!(matches!(outcome, WaitOutcome::Steered));
+    }
+
+    #[tokio::test]
+    async fn active_operator_steer_wins_when_explicit_action_wakes_together() {
+        let input_queue = InputQueue::new();
+        let target = ThreadId::new();
+        let recipient = ThreadId::new();
+        let target_path = AgentPath::try_from("/root/worker").expect("worker path");
+        let target_agents = vec![(target, target_path.clone())];
+        let turn_state = tokio::sync::Mutex::new(crate::state::TurnState::default());
+        let (mut activity_rx, pending_activity) =
+            input_queue.subscribe_activity(Some(&turn_state)).await;
+        let explicit_activity_rx = input_queue.subscribe_explicit_activity();
+        assert_eq!(
+            input_queue
+                .pending_explicit_activity_for_targets(recipient, &target_agents)
+                .await,
+            None
+        );
+        let mut agent_wait = None;
+        let mut wait = Box::pin(wait_for_activity_with_explicit(
+            &mut activity_rx,
+            pending_activity,
+            Instant::now() + Duration::from_secs(60),
+            &mut agent_wait,
+            Some(ExplicitActivityWait {
+                activity_rx: explicit_activity_rx,
+                input_queue: &input_queue,
+                recipient_thread_id: recipient,
+                target_agents: &target_agents,
+                turn_state: Some(&turn_state),
+            }),
+        ));
+        assert!(futures::poll!(wait.as_mut()).is_pending());
+
+        let update_id = ResponseItemId::new("racing-action-with-steer");
+        input_queue
+            .enqueue_explicit_mailbox_communication(
+                explicit_wait_mail(update_id.clone(), target_path.clone(), "body"),
+                Default::default(),
+                explicit_wait_activity(
+                    update_id,
+                    InterAgentCommunicationIntent::ResultReady,
+                    target,
+                    recipient,
+                    target_path,
+                ),
+            )
+            .await;
+        input_queue
+            .notify_operator_steer_for_test(&turn_state)
+            .await;
+
+        assert!(matches!(wait.await, WaitOutcome::Steered));
+    }
+
+    #[tokio::test]
+    async fn target_terminal_wins_when_explicit_action_wakes_together() {
+        let input_queue = InputQueue::new();
+        let registry = Arc::new(Mutex::new(AgentWaitRegistry::default()));
+        let target = ThreadId::new();
+        let recipient = ThreadId::new();
+        let target_path = AgentPath::try_from("/root/worker").expect("worker path");
+        let target_agents = vec![(target, target_path.clone())];
+        let publisher = AgentOutcomePublisher::new(target, registry.clone());
+        publisher.publish(AgentOutcomeSnapshot {
+            turn_id: Some("turn-1".to_string()),
+            status: AgentStatus::Running,
+            readiness: AgentReadiness::Pending,
+        });
+        let mut agent_wait = Some(register_agent_wait(
+            &registry,
+            vec![target],
+            AgentWaitReturnWhen::Any,
+        ));
+        let (mut activity_rx, pending_activity) =
+            input_queue.subscribe_activity(/*turn_state*/ None).await;
+        let explicit_activity_rx = input_queue.subscribe_explicit_activity();
+        assert_eq!(
+            input_queue
+                .pending_explicit_activity_for_targets(recipient, &target_agents)
+                .await,
+            None
+        );
+        let mut wait = Box::pin(wait_for_activity_with_explicit(
+            &mut activity_rx,
+            pending_activity,
+            Instant::now() + Duration::from_secs(60),
+            &mut agent_wait,
+            Some(ExplicitActivityWait {
+                activity_rx: explicit_activity_rx,
+                input_queue: &input_queue,
+                recipient_thread_id: recipient,
+                target_agents: &target_agents,
+                turn_state: None,
+            }),
+        ));
+        assert!(futures::poll!(wait.as_mut()).is_pending());
+
+        let update_id = ResponseItemId::new("racing-action-with-terminal");
+        input_queue
+            .enqueue_explicit_mailbox_communication(
+                explicit_wait_mail(update_id.clone(), target_path.clone(), "body"),
+                Default::default(),
+                explicit_wait_activity(
+                    update_id,
+                    InterAgentCommunicationIntent::ActionRequired,
+                    target,
+                    recipient,
+                    target_path,
+                ),
+            )
+            .await;
+        publisher.publish(AgentOutcomeSnapshot {
+            turn_id: Some("turn-1".to_string()),
+            status: AgentStatus::Completed(Some("done".to_string())),
+            readiness: AgentReadiness::Terminal,
+        });
+
+        let WaitOutcome::TargetTerminal(result) = wait.await else {
+            panic!("terminal target status must win over a concurrent explicit action");
+        };
+        assert_eq!(result.outcomes[0].0, target);
+    }
+
+    #[tokio::test]
+    async fn explicit_action_already_pending_at_wait_start_uses_target_snapshot() {
+        let input_queue = InputQueue::new();
+        let target = ThreadId::new();
+        let recipient = ThreadId::new();
+        let update_id = ResponseItemId::new("result-ready-before-wait");
+        let sender_path = AgentPath::try_from("/root/worker").expect("worker path");
+        input_queue
+            .enqueue_explicit_mailbox_communication(
+                explicit_wait_mail(update_id.clone(), sender_path.clone(), "private body"),
+                Default::default(),
+                explicit_wait_activity(
+                    update_id.clone(),
+                    InterAgentCommunicationIntent::ResultReady,
+                    target,
+                    recipient,
+                    sender_path.clone(),
+                ),
+            )
+            .await;
+
+        let _explicit_activity_rx = input_queue.subscribe_explicit_activity();
+        let pending = input_queue
+            .pending_explicit_activity_for_targets(recipient, &[(target, sender_path)])
+            .await;
+        assert_eq!(pending.map(|activity| activity.update_id), Some(update_id));
     }
 
     #[tokio::test]

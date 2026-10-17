@@ -8,10 +8,13 @@ use super::*;
 use crate::TurnStartOptions;
 use crate::agent::api::AgentInput;
 use crate::agent::api::AgentTarget;
+use crate::agent::api::ExplicitInterAgentUpdate;
 use crate::agent::api::SendRequest;
 use crate::agent::child_config::build_agent_resume_config;
 use crate::agent::types::MessageDeliveryMode;
 use crate::tools::context::FunctionToolOutput;
+use codex_history::InterAgentCommunicationIntent;
+use codex_protocol::ResponseItemId;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -19,6 +22,9 @@ use crate::tools::context::FunctionToolOutput;
 pub(crate) struct SendMessageArgs {
     pub(crate) target: String,
     pub(crate) message: String,
+    pub(crate) intent: Option<InterAgentCommunicationIntent>,
+    pub(crate) idempotency_key: Option<String>,
+    pub(crate) supersedes: Option<Vec<ResponseItemId>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -44,6 +50,7 @@ pub(super) async fn handle_message_string_tool(
     mode: MessageDeliveryMode,
     target: String,
     message: String,
+    explicit_update: Option<ExplicitInterAgentUpdate>,
     analytics: &mut ToolCallAnalytics,
 ) -> Result<FunctionToolOutput, FunctionCallError> {
     let message = message_content(message)?;
@@ -69,6 +76,7 @@ pub(super) async fn handle_message_string_tool(
                 message: agent_message_from_tool(message, &source),
                 mode,
             },
+            explicit_update,
             start_options: TurnStartOptions {
                 parent_turn_id: (mode == MessageDeliveryMode::TriggerTurn)
                     .then(|| turn.sub_id.clone()),

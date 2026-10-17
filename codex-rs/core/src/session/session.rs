@@ -30,6 +30,7 @@ use codex_http_client::RouteAwareClientPool;
 use codex_login::auth::AgentIdentityAuthPolicy;
 use codex_model_provider::SharedModelProvider;
 use codex_prompts::render_model_instructions;
+use codex_protocol::ResponseItemId;
 use codex_protocol::SessionId;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
 use codex_protocol::config_types::ShellEnvironmentPolicy;
@@ -60,11 +61,16 @@ type McpToolApprovalMetadataMap =
 /// A session has at most 1 running task at a time, and can be interrupted by user input.
 pub(crate) struct Session {
     pub(crate) thread_id: ThreadId,
+    pub(super) rollout_path: Option<PathBuf>,
     pub(crate) execution_nonce: codex_runtime_proof::ExecutionNonce,
     pub(crate) installation_id: String,
     pub(super) tx_event: Sender<Event>,
     pub(super) agent_status: watch::Sender<AgentStatus>,
     pub(super) state: Mutex<SessionState>,
+    /// Serializes explicit inter-agent admission against retained-history scans and representation.
+    pub(crate) explicit_inter_agent_admission: tokio::sync::Mutex<()>,
+    /// Suppresses duplicate volatile delivery while an admitted update awaits durable representation.
+    pub(crate) delivered_explicit_inter_agent_updates: std::sync::Mutex<HashSet<ResponseItemId>>,
     /// Orders accepted settings commits and their persisted events with compaction checkpoints.
     /// Keep this separate from `state` so storage I/O does not block runtime state access.
     pub(super) thread_settings_persistence: Semaphore,
@@ -1836,11 +1842,14 @@ impl Session {
             let (mcp_prewarm_tx, mcp_prewarm_rx) = async_channel::bounded(1);
             let sess = Arc::new(Session {
                 thread_id,
+                rollout_path: rollout_path.clone(),
                 execution_nonce: Uuid::new_v4(),
                 installation_id,
                 tx_event: tx_event.clone(),
                 agent_status,
                 state: Mutex::new(state),
+                explicit_inter_agent_admission: tokio::sync::Mutex::new(()),
+                delivered_explicit_inter_agent_updates: std::sync::Mutex::new(HashSet::new()),
                 thread_settings_persistence: Semaphore::new(/*permits*/ 1),
                 code_mode_message_tasks: CodeModeMessageTasks::default(),
                 managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
@@ -1971,9 +1980,20 @@ impl Session {
                 InitialHistory::New => codex_hooks::SessionStartSource::Startup,
                 InitialHistory::Cleared => codex_hooks::SessionStartSource::Clear,
             };
+            let restore_explicit_agent_mail =
+                matches!(&initial_history, InitialHistory::Resumed(_))
+                    || (forked_from_id.is_none()
+                        && matches!(&initial_history, InitialHistory::Forked(_)));
 
             // record_initial_history can emit events. We record only after the SessionConfiguredEvent is emitted.
             Box::pin(sess.record_initial_history(initial_history)).await;
+            if restore_explicit_agent_mail {
+                sess.services
+                    .local_agent_runtime
+                    .control(sess.session_id())
+                    .restore_explicit_inter_agent_admissions(&sess)
+                    .await?;
+            }
             if restore_child_window {
                 sess.state.lock().await.restore_auto_compact_window(
                     /*window_number*/ 0,

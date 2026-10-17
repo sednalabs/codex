@@ -4,7 +4,10 @@ use crate::state::ActiveTurn;
 use crate::state::MailboxDeliveryPhase;
 use crate::state::TurnState;
 use codex_diagnostics::GaugeGuard;
+use codex_history::InterAgentCommunicationIntent;
 use codex_history::ResponseItemEnvelope;
+use codex_protocol::AgentPath;
+use codex_protocol::ResponseItemId;
 use codex_protocol::ThreadId;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::InterAgentCommunication;
@@ -85,6 +88,20 @@ pub(crate) enum InputQueueActivity {
     Steer,
 }
 
+/// Body-free provenance attached only to a durably admitted explicit update.
+/// `generation` is local to this input queue and distinct from the persisted update identity. A
+/// missing generation fails closed for wake delivery while retaining the queued communication.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ExplicitMailboxActivity {
+    pub(crate) update_id: ResponseItemId,
+    pub(crate) intent: InterAgentCommunicationIntent,
+    pub(crate) sender_thread_id: ThreadId,
+    pub(crate) recipient_thread_id: ThreadId,
+    pub(crate) sender_path: AgentPath,
+    pub(crate) recipient_path: AgentPath,
+    pub(crate) generation: Option<u64>,
+}
+
 /// Turn-local pending input storage owned by the input queue flow.
 #[derive(Default)]
 pub(crate) struct TurnInputQueue {
@@ -94,6 +111,7 @@ pub(crate) struct TurnInputQueue {
 /// Session-scoped pending input storage and active-turn mailbox delivery coordination.
 pub(crate) struct InputQueue {
     activity_tx: watch::Sender<InputQueueActivity>,
+    explicit_activity_tx: watch::Sender<Option<u64>>,
     controller: Option<(ThreadId, Arc<dyn AgentControl>, watch::Receiver<bool>)>,
     mailbox_state: Mutex<MailboxQueueState>,
 }
@@ -105,6 +123,7 @@ struct MailboxQueueState {
 
 pub(crate) struct PendingMailboxCommunication {
     pub(crate) communication: InterAgentCommunication,
+    explicit_activity: Option<ExplicitMailboxActivity>,
     start_options: TurnStartOptions,
     local_enqueue_ordinal: Option<u64>,
     _diagnostics_guard: GaugeGuard,
@@ -113,8 +132,10 @@ pub(crate) struct PendingMailboxCommunication {
 impl InputQueue {
     pub(crate) fn new() -> Self {
         let (activity_tx, _) = watch::channel(InputQueueActivity::Mailbox);
+        let (explicit_activity_tx, _) = watch::channel(None);
         Self {
             activity_tx,
+            explicit_activity_tx,
             controller: None,
             mailbox_state: Mutex::new(MailboxQueueState {
                 pending: VecDeque::new(),
@@ -151,6 +172,7 @@ impl InputQueue {
                     .into_iter()
                     .map(|communication| PendingMailboxCommunication {
                         communication,
+                        explicit_activity: None,
                         start_options: TurnStartOptions::default(),
                         local_enqueue_ordinal: None,
                         _diagnostics_guard: PENDING_MAILBOX_MESSAGES.track(),
@@ -180,6 +202,51 @@ impl InputQueue {
             None
         };
         (activity_rx, pending_activity)
+    }
+
+    /// Subscribe before `WaitAgent` snapshots pending mail; the receiver preserves any arrival
+    /// across that queue snapshot.
+    pub(crate) fn subscribe_explicit_activity(&self) -> watch::Receiver<Option<u64>> {
+        self.explicit_activity_tx.subscribe()
+    }
+
+    pub(crate) async fn pending_explicit_activity_for_targets(
+        &self,
+        recipient_thread_id: ThreadId,
+        target_agents: &[(ThreadId, AgentPath)],
+    ) -> Option<ExplicitMailboxActivity> {
+        if target_agents.is_empty() {
+            return None;
+        }
+        let mut state = self.mailbox_state.lock().await;
+        self.read_mailbox(&mut state.pending);
+        state.pending.iter().find_map(|mail| {
+            let activity = mail.explicit_activity.as_ref()?;
+            if activity.recipient_thread_id != recipient_thread_id
+                || !activity.recipient_path.is_root()
+                || !target_agents.iter().any(|(thread_id, path)| {
+                    *thread_id == activity.sender_thread_id && *path == activity.sender_path
+                })
+                || !matches!(
+                    activity.intent,
+                    InterAgentCommunicationIntent::ActionRequired
+                        | InterAgentCommunicationIntent::ResultReady
+                )
+            {
+                return None;
+            }
+            activity.generation.map(|_| activity.clone())
+        })
+    }
+
+    pub(crate) async fn pending_turn_input_activity(
+        &self,
+        turn_state: Option<&Mutex<TurnState>>,
+    ) -> Option<InputQueueActivity> {
+        match turn_state {
+            Some(turn_state) => turn_state.lock().await.pending_input.pending_activity(),
+            None => None,
+        }
     }
 
     #[expect(
@@ -222,6 +289,30 @@ impl InputQueue {
         communication: InterAgentCommunication,
         start_options: TurnStartOptions,
     ) {
+        self.enqueue_mailbox_communication_with_activity(communication, start_options, None)
+            .await;
+    }
+
+    pub(crate) async fn enqueue_explicit_mailbox_communication(
+        &self,
+        communication: InterAgentCommunication,
+        start_options: TurnStartOptions,
+        explicit_activity: ExplicitMailboxActivity,
+    ) {
+        self.enqueue_mailbox_communication_with_activity(
+            communication,
+            start_options,
+            Some(explicit_activity),
+        )
+        .await;
+    }
+
+    async fn enqueue_mailbox_communication_with_activity(
+        &self,
+        communication: InterAgentCommunication,
+        start_options: TurnStartOptions,
+        mut explicit_activity: Option<ExplicitMailboxActivity>,
+    ) {
         let mut state = self.mailbox_state.lock().await;
         // Mail retained while unloaded precedes new submissions to the loaded session.
         self.read_mailbox(&mut state.pending);
@@ -229,12 +320,26 @@ impl InputQueue {
         state.next_local_enqueue_ordinal = state
             .next_local_enqueue_ordinal
             .and_then(|ordinal| ordinal.checked_add(1));
+        if let Some(activity) = explicit_activity.as_mut() {
+            activity.generation = local_enqueue_ordinal;
+        }
         state.pending.push_back(PendingMailboxCommunication {
             communication,
+            explicit_activity: explicit_activity.clone(),
             start_options,
             local_enqueue_ordinal,
             _diagnostics_guard: PENDING_MAILBOX_MESSAGES.track(),
         });
+        if let Some(activity) = explicit_activity.as_ref().filter(|activity| {
+            matches!(
+                activity.intent,
+                InterAgentCommunicationIntent::ActionRequired
+                    | InterAgentCommunicationIntent::ResultReady
+            )
+        }) && let Some(generation) = activity.generation
+        {
+            self.explicit_activity_tx.send_replace(Some(generation));
+        }
         if state
             .pending
             .iter()
@@ -242,6 +347,31 @@ impl InputQueue {
         {
             self.activity_tx.send_replace(InputQueueActivity::Mailbox);
         }
+    }
+
+    /// Remove only still-pending entries created by the durable explicit-admission path.
+    /// Public/legacy messages with the same ID or payload have no such provenance and remain.
+    pub(crate) async fn remove_pending_explicit_updates(
+        &self,
+        update_ids: &std::collections::HashSet<ResponseItemId>,
+    ) -> std::collections::HashSet<ResponseItemId> {
+        if update_ids.is_empty() {
+            return std::collections::HashSet::new();
+        }
+        let mut state = self.mailbox_state.lock().await;
+        let mut removed = std::collections::HashSet::new();
+        state.pending.retain(|mail| {
+            let Some(activity) = mail.explicit_activity.as_ref() else {
+                return true;
+            };
+            if update_ids.contains(&activity.update_id) {
+                removed.insert(activity.update_id.clone());
+                false
+            } else {
+                true
+            }
+        });
+        removed
     }
 
     pub(crate) async fn has_pending_mailbox_items(&self) -> bool {
@@ -1027,5 +1157,174 @@ mod tests {
             .enqueue_mailbox_communication(trigger_mail, Default::default())
             .await;
         assert!(input_queue.has_trigger_turn_mailbox_items().await);
+    }
+
+    fn explicit_test_activity(
+        update_id: ResponseItemId,
+        intent: InterAgentCommunicationIntent,
+        sender_thread_id: ThreadId,
+        recipient_thread_id: ThreadId,
+    ) -> ExplicitMailboxActivity {
+        ExplicitMailboxActivity {
+            update_id,
+            intent,
+            sender_thread_id,
+            recipient_thread_id,
+            sender_path: AgentPath::try_from("/root/worker").expect("sender path"),
+            recipient_path: AgentPath::root(),
+            generation: None,
+        }
+    }
+
+    fn explicit_test_mail(update_id: ResponseItemId) -> InterAgentCommunication {
+        let mut communication = InterAgentCommunication::new(
+            AgentPath::try_from("/root/worker").expect("sender path"),
+            AgentPath::root(),
+            Vec::new(),
+            "private message body is not copied into activity".to_string(),
+            /*trigger_turn*/ false,
+        );
+        communication.id = Some(update_id);
+        communication
+    }
+
+    #[tokio::test]
+    async fn explicit_action_snapshot_is_targeted_and_subscribe_before_snapshot_is_wake_safe() {
+        let queue = InputQueue::new();
+        let sender = ThreadId::new();
+        let recipient = ThreadId::new();
+        let unrelated = ThreadId::new();
+        let sender_path = AgentPath::try_from("/root/worker").expect("sender path");
+        let unrelated_path = AgentPath::try_from("/root/unrelated").expect("other path");
+        let update_id = ResponseItemId::new("explicit-action-1");
+        let (mut legacy_activity_rx, _) = queue.subscribe_activity(None).await;
+        let mut explicit_activity_rx = queue.subscribe_explicit_activity();
+        let pending = queue
+            .pending_explicit_activity_for_targets(recipient, &[(sender, sender_path.clone())])
+            .await;
+        assert_eq!(pending, None);
+
+        queue
+            .enqueue_explicit_mailbox_communication(
+                explicit_test_mail(update_id.clone()),
+                Default::default(),
+                explicit_test_activity(
+                    update_id.clone(),
+                    InterAgentCommunicationIntent::ActionRequired,
+                    sender,
+                    recipient,
+                ),
+            )
+            .await;
+
+        explicit_activity_rx
+            .changed()
+            .await
+            .expect("explicit action notification");
+        assert_eq!(*explicit_activity_rx.borrow_and_update(), Some(0));
+        assert!(
+            !legacy_activity_rx
+                .has_changed()
+                .expect("legacy activity channel remains open"),
+            "queue-only explicit actions do not wake shared mailbox or Sleep waiters"
+        );
+        let pending = queue
+            .pending_explicit_activity_for_targets(recipient, &[(sender, sender_path.clone())])
+            .await
+            .expect("matching pending explicit action");
+        assert_eq!(pending.update_id, update_id);
+        assert_eq!(
+            pending.intent,
+            InterAgentCommunicationIntent::ActionRequired
+        );
+        assert_eq!(pending.sender_thread_id, sender);
+        assert_eq!(pending.recipient_thread_id, recipient);
+        assert_eq!(pending.sender_path, sender_path);
+        assert_eq!(pending.generation, Some(0));
+        assert!(
+            queue
+                .pending_explicit_activity_for_targets(recipient, &[(unrelated, unrelated_path)])
+                .await
+                .is_none()
+        );
+        assert!(
+            queue
+                .pending_explicit_activity_for_targets(ThreadId::new(), &[(sender, sender_path)],)
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_snapshot_catches_preexisting_matching_action_but_not_progress() {
+        let queue = InputQueue::new();
+        let sender = ThreadId::new();
+        let recipient = ThreadId::new();
+        let sender_path = AgentPath::try_from("/root/worker").expect("sender path");
+        let action_id = ResponseItemId::new("explicit-action-pending");
+        let progress_id = ResponseItemId::new("explicit-progress-pending");
+        queue
+            .enqueue_explicit_mailbox_communication(
+                explicit_test_mail(progress_id.clone()),
+                Default::default(),
+                explicit_test_activity(
+                    progress_id,
+                    InterAgentCommunicationIntent::Progress,
+                    sender,
+                    recipient,
+                ),
+            )
+            .await;
+        queue
+            .enqueue_explicit_mailbox_communication(
+                explicit_test_mail(action_id.clone()),
+                Default::default(),
+                explicit_test_activity(
+                    action_id.clone(),
+                    InterAgentCommunicationIntent::ResultReady,
+                    sender,
+                    recipient,
+                ),
+            )
+            .await;
+
+        let _explicit_activity_rx = queue.subscribe_explicit_activity();
+        let pending = queue
+            .pending_explicit_activity_for_targets(recipient, &[(sender, sender_path)])
+            .await;
+        assert_eq!(pending.map(|activity| activity.update_id), Some(action_id));
+    }
+
+    #[tokio::test]
+    async fn pruning_explicit_entries_does_not_remove_legacy_message_with_same_id() {
+        let queue = InputQueue::new();
+        let sender = ThreadId::new();
+        let recipient = ThreadId::new();
+        let update_id = ResponseItemId::new("shared-public-id");
+        let explicit_mail = explicit_test_mail(update_id.clone());
+        queue
+            .enqueue_explicit_mailbox_communication(
+                explicit_mail.clone(),
+                Default::default(),
+                explicit_test_activity(
+                    update_id.clone(),
+                    InterAgentCommunicationIntent::Progress,
+                    sender,
+                    recipient,
+                ),
+            )
+            .await;
+        queue
+            .enqueue_mailbox_communication(explicit_mail.clone(), Default::default())
+            .await;
+
+        let removed = queue
+            .remove_pending_explicit_updates(&std::collections::HashSet::from([update_id.clone()]))
+            .await;
+        assert_eq!(removed, std::collections::HashSet::from([update_id]));
+        assert_eq!(
+            queue.drain_mailbox_input_items().await.0,
+            vec![TurnInput::InterAgentCommunication(explicit_mail)]
+        );
     }
 }

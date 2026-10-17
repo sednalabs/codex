@@ -2,7 +2,11 @@ use super::*;
 use crate::session::step_context::StepContext;
 use crate::session::tests::build_world_state_from_turn_context;
 use crate::session::tests::make_session_and_context;
+use codex_history::CodexHarnessMetadata;
 use codex_history::CompactedItem;
+use codex_history::InterAgentCommunicationAdmission;
+use codex_history::InterAgentCommunicationIntent;
+use codex_history::ResponseItemEnvelope;
 use codex_protocol::AgentPath;
 use codex_protocol::ResponseItemId;
 use codex_protocol::error::CodexErrorDetails;
@@ -74,6 +78,143 @@ fn compacted_with_history(history: Vec<ResponseItem>) -> RolloutItem {
         latest_token_usage_record: None,
         resume_metadata: None,
     })
+}
+
+fn explicit_inter_agent_admission(update_id: &str) -> RolloutItem {
+    let sender_path = AgentPath::root().join("worker").unwrap();
+    let recipient_path = AgentPath::root();
+    let mut original_communication = InterAgentCommunication::new(
+        sender_path.clone(),
+        recipient_path.clone(),
+        Vec::new(),
+        "A bounded progress update.".to_string(),
+        /*trigger_turn*/ false,
+    );
+    let update_id = ResponseItemId::from_server(update_id.to_string());
+    original_communication.id = Some(update_id.clone());
+    RolloutItem::InterAgentCommunicationMetadata {
+        trigger_turn: false,
+        admission: Some(InterAgentCommunicationAdmission {
+            update_id,
+            idempotency_key: "progress-update-1".to_string(),
+            intent: InterAgentCommunicationIntent::Progress,
+            original_communication,
+            root_thread_id: codex_protocol::ThreadId::from_u128(1),
+            sender_thread_id: codex_protocol::ThreadId::from_u128(2),
+            recipient_thread_id: codex_protocol::ThreadId::from_u128(1),
+            sender_path,
+            recipient_path,
+            supersedes: Vec::new(),
+            represented_response_id: None,
+        }),
+    }
+}
+
+fn explicit_inter_agent_response(update_id: &str, response_id: &str) -> ResponseItemEnvelope {
+    ResponseItemEnvelope {
+        item: ResponseItem::AgentMessage {
+            id: Some(ResponseItemId::from_server(response_id.to_string())),
+            author: "/root/worker".to_string(),
+            recipient: "/root".to_string(),
+            content: Vec::new(),
+            internal_chat_message_metadata_passthrough: None,
+        },
+        metadata: Some(CodexHarnessMetadata {
+            inter_agent_update_id: Some(ResponseItemId::from_server(update_id.to_string())),
+            ..Default::default()
+        }),
+    }
+}
+
+fn compacted_with_envelopes(history: Vec<ResponseItemEnvelope>) -> RolloutItem {
+    RolloutItem::Compacted(CompactedItem {
+        message: "checkpoint".to_string(),
+        replacement_history: Some(history),
+        guardian_history: None,
+        retained_context: None,
+        mcp_resource_origins: None,
+        window_number: Some(1),
+        first_window_id: None,
+        previous_window_id: None,
+        window_id: None,
+        compaction_response_id: None,
+        latest_token_usage_record: None,
+        resume_metadata: None,
+    })
+}
+
+#[test]
+fn quiet_explicit_update_remains_in_the_prior_fork_turn_suffix() {
+    let rollout = vec![
+        response_item(user_msg("earlier user turn")),
+        explicit_inter_agent_admission("update_1"),
+        response_item(assistant_msg("interleaved non-boundary record")),
+        RolloutItem::ResponseItem(explicit_inter_agent_response("update_1", "response_1")),
+    ];
+
+    let retained_two_turns = truncate_rollout_to_last_n_fork_turns(&rollout, /*n_from_end*/ 2);
+    assert_eq!(
+        serde_json::to_value(&retained_two_turns).unwrap(),
+        serde_json::to_value(&rollout).unwrap()
+    );
+
+    let retained_last_turn = truncate_rollout_to_last_n_fork_turns(&rollout, /*n_from_end*/ 1);
+    assert_eq!(
+        serde_json::to_value(&retained_last_turn).unwrap(),
+        serde_json::to_value(&rollout).unwrap(),
+        "quiet progress stays in the suffix of the previous real user turn"
+    );
+    assert_eq!(
+        retained_last_turn
+            .iter()
+            .filter(|item| matches!(
+                item,
+                RolloutItem::InterAgentCommunicationMetadata {
+                    admission: Some(admission),
+                    ..
+                } if admission.update_id.as_str() == "update_1"
+            ))
+            .count(),
+        1,
+        "the explicit admission must be retained exactly once"
+    );
+    assert_eq!(
+        retained_last_turn
+            .iter()
+            .filter(|item| matches!(
+                item,
+                RolloutItem::ResponseItem(response)
+                    if matches!(&response.item, ResponseItem::AgentMessage {
+                        id: Some(id),
+                        ..
+                    } if id.as_str() == "response_1")
+            ))
+            .count(),
+        1,
+        "the quiet AgentMessage must be retained exactly once"
+    );
+}
+
+#[test]
+fn rollback_uses_compacted_response_boundary_not_following_admission() {
+    let rollout = vec![
+        compacted_with_envelopes(vec![
+            user_msg("earlier compacted turn").into(),
+            explicit_inter_agent_response("update_1", "response_1"),
+        ]),
+        explicit_inter_agent_admission("update_1"),
+        RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
+            num_turns: 1,
+        })),
+    ];
+
+    let truncated = truncate_rollout_to_last_n_fork_turns(&rollout, /*n_from_end*/ 1);
+    let [RolloutItem::Compacted(compacted)] = truncated.as_slice() else {
+        panic!("the retained compacted history should own the fork suffix");
+    };
+    let history = compacted.replacement_history.as_ref().unwrap();
+    assert_eq!(history.len(), 1);
+    assert!(matches!(&history[0].item, ResponseItem::Message { role, .. } if role == "user"));
 }
 
 #[test]
