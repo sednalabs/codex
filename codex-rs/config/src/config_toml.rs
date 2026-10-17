@@ -6,9 +6,10 @@ use std::num::NonZeroU64;
 use std::num::NonZeroUsize;
 use std::path::Path;
 
-use crate::HooksToml;
 use crate::browser_use::BrowserUseConfigToml;
 use crate::computer_use::ComputerUseConfigToml;
+use crate::HooksToml;
+use crate::instruction_overlays::InstructionOverlaysToml;
 use crate::permissions_toml::PermissionsToml;
 use crate::profile_toml::ConfigProfile;
 use crate::types::AnalyticsConfigToml;
@@ -246,12 +247,16 @@ pub struct ConfigToml {
     #[serde(default)]
     pub notify: Option<Vec<String>>,
 
-    /// System instructions.
+    /// Client-provided base instructions (sent as developer guidance in normal Responses requests).
     pub instructions: Option<String>,
 
     /// Developer instructions inserted as a `developer` role message.
     #[serde(default)]
     pub developer_instructions: Option<String>,
+
+    /// Bounded literal edits for explicitly selected client-owned instruction components.
+    #[serde(default)]
+    pub instruction_overlays: Option<InstructionOverlaysToml>,
 
     /// Whether to inject the `<permissions instructions>` developer block.
     pub include_permissions_instructions: Option<bool>,

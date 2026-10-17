@@ -11,6 +11,7 @@ use codex_agent_roles::parse_agent_role_file_contents;
 use codex_config::ConfigLayerEntry;
 use codex_config::ConfigLayerSource;
 use codex_config::ConfigLayerStack;
+use codex_config::InstructionOverlaysToml;
 use codex_config::SkillsConfig;
 use codex_config::loader::resolve_relative_paths_in_config_toml;
 use codex_exec_server::read_sensitive_file_to_string;
@@ -36,6 +37,7 @@ const AGENT_TYPE_UNAVAILABLE_ERROR: &str = "agent type is currently not availabl
 #[derive(Default, Serialize)]
 struct AgentRoleOverrides {
     developer_instructions: Option<String>,
+    instruction_overlays: Option<InstructionOverlaysToml>,
     model: Option<String>,
     model_reasoning_effort: Option<ReasoningEffort>,
     model_reasoning_summary: Option<ReasoningSummary>,
@@ -60,8 +62,8 @@ pub(crate) async fn apply_role_to_config(
 
     apply_role_to_config_inner(config, role_name, &role)
         .await
-        .map_err(|err| {
-            tracing::warn!("failed to apply role to config: {err}");
+        .map_err(|_| {
+            tracing::warn!("failed to apply role configuration");
             AGENT_TYPE_UNAVAILABLE_ERROR.to_string()
         })
 }
@@ -79,6 +81,7 @@ async fn apply_role_to_config_inner(
     let role_config = deserialize_config_toml_with_base(role_layer_toml, &config.codex_home)?;
     let mut overrides = AgentRoleOverrides {
         developer_instructions: role_config.developer_instructions,
+        instruction_overlays: role_config.instruction_overlays,
         model: role_config.model,
         model_reasoning_effort: role_config.model_reasoning_effort,
         model_reasoning_summary: role_config.model_reasoning_summary,
@@ -181,6 +184,19 @@ mod role_overrides {
     ) -> anyhow::Result<Config> {
         let mut next_config = config.clone();
         next_config.config_layer_stack = build_config_layer_stack(config, &role_layer_toml)?;
+        if overrides.instruction_overlays.is_some() {
+            let effective_config = next_config.config_layer_stack.effective_config();
+            let instruction_overlays: InstructionOverlaysToml = effective_config
+                .get("instruction_overlays")
+                .cloned()
+                .ok_or_else(|| anyhow!("invalid instruction overlay configuration"))?
+                .try_into()
+                .map_err(|_| anyhow!("invalid instruction overlay configuration"))?;
+            instruction_overlays
+                .validate_all()
+                .map_err(|_| anyhow!("invalid instruction overlay configuration"))?;
+            next_config.instruction_overlays = instruction_overlays;
+        }
         if let Some(model) = &overrides.model {
             next_config.model = Some(model.clone());
         }
@@ -421,3 +437,272 @@ Rules:
 #[cfg(test)]
 #[path = "role_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod instruction_overlay_role_tests {
+    use super::*;
+    use crate::config::ConfigBuilder;
+    use codex_config::InstructionOverlayComponent;
+    use codex_config::LoaderOverrides;
+    use codex_config::loader::project_trust_key;
+    use tempfile::TempDir;
+
+    async fn config_with_parent_overlays(home: &TempDir, overlays: &str) -> Config {
+        let overlays = toml::from_str::<TomlValue>(overlays).expect("parent overlay TOML");
+        ConfigBuilder::default()
+            .codex_home(home.path().to_path_buf())
+            .cli_overrides(vec![("instruction_overlays".to_string(), overlays)])
+            .fallback_cwd(/*fallback_cwd*/ Some(home.path().to_path_buf()))
+            .build()
+            .await
+            .expect("build isolated parent config")
+    }
+
+    async fn install_role(config: &mut Config, home: &TempDir, content: &str) {
+        let role_file = home.path().join("custom-role.toml");
+        tokio::fs::write(&role_file, content)
+            .await
+            .expect("write synthetic role file");
+        config.agent_roles.insert(
+            "custom".to_string(),
+            AgentRoleConfig {
+                description: None,
+                config_file: Some(role_file),
+                nickname_candidates: None,
+            },
+        );
+    }
+
+    async fn project_role_config(trust_level: &str) -> (TempDir, TempDir, Config) {
+        let home = TempDir::new().expect("temporary isolated home");
+        let project = TempDir::new().expect("temporary project");
+        tokio::fs::write(project.path().join(".project-root"), "")
+            .await
+            .expect("write project marker");
+        let project_key = TomlValue::String(project_trust_key(project.path())).to_string();
+        tokio::fs::write(
+            home.path().join("config.toml"),
+            format!("project_root_markers = [\".project-root\"]\n[projects.{project_key}]\ntrust_level = \"{trust_level}\""),
+        )
+        .await
+        .expect("write synthetic project trust config");
+        let agents = project.path().join(".codex/agents");
+        tokio::fs::create_dir_all(&agents)
+            .await
+            .expect("create project role directory");
+        tokio::fs::write(project.path().join(".codex/config.toml"), "")
+            .await
+            .expect("write project config layer");
+        tokio::fs::write(
+            agents.join("project-role.toml"),
+            "name = \"project-role\"\ndescription = \"synthetic project role\"\ndeveloper_instructions = \"PROJECT_ROLE_SOURCE\"\n[instruction_overlays.developer_guidance]\nedits = [{ op = \"append\", text = \" project role guidance\" }]",
+        )
+        .await
+        .expect("write synthetic project role");
+        let config = ConfigBuilder::default()
+            .codex_home(home.path().to_path_buf())
+            .fallback_cwd(/*fallback_cwd*/ Some(project.path().to_path_buf()))
+            .build()
+            .await
+            .expect("load synthetic project role");
+        (home, project, config)
+    }
+
+    #[tokio::test]
+    async fn trusted_project_discovery_projects_role_overlay_but_untrusted_is_excluded() {
+        let (home, _project, mut trusted) = project_role_config("trusted").await;
+        assert!(trusted.agent_roles.contains_key("project-role"));
+        apply_role_to_config(&mut trusted, /*role_name*/ Some("project-role"))
+            .await
+            .expect("trusted project-discovered role applies");
+        assert_eq!(
+            trusted
+                .instruction_overlays
+                .apply_component(
+                    InstructionOverlayComponent::DeveloperGuidance,
+                    /*body*/ Some("source"),
+                )
+                .expect("project role overlay"),
+            Some("source project role guidance".to_string())
+        );
+        let (_home, _project, untrusted) = project_role_config("untrusted").await;
+        assert!(!untrusted.agent_roles.contains_key("project-role"));
+    }
+
+    #[tokio::test]
+    async fn role_overlay_projection_preserves_absence_merges_components_and_honors_clear() {
+        let home = TempDir::new().expect("temporary config home");
+        let mut config = config_with_parent_overlays(
+            &home,
+            r#"
+                [model_baseline]
+                edits = [{ op = "append", text = " parent-baseline" }]
+                [developer_guidance]
+                edits = [{ op = "append", text = " parent-developer" }]
+            "#,
+        )
+        .await;
+        let inherited = config.instruction_overlays.clone();
+
+        install_role(&mut config, &home, "model = 'child-model'").await;
+        apply_role_to_config(&mut config, /*role_name*/ Some("custom"))
+            .await
+            .expect("role without overlay key applies");
+        assert_eq!(config.instruction_overlays, inherited);
+        assert_eq!(config.model.as_deref(), Some("child-model"));
+
+        install_role(
+            &mut config,
+            &home,
+            r#"
+                model = "role-with-overlays"
+                [instruction_overlays.model_baseline]
+                edits = [{ op = "replace", text = " role-baseline" }]
+                [instruction_overlays.multi_agent_mode]
+                edits = [{ op = "append", text = " role-mode" }]
+            "#,
+        )
+        .await;
+        let model_before_role = config.model.clone();
+        let effort_before_role = config.model_reasoning_effort.clone();
+        apply_role_to_config(&mut config, /*role_name*/ Some("custom"))
+            .await
+            .expect("selected role overlays apply");
+        assert_eq!(config.model.as_deref(), Some("role-with-overlays"));
+        assert_eq!(config.model_reasoning_effort, effort_before_role);
+        assert_ne!(config.model, model_before_role);
+        assert_eq!(
+            config
+                .instruction_overlays
+                .apply_component(
+                    InstructionOverlayComponent::ModelBaseline,
+                    /*body*/ Some("source"),
+                )
+                .expect("role baseline replacement"),
+            Some(" role-baseline".to_string())
+        );
+        assert_eq!(
+            config
+                .instruction_overlays
+                .apply_component(
+                    InstructionOverlayComponent::DeveloperGuidance,
+                    /*body*/ Some("source"),
+                )
+                .expect("unrelated inherited component retained"),
+            Some("source parent-developer".to_string())
+        );
+        assert!(config.instruction_overlays.multi_agent_mode.is_some());
+
+        install_role(
+            &mut config,
+            &home,
+            "[instruction_overlays.model_baseline]\nedits = []",
+        )
+        .await;
+        apply_role_to_config(&mut config, /*role_name*/ Some("custom"))
+            .await
+            .expect("explicit empty role edits clear only the component");
+        assert_eq!(
+            config
+                .instruction_overlays
+                .apply_component(
+                    InstructionOverlayComponent::ModelBaseline,
+                    /*body*/ Some("source"),
+                )
+                .expect("cleared baseline"),
+            Some("source".to_string())
+        );
+        assert!(config.instruction_overlays.developer_guidance.is_some());
+        assert!(config.instruction_overlays.multi_agent_mode.is_some());
+
+        install_role(&mut config, &home, "instruction_overlays = {}").await;
+        let before_empty_table = config.instruction_overlays.clone();
+        apply_role_to_config(&mut config, /*role_name*/ Some("custom"))
+            .await
+            .expect("present empty outer role table is not a global clear");
+        assert_eq!(config.instruction_overlays, before_empty_table);
+    }
+
+    #[tokio::test]
+    async fn role_overlay_projection_keeps_higher_precedence_managed_layer_authoritative() {
+        let home = TempDir::new().expect("temporary config home");
+        let managed_config = home.path().join("managed_config.toml");
+        tokio::fs::write(
+            &managed_config,
+            r#"
+                [instruction_overlays.model_baseline]
+                edits = [{ op = "replace", text = "managed-baseline" }]
+            "#,
+        )
+        .await
+        .expect("write synthetic managed config");
+        tokio::fs::write(home.path().join("requirements.toml"), "")
+            .await
+            .expect("write synthetic requirements");
+        let mut config = ConfigBuilder::default()
+            .codex_home(home.path().to_path_buf())
+            .loader_overrides(LoaderOverrides::with_managed_config_path_for_tests(
+                managed_config,
+            ))
+            .fallback_cwd(/*fallback_cwd*/ Some(home.path().to_path_buf()))
+            .build()
+            .await
+            .expect("build config with a managed overlay");
+        install_role(
+            &mut config,
+            &home,
+            "[instruction_overlays.model_baseline]\nedits = [{ op = 'replace', text = 'role-baseline' }]",
+        )
+        .await;
+
+        apply_role_to_config(&mut config, /*role_name*/ Some("custom"))
+            .await
+            .expect("role layer applies without replacing managed precedence");
+        assert_eq!(
+            config
+                .instruction_overlays
+                .apply_component(
+                    InstructionOverlayComponent::ModelBaseline,
+                    /*body*/ Some("source"),
+                )
+                .expect("managed baseline remains selected"),
+            Some("managed-baseline".to_string())
+        );
+    }
+
+    #[tracing_test::traced_test]
+    #[tokio::test]
+    async fn invalid_role_overlay_diagnostics_do_not_disclose_configured_text() {
+        let home = TempDir::new().expect("temporary config home");
+        let mut config = config_with_parent_overlays(
+            &home,
+            "[developer_guidance]\nedits = [{ op = 'append', text = 'parent' }]",
+        )
+        .await;
+        for (fixture, sentinel) in [
+            (
+                "[instruction_overlays.model_baseline]\nedits = [{ op = 'replace_exact', from = '', to = 'OVERLAY_SENTINEL', expected_matches = 1 }]",
+                "OVERLAY_SENTINEL",
+            ),
+            (
+                "[instruction_overlays.model_baseline]\nedits = [{ op = 'PRIVATE_OPERATION_SENTINEL', text = 'PRIVATE_BODY_SENTINEL' }]",
+                "PRIVATE_OPERATION_SENTINEL",
+            ),
+            (
+                "[instruction_overlays]\nPRIVATE_COMPONENT_SENTINEL = {}",
+                "PRIVATE_COMPONENT_SENTINEL",
+            ),
+        ] {
+            install_role(&mut config, &home, fixture).await;
+            let before = config.clone();
+            let error = apply_role_to_config(&mut config, /*role_name*/ Some("custom"))
+                .await
+                .expect_err("invalid role overlay must fail");
+            assert_eq!(error, AGENT_TYPE_UNAVAILABLE_ERROR);
+            assert_eq!(config, before, "failed role projection is atomic");
+            assert!(logs_contain("failed to apply role configuration"));
+            assert!(!logs_contain(sentinel));
+            assert!(!logs_contain("PRIVATE_BODY_SENTINEL"));
+        }
+    }
+}

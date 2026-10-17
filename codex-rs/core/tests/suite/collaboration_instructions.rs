@@ -1,5 +1,13 @@
 use anyhow::Result;
+use codex_config::InstructionOverlayComponentToml;
+use codex_config::InstructionOverlayEdit;
+use codex_config::InstructionOverlayOnAbsent;
+use codex_config::InstructionOverlaySelection;
+use codex_config::loader::project_trust_key;
+use codex_core::ForkSnapshot;
+use codex_core::StartThreadOptions;
 use codex_core::TurnInputRequest;
+use codex_core::config::ConfigBuilder;
 use codex_features::Feature;
 use codex_history::RolloutItem;
 use codex_login::CodexAuth;
@@ -13,18 +21,29 @@ use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::protocol::COLLABORATION_MODE_CLOSE_TAG;
 use codex_protocol::protocol::COLLABORATION_MODE_OPEN_TAG;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::Op;
+use codex_protocol::protocol::ReviewRequest;
+use codex_protocol::protocol::ReviewTarget;
+use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadSettingsOverrides;
+use codex_protocol::turn_input::TurnInputSubmission;
 use codex_protocol::user_input::UserInput;
+use codex_thread_store::LoadThreadHistoryParams;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
+use core_test_support::responses::ev_function_call_with_namespace;
 use core_test_support::responses::ev_response_created;
 use core_test_support::responses::mount_models_once_with_etag;
 use core_test_support::responses::mount_response_once;
 use core_test_support::responses::mount_sse_once;
+use core_test_support::responses::mount_sse_once_match;
+use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
 use core_test_support::responses::sse_response;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
+use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::local_requests;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
@@ -115,6 +134,105 @@ fn count_messages_containing(texts: &[String], target: &str) -> usize {
     texts.iter().filter(|text| text.contains(target)).count()
 }
 
+fn append_overlay(
+    text: &str,
+    selection: InstructionOverlaySelection,
+) -> InstructionOverlayComponentToml {
+    InstructionOverlayComponentToml {
+        on_absent: InstructionOverlayOnAbsent::Error,
+        selection,
+        edits: vec![InstructionOverlayEdit::Append {
+            text: text.to_string(),
+        }],
+    }
+}
+
+async fn persisted_model_context_json(test: &TestCodex) -> Result<String> {
+    test.codex.ensure_rollout_materialized().await;
+    test.codex.flush_rollout().await?;
+    let history = test
+        .thread_store
+        .load_latest_model_context(LoadThreadHistoryParams {
+            thread_id: test.session_configured.thread_id.clone(),
+            include_archived: true,
+        })
+        .await?;
+    Ok(serde_json::to_string(&history.items)?)
+}
+
+async fn submit_thread_text_turn(thread: &codex_core::CodexThread, prompt: &str) -> Result<()> {
+    let submission = thread
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: prompt.to_string(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    let turn_id = match submission {
+        TurnInputSubmission::Started { turn_id, .. }
+        | TurnInputSubmission::Steered { turn_id, .. } => turn_id,
+        TurnInputSubmission::NotSubmitted { .. } => {
+            anyhow::bail!("child turn input was not submitted")
+        }
+    };
+    wait_for_event(
+        thread,
+        |ev| matches!(ev, EventMsg::TurnComplete(event) if event.turn_id == turn_id),
+    )
+    .await;
+    Ok(())
+}
+
+async fn submit_text_turn_with_model(test: &TestCodex, prompt: &str, model: &str) -> Result<()> {
+    test.codex
+        .start_or_steer_turn(
+            TurnInputRequest::user_input(vec![UserInput::Text {
+                text: prompt.to_string(),
+                text_elements: Vec::new(),
+            }])
+            .with_thread_settings(ThreadSettingsOverrides {
+                model: Some(model.to_string()),
+                ..Default::default()
+            }),
+        )
+        .await?;
+    wait_for_event(&test.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+    Ok(())
+}
+
+fn decoded_request_body(request: &wiremock::Request) -> Option<Vec<u8>> {
+    let is_zstd = request
+        .headers
+        .get("content-encoding")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .split(',')
+                .any(|entry| entry.trim().eq_ignore_ascii_case("zstd"))
+        });
+    if is_zstd {
+        zstd::stream::decode_all(std::io::Cursor::new(&request.body)).ok()
+    } else {
+        Some(request.body.clone())
+    }
+}
+
+fn request_body_contains(request: &wiremock::Request, needle: &str) -> bool {
+    decoded_request_body(request)
+        .and_then(|body| String::from_utf8(body).ok())
+        .is_some_and(|body| body.contains(needle))
+}
+
+fn request_has_input_type(request: &wiremock::Request, expected_type: &str) -> bool {
+    decoded_request_body(request)
+        .and_then(|body| serde_json::from_slice::<Value>(&body).ok())
+        .and_then(|body| body.get("input")?.as_array().cloned())
+        .is_some_and(|items| {
+            items
+                .iter()
+                .any(|item| item.get("type").and_then(Value::as_str) == Some(expected_type))
+        })
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn no_collaboration_instructions_by_default() -> Result<()> {
     skip_if_no_network!(Ok(()));
@@ -149,6 +267,545 @@ async fn no_collaboration_instructions_by_default() -> Result<()> {
         0
     );
 
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn configured_developer_overlay_changes_only_its_tagged_request_fragment() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let req = mount_sse_once(
+        &server,
+        sse(vec![ev_response_created("resp-1"), ev_completed("resp-1")]),
+    )
+    .await;
+
+    let test = test_codex()
+        .with_config(|config| {
+            config.developer_instructions = Some("synthetic developer guidance".to_string());
+            config.instruction_overlays.developer_guidance = Some(append_overlay(
+                "\nsynthetic caller note",
+                InstructionOverlaySelection::Unique,
+            ));
+        })
+        .build(&server)
+        .await?;
+    test.submit_text_turn("hello").await?;
+
+    let texts = developer_texts(&req.single_request().input());
+    let permissions = texts
+        .iter()
+        .find(|text| text.contains("<permissions instructions>"))
+        .expect("permission instructions remain in their separate developer fragment");
+    assert!(!permissions.contains("synthetic caller note"));
+    assert_eq!(
+        count_messages_containing(&texts, "synthetic caller note"),
+        1
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retained_model_switch_overlay_is_request_only_and_does_not_accumulate() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let mock = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![ev_response_created("resp-1"), ev_completed("resp-1")]),
+            sse(vec![ev_response_created("resp-2"), ev_completed("resp-2")]),
+            sse(vec![ev_response_created("resp-3"), ev_completed("resp-3")]),
+        ],
+    )
+    .await;
+    let test = test_codex()
+        .with_model("gpt-5.4")
+        .with_config(|config| {
+            config.instruction_overlays.model_switch_guidance =
+                Some(InstructionOverlayComponentToml {
+                    on_absent: InstructionOverlayOnAbsent::Skip,
+                    ..append_overlay(
+                        " synthetic transition note",
+                        InstructionOverlaySelection::AllClassified,
+                    )
+                });
+        })
+        .build(&server)
+        .await?;
+
+    test.submit_text_turn("initial model").await?;
+    submit_text_turn_with_model(&test, "switch model", "gpt-5.5").await?;
+    submit_text_turn_with_model(&test, "same selected model", "gpt-5.5").await?;
+
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(requests[0].body_json()["model"], "gpt-5.4");
+    assert_eq!(requests[1].body_json()["model"], "gpt-5.5");
+    assert_eq!(requests[2].body_json()["model"], "gpt-5.5");
+    let initial_texts = developer_texts(&requests[0].input());
+    assert_eq!(
+        count_messages_containing(&initial_texts, "<model_switch>"),
+        0
+    );
+    assert_eq!(
+        count_messages_containing(&initial_texts, "synthetic transition note"),
+        0
+    );
+    let switched = developer_texts(
+        requests[1].body_json()["input"]
+            .as_array()
+            .expect("request input is an array"),
+    );
+    let transitions: Vec<&String> = switched
+        .iter()
+        .filter(|text| text.contains("<model_switch>"))
+        .collect();
+    assert_eq!(transitions.len(), 1);
+    assert!(transitions[0].contains("synthetic transition note"));
+    assert_eq!(
+        transitions[0].matches("synthetic transition note").count(),
+        1
+    );
+    let repeated = developer_texts(
+        requests[2].body_json()["input"]
+            .as_array()
+            .expect("request input is an array"),
+    );
+    let repeated_transitions: Vec<&String> = repeated
+        .iter()
+        .filter(|text| text.contains("<model_switch>"))
+        .collect();
+    assert_eq!(repeated_transitions, transitions);
+
+    let stored = persisted_model_context_json(&test).await?;
+    assert!(stored.contains("<model_switch>"));
+    assert!(!stored.contains("synthetic transition note"));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn review_uses_review_baseline_and_does_not_apply_normal_baseline() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let mock = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![ev_response_created("resp-1"), ev_completed("resp-1")]),
+            sse(vec![
+                ev_response_created("resp-2"),
+                ev_assistant_message("resp-2", "No findings."),
+                ev_completed("resp-2"),
+            ]),
+        ],
+    )
+    .await;
+    let test = test_codex()
+        .with_config(|config| {
+            config.instruction_overlays.model_baseline = Some(append_overlay(
+                " NORMAL_BASE_MARKER",
+                InstructionOverlaySelection::Unique,
+            ));
+            config.instruction_overlays.review_baseline = Some(append_overlay(
+                " REVIEW_BASE_MARKER",
+                InstructionOverlaySelection::Unique,
+            ));
+        })
+        .build(&server)
+        .await?;
+    test.submit_text_turn("normal request").await?;
+    test.codex
+        .submit(Op::Review {
+            review_request: ReviewRequest {
+                target: ReviewTarget::Custom {
+                    instructions: "synthetic review request".to_string(),
+                },
+                user_facing_hint: None,
+            },
+        })
+        .await?;
+    wait_for_event(&test.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 2);
+    let normal_texts = developer_texts(
+        requests[0].body_json()["input"]
+            .as_array()
+            .expect("request input is an array"),
+    );
+    assert!(
+        normal_texts
+            .iter()
+            .any(|text| text.contains("NORMAL_BASE_MARKER"))
+    );
+    assert!(
+        !normal_texts
+            .iter()
+            .any(|text| text.contains("REVIEW_BASE_MARKER"))
+    );
+    let review_texts = developer_texts(
+        requests[1].body_json()["input"]
+            .as_array()
+            .expect("request input is an array"),
+    );
+    assert!(
+        !review_texts
+            .iter()
+            .any(|text| text.contains("NORMAL_BASE_MARKER"))
+    );
+    assert!(
+        review_texts
+            .iter()
+            .any(|text| text.contains("REVIEW_BASE_MARKER"))
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fork_reconstructs_the_configured_overlay_on_its_child_client() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let mock = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![ev_response_created("resp-1"), ev_completed("resp-1")]),
+            sse(vec![ev_response_created("resp-2"), ev_completed("resp-2")]),
+        ],
+    )
+    .await;
+    let test = test_codex()
+        .with_config(|config| {
+            config.developer_instructions = Some("synthetic fork guidance".to_string());
+            config.instruction_overlays.developer_guidance = Some(append_overlay(
+                " fork child marker",
+                InstructionOverlaySelection::Unique,
+            ));
+        })
+        .build(&server)
+        .await?;
+    test.submit_text_turn("parent turn").await?;
+    test.codex.ensure_rollout_materialized().await;
+    test.codex.flush_rollout().await?;
+    let path = test
+        .codex
+        .rollout_path()
+        .expect("parent rollout has been persisted");
+    let fork = test
+        .thread_manager
+        .fork_legacy_thread(
+            ForkSnapshot::Interrupted,
+            StartThreadOptions::new(test.config.clone()),
+            path,
+        )
+        .await?;
+    submit_thread_text_turn(&fork.thread, "fork child turn").await?;
+
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 2);
+    let child_texts = developer_texts(
+        requests[1].body_json()["input"]
+            .as_array()
+            .expect("child request input is an array"),
+    );
+    assert_eq!(
+        count_messages_containing(&child_texts, "fork child marker"),
+        1
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resume_and_config_rollback_change_only_new_outgoing_requests() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let mock = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![ev_response_created("resp-1"), ev_completed("resp-1")]),
+            sse(vec![ev_response_created("resp-2"), ev_completed("resp-2")]),
+            sse(vec![ev_response_created("resp-3"), ev_completed("resp-3")]),
+        ],
+    )
+    .await;
+    let mut configured_builder = test_codex().with_config(|config| {
+        config.developer_instructions = Some("synthetic resume guidance".to_string());
+        config.instruction_overlays.developer_guidance = Some(append_overlay(
+            " reconstructed config marker",
+            InstructionOverlaySelection::Unique,
+        ));
+    });
+    let initial = configured_builder.build(&server).await?;
+    initial.submit_text_turn("before restart").await?;
+    let raw_before_restart = persisted_model_context_json(&initial).await?;
+    assert!(!raw_before_restart.contains("reconstructed config marker"));
+    let home = initial.home.clone();
+    let rollout_path = initial
+        .session_configured
+        .rollout_path
+        .clone()
+        .expect("test session has a rollout path");
+    initial.codex.shutdown_and_wait().await?;
+
+    let mut resume_builder = test_codex().with_config(|config| {
+        config.developer_instructions = Some("synthetic resume guidance".to_string());
+        config.instruction_overlays.developer_guidance = Some(append_overlay(
+            " reconstructed config marker",
+            InstructionOverlaySelection::Unique,
+        ));
+    });
+    let resumed = resume_builder.resume(&server, home, rollout_path).await?;
+    resumed.submit_text_turn("after resume").await?;
+    let raw_after_resume = persisted_model_context_json(&resumed).await?;
+    assert!(!raw_after_resume.contains("reconstructed config marker"));
+
+    let mut rollback_builder = test_codex().with_config(|config| {
+        config.developer_instructions = Some("synthetic resume guidance".to_string());
+    });
+    let rolled_back = rollback_builder.restart(&server, &resumed).await?;
+    rolled_back.submit_text_turn("after rollback").await?;
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 3);
+    let resumed_texts = developer_texts(
+        requests[1].body_json()["input"]
+            .as_array()
+            .expect("request input is an array"),
+    );
+    assert_eq!(
+        count_messages_containing(&resumed_texts, "reconstructed config marker"),
+        1
+    );
+    let rollback_texts = developer_texts(
+        requests[2].body_json()["input"]
+            .as_array()
+            .expect("request input is an array"),
+    );
+    assert_eq!(
+        count_messages_containing(&rollback_texts, "reconstructed config marker"),
+        0
+    );
+    let raw_after_rollback = persisted_model_context_json(&rolled_back).await?;
+    assert!(!raw_after_rollback.contains("reconstructed config marker"));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn thread_spawn_child_inherits_the_resolved_overlay_plan() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let request = mount_sse_once(
+        &server,
+        sse(vec![ev_response_created("resp-1"), ev_completed("resp-1")]),
+    )
+    .await;
+    let test = test_codex()
+        .with_config(|config| {
+            config.developer_instructions = Some("synthetic child guidance".to_string());
+            config.instruction_overlays.developer_guidance = Some(append_overlay(
+                " inherited child marker",
+                InstructionOverlaySelection::Unique,
+            ));
+        })
+        .build(&server)
+        .await?;
+    let child = test
+        .thread_manager
+        .start_thread(StartThreadOptions {
+            environments: Some(vec![test.executor_environment().request()]),
+            session_source: Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: test.session_configured.thread_id.clone(),
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            })),
+            ..StartThreadOptions::new(test.config.clone())
+        })
+        .await?;
+    submit_thread_text_turn(&child.thread, "spawned child request").await?;
+
+    let texts = developer_texts(&request.single_request().input());
+    assert_eq!(
+        count_messages_containing(&texts, "inherited child marker"),
+        1
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn trusted_project_role_overlay_reaches_the_spawned_child_request() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let mut test = test_codex().build(&server).await?;
+    let project = tempfile::TempDir::new()?;
+    let home = tempfile::TempDir::new()?;
+    std::fs::write(project.path().join(".project-root"), "")?;
+    let project_key = toml::Value::String(project_trust_key(project.path())).to_string();
+    std::fs::write(
+        home.path().join("config.toml"),
+        format!(
+            "project_root_markers = [\".project-root\"]\n[projects.{project_key}]\ntrust_level = \"trusted\"\n"
+        ),
+    )?;
+    let agents = project.path().join(".codex/agents");
+    std::fs::create_dir_all(&agents)?;
+    std::fs::write(project.path().join(".codex/config.toml"), "")?;
+    std::fs::write(
+        agents.join("project-role.toml"),
+        "name = \"project-role\"\ndescription = \"synthetic project role\"\ndeveloper_instructions = \"PROJECT_ROLE_SOURCE\"\n[instruction_overlays.developer_guidance]\nedits = [{ op = \"append\", text = \" PROJECT_ROLE_OVERLAY\" }]\n",
+    )?;
+    let discovered = ConfigBuilder::default()
+        .codex_home(home.path().to_path_buf())
+        .fallback_cwd(/*fallback_cwd*/ Some(project.path().to_path_buf()))
+        .build()
+        .await?;
+    assert!(discovered.agent_roles.contains_key("project-role"));
+
+    let mut root_config = test.config.clone();
+    root_config.agent_roles = discovered.agent_roles;
+    root_config.cwd = discovered.cwd.clone();
+    root_config.codex_home = discovered.codex_home.clone();
+    root_config.features.enable(Feature::Collab)?;
+    root_config.features.enable(Feature::MultiAgentV2)?;
+    let root = test
+        .thread_manager
+        .start_thread(StartThreadOptions {
+            environments: Some(vec![test.executor_environment().request()]),
+            ..StartThreadOptions::new(root_config)
+        })
+        .await?;
+    let spawn_args = serde_json::to_string(&json!({
+        "message": "project role child task",
+        "task_name": "project_worker",
+        "agent_type": "project-role",
+        "fork_turns": "none",
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| request_body_contains(request, "spawn this synthetic role"),
+        sse(vec![
+            ev_response_created("resp-root-spawn"),
+            ev_function_call_with_namespace(
+                "spawn-project-role",
+                "collaboration",
+                "spawn_agent",
+                &spawn_args,
+            ),
+            ev_completed("resp-root-spawn"),
+        ]),
+    )
+    .await;
+    let wait_target_path_seen =
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(/*value*/ false));
+    struct WaitForSpawnedRoleResponder {
+        wait_target_path_seen: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+    impl wiremock::Respond for WaitForSpawnedRoleResponder {
+        fn respond(&self, request: &wiremock::Request) -> wiremock::ResponseTemplate {
+            let task_path = decoded_request_body(request)
+                .and_then(|body| serde_json::from_slice::<Value>(&body).ok())
+                .and_then(|body| body.get("input")?.as_array().cloned())
+                .and_then(|input| {
+                    input.iter().find_map(|item| {
+                        (item.get("type")?.as_str()? == "function_call_output"
+                            && item.get("call_id")?.as_str()? == "spawn-project-role")
+                            .then(|| item.get("output")?.as_str())
+                            .flatten()
+                            .and_then(|output| serde_json::from_str::<Value>(output).ok())
+                            .and_then(|output| output.get("task_name")?.as_str().map(str::to_owned))
+                    })
+                });
+            let targets = match task_path {
+                Some(task_path) => {
+                    self.wait_target_path_seen
+                        .store(/*value*/ true, std::sync::atomic::Ordering::SeqCst);
+                    vec![task_path]
+                }
+                None => vec!["missing_spawn_path".to_string()],
+            };
+            let wait_args = json!({
+                "targets": targets,
+                "return_when": "all",
+                "timeout_ms": 10_000,
+            });
+            wiremock::ResponseTemplate::new(/*status_code*/ 200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(sse(vec![
+                    ev_response_created("resp-root-wait"),
+                    ev_function_call_with_namespace(
+                        "wait-project-worker",
+                        "collaboration",
+                        "wait_agent",
+                        &wait_args.to_string(),
+                    ),
+                    ev_completed("resp-root-wait"),
+                ]))
+        }
+    }
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path_regex(".*/responses$"))
+        .and(|request: &wiremock::Request| request_body_contains(request, "spawn-project-role"))
+        .respond_with(WaitForSpawnedRoleResponder {
+            wait_target_path_seen: std::sync::Arc::clone(&wait_target_path_seen),
+        })
+        .up_to_n_times(/*n_times*/ 1)
+        .mount(&server)
+        .await;
+    let child_request = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            request_has_input_type(request, "agent_message")
+                && request_body_contains(request, "project role child task")
+        },
+        sse(vec![
+            ev_response_created("resp-project-child"),
+            ev_assistant_message("msg-project-child", "project role complete"),
+            ev_completed("resp-project-child"),
+        ]),
+    )
+    .await;
+    let root_completion = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| request_body_contains(request, "wait-project-worker"),
+        sse(vec![ev_completed("resp-root-complete")]),
+    )
+    .await;
+
+    submit_thread_text_turn(&root.thread, "spawn this synthetic role").await?;
+    let wait_output = root_completion
+        .single_request()
+        .function_call_output_text("wait-project-worker")
+        .expect("root continuation contains the targeted wait result");
+    assert!(
+        wait_target_path_seen.load(std::sync::atomic::Ordering::SeqCst),
+        "spawn response did not provide a canonical task path for wait_agent"
+    );
+    let wait_result: Value = serde_json::from_str(&wait_output)?;
+    assert_eq!(
+        wait_result["message"],
+        "Target agent completion is actionable."
+    );
+    assert!(
+        !wait_result["timed_out"]
+            .as_bool()
+            .expect("wait timeout flag")
+    );
+    assert_eq!(wait_result["outcome"], "target_terminal_all");
+    let child_texts = developer_texts(&child_request.single_request().input());
+    assert!(
+        child_texts
+            .iter()
+            .any(|text| text.contains("PROJECT_ROLE_SOURCE"))
+    );
+    assert_eq!(
+        count_messages_containing(&child_texts, "PROJECT_ROLE_OVERLAY"),
+        1
+    );
     Ok(())
 }
 

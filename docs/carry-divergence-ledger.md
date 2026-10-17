@@ -534,3 +534,26 @@ finite proof/authentication frames only through the existing anonymous-descripto
 boundary. Packaging is not issuer appointment, policy or credential provisioning,
 service installation, or live execution authority. The ordinary branch installer
 continues to install only the CLI and its two existing companion executables.
+
+## Editable client instruction overlays
+
+The client instruction-overlay carry is documented in
+[`docs/config.md`](config.md#client-instruction-overlays). It defines nine
+closed client-owned text targets and uses the existing enabled configuration
+and trusted-project boundary, including role configuration. Ordered literal
+operations are bounded and atomic on eligible outgoing request copies; strict
+`unique` selection remains the default, while explicit `all_classified`
+selection applies counts independently to each known instance. It does not
+infer a latest/current instance, change runtime controls or permissions, or
+rewrite stored history. Internal, Guardian, compact, memory-consolidation,
+`SessionSource::Custom`, unknown, and other non-eligible sources are unchanged;
+review requests may select only the review baseline. This source gate is
+distinct from operator-defined agent roles: those roles remain included on
+otherwise eligible root and ThreadSpawn requests. Managed, administrative,
+security, provider-enforced, and unclassified content is excluded.
+
+Rollback is configuration reconstruction: restore or remove the setting at
+its existing layer and start a new process/session. This source carry and its
+synthetic tests do not claim installed or live acceptance. The instruction
+inspection command reports that it does not evaluate these overlays and is not
+proof of a transformed provider request.

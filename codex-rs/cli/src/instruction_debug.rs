@@ -1,5 +1,7 @@
 use clap::Parser;
 use codex_config::CloudConfigBundleLoader;
+#[cfg(test)]
+use codex_config::ConfigLayerEntry;
 use codex_config::ConfigLayerMetadata;
 use codex_config::ConfigLayerSource;
 use codex_config::ConfigLoadOptions;
@@ -131,6 +133,9 @@ fn build_report(
             "configuration instructions may override stored history, which may override the model base",
             "compiled cadence transforms are conditional and were not evaluated",
         ],
+        "inspection_limits": {
+            "instruction_overlays": "instruction overlay tables and request-copy transformations are not projected or evaluated by this inspection",
+        },
         "publication_warning": "heuristic redaction only; unfamiliar, split-line, multiline, encoded, or unrecognized secrets may remain; absence of credentials is not guaranteed",
     }))
 }
@@ -578,6 +583,76 @@ mod tests {
             output.is_empty(),
             "oversized report must not write a prefix"
         );
+    }
+
+    #[test]
+    fn report_discloses_instruction_overlay_inspection_limit() {
+        let overlay_literal = "OVERLAY_LITERAL_MUST_NOT_BE_PROJECTED";
+        let selected_literal = "SELECTED_DEVELOPER_TEXT_MUST_BE_OPT_IN";
+        let synthetic_path =
+            AbsolutePathBuf::from_absolute_path("/synthetic/instruction-overlay-config.toml")
+                .expect("synthetic absolute path");
+        let config = toml::from_str(&format!(
+            "developer_instructions = {selected_literal:?}\n[instruction_overlays.developer_guidance]\nedits = [{{ op = 'append', text = {overlay_literal:?} }}]\n"
+        ))
+        .expect("synthetic config value");
+        let typed_overlays: codex_config::InstructionOverlaysToml = toml::from_str(&format!(
+            "[developer_guidance]\nedits = [{{ op = 'append', text = {overlay_literal:?} }}]\n"
+        ))
+        .expect("synthetic overlay config type");
+        assert!(typed_overlays.developer_guidance.is_some());
+        let layer = ConfigLayerEntry::new(
+            ConfigLayerSource::User {
+                file: synthetic_path,
+                profile: None,
+            },
+            config,
+        );
+        let stack = codex_config::ConfigLayerStack::new(
+            vec![layer],
+            codex_config::ConfigRequirements::default(),
+            codex_config::ConfigRequirementsToml::default(),
+        )
+        .expect("synthetic layer stack");
+        let effective = stack.effective_config();
+        assert_eq!(
+            effective
+                .get("instruction_overlays")
+                .and_then(|value| value.get("developer_guidance"))
+                .and_then(|value| value.get("edits"))
+                .and_then(|value| value.get(0))
+                .and_then(|value| value.get("text"))
+                .and_then(TomlValue::as_str),
+            Some(overlay_literal),
+            "synthetic overlay literal must exist in the effective fixture"
+        );
+
+        for show_content in [false, true] {
+            let report =
+                build_report(&stack, show_content, /*stdin_text*/ None).expect("synthetic report");
+            let projected = report["inline_configuration"]
+                .as_array()
+                .expect("inline configuration array");
+            let keys = projected
+                .iter()
+                .map(|field| field["key"].as_str().expect("projected key").to_string())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                keys,
+                INSTRUCTION_PATHS
+                    .iter()
+                    .map(|path| path.join("."))
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(
+                report["inspection_limits"]["instruction_overlays"],
+                "instruction overlay tables and request-copy transformations are not projected or evaluated by this inspection"
+            );
+            let serialized = report.to_string();
+            assert_eq!(serialized.contains(selected_literal), show_content);
+            assert!(!serialized.contains(overlay_literal));
+            assert!(report.get("instruction_overlays").is_none());
+        }
     }
 
     #[tokio::test]

@@ -377,6 +377,66 @@
         "codex-rs/core/src/mcp_tool_call.rs"
       ],
       "extraction_target": "native host capability for narrowly scoped MCP request proof"
+    },
+    {
+      "id": "codex-client-instruction-overlays",
+      "title": "Editable client instruction overlays",
+      "status": "live",
+      "category": "core-runtime",
+      "surface_type": "protocol-client",
+      "surface": [
+        "nine closed client-owned instruction components",
+        "trusted enabled configuration and role layers",
+        "ordered literal edits on eligible outgoing request copies"
+      ],
+      "files": [
+        "codex-rs/config/src/config_toml.rs",
+        "codex-rs/config/src/instruction_overlays.rs",
+        "codex-rs/config/src/loader/mod.rs",
+        "codex-rs/core/src/agent/role.rs",
+        "codex-rs/core/src/client/instruction_overlays.rs",
+        "codex-rs/core/src/client.rs",
+        "codex-rs/core/src/session/session.rs",
+        "codex-rs/core/tests/suite/collaboration_instructions.rs",
+        "codex-rs/core/config.schema.json",
+        "codex-rs/cli/src/instruction_debug.rs",
+        "docs/config.md",
+        "scripts/codex_package/smoke_tests/test_codex_package.py"
+      ],
+      "behavior": "The existing enabled-layer and trusted-project boundary supplies a closed nine-component plan. Bounded ordered literal edits apply atomically to eligible outgoing request copies, with strict unique selection by default and explicit all_classified selection where configured; they do not alter model, mode, tools, permissions, feature flags, channels, provider policy, hidden/system instructions, or stored history.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "existing codex-config, codex-core, codex-cli named-test targets and downstream package smoke consumer",
+      "tests": [
+        "instruction_overlays::tests::applies_ordered_literal_edits_verbatim_and_redacts_debug",
+        "instruction_overlays::tests::large_source_can_be_shrunk_and_growth_or_count_failures_preflight",
+        "client::instruction_overlays::tests::source_gate_is_exhaustive_and_custom_strings_do_not_promote",
+        "client::instruction_overlays::tests::all_classified_is_atomic_and_obeys_global_instance_cap",
+        "client::tests::invalid_instruction_overlay_request_is_non_retryable_without_literal_leakage",
+        "trusted_project_discovery_projects_role_overlay_but_untrusted_is_excluded",
+        "configured_developer_overlay_changes_only_its_tagged_request_fragment",
+        "retained_model_switch_overlay_is_request_only_and_does_not_accumulate",
+        "review_uses_review_baseline_and_does_not_apply_normal_baseline",
+        "fork_reconstructs_the_configured_overlay_on_its_child_client",
+        "resume_and_config_rollback_change_only_new_outgoing_requests",
+        "thread_spawn_child_inherits_the_resolved_overlay_plan",
+        "trusted_project_role_overlay_reaches_the_spawned_child_request",
+        "instruction_debug::tests::report_discloses_instruction_overlay_inspection_limit",
+        "config_schema_matches_fixture",
+        "test_cli_instruction_overlays_in_synthetic_linux_package"
+      ],
+      "owner": "downstream",
+      "notes": "The contract is documented in docs/config.md. Limits are 64 operations, 32 KiB per literal, 256 KiB aggregate configured literals across applicable components, 256 KiB per transformed component body, 64 selected text instances, and 4 MiB combined final selected text per request. Internal, Guardian, compact, memory-consolidation, SessionSource::Custom, unknown, and other non-eligible sources remain unchanged; review requests can select only review_baseline. This source gate is distinct from custom operator-defined agent roles, which remain included on otherwise eligible root and ThreadSpawn requests. Managed, administrative, security, provider-enforced, and unclassified content is not selected. The edits are literal rather than regex-based, operate on request copies, and do not rewrite saved history. Rollback reconstructs configuration in a new process/session. Source, synthetic consumer fixtures, schema, and package tests are not claims of installed or live acceptance.",
+      "upstreamability_tier": "neutral-seam",
+      "boundary_type": "runtime-extension",
+      "hotspot_files": [
+        "codex-rs/core/src/client/instruction_overlays.rs",
+        "codex-rs/config/src/instruction_overlays.rs"
+      ],
+      "extraction_target": "existing client request-copy and configuration seams"
     }
   ],
   "superseded_hunks": [

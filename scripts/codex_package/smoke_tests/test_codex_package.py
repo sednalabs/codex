@@ -29,6 +29,7 @@ from pathlib import Path
 
 import pytest
 from app_server_harness import (
+    CapturedResponsesRequest,
     MockResponsesServer,
     ev_completed,
     ev_response_created,
@@ -226,6 +227,275 @@ def test_cli_instruction_inspection_with_synthetic_linux_configuration(
     assert not state_created, "Instruction inspection created auth or session state"
     assert config_unchanged, "Instruction inspection changed its synthetic config"
     assert target_unopened, "Instruction inspection created its configured target"
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="Package instruction overlay consumer is scoped to the Linux first-package runner",
+)
+def test_cli_instruction_overlays_in_synthetic_linux_package(
+    package: SmokePackage,
+    tmp_path: Path,
+) -> None:
+    """Exercise editable instruction overlays through the exact packaged CLI."""
+    home = tmp_path / "home"
+    config_home = home / "codex"
+    workspace = tmp_path / "workspace"
+    temporary = tmp_path / "temporary"
+    for directory in (config_home, workspace, temporary):
+        directory.mkdir(parents=True)
+    (workspace / ".git").mkdir()
+    (workspace / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+
+    environment = {
+        key: package.environment[key]
+        for key in ("PATH", "SystemRoot", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT")
+        if key in package.environment
+    }
+    if "PATH" not in environment:
+        pytest.fail("Packaged CLI PATH is unavailable", pytrace=False)
+    environment.update(
+        CODEX_HOME=str(config_home),
+        HOME=str(home),
+        USERPROFILE=str(home),
+        XDG_CONFIG_HOME=str(home / "xdg-config"),
+        APPDATA=str(home / "app-data"),
+        LOCALAPPDATA=str(home / "local-app-data"),
+        PROGRAMDATA=str(home / "program-data"),
+        TMPDIR=str(temporary),
+        TMP=str(temporary),
+        TEMP=str(temporary),
+        NO_PROXY="127.0.0.1,localhost",
+        no_proxy="127.0.0.1,localhost",
+    )
+    isolated = replace(package, directory=workspace, environment=environment)
+    config_path = config_home / "config.toml"
+
+    def common_configuration(server_url: str) -> str:
+        return (
+            'model = "package-overlay-smoke"\n'
+            'model_provider = "package_overlay_smoke"\n'
+            'instructions = "PACKAGE_BASE_ORIGINAL"\n'
+            'developer_instructions = "PACKAGE_DEVELOPER_ORIGINAL"\n'
+            'approval_policy = "never"\n'
+            'sandbox_mode = "read-only"\n'
+            "suppress_unstable_features_warning = true\n"
+            "\n[features]\n"
+            "apps = false\n"
+            "plugins = false\n"
+            "memories = false\n"
+            "\n[analytics]\n"
+            "enabled = false\n"
+            "\n[otel]\n"
+            'exporter = "none"\n'
+            'trace_exporter = "none"\n'
+            'metrics_exporter = "none"\n'
+            "\n[model_providers.package_overlay_smoke]\n"
+            'name = "package overlay smoke"\n'
+            f'base_url = "{server_url}/v1"\n'
+            'wire_api = "responses"\n'
+            "requires_openai_auth = false\n"
+            "request_max_retries = 0\n"
+            "stream_max_retries = 0\n"
+        )
+
+    overlay_tables = (
+        "\n[instruction_overlays.model_baseline]\n"
+        'edits = [{ op = "replace_exact", from = "PACKAGE_BASE_ORIGINAL", '
+        'to = "PACKAGE_BASE_EDITED", expected_matches = 1 }]\n'
+        "\n[instruction_overlays.developer_guidance]\n"
+        "edits = [\n"
+        '  { op = "replace", text = "old remove" },\n'
+        '  { op = "prepend", text = "start " },\n'
+        '  { op = "append", text = " end" },\n'
+        '  { op = "replace_exact", from = "old", to = "new", expected_matches = 1 },\n'
+        '  { op = "remove_exact", text = " remove", expected_matches = 1 },\n'
+        "]\n"
+    )
+    arguments = (
+        "--ask-for-approval",
+        "never",
+        "--sandbox",
+        "read-only",
+        "--model",
+        "package-overlay-smoke",
+        "exec",
+        "--ephemeral",
+        "--ignore-rules",
+        "--skip-git-repo-check",
+        "--color",
+        "never",
+        "PACKAGE_SYNTHETIC_PROMPT",
+    )
+
+    def require_system_configuration_absent() -> None:
+        for name in ("config.toml", "requirements.toml", "managed_config.toml"):
+            try:
+                (Path("/etc/codex") / name).lstat()
+            except FileNotFoundError:
+                continue
+            except OSError:
+                pytest.fail("System configuration absence is unverified", pytrace=False)
+            pytest.fail(
+                "Package overlay consumer requires absent system configuration",
+                pytrace=False,
+            )
+
+    def response_requests(
+        server: MockResponsesServer,
+    ) -> list[CapturedResponsesRequest]:
+        return [
+            request for request in server.requests() if request.path == "/v1/responses"
+        ]
+
+    def request_projection(request: CapturedResponsesRequest) -> list[str]:
+        try:
+            body = request.body_json()
+        except (ValueError, UnicodeError):
+            pytest.fail("Mock Responses request body is not valid JSON", pytrace=False)
+        if (
+            request.method != "POST"
+            or request.path != "/v1/responses"
+            or not isinstance(body, dict)
+            or body.get("model") != "package-overlay-smoke"
+        ):
+            pytest.fail("Mock Responses request model is invalid", pytrace=False)
+        if "instructions" in body:
+            pytest.fail("Unexpected top-level instructions field", pytrace=False)
+        items = body.get("input")
+        if not isinstance(items, list):
+            pytest.fail("Mock Responses request input is invalid", pytrace=False)
+        developer_texts: list[str] = []
+        prompt_seen = False
+        for item in items:
+            if not isinstance(item, dict):
+                pytest.fail("Mock Responses request item is invalid", pytrace=False)
+            role = item.get("role")
+            content = item.get("content")
+            if not isinstance(content, (str, list)):
+                continue
+            texts: list[str] = []
+            if isinstance(content, str):
+                texts.append(content)
+            else:
+                for part in content:
+                    if not isinstance(part, dict):
+                        continue
+                    text = part.get("text")
+                    if part.get("type") == "input_text" and isinstance(text, str):
+                        texts.append(text)
+            if role == "developer":
+                developer_texts.extend(texts)
+            elif role == "user" and "PACKAGE_SYNTHETIC_PROMPT" in texts:
+                prompt_seen = True
+        if not prompt_seen:
+            pytest.fail(
+                "Synthetic package prompt is absent from the request", pytrace=False
+            )
+        return developer_texts
+
+    def run_success(
+        server: MockResponsesServer,
+        response_id: str,
+        expected_base: str,
+        expected_developer: str,
+        expected_permission: str | None,
+        forbidden_texts: tuple[str, ...] = (),
+    ) -> str:
+        require_system_configuration_absent()
+        before = len(response_requests(server))
+        server.enqueue_assistant_message("PACKAGE_DONE", response_id=response_id)
+        try:
+            isolated.run(*arguments, stdin="")
+        except (OSError, subprocess.SubprocessError, UnicodeError):
+            pytest.fail("Packaged overlay invocation failed", pytrace=False)
+        requests = response_requests(server)
+        if len(requests) != before + 1:
+            pytest.fail(
+                "Successful overlay invocation did not send exactly one request",
+                pytrace=False,
+            )
+        developer_texts = request_projection(requests[-1])
+        all_developer_text = "\n".join(developer_texts)
+        if developer_texts.count(expected_base) != 1:
+            pytest.fail("Expected synthetic baseline text is absent", pytrace=False)
+        if developer_texts.count(expected_developer) != 1:
+            pytest.fail("Expected synthetic developer text is absent", pytrace=False)
+        if any(marker in all_developer_text for marker in forbidden_texts):
+            pytest.fail(
+                "Original overlay source text remains in the request", pytrace=False
+            )
+        if (
+            expected_permission is not None
+            and expected_permission not in all_developer_text
+        ):
+            pytest.fail("Mandatory permissions guidance is absent", pytrace=False)
+        permission_fragments = [
+            text for text in developer_texts if "<permissions instructions>" in text
+        ]
+        if len(permission_fragments) != 1:
+            pytest.fail(
+                "Mandatory permissions fragment shape is invalid", pytrace=False
+            )
+        return permission_fragments[0]
+
+    with MockResponsesServer() as server:
+        common = common_configuration(server.url)
+        config_path.write_text(common, encoding="utf-8")
+        baseline_permission = run_success(
+            server,
+            "PACKAGE_BASELINE",
+            "PACKAGE_BASE_ORIGINAL",
+            "PACKAGE_DEVELOPER_ORIGINAL",
+            "<permissions instructions>",
+        )
+
+        config_path.write_text(common + overlay_tables, encoding="utf-8")
+        overlay_permission = run_success(
+            server,
+            "PACKAGE_OVERLAY",
+            "PACKAGE_BASE_EDITED",
+            "start new end",
+            baseline_permission,
+            ("PACKAGE_BASE_ORIGINAL", "PACKAGE_DEVELOPER_ORIGINAL"),
+        )
+        if overlay_permission != baseline_permission:
+            pytest.fail("Overlay changed mandatory permissions guidance", pytrace=False)
+
+        mismatch_configuration = overlay_tables.replace(
+            'to = "PACKAGE_BASE_EDITED", expected_matches = 1',
+            'to = "PACKAGE_BASE_EDITED", expected_matches = 2',
+            1,
+        )
+        config_path.write_text(common + mismatch_configuration, encoding="utf-8")
+        require_system_configuration_absent()
+        before_mismatch = len(response_requests(server))
+        try:
+            isolated.run(*arguments, stdin="")
+        except subprocess.CalledProcessError as error:
+            if error.returncode == 0:
+                pytest.fail("Count-mismatch invocation returned success", pytrace=False)
+        except (OSError, subprocess.SubprocessError, UnicodeError):
+            pytest.fail(
+                "Count-mismatch invocation could not be completed", pytrace=False
+            )
+        else:
+            pytest.fail("Count-mismatch overlay unexpectedly succeeded", pytrace=False)
+        if len(response_requests(server)) != before_mismatch:
+            pytest.fail("Count mismatch sent a Responses request", pytrace=False)
+
+        config_path.write_text(common, encoding="utf-8")
+        rollback_permission = run_success(
+            server,
+            "PACKAGE_ROLLBACK",
+            "PACKAGE_BASE_ORIGINAL",
+            "PACKAGE_DEVELOPER_ORIGINAL",
+            baseline_permission,
+        )
+        if rollback_permission != baseline_permission:
+            pytest.fail(
+                "Rollback changed mandatory permissions guidance", pytrace=False
+            )
 
 
 def test_cli_version_matches_release_sources(package: SmokePackage) -> None:
