@@ -453,6 +453,7 @@ async fn workspace_routed_http_rejects_redirects_without_a_routing_header() {
 enum SetupRefresh {
     CommandAfterRequestAuth(PathBuf),
     CommandAfterWorkspaceProvider(PathBuf),
+    CommandRepeatedAfterWorkspaceProvider(PathBuf),
     ChatGpt {
         home: PathBuf,
         token: String,
@@ -483,15 +484,18 @@ impl SetupRefreshProvider {
         self.successful_command_refreshes
             .fetch_add(1, Ordering::SeqCst);
         let after = *manager.auth_change_receiver().borrow();
-        self.command_revision_changed
-            .store(before != after, Ordering::SeqCst);
-        self.command_cache_refreshed.store(
-            manager
-                .auth_cached()
-                .as_ref()
-                .is_some_and(|auth| auth.api_key() == Some("refreshed-token")),
-            Ordering::SeqCst,
-        );
+        if before != after {
+            self.command_revision_changed
+                .store(true, Ordering::SeqCst);
+        }
+        if manager
+            .auth_cached()
+            .as_ref()
+            .is_some_and(|auth| auth.api_key() == Some("refreshed-token"))
+        {
+            self.command_cache_refreshed
+                .store(true, Ordering::SeqCst);
+        }
     }
 }
 
@@ -544,6 +548,10 @@ impl ModelProvider for SetupRefreshProvider {
                     self.refresh_command_token(token_path).await;
                 }
                 SetupRefresh::CommandAfterWorkspaceProvider(_) => {}
+                SetupRefresh::CommandRepeatedAfterWorkspaceProvider(token_path) => {
+                    self.command_hook_calls.fetch_add(1, Ordering::SeqCst);
+                    self.refresh_command_token(token_path).await;
+                }
                 SetupRefresh::ChatGpt {
                     home,
                     token,
@@ -660,6 +668,83 @@ async fn client_setup_accepts_command_credential_refresh() {
         );
         assert_eq!(setup.auth_owner_generation, client.auth_owner_generation());
     }
+}
+
+#[tokio::test]
+async fn client_setup_discards_cold_command_auth_during_repeated_workspace_refresh() {
+    let tempdir = TempDir::new().unwrap();
+    let token_path = tempdir.path().join("token.txt");
+    std::fs::write(&token_path, "initial-token").unwrap();
+    let mut info = test_model_provider().info().clone();
+    info.auth = Some(codex_protocol::config_types::ModelProviderAuthInfo {
+        command: if cfg!(windows) { "cmd.exe" } else { "cat" }.into(),
+        args: if cfg!(windows) {
+            vec!["/D", "/C", "type", "token.txt"]
+        } else {
+            vec!["token.txt"]
+        }
+        .into_iter()
+        .map(Into::into)
+        .collect(),
+        timeout_ms: std::num::NonZeroU64::new(/*n*/ 5_000).unwrap(),
+        refresh_interval_ms: 60_000,
+        cwd: tempdir.path().try_into().unwrap(),
+    });
+    let provider = Arc::new(SetupRefreshProvider {
+        inner: create_model_provider(info, /*auth_manager*/ None),
+        refresh: SetupRefresh::CommandRepeatedAfterWorkspaceProvider(token_path.clone()),
+        command_hook_calls: AtomicUsize::new(/*v*/ 0),
+        successful_command_refreshes: AtomicUsize::new(/*v*/ 0),
+        command_revision_changed: AtomicBool::new(false),
+        command_cache_refreshed: AtomicBool::new(false),
+        setup_calls: AtomicUsize::new(/*v*/ 0),
+    });
+    let manager = provider.auth_manager().unwrap();
+    // Preserve the original cold-manager sequence: capture revision before the first command auth
+    // resolution, then refresh on every Workspace api_provider callback.
+    let previous_revision = Some(*manager.auth_change_receiver().borrow());
+    let mut client = test_model_client(SessionSource::Exec);
+    Arc::get_mut(&mut client.state).unwrap().provider = provider.clone();
+
+    let setup = client
+        .current_client_setup(
+            super::ClientRouting::Workspace,
+            /*expected_authority*/ None,
+        )
+        .await
+        .unwrap();
+    let mut headers = http::HeaderMap::new();
+    setup.api_auth.add_auth_headers(&mut headers);
+    assert!(
+        headers
+            .get(http::header::AUTHORIZATION)
+            .is_some_and(|value| value.as_bytes() == b"Bearer refreshed-token"),
+        "route=Workspace-cold; command refresh changed revision={}; cached token is refreshed={}; api-provider calls={}; command hook calls={}; successful refreshes={}",
+        provider.command_revision_changed.load(Ordering::SeqCst),
+        provider.command_cache_refreshed.load(Ordering::SeqCst),
+        provider.setup_calls.load(Ordering::SeqCst),
+        provider.command_hook_calls.load(Ordering::SeqCst),
+        provider.successful_command_refreshes.load(Ordering::SeqCst),
+    );
+    assert!(provider.command_revision_changed.load(Ordering::SeqCst));
+    assert!(provider.command_cache_refreshed.load(Ordering::SeqCst));
+    assert_eq!(provider.setup_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(provider.command_hook_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(provider.successful_command_refreshes.load(Ordering::SeqCst), 2);
+    let current_revision = Some(*manager.auth_change_receiver().borrow());
+    assert_eq!(setup.auth_revision, current_revision);
+    assert_ne!(previous_revision, current_revision);
+    assert_ne!(
+        codex_model_provider::ResponsesConnectionKey::new(
+            &setup.api_provider,
+            previous_revision
+        ),
+        codex_model_provider::ResponsesConnectionKey::new(
+            &setup.api_provider,
+            setup.auth_revision
+        ),
+    );
+    assert_eq!(setup.auth_owner_generation, client.auth_owner_generation());
 }
 
 #[tokio::test]
