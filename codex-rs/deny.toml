@@ -113,6 +113,8 @@ allow = [
     # BSL-1.0 - https://www.boost.org/users/license.html
     # Used by: transitive only
     "BSL-1.0",
+    # Used by: libbz2-rs-sys via bzip2 under zip.
+    "bzip2-1.0.6",
     # CC0-1.0 - https://creativecommons.org/publicdomain/zero/1.0/
     # Used by: dunce, notify
     "CC0-1.0",
