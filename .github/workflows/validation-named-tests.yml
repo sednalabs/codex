@@ -413,7 +413,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ inputs.target_sha }}
-          fetch-depth: 5
+          fetch-depth: 7
           persist-credentials: false
 
       - name: Verify fixed source, base, and workflow-host identity
@@ -430,10 +430,10 @@ jobs:
           expected_base="a89b02855334af7c0521882271cb97b818981d1a"
           case "${WINDOWS_VALIDATION_MODE}" in
             delete_diagnostic)
-              expected_target="6d97f6bbf14e803caab49e0f403d88f4982f82dc"
-              expected_tree="7ac44082ef7ddc28f1f66a23fdd072c102c0b1a7"
-              expected_parent="e71147fbe138299b17ae64101a705aae2bbb3553"
-              expected_base_depth=4
+              expected_target="0d8736079c4baf492d3438eaaad0323aa1e25f2d"
+              expected_tree="19c225ed160989f13c2a2a1c5686008c2e9cedb1"
+              expected_parent="a91781b542b9554902490e8c54bd7f7cf7ef2cc1"
+              expected_base_depth=6
               ;;
             voice_runtime)
               expected_target="1f769231c112a57a67800431aa472256a7e11697"
