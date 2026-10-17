@@ -521,9 +521,9 @@ async fn initialization_selects_legacy_or_explicit_gateway_login() -> Result<()>
         assert_eq!(
             error.error.message,
             if explicit {
-                "Gateway sign-in required. Choose Sign in or Reconnect, then retry your request"
+                "failed to submit turn input: Gateway sign-in required. Choose Sign in or Reconnect, then retry your request"
             } else {
-                "Gateway OAuth authentication failed; check the gateway configuration and credential store."
+                "failed to submit turn input: Gateway OAuth authentication failed; check the gateway configuration and credential store."
             }
         );
         assert!(oauth.received_requests().await.unwrap().is_empty());
