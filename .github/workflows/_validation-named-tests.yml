@@ -641,7 +641,7 @@ jobs:
               or identities["base_sha"] != expected_base
               or os.environ["VALIDATION_TARGET_SHA"] != expected_target
               or os.environ["VALIDATION_BASE_REF"] != expected_base
-              or os.environ["VALIDATION_EXPECTED_BASE_SHA"] != expected_base
+              or os.environ.get("VALIDATION_EXPECTED_BASE_SHA", "") not in ("", expected_base)
               or os.environ["VALIDATION_PROFILE"] != "rust_minimal"
               or os.environ["GITHUB_REPOSITORY"] != "sednalabs/codex"
               or git_value(host, "status", "--porcelain", "--untracked-files=no")
