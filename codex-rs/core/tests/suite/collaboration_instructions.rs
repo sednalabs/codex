@@ -1,4 +1,7 @@
 use anyhow::Result;
+use codex_config::InstructionOverlayComponentToml;
+use codex_config::InstructionOverlayEdit;
+use codex_config::InstructionOverlayOnAbsent;
 use codex_core::TurnInputRequest;
 use codex_features::Feature;
 use codex_history::RolloutItem;
@@ -149,6 +152,39 @@ async fn no_collaboration_instructions_by_default() -> Result<()> {
         0
     );
 
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn configured_developer_overlay_changes_only_its_tagged_request_fragment() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let req = mount_sse_once(
+        &server,
+        sse(vec![ev_response_created("resp-1"), ev_completed("resp-1")]),
+    )
+    .await;
+
+    let test = test_codex()
+        .with_config(|config| {
+            config.instruction_overlays.developer_guidance =
+                Some(InstructionOverlayComponentToml {
+                    on_absent: InstructionOverlayOnAbsent::Error,
+                    selection: Default::default(),
+                    edits: vec![InstructionOverlayEdit::Append {
+                        text: "\nsynthetic caller note".to_string(),
+                    }],
+                });
+        })
+        .build(&server)
+        .await?;
+    test.submit_text_turn("hello").await?;
+    wait_for_event(&test.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+
+    let texts = developer_texts(&req.single_request().input());
+    assert!(texts.iter().any(|text| text.contains("<permissions instructions>")));
+    assert_eq!(count_messages_containing(&texts, "synthetic caller note"), 1);
     Ok(())
 }
 

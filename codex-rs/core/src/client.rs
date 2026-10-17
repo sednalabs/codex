@@ -39,6 +39,8 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use url::Url;
 
+#[path = "client/instruction_overlays.rs"]
+mod instruction_overlays;
 #[path = "client_tool_metadata.rs"]
 mod tool_metadata;
 
@@ -79,6 +81,7 @@ use codex_api::auth_header_telemetry;
 use codex_api::build_session_headers;
 use codex_api::create_text_param_for_request;
 use codex_api::response_create_client_metadata;
+use codex_config::InstructionOverlaysToml;
 use codex_http_client::ClientRouteClass;
 use codex_http_client::HttpClientFactory;
 use codex_login::AuthChangeState;
@@ -309,6 +312,7 @@ impl RequestRouteTelemetry {
 #[derive(Debug, Clone)]
 pub struct ModelClient {
     state: Arc<ModelClientState>,
+    instruction_overlays: Arc<InstructionOverlaysToml>,
     agent_identity_policy: AgentIdentityAuthPolicy,
     prompt_cache_key_override: Option<String>,
     codex_responses_headers: Option<Arc<CodexResponsesHeaders>>,
@@ -1036,6 +1040,7 @@ impl ModelClient {
                 cached_websocket_session: StdMutex::new(WebsocketSession::default()),
                 last_inference_tools: StdMutex::new(None),
             }),
+            instruction_overlays: Arc::new(InstructionOverlaysToml::default()),
             agent_identity_policy,
             prompt_cache_key_override: None,
             codex_responses_headers: None,
@@ -1051,6 +1056,14 @@ impl ModelClient {
 
     pub(crate) fn with_executed_tool_calls(mut self, recorder: ExecutedToolCalls) -> Self {
         self.executed_tool_calls = Some(recorder);
+        self
+    }
+
+    pub(crate) fn with_instruction_overlays(
+        mut self,
+        instruction_overlays: InstructionOverlaysToml,
+    ) -> Self {
+        self.instruction_overlays = Arc::new(instruction_overlays);
         self
     }
 
@@ -1452,7 +1465,12 @@ impl ModelClient {
         responses_metadata: &CodexResponsesMetadata,
         include_internal: bool,
     ) -> Result<ResponsesApiRequest> {
-        let mut input = prompt.get_formatted_input_for_request(model_info);
+        let (base_instructions, mut input) = instruction_overlays::transform_request(
+            &self.state.session_source,
+            self.instruction_overlays.as_ref(),
+            prompt.base_instructions.text.clone(),
+            prompt.get_formatted_input_for_request(model_info),
+        )?;
         if !self.reasoning_effort_override_enabled(model_info) {
             // Unsupported models and disabled overrides must also accept saved history.
             // Filter only the request copy; persisted history remains unchanged.
@@ -1482,13 +1500,14 @@ impl ModelClient {
         } else {
             Some(create_tools_raw_json_for_responses_api(&prompt.tools)?.into())
         };
-        if !prompt.base_instructions.text.is_empty() {
+        if !base_instructions.is_empty() {
+            let base_id = Uuid::new_v5(&prefix_namespace, base_instructions.as_bytes());
             let mut instructions = ContextualUserFragment::into(BaseInstructionsFragment(
-                prompt.base_instructions.text.clone(),
+                base_instructions,
             ));
             instructions.set_id(Some(ResponseItemId::with_suffix(
                 "msg",
-                Uuid::new_v5(&prefix_namespace, prompt.base_instructions.text.as_bytes()),
+                base_id,
             )));
             prefix.push(instructions);
         }

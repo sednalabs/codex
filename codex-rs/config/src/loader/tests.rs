@@ -1,4 +1,5 @@
 use super::*;
+use crate::ConfigRequirements;
 use crate::ConfigRequirementsToml;
 use codex_file_system::CopyOptions;
 use codex_file_system::CreateDirectoryOptions;
@@ -912,7 +913,9 @@ async fn local_layers_keep_raw_paths_order_and_legacy_requirements() {
     let project_key = TomlValue::String(project_key).to_string();
     let user_config = |trust_level| {
         format!(
-            "project_root_markers=[\".project-root\"]\nmodel_instructions_file=\"./user.md\"\n[projects.{project_key}]\ntrust_level=\"{trust_level}\""
+            "project_root_markers=[\".project-root\"]\nmodel_instructions_file=\"./user.md\"\n\
+             instruction_overlays = {{ model_baseline = {{ edits = [{{ op = 'replace', text = 'user instruction' }}] }} }}\n\
+             [projects.{project_key}]\ntrust_level=\"{trust_level}\""
         )
     };
     let user_file = codex_home.join(CONFIG_TOML_FILE);
@@ -929,7 +932,8 @@ async fn local_layers_keep_raw_paths_order_and_legacy_requirements() {
         .expect("write system config");
     std::fs::write(
         dot_codex.join(CONFIG_TOML_FILE),
-        "model_instructions_file = \"./project.md\"\nopenai_base_url = \"https://ignored\"",
+        "model_instructions_file = \"./project.md\"\nopenai_base_url = \"https://ignored\"\n\
+         instruction_overlays = { model_baseline = { edits = [{ op = 'replace', text = 'project instruction' }] } }",
     )
     .expect("write project config");
     let managed_file = managed_dir.join("managed_config.toml");
@@ -975,6 +979,10 @@ async fn local_layers_keep_raw_paths_order_and_legacy_requirements() {
     assert_eq!(layers.config.cloud_insertion_index, 1);
     assert_eq!(layers.requirements.cloud_insertion_index, 1);
     assert_eq!(
+        layers.config.effective_config().get("instruction_overlays"),
+        Some(&toml::from_str::<TomlValue>("{ model_baseline = { edits = [{ op = 'replace', text = 'project instruction' }] } }").expect("project overlay config"))
+    );
+    assert_eq!(
         (
             layers.config.layers[2].toml.clone(),
             layers.config.layers[3]
@@ -988,7 +996,7 @@ async fn local_layers_keep_raw_paths_order_and_legacy_requirements() {
             layers.requirements.layers[1].toml.clone(),
         ),
         (
-            toml::from_str("model_instructions_file = \"./project.md\"")
+            toml::from_str("model_instructions_file = \"./project.md\"\ninstruction_overlays = { model_baseline = { edits = [{ op = 'replace', text = 'project instruction' }] } }")
                 .expect("project TOML"),
             Some(TomlValue::String("./managed.md".into())),
             Some(TomlValue::String("./logs".into())),
@@ -998,6 +1006,7 @@ async fn local_layers_keep_raw_paths_order_and_legacy_requirements() {
             .expect("legacy requirements TOML"),
         )
     );
+    assert!(layers.config.layers[2].toml.get("instruction_overlays").is_some());
 
     {
         std::fs::write(
@@ -1055,6 +1064,35 @@ async fn local_layers_keep_raw_paths_order_and_legacy_requirements() {
             .count(),
         0
     );
+    assert!(layers.config.layers.iter().all(|layer| layer.toml.get("instruction_overlays").is_none()));
+    assert_eq!(
+        layers.config.effective_config().get("instruction_overlays"),
+        Some(&toml::from_str::<TomlValue>("{ model_baseline = { edits = [{ op = 'replace', text = 'user instruction' }] } }").expect("user overlay config"))
+    );
+}
+
+#[test]
+fn disabled_project_layer_does_not_contribute_instruction_overlays() {
+    let tmp = tempdir().expect("tempdir");
+    let project_config_dir = AbsolutePathBuf::from_absolute_path(tmp.path().join(".codex"))
+        .expect("absolute project config directory");
+    let disabled_project = ConfigLayerEntry::new_disabled(
+        ConfigLayerSource::Project {
+            dot_codex_folder: project_config_dir,
+        },
+        toml::from_str(
+            "instruction_overlays = { developer_guidance = { edits = [{ op = 'append', text = 'disabled' }] } }",
+        )
+        .expect("synthetic disabled project overlay"),
+        "fixture disabled project layer",
+    );
+    let stack = ConfigLayerStack::new(
+        vec![disabled_project],
+        ConfigRequirements::default(),
+        ConfigRequirementsToml::default(),
+    )
+    .expect("disabled synthetic layer stack");
+    assert!(stack.effective_config().get("instruction_overlays").is_none());
 }
 
 #[test]

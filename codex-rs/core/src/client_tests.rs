@@ -23,6 +23,10 @@ use codex_api::AgentIdentityTelemetry;
 use codex_api::ApiError;
 use codex_api::ResponseEvent;
 use codex_api::TransportError;
+use codex_config::InstructionOverlayComponentToml;
+use codex_config::InstructionOverlayEdit;
+use codex_config::InstructionOverlayOnAbsent;
+use codex_config::InstructionOverlaysToml;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::OutboundProxyPolicy;
 use codex_login::AuthManager;
@@ -62,6 +66,8 @@ use codex_protocol::mcp::McpAttributionSource;
 use codex_protocol::mcp::McpAttributionStatus;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::ContentItemKind;
+use codex_protocol::models::InternalChatMessageMetadataPassthrough;
 use codex_protocol::models::ExecutedToolCall;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseInputItem;
@@ -975,6 +981,90 @@ fn test_model_info() -> ModelInfo {
         "experimental_supported_tools": []
     }))
     .expect("deserialize test model info")
+}
+
+#[test]
+fn model_switch_overlay_is_applied_in_shared_http_and_lite_request_construction(
+) -> anyhow::Result<()> {
+    let plan = InstructionOverlaysToml {
+        model_switch_guidance: Some(InstructionOverlayComponentToml {
+            on_absent: InstructionOverlayOnAbsent::Error,
+            selection: Default::default(),
+            edits: vec![InstructionOverlayEdit::Append {
+                text: " synthetic transition rule".to_string(),
+            }],
+        }),
+        ..Default::default()
+    };
+    let client = test_model_client(SessionSource::Cli).with_instruction_overlays(plan);
+    let transition = ResponseItem::Message {
+        id: Some(codex_protocol::ResponseItemId::from_server(
+            "transition-id".to_string(),
+        )),
+        role: "developer".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "<model_switch>selected model transition</model_switch>".to_string(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: Some(
+            InternalChatMessageMetadataPassthrough {
+                content_item_kinds: Some(vec![ContentItemKind(
+                    "model_switch.instructions".to_string(),
+                )]),
+                ..Default::default()
+            },
+        ),
+    };
+    let prompt = Prompt {
+        input: vec![transition],
+        ..Default::default()
+    };
+    let raw_input = prompt.input.clone();
+    let metadata = test_responses_metadata_for_client(
+        &client,
+        /*turn_id*/ None,
+        format!("{}:0", client.state.thread_id),
+        /*parent_thread_id*/ None,
+        TestCodexResponsesRequestKind::Turn,
+    );
+
+    for responses_lite in [false, true] {
+        let mut model = test_model_info();
+        model.use_responses_lite = responses_lite;
+        let request = client.build_responses_request(
+            &prompt,
+            &model,
+            /*effort*/ None,
+            codex_protocol::config_types::ReasoningSummary::None,
+            /*service_tier*/ None,
+            &metadata,
+            /*include_internal*/ true,
+        )?;
+        assert_eq!(request.model, "gpt-test");
+        let text = request
+            .input
+            .iter()
+            .find_map(|item| match item {
+                ResponseItem::Message { content, .. } => content.iter().find_map(|content| {
+                    match content {
+                        ContentItem::InputText { text }
+                            if text.contains("synthetic transition rule") =>
+                        {
+                            Some(text.as_str())
+                        }
+                        _ => None,
+                    }
+                }),
+                _ => None,
+            })
+            .expect("transformed transition in outgoing request");
+        assert_eq!(
+            text,
+            "<model_switch>selected model transition synthetic transition rule</model_switch>"
+        );
+        assert_eq!(prompt.input, raw_input);
+    }
+    Ok(())
 }
 
 fn output_with_tool_result_metadata(metadata: ToolResultMetadata) -> ResponseItem {
