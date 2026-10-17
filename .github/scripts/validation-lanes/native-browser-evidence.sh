@@ -61,76 +61,115 @@ for name in "${browser_runtime_env_names[@]}"; do
   browser_env_unset+=(-u "$name")
 done
 
-run_rust_selector() {
-  local package="$1"
-  local test_name="$2"
-  local log_path
-  shift 2
-  log_path="$(mktemp "$runner_temp/native-browser-rust-test.XXXXXX")"
+# The trusted host owns Cargo argv, target inventory, and exact non-ignored
+# outcome reconciliation. Its full results can contain fixture URLs or paths;
+# retain only this fixed selector/status/count projection, never diagnostics.
+umask 077
+results_path="$target_root/rust-tests-v1-results.json"
+results_pending=0
+runner_log=""
+cleanup_named_results() {
+  if [[ "$results_pending" == "1" ]]; then
+    if ! rm -f -- "$results_path" 2>/dev/null; then
+      echo "native-browser-evidence: temporary result cleanup failed" >&2
+      return 1
+    fi
+    results_pending=0
+  fi
+  if [[ -n "$runner_log" ]]; then
+    if ! rm -f -- "$runner_log" 2>/dev/null; then
+      echo "native-browser-evidence: temporary runner log cleanup failed" >&2
+      return 1
+    fi
+    runner_log=""
+  fi
+}
+trap cleanup_named_results EXIT
 
-  local cargo_status
-  if env "$@" CARGO_TERM_COLOR=never \
-    cargo test --manifest-path codex-rs/Cargo.toml --locked -p "$package" --lib "$test_name" -- --exact --test-threads=1 >"$log_path" 2>&1; then
-    cargo_status=0
+run_fixed_request() {
+  local request="$1"
+  local runner_status projection_status
+  shift
+  if [[ -e "$results_path" || -L "$results_path" ]]; then
+    echo "native-browser-evidence: refusing to overwrite existing named-test results" >&2
+    return 1
+  fi
+  runner_log="$(mktemp "$runner_temp/native-browser-named-runner.XXXXXX")" || return 1
+  results_pending=1
+  if env "$@" CARGO_TERM_COLOR=never RUST_BACKTRACE=0 RUST_LIB_BACKTRACE=0 RUST_TEST_NOCAPTURE=0 \
+    VALIDATION_PROFILE=rust_integration "RUST_TEST_REQUEST_JSON=$request" \
+    python3 "$helper_root/.github/scripts/run_named_rust_tests.py" >"$runner_log" 2>&1; then
+    runner_status=0
   else
-    cargo_status=$?
+    runner_status=$?
   fi
 
-  if [[ "$cargo_status" != "0" ]]; then
-    echo "native-browser-evidence: Rust selector failed: ${package}::${test_name} (test output redacted)" >&2
-    printf 'native-browser-evidence: cargo_exit=%s\n' "$cargo_status" >&2
-    if LC_ALL=C grep -Eq "^error: unexpected argument .* found$" "$log_path"; then
-      echo "native-browser-evidence: cargo_usage_error=unexpected_argument" >&2
-    else
-      echo "native-browser-evidence: cargo_usage_error=none" >&2
-    fi
+  if RUST_TEST_REQUEST_JSON="$request" NAMED_RUNNER_STATUS="$runner_status" python3 - <<'PY'
+import json
+import os
+from pathlib import Path
 
-    local libtest_summary
-    libtest_summary="$(LC_ALL=C grep -E '^test result: (ok|FAILED)\. [0-9]+ passed; [0-9]+ failed; [0-9]+ ignored; [0-9]+ measured; [0-9]+ filtered out;$' "$log_path" | tail -n 1 || true)"
-    if [[ -n "$libtest_summary" ]]; then
-      printf 'native-browser-evidence: libtest_summary=%s\n' "${libtest_summary#test result: }" >&2
-    else
-      echo "native-browser-evidence: libtest_summary=none" >&2
-    fi
+expected = json.loads(os.environ["RUST_TEST_REQUEST_JSON"])
+try:
+    result = json.loads(Path("rust-tests-v1-results.json").read_text(encoding="utf-8"))
+    if not isinstance(result, dict):
+        result = {}
+except (OSError, UnicodeError, json.JSONDecodeError):
+    result = {}
 
-    if [[ "$package" == "codex-browser-computer-use" && "$test_name" == "tests::hosted_native_browser_tool_flow" ]]; then
-      local browser_panic_line
-      browser_panic_line="$(LC_ALL=C awk '
-        /panicked at / {
-          location = $0
-          sub(/^.*panicked at /, "", location)
-          if (location ~ /(^|\/)codex-rs\/browser-computer-use\/src\/lib\.rs:[0-9]+:[0-9]+:/) {
-            sub(/^.*codex-rs\/browser-computer-use\/src\/lib\.rs:/, "", location)
-            sub(/:.*/, "", location)
-            print location
-            exit
-          }
-        }
-      ' "$log_path")"
-      if [[ "$browser_panic_line" =~ ^[0-9]+$ ]] && (( browser_panic_line >= 2407 && browser_panic_line <= 2981 )); then
-        printf 'native-browser-evidence: browser_test_panic_line=%s\n' "$browser_panic_line" >&2
-      elif [[ -n "$browser_panic_line" ]]; then
-        echo "native-browser-evidence: browser_test_panic_line=unmatched" >&2
-      else
-        echo "native-browser-evidence: browser_test_panic_line=none" >&2
-      fi
-    fi
-    return 1
+rows = result.get("tests", [])
+if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+    rows = []
+identity = result.get("identity", {})
+if not isinstance(identity, dict):
+    identity = {}
+bound = (
+    result.get("schema_version") == "rust-tests-v1"
+    and result.get("request") == expected
+    and result.get("candidate_sha") == os.environ["VALIDATION_TARGET_SHA"]
+    and identity.get("harness_sha") == os.environ["VALIDATION_HARNESS_SHA"]
+    and [row.get("name") for row in rows] == expected["tests"]
+)
+accepted = (
+    bound
+    and os.environ["NAMED_RUNNER_STATUS"] == "0"
+    and result.get("status") == "success"
+)
+for name in expected["tests"]:
+    matches = [row for row in rows if row.get("name") == name]
+    row = matches[0] if len(matches) == 1 else {}
+    counts = row.get("result_counts")
+    if not isinstance(counts, dict):
+        counts = {}
+    safe_counts = {}
+    for key in ("passed", "failed", "ignored"):
+        value = counts.get(key)
+        safe_counts[key] = value if type(value) is int and value >= 0 else None
+    passed = (
+        bound
+        and row.get("status") == "success"
+        and row.get("execution_reconciled") is True
+        and safe_counts == {"passed": 1, "failed": 0, "ignored": 0}
+    )
+    accepted = accepted and passed
+    print(json.dumps({
+        "selector": f"{expected['package']}::{name}",
+        "status": "pass" if passed else "fail",
+        **safe_counts,
+    }, sort_keys=True))
+raise SystemExit(0 if accepted else 1)
+PY
+  then
+    projection_status=0
+  else
+    projection_status=$?
   fi
-
-  local passed_count
-  local summary_count
-  passed_count="$(LC_ALL=C grep -Fxc -- "test ${test_name} ... ok" "$log_path" || true)"
-  summary_count="$(LC_ALL=C grep -Fc -- 'test result: ok. 1 passed; 0 failed; 0 ignored;' "$log_path" || true)"
-  if [[ "$passed_count" != "1" || "$summary_count" != "1" ]]; then
-    echo "native-browser-evidence: Rust selector did not execute exactly once without ignored tests: ${package}::${test_name} (test output redacted)" >&2
-    LC_ALL=C grep -E '^test result: ' "$log_path" | tail -n 1 >&2 || true
-    return 1
-  fi
-  printf 'native-browser-evidence: Rust selector passed exactly once: %s::%s\n' "$package" "$test_name"
+  cleanup_named_results || return 1
+  [[ "$runner_status" == "0" && "$projection_status" == "0" ]]
 }
 
-run_rust_selector codex-browser-computer-use tests::hosted_native_browser_tool_flow \
+validation_status=0
+run_fixed_request '{"schema_version":"rust-tests-v1","profile":"rust_integration","package":"codex-browser-computer-use","target_kind":"lib","target":"","execution_mode":"exact","tests":["tests::hosted_native_browser_tool_flow"]}' \
   "${browser_env_unset[@]}" \
   CODEX_BROWSER_COMPUTER_USE_PROVIDER=playwright \
   "CODEX_BROWSER_PLAYWRIGHT_NODE_PATH=$browser_node_path" \
@@ -138,11 +177,10 @@ run_rust_selector codex-browser-computer-use tests::hosted_native_browser_tool_f
   "CODEX_BROWSER_PLAYWRIGHT_STATE_DIR=$browser_state_dir" \
   CODEX_BROWSER_PLAYWRIGHT_HEADLESS=1 \
   "NODE_PATH=$playwright_prefix/node_modules" \
-  "PLAYWRIGHT_BROWSERS_PATH=$RUNNER_TEMP/native-browser-browsers"
+  "PLAYWRIGHT_BROWSERS_PATH=$RUNNER_TEMP/native-browser-browsers" || validation_status=1
 
-run_rust_selector codex-tui dynamic_tools_mcp::native_computer_use_registration_tests::configured_native_provider_specs_are_registered_for_each_transport \
-  "${browser_env_unset[@]}"
-run_rust_selector codex-tui app::tests::session_lifecycle_requests::browser_dynamic_tool_image_is_forwarded_to_the_app_server_response \
-  "${browser_env_unset[@]}"
-run_rust_selector codex-exec tests::exec_dispatches_browser_provider_and_preserves_typed_images \
-  "${browser_env_unset[@]}"
+run_fixed_request '{"schema_version":"rust-tests-v1","profile":"rust_integration","package":"codex-tui","target_kind":"lib","target":"","execution_mode":"exact","tests":["dynamic_tools_mcp::native_computer_use_registration_tests::configured_native_provider_specs_are_registered_for_each_transport","app::tests::session_lifecycle_requests::browser_dynamic_tool_image_is_forwarded_to_the_app_server_response"]}' \
+  "${browser_env_unset[@]}" || validation_status=1
+run_fixed_request '{"schema_version":"rust-tests-v1","profile":"rust_integration","package":"codex-exec","target_kind":"lib","target":"","execution_mode":"exact","tests":["tests::exec_dispatches_browser_provider_and_preserves_typed_images"]}' \
+  "${browser_env_unset[@]}" || validation_status=1
+exit "$validation_status"
