@@ -56,14 +56,39 @@ Installed-host first use is a separate acceptance step after protected delivery.
 
 ## Core default path
 
-Exact-target V2 `wait_agent` ignores queue-only (`trigger_turn=false`) mailbox
-activity while preserving durable FIFO delivery and notification summaries;
-targetless waits retain broad mailbox wake behavior. The focused guardrail is
-`codex.core-multi-agent-orchestration-targeted`, covering
-`multi_agent_v2_wait_agent_accepts_target_and_timeout_arguments`,
-`multi_agent_v2_wait_agent_does_not_return_completed_content`,
-`multi_agent_v2_wait_agent_wakes_on_trigger_turn_mailbox_notification`, and
-`input_queue_tracks_pending_trigger_turn_mail`.
+V2 `send_message` without an explicit intent keeps ordinary queue-only delivery
+quiet and FIFO; explicit `progress` is quiet as well. Every explicit intent,
+including `progress`, requires an `idempotency_key` and retains the original
+message and scope in durable admission metadata. An identical retry returns
+its original receipt, changed requests cannot reuse the key, and `supersedes`
+may name only same-scope progress updates. Only `action_required` and
+`result_ready` are actionable and can wake an active
+V2 `wait_agent` only when the root wait explicitly targets the matching sender.
+The signal is body-free and matched against the sender/recipient identity and
+pending generation; subscription precedes the pending-message snapshot.
+Unmatched activity, progress, and legacy ID-bearing messages do not produce an
+actionable wake. Trigger-turn mailbox activity, operator steer, and target
+terminal status remain separate wait outcomes; this does not start a new turn or
+change follow-up/interrupt rules. A targetless wait is not a substitute for an
+explicit sender-targeted wait.
+
+The focused guardrail is `codex.core-multi-agent-orchestration-targeted`,
+covering `queue_only_mail_waits_for_followup_and_is_delivered_once`,
+`already_pending_queue_only_mail_does_not_complete_wait`,
+`multi_agent_v2_explicit_root_updates_are_durable_and_idempotent`,
+`active_wait_wakes_for_targeted_action_but_not_progress_unmatched_or_legacy_id`,
+`explicit_action_snapshot_is_targeted_and_subscribe_before_snapshot_is_wake_safe`,
+and `explicit_snapshot_catches_preexisting_matching_action_but_not_progress`.
+The retained rollout metadata contract is covered by
+`codex-history` lib test `explicit_inter_agent_admission_round_trips_on_existing_metadata_record`
+and `codex-thread-store` lib test
+`migration_keeps_admission_ledger_outside_bounded_subagent_context`. The
+`codex-core` lib selectors
+`explicit_communication_reconciles_post_append_metadata_failure_once`,
+`explicit_batch_retry_keeps_failed_message_before_suffix`,
+`explicit_retry_restores_persisted_envelope_not_regenerated_metadata`, and
+`explicit_retry_does_not_resurrect_rolled_back_compaction_history` cover
+checked persistence and retry/rollback reconciliation.
 
 Default broader local validation path when you intentionally want a repo-side
 gate:
@@ -120,10 +145,9 @@ Focused targeted lanes for iterative work on the current carry seams:
     `changing_configured_mode_hint_to_empty_appends_explicit_reset`, which
     proves the same replacement survives a resumed thread without retaining the
     removed custom policy as the active mode.
-  - Includes upstream
-    `queue_only_agent_mail_wakes_sleeping_root_and_persists_message`, which
-    proves queue-only child mail wakes a root thread only while it has a durable
-    sleep and that the message is persisted in thread history.
+  - Includes `queue_only_mail_waits_for_followup_and_is_delivered_once` and
+    `already_pending_queue_only_mail_does_not_complete_wait`, which preserve
+    quiet queue-only delivery and wait behavior.
 - `codex.blocking-waits-core-targeted`
 - `codex.blocking-waits-unified-exec-targeted`
 - `codex.blocking-waits-app-server-targeted`

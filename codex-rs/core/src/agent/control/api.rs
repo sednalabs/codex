@@ -104,11 +104,18 @@ impl AgentControl for LocalAgentControl {
                 target,
                 resume_config,
                 input,
+                explicit_update,
                 mut start_options,
             } = request;
             let target = self.resolve_target(caller, &target)?;
             let (metadata, submission_id) = match input {
                 AgentInput::UserInput(input) => {
+                    if explicit_update.is_some() {
+                        return Err(CodexErr::InvalidRequest(
+                            "explicit inter-agent update metadata requires a message input"
+                                .to_string(),
+                        ));
+                    }
                     let receiver = self.get_agent_metadata(target);
                     let _residency_pin = if receiver.is_some() {
                         self.ensure_v2_agent_loaded(resume_config, target, /*parent*/ None)
@@ -121,53 +128,76 @@ impl AgentControl for LocalAgentControl {
                 }
                 AgentInput::Message { message, mode } => {
                     let receiver = self.runtime.ensure_agent_known(target)?;
-                    let author = self
-                        .runtime
-                        .ensure_agent_known(caller)?
-                        .agent_path
-                        .unwrap_or_else(AgentPath::root);
-                    if mode == MessageDeliveryMode::TriggerTurn
-                        && receiver.agent_path.as_ref().is_some_and(AgentPath::is_root)
-                    {
-                        return Err(CodexErr::UnsupportedOperation(
-                            "Follow-up tasks can't target the root agent".to_string(),
-                        ));
-                    }
-                    let receiver_path = receiver.agent_path.clone().ok_or_else(|| {
-                        CodexErr::UnsupportedOperation(
-                            "target agent is missing an agent_path".to_string(),
-                        )
-                    })?;
-                    // Cold-restored children still reload lazily on any message. Only
-                    // locally evicted recipients can retain mail without reloading.
-                    // Loaded recipients go straight to delivery, which rejects sends
-                    // racing an in-progress eviction when it acquires the residency pin.
-                    let _residency_pin = if mode == MessageDeliveryMode::TriggerTurn
-                        || (self.runtime.upgrade()?.get_thread(target).await.is_err()
-                            && self.runtime.registry.evicted_environments(target).is_none())
-                    {
-                        self.ensure_v2_agent_loaded(resume_config, target, /*parent*/ None)
-                            .await?
-                    } else {
-                        None
-                    };
-                    let communication = message.into_communication(author, receiver_path, mode);
-                    let kind = match mode {
-                        MessageDeliveryMode::QueueOnly => {
-                            start_options.parent_turn_id = None;
-                            AgentCommunicationKind::Message
+                    if let Some(explicit_update) = explicit_update {
+                        if mode != MessageDeliveryMode::QueueOnly {
+                            return Err(CodexErr::InvalidRequest(
+                                "explicit inter-agent updates must use quiet queue-only delivery"
+                                    .to_string(),
+                            ));
                         }
-                        MessageDeliveryMode::TriggerTurn => AgentCommunicationKind::Followup,
-                    };
-                    let submission_id = self
-                        .send_inter_agent_communication(
-                            target,
-                            communication,
-                            AgentCommunicationContext::new(kind, caller),
-                            start_options,
-                        )
-                        .await?;
-                    (receiver, submission_id)
+                        let submission_id = self
+                            .send_explicit_inter_agent_update(
+                                caller,
+                                target,
+                                resume_config,
+                                message,
+                                explicit_update,
+                                AgentCommunicationContext::new(
+                                    AgentCommunicationKind::Message,
+                                    caller,
+                                ),
+                            )
+                            .await?;
+                        (receiver, submission_id)
+                    } else {
+                        let author = self
+                            .runtime
+                            .ensure_agent_known(caller)?
+                            .agent_path
+                            .unwrap_or_else(AgentPath::root);
+                        if mode == MessageDeliveryMode::TriggerTurn
+                            && receiver.agent_path.as_ref().is_some_and(AgentPath::is_root)
+                        {
+                            return Err(CodexErr::UnsupportedOperation(
+                                "Follow-up tasks can't target the root agent".to_string(),
+                            ));
+                        }
+                        let receiver_path = receiver.agent_path.clone().ok_or_else(|| {
+                            CodexErr::UnsupportedOperation(
+                                "target agent is missing an agent_path".to_string(),
+                            )
+                        })?;
+                        // Cold-restored children still reload lazily on any message. Only
+                        // locally evicted recipients can retain mail without reloading.
+                        // Loaded recipients go straight to delivery, which rejects sends
+                        // racing an in-progress eviction when it acquires the residency pin.
+                        let _residency_pin = if mode == MessageDeliveryMode::TriggerTurn
+                            || (self.runtime.upgrade()?.get_thread(target).await.is_err()
+                                && self.runtime.registry.evicted_environments(target).is_none())
+                        {
+                            self.ensure_v2_agent_loaded(resume_config, target, /*parent*/ None)
+                                .await?
+                        } else {
+                            None
+                        };
+                        let communication = message.into_communication(author, receiver_path, mode);
+                        let kind = match mode {
+                            MessageDeliveryMode::QueueOnly => {
+                                start_options.parent_turn_id = None;
+                                AgentCommunicationKind::Message
+                            }
+                            MessageDeliveryMode::TriggerTurn => AgentCommunicationKind::Followup,
+                        };
+                        let submission_id = self
+                            .send_inter_agent_communication(
+                                target,
+                                communication,
+                                AgentCommunicationContext::new(kind, caller),
+                                start_options,
+                            )
+                            .await?;
+                        (receiver, submission_id)
+                    }
                 }
             };
             Ok(DeliveryReceipt {

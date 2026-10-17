@@ -4,6 +4,7 @@ use super::CodexHarnessMetadata;
 use super::CompactedItem;
 use super::EventMsg;
 use super::InterAgentCommunication;
+use super::InterAgentCommunicationAdmission;
 use super::McpResourceOriginCheckpoint;
 use super::RealtimeItem;
 use super::ResponseItem;
@@ -84,13 +85,15 @@ impl<'a> From<&'a RolloutItem> for RolloutItemWire<'a> {
             RolloutItem::InterAgentCommunication(payload) => Self::InterAgentCommunication {
                 payload: Cow::Borrowed(payload),
             },
-            RolloutItem::InterAgentCommunicationMetadata { trigger_turn } => {
-                Self::InterAgentCommunicationMetadata {
-                    payload: InterAgentCommunicationMetadataPayload {
-                        trigger_turn: *trigger_turn,
-                    },
-                }
-            }
+            RolloutItem::InterAgentCommunicationMetadata {
+                trigger_turn,
+                admission,
+            } => Self::InterAgentCommunicationMetadata {
+                payload: InterAgentCommunicationMetadataPayload {
+                    trigger_turn: *trigger_turn,
+                    admission: admission.clone(),
+                },
+            },
             RolloutItem::Compacted(payload) => Self::Compacted {
                 payload: Cow::Borrowed(payload),
             },
@@ -210,6 +213,7 @@ impl From<RolloutItemWire<'_>> for RolloutItem {
             RolloutItemWire::InterAgentCommunicationMetadata { payload } => {
                 Self::InterAgentCommunicationMetadata {
                     trigger_turn: payload.trigger_turn,
+                    admission: payload.admission,
                 }
             }
             RolloutItemWire::Compacted { payload } => Self::Compacted(payload.into_owned()),
@@ -233,6 +237,8 @@ impl From<RolloutItemWire<'_>> for RolloutItem {
 #[derive(Serialize, Deserialize, JsonSchema)]
 pub(super) struct InterAgentCommunicationMetadataPayload {
     trigger_turn: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    admission: Option<InterAgentCommunicationAdmission>,
 }
 
 #[derive(Serialize, Deserialize, JsonSchema)]

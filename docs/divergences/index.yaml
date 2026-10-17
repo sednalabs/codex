@@ -143,34 +143,39 @@
     },
     {
       "id": "exact-target-wait-mailbox-filter",
-      "title": "Exact-target V2 wait filters queue-only mailbox activity",
+      "title": "V2 root-directed agent updates distinguish quiet delivery from actionable wait activity",
       "status": "live",
       "category": "agent-runtime",
       "surface_type": "wait-agent",
-      "surface": ["multi-agent V2 wait_agent", "session input queue"],
+      "surface": ["multi-agent V2 send_message", "multi-agent V2 wait_agent", "session input queue"],
       "files": [
+        "codex-rs/core/src/tools/handlers/multi_agents_spec.rs",
+        "codex-rs/core/src/agent/control/delivery.rs",
+        "codex-rs/history/src/lib.rs",
         "codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs",
         "codex-rs/core/src/session/input_queue.rs"
       ],
-      "behavior": "Exact-target waits ignore queue-only inter-agent mailbox activity while retaining FIFO durable messages and later notification summaries; targetless waits remain broadly mailbox-wakeable.",
+      "behavior": "Ordinary queue-only messages and explicit progress remain quiet and FIFO. Every explicit intent, including progress, requires an idempotency_key and retains the original communication and scope in durable admission metadata. Only root-directed action_required or result_ready are actionable; they may wake an active wait only when it explicitly targets the matching sender. The wake signal is body-free and matched by sender/recipient identity and queue generation. Identical retries return the original receipt; changed requests cannot reuse a key, and supersedes may name same-scope progress updates only. Legacy IDs and unmatched activity do not create an actionable wake.",
       "upstream_equivalent": false,
       "introduced_in": {"carry_commit": null, "upstream_commit": null},
       "guardrail_lane": "codex.core-multi-agent-orchestration-targeted",
       "tests": [
-        "multi_agent_v2_wait_agent_accepts_target_and_timeout_arguments",
-        "multi_agent_v2_wait_agent_does_not_return_completed_content",
-        "multi_agent_v2_wait_agent_wakes_on_trigger_turn_mailbox_notification",
-        "input_queue_tracks_pending_trigger_turn_mail"
+        "multi_agent_v2_explicit_root_updates_are_durable_and_idempotent",
+        "active_wait_wakes_for_targeted_action_but_not_progress_unmatched_or_legacy_id",
+        "explicit_action_snapshot_is_targeted_and_subscribe_before_snapshot_is_wake_safe",
+        "explicit_snapshot_catches_preexisting_matching_action_but_not_progress"
       ],
       "owner": "downstream",
-      "notes": "Regression repair for exact-target waits; preserve queue-only delivery and notification visibility until upstream adopts the typed actionable-input distinction.",
+      "notes": "Preserve quiet ordinary/progress delivery and existing trigger-turn, steer, and terminal outcomes. History and migration selectors are in their respective package test targets. Goal-aware terminal handback is a separate producer/consumer contract.",
       "upstreamability_tier": "upstream-pr",
       "boundary_type": "runtime-regression-repair",
       "hotspot_files": [
+        "codex-rs/core/src/tools/handlers/multi_agents_spec.rs",
+        "codex-rs/core/src/agent/control/delivery.rs",
         "codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs",
         "codex-rs/core/src/session/input_queue.rs"
       ],
-      "extraction_target": "upstream exact-target wait mailbox filtering"
+      "extraction_target": "upstream explicit actionable-message intent for exact-target V2 waits"
     },
     {
       "id": "rmcp-streamable-http-cancellation",

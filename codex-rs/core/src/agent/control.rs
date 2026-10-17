@@ -87,6 +87,8 @@ mod target;
 mod user_authorization;
 mod watch;
 
+pub(crate) use self::delivery::explicit_admission_for_communication;
+
 /// Per-session controller handle for a local agent tree.
 /// Handles retain a session identity and share their tree's `LocalAgentRuntime`.
 /// Local startup preserves that state when creating or resuming children.
