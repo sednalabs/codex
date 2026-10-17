@@ -6,6 +6,9 @@ expression: "render_bottom_popup(&app.chat_widget, 80)"
   Select an agent to watch. ⌥← previous, ⌥→ next.
 
 
-› 1. • /root/worker  00000000-0000-0000-0000-000000000123
+› 1. • /root/worker  00000000-0000-0000-0000-000000000123 • Path: /root/worker •
+                    Parent: unknown • Status: running • provider-effective
+                    identity: unverified • Configured model: unknown •
+                    Configured effort: unknown
 
   enter select · esc back
