@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import subprocess
+import tempfile
 from pathlib import Path
 from unittest import TestCase, main, mock
 
@@ -169,29 +170,32 @@ class NamedRustTests(TestCase):
             "target_kind": "bin",
             "target": "codex",
         }
-        record = {
-            "package": "codex-cli",
-            "target_kind": "bin",
-            "target": "codex",
-            "profiles": ("rust_minimal",),
-            "inventory_argv": tuple(
-                MODULE.expected_commands("codex-cli", "bin", "codex")[0]
-            ),
-            "execution_argv": tuple(
-                MODULE.expected_commands("codex-cli", "bin", "codex")[1]
-            ),
-        }
-        self.assertEqual(
-            MODULE.cargo_args(request, list_only=True, command_record=record),
-            ["cargo", "test", "--locked", "-p", "codex-cli", "--bin", "codex", "--", "--list"],
-        )
-        self.assertEqual(
-            MODULE.cargo_args(request, list_only=False, command_record=record),
-            [
-                "cargo", "test", "--locked", "-p", "codex-cli", "--bin", "codex",
-                "--", "--test-threads=1",
-            ],
-        )
+        inventory, execution = MODULE.expected_commands("codex-cli", "bin", "codex")
+        with tempfile.TemporaryDirectory() as directory:
+            repo_root = Path(directory)
+            catalog_path = repo_root / ".github" / MODULE.MANIFEST_NAME
+            catalog_path.parent.mkdir()
+            catalog_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": MODULE.MANIFEST_SCHEMA_VERSION,
+                        "targets": [
+                            {
+                                "package": "codex-cli",
+                                "target_kind": "bin",
+                                "target": "codex",
+                                "profiles": ["rust_minimal"],
+                                "inventory_argv": inventory,
+                                "execution_argv": execution,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            record = MODULE.select_target(request, MODULE.load_manifest(repo_root))
+        self.assertEqual(MODULE.cargo_args(request, list_only=True, command_record=record), inventory)
+        self.assertEqual(MODULE.cargo_args(request, list_only=False, command_record=record), execution)
 
     def test_bin_request_requires_a_safe_catalog_target(self) -> None:
         request = {**REQUEST, "target_kind": "bin", "target": "--workspace"}

@@ -117,8 +117,10 @@ def expected_commands(
         command.append("--lib")
     elif target_kind == "integration":
         command.extend(["--test", target])
-    else:
+    elif target_kind == "bin":
         command.extend(["--bin", target])
+    else:
+        raise ValueError("Cargo target kind is not supported")
     inventory = [*command, "--", "--list"]
     execution = [*command, "--", "--test-threads=1"]
     return inventory, execution
