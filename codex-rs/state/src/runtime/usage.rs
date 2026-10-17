@@ -598,6 +598,7 @@ mod tests {
     use crate::runtime::test_support::unique_temp_dir;
     use codex_utils_absolute_path::test_support::PathExt;
     use pretty_assertions::assert_eq;
+    use sqlx::Row;
 
     fn completed_record(
         provider_call_id: &str,

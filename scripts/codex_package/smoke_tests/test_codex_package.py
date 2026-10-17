@@ -263,6 +263,7 @@ def test_packaged_usage_report_covers_recorded_synthetic_spawn_tree(
     }
     environment.update(
         CODEX_HOME=str(codex_home),
+        CODEX_SQLITE_HOME=str(codex_home),
         HOME=str(home),
         USERPROFILE=str(home),
         XDG_CONFIG_HOME=str(home / "xdg-config"),
@@ -312,6 +313,27 @@ def test_packaged_usage_report_covers_recorded_synthetic_spawn_tree(
                 "namespace": "collaboration",
             },
         }
+
+    def completed_with_usage_and_model(
+        response_id: str,
+        *,
+        model: str,
+        input_tokens: int,
+        cached_input_tokens: int,
+        output_tokens: int,
+        reasoning_output_tokens: int,
+        total_tokens: int,
+    ) -> dict[str, object]:
+        event = ev_completed_with_usage(
+            response_id,
+            input_tokens=input_tokens,
+            cached_input_tokens=cached_input_tokens,
+            output_tokens=output_tokens,
+            reasoning_output_tokens=reasoning_output_tokens,
+            total_tokens=total_tokens,
+        )
+        event["response"]["model"] = model
+        return event
 
     config_path.write_text(
         'model = "package-smoke"\n'
@@ -380,8 +402,9 @@ def test_packaged_usage_report_covers_recorded_synthetic_spawn_tree(
                                 "fork_turns": "none",
                             },
                         ),
-                        ev_completed_with_usage(
+                        completed_with_usage_and_model(
                             "usage-root-spawn",
+                            model="synthetic-root-provider-model",
                             input_tokens=2,
                             cached_input_tokens=0,
                             output_tokens=3,
@@ -409,8 +432,9 @@ def test_packaged_usage_report_covers_recorded_synthetic_spawn_tree(
                                 "timeout_ms": 20_000,
                             },
                         ),
-                        ev_completed_with_usage(
+                        completed_with_usage_and_model(
                             "usage-root-wait",
+                            model="synthetic-root-provider-model",
                             input_tokens=2,
                             cached_input_tokens=0,
                             output_tokens=3,
@@ -429,8 +453,9 @@ def test_packaged_usage_report_covers_recorded_synthetic_spawn_tree(
                     [
                         ev_response_created("usage-root-final"),
                         ev_assistant_message("usage-root-answer", "root complete"),
-                        ev_completed_with_usage(
+                        completed_with_usage_and_model(
                             "usage-root-final",
+                            model="synthetic-root-provider-model",
                             input_tokens=2,
                             cached_input_tokens=0,
                             output_tokens=3,
@@ -449,8 +474,9 @@ def test_packaged_usage_report_covers_recorded_synthetic_spawn_tree(
                     [
                         ev_response_created("usage-child-final"),
                         ev_assistant_message("usage-child-answer", "child complete"),
-                        ev_completed_with_usage(
+                        completed_with_usage_and_model(
                             "usage-child-final",
+                            model="synthetic-child-provider-model",
                             input_tokens=2,
                             cached_input_tokens=0,
                             output_tokens=3,
@@ -600,14 +626,29 @@ def test_packaged_usage_report_covers_recorded_synthetic_spawn_tree(
         summary.get("token_sums_known_subtotal") if isinstance(summary, dict) else None
     )
 
-    def model_call_count(rows: object) -> int | None:
-        if not isinstance(rows, list) or any(
-            not isinstance(row, dict)
-            or not isinstance(row.get("provider_call_count"), int)
-            for row in rows
-        ):
+    def model_usage(rows: object) -> dict[str, tuple[int, int]] | None:
+        if not isinstance(rows, list):
             return None
-        return sum(row["provider_call_count"] for row in rows)
+        observed: dict[str, tuple[int, int]] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                return None
+            model = row.get("actual_model_used")
+            call_count = row.get("provider_call_count")
+            subtotals = row.get("token_sums_known_subtotal")
+            missing = row.get("token_missing_call_count")
+            if (
+                not isinstance(model, str)
+                or not isinstance(call_count, int)
+                or not isinstance(subtotals, dict)
+                or not isinstance(subtotals.get("total_tokens"), int)
+                or not isinstance(missing, dict)
+                or missing.get("total_tokens") != 0
+                or model in observed
+            ):
+                return None
+            observed[model] = (call_count, subtotals["total_tokens"])
+        return observed
 
     report_checks = (
         completed.returncode == 0,
@@ -631,8 +672,9 @@ def test_packaged_usage_report_covers_recorded_synthetic_spawn_tree(
         and isinstance(descendant_contribution, dict)
         and descendant_contribution.get("provider_call_count") == 1
         and contributions.get("disjoint_call_counts_reconcile") is True,
-        model_call_count(root_models) == 3,
-        model_call_count(descendant_models) == 1,
+        model_usage(root_models) == {"synthetic-root-provider-model": (3, 15)},
+        model_usage(descendant_models)
+        == {"synthetic-child-provider-model": (1, 5)},
     )
     if not all(report_checks):
         pytest.fail("Packaged root/child usage report did not reconcile", pytrace=False)
