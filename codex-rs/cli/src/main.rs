@@ -71,6 +71,7 @@ mod marketplace_cmd;
 mod mcp_cmd;
 mod mcp_login;
 mod migrate_rollouts;
+mod instruction_debug;
 mod plugin_cmd;
 mod queue_cmd;
 mod remote_control_cmd;
@@ -266,6 +267,9 @@ enum DebugSubcommand {
 
     /// Render the model-visible prompt input list as JSON.
     PromptInput(DebugPromptInputCommand),
+
+    /// Inspect selected local instruction configuration inputs as JSON.
+    Instructions(instruction_debug::DebugInstructionsCommand),
 
     /// Replay a rollout trace bundle and write reduced state JSON.
     #[clap(hide = true)]
@@ -1754,6 +1758,14 @@ async fn cli_main(
                     arg0_paths.clone(),
                 )
                 .await?;
+            }
+            DebugSubcommand::Instructions(cmd) => {
+                reject_remote_mode_for_subcommand(
+                    root_remote.as_deref(),
+                    root_remote_auth_token_env.as_deref(),
+                    "debug instructions",
+                )?;
+                instruction_debug::run(cmd, root_config_overrides).await?;
             }
             DebugSubcommand::TraceReduce(cmd) => {
                 reject_remote_mode_for_subcommand(
@@ -3396,6 +3408,24 @@ mod tests {
             cmd.images,
             vec![PathBuf::from("/tmp/a.png"), PathBuf::from("/tmp/b.png")]
         );
+    }
+
+    #[test]
+    fn debug_instructions_parses_opt_in_content_flags() {
+        let cli = MultitoolCli::try_parse_from([
+            "codex",
+            "debug",
+            "instructions",
+            "--show-content",
+            "--client-instructions-stdin",
+        ])
+        .expect("parse");
+        assert!(matches!(
+            cli.subcommand,
+            Some(Subcommand::Debug(DebugCommand {
+                subcommand: DebugSubcommand::Instructions(_)
+            }))
+        ));
     }
 
     #[test]
