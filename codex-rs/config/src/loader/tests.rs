@@ -979,8 +979,13 @@ async fn local_layers_keep_raw_paths_order_and_legacy_requirements() {
     assert_eq!(layers.config.cloud_insertion_index, 1);
     assert_eq!(layers.requirements.cloud_insertion_index, 1);
     assert_eq!(
-        layers.config.effective_config().get("instruction_overlays"),
-        Some(&toml::from_str::<TomlValue>("{ model_baseline = { edits = [{ op = 'replace', text = 'project instruction' }] } }").expect("project overlay config"))
+        layers.config.layers[2].toml.get("instruction_overlays"),
+        Some(
+            &toml::from_str::<TomlValue>(
+                "model_baseline = { edits = [{ op = 'replace', text = 'project instruction' }] }"
+            )
+            .expect("project overlay config")
+        )
     );
     assert_eq!(
         (
@@ -1006,7 +1011,12 @@ async fn local_layers_keep_raw_paths_order_and_legacy_requirements() {
             .expect("legacy requirements TOML"),
         )
     );
-    assert!(layers.config.layers[2].toml.get("instruction_overlays").is_some());
+    assert!(
+        layers.config.layers[2]
+            .toml
+            .get("instruction_overlays")
+            .is_some()
+    );
 
     {
         std::fs::write(
@@ -1064,10 +1074,19 @@ async fn local_layers_keep_raw_paths_order_and_legacy_requirements() {
             .count(),
         0
     );
-    assert!(layers.config.layers.iter().all(|layer| layer.toml.get("instruction_overlays").is_none()));
     assert_eq!(
-        layers.config.effective_config().get("instruction_overlays"),
-        Some(&toml::from_str::<TomlValue>("{ model_baseline = { edits = [{ op = 'replace', text = 'user instruction' }] } }").expect("user overlay config"))
+        layers
+            .config
+            .layers
+            .iter()
+            .find(|layer| matches!(layer.source, ConfigLayerSource::User { .. }))
+            .and_then(|layer| layer.toml.get("instruction_overlays")),
+        Some(
+            &toml::from_str::<TomlValue>(
+                "model_baseline = { edits = [{ op = 'replace', text = 'user instruction' }] }"
+            )
+            .expect("user overlay config")
+        )
     );
 }
 
@@ -1092,7 +1111,12 @@ fn disabled_project_layer_does_not_contribute_instruction_overlays() {
         ConfigRequirementsToml::default(),
     )
     .expect("disabled synthetic layer stack");
-    assert!(stack.effective_config().get("instruction_overlays").is_none());
+    assert!(
+        stack
+            .effective_config()
+            .get("instruction_overlays")
+            .is_none()
+    );
 }
 
 #[test]
