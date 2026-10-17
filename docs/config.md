@@ -46,10 +46,11 @@ on_absent = "error"
 edits = [{ op = "append", text = "\nUse the local test fixture." }]
 ```
 
-Put the same table in `~/.codex/config.toml`, a profile table such as
-`[profiles.work.instruction_overlays.developer_guidance]`, or a role's TOML
-configuration. A trusted enabled project may also define it in its local
-configuration; project plans follow normal configuration-layer precedence.
+Put the same table in `~/.codex/config.toml`, at top level in
+`~/.codex/work.config.toml` (selected with `codex --profile work`), or in a
+role's TOML configuration. A trusted enabled project may also define it in its
+local configuration; project plans follow normal configuration-layer
+precedence.
 For a one-command override, `-c`/`--config` accepts the nested TOML value:
 
 ```sh

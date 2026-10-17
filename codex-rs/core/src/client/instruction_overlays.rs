@@ -4,6 +4,7 @@ use codex_config::InstructionOverlaySelection;
 use codex_config::InstructionOverlaysToml;
 use codex_config::MAX_INSTRUCTION_OVERLAY_INSTANCES;
 use codex_config::MAX_INSTRUCTION_OVERLAY_REQUEST_BYTES;
+use codex_protocol::models::BaseInstructionsProvenance;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::COLLABORATION_MODE_CLOSE_TAG;
@@ -30,6 +31,7 @@ pub(super) fn transform_request(
     source: &SessionSource,
     plan: &InstructionOverlaysToml,
     baseline: String,
+    baseline_provenance: Option<&BaseInstructionsProvenance>,
     input: Vec<ResponseItem>,
 ) -> Result<(String, Vec<ResponseItem>)> {
     let Some(components) = eligible_components(source) else {
@@ -38,7 +40,6 @@ pub(super) fn transform_request(
 
     plan.validate_components(components)
         .map_err(|error| anyhow::anyhow!("instruction overlay plan invalid: {error}"))?;
-    let baseline_present = !baseline.is_empty();
     let mut transformed_baseline = baseline;
     let mut transformed_input = input;
     let mut selected_instances = 0usize;
@@ -52,26 +53,25 @@ pub(super) fn transform_request(
         .component(baseline_component)
         .is_some_and(|p| !p.edits.is_empty())
     {
+        // Incremental-tools requests carry their selected base as a typed input item and use
+        // empty text with no provenance as the scalar placeholder. Empty explicit bases still
+        // have provenance and remain independently selectable.
+        let scalar_selected = !transformed_baseline.is_empty() || baseline_provenance.is_some();
+        if scalar_selected {
+            selected_instances = selected_instances.saturating_add(1);
+            if selected_instances > MAX_INSTRUCTION_OVERLAY_INSTANCES {
+                anyhow::bail!("instruction overlay selected-instance limit exceeded");
+            }
+        }
         let tagged_base = find_candidate(
             plan,
             &transformed_input,
             baseline_component,
             target_kind(baseline_component),
+            selected_instances,
+            scalar_selected,
         )?;
-        let selection = plan
-            .component(baseline_component)
-            .map(|component_plan| component_plan.selection)
-            .unwrap_or_default();
-        if baseline_present
-            && !tagged_base.is_empty()
-            && selection == InstructionOverlaySelection::Unique
-        {
-            anyhow::bail!(
-                "instruction overlay {} has ambiguous request targets",
-                baseline_component.as_str()
-            );
-        }
-        if baseline_present {
+        if scalar_selected {
             if let Some(updated) = apply_component(
                 plan,
                 baseline_component,
@@ -79,11 +79,8 @@ pub(super) fn transform_request(
             )? {
                 transformed_baseline = updated;
             }
-            selected_instances = selected_instances.saturating_add(1);
             selected_bytes = selected_bytes.saturating_add(transformed_baseline.len());
-            if selected_instances > MAX_INSTRUCTION_OVERLAY_INSTANCES
-                || selected_bytes > MAX_INSTRUCTION_OVERLAY_REQUEST_BYTES
-            {
+            if selected_bytes > MAX_INSTRUCTION_OVERLAY_REQUEST_BYTES {
                 anyhow::bail!("instruction overlay request output limit exceeded");
             }
         }
@@ -96,7 +93,7 @@ pub(super) fn transform_request(
                 &mut selected_instances,
                 &mut selected_bytes,
             )?;
-        } else if !baseline_present {
+        } else if !scalar_selected {
             let _ = apply_component(plan, baseline_component, /*body*/ None)?;
         }
     }
@@ -156,7 +153,14 @@ fn apply_tagged_component(
     {
         return Ok(());
     }
-    let selected = find_candidate(plan, input, component, target_kind(component))?;
+    let selected = find_candidate(
+        plan,
+        input,
+        component,
+        target_kind(component),
+        *selected_instances,
+        false,
+    )?;
     apply_candidates(
         plan,
         component,
@@ -178,8 +182,13 @@ fn find_candidate(
     input: &[ResponseItem],
     component: InstructionOverlayComponent,
     target_kind: &str,
+    already_selected_instances: usize,
+    scalar_selected: bool,
 ) -> Result<Vec<Candidate>> {
     let mut selected = Vec::new();
+    let unique_selection = plan
+        .component(component)
+        .is_none_or(|config| config.selection == InstructionOverlaySelection::Unique);
     for (item_index, item) in input.iter().enumerate() {
         let ResponseItem::Message {
             role,
@@ -210,6 +219,17 @@ fn find_candidate(
         }
         for (content_index, kind) in kinds.iter().enumerate() {
             if kind.as_str() == target_kind {
+                if unique_selection && (scalar_selected || !selected.is_empty()) {
+                    anyhow::bail!(
+                        "instruction overlay target for {} is ambiguous",
+                        component.as_str()
+                    );
+                }
+                if already_selected_instances.saturating_add(selected.len())
+                    >= MAX_INSTRUCTION_OVERLAY_INSTANCES
+                {
+                    anyhow::bail!("instruction overlay selected-instance limit exceeded");
+                }
                 let ContentItem::InputText { text } = &content[content_index] else {
                     anyhow::bail!(
                         "instruction overlay target for {} is not text at request item {item_index}",
@@ -223,16 +243,6 @@ fn find_candidate(
                 });
             }
         }
-    }
-    if selected.len() > 1
-        && plan
-            .component(component)
-            .is_none_or(|config| config.selection == InstructionOverlaySelection::Unique)
-    {
-        anyhow::bail!(
-            "instruction overlay target for {} is ambiguous",
-            component.as_str()
-        );
     }
     Ok(selected)
 }
@@ -418,7 +428,23 @@ mod tests {
         baseline: &str,
         input: &[ResponseItem],
     ) -> Result<(String, Vec<ResponseItem>)> {
-        super::transform_request(source, plan, baseline.to_string(), input.to_vec())
+        transform_request_with_provenance(source, plan, baseline, None, input)
+    }
+
+    fn transform_request_with_provenance(
+        source: &SessionSource,
+        plan: &InstructionOverlaysToml,
+        baseline: &str,
+        provenance: Option<&BaseInstructionsProvenance>,
+        input: &[ResponseItem],
+    ) -> Result<(String, Vec<ResponseItem>)> {
+        super::transform_request(
+            source,
+            plan,
+            baseline.to_string(),
+            provenance,
+            input.to_vec(),
+        )
     }
 
     fn active(text: &str) -> InstructionOverlayComponentToml {
@@ -610,6 +636,145 @@ mod tests {
     }
 
     #[test]
+    fn empty_explicit_bases_are_selected_but_incremental_placeholders_use_typed_base() {
+        for (source, component, provenance) in [
+            (
+                SessionSource::Cli,
+                InstructionOverlayComponent::ModelBaseline,
+                BaseInstructionsProvenance::Custom,
+            ),
+            (
+                SessionSource::Cli,
+                InstructionOverlayComponent::ModelBaseline,
+                BaseInstructionsProvenance::Model {
+                    model: "fixture-model".to_string(),
+                },
+            ),
+            (
+                SessionSource::SubAgent(SubAgentSource::Review),
+                InstructionOverlayComponent::ReviewBaseline,
+                BaseInstructionsProvenance::Custom,
+            ),
+            (
+                SessionSource::SubAgent(SubAgentSource::Review),
+                InstructionOverlayComponent::ReviewBaseline,
+                BaseInstructionsProvenance::Model {
+                    model: "fixture-model".to_string(),
+                },
+            ),
+        ] {
+            let mut plan = InstructionOverlaysToml::default();
+            match component {
+                InstructionOverlayComponent::ModelBaseline => {
+                    plan.model_baseline = Some(active("edited explicit empty base"));
+                }
+                InstructionOverlayComponent::ReviewBaseline => {
+                    plan.review_baseline = Some(active("edited explicit empty review base"));
+                }
+                _ => unreachable!("only baseline components are covered"),
+            }
+            let (actual, input) =
+                transform_request_with_provenance(&source, &plan, "", Some(&provenance), &[])
+                    .expect("empty base with explicit provenance is selected");
+            assert_eq!(
+                actual,
+                match component {
+                    InstructionOverlayComponent::ModelBaseline => "edited explicit empty base",
+                    InstructionOverlayComponent::ReviewBaseline => {
+                        "edited explicit empty review base"
+                    }
+                    _ => unreachable!("only baseline components are covered"),
+                }
+            );
+            assert!(input.is_empty());
+        }
+
+        let typed_base = vec![developer_fragment(
+            "model.base_instructions",
+            "typed incremental base",
+        )];
+        let plan = InstructionOverlaysToml {
+            model_baseline: Some(active("edited typed base")),
+            ..Default::default()
+        };
+        let (placeholder, output) =
+            transform_request_with_provenance(&SessionSource::Cli, &plan, "", None, &typed_base)
+                .expect("empty no-provenance placeholder selects typed base");
+        assert!(placeholder.is_empty());
+        let ResponseItem::Message { content, .. } = &output[0] else {
+            panic!("typed base message retained")
+        };
+        assert_eq!(
+            content,
+            &[ContentItem::InputText {
+                text: "edited typed base".to_string()
+            }]
+        );
+
+        assert!(
+            transform_request_with_provenance(&SessionSource::Cli, &plan, "", None, &[],).is_err()
+        );
+        let mut skipped = plan.clone();
+        skipped.model_baseline.as_mut().unwrap().on_absent = InstructionOverlayOnAbsent::Skip;
+        let (placeholder, input) =
+            transform_request_with_provenance(&SessionSource::Cli, &skipped, "", None, &[])
+                .expect("explicit skip accepts an absent typed base");
+        assert!(placeholder.is_empty());
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn scalar_and_typed_baselines_obey_selection_without_mutating_raw_input() {
+        let source = SessionSource::Cli;
+        let raw = vec![developer_fragment(
+            "model.base_instructions",
+            "typed source base",
+        )];
+        let unique = InstructionOverlaysToml {
+            model_baseline: Some(active("overlay")),
+            ..Default::default()
+        };
+        assert!(
+            transform_request_with_provenance(
+                &source,
+                &unique,
+                "scalar source base",
+                Some(&BaseInstructionsProvenance::Custom),
+                &raw,
+            )
+            .is_err()
+        );
+
+        let mut all = unique;
+        all.model_baseline.as_mut().unwrap().selection = InstructionOverlaySelection::AllClassified;
+        let (scalar, typed) = transform_request_with_provenance(
+            &source,
+            &all,
+            "scalar source base",
+            Some(&BaseInstructionsProvenance::Custom),
+            &raw,
+        )
+        .expect("all_classified edits scalar and typed instances");
+        assert_eq!(scalar, "overlay");
+        let ResponseItem::Message { content, .. } = &typed[0] else {
+            panic!("typed base message retained")
+        };
+        assert_eq!(
+            content,
+            &[ContentItem::InputText {
+                text: "overlay".to_string()
+            }]
+        );
+        assert_eq!(
+            raw,
+            vec![developer_fragment(
+                "model.base_instructions",
+                "typed source base",
+            )]
+        );
+    }
+
+    #[test]
     fn model_switch_guidance_edits_one_retained_candidate_per_raw_request_copy() {
         let plan = InstructionOverlaysToml {
             model_switch_guidance: Some(InstructionOverlayComponentToml {
@@ -738,6 +903,27 @@ mod tests {
             .map(|_| developer_fragment("generic.developer_instructions", "x"))
             .collect::<Vec<_>>();
         assert!(transform_request(&SessionSource::Cli, &crowded, "base", &many).is_err());
+    }
+
+    #[test]
+    fn selected_instance_cap_is_shared_across_components() {
+        let mut developer = active("changed");
+        developer.selection = InstructionOverlaySelection::AllClassified;
+        let mut usage = active("changed");
+        usage.selection = InstructionOverlaySelection::AllClassified;
+        let plan = InstructionOverlaysToml {
+            developer_guidance: Some(developer),
+            multi_agent_usage_hint: Some(usage),
+            ..Default::default()
+        };
+        let mut input = (0..32)
+            .map(|_| developer_fragment("generic.developer_instructions", "dev"))
+            .collect::<Vec<_>>();
+        input.extend((0..32).map(|_| developer_fragment("multi_agent.usage_hint", "usage")));
+        assert!(transform_request(&SessionSource::Cli, &plan, "base", &input).is_ok());
+
+        input.push(developer_fragment("multi_agent.usage_hint", "one too many"));
+        assert!(transform_request(&SessionSource::Cli, &plan, "base", &input).is_err());
     }
 
     #[test]

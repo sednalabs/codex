@@ -1469,6 +1469,7 @@ impl ModelClient {
             &self.state.session_source,
             self.instruction_overlays.as_ref(),
             prompt.base_instructions.text.clone(),
+            prompt.base_instructions.provenance.as_ref(),
             prompt.get_formatted_input_for_request(model_info),
         )?;
         if !self.reasoning_effort_override_enabled(model_info) {
@@ -1502,13 +1503,9 @@ impl ModelClient {
         };
         if !base_instructions.is_empty() {
             let base_id = Uuid::new_v5(&prefix_namespace, base_instructions.as_bytes());
-            let mut instructions = ContextualUserFragment::into(BaseInstructionsFragment(
-                base_instructions,
-            ));
-            instructions.set_id(Some(ResponseItemId::with_suffix(
-                "msg",
-                base_id,
-            )));
+            let mut instructions =
+                ContextualUserFragment::into(BaseInstructionsFragment(base_instructions));
+            instructions.set_id(Some(ResponseItemId::with_suffix("msg", base_id)));
             prefix.push(instructions);
         }
         input.splice(0..0, prefix);

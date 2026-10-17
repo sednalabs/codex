@@ -635,10 +635,18 @@ mod tests {
         assert_eq!(
             plan.apply_component(
                 InstructionOverlayComponent::DeveloperGuidance,
+                /*body*/ Some(""),
+            )
+            .expect("selected empty value"),
+            Some(String::new())
+        );
+        assert_eq!(
+            plan.apply_component(
+                InstructionOverlayComponent::DeveloperGuidance,
                 /*body*/ None,
             )
-            .expect("present empty value"),
-            None
+            .expect_err("default on_absent rejects missing target"),
+            InstructionOverlayError::TargetAbsent
         );
         assert_eq!(
             plan.apply_component(
