@@ -233,7 +233,8 @@ impl LocalAgentControl {
             return;
         }
 
-        // Resolve and validate the complete bounded graph before registering any descendant.
+        // Resolve children concurrently, but keep the graph-store order when collecting results.
+        // A missing/corrupt child must not prevent otherwise valid siblings from being restored.
         let stored_threads = stream::iter(
             descendants
                 .thread_ids
@@ -264,7 +265,7 @@ impl LocalAgentControl {
                 Ok(stored_thread) => stored_thread,
                 Err(err) => {
                     warn!("failed to preflight V2 agent metadata for {thread_id}: {err}");
-                    return;
+                    continue;
                 }
             };
             let agent_path = match stored_thread
@@ -279,13 +280,13 @@ impl LocalAgentControl {
                     return;
                 }
             };
-            if let Some(agent_path) = &agent_path
-                && !paths.insert(agent_path.to_string())
-            {
-                warn!(
-                    "failed to preflight V2 agent metadata: duplicate stored agent path {agent_path}"
-                );
-                return;
+            if let Some(agent_path) = &agent_path {
+                if !paths.insert(agent_path.to_string()) {
+                    warn!(
+                        "failed to preflight V2 agent metadata for {thread_id}: duplicate stored agent path {agent_path}"
+                    );
+                    continue;
+                }
             }
             let agent_role = stored_thread
                 .agent_role
