@@ -388,8 +388,8 @@ fn provider_uses_first_party_auth_path(provider: &ModelProviderInfo) -> bool {
         && provider.aws.is_none()
 }
 
-async fn compose_gateway_auth_for_request(
-    provider: &dyn ModelProvider,
+async fn compose_gateway_auth_for_request<P: ModelProvider + ?Sized>(
+    provider: &P,
     resolved: ResolvedProviderAuth,
 ) -> codex_protocol::error::Result<ResolvedProviderAuth> {
     if provider.info().gateway_oauth.is_none() {
