@@ -1,5 +1,6 @@
 use clap::Parser;
 use codex_config::CloudConfigBundleLoader;
+#[cfg(test)]
 use codex_config::ConfigLayerEntry;
 use codex_config::ConfigLayerMetadata;
 use codex_config::ConfigLayerSource;
