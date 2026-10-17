@@ -82,7 +82,7 @@ fn build_report(
     stdin_text: Option<&str>,
 ) -> anyhow::Result<JsonValue> {
     let effective = layers.effective_config();
-    let origins = layers.origins_with_path_filter(|path| is_instruction_path(path));
+    let origins = layers.origins_with_path_filter(is_instruction_path);
     let fields = project_inline_config(&effective, &origins, layers, show_content)?;
 
     let requirements = layers.requirements();
@@ -199,22 +199,23 @@ fn project_inline_config(
             "present": value.is_some(),
             "origin": origin.map(|metadata| source_metadata(&metadata.name, stack)),
         });
-        if show_content && *path != MODEL_INSTRUCTIONS_PATH {
-            if let Some(value) = value.and_then(TomlValue::as_str) {
-                content_bytes = content_bytes.saturating_add(value.len());
-                if content_bytes > MAX_CONTENT_BYTES {
-                    anyhow::bail!("instruction content exceeds the size limit");
-                }
-                let (redacted, count) = redact(value);
-                field["content"] = json!(redacted);
-                field["redacted_lines"] = json!(count);
+        if show_content
+            && *path != MODEL_INSTRUCTIONS_PATH
+            && let Some(value) = value.and_then(TomlValue::as_str)
+        {
+            content_bytes = content_bytes.saturating_add(value.len());
+            if content_bytes > MAX_CONTENT_BYTES {
+                anyhow::bail!("instruction content exceeds the size limit");
             }
+            let (redacted, count) = redact(value);
+            field["content"] = json!(redacted);
+            field["redacted_lines"] = json!(count);
         }
-        if *path == MODEL_INSTRUCTIONS_PATH {
-            if let Some(path) = value.and_then(TomlValue::as_str) {
-                field["configured_path"] = json!(path);
-                field["content_status"] = json!("not_opened; configured path only");
-            }
+        if *path == MODEL_INSTRUCTIONS_PATH
+            && let Some(path) = value.and_then(TomlValue::as_str)
+        {
+            field["configured_path"] = json!(path);
+            field["content_status"] = json!("not_opened; configured path only");
         }
         fields.push(field);
     }
