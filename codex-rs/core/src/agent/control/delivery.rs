@@ -551,7 +551,7 @@ impl LocalAgentControl {
         let rollout_path = recipient_thread.rollout_path().ok_or_else(|| {
             CodexErr::Fatal("explicit inter-agent recipient has no retained rollout".to_string())
         })?;
-        let mut index =
+        let (mut index, _retained_rollout_items) =
             load_explicit_admission_index(&rollout_path, root_thread_id, recipient).await?;
         let scope_key = explicit_scope_key(
             &root_thread_id,
@@ -664,7 +664,7 @@ impl LocalAgentControl {
         else {
             return Ok(());
         };
-        let index =
+        let (index, _retained_rollout_items) =
             load_explicit_admission_index(&rollout_path, session.thread_id, session.thread_id)
                 .await?;
         enqueue_pending_explicit_admissions(session, &index).await;
