@@ -32,6 +32,7 @@ use http::Method;
 use http::StatusCode;
 use pretty_assertions::assert_eq;
 use serde_json::json;
+use std::path::Path;
 use std::sync::Mutex;
 use std::time::Duration;
 use std::time::Instant;
@@ -58,6 +59,18 @@ const FIRST_RETRY_MIN_DELAY: Duration = Duration::from_millis(180);
 const FIRST_RETRY_MAX_DELAY: Duration = Duration::from_millis(220);
 const SECOND_RETRY_MIN_DELAY: Duration = Duration::from_millis(360);
 const SECOND_RETRY_MAX_DELAY: Duration = Duration::from_millis(440);
+
+fn capacity_retry_append_command(path: &Path, line: &str) -> String {
+    #[cfg(windows)]
+    {
+        let path = path.to_string_lossy().replace('\'', "''");
+        format!("Add-Content -LiteralPath '{path}' -Value '{line}' -Encoding Ascii")
+    }
+    #[cfg(not(windows))]
+    {
+        format!("printf '{line}\\n' >> {path:?}")
+    }
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct RetryTelemetryEvent {
@@ -269,6 +282,28 @@ async fn submit_user_input(test: &TestCodex, text: &str) -> Result<()> {
             text: text.to_string(),
             text_elements: Vec::new(),
         }]))
+        .await?;
+    Ok(())
+}
+
+async fn submit_capacity_effect_input(test: &TestCodex, text: &str) -> Result<()> {
+    // These fixtures deliberately execute side effects. Match submit_turn's
+    // execution permissions without consuming the events asserted below.
+    let (sandbox_policy, permission_profile) =
+        turn_permission_fields(PermissionProfile::Disabled, test.config.cwd.as_path());
+    test.codex
+        .start_or_steer_turn(
+            TurnInputRequest::user_input(vec![UserInput::Text {
+                text: text.to_string(),
+                text_elements: Vec::new(),
+            }])
+            .with_thread_settings(codex_protocol::protocol::ThreadSettingsOverrides {
+                approval_policy: Some(AskForApproval::Never),
+                sandbox_policy: Some(sandbox_policy),
+                permission_profile,
+                ..Default::default()
+            }),
+        )
         .await?;
     Ok(())
 }
@@ -1136,17 +1171,17 @@ async fn capacity_retry_deduplicates_accepted_output_and_tool_ids() -> Result<()
     let server = responses::start_mock_server().await;
     let first_call_id = "capacity-accepted-call";
     let distinct_call_id = "capacity-distinct-call";
-    let partial_id = "capacity-accepted-message";
+    let partial_id = "msg_capacity_accepted_message";
     let effects_dir = tempfile::tempdir()?;
     let effect_path = effects_dir.path().join("effect.txt");
     let first_args = json!({
-        "command": format!("printf 'first\\n' >> {effect_path:?}"),
+        "cmd": capacity_retry_append_command(&effect_path, "first"),
         "login": false,
         "timeout_ms": 5_000,
     })
     .to_string();
     let distinct_args = json!({
-        "command": format!("printf 'distinct\\n' >> {effect_path:?}"),
+        "cmd": capacity_retry_append_command(&effect_path, "distinct"),
         "login": false,
         "timeout_ms": 5_000,
     })
@@ -1159,7 +1194,7 @@ async fn capacity_retry_deduplicates_accepted_output_and_tool_ids() -> Result<()
                 responses::ev_message_item_added(partial_id, ""),
                 responses::ev_output_text_delta("accepted before failure"),
                 responses::ev_assistant_message(partial_id, "accepted before failure"),
-                responses::ev_function_call(first_call_id, "shell_command", &first_args),
+                responses::ev_function_call(first_call_id, "exec_command", &first_args),
             ])),
             ResponseTemplate::new(503).set_body_json(json!({
                 "error": {
@@ -1173,8 +1208,8 @@ async fn capacity_retry_deduplicates_accepted_output_and_tool_ids() -> Result<()
                 responses::ev_message_item_added(partial_id, ""),
                 responses::ev_output_text_delta("accepted before failure"),
                 responses::ev_assistant_message(partial_id, "accepted before failure"),
-                responses::ev_function_call(first_call_id, "shell_command", &first_args),
-                responses::ev_function_call(distinct_call_id, "shell_command", &distinct_args),
+                responses::ev_function_call(first_call_id, "exec_command", &first_args),
+                responses::ev_function_call(distinct_call_id, "exec_command", &distinct_args),
                 responses::ev_completed("capacity-replay-recovery"),
             ])),
             responses::sse_response(responses::sse(vec![
@@ -1193,7 +1228,7 @@ async fn capacity_retry_deduplicates_accepted_output_and_tool_ids() -> Result<()
         })
         .build_with_auto_env(&server)
         .await?;
-    submit_user_input(&test, "recover the accepted effects").await?;
+    submit_capacity_effect_input(&test, "recover the accepted effects").await?;
 
     let mut accepted_message_ids = Vec::new();
     let mut streamed_partial_deltas = 0;
@@ -1230,7 +1265,12 @@ async fn capacity_retry_deduplicates_accepted_output_and_tool_ids() -> Result<()
         1,
         "only one completed assistant item with the accepted provider ID",
     );
-    assert_eq!(std::fs::read_to_string(&effect_path)?, "first\ndistinct\n");
+    assert_eq!(
+        std::fs::read_to_string(&effect_path)?
+            .lines()
+            .collect::<Vec<_>>(),
+        vec!["first", "distinct"]
+    );
 
     let requests = response_mock.requests();
     assert_eq!(requests.len(), 4);
@@ -1291,13 +1331,13 @@ async fn capacity_retry_rejects_conflicting_tool_call_id() -> Result<()> {
     let effects_dir = tempfile::tempdir()?;
     let effect_path = effects_dir.path().join("effect.txt");
     let accepted_args = json!({
-        "command": format!("printf 'accepted\\n' >> {effect_path:?}"),
+        "cmd": capacity_retry_append_command(&effect_path, "accepted"),
         "login": false,
         "timeout_ms": 5_000,
     })
     .to_string();
     let conflicting_args = json!({
-        "command": format!("printf 'conflict\\n' >> {effect_path:?}"),
+        "cmd": capacity_retry_append_command(&effect_path, "conflict"),
         "login": false,
         "timeout_ms": 5_000,
     })
@@ -1309,7 +1349,7 @@ async fn capacity_retry_rejects_conflicting_tool_call_id() -> Result<()> {
                 responses::ev_response_created("capacity-conflict-partial"),
                 responses::ev_function_call(
                     "capacity-conflict-call",
-                    "shell_command",
+                    "exec_command",
                     &accepted_args,
                 ),
             ])),
@@ -1327,13 +1367,13 @@ async fn capacity_retry_rejects_conflicting_tool_call_id() -> Result<()> {
                     "item": {
                         "type": "function_call",
                         "call_id": "capacity-conflict-call",
-                        "name": "shell_command",
+                        "name": "exec_command",
                         "arguments": accepted_args,
                     }
                 }),
                 responses::ev_function_call(
                     "capacity-conflict-call",
-                    "shell_command",
+                    "exec_command",
                     &conflicting_args,
                 ),
                 responses::ev_completed("capacity-conflict-replayed"),
@@ -1349,7 +1389,7 @@ async fn capacity_retry_rejects_conflicting_tool_call_id() -> Result<()> {
         })
         .build_with_auto_env(&server)
         .await?;
-    submit_user_input(&test, "reject a changed accepted call").await?;
+    submit_capacity_effect_input(&test, "reject a changed accepted call").await?;
     let mut terminal_errors = 0;
     loop {
         match wait_for_event(&test.codex, |_| true).await {
@@ -1365,7 +1405,12 @@ async fn capacity_retry_rejects_conflicting_tool_call_id() -> Result<()> {
         }
     }
     assert_eq!(terminal_errors, 1);
-    assert_eq!(std::fs::read_to_string(&effect_path)?, "accepted\n");
+    assert_eq!(
+        std::fs::read_to_string(&effect_path)?
+            .lines()
+            .collect::<Vec<_>>(),
+        vec!["accepted"]
+    );
     assert_eq!(response_mock.requests().len(), 3);
     Ok(())
 }
