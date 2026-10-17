@@ -193,30 +193,8 @@ async fn guardian_circuit_breaker_notifies_parent(action: CircuitBreakAction) ->
         ),
     );
 
-    // Delivery is queued. If the parent samples before draining its mailbox,
-    // wait_agent must observe the notification before the next model request.
-    let _wait = if action == CircuitBreakAction::Strict {
-        Some(
-            mount_sse_once_match(
-                &server,
-                move |request: &wiremock::Request| {
-                    is_root(request) && !body_contains(request, "Agent interrupted by Guardian:")
-                },
-                sse(vec![
-                    ev_function_call_with_namespace(
-                        "wait-worker",
-                        MULTI_AGENT_V2_NAMESPACE,
-                        "wait_agent",
-                        "{}",
-                    ),
-                    ev_completed("parent-wait"),
-                ]),
-            )
-            .await,
-        )
-    } else {
-        None
-    };
+    // The child's idle barrier follows parent delivery. Start an explicit parent
+    // turn to consume that queued result; queue-only mail does not wake a wait.
     let continued = mount_sse_once_match(
         &server,
         move |request: &wiremock::Request| {
