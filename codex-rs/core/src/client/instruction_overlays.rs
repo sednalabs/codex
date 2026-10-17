@@ -162,7 +162,7 @@ fn apply_tagged_component(
         component,
         target_kind(component),
         *selected_instances,
-        false,
+        /*scalar_selected*/ false,
     )?;
     apply_candidates(
         plan,
