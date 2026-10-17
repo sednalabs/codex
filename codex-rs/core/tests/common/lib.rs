@@ -436,7 +436,8 @@ fn native_cargo_stdio_server_build_paths() -> Option<(PathBuf, PathBuf)> {
 
     let codex_rs_root = codex_utils_cargo_bin::repo_root().ok()?.join("codex-rs");
     let codex_rs_root = codex_rs_root.canonicalize().ok()?;
-    if std::env::current_dir().ok()?.canonicalize().ok()? != codex_rs_root {
+    let test_package_root = codex_rs_root.join("core").canonicalize().ok()?;
+    if std::env::current_dir().ok()?.canonicalize().ok()? != test_package_root {
         return None;
     }
 
