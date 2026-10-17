@@ -412,12 +412,17 @@ def _selected_subagent_details(
             (
                 "PRIVATE_PROMPT_SENTINEL",
                 "PRIVATE_NESTED_PROMPT_SENTINEL",
-                "instructions",
-                "credentials",
             ),
-            expected_presence=(False, False, False, False),
+            expected_presence=(False, False),
             stage=f"{stage}-selected-detail",
-            action="validate-private-content-absence",
+            action="validate-private-sentinel-absence",
+        )
+        tui.assert_marker_states(
+            frame.lower(),
+            ("instructions", "credentials"),
+            expected_presence=(False, False),
+            stage=f"{stage}-selected-detail",
+            action="validate-private-keyword-absence",
         )
         selected[thread_id] = detail
 
