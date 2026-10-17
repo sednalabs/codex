@@ -323,11 +323,11 @@ jobs:
           EXPECTED_WORKFLOW_HOST_SHA: ${{ inputs.expected_workflow_host_sha }}
         run: |
           set -euo pipefail
-          expected_target="312efecb2169058c051cf902c02fea6198561ea0"
-          expected_tree="59291b19b1e042e99778f8ae79cbaa58a388e897"
-          expected_parent="b9630c6f9fe3cfda7434d882ef98763d78725e92"
-          expected_base="a8778ccc83d615b403e4c01370ff8cb5f47677d0"
-          expected_source_ref="refs/heads/validation/browser-fixture-312efecb"
+          expected_target="c31c05e6052d93f00cf0b1b3a15b72c3b1583812"
+          expected_tree="abd817177c8763bd3d8787b562189165e8b5b048"
+          expected_parent="bdc79b691682cca64a01163e7ec473488e860afe"
+          expected_base="4e177049188ef74ecb693058ff02cdda805edbf3"
+          expected_source_ref="refs/heads/validation/native-browser-lifecycle-c31c05e6"
           expected_host_ref="refs/heads/validation/receiver-exact-cargo-20261016"
           actual_target="$(git -C validation-target rev-parse HEAD)"
           actual_tree="$(git -C validation-target rev-parse 'HEAD^{tree}')"
