@@ -975,6 +975,87 @@ def _check_spawn_edge_status_and_identifier_bounds(temporary: Path) -> None:
                 reporter.conn = None
 
 
+def _check_invalid_root_metadata_rejected(temporary: Path) -> None:
+    database = temporary / "invalid-root-metadata.sqlite"
+    _create_database(database, current_indexes=True)
+    connection = sqlite3.connect(database)
+    try:
+        connection.execute(
+            "UPDATE usage_threads SET root_thread_id = ? WHERE thread_id = ?",
+            (sqlite3.Binary(ROOT_THREAD.encode()), ROOT_THREAD),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    reporter = report.UsageReporter(
+        database,
+        report.parse_utc(START),
+        report.parse_utc(END),
+        report.UTC,
+        "UTC",
+        "subtree",
+        ROOT_THREAD,
+        "none",
+        True,
+        all_time=True,
+        token_only_projection=True,
+    )
+    try:
+        reporter.open()
+        anchor = reporter._fetch_anchor(ROOT_THREAD)
+        try:
+            reporter._walk_subtree(anchor or {})
+        except report.ReportProblem as exc:
+            _assert(
+                exc.reason == "lineage_root_metadata_invalid"
+                and reporter.lineage_walk_incomplete,
+                "BLOB root metadata rejects the anchor before it seeds scope",
+            )
+            _assert(
+                [item["query"] for item in reporter.query_plans] == ["thread_anchor"],
+                "invalid root metadata stops before descendant discovery",
+            )
+        else:
+            raise AssertionError("BLOB root metadata was accepted as a valid anchor")
+    finally:
+        if reporter.conn is not None:
+            reporter.conn.rollback()
+            reporter.conn.close()
+            reporter.conn = None
+
+    numeric_reporter = report.UsageReporter(
+        Path("unused"),
+        report.parse_utc(START),
+        report.parse_utc(END),
+        report.UTC,
+        "UTC",
+        "subtree",
+        None,
+        "none",
+        False,
+        all_time=True,
+        token_only_projection=True,
+    )
+    try:
+        numeric_reporter._walk_subtree(
+            {
+                "thread_id": 42,
+                "root_thread_id": None,
+                "parent_thread_id": None,
+                "fork_parent_thread_id": None,
+            }
+        )
+    except report.ReportProblem as exc:
+        _assert(
+            exc.reason == "lineage_root_metadata_invalid"
+            and numeric_reporter.lineage_walk_incomplete,
+            "numeric root IDs are rejected without reaching string length checks",
+        )
+    else:
+        raise AssertionError("numeric root thread ID was accepted")
+
+
 def _check_streaming_missing_call_id(temporary: Path) -> None:
     database = temporary / "streaming-missing-call-id.sqlite"
     _create_database(database, current_indexes=True)
@@ -1397,6 +1478,7 @@ def main() -> int:
         _check_cycle_is_incomplete(temporary)
         _check_streaming_query_indexes(temporary)
         _check_spawn_edge_status_and_identifier_bounds(temporary)
+        _check_invalid_root_metadata_rejected(temporary)
         _check_streaming_missing_call_id(temporary)
         _check_shared_text_pool()
         _check_multi_ledger_reconciliation(temporary)
@@ -1404,7 +1486,7 @@ def main() -> int:
         _check_multi_ledger_partial_selection(temporary)
         _check_requested_subtree_without_recorded_root(temporary)
         _check_large_subtree_uses_compact_projection(temporary)
-    print(json.dumps({"status": "passed", "cases": 11}, separators=(",", ":")))
+    print(json.dumps({"status": "passed", "cases": 12}, separators=(",", ":")))
     return 0
 
 

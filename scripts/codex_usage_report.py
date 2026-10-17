@@ -823,17 +823,27 @@ class UsageReporter:
         self, anchor: dict[str, Any]
     ) -> tuple[dict[str, dict[str, Any]], bool]:
         """Walk only spawn-confirmed descendants from the exact requested root."""
-        root_id = anchor["thread_id"]
+        identity_columns = (
+            "thread_id",
+            "root_thread_id",
+            "parent_thread_id",
+            "fork_parent_thread_id",
+        )
+        root_value = anchor.get("thread_id")
         if any(
-            anchor.get(column) is not None and not isinstance(anchor.get(column), str)
-            for column in (
-                "thread_id",
-                "root_thread_id",
-                "parent_thread_id",
-                "fork_parent_thread_id",
+            anchor.get(column) is not None
+            and (
+                not isinstance(anchor.get(column), str)
+                or len(anchor[column])
+                > MAX_MULTI_LEDGER_INTERNAL_TEXT_CHARS[
+                    "thread_id" if column == "thread_id" else column
+                ]
             )
-        ):
+            for column in identity_columns
+        ) or not isinstance(root_value, str) or not root_value.strip():
             self.lineage_walk_incomplete = True
+            raise ReportProblem("incomplete", "lineage_root_metadata_invalid")
+        root_id = root_value
         nodes = {root_id: anchor}
         seen_requests: set[str] = set()
         seen_children: dict[str, str] = {}
