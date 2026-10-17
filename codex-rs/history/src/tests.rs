@@ -478,7 +478,9 @@ fn response_item_envelope_ignores_unknown_harness_metadata_fields() -> Result<()
 #[test]
 fn explicit_inter_agent_admission_round_trips_on_existing_metadata_record() -> Result<()> {
     let update_id = codex_protocol::ResponseItemId::from_server("update_1".to_string());
-    let sender_path = AgentPath::root().join("worker")?;
+    let sender_path = AgentPath::root()
+        .join("worker")
+        .expect("static worker agent path is valid");
     let recipient_path = AgentPath::root();
     let mut original_communication = InterAgentCommunication::new(
         sender_path.clone(),
@@ -589,7 +591,9 @@ fn compacted_replacement_history_retains_inter_agent_update_identity() -> Result
     let update_id = codex_protocol::ResponseItemId::from_server("update_1".to_string());
     let response_id = codex_protocol::ResponseItemId::from_server("response_1".to_string());
     let mut response = InterAgentCommunication::new(
-        AgentPath::root().join("worker")?,
+        AgentPath::root()
+            .join("worker")
+            .expect("static worker agent path is valid"),
         AgentPath::root(),
         Vec::new(),
         "The report is ready.".to_string(),
