@@ -240,7 +240,9 @@ for line in sys.stdin:
         "#!/bin/sh\n\
          printf '%s\\n' \"$$\" > \"$WRAPPER_PID_FILE\"\n\
          if [ \"${CODEX_INTERNAL_MCP_STDIO_CLOSE_POLICY+x}\" = x ]; then printf leaked > \"$POLICY_LEAK_FILE\"; fi\n\
-         \"$MCP_SERVER\" &\n\
+         exec 3<&0\n\
+         \"$MCP_SERVER\" 0<&3 3<&- &\n\
+         exec 3<&-\n\
          server_pid=$!\n\
          wait \"$server_pid\"\n\
          sleep 3.2\n\
@@ -387,30 +389,32 @@ async fn cooperative_close_times_out_reaps_owned_child_and_prevents_reuse() -> R
     let server = temp_dir.path().join("unresponsive-server");
     codex_utils_cargo_bin::write_executable(
         &server,
-        "#!/usr/bin/env python3\n\
-         import json\n\
-         import os\n\
-         import sys\n\
-         import time\n\
-         with open(os.environ['SERVER_PID_FILE'], 'w') as pid_file:\n\
-             pid_file.write(str(os.getpid()))\n\
-         request = json.loads(sys.stdin.readline())\n\
-         if request.get('jsonrpc') != '2.0' or request.get('method') != 'initialize':\n\
-             sys.exit(2)\n\
-         with open(os.environ['INITIALIZE_REQUEST_FILE'], 'w') as marker:\n\
-             marker.write('received')\n\
-         print(json.dumps({\n\
-             'jsonrpc': '2.0',\n\
-             'id': request['id'],\n\
-             'result': {\n\
-                 'protocolVersion': '2025-06-18',\n\
-                 'capabilities': {},\n\
-                 'serverInfo': {'name': 'unresponsive-test-server', 'version': '1'},\n\
-             },\n\
-         }), flush=True)\n\
-         with open(os.environ['INITIALIZE_RESPONSE_FILE'], 'w') as marker:\n\
-             marker.write('sent')\n\
-         time.sleep(300)\n",
+        r##"#!/usr/bin/env python3
+import json
+import os
+import sys
+import time
+
+with open(os.environ['SERVER_PID_FILE'], 'w') as pid_file:
+    pid_file.write(str(os.getpid()))
+request = json.loads(sys.stdin.readline())
+if request.get('jsonrpc') != '2.0' or request.get('method') != 'initialize':
+    sys.exit(2)
+with open(os.environ['INITIALIZE_REQUEST_FILE'], 'w') as marker:
+    marker.write('received')
+print(json.dumps({
+    'jsonrpc': '2.0',
+    'id': request['id'],
+    'result': {
+        'protocolVersion': '2025-06-18',
+        'capabilities': {},
+        'serverInfo': {'name': 'unresponsive-test-server', 'version': '1'},
+    },
+}), flush=True)
+with open(os.environ['INITIALIZE_RESPONSE_FILE'], 'w') as marker:
+    marker.write('sent')
+time.sleep(300)
+"##,
     )?;
 
     let client = RmcpClient::new_stdio_client(
