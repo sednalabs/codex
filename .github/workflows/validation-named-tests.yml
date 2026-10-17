@@ -328,7 +328,7 @@ jobs:
           expected_parent="bdc79b691682cca64a01163e7ec473488e860afe"
           expected_base="4e177049188ef74ecb693058ff02cdda805edbf3"
           expected_source_ref="refs/heads/validation/native-browser-lifecycle-c31c05e6"
-          expected_host_ref="refs/heads/validation/receiver-exact-cargo-20261016"
+          expected_host_ref="refs/heads/validation/host-native-browser-c31c05e6"
           actual_target="$(git -C validation-target rev-parse HEAD)"
           actual_tree="$(git -C validation-target rev-parse 'HEAD^{tree}')"
           actual_parent="$(git -C validation-target rev-parse 'HEAD^')"
