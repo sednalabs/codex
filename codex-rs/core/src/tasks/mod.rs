@@ -688,14 +688,29 @@ impl Session {
                 std::mem::take(&mut ts.token_usage_by_model),
             )
         };
-        run_hooks_and_record_inputs(
+        if let Err(err) = run_hooks_and_record_inputs(
             self,
             &turn_context,
             &turn_context.capture_current_model_info(),
             &pending_input,
             PersistContext::Standard,
         )
-        .await;
+        .await
+        {
+            warn!(%err, "failed to persist pending turn input");
+            self.emit_turn_error_lifecycle(
+                turn_context.as_ref(),
+                err.to_codex_protocol_error(),
+                err.details(),
+            )
+            .await;
+            self.track_turn_codex_error(turn_context.as_ref(), &err);
+            self.send_event(
+                turn_context.as_ref(),
+                EventMsg::Error(err.to_error_event(/*message_prefix*/ None)),
+            )
+            .await;
+        }
         let turn_telemetry = &turn_context.session_telemetry;
         // Emit token usage metrics.
         {

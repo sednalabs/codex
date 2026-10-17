@@ -90,7 +90,7 @@ impl SessionTask for RegularTask {
                     &input,
                     PersistContext::Standard,
                 )
-                .await;
+                .await?;
                 return Ok(None);
             }
             SessionStartupPrewarmResolution::Unavailable { .. } => None,
