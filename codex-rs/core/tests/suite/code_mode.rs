@@ -6828,13 +6828,42 @@ image(imageItem);
         Some(false),
         "code_mode mcp image scenario call failed unexpectedly"
     );
-    assert_regex_match(
-        concat!(
-            r"(?s)\A",
-            r"Script completed\nWall time \d+\.\d seconds\nOutput:\n\z"
-        ),
-        text_item(&items, /*index*/ 0),
+    let header_pattern = concat!(
+        r"(?s)\A",
+        r"Script completed\nWall time \d+\.\d seconds\nOutput:\n\z"
     );
+    let output_header = text_item(&items, /*index*/ 0);
+    let header_regex =
+        regex_lite::Regex::new(header_pattern).expect("valid output header regex");
+    if !header_regex.is_match(output_header) {
+        let header_class = if let Some(completed_body) =
+            output_header.strip_prefix("Script completed\n")
+        {
+            let timing_line = completed_body.lines().next().unwrap_or_default();
+            if timing_line.contains(" (code-mode ") {
+                "completed_extended"
+            } else if timing_line.starts_with("Wall time ")
+                && timing_line.ends_with(" seconds")
+            {
+                "completed_default"
+            } else {
+                "completed_other"
+            }
+        } else if output_header.starts_with("Script failed\n") {
+            "failed"
+        } else if output_header.starts_with("Script terminated\n") {
+            "terminated"
+        } else if output_header.starts_with("Script running with cell ID ") {
+            "running"
+        } else {
+            "other"
+        };
+        panic!(
+            "Code Mode output header mismatch: class={header_class}; item_count={}",
+            items.len()
+        );
+    }
+    assert_regex_match(header_pattern, output_header);
     assert_eq!(items.len(), 2);
 
     assert_eq!(
