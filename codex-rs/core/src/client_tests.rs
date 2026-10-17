@@ -67,9 +67,9 @@ use codex_protocol::mcp::McpAttributionStatus;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ContentItemKind;
-use codex_protocol::models::InternalChatMessageMetadataPassthrough;
 use codex_protocol::models::ExecutedToolCall;
 use codex_protocol::models::FunctionCallOutputPayload;
+use codex_protocol::models::InternalChatMessageMetadataPassthrough;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::models::ToolResultMetadata;
@@ -984,8 +984,8 @@ fn test_model_info() -> ModelInfo {
 }
 
 #[test]
-fn model_switch_overlay_is_applied_in_shared_http_and_lite_request_construction(
-) -> anyhow::Result<()> {
+fn model_switch_overlay_is_applied_in_shared_http_and_lite_request_construction()
+-> anyhow::Result<()> {
     let plan = InstructionOverlaysToml {
         model_switch_guidance: Some(InstructionOverlayComponentToml {
             on_absent: InstructionOverlayOnAbsent::Error,
@@ -1006,14 +1006,12 @@ fn model_switch_overlay_is_applied_in_shared_http_and_lite_request_construction(
             text: "<model_switch>selected model transition</model_switch>".to_string(),
         }],
         phase: None,
-        internal_chat_message_metadata_passthrough: Some(
-            InternalChatMessageMetadataPassthrough {
-                content_item_kinds: Some(vec![ContentItemKind(
-                    "model_switch.instructions".to_string(),
-                )]),
-                ..Default::default()
-            },
-        ),
+        internal_chat_message_metadata_passthrough: Some(InternalChatMessageMetadataPassthrough {
+            content_item_kinds: Some(vec![ContentItemKind(
+                "model_switch.instructions".to_string(),
+            )]),
+            ..Default::default()
+        }),
     };
     let prompt = Prompt {
         input: vec![transition],
@@ -1045,16 +1043,16 @@ fn model_switch_overlay_is_applied_in_shared_http_and_lite_request_construction(
             .input
             .iter()
             .find_map(|item| match item {
-                ResponseItem::Message { content, .. } => content.iter().find_map(|content| {
-                    match content {
+                ResponseItem::Message { content, .. } => {
+                    content.iter().find_map(|content| match content {
                         ContentItem::InputText { text }
                             if text.contains("synthetic transition rule") =>
                         {
                             Some(text.as_str())
                         }
                         _ => None,
-                    }
-                }),
+                    })
+                }
                 _ => None,
             })
             .expect("transformed transition in outgoing request");
@@ -1065,6 +1063,49 @@ fn model_switch_overlay_is_applied_in_shared_http_and_lite_request_construction(
         assert_eq!(prompt.input, raw_input);
     }
     Ok(())
+}
+
+#[test]
+fn invalid_instruction_overlay_request_is_non_retryable_without_literal_leakage() {
+    let literal = "OVERLAY_ERROR_LITERAL_MUST_NOT_LEAK";
+    let plan = InstructionOverlaysToml {
+        developer_guidance: Some(InstructionOverlayComponentToml {
+            on_absent: InstructionOverlayOnAbsent::Error,
+            selection: Default::default(),
+            edits: vec![InstructionOverlayEdit::Append {
+                text: literal.to_string(),
+            }],
+        }),
+        ..Default::default()
+    };
+    let client = test_model_client(SessionSource::Cli).with_instruction_overlays(plan);
+    let metadata = test_responses_metadata_for_client(
+        &client,
+        /*turn_id*/ None,
+        format!("{}:0", client.state.thread_id),
+        /*parent_thread_id*/ None,
+        TestCodexResponsesRequestKind::Turn,
+    );
+    let error = match client.build_responses_request(
+        &Prompt::default(),
+        &test_model_info(),
+        /*effort*/ None,
+        codex_protocol::config_types::ReasoningSummary::None,
+        /*service_tier*/ None,
+        &metadata,
+        /*include_internal*/ true,
+    ) {
+        Ok(_) => panic!("missing required overlay target must reject request construction"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(
+        error.details(),
+        CodexErrorDetails::InvalidRequest(_)
+    ));
+    assert!(error.retry_delay(/*retry_count*/ 1).is_none());
+    assert!(!error.to_string().contains(literal));
+    assert!(!format!("{error:?}").contains(literal));
 }
 
 fn output_with_tool_result_metadata(metadata: ToolResultMetadata) -> ResponseItem {

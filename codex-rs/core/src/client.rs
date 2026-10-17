@@ -1471,7 +1471,8 @@ impl ModelClient {
             &prompt.base_instructions.text,
             prompt.base_instructions.provenance.as_ref(),
             prompt.get_formatted_input_for_request(model_info),
-        )?;
+        )
+        .map_err(|error| CodexErr::InvalidRequest(error.to_string()))?;
         let base_instructions =
             transformed_base_instructions.unwrap_or_else(|| prompt.base_instructions.text.clone());
         if !self.reasoning_effort_override_enabled(model_info) {
