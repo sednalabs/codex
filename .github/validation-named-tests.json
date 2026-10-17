@@ -90,6 +90,14 @@
       "execution_argv": ["cargo", "test", "--locked", "-p", "codex-goal-extension", "--test", "goal_scheduler_native_wait", "--", "--test-threads=1"]
     },
     {
+      "package": "codex-history",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-history", "--lib", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-history", "--lib", "--", "--test-threads=1"]
+    },
+    {
       "package": "codex-mcp",
       "target_kind": "lib",
       "target": "",
