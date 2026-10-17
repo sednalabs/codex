@@ -905,6 +905,16 @@ def _check_spawn_edge_status_and_identifier_bounds(temporary: Path) -> None:
                     "UPDATE usage_spawn_requests SET child_thread_id = ? WHERE spawn_request_id = ?",
                     (value, "spawn-sentinel"),
                 )
+            elif field == "child":
+                connection.execute(
+                    "UPDATE usage_spawn_requests SET child_thread_id = ? WHERE spawn_request_id = ?",
+                    (value, "spawn-sentinel"),
+                )
+            elif field == "parent":
+                connection.execute(
+                    "UPDATE usage_threads SET parent_thread_id = ? WHERE thread_id = ?",
+                    (value, ROOT_THREAD),
+                )
             elif field == "blob-parent-metadata":
                 root_id = value
                 connection.execute(
@@ -947,15 +957,26 @@ def _check_spawn_edge_status_and_identifier_bounds(temporary: Path) -> None:
             token_only_projection=True,
         )
         try:
-            state = _prepare_stream_reporter(reporter)
-            _assert(
-                reporter.lineage_walk_incomplete,
-                f"{name} is surfaced as incomplete lineage",
-            )
-            _assert(
-                set(state["scope_nodes"]) == {root_id},
-                f"{name} does not silently add a descendant",
-            )
+            try:
+                state = _prepare_stream_reporter(reporter, root_id)
+            except report.ReportProblem as exc:
+                if field != "parent":
+                    raise
+                _assert(
+                    exc.status == "incomplete"
+                    and exc.reason == "lineage_root_metadata_invalid"
+                    and reporter.lineage_walk_incomplete,
+                    f"{name} rejects oversized root-parent metadata before discovery",
+                )
+            else:
+                _assert(
+                    reporter.lineage_walk_incomplete,
+                    f"{name} is surfaced as incomplete lineage",
+                )
+                _assert(
+                    set(state["scope_nodes"]) == {root_id},
+                    f"{name} does not silently add a descendant",
+                )
         finally:
             if reporter.conn is not None:
                 reporter.conn.rollback()
@@ -1246,8 +1267,10 @@ def _check_streaming_invalid_call_ids(temporary: Path) -> None:
     )
 
 
-def _prepare_stream_reporter(reporter: report.UsageReporter) -> dict[str, Any]:
-    return report._prepare_exact_root_reporter(reporter, ROOT_THREAD)
+def _prepare_stream_reporter(
+    reporter: report.UsageReporter, root_thread_id: str = ROOT_THREAD
+) -> dict[str, Any]:
+    return report._prepare_exact_root_reporter(reporter, root_thread_id)
 
 
 def _check_multi_ledger_reconciliation(temporary: Path) -> None:
