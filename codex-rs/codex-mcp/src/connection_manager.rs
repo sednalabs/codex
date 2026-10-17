@@ -657,9 +657,8 @@ impl McpConnectionSet {
                 }
             }
             let cancel_token = startup_cancellation_token.child_token();
-            let tool_catalog_cache_context = if close_policy_validation.is_err() {
-                None
-            } else if server_name == CODEX_APPS_MCP_SERVER_NAME
+            let tool_catalog_cache_context = if close_policy_validation.is_err()
+                || server_name == CODEX_APPS_MCP_SERVER_NAME
                 || server.requires_read_only_mcp_tools()
             {
                 None

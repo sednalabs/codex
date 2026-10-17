@@ -442,38 +442,6 @@ jobs:
           path: ${{ runner.temp }}/bazel-execution-logs
           if-no-files-found: ignore
 
-      # Temporary snapshot-diff evidence; remove after the next required Windows result is assessed.
-      - name: Upload generated Windows snapshot diffs
-        if: failure() && !cancelled()
-        continue-on-error: true
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: windows-snapshot-diffs-${{ github.sha }}-run-${{ github.run_id }}-attempt-${{ github.run_attempt }}-shard-${{ matrix.shard }}
-          path: |
-            codex-rs/core/tests/suite/snapshots/all__suite__scenarios__agent_eviction__idle_eviction_followup.snap.new
-            codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_active_environment_selection.snap.new
-            codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_async_question_and_answer.snap.new
-            codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_code_mode_call_timing.snap.new
-            codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_disabled_executor_skills.snap.new
-            codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_input_interrupts_response.snap.new
-            codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_input_yields_code_mode_cell.snap.new
-            codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_kickoff_remote_compaction_windows.snap.new
-            codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_plugin_refresh.snap.new
-            codex-rs/core/tests/suite/snapshots/all__suite__scenarios__code_mode_catalog_messages.snap.new
-            codex-rs/core/tests/suite/snapshots/all__suite__scenarios__code_mode_catalog_messages_ranked_search.snap.new
-            codex-rs/core/tests/suite/snapshots/all__suite__scenarios__code_mode_settled_helpers__code_mode_settled_helpers.snap.new
-            codex-rs/core/tests/suite/snapshots/all__suite__scenarios__compaction__remote_slash_compact.snap.new
-            codex-rs/core/tests/suite/snapshots/all__suite__scenarios__indirect_namespace_prefixes__catalog_indirect_namespace_prefixes.snap.new
-            codex-rs/core/tests/suite/snapshots/all__suite__scenarios__mcp_resource_messages__mcp_resource_messages.snap.new
-            codex-rs/core/tests/suite/snapshots/all__suite__scenarios__multi_agent_catalog_parameters.snap.new
-            codex-rs/core/tests/suite/snapshots/all__suite__scenarios__skill_catalog_dedup__dedup_before_budgeting.snap.new
-            codex-rs/core/tests/suite/snapshots/all__suite__scenarios__strict_3p_cache__strict_3p_mcp_catalog_cache.snap.new
-            codex-rs/core/tests/suite/snapshots/all__suite__scenarios__subagent_inherits_pending_environment_windows.snap.new
-            codex-rs/tui/src/snapshots/codex_tui__app__tests__path_backed_agent_picker.snap.new
-            codex-rs/tui/src/snapshots/codex_tui__update_prompt__tests__update_prompt_modal.snap.new
-          if-no-files-found: ignore
-          retention-days: 1
-
       - name: Check for a clean worktree
         if: always() && !cancelled()
         uses: ./.github/actions/check-clean-worktree

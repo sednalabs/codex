@@ -483,7 +483,7 @@ time.sleep(300)
     assert!(client.is_closed().await);
     assert!(
         client
-            .list_tools(None, Some(Duration::from_secs(1)))
+            .list_tools(/*params*/ None, Some(Duration::from_secs(1)))
             .await
             .is_err(),
         "a client with an unconfirmed cooperative close must not be reused"

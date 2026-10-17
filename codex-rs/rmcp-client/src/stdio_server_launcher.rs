@@ -59,7 +59,6 @@ use rmcp::service::TxJsonRpcMessage;
 use rmcp::transport::Transport;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::BufReader;
-use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::watch;
 use tokio::time::Instant;
 use tracing::info;
@@ -67,6 +66,7 @@ use tracing::warn;
 
 use crate::executor_process_transport::ExecutorProcessTransport;
 use crate::local_stdio_transport::LocalStdioTransport;
+use crate::local_stdio_transport::SharedChild;
 use crate::program_resolver;
 use crate::protocol_mode::McpProtocolMode;
 use crate::utils::create_env_for_mcp_server;
@@ -159,6 +159,13 @@ enum StdioServerTransportInner {
     Local(LocalStdioTransport),
     Executor(ExecutorProcessTransport),
 }
+
+type LocalStdioSpawnResult = (
+    StdioServerTransportInner,
+    Option<tokio::process::ChildStderr>,
+    Option<u32>,
+    Option<Arc<SharedChild>>,
+);
 
 impl Transport<RoleClient> for StdioServerTransport {
     type Error = io::Error;
@@ -307,7 +314,7 @@ struct StdioServerProcessHandleInner {
     program_name: String,
     kind: StdioServerProcessKind,
     close_policy: StdioServerClosePolicy,
-    local_child: StdMutex<Option<Arc<AsyncMutex<Child>>>>,
+    local_child: StdMutex<Option<Arc<SharedChild>>>,
     terminated: AtomicBool,
     close_outcome: AtomicU8,
     close_completion: watch::Sender<StdioServerCloseOutcome>,
@@ -383,17 +390,11 @@ impl LocalStdioServerLauncher {
             }
         };
 
-        let spawn_transport = |command: Command| -> io::Result<(
-            StdioServerTransportInner,
-            Option<tokio::process::ChildStderr>,
-            Option<u32>,
-            Option<Arc<AsyncMutex<Child>>>,
-        )> {
+        let spawn_transport = |command: Command| -> io::Result<LocalStdioSpawnResult> {
             let (transport, stderr) = LocalStdioTransport::spawn(
                 command,
                 program_name.clone(),
                 protocol_mode,
-                close_policy,
             )?;
             let process_id = transport.id();
             let child = Some(transport.process_child());
@@ -550,7 +551,7 @@ impl StdioServerProcessHandle {
         terminator: Option<LocalProcessTerminator>,
         stderr_reader: Option<watch::Sender<()>>,
         close_policy: StdioServerClosePolicy,
-        local_child: Option<Arc<AsyncMutex<Child>>>,
+        local_child: Option<Arc<SharedChild>>,
     ) -> Self {
         let (close_completion, _close_receiver) = watch::channel(StdioServerCloseOutcome::Pending);
         let local_child = if close_policy == StdioServerClosePolicy::CooperativeLocal {
@@ -654,7 +655,7 @@ impl StdioServerProcessHandle {
                 let Some(child) = child else {
                     return Ok(());
                 };
-                let mut child = child.lock().await;
+                let mut child = child.lock().await?;
                 return match tokio::time::timeout(COOPERATIVE_STDIO_CLOSE_TIMEOUT, child.wait())
                     .await
                 {
@@ -688,7 +689,14 @@ impl StdioServerProcessHandle {
                     "cooperative MCP stdio child ownership is unavailable",
                 ));
             };
-            let mut child = child.lock().await;
+            let mut child = match child.lock().await {
+                Ok(child) => child,
+                Err(error) => {
+                    self.inner.terminated.store(false, Ordering::Release);
+                    self.report_close_outcome(StdioServerCloseOutcome::Failed);
+                    return Err(error);
+                }
+            };
             let outcome = match terminate_owned_stdio_child(&mut child).await {
                 Ok(outcome) => outcome,
                 Err(error) => {
@@ -740,7 +748,15 @@ impl Drop for StdioServerProcessHandleInner {
                 if let Some(child) = child {
                     if let Ok(handle) = tokio::runtime::Handle::try_current() {
                         std::mem::drop(handle.spawn(async move {
-                            let mut child = child.lock().await;
+                            let mut child = match child.lock().await {
+                                Ok(child) => child,
+                                Err(error) => {
+                                    warn!(
+                                        "Failed to acquire owned MCP child for drop cleanup: {error}"
+                                    );
+                                    return;
+                                }
+                            };
                             match tokio::time::timeout(
                                 COOPERATIVE_STDIO_CLOSE_TIMEOUT,
                                 child.wait(),

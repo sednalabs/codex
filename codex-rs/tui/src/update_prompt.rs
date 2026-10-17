@@ -59,8 +59,11 @@ pub(crate) async fn run_update_prompt_if_needed(
         return Ok(UpdatePromptOutcome::Continue);
     };
 
-    let mut screen =
-        UpdatePromptScreen::new(tui.frame_requester(), latest_version.clone(), update_action);
+    let mut screen = UpdatePromptScreen::new(
+        tui.frame_requester(),
+        latest_version.clone(),
+        update_action.command_str(),
+    );
     tui.draw(u16::MAX, |frame| {
         frame.render_widget_ref(&screen, frame.area());
     })?;
@@ -112,22 +115,18 @@ struct UpdatePromptScreen {
     request_frame: FrameRequester,
     latest_version: String,
     current_version: String,
-    update_action: UpdateAction,
+    update_command: String,
     highlighted: UpdateSelection,
     selection: Option<UpdateSelection>,
 }
 
 impl UpdatePromptScreen {
-    fn new(
-        request_frame: FrameRequester,
-        latest_version: String,
-        update_action: UpdateAction,
-    ) -> Self {
+    fn new(request_frame: FrameRequester, latest_version: String, update_command: String) -> Self {
         Self {
             request_frame,
             latest_version,
             current_version: env!("CARGO_PKG_VERSION").to_string(),
-            update_action,
+            update_command,
             highlighted: UpdateSelection::UpdateNow,
             selection: None,
         }
@@ -205,8 +204,6 @@ impl WidgetRef for &UpdatePromptScreen {
         Clear.render(area, buf);
         let mut column = FlexRenderable::new();
 
-        let update_command = self.update_action.command_str();
-
         column.push(/*flex*/ 1, RenderableItem::Borrowed(&""));
         column.push(
             /*flex*/ 0,
@@ -241,7 +238,7 @@ impl WidgetRef for &UpdatePromptScreen {
             /*flex*/ 1,
             picker_option_list(
                 vec![
-                    format!("Update now (runs `{update_command}`)"),
+                    format!("Update now (runs `{}`)", self.update_command),
                     "Skip".to_string(),
                     "Skip until next version".to_string(),
                 ],
@@ -286,7 +283,7 @@ mod tests {
         UpdatePromptScreen::new(
             FrameRequester::test_dummy(),
             "9.9.9".into(),
-            UpdateAction::SednaStandalone,
+            "sh -c \"echo 'Manual reinstall from https://github.com/sednalabs/codex/releases'; exit 1\"".into(),
         )
     }
 
@@ -348,7 +345,7 @@ mod tests {
     #[test]
     fn long_update_command_keeps_selected_skip_visible_in_a_short_viewport() {
         let mut screen = new_prompt();
-        screen.update_action = UpdateAction::SednaStandalone;
+        screen.update_command = "codex app-server daemon update --from-cli --yes --release-channel fixture --source-commit fixture --previous-version fixture --previous-native-version fixture".into();
         screen.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
         let (width, height) = (28, 12);
         let mut terminal = Terminal::new(VT100Backend::new(width, height)).expect("terminal");

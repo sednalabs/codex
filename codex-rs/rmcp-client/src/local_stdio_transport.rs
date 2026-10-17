@@ -4,9 +4,13 @@
 
 use std::future::Future;
 use std::io;
+use std::ops::Deref;
+use std::ops::DerefMut;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::time::Duration;
 
+use codex_utils_pty::Child;
 use codex_utils_pty::Command;
 use futures::FutureExt;
 use rmcp::service::RoleClient;
@@ -17,19 +21,89 @@ use rmcp::transport::async_rw::AsyncRwTransport;
 use tokio::process::ChildStderr;
 use tokio::process::ChildStdin;
 use tokio::process::ChildStdout;
-use tokio::sync::Mutex;
+use tokio::sync::OwnedSemaphorePermit;
+use tokio::sync::Semaphore;
 
 use crate::bounded_stdio_transport::BoundedStdioTransport;
 use crate::protocol_mode::McpProtocolMode;
 use crate::stdio_server_launcher::COOPERATIVE_STDIO_CLOSE_TIMEOUT;
 use crate::stdio_server_launcher::COOPERATIVE_STDIO_KILL_ERROR_WAIT;
 use crate::stdio_server_launcher::StdioServerCloseOutcome;
-use crate::stdio_server_launcher::StdioServerClosePolicy;
 use crate::stdio_server_launcher::cooperative_close_outcome_after_exit;
-use codex_utils_pty::Child;
+
+/// Serializes asynchronous child operations without suspending a mutex guard.
+/// The semaphore protects the period while the child is moved out of its short
+/// synchronous slot; the lease returns it even when an operation is cancelled.
+pub(super) struct SharedChild {
+    operation_gate: Arc<Semaphore>,
+    child: StdMutex<Option<Child>>,
+}
+
+pub(super) struct SharedChildLease {
+    permit: Option<OwnedSemaphorePermit>,
+    owner: Arc<SharedChild>,
+    child: Option<Child>,
+}
+
+impl SharedChild {
+    fn new(child: Child) -> Arc<Self> {
+        Arc::new(Self {
+            operation_gate: Arc::new(Semaphore::new(1)),
+            child: StdMutex::new(Some(child)),
+        })
+    }
+
+    pub(super) async fn lock(self: &Arc<Self>) -> io::Result<SharedChildLease> {
+        let permit = Arc::clone(&self.operation_gate)
+            .acquire_owned()
+            .await
+            .map_err(|_| io::Error::other("MCP stdio child operation gate is closed"))?;
+        let child = self
+            .child
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .ok_or_else(|| io::Error::other("MCP stdio child ownership is unavailable"))?;
+        Ok(SharedChildLease {
+            permit: Some(permit),
+            owner: Arc::clone(self),
+            child: Some(child),
+        })
+    }
+}
+
+impl Deref for SharedChildLease {
+    type Target = Child;
+
+    fn deref(&self) -> &Self::Target {
+        self.child.as_ref().expect("leased child is present")
+    }
+}
+
+impl DerefMut for SharedChildLease {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.child.as_mut().expect("leased child is present")
+    }
+}
+
+impl Drop for SharedChildLease {
+    fn drop(&mut self) {
+        if let Some(child) = self.child.take() {
+            let mut slot = self
+                .owner
+                .child
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            debug_assert!(slot.is_none(), "child lease is exclusive");
+            *slot = Some(child);
+        }
+        // Release the operation gate only after the child has been restored.
+        drop(self.permit.take());
+    }
+}
 
 pub(super) struct LocalStdioTransport {
-    child: Arc<Mutex<Child>>,
+    child: Arc<SharedChild>,
     process_id: Option<u32>,
     transport: StdioTransport,
 }
@@ -46,7 +120,6 @@ impl LocalStdioTransport {
         command: Command,
         program_name: String,
         protocol_mode: McpProtocolMode,
-        close_policy: StdioServerClosePolicy,
     ) -> io::Result<(Self, Option<ChildStderr>)> {
         let mut child = command.spawn()?;
         let process_id = child.id();
@@ -67,7 +140,7 @@ impl LocalStdioTransport {
         };
         Ok((
             Self {
-                child: Arc::new(Mutex::new(child)),
+                child: SharedChild::new(child),
                 process_id,
                 transport,
             },
@@ -79,7 +152,7 @@ impl LocalStdioTransport {
         self.process_id
     }
 
-    pub(super) fn process_child(&self) -> Arc<Mutex<Child>> {
+    pub(super) fn process_child(&self) -> Arc<SharedChild> {
         Arc::clone(&self.child)
     }
 
@@ -102,7 +175,10 @@ impl LocalStdioTransport {
             )),
         };
 
-        let mut child = self.child.lock().await;
+        let mut child = match self.child.lock().await {
+            Ok(child) => child,
+            Err(error) => return (Err(error), StdioServerCloseOutcome::Failed),
+        };
         let close_result = match tokio::time::timeout_at(close_deadline, child.wait()).await {
             Ok(Ok(status)) => cooperative_close_outcome_after_exit(status),
             Ok(Err(error)) => Err(error),
@@ -155,7 +231,7 @@ impl Transport<RoleClient> for LocalStdioTransport {
             StdioTransport::Legacy(transport) => transport.close().await?,
             StdioTransport::V20260728(transport) => transport.close().await?,
         }
-        let mut child = self.child.lock().await;
+        let mut child = self.child.lock().await?;
         match tokio::time::timeout(Duration::from_secs(3), child.wait()).await {
             Ok(status) => status.map(|_| ()),
             Err(_) => child.kill().await,

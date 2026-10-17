@@ -33,6 +33,12 @@ request. It never infers a latest/current instance. Each request starts from
 unchanged history, so append/prepend applies once per selected instance in that
 request and does not accumulate in stored history.
 
+`developer_guidance` selects client prose tagged
+`generic.developer_instructions`, including configured developer guidance and
+client-generated namespace-description updates. Additional tagged fragments
+can make `unique` selection ambiguous; explicit `all_classified` edits each
+instance, with exact-match counts checked independently per instance.
+
 Limits are at most 64 operations, 32 KiB per literal, 256 KiB of literals
 across selected components, 256 KiB per transformed component body, 64 selected
 text instances, and 4 MiB combined final selected text per request. Output
@@ -76,8 +82,9 @@ baseline edit does not change it. Model-switch, collaboration, and persistent
 components require their known wrappers. Saved history and world state are not
 rewritten. A separate realtime transport path continues to use the existing
 realtime-specific configuration knobs; this Responses setting does not edit
-realtime developer instructions or generated capability declarations. Managed,
-administrative, security, Guardian, provider-enforced, and other unclassified
+realtime developer instructions. Structured tool/schema/capability declarations
+and actual runtime controls also remain unchanged. Managed, administrative,
+security, Guardian, provider-enforced, and other unclassified
 content is not selected by these components.
 
 Configuration changes take effect when a new process/session reconstructs its

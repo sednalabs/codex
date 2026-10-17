@@ -6654,7 +6654,7 @@ fn cooperative_stdio_close_requires_matching_host_local_stdio_config() {
     let plugin_registration = resolve_test_registration(crate::McpServerRegistration::from_plugin(
         "computer-use".to_string(),
         crate::McpPluginAttribution::new("fixture@tests".to_string(), "Fixture".to_string()),
-        0,
+        /*plugin_order*/ 0,
         config.clone(),
     ));
     assert!(validate_cooperative_stdio_close_policy(&config, Some(&plugin_registration)).is_err());
@@ -6663,7 +6663,7 @@ fn cooperative_stdio_close_requires_matching_host_local_stdio_config() {
         resolve_test_registration(crate::McpServerRegistration::from_selected_plugin(
             "computer-use".to_string(),
             crate::McpPluginAttribution::new("selected@tests".to_string(), "Selected".to_string()),
-            0,
+            /*selection_order*/ 0,
             codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID,
             config.clone(),
         ));
@@ -6676,7 +6676,7 @@ fn cooperative_stdio_close_requires_matching_host_local_stdio_config() {
         resolve_test_registration(crate::McpServerRegistration::from_extension(
             "computer-use".to_string(),
             "fixture-extension",
-            0,
+            /*contribution_order*/ 0,
             config.clone(),
         ));
     assert!(
@@ -6791,6 +6791,8 @@ fn cooperative_stdio_close_requires_matching_host_local_stdio_config() {
     );
 
     let ordinary_config = stdio_close_policy_config(&[], Vec::new());
-    assert!(validate_cooperative_stdio_close_policy(&ordinary_config, None).is_ok());
-    assert!(validate_cooperative_stdio_close_policy(&config, None).is_err());
+    assert!(
+        validate_cooperative_stdio_close_policy(&ordinary_config, /*registration*/ None).is_ok()
+    );
+    assert!(validate_cooperative_stdio_close_policy(&config, /*registration*/ None).is_err());
 }
