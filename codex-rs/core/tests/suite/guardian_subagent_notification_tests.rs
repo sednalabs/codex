@@ -22,6 +22,7 @@ use tokio::sync::oneshot;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn guardian_circuit_breaker_notifies_parent(action: CircuitBreakAction) -> Result<()> {
     skip_if_no_network!(Ok(()));
+    const STATUS_PROMPT: &str = "Report the worker's status.";
     let server = start_mock_server().await;
     let mut extensions = ExtensionRegistryBuilder::new();
     extensions.thread_lifecycle_contributor(Arc::new(ThreadIdle));
@@ -198,15 +199,43 @@ async fn guardian_circuit_breaker_notifies_parent(action: CircuitBreakAction) ->
     let continued = mount_sse_once_match(
         &server,
         move |request: &wiremock::Request| {
-            is_root(request)
-                && (action == CircuitBreakAction::Default
-                    || body_contains(request, "Agent interrupted by Guardian:"))
+            decoded_body(request)
+                .and_then(|body| serde_json::from_slice::<Value>(&body).ok())
+                .is_some_and(|body| {
+                    body["client_metadata"]["thread_id"] == json!(root)
+                        && body["input"].as_array().is_some_and(|input| {
+                            input.iter().any(|item| {
+                                item["type"] == "message"
+                                    && item["role"] == "user"
+                                    && item["content"].as_array().is_some_and(|content| {
+                                        content.iter().any(|part| {
+                                            part["type"] == "input_text"
+                                                && part["text"] == STATUS_PROMPT
+                                        })
+                                    })
+                            })
+                        })
+                })
         },
         sse(vec![ev_completed("parent-continued")]),
     )
     .await;
-    test.submit_text_turn("Report the worker's status.").await?;
-    let continued_request = continued.single_request();
+    test.submit_text_turn(STATUS_PROMPT).await?;
+    // ResponseMock observes before the caller predicate. Select the actual root
+    // status input rather than assuming its first observation matched the mock.
+    let status_requests = continued
+        .requests()
+        .into_iter()
+        .filter(|request| {
+            request.body_json()["client_metadata"]["thread_id"] == json!(root)
+                && request
+                    .message_input_texts("user")
+                    .iter()
+                    .any(|text| text == STATUS_PROMPT)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(status_requests.len(), 1, "expected one root status request");
+    let continued_request = &status_requests[0];
     let messages = continued_request.inputs_of_type("agent_message");
     let expected = if action == CircuitBreakAction::Strict {
         vec![json!({
