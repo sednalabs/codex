@@ -39,6 +39,8 @@ use codex_model_provider::ModelProvider;
 use codex_model_provider::ModelProviderFuture;
 use codex_model_provider::ProviderAccountResult;
 use codex_model_provider::ProviderAuthRecoveryMessages;
+use codex_model_provider::ProviderAuthScope;
+use codex_model_provider::ProviderRequestAuth;
 use codex_model_provider::ProviderUnauthorizedRecovery;
 use codex_model_provider::SharedModelProvider;
 use codex_model_provider::create_model_provider;
@@ -94,6 +96,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
@@ -448,7 +451,8 @@ async fn workspace_routed_http_rejects_redirects_without_a_routing_header() {
 
 #[derive(Debug)]
 enum SetupRefresh {
-    Command(PathBuf),
+    CommandAfterRequestAuth(PathBuf),
+    CommandAfterWorkspaceProvider(PathBuf),
     ChatGpt {
         home: PathBuf,
         token: String,
@@ -460,7 +464,35 @@ enum SetupRefresh {
 struct SetupRefreshProvider {
     inner: SharedModelProvider,
     refresh: SetupRefresh,
+    command_hook_calls: AtomicUsize,
+    successful_command_refreshes: AtomicUsize,
+    command_revision_changed: AtomicBool,
+    command_cache_refreshed: AtomicBool,
     setup_calls: AtomicUsize,
+}
+
+impl SetupRefreshProvider {
+    async fn refresh_command_token(&self, token_path: &std::path::Path) {
+        let manager = self.inner.auth_manager().expect("auth manager");
+        let before = *manager.auth_change_receiver().borrow();
+        std::fs::write(token_path, "refreshed-token").expect("write refreshed token");
+        manager
+            .refresh_token_from_authority()
+            .await
+            .expect("refresh command token");
+        self.successful_command_refreshes
+            .fetch_add(1, Ordering::SeqCst);
+        let after = *manager.auth_change_receiver().borrow();
+        self.command_revision_changed
+            .store(before != after, Ordering::SeqCst);
+        self.command_cache_refreshed.store(
+            manager
+                .auth_cached()
+                .as_ref()
+                .is_some_and(|auth| auth.api_key() == Some("refreshed-token")),
+            Ordering::SeqCst,
+        );
+    }
 }
 
 impl ModelProvider for SetupRefreshProvider {
@@ -480,20 +512,38 @@ impl ModelProvider for SetupRefreshProvider {
         self.inner.account_state()
     }
 
+    fn request_auth_for_scope(
+        &self,
+        scope: ProviderAuthScope,
+    ) -> ModelProviderFuture<'_, codex_protocol::error::Result<ProviderRequestAuth>> {
+        Box::pin(async move {
+            let request_auth = self.inner.request_auth_for_scope(scope).await?;
+            if let SetupRefresh::CommandAfterRequestAuth(token_path) = &self.refresh
+                && self.command_hook_calls.fetch_add(1, Ordering::SeqCst) == 0
+            {
+                // Change command-backed credentials after this request's auth snapshot resolves.
+                // Client setup must discard that stale snapshot and resolve a coherent successor.
+                self.refresh_command_token(token_path).await;
+            }
+            Ok(request_auth)
+        })
+    }
+
     fn api_provider(
         &self,
     ) -> ModelProviderFuture<'_, codex_protocol::error::Result<codex_api::Provider>> {
         Box::pin(async move {
             self.setup_calls.fetch_add(1, Ordering::SeqCst);
-            let manager = self.inner.auth_manager().expect("auth manager");
             match &self.refresh {
-                SetupRefresh::Command(token_path) => {
-                    std::fs::write(token_path, "refreshed-token")?;
-                    manager
-                        .refresh_token_from_authority()
-                        .await
-                        .expect("refresh command token");
+                SetupRefresh::CommandAfterRequestAuth(_) => {}
+                SetupRefresh::CommandAfterWorkspaceProvider(token_path)
+                    if self.command_hook_calls.fetch_add(1, Ordering::SeqCst) == 0 =>
+                {
+                    // Preserve the original Workspace callback: request auth has already resolved,
+                    // and the callback changes the same manager before setup captures its guard.
+                    self.refresh_command_token(token_path).await;
                 }
+                SetupRefresh::CommandAfterWorkspaceProvider(_) => {}
                 SetupRefresh::ChatGpt {
                     home,
                     token,
@@ -502,7 +552,11 @@ impl ModelProvider for SetupRefreshProvider {
                     codex_login::auth::login_with_chatgpt_auth_tokens(
                         home, token, workspace, /*chatgpt_plan_type*/ None,
                     )?;
-                    manager.reload().await;
+                    self.inner
+                        .auth_manager()
+                        .expect("auth manager")
+                        .reload()
+                        .await;
                 }
             }
             self.inner.api_provider().await
@@ -544,13 +598,29 @@ async fn client_setup_accepts_command_credential_refresh() {
         });
         let provider = Arc::new(SetupRefreshProvider {
             inner: create_model_provider(info, /*auth_manager*/ None),
-            refresh: SetupRefresh::Command(token_path),
+            refresh: match routing {
+                super::ClientRouting::Workspace => {
+                    SetupRefresh::CommandAfterWorkspaceProvider(token_path.clone())
+                }
+                super::ClientRouting::ConfiguredProvider => {
+                    SetupRefresh::CommandAfterRequestAuth(token_path.clone())
+                }
+            },
+            command_hook_calls: AtomicUsize::new(/*v*/ 0),
+            successful_command_refreshes: AtomicUsize::new(/*v*/ 0),
+            command_revision_changed: AtomicBool::new(false),
+            command_cache_refreshed: AtomicBool::new(false),
             setup_calls: AtomicUsize::new(/*v*/ 0),
         });
         let manager = provider.auth_manager().unwrap();
-        let mut client = test_model_client(SessionSource::Exec);
-        Arc::get_mut(&mut client.state).unwrap().provider = provider;
+        let initial_auth = manager
+            .auth()
+            .await
+            .expect("command-backed initial auth resolves");
+        assert_eq!(initial_auth.api_key(), Some("initial-token"));
         let previous_revision = Some(*manager.auth_change_receiver().borrow());
+        let mut client = test_model_client(SessionSource::Exec);
+        Arc::get_mut(&mut client.state).unwrap().provider = provider.clone();
 
         let setup = client
             .current_client_setup(routing, /*expected_authority*/ None)
@@ -558,10 +628,23 @@ async fn client_setup_accepts_command_credential_refresh() {
             .unwrap();
         let mut headers = http::HeaderMap::new();
         setup.api_auth.add_auth_headers(&mut headers);
-        assert_eq!(
-            headers.get(http::header::AUTHORIZATION).unwrap(),
-            "Bearer refreshed-token"
+        let route_name = match routing {
+            super::ClientRouting::Workspace => "Workspace",
+            super::ClientRouting::ConfiguredProvider => "ConfiguredProvider",
+        };
+        assert!(
+            headers
+                .get(http::header::AUTHORIZATION)
+                .is_some_and(|value| value.as_bytes() == b"Bearer refreshed-token"),
+            "route={route_name}; command refresh changed revision={}; cached token is refreshed={}; api-provider calls={}; command hook calls={}",
+            provider.command_revision_changed.load(Ordering::SeqCst),
+            provider.command_cache_refreshed.load(Ordering::SeqCst),
+            provider.setup_calls.load(Ordering::SeqCst),
+            provider.command_hook_calls.load(Ordering::SeqCst),
         );
+        assert!(provider.command_revision_changed.load(Ordering::SeqCst));
+        assert!(provider.command_cache_refreshed.load(Ordering::SeqCst));
+        assert_eq!(provider.successful_command_refreshes.load(Ordering::SeqCst), 1);
         let current_revision = Some(*manager.auth_change_receiver().borrow());
         assert_eq!(setup.auth_revision, current_revision);
         assert_ne!(previous_revision, current_revision);
@@ -594,6 +677,10 @@ async fn workspace_client_setup_uses_refreshed_chatgpt_auth() {
             token: refreshed_token.get_token().unwrap(),
             workspace: "workspace-a".into(),
         },
+        command_hook_calls: AtomicUsize::new(/*v*/ 0),
+        successful_command_refreshes: AtomicUsize::new(/*v*/ 0),
+        command_revision_changed: AtomicBool::new(false),
+        command_cache_refreshed: AtomicBool::new(false),
         setup_calls: AtomicUsize::new(/*v*/ 0),
     });
     let mut client = test_model_client(SessionSource::Exec);
