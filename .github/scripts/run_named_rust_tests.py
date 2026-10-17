@@ -110,7 +110,11 @@ def rustc_error_locations(stderr: str | None) -> dict[str, Any]:
 
     entries: list[dict[str, str]] = []
     current_code: str | None = None
-    for line in str(stderr or "").splitlines():
+    # Cargo emits ANSI colour sequences on GitHub-hosted stderr by default.
+    # Strip those before matching the fixed error-header and primary-location
+    # forms so the safe synopsis works on the real compiler output as well as
+    # plain-text fixtures.
+    for line in ANSI_CSI_RE.sub("", str(stderr or "")).splitlines():
         header = RUSTC_ERROR_HEADER_RE.match(line)
         if header:
             current_code = header.group("code")

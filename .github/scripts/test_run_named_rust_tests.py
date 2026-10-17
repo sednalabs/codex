@@ -178,6 +178,30 @@ error[E0382]: another private compiler message
             {"entries": [], "truncated": False},
         )
 
+    def test_rustc_synopsis_parses_ansi_colored_compiler_lines(self) -> None:
+        stderr = (
+            "\x1b[1;31merror[E0425]: private compiler prose\x1b[0m\n"
+            " \x1b[1;94m-->\x1b[0m core/src/session/tests.rs:2858:10\n"
+        )
+
+        summary = MODULE.rustc_error_locations(stderr)
+
+        self.assertEqual(
+            summary,
+            {
+                "entries": [
+                    {
+                        "code": "E0425",
+                        "location": "codex-rs/core/src/session/tests.rs:2858:10",
+                    }
+                ],
+                "truncated": False,
+            },
+        )
+        rendered = json.dumps(summary)
+        self.assertNotIn("private compiler prose", rendered)
+        self.assertNotIn("\x1b", rendered)
+
     def test_rustc_synopsis_caps_entries_and_marks_truncation(self) -> None:
         stderr = "".join(
             f"error[E0001]: hidden {index}\n --> core/src/lib.rs:{index + 1}:1\n"
