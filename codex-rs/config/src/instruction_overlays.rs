@@ -433,19 +433,17 @@ impl InstructionOverlaysToml {
             };
         };
 
-        let mut output = body.to_owned();
+        let mut output: Option<String> = None;
         for edit in &plan.edits {
-            output = apply_edit(output, edit)?;
-            if output.len() > MAX_INSTRUCTION_OVERLAY_BODY_BYTES {
-                return Err(InstructionOverlayError::BodyTooLarge);
-            }
+            let current = output.as_deref().unwrap_or(body);
+            output = Some(apply_edit(current, edit)?);
         }
-        Ok(Some(output))
+        Ok(output)
     }
 }
 
 fn apply_edit(
-    body: String,
+    body: &str,
     edit: &InstructionOverlayEdit,
 ) -> Result<String, InstructionOverlayError> {
     let output = match edit {
@@ -453,13 +451,13 @@ fn apply_edit(
             check_output_length(body.len(), text.len())?;
             let mut output = String::with_capacity(text.len().saturating_add(body.len()));
             output.push_str(text);
-            output.push_str(&body);
+            output.push_str(body);
             output
         }
         InstructionOverlayEdit::Append { text } => {
             check_output_length(body.len(), text.len())?;
             let mut output = String::with_capacity(text.len().saturating_add(body.len()));
-            output.push_str(&body);
+            output.push_str(body);
             output.push_str(text);
             output
         }
@@ -473,11 +471,11 @@ fn apply_edit(
             from,
             to,
             expected_matches,
-        } => replace_exact(&body, from, to, *expected_matches)?,
+        } => replace_exact(body, from, to, *expected_matches)?,
         InstructionOverlayEdit::RemoveExact {
             text,
             expected_matches,
-        } => replace_exact(&body, text, "", *expected_matches)?,
+        } => replace_exact(body, text, "", *expected_matches)?,
     };
     Ok(output)
 }
@@ -736,6 +734,76 @@ mod tests {
             .expect_err("oversized output"),
             InstructionOverlayError::BodyTooLarge
         );
+    }
+
+    #[test]
+    fn large_source_can_be_shrunk_and_growth_or_count_failures_preflight() {
+        let source = "large source".repeat(MAX_INSTRUCTION_OVERLAY_BODY_BYTES / 12 + 100);
+        let shrink = InstructionOverlaysToml {
+            developer_guidance: Some(component(vec![InstructionOverlayEdit::Replace {
+                text: "small".to_string(),
+            }])),
+            ..Default::default()
+        };
+        assert_eq!(
+            shrink
+                .apply_component(
+                    InstructionOverlayComponent::DeveloperGuidance,
+                    /*body*/ Some(&source),
+                )
+                .expect("replace can shrink a large input source"),
+            Some("small".to_string())
+        );
+
+        let too_large = "x".repeat(MAX_INSTRUCTION_OVERLAY_BODY_BYTES);
+        for edit in [
+            InstructionOverlayEdit::Prepend {
+                text: "y".to_string(),
+            },
+            InstructionOverlayEdit::Append {
+                text: "y".to_string(),
+            },
+        ] {
+            let plan = InstructionOverlaysToml {
+                developer_guidance: Some(component(vec![edit])),
+                ..Default::default()
+            };
+            assert_eq!(
+                plan.apply_component(
+                    InstructionOverlayComponent::DeveloperGuidance,
+                    /*body*/ Some(&too_large),
+                )
+                .expect_err("growth over the component cap is rejected before allocation"),
+                InstructionOverlayError::BodyTooLarge
+            );
+        }
+
+        for edit in [
+            InstructionOverlayEdit::ReplaceExact {
+                from: "absent".to_string(),
+                to: "replace".to_string(),
+                expected_matches: 1,
+            },
+            InstructionOverlayEdit::RemoveExact {
+                text: "absent".to_string(),
+                expected_matches: 1,
+            },
+        ] {
+            let plan = InstructionOverlaysToml {
+                developer_guidance: Some(component(vec![edit])),
+                ..Default::default()
+            };
+            assert!(matches!(
+                plan.apply_component(
+                    InstructionOverlayComponent::DeveloperGuidance,
+                    /*body*/ Some(&source),
+                ),
+                Err(InstructionOverlayError::MatchCountMismatch {
+                    expected: 1,
+                    actual: 0
+                })
+            ));
+        }
     }
 
     #[test]

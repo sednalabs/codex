@@ -2,6 +2,8 @@ use anyhow::Result;
 use codex_config::InstructionOverlayComponent;
 use codex_config::InstructionOverlaySelection;
 use codex_config::InstructionOverlaysToml;
+#[cfg(test)]
+use codex_config::MAX_INSTRUCTION_OVERLAY_BODY_BYTES;
 use codex_config::MAX_INSTRUCTION_OVERLAY_INSTANCES;
 use codex_config::MAX_INSTRUCTION_OVERLAY_REQUEST_BYTES;
 use codex_protocol::models::BaseInstructionsProvenance;
@@ -30,17 +32,17 @@ const REVIEW_COMPONENTS: &[InstructionOverlayComponent] =
 pub(super) fn transform_request(
     source: &SessionSource,
     plan: &InstructionOverlaysToml,
-    baseline: String,
+    baseline: &str,
     baseline_provenance: Option<&BaseInstructionsProvenance>,
     input: Vec<ResponseItem>,
-) -> Result<(String, Vec<ResponseItem>)> {
+) -> Result<(Option<String>, Vec<ResponseItem>)> {
     let Some(components) = eligible_components(source) else {
-        return Ok((baseline, input));
+        return Ok((None, input));
     };
 
     plan.validate_components(components)
         .map_err(|error| anyhow::anyhow!("instruction overlay plan invalid: {error}"))?;
-    let mut transformed_baseline = baseline;
+    let mut transformed_baseline = None;
     let mut transformed_input = input;
     let mut selected_instances = 0usize;
     let mut selected_bytes = 0usize;
@@ -56,7 +58,7 @@ pub(super) fn transform_request(
         // Incremental-tools requests carry their selected base as a typed input item and use
         // empty text with no provenance as the scalar placeholder. Empty explicit bases still
         // have provenance and remain independently selectable.
-        let scalar_selected = !transformed_baseline.is_empty() || baseline_provenance.is_some();
+        let scalar_selected = !baseline.is_empty() || baseline_provenance.is_some();
         if scalar_selected {
             selected_instances = selected_instances.saturating_add(1);
             if selected_instances > MAX_INSTRUCTION_OVERLAY_INSTANCES {
@@ -72,14 +74,15 @@ pub(super) fn transform_request(
             scalar_selected,
         )?;
         if scalar_selected {
-            if let Some(updated) = apply_component(
-                plan,
-                baseline_component,
-                /*body*/ Some(&transformed_baseline),
-            )? {
-                transformed_baseline = updated;
+            if let Some(updated) =
+                apply_component(plan, baseline_component, /*body*/ Some(baseline))?
+            {
+                transformed_baseline = Some(updated);
             }
-            selected_bytes = selected_bytes.saturating_add(transformed_baseline.len());
+            let transformed_len = transformed_baseline
+                .as_ref()
+                .map_or(baseline.len(), String::len);
+            selected_bytes = selected_bytes.saturating_add(transformed_len);
             if selected_bytes > MAX_INSTRUCTION_OVERLAY_REQUEST_BYTES {
                 anyhow::bail!("instruction overlay request output limit exceeded");
             }
@@ -174,7 +177,6 @@ fn apply_tagged_component(
 struct Candidate {
     item_index: usize,
     content_index: usize,
-    text: String,
 }
 
 fn find_candidate(
@@ -230,7 +232,7 @@ fn find_candidate(
                 {
                     anyhow::bail!("instruction overlay selected-instance limit exceeded");
                 }
-                let ContentItem::InputText { text } = &content[content_index] else {
+                let ContentItem::InputText { .. } = &content[content_index] else {
                     anyhow::bail!(
                         "instruction overlay target for {} is not text at request item {item_index}",
                         component.as_str()
@@ -239,7 +241,6 @@ fn find_candidate(
                 selected.push(Candidate {
                     item_index,
                     content_index,
-                    text: text.clone(),
                 });
             }
         }
@@ -273,10 +274,15 @@ fn apply_candidates(
     for Candidate {
         item_index,
         content_index,
-        text,
     } in selected
     {
-        let (prefix, body, suffix) = split_wrapper(component, &text, item_index)?;
+        let ResponseItem::Message { content, .. } = &input[item_index] else {
+            unreachable!("selected item is a message")
+        };
+        let ContentItem::InputText { text } = &content[content_index] else {
+            unreachable!("selected content is input text")
+        };
+        let (prefix, body, suffix) = split_wrapper(component, text, item_index)?;
         let Some(updated_body) = apply_component(plan, component, /*body*/ Some(body))? else {
             continue;
         };
@@ -438,13 +444,12 @@ mod tests {
         provenance: Option<&BaseInstructionsProvenance>,
         input: &[ResponseItem],
     ) -> Result<(String, Vec<ResponseItem>)> {
-        super::transform_request(
-            source,
-            plan,
-            baseline.to_string(),
-            provenance,
-            input.to_vec(),
-        )
+        let (transformed_baseline, output) =
+            super::transform_request(source, plan, baseline, provenance, input.to_vec())?;
+        Ok((
+            transformed_baseline.unwrap_or_else(|| baseline.to_string()),
+            output,
+        ))
     }
 
     fn active(text: &str) -> InstructionOverlayComponentToml {
@@ -772,6 +777,73 @@ mod tests {
                 "typed source base",
             )]
         );
+    }
+
+    #[test]
+    fn oversized_scalar_and_typed_sources_can_be_replaced_without_mutating_history() {
+        let oversized = "source".repeat(MAX_INSTRUCTION_OVERLAY_BODY_BYTES / 6 + 1);
+        let mut baseline_plan = active("short scalar");
+        baseline_plan.edits = vec![InstructionOverlayEdit::Replace {
+            text: "short scalar".to_string(),
+        }];
+        let mut developer_plan = active("short typed");
+        developer_plan.edits = vec![InstructionOverlayEdit::Replace {
+            text: "short typed".to_string(),
+        }];
+        let plan = InstructionOverlaysToml {
+            model_baseline: Some(baseline_plan),
+            developer_guidance: Some(developer_plan),
+            ..Default::default()
+        };
+        let raw = vec![developer_fragment(
+            "generic.developer_instructions",
+            &oversized,
+        )];
+        let original = raw.clone();
+        let (baseline, output) = transform_request_with_provenance(
+            &SessionSource::Cli,
+            &plan,
+            &oversized,
+            Some(&BaseInstructionsProvenance::Custom),
+            &raw,
+        )
+        .expect("bounded replacements shrink oversized source fragments");
+        assert_eq!(baseline, "short scalar");
+        assert_eq!(
+            output,
+            vec![developer_fragment(
+                "generic.developer_instructions",
+                "short typed"
+            )]
+        );
+        assert_eq!(raw, original);
+    }
+
+    #[test]
+    fn sixty_fifth_candidate_fails_before_any_candidate_preparation() {
+        let mut component = active("unreachable");
+        component.selection = InstructionOverlaySelection::AllClassified;
+        component.edits = vec![InstructionOverlayEdit::ReplaceExact {
+            from: "deliberately absent".to_string(),
+            to: "unreachable".to_string(),
+            expected_matches: 1,
+        }];
+        let plan = InstructionOverlaysToml {
+            developer_guidance: Some(component),
+            ..Default::default()
+        };
+        let raw = (0..=MAX_INSTRUCTION_OVERLAY_INSTANCES)
+            .map(|_| developer_fragment("generic.developer_instructions", "bad match"))
+            .collect::<Vec<_>>();
+        let error = transform_request(&SessionSource::Cli, &plan, "base", &raw)
+            .expect_err("the 65th classified target exceeds the cap first");
+        assert!(error.to_string().contains("selected-instance limit"));
+        assert!(!error.to_string().contains("match count"));
+        assert!(raw.iter().all(|item| matches!(
+            item,
+            ResponseItem::Message { content, .. }
+                if content == &vec![ContentItem::InputText { text: "bad match".to_string() }]
+        )));
     }
 
     #[test]

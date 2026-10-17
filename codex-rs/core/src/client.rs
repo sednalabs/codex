@@ -1465,13 +1465,15 @@ impl ModelClient {
         responses_metadata: &CodexResponsesMetadata,
         include_internal: bool,
     ) -> Result<ResponsesApiRequest> {
-        let (base_instructions, mut input) = instruction_overlays::transform_request(
+        let (transformed_base_instructions, mut input) = instruction_overlays::transform_request(
             &self.state.session_source,
             self.instruction_overlays.as_ref(),
-            prompt.base_instructions.text.clone(),
+            &prompt.base_instructions.text,
             prompt.base_instructions.provenance.as_ref(),
             prompt.get_formatted_input_for_request(model_info),
         )?;
+        let base_instructions =
+            transformed_base_instructions.unwrap_or_else(|| prompt.base_instructions.text.clone());
         if !self.reasoning_effort_override_enabled(model_info) {
             // Unsupported models and disabled overrides must also accept saved history.
             // Filter only the request copy; persisted history remains unchanged.
