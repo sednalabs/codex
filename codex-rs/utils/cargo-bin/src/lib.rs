@@ -48,6 +48,19 @@ pub fn cargo_bin(name: &str) -> Result<PathBuf, CargoBinError> {
             return resolve_bin_from_env(key, value);
         }
     }
+    let current_exe =
+        std::env::current_exe().map_err(|source| CargoBinError::CurrentExe { source })?;
+    let sibling_candidate = legacy_sibling_candidate(&current_exe, name);
+    if !sibling_candidate
+        .as_deref()
+        .is_some_and(|candidate| candidate.is_file())
+    {
+        return Err(CargoBinError::NotFound {
+            name: name.to_owned(),
+            env_keys,
+            fallback: "assert_cmd legacy sibling candidate was not a regular file".to_owned(),
+        });
+    }
     match assert_cmd::Command::cargo_bin(name) {
         Ok(cmd) => {
             let mut path = PathBuf::from(cmd.get_program());
@@ -73,6 +86,17 @@ pub fn cargo_bin(name: &str) -> Result<PathBuf, CargoBinError> {
     }
 }
 
+fn legacy_sibling_candidate(current_exe: &Path, name: &str) -> Option<PathBuf> {
+    let mut directory = current_exe.parent()?.to_path_buf();
+    if directory
+        .file_name()
+        .is_some_and(|component| component == "deps")
+    {
+        directory.pop();
+    }
+    Some(directory.join(format!("{name}{}", std::env::consts::EXE_SUFFIX)))
+}
+
 fn cargo_bin_env_keys(name: &str) -> Vec<String> {
     let mut keys = Vec::with_capacity(2);
     keys.push(format!("CARGO_BIN_EXE_{name}"));
@@ -84,6 +108,79 @@ fn cargo_bin_env_keys(name: &str) -> Vec<String> {
     }
 
     keys
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicU64;
+    use std::sync::atomic::Ordering;
+
+    struct TestTempDir(PathBuf);
+
+    impl TestTempDir {
+        fn new() -> Self {
+            static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+            loop {
+                let path = std::env::temp_dir().join(format!(
+                    "codex-utils-cargo-bin-test-{}-{}",
+                    std::process::id(),
+                    NEXT_ID.fetch_add(1, Ordering::Relaxed),
+                ));
+                match std::fs::create_dir(&path) {
+                    Ok(()) => return Self(path),
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(error) => panic!("create isolated test directory: {error}"),
+                }
+            }
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestTempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn legacy_sibling_candidate_matches_direct_and_deps_layouts() {
+        let temp = TestTempDir::new();
+        let direct_exe = temp.path().join("test-runner");
+        let direct_candidate = legacy_sibling_candidate(&direct_exe, "sample-bin")
+            .expect("direct executable has a parent");
+        let expected_direct = temp
+            .path()
+            .join(format!("sample-bin{}", std::env::consts::EXE_SUFFIX));
+        assert_eq!(direct_candidate, expected_direct);
+        assert!(!direct_candidate.exists());
+        std::fs::write(&direct_candidate, "synthetic regular file")
+            .expect("write direct candidate fixture");
+        assert!(direct_candidate.is_file());
+
+        let deps = temp.path().join("deps");
+        std::fs::create_dir(&deps).expect("create synthetic deps directory");
+        let deps_exe = deps.join("test-runner");
+        let deps_candidate = legacy_sibling_candidate(&deps_exe, "sample-bin")
+            .expect("deps executable has a parent");
+        assert_eq!(deps_candidate, expected_direct);
+        assert!(deps_candidate.is_file());
+    }
+
+    #[test]
+    fn absent_unique_binary_returns_typed_not_found_without_panicking() {
+        let name = "codex_utils_cargo_bin_missing_lookup_regression_7f31c2";
+        let error = cargo_bin(name).expect_err("unique absent binary is not found");
+        assert!(matches!(
+            error,
+            CargoBinError::NotFound { name: found, fallback, .. }
+                if found == name
+                    && fallback == "assert_cmd legacy sibling candidate was not a regular file"
+        ));
+    }
 }
 
 pub fn runfiles_available() -> bool {
