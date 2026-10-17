@@ -571,12 +571,12 @@ def _check_report_shape(database: Path) -> dict[str, Any]:
         "requested root usage remains separated by actual model",
     )
     _assert(
-        descendants_by_model["synthetic-alpha"]["provider_call_count"] == 2
+        descendants_by_model["synthetic-alpha"]["provider_call_count"] == 1
         and descendants_by_model["synthetic-alpha"]["token_sums_known_subtotal"][
             "uncached_input_tokens"
         ]
-        == 16,
-        "all nested descendants aggregate by actual model",
+        == 13,
+        "only spawn-confirmed nested descendants aggregate by actual model",
     )
     _assert(
         descendants_by_model["synthetic-beta"]["token_sums_known_subtotal"][
@@ -605,7 +605,7 @@ def _check_report_shape(database: Path) -> dict[str, Any]:
         summary_models["synthetic-alpha"]["token_sums_known_subtotal"][
             "uncached_input_tokens"
         ]
-        == 23,
+        == 20,
         "alpha model tokens across root and descendants",
     )
     _assert(
@@ -653,8 +653,8 @@ def _check_report_shape(database: Path) -> dict[str, Any]:
         descendant_models["synthetic-alpha"]["token_sums_known_subtotal"][
             "uncached_input_tokens"
         ]
-        == 16,
-        "nested and root-tagged descendant model split",
+        == 13,
+        "spawn-confirmed descendants exclude detached root-tagged rows",
     )
     _assert(
         sum(
