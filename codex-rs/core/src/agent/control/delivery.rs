@@ -24,7 +24,6 @@ use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::InterAgentCommunication;
-use codex_protocol::protocol::MultiAgentVersion;
 use codex_rollout::RolloutRecorder;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -484,7 +483,8 @@ impl LocalAgentControl {
         let state = self.runtime.upgrade()?;
         let sender_thread = state.get_thread(caller).await?;
         if !sender_thread.is_running()
-            || !is_v2_agent_thread(&sender_thread).await
+            || sender_thread.multi_agent_version()
+                != Some(codex_protocol::protocol::MultiAgentVersion::V2)
             || !Arc::ptr_eq(
                 &sender_thread.session.services.local_agent_runtime.registry,
                 &self.runtime.registry,
@@ -501,7 +501,8 @@ impl LocalAgentControl {
             .await?;
         let recipient_thread = state.get_thread(recipient).await?;
         if !recipient_thread.is_running()
-            || !is_v2_agent_thread(&recipient_thread).await
+            || recipient_thread.multi_agent_version()
+                != Some(codex_protocol::protocol::MultiAgentVersion::V2)
             || !Arc::ptr_eq(
                 &recipient_thread
                     .session
@@ -679,7 +680,7 @@ async fn valid_explicit_member(
 ) -> bool {
     thread.session.thread_id == thread_id
         && thread.is_running()
-        && is_v2_agent_thread(thread).await
+        && thread.multi_agent_version() == Some(codex_protocol::protocol::MultiAgentVersion::V2)
         && Arc::ptr_eq(
             &thread.session.services.local_agent_runtime.registry,
             registry,
@@ -691,24 +692,6 @@ async fn valid_explicit_member(
             .as_ref()
             == Some(path)
         && !is_final(&thread.agent_status().await)
-}
-
-async fn is_v2_agent_thread(thread: &CodexThread) -> bool {
-    match thread.multi_agent_version() {
-        Some(version) => version == MultiAgentVersion::V2,
-        None => {
-            // A fresh root has no resolved model-specific version until its first turn. Until
-            // then, use the same configured feature fallback as turn admission for this
-            // membership check. A resolved non-V2 version remains authoritative and is not
-            // widened by configuration.
-            thread
-                .session
-                .get_config()
-                .await
-                .multi_agent_version_from_features()
-                == MultiAgentVersion::V2
-        }
-    }
 }
 
 async fn validate_current_explicit_membership(

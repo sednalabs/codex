@@ -1512,8 +1512,18 @@ async fn multi_agent_v2_explicit_root_updates_are_durable_and_idempotent() {
         root.thread.config_snapshot().await.history_mode,
         ThreadHistoryMode::Paginated
     );
-    set_agent_control(&mut session, manager.agent_control());
     session.thread_id = root.thread_id;
+    let root_thread = manager
+        .get_thread(root.thread_id)
+        .await
+        .expect("root thread should remain loaded");
+    // Keep the child fixture in the root's registry; a fresh manager control is another tree.
+    let root_agent_control = root_thread
+        .session
+        .services
+        .local_agent_runtime
+        .control(session.session_id());
+    set_agent_control(&mut session, root_agent_control);
 
     let child_path = AgentPath::try_from("/root/worker").expect("agent path");
     let child_thread_id = session
@@ -1548,18 +1558,9 @@ async fn multi_agent_v2_explicit_root_updates_are_durable_and_idempotent() {
     });
     let session = Arc::new(session);
     let turn = Arc::new(turn);
-    let root_thread = manager
-        .get_thread(root.thread_id)
-        .await
-        .expect("root thread should remain loaded");
-    assert_eq!(root_thread.multi_agent_version(), None);
     assert_eq!(
-        root_thread
-            .session
-            .get_config()
-            .await
-            .multi_agent_version_from_features(),
-        MultiAgentVersion::V2
+        root_thread.multi_agent_version(),
+        Some(MultiAgentVersion::V2)
     );
 
     SendMessageHandlerV2
