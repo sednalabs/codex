@@ -833,7 +833,15 @@ class UsageReporter:
         cycle_seen = False
         while frontier:
             self.check_deadline()
-            batch_ids = sorted(set(frontier))
+            unique_frontier = sorted(set(frontier))
+            bounded_frontier = [
+                thread_id
+                for thread_id in unique_frontier
+                if len(thread_id) <= MAX_MULTI_LEDGER_INTERNAL_TEXT_CHARS["thread_id"]
+            ]
+            if len(bounded_frontier) != len(unique_frontier):
+                self.lineage_walk_incomplete = True
+            batch_ids = bounded_frontier
             next_frontier: list[str] = []
             for batch in _sql_chunks(batch_ids):
                 placeholders = ",".join("?" for _ in batch)
@@ -861,10 +869,29 @@ class UsageReporter:
                     raise
                 for edge in cursor:
                     self.check_deadline()
-                    request_id = _blank_to_none(edge["spawn_request_id"])
-                    child_id = _blank_to_none(edge["child_thread_id"])
-                    parent_id = _blank_to_none(edge["parent_thread_id"])
+                    raw_request_id = edge["spawn_request_id"]
+                    raw_child_id = edge["child_thread_id"]
+                    raw_parent_id = edge["parent_thread_id"]
+                    if any(
+                        isinstance(value, str)
+                        and len(value) > MAX_MULTI_LEDGER_INTERNAL_TEXT_CHARS[column]
+                        for column, value in (
+                            ("spawn_request_id", raw_request_id),
+                            ("child_thread_id", raw_child_id),
+                            ("parent_thread_id", raw_parent_id),
+                        )
+                    ):
+                        self.lineage_walk_incomplete = True
+                        continue
+                    request_id = _blank_to_none(raw_request_id)
+                    child_id = _blank_to_none(raw_child_id)
+                    parent_id = _blank_to_none(raw_parent_id)
                     if request_id is None or parent_id is None or request_id in seen_requests:
+                        self.lineage_walk_incomplete = True
+                        continue
+                    if child_id is not None and edge["status"] != "Completed(None)":
+                        # A child ID on a non-successful or unknown terminal
+                        # status is not enough to establish reportable lineage.
                         self.lineage_walk_incomplete = True
                         continue
                     if len(seen_requests) >= MAX_LINEAGE_NODES:
@@ -1033,7 +1060,8 @@ class UsageReporter:
         for index in (THREAD_STARTED_INDEX, "usage_provider_calls_thread_idx"):
             sql = (
                 f"SELECT {select} {self._token_call_from(index)} "
-                f"WHERE call.thread_id IN ({placeholders}) LIMIT ?"
+                f"WHERE call.thread_id IN ({placeholders}) "
+                "ORDER BY call.started_at, call.provider_call_id LIMIT ?"
             )
             assert self.conn is not None
             try:

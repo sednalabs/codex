@@ -169,7 +169,7 @@ def _create_database(path: Path, *, current_indexes: bool) -> None:
             """
             INSERT INTO usage_spawn_requests(
                 spawn_request_id, parent_thread_id, child_thread_id, status
-            ) VALUES (?, ?, ?, 'complete')
+            ) VALUES (?, ?, ?, 'Completed(None)')
             """,
             (
                 ("spawn-sentinel", ROOT_THREAD, "synthetic-child"),
@@ -802,7 +802,7 @@ def _check_cycle_is_incomplete(temporary: Path) -> None:
             (ROOT_THREAD,),
         )
         connection.executemany(
-            "INSERT INTO usage_spawn_requests(spawn_request_id, parent_thread_id, child_thread_id, status) VALUES (?, ?, ?, 'complete')",
+            "INSERT INTO usage_spawn_requests(spawn_request_id, parent_thread_id, child_thread_id, status) VALUES (?, ?, ?, 'Completed(None)')",
             (
                 ("cycle-root-a", ROOT_THREAD, "cycle-a"),
                 ("cycle-a-b", "cycle-a", "cycle-b"),
@@ -834,13 +834,25 @@ def _check_streaming_query_indexes(temporary: Path) -> None:
         True,
         all_time=True,
         token_only_projection=True,
+        max_calls=3,
     )
     try:
         state = _prepare_stream_reporter(reporter)
         scope_ids = sorted(state["scope_nodes"])
         ids = reporter._selected_token_call_ids(scope_ids)
         _assert("root-alpha" in ids, "exact thread selection collects stable IDs only")
-        row = next(reporter._iter_token_calls(scope_ids, reporter.selected_rows))
+        selected_count = reporter.selected_rows
+        streamed_rows = list(reporter._iter_token_calls(scope_ids, selected_count))
+        streamed_ids = [str(row["provider_call_id"]) for row in streamed_rows]
+        _assert(
+            set(streamed_ids) == ids and len(streamed_ids) == selected_count == 3,
+            "ID selection and row streaming choose the same identities at the call cap",
+        )
+        _assert(
+            reporter.call_selection_truncated,
+            "the unchanged call cap is explicitly marked as a truncated selection",
+        )
+        row = streamed_rows[0]
         probe = reporter._probe_token_call(str(row["provider_call_id"]))
         _assert(probe is not None, "stable call ID probe finds one exact row")
         details = [
@@ -850,7 +862,7 @@ def _check_streaming_query_indexes(temporary: Path) -> None:
         ]
         _assert(
             any("SEARCH" in detail and "usage_provider_calls" in detail for detail in details),
-            "the selected-call stream uses an exact thread index",
+            "both ordered selected-call passes use an exact thread index",
         )
         _assert(
             any("SEARCH" in detail and "provider_call_id" in detail for detail in details),
@@ -861,6 +873,79 @@ def _check_streaming_query_indexes(temporary: Path) -> None:
             reporter.conn.rollback()
             reporter.conn.close()
             reporter.conn = None
+
+
+def _check_spawn_edge_status_and_identifier_bounds(temporary: Path) -> None:
+    cases = (
+        ("pending-child", "status", "PendingInit"),
+        ("failed-child", "status", 'Errored("failed")'),
+        ("oversized-request-id", "request", "x" * 129),
+        ("oversized-child-id", "child", "x" * 129),
+        ("oversized-parent-id", "parent", "x" * 129),
+    )
+    for name, field, value in cases:
+        database = temporary / f"lineage-{name}.sqlite"
+        _create_database(database, current_indexes=True)
+        connection = sqlite3.connect(database)
+        root_id = ROOT_THREAD
+        try:
+            if field == "status":
+                connection.execute(
+                    "UPDATE usage_spawn_requests SET status = ? WHERE spawn_request_id = ?",
+                    (value, "spawn-sentinel"),
+                )
+            elif field == "request":
+                connection.execute(
+                    "UPDATE usage_spawn_requests SET spawn_request_id = ? WHERE spawn_request_id = ?",
+                    (value, "spawn-sentinel"),
+                )
+            elif field == "child":
+                connection.execute(
+                    "UPDATE usage_spawn_requests SET child_thread_id = ? WHERE spawn_request_id = ?",
+                    (value, "spawn-sentinel"),
+                )
+            else:
+                root_id = value
+                connection.execute(
+                    "UPDATE usage_threads SET thread_id = ? WHERE thread_id = ?",
+                    (root_id, ROOT_THREAD),
+                )
+                connection.execute(
+                    "UPDATE usage_spawn_requests SET parent_thread_id = ? WHERE parent_thread_id = ?",
+                    (root_id, ROOT_THREAD),
+                )
+            connection.commit()
+        finally:
+            connection.close()
+
+        reporter = report.UsageReporter(
+            database,
+            report.parse_utc(START),
+            report.parse_utc(END),
+            report.UTC,
+            "UTC",
+            "subtree",
+            root_id,
+            "none",
+            False,
+            all_time=True,
+            token_only_projection=True,
+        )
+        try:
+            state = _prepare_stream_reporter(reporter)
+            _assert(
+                reporter.lineage_walk_incomplete,
+                f"{name} is surfaced as incomplete lineage",
+            )
+            _assert(
+                set(state["scope_nodes"]) == {root_id},
+                f"{name} does not silently add a descendant",
+            )
+        finally:
+            if reporter.conn is not None:
+                reporter.conn.rollback()
+                reporter.conn.close()
+                reporter.conn = None
 
 
 def _check_streaming_missing_call_id(temporary: Path) -> None:
@@ -1231,7 +1316,7 @@ def _check_large_subtree_uses_compact_projection(temporary: Path) -> None:
             children,
         )
         connection.executemany(
-            "INSERT INTO usage_spawn_requests(spawn_request_id, parent_thread_id, child_thread_id, status) VALUES (?, ?, ?, 'complete')",
+            "INSERT INTO usage_spawn_requests(spawn_request_id, parent_thread_id, child_thread_id, status) VALUES (?, ?, ?, 'Completed(None)')",
             (
                 (f"spawn-large-{index:04d}", ROOT_THREAD, f"synthetic-detached-{index:04d}")
                 for index in range(report.MAX_OUTPUT_GROUPS + 1)
@@ -1284,6 +1369,7 @@ def main() -> int:
         _check_call_limit_partial(temporary)
         _check_cycle_is_incomplete(temporary)
         _check_streaming_query_indexes(temporary)
+        _check_spawn_edge_status_and_identifier_bounds(temporary)
         _check_streaming_missing_call_id(temporary)
         _check_shared_text_pool()
         _check_multi_ledger_reconciliation(temporary)
@@ -1291,7 +1377,7 @@ def main() -> int:
         _check_multi_ledger_partial_selection(temporary)
         _check_requested_subtree_without_recorded_root(temporary)
         _check_large_subtree_uses_compact_projection(temporary)
-    print(json.dumps({"status": "passed", "cases": 10}, separators=(",", ":")))
+    print(json.dumps({"status": "passed", "cases": 11}, separators=(",", ":")))
     return 0
 
 
