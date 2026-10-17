@@ -71,6 +71,7 @@ use wiremock::matchers::method;
 use wiremock::matchers::path;
 
 const CHILD_INITIAL: &str = "goal-worker-initial";
+const PRE_RESUME_PROMPT: &str = "record the pre-resume child handback";
 const WAIT_PROMPT: &str = "wait for goal worker";
 const OPERATOR_PROMPT: &str = "operator changes the request";
 const DRAIN_PROMPT: &str = "record queued goal handbacks";
@@ -376,6 +377,17 @@ async fn mount_provider(
         })
         .mount(server)
         .await;
+    if matches!(scenario, Scenario::ResumedComplete) {
+        mount_sse_once_match(
+            server,
+            |request: &Request| body_contains(request, PRE_RESUME_PROMPT),
+            sse(vec![
+                ev_assistant_message("parent-pre-resume", "ready to resume"),
+                ev_completed("parent-pre-resume"),
+            ]),
+        )
+        .await;
+    }
     mount_sse_once_match(
         server,
         |request: &Request| body_contains(request, WAIT_PROMPT),
@@ -534,6 +546,9 @@ async fn run_goal_scheduler_wait(
     let initial_turn = child_complete(&child, child_id, &mut activities).await?;
     let (test, initial_goal_id) = if matches!(scenario, Scenario::ResumedComplete) {
         set_resumed_phase(&mut resumed_phase, "shutdown and seed persisted goal");
+        // Record the pre-goal control handback before replacing the live session.
+        test.submit_turn(PRE_RESUME_PROMPT).await?;
+        timeout(Duration::from_secs(10), ThreadIdle::wait(&test.codex)).await?;
         let db = state.lock().expect("state").clone().expect("DB");
         test.thread_manager
             .shutdown_all_threads_bounded(Duration::from_secs(5))
@@ -627,7 +642,14 @@ async fn run_goal_scheduler_wait(
     })
     .await??;
     let baseline = parent_request_count(&server, parent_id).await;
-    assert_eq!(baseline, 3);
+    assert_eq!(
+        baseline,
+        if matches!(scenario, Scenario::ResumedComplete) {
+            4
+        } else {
+            3
+        }
+    );
     set_resumed_phase(&mut resumed_phase, "initial quiet observation");
     assert_quiet(&test.codex, &server, parent_id, baseline).await?;
 
