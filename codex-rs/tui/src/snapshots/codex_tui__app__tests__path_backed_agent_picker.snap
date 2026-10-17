@@ -1,5 +1,6 @@
 ---
 source: tui/src/app/tests.rs
+assertion_line: 2482
 expression: "render_bottom_popup(&app.chat_widget, 80)"
 ---
   Subagents
@@ -7,8 +8,8 @@ expression: "render_bottom_popup(&app.chat_widget, 80)"
 
 
 › 1. • /root/worker  00000000-0000-0000-0000-000000000123 • Path: /root/worker •
-                    Parent: unknown • Status: running • provider-effective
-                    identity: unverified • Configured model: unknown •
-                    Configured effort: unknown
+                     Parent: unknown • Status: running • provider-effective
+                     identity: unverified • Configured model: unknown •
+                     Configured effort: unknown
 
   enter select · esc back
