@@ -2935,24 +2935,32 @@ async fn make_explicit_test_session(
     async_channel::Receiver<codex_protocol::protocol::Event>,
     PathBuf,
 ) {
-    let (mut session, rx_event, _) = make_session_with_usage_state_and_agent_control_and_rx(
+    let (session, rx_event, _) = make_session_with_usage_state_and_agent_control_and_rx(
         InitialHistory::New,
         SessionSource::Exec,
         LocalAgentControl::default(),
         codex_home,
-        /*enable_usage_state*/ false,
+        /*enable_usage_state*/ true,
         /*parent_thread_id*/ None,
         Some(thread_store),
+        /*enable_multi_agent_v2*/ true,
     )
     .await
     .expect("create explicit inter-agent test session");
-    Arc::get_mut(&mut session)
-        .expect("test session should be uniquely owned")
-        .multi_agent_version = OnceLock::from(MultiAgentVersion::V2);
-    let rollout_path = attach_thread_persistence(
-        Arc::get_mut(&mut session).expect("test session should remain uniquely owned"),
-    )
-    .await;
+    assert_eq!(
+        session.multi_agent_version(),
+        Some(MultiAgentVersion::V2),
+        "explicit inter-agent tests must use the version selected by config"
+    );
+    let rollout_path = session
+        .current_rollout_path()
+        .await
+        .expect("load explicit inter-agent rollout path")
+        .expect("persistent explicit inter-agent session has a rollout path");
+    session
+        .flush_rollout()
+        .await
+        .expect("new explicit inter-agent session should flush");
     (session, rx_event, rollout_path)
 }
 
@@ -8072,6 +8080,7 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
             /*enable_usage_state*/ false,
             /*parent_thread_id*/ None,
             /*shared_thread_store*/ None,
+            /*enable_multi_agent_v2*/ false,
         )
         .await?;
     Ok((session, rx_event))
@@ -8085,6 +8094,7 @@ async fn make_session_with_usage_state_and_agent_control_and_rx(
     enable_usage_state: bool,
     parent_thread_id: Option<ThreadId>,
     shared_thread_store: Option<Arc<dyn codex_thread_store::ThreadStore>>,
+    enable_multi_agent_v2: bool,
 ) -> anyhow::Result<(
     Arc<Session>,
     async_channel::Receiver<Event>,
@@ -8092,6 +8102,9 @@ async fn make_session_with_usage_state_and_agent_control_and_rx(
 )> {
     let mut config = build_test_config(codex_home).await;
     config.ephemeral = !enable_usage_state;
+    if enable_multi_agent_v2 {
+        let _ = config.features.enable(Feature::MultiAgentV2);
+    }
     let config = Arc::new(config);
     let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("Test API Key"));
     let models_manager = models_manager_with_provider(
@@ -8240,6 +8253,7 @@ async fn completed_response_usage_joins_real_session_lineage_and_survives_writer
         /*enable_usage_state*/ true,
         /*parent_thread_id*/ None,
         /*shared_thread_store*/ None,
+        /*enable_multi_agent_v2*/ false,
     )
     .await
     .expect("create persistent root session");
@@ -8259,6 +8273,7 @@ async fn completed_response_usage_joins_real_session_lineage_and_survives_writer
             /*enable_usage_state*/ true,
             /*parent_thread_id*/ Some(root.thread_id()),
             /*shared_thread_store*/ Some(thread_store),
+            /*enable_multi_agent_v2*/ false,
         )
         .await
         .expect("create child session on shared state store");
