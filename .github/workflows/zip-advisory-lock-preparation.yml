@@ -1,0 +1,123 @@
+name: ZIP advisory lock preparation
+
+on:
+  push:
+    branches: [validation/zip-advisory-lock-preparation-e131]
+    paths:
+      - .github/workflows/zip-advisory-lock-preparation.yml
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out the fixed source candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: e131f62b98c74bebf457b995a5dbd7a58b1dd437
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify separate workflow-host and source identities
+        env:
+          EVENT_SHA: ${{ github.sha }}
+          EVENT_REF: ${{ github.ref }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$EVENT_REF" = refs/heads/validation/zip-advisory-lock-preparation-e131
+          test "$(git rev-parse HEAD)" = e131f62b98c74bebf457b995a5dbd7a58b1dd437
+          test "$(git rev-parse HEAD^{tree})" = f42625f77fb6c126c5d135440c5a400fee40ce14
+          test "$(git rev-parse HEAD^)" = a7f1865d3886f1782e74490f70f79807d8cf003b
+          test -z "$(git status --porcelain)"
+          printf 'EVENT_SHA=%s\nEVENT_REF=%s\nWORKFLOW_SHA=%s\nSOURCE_SHA=%s\nSOURCE_TREE=%s\nSOURCE_PARENT=%s\n' \
+            "$EVENT_SHA" "$EVENT_REF" "$WORKFLOW_SHA" \
+            "$(git rev-parse HEAD)" "$(git rev-parse HEAD^{tree})" "$(git rev-parse HEAD^)" \
+            >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@ebb3d1676050bfd0971c36c1e215b5751473994d # 1.96.0
+        with:
+          toolchain: 1.96.0
+          components: rustfmt
+
+      - uses: ./.github/actions/setup-bazel-ci
+        with:
+          target: x86_64-unknown-linux-gnu
+
+      - name: Prepare bounded lock and Rust-format postimages
+        shell: bash
+        run: |
+          set -euo pipefail
+          git status --porcelain > "$RUNNER_TEMP/zip-prep-before.txt"
+          test ! -s "$RUNNER_TEMP/zip-prep-before.txt"
+
+          rustup toolchain install nightly-2025-09-18 --component rustfmt
+          cargo +1.96.0 update --manifest-path codex-rs/Cargo.toml -p zip --precise 9.0.0
+          just bazel-lock-update
+          rustfmt +nightly-2025-09-18 --config-path codex-rs/rustfmt.toml \
+            codex-rs/core-plugins/src/startup_sync.rs \
+            codex-rs/core-plugins/src/startup_sync_tests.rs
+
+          git diff --check
+          git status --porcelain --untracked-files=all > "$RUNNER_TEMP/zip-prep-status.txt"
+          ZIP_STATUS_FILE="$RUNNER_TEMP/zip-prep-status.txt" python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          status = Path(os.environ["ZIP_STATUS_FILE"]).read_text().splitlines()
+          changed = {line[3:] for line in status}
+          allowed = {
+              "codex-rs/Cargo.lock",
+              "MODULE.bazel.lock",
+              "codex-rs/core-plugins/src/startup_sync.rs",
+              "codex-rs/core-plugins/src/startup_sync_tests.rs",
+          }
+          if not changed or not changed <= allowed:
+              raise SystemExit(f"unexpected generated paths: {sorted(changed)}")
+          required = allowed
+          missing = required - changed
+          # Rustfmt may be a no-op for either source file; both files are still
+          # included as postimages below. Lock changes are required evidence.
+          if missing - {
+              "codex-rs/core-plugins/src/startup_sync.rs",
+              "codex-rs/core-plugins/src/startup_sync_tests.rs",
+          }:
+              raise SystemExit(f"required lock postimage unchanged: {sorted(missing)}")
+          PY
+
+          out="$RUNNER_TEMP/zip-advisory-preparation"
+          mkdir -p "$out"
+          cp codex-rs/Cargo.lock "$out/Cargo.lock"
+          cp MODULE.bazel.lock "$out/MODULE.bazel.lock"
+          cp codex-rs/core-plugins/src/startup_sync.rs "$out/startup_sync.rs"
+          cp codex-rs/core-plugins/src/startup_sync_tests.rs "$out/startup_sync_tests.rs"
+          {
+            printf 'workflow_host_sha=%s\n' "$WORKFLOW_SHA"
+            printf 'workflow_event_sha=%s\n' "$EVENT_SHA"
+            printf 'workflow_event_ref=%s\n' "$EVENT_REF"
+            printf 'run_id=%s\nrun_attempt=%s\nrunner_os=%s\n' \
+              "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$RUNNER_OS"
+            printf 'source_sha=%s\nsource_tree=%s\nsource_parent=%s\n' \
+              "$SOURCE_SHA" "$SOURCE_TREE" "$SOURCE_PARENT"
+            printf 'checkout_action=3d3c42e5aac5ba805825da76410c181273ba90b1\n'
+            printf 'rust_action=ebb3d1676050bfd0971c36c1e215b5751473994d\nrust_toolchain=1.96.0\nrustfmt_toolchain=nightly-2025-09-18\n'
+            printf 'setup_bazel_ci=source-pinned-local-action\nbazel_setup_action=c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86\nbazelisk=1.28.1\nbazel_version=9.2.0\n'
+            printf 'dotslash_action=1e4e7b3e07eaca387acb98f1d4720e0bee8dbb6a\njust_install_action=4cef1412cce204788f482e778a0b9187f9626a29\njust_version=1.51.0\n'
+            printf 'commands=cargo +1.96.0 update --manifest-path codex-rs/Cargo.toml -p zip --precise 9.0.0; just bazel-lock-update; rustfmt +nightly-2025-09-18 on two startup_sync Rust files\n'
+            printf 'changed_paths:\n'
+            sed 's/^...//' "$RUNNER_TEMP/zip-prep-status.txt"
+            printf 'postimage_sha256:\n'
+            sha256sum "$out/Cargo.lock" "$out/MODULE.bazel.lock" \
+              "$out/startup_sync.rs" "$out/startup_sync_tests.rs"
+          } > "$out/receipt.txt"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: zip-advisory-preparation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/zip-advisory-preparation/
+          if-no-files-found: error
+          retention-days: 7
