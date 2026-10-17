@@ -107,6 +107,7 @@ run_fixed_request() {
   if RUST_TEST_REQUEST_JSON="$request" NAMED_RUNNER_STATUS="$runner_status" python3 - <<'PY'
 import json
 import os
+import re
 from pathlib import Path
 
 expected = json.loads(os.environ["RUST_TEST_REQUEST_JSON"])
@@ -157,6 +158,49 @@ for name in expected["tests"]:
         "status": "pass" if passed else "fail",
         **safe_counts,
     }, sort_keys=True))
+    browser_selector = (
+        expected.get("package") == "codex-browser-computer-use"
+        and expected.get("tests") == ["tests::hosted_native_browser_tool_flow"]
+        and name == "tests::hosted_native_browser_tool_flow"
+    )
+    if (
+        bound
+        and browser_selector
+        and not passed
+        and safe_counts == {"passed": 0, "failed": 1, "ignored": 0}
+    ):
+        diagnostics = row.get("diagnostics", {})
+        if not isinstance(diagnostics, dict):
+            diagnostics = {}
+        panic_lines = set()
+        unmatched_location = False
+        for stream_name in ("stdout_tail", "stderr_tail"):
+            tail = diagnostics.get(stream_name)
+            if not isinstance(tail, str):
+                continue
+            for line in tail.splitlines():
+                panic = line.find("panicked at ")
+                if panic < 0:
+                    continue
+                location = line[panic + len("panicked at "):]
+                match = re.search(
+                    r"(?:^|[/\\])codex-rs/browser-computer-use/src/lib\.rs:(\d+):\d+(?::|$)",
+                    location,
+                )
+                if match is None:
+                    continue
+                source_line = int(match.group(1))
+                if 2407 <= source_line <= 2981:
+                    panic_lines.add(source_line)
+                else:
+                    unmatched_location = True
+        if len(panic_lines) == 1:
+            panic_line = str(next(iter(panic_lines)))
+        elif len(panic_lines) > 1 or unmatched_location:
+            panic_line = "unmatched"
+        else:
+            panic_line = "none"
+        print(f"native-browser-evidence: browser_test_panic_line={panic_line}")
 raise SystemExit(0 if accepted else 1)
 PY
   then
