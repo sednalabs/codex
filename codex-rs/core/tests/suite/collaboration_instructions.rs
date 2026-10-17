@@ -283,6 +283,7 @@ async fn configured_developer_overlay_changes_only_its_tagged_request_fragment()
 
     let test = test_codex()
         .with_config(|config| {
+            config.developer_instructions = Some("synthetic developer guidance".to_string());
             config.instruction_overlays.developer_guidance = Some(append_overlay(
                 "\nsynthetic caller note",
                 InstructionOverlaySelection::Unique,
@@ -320,11 +321,16 @@ async fn retained_model_switch_overlay_is_request_only_and_does_not_accumulate()
     )
     .await;
     let test = test_codex()
+        .with_model("gpt-5.4")
         .with_config(|config| {
-            config.instruction_overlays.model_switch_guidance = Some(append_overlay(
-                " synthetic transition note",
-                InstructionOverlaySelection::AllClassified,
-            ));
+            config.instruction_overlays.model_switch_guidance =
+                Some(InstructionOverlayComponentToml {
+                    on_absent: InstructionOverlayOnAbsent::Skip,
+                    ..append_overlay(
+                        " synthetic transition note",
+                        InstructionOverlaySelection::AllClassified,
+                    )
+                });
         })
         .build(&server)
         .await?;
@@ -335,6 +341,15 @@ async fn retained_model_switch_overlay_is_request_only_and_does_not_accumulate()
 
     let requests = mock.requests();
     assert_eq!(requests.len(), 3);
+    assert_eq!(requests[0].body_json()["model"], "gpt-5.4");
+    assert_eq!(requests[1].body_json()["model"], "gpt-5.5");
+    assert_eq!(requests[2].body_json()["model"], "gpt-5.5");
+    let initial_texts = developer_texts(&requests[0].input());
+    assert_eq!(count_messages_containing(&initial_texts, "<model_switch>"), 0);
+    assert_eq!(
+        count_messages_containing(&initial_texts, "synthetic transition note"),
+        0
+    );
     let switched = developer_texts(
         requests[1].body_json()["input"]
             .as_array()
@@ -346,6 +361,7 @@ async fn retained_model_switch_overlay_is_request_only_and_does_not_accumulate()
         .collect();
     assert_eq!(transitions.len(), 1);
     assert!(transitions[0].contains("synthetic transition note"));
+    assert_eq!(transitions[0].matches("synthetic transition note").count(), 1);
     let repeated = developer_texts(
         requests[2].body_json()["input"]
             .as_array()
@@ -456,6 +472,7 @@ async fn fork_reconstructs_the_configured_overlay_on_its_child_client() -> Resul
     .await;
     let test = test_codex()
         .with_config(|config| {
+            config.developer_instructions = Some("synthetic fork guidance".to_string());
             config.instruction_overlays.developer_guidance = Some(append_overlay(
                 " fork child marker",
                 InstructionOverlaySelection::Unique,
@@ -509,6 +526,7 @@ async fn resume_and_config_rollback_change_only_new_outgoing_requests() -> Resul
     )
     .await;
     let mut configured_builder = test_codex().with_config(|config| {
+        config.developer_instructions = Some("synthetic resume guidance".to_string());
         config.instruction_overlays.developer_guidance = Some(append_overlay(
             " reconstructed config marker",
             InstructionOverlaySelection::Unique,
@@ -527,6 +545,7 @@ async fn resume_and_config_rollback_change_only_new_outgoing_requests() -> Resul
     initial.codex.shutdown_and_wait().await?;
 
     let mut resume_builder = test_codex().with_config(|config| {
+        config.developer_instructions = Some("synthetic resume guidance".to_string());
         config.instruction_overlays.developer_guidance = Some(append_overlay(
             " reconstructed config marker",
             InstructionOverlaySelection::Unique,
@@ -537,7 +556,9 @@ async fn resume_and_config_rollback_change_only_new_outgoing_requests() -> Resul
     let raw_after_resume = persisted_model_context_json(&resumed).await?;
     assert!(!raw_after_resume.contains("reconstructed config marker"));
 
-    let mut rollback_builder = test_codex();
+    let mut rollback_builder = test_codex().with_config(|config| {
+        config.developer_instructions = Some("synthetic resume guidance".to_string());
+    });
     let rolled_back = rollback_builder.restart(&server, &resumed).await?;
     rolled_back.submit_text_turn("after rollback").await?;
     let requests = mock.requests();
@@ -577,6 +598,7 @@ async fn thread_spawn_child_inherits_the_resolved_overlay_plan() -> Result<()> {
     .await;
     let test = test_codex()
         .with_config(|config| {
+            config.developer_instructions = Some("synthetic child guidance".to_string());
             config.instruction_overlays.developer_guidance = Some(append_overlay(
                 " inherited child marker",
                 InstructionOverlaySelection::Unique,
