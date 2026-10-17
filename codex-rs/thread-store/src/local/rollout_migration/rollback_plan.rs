@@ -26,8 +26,8 @@ use codex_rollout::RolloutLine;
 use super::migration_error;
 use super::rollback;
 use super::rollback_replay::ModelReplayPlanner;
-use super::subagent::admission_idempotency_scope;
 use super::subagent::AdmissionIdempotencyScope;
+use super::subagent::admission_idempotency_scope;
 use crate::ThreadStoreResult;
 
 #[derive(Clone)]
@@ -307,12 +307,15 @@ impl RollbackPlanner {
                         "explicit inter-agent admission has an empty idempotency key",
                     ));
                 }
-                if !self.admission_idempotency_scopes.insert(admission_idempotency_scope(
-                    &admission.root_thread_id,
-                    &admission.sender_thread_id,
-                    &admission.recipient_thread_id,
-                    &admission.idempotency_key,
-                )) {
+                if !self
+                    .admission_idempotency_scopes
+                    .insert(admission_idempotency_scope(
+                        &admission.root_thread_id,
+                        &admission.sender_thread_id,
+                        &admission.recipient_thread_id,
+                        &admission.idempotency_key,
+                    ))
+                {
                     return Err(migration_error(
                         "legacy rollout contains duplicate explicit inter-agent idempotency keys in scope",
                     ));

@@ -391,11 +391,8 @@ impl LocalStdioServerLauncher {
         };
 
         let spawn_transport = |command: Command| -> io::Result<LocalStdioSpawnResult> {
-            let (transport, stderr) = LocalStdioTransport::spawn(
-                command,
-                program_name.clone(),
-                protocol_mode,
-            )?;
+            let (transport, stderr) =
+                LocalStdioTransport::spawn(command, program_name.clone(), protocol_mode)?;
             let process_id = transport.id();
             let child = Some(transport.process_child());
             Ok((

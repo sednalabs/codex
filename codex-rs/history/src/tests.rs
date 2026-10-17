@@ -495,9 +495,9 @@ fn explicit_inter_agent_admission_round_trips_on_existing_metadata_record() -> R
         idempotency_key: "request-1".to_string(),
         intent: InterAgentCommunicationIntent::ActionRequired,
         original_communication,
-        root_thread_id: ThreadId::from_u128(1),
-        sender_thread_id: ThreadId::from_u128(2),
-        recipient_thread_id: ThreadId::from_u128(3),
+        root_thread_id: ThreadId::from_u128(/*value*/ 1),
+        sender_thread_id: ThreadId::from_u128(/*value*/ 2),
+        recipient_thread_id: ThreadId::from_u128(/*value*/ 3),
         sender_path,
         recipient_path,
         supersedes: vec![codex_protocol::ResponseItemId::from_server(

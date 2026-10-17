@@ -297,12 +297,14 @@ async fn submit_capacity_effect_input(test: &TestCodex, text: &str) -> Result<()
                 text: text.to_string(),
                 text_elements: Vec::new(),
             }])
-            .with_thread_settings(codex_protocol::protocol::ThreadSettingsOverrides {
-                approval_policy: Some(AskForApproval::Never),
-                sandbox_policy: Some(sandbox_policy),
-                permission_profile,
-                ..Default::default()
-            }),
+            .with_thread_settings(
+                codex_protocol::protocol::ThreadSettingsOverrides {
+                    approval_policy: Some(AskForApproval::Never),
+                    sandbox_policy: Some(sandbox_policy),
+                    permission_profile,
+                    ..Default::default()
+                },
+            ),
         )
         .await?;
     Ok(())

@@ -3188,7 +3188,10 @@ async fn explicit_batch_retry_keeps_failed_message_before_suffix() {
         PersistContext::Standard,
     )
     .await;
-    assert!(first_attempt.is_err(), "the first queued append should fail once");
+    assert!(
+        first_attempt.is_err(),
+        "the first queued append should fail once"
+    );
     assert_eq!(store.append_failures.load(Ordering::SeqCst), 1);
 
     let turn_state = session

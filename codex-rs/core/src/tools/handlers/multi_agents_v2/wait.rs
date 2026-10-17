@@ -370,7 +370,14 @@ async fn wait_for_activity(
     deadline: Instant,
     agent_wait: &mut Option<AgentWaitRegistration>,
 ) -> WaitOutcome {
-    wait_for_activity_with_explicit(activity_rx, pending_activity, deadline, agent_wait, None).await
+    wait_for_activity_with_explicit(
+        activity_rx,
+        pending_activity,
+        deadline,
+        agent_wait,
+        /*explicit_wait*/ None,
+    )
+    .await
 }
 
 struct ExplicitActivityWait<'a> {
