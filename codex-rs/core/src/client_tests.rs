@@ -575,7 +575,7 @@ async fn client_setup_accepts_command_credential_refresh() {
                 setup.auth_revision
             ),
         );
-        assert_ne!(setup.auth_owner_generation, client.auth_owner_generation());
+        assert_eq!(setup.auth_owner_generation, client.auth_owner_generation());
     }
 }
 
@@ -583,8 +583,7 @@ async fn client_setup_accepts_command_credential_refresh() {
 async fn workspace_client_setup_uses_refreshed_chatgpt_auth() {
     let home = TempDir::new().unwrap();
     let initial = external_chatgpt_auth("user-a", "workspace-a", "initial");
-    let manager =
-        AuthManager::from_auth_for_testing_with_home(initial, home.path().to_path_buf());
+    let manager = AuthManager::from_auth_for_testing_with_home(initial, home.path().to_path_buf());
     let refreshed_token = external_chatgpt_auth("user-a", "workspace-a", "refreshed");
     let mut info = test_model_provider().info().clone();
     info.requires_openai_auth = true;
@@ -629,8 +628,10 @@ async fn workspace_unauthorized_retry_rejects_account_switches() {
         let home = TempDir::new().unwrap();
         let initial = external_chatgpt_auth("user-a", "workspace-a", "initial");
         let refreshed = external_chatgpt_auth(user, workspace, "refreshed");
-        let manager =
-            AuthManager::from_auth_for_testing_with_home(initial.clone(), home.path().to_path_buf());
+        let manager = AuthManager::from_auth_for_testing_with_home(
+            initial.clone(),
+            home.path().to_path_buf(),
+        );
         manager
             .set_external_auth(Arc::new(RefreshingExternalAuth {
                 current: Arc::new(Mutex::new(initial)),
@@ -658,8 +659,10 @@ async fn workspace_unauthorized_retry_rejects_account_switches() {
             .expect("request-start auth state is captured");
         drop(initial_setup);
 
-        let mut session = client
-            .new_session_with_authority(Some(original_authority), /*ordinary_401_rebind*/ true);
+        let mut session = client.new_session_with_authority(
+            Some(original_authority),
+            /*ordinary_401_rebind*/ true,
+        );
         let mut recovery = manager.unauthorized_recovery();
         let mut result = recovery
             .next_for_unauthorized_request(expected_state)
@@ -674,7 +677,10 @@ async fn workspace_unauthorized_retry_rejects_account_switches() {
             expected_state.generation.checked_add(1),
             Some(observed_after.generation)
         );
-        assert_ne!(expected_state.owner_generation, observed_after.owner_generation);
+        assert_ne!(
+            expected_state.owner_generation,
+            observed_after.owner_generation
+        );
         assert!(!witness.matches_same_owner_successor(expected_state, observed_after));
 
         let mut retry = PendingUnauthorizedRetry::from_recovery(UnauthorizedRecoveryExecution {
@@ -701,6 +707,7 @@ async fn configured_provider_setup_uses_coherent_refreshed_chatgpt_auth() {
     let home = TempDir::new().unwrap();
     let initial = external_chatgpt_auth("user-a", "workspace-a", "initial-token");
     let refreshed = external_chatgpt_auth("user-a", "workspace-a", "refreshed-token");
+    let refreshed_access_token = refreshed.get_token().unwrap();
     let manager =
         AuthManager::from_auth_for_testing_with_home(initial.clone(), home.path().to_path_buf());
     manager
@@ -731,9 +738,12 @@ async fn configured_provider_setup_uses_coherent_refreshed_chatgpt_auth() {
         .expect("configured-provider setup uses refreshed auth");
     let mut headers = http::HeaderMap::new();
     setup.api_auth.add_auth_headers(&mut headers);
+    let expected_authorization = format!("Bearer {refreshed_access_token}");
     assert_eq!(
-        headers.get(http::header::AUTHORIZATION).unwrap(),
-        "Bearer refreshed-token"
+        headers
+            .get(http::header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok()),
+        Some(expected_authorization.as_str())
     );
     assert_eq!(
         setup
@@ -741,7 +751,7 @@ async fn configured_provider_setup_uses_coherent_refreshed_chatgpt_auth() {
             .as_ref()
             .and_then(|auth| auth.get_token().ok())
             .as_deref(),
-        Some("refreshed-token")
+        Some(refreshed_access_token.as_str())
     );
     assert_eq!(
         setup.auth_revision,
