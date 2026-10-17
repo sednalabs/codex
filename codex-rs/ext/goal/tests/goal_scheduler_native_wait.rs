@@ -563,7 +563,7 @@ async fn run_goal_scheduler_wait(
                 child_id,
                 "resumed real goal",
                 ThreadGoalStatus::Active,
-                None,
+                /*token_budget*/ None,
             )
             .await?
             .context("insert resumed goal")?;
@@ -1026,7 +1026,7 @@ async fn run_goal_scheduler_wait(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fresh_goal_scheduler_keeps_native_wait_quiet_until_complete() -> Result<()> {
-    run_goal_scheduler_wait(Scenario::FreshComplete, None).await
+    run_goal_scheduler_wait(Scenario::FreshComplete, /*resumed_phase*/ None).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1059,20 +1059,20 @@ async fn resumed_goal_scheduler_keeps_native_wait_quiet_until_complete()
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn goal_scheduler_error_wakes_native_wait_with_raw_error() -> Result<()> {
-    run_goal_scheduler_wait(Scenario::Error, None).await
+    run_goal_scheduler_wait(Scenario::Error, /*resumed_phase*/ None).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn operator_steer_wakes_goal_native_wait_without_goal_completion() -> Result<()> {
-    run_goal_scheduler_wait(Scenario::OperatorSteer, None).await
+    run_goal_scheduler_wait(Scenario::OperatorSteer, /*resumed_phase*/ None).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn goal_action_required_wakes_same_pending_native_wait() -> Result<()> {
-    run_goal_scheduler_wait(Scenario::ActionRequired, None).await
+    run_goal_scheduler_wait(Scenario::ActionRequired, /*resumed_phase*/ None).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn goal_result_ready_wakes_same_pending_native_wait() -> Result<()> {
-    run_goal_scheduler_wait(Scenario::ResultReady, None).await
+    run_goal_scheduler_wait(Scenario::ResultReady, /*resumed_phase*/ None).await
 }
