@@ -1517,6 +1517,15 @@ async fn multi_agent_v2_explicit_root_updates_are_durable_and_idempotent() {
         .get_thread(root.thread_id)
         .await
         .expect("root thread should remain loaded");
+    let root_rollout_path = root_thread
+        .rollout_path()
+        .expect("root should retain its rollout path");
+    assert!(
+        codex_rollout::existing_rollout_path(&root_rollout_path)
+            .await
+            .is_none(),
+        "a fresh root should not have a materialized rollout before its first update"
+    );
     // Keep the child fixture in the root's registry; a fresh manager control is another tree.
     let root_agent_control = root_thread
         .session
@@ -1562,6 +1571,16 @@ async fn multi_agent_v2_explicit_root_updates_are_durable_and_idempotent() {
         root_thread.multi_agent_version(),
         Some(MultiAgentVersion::V2)
     );
+    assert!(root_thread.session.active_turn.lock().await.is_none());
+    assert_eq!(
+        root_thread
+            .session
+            .clone_history()
+            .await
+            .raw_items()
+            .count(),
+        0
+    );
 
     SendMessageHandlerV2
         .handle(invocation(
@@ -1578,6 +1597,22 @@ async fn multi_agent_v2_explicit_root_updates_are_durable_and_idempotent() {
         .await
         .expect("explicit progress should be admitted");
 
+    assert!(root_thread.session.active_turn.lock().await.is_none());
+    assert_eq!(
+        root_thread
+            .session
+            .clone_history()
+            .await
+            .raw_items()
+            .count(),
+        0
+    );
+    assert!(
+        codex_rollout::existing_rollout_path(&root_rollout_path)
+            .await
+            .is_some(),
+        "the first explicit update should materialize the durable root rollout"
+    );
     let history_items = full_rollout_items(&root_thread).await;
     let progress = history_items.iter().find_map(|item| match item {
         RolloutItem::InterAgentCommunicationMetadata {
@@ -1604,9 +1639,6 @@ async fn multi_agent_v2_explicit_root_updates_are_durable_and_idempotent() {
     );
     let mut unrelated_id_bearing_communication = progress.original_communication.clone();
     unrelated_id_bearing_communication.content = "legacy message with a public ID".to_string();
-    let root_rollout_path = root_thread
-        .rollout_path()
-        .expect("root should retain its rollout path");
     assert!(
         crate::agent::control::explicit_admission_for_communication(
             &root_rollout_path,
