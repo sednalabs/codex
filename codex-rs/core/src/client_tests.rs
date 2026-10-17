@@ -485,16 +485,14 @@ impl SetupRefreshProvider {
             .fetch_add(1, Ordering::SeqCst);
         let after = *manager.auth_change_receiver().borrow();
         if before != after {
-            self.command_revision_changed
-                .store(true, Ordering::SeqCst);
+            self.command_revision_changed.store(true, Ordering::SeqCst);
         }
         if manager
             .auth_cached()
             .as_ref()
             .is_some_and(|auth| auth.api_key() == Some("refreshed-token"))
         {
-            self.command_cache_refreshed
-                .store(true, Ordering::SeqCst);
+            self.command_cache_refreshed.store(true, Ordering::SeqCst);
         }
     }
 }
@@ -652,7 +650,10 @@ async fn client_setup_accepts_command_credential_refresh() {
         );
         assert!(provider.command_revision_changed.load(Ordering::SeqCst));
         assert!(provider.command_cache_refreshed.load(Ordering::SeqCst));
-        assert_eq!(provider.successful_command_refreshes.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            provider.successful_command_refreshes.load(Ordering::SeqCst),
+            1
+        );
         let current_revision = Some(*manager.auth_change_receiver().borrow());
         assert_eq!(setup.auth_revision, current_revision);
         assert_ne!(previous_revision, current_revision);
@@ -730,19 +731,16 @@ async fn client_setup_discards_cold_command_auth_during_repeated_workspace_refre
     assert!(provider.command_cache_refreshed.load(Ordering::SeqCst));
     assert_eq!(provider.setup_calls.load(Ordering::SeqCst), 2);
     assert_eq!(provider.command_hook_calls.load(Ordering::SeqCst), 2);
-    assert_eq!(provider.successful_command_refreshes.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        provider.successful_command_refreshes.load(Ordering::SeqCst),
+        2
+    );
     let current_revision = Some(*manager.auth_change_receiver().borrow());
     assert_eq!(setup.auth_revision, current_revision);
     assert_ne!(previous_revision, current_revision);
     assert_ne!(
-        codex_model_provider::ResponsesConnectionKey::new(
-            &setup.api_provider,
-            previous_revision
-        ),
-        codex_model_provider::ResponsesConnectionKey::new(
-            &setup.api_provider,
-            setup.auth_revision
-        ),
+        codex_model_provider::ResponsesConnectionKey::new(&setup.api_provider, previous_revision),
+        codex_model_provider::ResponsesConnectionKey::new(&setup.api_provider, setup.auth_revision),
     );
     assert_eq!(setup.auth_owner_generation, client.auth_owner_generation());
 }

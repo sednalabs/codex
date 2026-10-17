@@ -75,9 +75,7 @@ def test_cli_instruction_inspection_with_synthetic_linux_configuration(
     # The resolver recognizes .git/HEAD as a checkout boundary. Keep project
     # discovery inside this fresh workspace without invoking an external git.
     (workspace / ".git").mkdir()
-    (workspace / ".git" / "HEAD").write_text(
-        "ref: refs/heads/main\n", encoding="utf-8"
-    )
+    (workspace / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
 
     # Keep the exact package entrypoint, but do not inherit credentials, provider
     # settings, remote-control selectors, or runtime-proof configuration.
@@ -122,7 +120,8 @@ def test_cli_instruction_inspection_with_synthetic_linux_configuration(
             except OSError:
                 pytest.fail("System configuration absence is unverified", pytrace=False)
             pytest.fail(
-                "Instruction consumer requires absent system configuration", pytrace=False
+                "Instruction consumer requires absent system configuration",
+                pytrace=False,
             )
         try:
             completed = isolated.run("debug", "instructions", *arguments, stdin=stdin)
@@ -130,7 +129,9 @@ def test_cli_instruction_inspection_with_synthetic_linux_configuration(
         except (OSError, subprocess.SubprocessError, ValueError, UnicodeError):
             pytest.fail("Packaged instruction inspection failed", pytrace=False)
         if not isinstance(report, dict):
-            pytest.fail("Packaged instruction report has an invalid shape", pytrace=False)
+            pytest.fail(
+                "Packaged instruction report has an invalid shape", pytrace=False
+            )
         return report, completed.stdout
 
     def inline_fields(report: dict) -> dict:
@@ -160,7 +161,8 @@ def test_cli_instruction_inspection_with_synthetic_linux_configuration(
         default_fields.get("developer_instructions", {}).get("present") is True,
         default_fields.get(
             "features.multi_agent_v2.subagent_developer_instructions", {}
-        ).get("present") is True,
+        ).get("present")
+        is True,
         len(default_fields) == 8,
         all("content" not in field for field in default_fields.values()),
         not any(
@@ -197,8 +199,7 @@ def test_cli_instruction_inspection_with_synthetic_linux_configuration(
     managed = section(explicit, "local_managed_additional_developer_instructions")
     warning = explicit.get("publication_warning")
     explicit_checks = (
-        explicit_fields.get("instructions", {}).get("content")
-        == "PACKAGE_BASE_MARKER",
+        explicit_fields.get("instructions", {}).get("content") == "PACKAGE_BASE_MARKER",
         explicit_fields.get("developer_instructions", {}).get("content")
         == "PACKAGE_DEVELOPER_MARKER",
         caller.get("origin") == "caller-supplied; unverified",

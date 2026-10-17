@@ -3441,7 +3441,10 @@ mod tests {
                 subcommand: DebugSubcommand::Instructions(_)
             }))
         ));
-        assert_eq!(cli.interactive.config_profile_v2.as_deref(), Some("inspection"));
+        assert_eq!(
+            cli.interactive.config_profile_v2.as_deref(),
+            Some("inspection")
+        );
         assert_eq!(
             cli.interactive.cwd.as_deref(),
             Some(std::path::Path::new("/tmp/instruction-fixture"))
