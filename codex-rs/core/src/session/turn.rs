@@ -923,7 +923,27 @@ pub(crate) async fn run_hooks_and_record_inputs(
             )
             .await
             {
-                let remaining = input[input_index + 1..].to_vec();
+                // Queued explicit mail is already returned to the mailbox by
+                // `record_inter_agent_communication` on retryable failure. Keep
+                // that item together with its suffix on the active turn queue so
+                // task completion cannot persist the suffix ahead of the retry.
+                let retry_current_explicit_message = match input_item {
+                    TurnInput::InterAgentCommunication(communication) => {
+                        communication.id.as_ref().is_some_and(|update_id| {
+                            sess.delivered_explicit_inter_agent_updates
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .contains(update_id)
+                        })
+                    }
+                    _ => false,
+                };
+                let retry_start = if retry_current_explicit_message {
+                    input_index
+                } else {
+                    input_index + 1
+                };
+                let remaining = input[retry_start..].to_vec();
                 if !remaining.is_empty() {
                     let turn_state = {
                         let active_turn = sess.active_turn.lock().await;

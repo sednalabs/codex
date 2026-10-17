@@ -265,19 +265,27 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration as StdDuration;
 
-struct FailOnceMetadataThreadStore {
+struct FailOnceThreadStore {
     inner: codex_thread_store::LocalThreadStore,
+    fail_next_append: AtomicBool,
+    append_failures: AtomicUsize,
     fail_next_metadata_update: AtomicBool,
     metadata_failures: AtomicUsize,
 }
 
-impl FailOnceMetadataThreadStore {
+impl FailOnceThreadStore {
     fn new(inner: codex_thread_store::LocalThreadStore) -> Self {
         Self {
             inner,
+            fail_next_append: AtomicBool::new(false),
+            append_failures: AtomicUsize::new(0),
             fail_next_metadata_update: AtomicBool::new(false),
             metadata_failures: AtomicUsize::new(0),
         }
+    }
+
+    fn fail_next_append(&self) {
+        self.fail_next_append.store(true, Ordering::SeqCst);
     }
 
     fn fail_next_metadata_update(&self) {
@@ -285,7 +293,7 @@ impl FailOnceMetadataThreadStore {
     }
 }
 
-impl codex_thread_store::ThreadStore for FailOnceMetadataThreadStore {
+impl codex_thread_store::ThreadStore for FailOnceThreadStore {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
@@ -312,6 +320,14 @@ impl codex_thread_store::ThreadStore for FailOnceMetadataThreadStore {
         &self,
         params: codex_thread_store::AppendThreadItemsParams,
     ) -> codex_thread_store::ThreadStoreFuture<'_, ()> {
+        if self.fail_next_append.swap(false, Ordering::SeqCst) {
+            self.append_failures.fetch_add(1, Ordering::SeqCst);
+            return Box::pin(async {
+                Err(codex_thread_store::ThreadStoreError::Internal {
+                    message: "injected one-shot append failure".to_string(),
+                })
+            });
+        }
         codex_thread_store::ThreadStore::append_items(&self.inner, params)
     }
 
@@ -3031,7 +3047,7 @@ fn drain_raw_response_items(
 async fn explicit_communication_reconciles_post_append_metadata_failure_once() {
     let codex_home = tempfile::tempdir().expect("create failure fixture home");
     let config = build_test_config(codex_home.path()).await;
-    let store = Arc::new(FailOnceMetadataThreadStore::new(
+    let store = Arc::new(FailOnceThreadStore::new(
         codex_thread_store::LocalThreadStore::new(
             codex_thread_store::LocalThreadStoreConfig::from_config(&config),
             /*state_db*/ None,
@@ -3121,6 +3137,118 @@ async fn explicit_communication_reconciles_post_append_metadata_failure_once() {
     assert!(
         drain_raw_response_items(&rx_event).is_empty(),
         "the retry must not emit a duplicate raw response event"
+    );
+}
+
+#[tokio::test]
+async fn explicit_batch_retry_keeps_failed_message_before_suffix() {
+    let codex_home = tempfile::tempdir().expect("create batch retry fixture home");
+    let config = build_test_config(codex_home.path()).await;
+    let store = Arc::new(FailOnceThreadStore::new(
+        codex_thread_store::LocalThreadStore::new(
+            codex_thread_store::LocalThreadStoreConfig::from_config(&config),
+            /*state_db*/ None,
+        ),
+    ));
+    let store_handle: Arc<dyn codex_thread_store::ThreadStore> = store.clone();
+    let (session, rx_event, rollout_path) =
+        make_explicit_test_session(codex_home.path(), store_handle).await;
+    let first = explicit_test_communication("batch-first-update", "first queued update");
+    let second = explicit_test_communication("batch-second-update", "second queued update");
+    let first_admission = explicit_test_admission(session.thread_id, &first);
+    let second_admission = explicit_test_admission(session.thread_id, &second);
+    persist_explicit_test_admission(&session, &first_admission).await;
+    persist_explicit_test_admission(&session, &second_admission).await;
+    let first_id = first.id.as_ref().expect("first update ID").clone();
+    let second_id = second.id.as_ref().expect("second update ID").clone();
+    {
+        let mut delivered = session
+            .delivered_explicit_inter_agent_updates
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        delivered.insert(first_id.clone());
+        delivered.insert(second_id.clone());
+    }
+    *session.active_turn.lock().await = Some(ActiveTurn::default());
+    let turn_context = session.new_default_turn().await;
+    let _ = drain_raw_response_items(&rx_event);
+    let batch = vec![
+        TurnInput::InterAgentCommunication(first.clone()),
+        TurnInput::InterAgentCommunication(second.clone()),
+    ];
+
+    store.fail_next_append();
+    let first_attempt = crate::session::turn::run_hooks_and_record_inputs(
+        &session,
+        &turn_context,
+        turn_context.model_info(),
+        &batch,
+        PersistContext::Standard,
+    )
+    .await;
+    assert!(first_attempt.is_err(), "the first queued append should fail once");
+    assert_eq!(store.append_failures.load(Ordering::SeqCst), 1);
+
+    let turn_state = session
+        .active_turn
+        .lock()
+        .await
+        .as_ref()
+        .map(|active_turn| Arc::clone(&active_turn.turn_state))
+        .expect("the failed batch should retain its active turn");
+    let retry_batch = session
+        .input_queue
+        .take_pending_input_for_turn_state(&turn_state)
+        .await;
+    assert_eq!(
+        retry_batch
+            .iter()
+            .filter_map(|input| match input {
+                TurnInput::InterAgentCommunication(communication) => communication.id.clone(),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        vec![first_id.clone(), second_id.clone()],
+        "the failed explicit item and its suffix must share one ordered retry path"
+    );
+
+    crate::session::turn::run_hooks_and_record_inputs(
+        &session,
+        &turn_context,
+        turn_context.model_info(),
+        &retry_batch,
+        PersistContext::Standard,
+    )
+    .await
+    .expect("the one-shot failure should recover in original order");
+
+    let (items, stored_thread_id, parse_errors) =
+        RolloutRecorder::load_rollout_items(&rollout_path)
+            .await
+            .expect("read retry rollout");
+    assert_eq!(stored_thread_id, Some(session.thread_id));
+    assert_eq!(parse_errors, 0);
+    assert_eq!(
+        items
+            .iter()
+            .filter_map(|item| match item {
+                RolloutItem::ResponseItem(response) => response
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.inter_agent_update_id.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        vec![first_id.clone(), second_id.clone()],
+        "retry must persist the failed message before its original suffix"
+    );
+    assert_eq!(
+        drain_raw_response_items(&rx_event)
+            .iter()
+            .filter_map(|item| item.id().cloned())
+            .collect::<Vec<_>>(),
+        vec![first_id, second_id],
+        "retry must emit the explicit messages in the same order"
     );
 }
 
