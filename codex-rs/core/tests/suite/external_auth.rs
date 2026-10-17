@@ -591,8 +591,8 @@ async fn amazon_bedrock_aws_auth_refresh_resigns() -> anyhow::Result<()> {
         assert!(
             error
                 .message
-                .contains("AWS credential export command exited with"),
-            "{error:?}"
+                .contains("failed to load AWS credentials:"),
+            "persistent export failure should surface the credential-loading error"
         );
         assert_eq!(
             std::fs::read_to_string(refresh_invocations)?,

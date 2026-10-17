@@ -1153,13 +1153,13 @@ async fn capacity_retry_deduplicates_accepted_output_and_tool_ids() -> Result<()
     let effects_dir = tempfile::tempdir()?;
     let effect_path = effects_dir.path().join("effect.txt");
     let first_args = json!({
-        "command": capacity_retry_append_command(&effect_path, "first"),
+        "cmd": capacity_retry_append_command(&effect_path, "first"),
         "login": false,
         "timeout_ms": 5_000,
     })
     .to_string();
     let distinct_args = json!({
-        "command": capacity_retry_append_command(&effect_path, "distinct"),
+        "cmd": capacity_retry_append_command(&effect_path, "distinct"),
         "login": false,
         "timeout_ms": 5_000,
     })
@@ -1172,7 +1172,7 @@ async fn capacity_retry_deduplicates_accepted_output_and_tool_ids() -> Result<()
                 responses::ev_message_item_added(partial_id, ""),
                 responses::ev_output_text_delta("accepted before failure"),
                 responses::ev_assistant_message(partial_id, "accepted before failure"),
-                responses::ev_function_call(first_call_id, "shell_command", &first_args),
+                responses::ev_function_call(first_call_id, "exec_command", &first_args),
             ])),
             ResponseTemplate::new(503).set_body_json(json!({
                 "error": {
@@ -1186,8 +1186,8 @@ async fn capacity_retry_deduplicates_accepted_output_and_tool_ids() -> Result<()
                 responses::ev_message_item_added(partial_id, ""),
                 responses::ev_output_text_delta("accepted before failure"),
                 responses::ev_assistant_message(partial_id, "accepted before failure"),
-                responses::ev_function_call(first_call_id, "shell_command", &first_args),
-                responses::ev_function_call(distinct_call_id, "shell_command", &distinct_args),
+                responses::ev_function_call(first_call_id, "exec_command", &first_args),
+                responses::ev_function_call(distinct_call_id, "exec_command", &distinct_args),
                 responses::ev_completed("capacity-replay-recovery"),
             ])),
             responses::sse_response(responses::sse(vec![
@@ -1309,13 +1309,13 @@ async fn capacity_retry_rejects_conflicting_tool_call_id() -> Result<()> {
     let effects_dir = tempfile::tempdir()?;
     let effect_path = effects_dir.path().join("effect.txt");
     let accepted_args = json!({
-        "command": capacity_retry_append_command(&effect_path, "accepted"),
+        "cmd": capacity_retry_append_command(&effect_path, "accepted"),
         "login": false,
         "timeout_ms": 5_000,
     })
     .to_string();
     let conflicting_args = json!({
-        "command": capacity_retry_append_command(&effect_path, "conflict"),
+        "cmd": capacity_retry_append_command(&effect_path, "conflict"),
         "login": false,
         "timeout_ms": 5_000,
     })
@@ -1327,7 +1327,7 @@ async fn capacity_retry_rejects_conflicting_tool_call_id() -> Result<()> {
                 responses::ev_response_created("capacity-conflict-partial"),
                 responses::ev_function_call(
                     "capacity-conflict-call",
-                    "shell_command",
+                    "exec_command",
                     &accepted_args,
                 ),
             ])),
@@ -1345,13 +1345,13 @@ async fn capacity_retry_rejects_conflicting_tool_call_id() -> Result<()> {
                     "item": {
                         "type": "function_call",
                         "call_id": "capacity-conflict-call",
-                        "name": "shell_command",
+                        "name": "exec_command",
                         "arguments": accepted_args,
                     }
                 }),
                 responses::ev_function_call(
                     "capacity-conflict-call",
-                    "shell_command",
+                    "exec_command",
                     &conflicting_args,
                 ),
                 responses::ev_completed("capacity-conflict-replayed"),
