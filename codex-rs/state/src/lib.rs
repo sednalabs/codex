@@ -95,6 +95,8 @@ pub use runtime::MemoryStore;
 pub use runtime::ProviderCallUsageRecord;
 pub use runtime::ProviderCallUsageWriteOutcome;
 pub use runtime::RemoteControlEnrollmentRecord;
+pub use runtime::SpawnRequestUsageRecord;
+pub use runtime::SpawnRequestUsageWriteOutcome;
 pub use runtime::SqliteIntegrityCheck;
 pub use runtime::SqliteQueueStore;
 pub use runtime::ThreadFilterOptions;

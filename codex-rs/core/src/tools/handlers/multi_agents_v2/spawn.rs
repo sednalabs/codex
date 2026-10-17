@@ -221,6 +221,29 @@ async fn handle_spawn_agent(
             collab_spawn_error(err)
         })?;
     let new_thread_id = spawned_agent.thread_id;
+    if let Some(state_db) = session.state_db() {
+        let usage_record = codex_state::SpawnRequestUsageRecord {
+            parent_thread_id: session.thread_id.to_string(),
+            parent_turn_id: turn.sub_id.clone(),
+            tool_call_id: call_id.clone(),
+            child_thread_id: new_thread_id.to_string(),
+            requested_model: args.model.clone(),
+            requested_role: role_name.map(str::to_owned),
+            requested_reasoning_effort: args
+                .reasoning_effort
+                .as_ref()
+                .map(|effort| effort.as_str().to_string()),
+        };
+        if state_db
+            .record_spawn_request_usage(&usage_record)
+            .await
+            .is_err()
+        {
+            // Spawn already succeeded. Usage recording is best-effort and must
+            // never change availability or emit untrusted IDs/metadata.
+            tracing::warn!("failed to record successful spawn usage edge; continuing");
+        }
+    }
     let agent_status = spawned_agent.status;
     let nickname = agent_snapshot
         .session_source
