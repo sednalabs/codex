@@ -31,8 +31,7 @@ fn extracted_zip_permissions_mask_suid_and_sgid_but_keep_executable_bits() {
 
     let tmp = tempdir().expect("tempdir");
     let archive = zipball_with_suid_sgid_file();
-    let mut zip =
-        ZipArchive::new(std::io::Cursor::new(&archive)).expect("open fixture archive");
+    let mut zip = ZipArchive::new(std::io::Cursor::new(&archive)).expect("open fixture archive");
     assert_eq!(
         zip.by_index(0)
             .expect("read fixture entry")
@@ -1464,8 +1463,7 @@ fn zipball_with_suid_sgid_file() -> Vec<u8> {
         .position(|window| window == b"PK\x01\x02")
         .expect("central directory entry");
     let mode: u32 = (0o100000 | 0o6755) << 16;
-    bytes[central_directory + 38..central_directory + 42]
-        .copy_from_slice(&mode.to_le_bytes());
+    bytes[central_directory + 38..central_directory + 42].copy_from_slice(&mode.to_le_bytes());
     bytes
 }
 

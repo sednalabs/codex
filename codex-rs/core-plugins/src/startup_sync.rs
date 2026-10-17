@@ -1112,23 +1112,18 @@ fn apply_zip_permissions(mode: Option<u32>, output_path: &Path) -> Result<(), St
     let Some(mode) = mode else {
         return Ok(());
     };
-    std::fs::set_permissions(
-        output_path,
-        std::fs::Permissions::from_mode(mode & 0o777),
+    std::fs::set_permissions(output_path, std::fs::Permissions::from_mode(mode & 0o777)).map_err(
+        |err| {
+            format!(
+                "failed to set permissions on curated plugins file {}: {err}",
+                output_path.display()
+            )
+        },
     )
-    .map_err(|err| {
-        format!(
-            "failed to set permissions on curated plugins file {}: {err}",
-            output_path.display()
-        )
-    })
 }
 
 #[cfg(not(unix))]
-fn apply_zip_permissions(
-    _mode: Option<u32>,
-    _output_path: &Path,
-) -> Result<(), String> {
+fn apply_zip_permissions(_mode: Option<u32>, _output_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
