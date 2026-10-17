@@ -67,11 +67,11 @@ mod exec_server_args_tests;
 mod exec_server_auth;
 mod exec_server_command;
 mod exec_server_telemetry;
+mod instruction_debug;
 mod marketplace_cmd;
 mod mcp_cmd;
 mod mcp_login;
 mod migrate_rollouts;
-mod instruction_debug;
 mod plugin_cmd;
 mod queue_cmd;
 mod remote_control_cmd;
@@ -1765,7 +1765,15 @@ async fn cli_main(
                     root_remote_auth_token_env.as_deref(),
                     "debug instructions",
                 )?;
-                instruction_debug::run(cmd, root_config_overrides).await?;
+                let loader_overrides =
+                    loader_overrides_for_profile(interactive.config_profile_v2.as_ref())?;
+                instruction_debug::run(
+                    cmd,
+                    root_config_overrides,
+                    interactive.cwd,
+                    loader_overrides,
+                )
+                .await?;
             }
             DebugSubcommand::TraceReduce(cmd) => {
                 reject_remote_mode_for_subcommand(
@@ -1911,6 +1919,9 @@ fn profile_v2_for_subcommand<'a>(
         | Subcommand::Sandbox(_)
         | Subcommand::Debug(DebugCommand {
             subcommand: DebugSubcommand::PromptInput(_),
+        }) => Ok(Some(profile_v2)),
+        Subcommand::Debug(DebugCommand {
+            subcommand: DebugSubcommand::Instructions(_),
         }) => Ok(Some(profile_v2)),
         _ => anyhow::bail!(
             "--profile only applies to runtime commands and `codex mcp`: `codex`, `codex exec`, `codex review`, `codex resume`, `codex queue`, `codex archive`, `codex delete`, `codex unarchive`, `codex fork`, `codex mcp`, `codex sandbox`, and `codex debug prompt-input`."
@@ -3414,6 +3425,10 @@ mod tests {
     fn debug_instructions_parses_opt_in_content_flags() {
         let cli = MultitoolCli::try_parse_from([
             "codex",
+            "--profile",
+            "inspection",
+            "-C",
+            "/tmp/instruction-fixture",
             "debug",
             "instructions",
             "--show-content",
@@ -3426,6 +3441,11 @@ mod tests {
                 subcommand: DebugSubcommand::Instructions(_)
             }))
         ));
+        assert_eq!(cli.interactive.config_profile_v2.as_deref(), Some("inspection"));
+        assert_eq!(
+            cli.interactive.cwd.as_deref(),
+            Some(std::path::Path::new("/tmp/instruction-fixture"))
+        );
     }
 
     #[test]

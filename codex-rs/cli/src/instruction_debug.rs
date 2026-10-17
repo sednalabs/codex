@@ -15,6 +15,7 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::io::Read;
 use std::io::Write;
+use std::path::PathBuf;
 use toml::Value as TomlValue;
 
 const MAX_CONTENT_BYTES: usize = 32_768;
@@ -28,7 +29,8 @@ pub(crate) struct DebugInstructionsCommand {
     show_content: bool,
 
     /// Read caller-selected UTF-8 text from stdin (origin is unverified).
-    /// Never supply credentials or hidden/live instructions.
+    /// Its content is printed only when --show-content is also set. Never
+    /// supply credentials or hidden/live instructions.
     #[arg(long)]
     client_instructions_stdin: bool,
 }
@@ -36,16 +38,21 @@ pub(crate) struct DebugInstructionsCommand {
 pub(crate) async fn run(
     command: DebugInstructionsCommand,
     overrides: CliConfigOverrides,
+    cwd: Option<PathBuf>,
+    loader_overrides: LoaderOverrides,
 ) -> anyhow::Result<()> {
     let parsed_overrides = overrides
         .parse_overrides()
         .map_err(|_| anyhow::anyhow!("unable to load instruction configuration"))?;
     let codex_home = codex_core::config::find_codex_home()
         .map_err(|_| anyhow::anyhow!("unable to load instruction configuration"))?;
-    let cwd = AbsolutePathBuf::current_dir()
-        .map_err(|_| anyhow::anyhow!("unable to load instruction configuration"))?;
+    let cwd = match cwd {
+        Some(path) => AbsolutePathBuf::relative_to_current_dir(path),
+        None => AbsolutePathBuf::current_dir(),
+    }
+    .map_err(|_| anyhow::anyhow!("unable to load instruction configuration"))?;
     let options = ConfigLoadOptions {
-        loader_overrides: LoaderOverrides::default(),
+        loader_overrides,
         strict_config: false,
         cloud_config_bundle: CloudConfigBundleLoader::default(),
     };
@@ -63,9 +70,18 @@ pub(crate) async fn run(
     let stdin_text =
         read_optional_input(command.client_instructions_stdin, std::io::stdin().lock())?;
 
+    let report = build_report(&layers, command.show_content, stdin_text.as_deref())?;
+    write_bounded_json(&report, &mut std::io::stdout().lock())
+}
+
+fn build_report(
+    layers: &codex_config::ConfigLayerStack,
+    show_content: bool,
+    stdin_text: Option<&str>,
+) -> anyhow::Result<JsonValue> {
     let effective = layers.effective_config();
     let origins = layers.origins_with_path_filter(|path| is_instruction_path(path));
-    let fields = project_inline_config(&effective, &origins, &layers, command.show_content)?;
+    let fields = project_inline_config(&effective, &origins, layers, show_content)?;
 
     let requirements = layers.requirements();
     let managed_present = layers
@@ -82,13 +98,13 @@ pub(crate) async fn run(
         "content": "excluded; local-managed instruction content is never displayed",
     });
 
-    let client_text = stdin_text.as_deref().map(|text| {
+    let client_text = stdin_text.map(|text| {
         let (redacted, count) = redact(text);
         (redacted, count)
     });
     let caller_supplied = if let Some((redacted, count)) = client_text {
         let mut section = json!({"present": true, "origin": "caller-supplied; unverified", "redacted_lines": count});
-        if command.show_content {
+        if show_content {
             section["content"] = json!(redacted);
         }
         section
@@ -98,7 +114,7 @@ pub(crate) async fn run(
 
     // These boundaries are intentionally explicit: this is a local config
     // projection, not a complete or authoritative session-prompt inspection.
-    let report = json!({
+    Ok(json!({
         "scope": "selected local merged configuration; not a complete effective session prompt",
         "inline_configuration": fields,
         "local_managed_additional_developer_instructions": managed,
@@ -114,15 +130,22 @@ pub(crate) async fn run(
             "compiled cadence transforms are conditional and were not evaluated",
         ],
         "publication_warning": "heuristic redaction only; unfamiliar, split-line, multiline, encoded, or unrecognized secrets may remain; absence of credentials is not guaranteed",
-    });
-    let mut output = serde_json::to_vec(&report)
+    }))
+}
+
+fn serialize_bounded_json(report: &JsonValue) -> anyhow::Result<Vec<u8>> {
+    let mut output = serde_json::to_vec(report)
         .map_err(|_| anyhow::anyhow!("unable to serialize instruction report"))?;
     output.push(b'\n');
     if output.len() > MAX_REPORT_BYTES {
         anyhow::bail!("instruction report exceeds the output size limit");
     }
-    std::io::stdout()
-        .lock()
+    Ok(output)
+}
+
+fn write_bounded_json<W: Write>(report: &JsonValue, writer: &mut W) -> anyhow::Result<()> {
+    let output = serialize_bounded_json(report)?;
+    writer
         .write_all(&output)
         .map_err(|_| anyhow::anyhow!("unable to write instruction report"))?;
     Ok(())
@@ -137,10 +160,10 @@ const INSTRUCTION_PATHS: &[&[&str]] = &[
         "multi_agent_v2",
         "subagent_developer_instructions",
     ],
-    &["features", "multi_agent_mode_hint_text"],
-    &["features", "usage_hint_text"],
-    &["features", "root_agent_usage_hint_text"],
-    &["features", "subagent_usage_hint_text"],
+    &["features", "multi_agent_v2", "multi_agent_mode_hint_text"],
+    &["features", "multi_agent_v2", "usage_hint_text"],
+    &["features", "multi_agent_v2", "root_agent_usage_hint_text"],
+    &["features", "multi_agent_v2", "subagent_usage_hint_text"],
 ];
 const MODEL_INSTRUCTIONS_PATH: &[&str] = &["model_instructions_file"];
 
@@ -369,16 +392,30 @@ mod tests {
 
     #[test]
     fn instruction_projection_never_selects_unrelated_fields() {
-        let secretish = vec!["api_key".to_string()];
-        assert!(!is_instruction_path(&secretish));
-        assert!(INSTRUCTION_PATHS.iter().all(|path| {
-            is_instruction_path(
-                &path
-                    .iter()
-                    .map(|part| (*part).to_string())
-                    .collect::<Vec<_>>(),
-            )
-        }));
+        let expected: &[&[&str]] = &[
+            &["instructions"],
+            &["developer_instructions"],
+            &["model_instructions_file"],
+            &[
+                "features",
+                "multi_agent_v2",
+                "subagent_developer_instructions",
+            ],
+            &["features", "multi_agent_v2", "multi_agent_mode_hint_text"],
+            &["features", "multi_agent_v2", "usage_hint_text"],
+            &["features", "multi_agent_v2", "root_agent_usage_hint_text"],
+            &["features", "multi_agent_v2", "subagent_usage_hint_text"],
+        ];
+        let actual = INSTRUCTION_PATHS
+            .iter()
+            .map(|path| path.join("."))
+            .collect::<Vec<_>>();
+        let expected = expected
+            .iter()
+            .map(|path| path.join("."))
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
+        assert!(!is_instruction_path(&["api_key".to_string()]));
     }
 
     #[test]
@@ -409,36 +446,66 @@ mod tests {
     }
 
     #[test]
-    fn json_expansion_is_checked_on_encoded_report_bytes() {
-        let escaped = json!({"content": "\\\"\n".repeat(16_384)});
-        assert!(serde_json::to_vec(&escaped).expect("JSON encoding").len() > 32_768);
+    fn oversized_encoded_report_writes_no_partial_output() {
+        let worst_case_text = "\0".repeat(MAX_CONTENT_BYTES);
+        let report = build_report(
+            &codex_config::ConfigLayerStack::default(),
+            true,
+            Some(&worst_case_text),
+        )
+        .expect("complete report assembly");
+        let mut output = Vec::new();
+        assert!(write_bounded_json(&report, &mut output).is_err());
+        assert!(
+            output.is_empty(),
+            "oversized report must not write a prefix"
+        );
     }
 
     #[tokio::test]
-    async fn fixture_loader_projects_only_instruction_keys_and_hides_managed_content() {
+    async fn fixture_loader_honors_profile_trusted_project_cwd_and_cli_precedence() {
         let temp = tempdir().expect("fixture directory");
         let home = temp.path().join("home");
         std::fs::create_dir_all(&home).expect("fixture home");
-        let user_config = home.join("config.toml");
+        let project = temp.path().join("project");
+        let cwd = project.join("nested");
+        std::fs::create_dir_all(project.join(".git")).expect("fixture git root");
+        std::fs::create_dir_all(project.join(".codex")).expect("fixture project config dir");
+        std::fs::write(project.join(".git/HEAD"), "ref: refs/heads/main\n")
+            .expect("fixture git head");
+        std::fs::create_dir_all(&cwd).expect("fixture cwd");
+        let project_key =
+            toml::Value::String(codex_config::loader::project_trust_key(&project)).to_string();
         std::fs::write(
-            &user_config,
+            home.join("config.toml"),
+            format!(
+                "instructions = \"base instruction\"\napi_key = \"UNRELATED_API_KEY_MUST_NOT_APPEAR\"\naccess_token = \"UNRELATED_ACCESS_TOKEN_MUST_NOT_APPEAR\"\nprovider = \"UNRELATED_PROVIDER_MUST_NOT_APPEAR\"\nenvironment_secret = \"UNRELATED_ENV_SECRET_MUST_NOT_APPEAR\"\nauth_token = \"UNRELATED_AUTH_TOKEN_MUST_NOT_APPEAR\"\n[projects.{project_key}]\ntrust_level = \"trusted\"\n"
+            ),
+        )
+        .expect("write base user config fixture");
+        let profile: codex_utils_cli::ProfileV2Name = "inspection".parse().expect("profile name");
+        let mut loader_overrides =
+            super::super::loader_overrides_for_profile_at_codex_home(Some(&profile), &home);
+        let profile_path = codex_core::config::resolve_profile_v2_config_path(&home, &profile);
+        std::fs::write(
+            profile_path,
             r#"
-instructions = "visible only with opt-in"
-developer_instructions = "developer text"
+developer_instructions = "profile developer text"
 model_instructions_file = "/forbidden/not-opened.md"
-api_key = "UNRELATED_API_KEY_MUST_NOT_APPEAR"
-access_token = "UNRELATED_ACCESS_TOKEN_MUST_NOT_APPEAR"
-provider = "UNRELATED_PROVIDER_MUST_NOT_APPEAR"
-environment_secret = "UNRELATED_ENV_SECRET_MUST_NOT_APPEAR"
-auth_token = "UNRELATED_AUTH_TOKEN_MUST_NOT_APPEAR"
 features.multi_agent_v2.subagent_developer_instructions = "subagent text"
-features.multi_agent_mode_hint_text = "mode hint"
-features.usage_hint_text = "user usage hint"
-features.root_agent_usage_hint_text = "root usage hint"
-features.subagent_usage_hint_text = "subagent usage hint"
+features.multi_agent_v2.multi_agent_mode_hint_text = "profile mode hint"
+features.multi_agent_v2.usage_hint_text = "profile usage hint"
+features.multi_agent_v2.root_agent_usage_hint_text = "root usage hint"
+features.multi_agent_v2.subagent_usage_hint_text = "subagent usage hint"
 "#,
         )
-        .expect("write config fixture");
+        .expect("write profile fixture");
+        std::fs::write(
+            project.join(".codex/config.toml"),
+            r#"instructions = "project instruction"
+features.multi_agent_v2.multi_agent_mode_hint_text = "project mode hint""#,
+        )
+        .expect("write project config fixture");
         let requirements_path = home.join("requirements.toml");
         std::fs::write(
             &requirements_path,
@@ -446,24 +513,21 @@ features.subagent_usage_hint_text = "subagent usage hint"
         )
         .expect("write requirements fixture");
 
-        let mut loader_overrides = LoaderOverrides::default();
-        loader_overrides.user_config_path =
-            Some(AbsolutePathBuf::from_absolute_path(&user_config).expect("absolute user config"));
         loader_overrides.managed_config_path = Some(home.join("managed_config.toml"));
         loader_overrides.system_config_path = Some(home.join("system.toml"));
         loader_overrides.system_requirements_path = Some(requirements_path.clone());
-        loader_overrides.ignore_project_config = true;
         #[cfg(target_os = "macos")]
         {
             loader_overrides.managed_preferences_base64 = Some(String::new());
+            loader_overrides.macos_managed_config_requirements_base64 = Some(String::new());
         }
         let layers = load_config_layers_state(
             LOCAL_FS.as_ref(),
             &home,
-            Some(AbsolutePathBuf::from_absolute_path(&home).expect("absolute cwd")),
+            Some(AbsolutePathBuf::from_absolute_path(&cwd).expect("absolute cwd")),
             &[(
-                "features.usage_hint_text".to_string(),
-                TomlValue::String("session usage hint".to_string()),
+                "features.multi_agent_v2.usage_hint_text".to_string(),
+                TomlValue::String("CLI usage hint".to_string()),
             )],
             ConfigLoadOptions {
                 loader_overrides,
@@ -474,7 +538,6 @@ features.subagent_usage_hint_text = "subagent usage hint"
         )
         .await
         .expect("load fixture-only config");
-        let effective = layers.effective_config();
         let origins = layers.origins_with_path_filter(|path| is_instruction_path(path));
         assert_eq!(origins.len(), INSTRUCTION_PATHS.len());
         assert!(
@@ -482,22 +545,71 @@ features.subagent_usage_hint_text = "subagent usage hint"
                 .values()
                 .any(|origin| matches!(origin.name, ConfigLayerSource::SessionFlags))
         );
+        assert!(matches!(
+            origins["instructions"].name,
+            ConfigLayerSource::Project { .. }
+        ));
+        assert!(matches!(
+            &origins["developer_instructions"].name,
+            ConfigLayerSource::User {
+                profile: Some(name), ..
+            } if name == "inspection"
+        ));
+        assert!(matches!(
+            origins["features.multi_agent_v2.usage_hint_text"].name,
+            ConfigLayerSource::SessionFlags
+        ));
+        assert!(matches!(
+            origins["features.multi_agent_v2.multi_agent_mode_hint_text"].name,
+            ConfigLayerSource::Project { .. }
+        ));
 
-        let fields = project_inline_config(&effective, &origins, &layers, false)
-            .expect("metadata projection");
-        let default_json = serde_json::to_string(&fields).expect("default JSON");
-        assert!(!default_json.contains("visible only with opt-in"));
+        let default_report = build_report(&layers, false, None).expect("default report");
+        let default_json = serde_json::to_string(&default_report).expect("default JSON");
+        assert!(!default_json.contains("project instruction"));
+        assert!(!default_json.contains("profile developer text"));
         assert!(!default_json.contains("UNRELATED_API_KEY"));
         assert!(!default_json.contains("UNRELATED_ACCESS_TOKEN"));
         assert!(!default_json.contains("UNRELATED_PROVIDER"));
         assert!(!default_json.contains("UNRELATED_ENV_SECRET"));
         assert!(!default_json.contains("UNRELATED_AUTH_TOKEN"));
         assert!(default_json.contains("/forbidden/not-opened.md"));
+        let default_managed_report =
+            &default_report["local_managed_additional_developer_instructions"];
+        assert!(
+            default_managed_report["present"]
+                .as_bool()
+                .expect("presence boolean")
+        );
+        assert!(
+            default_managed_report
+                .to_string()
+                .contains("requirements.toml")
+        );
+        assert!(!default_json.contains("MANAGED_CONTENT_MUST_NEVER_LEAK"));
+        let stdin_hidden_report = build_report(&layers, false, Some("caller-supplied text"))
+            .expect("hidden stdin report");
+        assert!(
+            stdin_hidden_report["caller_supplied_text"]["present"]
+                .as_bool()
+                .expect("stdin presence")
+        );
+        assert!(
+            stdin_hidden_report["caller_supplied_text"]
+                .get("content")
+                .is_none()
+        );
 
-        let with_content =
-            project_inline_config(&effective, &origins, &layers, true).expect("content projection");
-        let content_json = serde_json::to_string(&with_content).expect("content JSON");
-        assert!(content_json.contains("visible only with opt-in"));
+        let content_report =
+            build_report(&layers, true, Some("caller-supplied text")).expect("content report");
+        let content_json = serde_json::to_string(&content_report).expect("content JSON");
+        assert!(content_json.contains("project instruction"));
+        assert!(content_json.contains("profile developer text"));
+        assert!(content_json.contains("CLI usage hint"));
+        assert_eq!(
+            content_report["caller_supplied_text"]["origin"],
+            "caller-supplied; unverified"
+        );
         assert!(!content_json.contains("UNRELATED_API_KEY"));
         assert!(!content_json.contains("UNRELATED_ACCESS_TOKEN"));
         assert!(!content_json.contains("UNRELATED_PROVIDER"));
@@ -505,16 +617,7 @@ features.subagent_usage_hint_text = "subagent usage hint"
         assert!(!content_json.contains("UNRELATED_AUTH_TOKEN"));
         assert!(!content_json.contains("MANAGED_CONTENT_MUST_NEVER_LEAK"));
 
-        let managed_source = layers
-            .requirements()
-            .additional_developer_instructions
-            .as_ref()
-            .map(|sourced| requirement_source_metadata(&sourced.source));
-        let managed_report = json!({
-            "present": layers.requirements_toml().additional_developer_instructions.is_some(),
-            "source": managed_source,
-            "content": "excluded; local-managed instruction content is never displayed",
-        });
+        let managed_report = &content_report["local_managed_additional_developer_instructions"];
         assert!(
             managed_report["present"]
                 .as_bool()
