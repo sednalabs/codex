@@ -653,7 +653,7 @@ async fn trusted_project_role_overlay_reaches_the_spawned_child_request() -> Res
         .await?;
     let spawn_args = serde_json::to_string(&json!({
         "message": "project role child task",
-        "task_name": "project-worker",
+        "task_name": "project_worker",
         "agent_type": "project-role",
         "fork_turns": "none",
     }))?;
@@ -672,14 +672,14 @@ async fn trusted_project_role_overlay_reaches_the_spawned_child_request() -> Res
         ]),
     )
     .await;
-    let wait_target_seen =
+    let wait_target_path_seen =
         std::sync::Arc::new(std::sync::atomic::AtomicBool::new(/*value*/ false));
     struct WaitForSpawnedRoleResponder {
-        wait_target_seen: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        wait_target_path_seen: std::sync::Arc<std::sync::atomic::AtomicBool>,
     }
     impl wiremock::Respond for WaitForSpawnedRoleResponder {
         fn respond(&self, request: &wiremock::Request) -> wiremock::ResponseTemplate {
-            let agent_id = decoded_request_body(request)
+            let task_path = decoded_request_body(request)
                 .and_then(|body| serde_json::from_slice::<Value>(&body).ok())
                 .and_then(|body| body.get("input")?.as_array().cloned())
                 .and_then(|input| {
@@ -689,16 +689,16 @@ async fn trusted_project_role_overlay_reaches_the_spawned_child_request() -> Res
                             .then(|| item.get("output")?.as_str())
                             .flatten()
                             .and_then(|output| serde_json::from_str::<Value>(output).ok())
-                            .and_then(|output| output.get("agent_id")?.as_str().map(str::to_owned))
+                            .and_then(|output| output.get("task_name")?.as_str().map(str::to_owned))
                     })
                 });
-            let targets = match agent_id {
-                Some(agent_id) => {
-                    self.wait_target_seen
+            let targets = match task_path {
+                Some(task_path) => {
+                    self.wait_target_path_seen
                         .store(/*value*/ true, std::sync::atomic::Ordering::SeqCst);
-                    vec![agent_id]
+                    vec![task_path]
                 }
-                None => vec!["missing-spawn-agent-id".to_string()],
+                None => vec!["missing_spawn_path".to_string()],
             };
             let wait_args = json!({
                 "targets": targets,
@@ -723,7 +723,7 @@ async fn trusted_project_role_overlay_reaches_the_spawned_child_request() -> Res
         .and(wiremock::matchers::path_regex(".*/responses$"))
         .and(|request: &wiremock::Request| request_body_contains(request, "spawn-project-role"))
         .respond_with(WaitForSpawnedRoleResponder {
-            wait_target_seen: std::sync::Arc::clone(&wait_target_seen),
+            wait_target_path_seen: std::sync::Arc::clone(&wait_target_path_seen),
         })
         .up_to_n_times(/*n_times*/ 1)
         .mount(&server)
@@ -754,8 +754,8 @@ async fn trusted_project_role_overlay_reaches_the_spawned_child_request() -> Res
         .function_call_output_text("wait-project-worker")
         .expect("root continuation contains the targeted wait result");
     assert!(
-        wait_target_seen.load(std::sync::atomic::Ordering::SeqCst),
-        "spawn response did not provide an exact agent ID for wait_agent"
+        wait_target_path_seen.load(std::sync::atomic::Ordering::SeqCst),
+        "spawn response did not provide a canonical task path for wait_agent"
     );
     let wait_result: Value = serde_json::from_str(&wait_output)?;
     assert_eq!(
