@@ -74,9 +74,7 @@ def _assert(condition: bool, message: str) -> None:
         raise AssertionError(message)
 
 
-def _safe_report_process_diagnostic(
-    returncode: int, stdout: str, stderr: str
-) -> str:
+def _safe_report_process_diagnostic(returncode: int, stdout: str, stderr: str) -> str:
     status = "unavailable"
     reason_codes: tuple[str, ...] = ()
     error_reason = "none"
@@ -106,7 +104,7 @@ def _safe_report_process_diagnostic(
 
     source_line = "none"
     for line in stderr.splitlines():
-        marker = "scripts/codex_usage_report.py\", line "
+        marker = 'scripts/codex_usage_report.py", line '
         if marker not in line:
             continue
         suffix = line.rsplit(marker, 1)[1]
@@ -174,7 +172,11 @@ def _create_database(path: Path, *, current_indexes: bool) -> None:
             (
                 ("spawn-sentinel", ROOT_THREAD, "synthetic-child"),
                 ("spawn-child-grandchild", "synthetic-child", "synthetic-grandchild"),
-                ("spawn-child-zero-leaf", "synthetic-child", "synthetic-zero-call-leaf"),
+                (
+                    "spawn-child-zero-leaf",
+                    "synthetic-child",
+                    "synthetic-zero-call-leaf",
+                ),
             ),
         )
         connection.executemany(
@@ -743,7 +745,6 @@ def _check_indexed_spawn_walk_without_optional_call_indexes(temporary: Path) -> 
     )
 
 
-
 def _check_call_limit_partial(temporary: Path) -> None:
     database = temporary / "call-limit-partial.sqlite"
     _create_database(database, current_indexes=True)
@@ -766,8 +767,7 @@ def _check_call_limit_partial(temporary: Path) -> None:
         "selected-call cap is visible without discarding its bounded subtotal",
     )
     _assert(
-        reporter.selected_rows == 2
-        and result["summary"]["provider_call_count"] == 2,
+        reporter.selected_rows == 2 and result["summary"]["provider_call_count"] == 2,
         "only rows below the fixed call limit contribute to a partial report",
     )
     _assert(
@@ -856,16 +856,20 @@ def _check_streaming_query_indexes(temporary: Path) -> None:
         probe = reporter._probe_token_call(str(row["provider_call_id"]))
         _assert(probe is not None, "stable call ID probe finds one exact row")
         details = [
-            detail
-            for query in reporter.query_plans
-            for detail in query["details"]
+            detail for query in reporter.query_plans for detail in query["details"]
         ]
         _assert(
-            any("SEARCH" in detail and "usage_provider_calls" in detail for detail in details),
+            any(
+                "SEARCH" in detail and "usage_provider_calls" in detail
+                for detail in details
+            ),
             "both ordered selected-call passes use an exact thread index",
         )
         _assert(
-            any("SEARCH" in detail and "provider_call_id" in detail for detail in details),
+            any(
+                "SEARCH" in detail and "provider_call_id" in detail
+                for detail in details
+            ),
             "cross-ledger reconciliation uses an indexed provider-call ID probe",
         )
     finally:
@@ -1185,7 +1189,9 @@ def _check_streaming_missing_call_id(temporary: Path) -> None:
 
 
 def _check_streaming_invalid_call_ids(temporary: Path) -> None:
-    _assert(report._exact_provider_call_id(42) is None, "numeric IDs are not stringified")
+    _assert(
+        report._exact_provider_call_id(42) is None, "numeric IDs are not stringified"
+    )
     _assert(
         report._exact_provider_call_id("x" * 129) is None
         and report._exact_provider_call_id("   ") is None,
@@ -1352,13 +1358,21 @@ def _check_multi_ledger_reconciliation(temporary: Path) -> None:
         "the two explicit source roles are preserved",
     )
     dedupe = result["deduplication"]
-    _assert(dedupe["selected_provider_call_rows"] == 10, "both indexed selections are counted")
+    _assert(
+        dedupe["selected_provider_call_rows"] == 10,
+        "both indexed selections are counted",
+    )
     _assert(
         dedupe["identical_mirrored_rows_collapsed"] == 3,
         "three exact in-scope mirrored rows are each counted once",
     )
-    _assert(dedupe["conflicting_call_id_count"] == 1, "conflicting call IDs are surfaced")
-    _assert(dedupe["rows_excluded_for_conflicting_call_ids"] == 2, "both conflict copies are excluded")
+    _assert(
+        dedupe["conflicting_call_id_count"] == 1, "conflicting call IDs are surfaced"
+    )
+    _assert(
+        dedupe["rows_excluded_for_conflicting_call_ids"] == 2,
+        "both conflict copies are excluded",
+    )
     _assert(
         dedupe["configured_attribution_conflict_provider_call_count"] == 1,
         "conflicting spawn configuration is counted without selecting either value",
@@ -1389,12 +1403,18 @@ def _check_multi_ledger_reconciliation(temporary: Path) -> None:
         ),
         "the shared budget measures only output model attribution strings",
     )
-    _assert(result["summary"]["provider_call_count"] == 5, "only unambiguous calls contribute")
+    _assert(
+        result["summary"]["provider_call_count"] == 5,
+        "only unambiguous calls contribute",
+    )
     _assert(
         result["summary"]["token_sums_known_subtotal"]["uncached_input_tokens"] == 36,
         "exact mirror is counted once and conflicting call tokens are excluded",
     )
-    _assert(result["scope_totals"]["requested_root"]["provider_call_count"] == 1, "root usage stays separate")
+    _assert(
+        result["scope_totals"]["requested_root"]["provider_call_count"] == 1,
+        "root usage stays separate",
+    )
     _assert(
         result["scope_totals"]["all_descendants"]["provider_call_count"] == 4,
         "only lineage-resolved nested descendants are included",
@@ -1407,9 +1427,7 @@ def _check_multi_ledger_reconciliation(temporary: Path) -> None:
         result["scope_totals"]["unresolved_lineage"]["provider_call_count"] == 0,
         "recorded-root conflicts are distinct from missing lineage",
     )
-    by_model = {
-        item["actual_model_used"]: item for item in result["by_actual_model"]
-    }
+    by_model = {item["actual_model_used"]: item for item in result["by_actual_model"]}
     sentinel = by_model["<unavailable>"]["configured_model_effort_evidence"]
     _assert(
         sentinel[0]["configured_model_from_spawn_request"] is None
@@ -1582,7 +1600,9 @@ def _check_requested_subtree_without_recorded_root(temporary: Path) -> None:
         "grandchild-alpha",
         "grandchild-unavailable",
     ):
-        _assert(call_id not in serialized, "private provider-call identifiers stay omitted")
+        _assert(
+            call_id not in serialized, "private provider-call identifiers stay omitted"
+        )
 
 
 def _check_large_subtree_uses_compact_projection(temporary: Path) -> None:
@@ -1601,7 +1621,11 @@ def _check_large_subtree_uses_compact_projection(temporary: Path) -> None:
         connection.executemany(
             "INSERT INTO usage_spawn_requests(spawn_request_id, parent_thread_id, child_thread_id, status) VALUES (?, ?, ?, 'Completed(None)')",
             (
-                (f"spawn-large-{index:04d}", ROOT_THREAD, f"synthetic-detached-{index:04d}")
+                (
+                    f"spawn-large-{index:04d}",
+                    ROOT_THREAD,
+                    f"synthetic-detached-{index:04d}",
+                )
                 for index in range(report.MAX_OUTPUT_GROUPS + 1)
             ),
         )

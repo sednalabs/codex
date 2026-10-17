@@ -252,9 +252,7 @@ def test_packaged_usage_report_covers_recorded_synthetic_spawn_tree(
     for directory in (codex_home, workspace, temporary):
         directory.mkdir(parents=True)
     (workspace / ".git").mkdir()
-    (workspace / ".git" / "HEAD").write_text(
-        "ref: refs/heads/main\n", encoding="utf-8"
-    )
+    (workspace / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
 
     environment = {
         key: package.environment[key]
@@ -555,8 +553,7 @@ def test_packaged_usage_report_covers_recorded_synthetic_spawn_tree(
             "Recorded spawn edge did not match the successful call", pytrace=False
         )
     calls_by_thread = {
-        row["thread_id"]: (row["call_count"], row["total_tokens"])
-        for row in call_rows
+        row["thread_id"]: (row["call_count"], row["total_tokens"]) for row in call_rows
     }
     if calls_by_thread != {root_id: (3, 15), child_id: (1, 5)}:
         pytest.fail("Synthetic provider-call totals were not preserved", pytrace=False)
@@ -673,8 +670,7 @@ def test_packaged_usage_report_covers_recorded_synthetic_spawn_tree(
         and descendant_contribution.get("provider_call_count") == 1
         and contributions.get("disjoint_call_counts_reconcile") is True,
         model_usage(root_models) == {"synthetic-root-provider-model": (3, 15)},
-        model_usage(descendant_models)
-        == {"synthetic-child-provider-model": (1, 5)},
+        model_usage(descendant_models) == {"synthetic-child-provider-model": (1, 5)},
     )
     if not all(report_checks):
         pytest.fail("Packaged root/child usage report did not reconcile", pytrace=False)

@@ -95,9 +95,7 @@ POLICY_COLUMNS = (
     "policy_id, provider, billing_surface, account_plan, rate_card_kind, "
     "effective_from, effective_to, source_url, source_observed_at"
 )
-SPAWN_COLUMNS = (
-    "spawn_request_id, requested_model, requested_reasoning_effort"
-)
+SPAWN_COLUMNS = "spawn_request_id, requested_model, requested_reasoning_effort"
 TOKEN_FIELDS = {
     "uncached_input_tokens": "input_tokens_uncached",
     "cached_input_tokens": "input_tokens_cached",
@@ -667,7 +665,9 @@ class UsageReporter:
         self.thread_columns = (
             LINEAGE_THREAD_COLUMNS if token_only_projection else THREAD_COLUMNS
         )
-        self.deadline = deadline if deadline is not None else time.monotonic() + MAX_SECONDS
+        self.deadline = (
+            deadline if deadline is not None else time.monotonic() + MAX_SECONDS
+        )
         self.max_calls = max_calls
         self.max_selected_text_chars = max_selected_text_chars
         self.max_vm_instructions = max_vm_instructions
@@ -775,9 +775,7 @@ class UsageReporter:
                 continue
             pooled_multi_ledger = self.shared_text_pool is not None
             field_limit = (
-                MAX_MULTI_LEDGER_INTERNAL_TEXT_CHARS.get(
-                    column, MAX_TEXT_FIELD_CHARS
-                )
+                MAX_MULTI_LEDGER_INTERNAL_TEXT_CHARS.get(column, MAX_TEXT_FIELD_CHARS)
                 if pooled_multi_ledger
                 else MAX_TEXT_FIELD_CHARS
             )
@@ -847,17 +845,21 @@ class UsageReporter:
             "fork_parent_thread_id",
         )
         root_value = anchor.get("thread_id")
-        if any(
-            anchor.get(column) is not None
-            and (
-                not isinstance(anchor.get(column), str)
-                or len(anchor[column])
-                > MAX_MULTI_LEDGER_INTERNAL_TEXT_CHARS[
-                    "thread_id" if column == "thread_id" else column
-                ]
+        if (
+            any(
+                anchor.get(column) is not None
+                and (
+                    not isinstance(anchor.get(column), str)
+                    or len(anchor[column])
+                    > MAX_MULTI_LEDGER_INTERNAL_TEXT_CHARS[
+                        "thread_id" if column == "thread_id" else column
+                    ]
+                )
+                for column in identity_columns
             )
-            for column in identity_columns
-        ) or not isinstance(root_value, str) or not root_value.strip():
+            or not isinstance(root_value, str)
+            or not root_value.strip()
+        ):
             self.lineage_walk_incomplete = True
             raise ReportProblem("incomplete", "lineage_root_metadata_invalid")
         root_id = root_value
@@ -931,7 +933,11 @@ class UsageReporter:
                     request_id = _blank_to_none(raw_request_id)
                     child_id = _blank_to_none(raw_child_id)
                     parent_id = _blank_to_none(raw_parent_id)
-                    if request_id is None or parent_id is None or request_id in seen_requests:
+                    if (
+                        request_id is None
+                        or parent_id is None
+                        or request_id in seen_requests
+                    ):
                         self.lineage_walk_incomplete = True
                         continue
                     if len(seen_requests) >= MAX_LINEAGE_NODES:
@@ -986,7 +992,9 @@ class UsageReporter:
                     )
                     if (
                         metadata_parent != parent_id
-                        or (recorded_parent is not None and recorded_parent != parent_id)
+                        or (
+                            recorded_parent is not None and recorded_parent != parent_id
+                        )
                         or (
                             recorded_fork_parent is not None
                             and recorded_fork_parent != parent_id
@@ -1018,7 +1026,9 @@ class UsageReporter:
         calls: list[dict[str, Any]] = []
         if scope_thread_ids is None:
             if seek_start is None or seek_end is None:
-                raise ReportProblem("unavailable", "all_time_requires_exact_thread_scope")
+                raise ReportProblem(
+                    "unavailable", "all_time_requires_exact_thread_scope"
+                )
             sql = (
                 f"SELECT {self.call_columns} FROM usage_provider_calls INDEXED BY {STARTED_INDEX} "
                 "WHERE started_at >= ? AND started_at < ? LIMIT ?"
@@ -1109,7 +1119,11 @@ class UsageReporter:
         self, thread_ids: Sequence[str], *, limit: int, columns_only: bool = False
     ) -> tuple[str, tuple[Any, ...]]:
         placeholders = ",".join("?" for _ in thread_ids)
-        select = "call.provider_call_id, call.thread_id" if columns_only else self._token_call_select()
+        select = (
+            "call.provider_call_id, call.thread_id"
+            if columns_only
+            else self._token_call_select()
+        )
         params: tuple[Any, ...] = (*thread_ids, limit)
         for index in (THREAD_STARTED_INDEX, "usage_provider_calls_thread_idx"):
             sql = (
@@ -1121,11 +1135,17 @@ class UsageReporter:
             try:
                 plan = self.conn.execute("EXPLAIN QUERY PLAN " + sql, params).fetchall()
             except sqlite3.OperationalError as exc:
-                if "no such index" in str(exc).lower() and index == THREAD_STARTED_INDEX:
+                if (
+                    "no such index" in str(exc).lower()
+                    and index == THREAD_STARTED_INDEX
+                ):
                     continue
                 raise
             details = [str(row["detail"]) for row in plan]
-            if not any("SEARCH" in detail and "usage_provider_calls" in detail for detail in details):
+            if not any(
+                "SEARCH" in detail and "usage_provider_calls" in detail
+                for detail in details
+            ):
                 raise ReportProblem("unavailable", "required_reporting_index_missing")
             if self.diagnostics_enabled:
                 self.query_plans.append(
@@ -1135,9 +1155,7 @@ class UsageReporter:
             return sql, params
         raise ReportProblem("incomplete", "required_reporting_index_missing")
 
-    def _selected_token_call_ids(
-        self, scope_thread_ids: Sequence[str]
-    ) -> set[str]:
+    def _selected_token_call_ids(self, scope_thread_ids: Sequence[str]) -> set[str]:
         """Retain only the bounded ID frontier, never selected call rows."""
         selected: set[str] = set()
         rows_seen = 0
@@ -1176,7 +1194,9 @@ class UsageReporter:
         )
         assert self.conn is not None
         if not self._verified_call_id_index:
-            plan = self.conn.execute("EXPLAIN QUERY PLAN " + sql, (provider_call_id,)).fetchall()
+            plan = self.conn.execute(
+                "EXPLAIN QUERY PLAN " + sql, (provider_call_id,)
+            ).fetchall()
             if not any(
                 "SEARCH" in str(row["detail"])
                 and "provider_call_id" in str(row["detail"])
@@ -1191,7 +1211,9 @@ class UsageReporter:
                     }
                 )
             self._verified_call_id_index = True
-        row = self._execute("exact_provider_call_id_probe", sql, (provider_call_id,)).fetchone()
+        row = self._execute(
+            "exact_provider_call_id_probe", sql, (provider_call_id,)
+        ).fetchone()
         return self._account_output_text(row) if row is not None else None
 
     def _iter_token_calls(
@@ -1245,8 +1267,7 @@ class UsageReporter:
             assert self.conn is not None
             plan = self.conn.execute("EXPLAIN QUERY PLAN " + sql, params).fetchall()
             if not any(
-                "SEARCH usage_spawn_requests" in str(row["detail"])
-                for row in plan
+                "SEARCH usage_spawn_requests" in str(row["detail"]) for row in plan
             ):
                 raise ReportProblem(
                     "unavailable", "required_spawn_request_index_missing"
@@ -1765,9 +1786,7 @@ class UsageReporter:
             else:
                 scope_ids = [self.thread_id or ""]
             seek_start, seek_end = (
-                (None, None)
-                if self.all_time
-                else _seek_bounds(self.start, self.end)
+                (None, None) if self.all_time else _seek_bounds(self.start, self.end)
             )
             calls = self._fetch_calls(scope_ids, seek_start, seek_end)
             filtered_calls: list[dict[str, Any]] = []
@@ -1795,9 +1814,7 @@ class UsageReporter:
             if len(scope_nodes) > MAX_OUTPUT_GROUPS and not self.token_only_projection:
                 raise WorkLimitReached("output_group_limit_exceeded")
             participant_limit = (
-                MAX_LINEAGE_NODES
-                if self.token_only_projection
-                else MAX_OUTPUT_GROUPS
+                MAX_LINEAGE_NODES if self.token_only_projection else MAX_OUTPUT_GROUPS
             )
             participating = set(scope_nodes) if self.scope == "subtree" else set()
             if (
@@ -1964,9 +1981,7 @@ class UsageReporter:
             )
 
             thread_rows: list[dict[str, Any]] = []
-            for thread_id in (
-                sorted(participating) if self.scope != "subtree" else ()
-            ):
+            for thread_id in sorted(participating) if self.scope != "subtree" else ():
                 row = metadata.get(thread_id)
                 thread_lineage = lineage.get(thread_id) or self._resolve_lineage(
                     thread_id, metadata, missing_metadata
@@ -2376,7 +2391,12 @@ def _args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--credit-mode",
         required=True,
-        choices=("none", "observed_or_effective_rate", "supplied_standard_scenario", "both"),
+        choices=(
+            "none",
+            "observed_or_effective_rate",
+            "supplied_standard_scenario",
+            "both",
+        ),
     )
     parser.add_argument("--diagnostics", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
@@ -2397,7 +2417,9 @@ def _args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         args.end = dt.datetime.max.replace(tzinfo=UTC)
     else:
         if args.start_utc is None or args.end_utc is None:
-            parser.error("--start-utc and --end-utc are required unless --all-time is set")
+            parser.error(
+                "--start-utc and --end-utc are required unless --all-time is set"
+            )
         try:
             args.start = parse_utc(args.start_utc)
             args.end = parse_utc(args.end_utc)
@@ -2409,9 +2431,10 @@ def _args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error("--historical-database is only supported for subtree scope")
     if (args.historical_database or args.all_time) and args.credit_mode != "none":
         parser.error("all-time and multi-ledger reports require --credit-mode none")
-    if args.historical_database and Path(args.database).resolve() == Path(
+    if (
         args.historical_database
-    ).resolve():
+        and Path(args.database).resolve() == Path(args.historical_database).resolve()
+    ):
         parser.error("current and historical database paths must differ")
     try:
         args.timezone_value = ZoneInfo(args.timezone)
@@ -2533,7 +2556,9 @@ def _add_token_row(metrics: dict[str, Any], row: dict[str, Any]) -> None:
     effort = _blank_to_none(row.get("_configured_effort"))
     metrics["actual_model_evidence"][actual] += 1
     metrics["requested_to_actual_model_evidence"][(requested, actual)] += 1
-    metrics["configured_model_effort_evidence"][(configured, effort, requested, actual)] += 1
+    metrics["configured_model_effort_evidence"][
+        (configured, effort, requested, actual)
+    ] += 1
     for output_name, column in TOKEN_FIELDS.items():
         value = _nonnegative_integer(row.get(column))
         if value is None:
@@ -2696,8 +2721,7 @@ def _merge_exact_root_ledgers(
         elif resolved_root == root_thread_id:
             role = "all_descendants"
         elif (
-            row.get("_requested_subtree_member")
-            and lineage_status == "root_unrecorded"
+            row.get("_requested_subtree_member") and lineage_status == "root_unrecorded"
         ):
             # The exact subtree walk establishes membership relative to the
             # requested anchor even when legacy rows lack a recorded self-root.
@@ -2802,13 +2826,18 @@ class _ExactRootTokenAccumulator:
         thread_id = _blank_to_none(row.get("thread_id"))
         if resolved_root is not None and resolved_root != self.root_thread_id:
             role = "conflicting_root"
-        elif lineage_status in {"conflicting_recorded_roots", "recorded_root_unverified"}:
+        elif lineage_status in {
+            "conflicting_recorded_roots",
+            "recorded_root_unverified",
+        }:
             role = "conflicting_root"
         elif thread_id == self.root_thread_id:
             role = "requested_root"
         elif resolved_root == self.root_thread_id:
             role = "all_descendants"
-        elif row.get("_requested_subtree_member") and lineage_status == "root_unrecorded":
+        elif (
+            row.get("_requested_subtree_member") and lineage_status == "root_unrecorded"
+        ):
             role = "all_descendants"
         elif resolved_root is None:
             role = "unresolved_lineage"
@@ -2888,7 +2917,9 @@ def _annotate_exact_root_call(
     call["_requested_subtree_member"] = thread_id != root_thread_id
     call["_resolved_root_thread_id"] = root_thread_id
     call["_lineage_status"] = (
-        "resolved_self_root" if thread_id == root_thread_id else "resolved_via_spawn_path"
+        "resolved_self_root"
+        if thread_id == root_thread_id
+        else "resolved_via_spawn_path"
     )
     return call
 
@@ -2941,7 +2972,9 @@ def _run_exact_root_stream_report(
         for index, (source_name, database) in enumerate(ledger_inputs):
             check_deadline()
             remaining_sources = len(ledger_inputs) - index
-            source_call_budget = (remaining_calls + remaining_sources - 1) // remaining_sources
+            source_call_budget = (
+                remaining_calls + remaining_sources - 1
+            ) // remaining_sources
             reporter = UsageReporter(
                 database=database,
                 start=args.start,
@@ -3073,8 +3106,7 @@ def _run_exact_root_stream_report(
                     counterpart = reporters[0]._probe_token_call(call_id)
                     if (
                         counterpart is not None
-                        and counterpart.get("thread_id")
-                        in prepared[0]["scope_nodes"]
+                        and counterpart.get("thread_id") in prepared[0]["scope_nodes"]
                     ):
                         continue
                 accumulator.add(row)
@@ -3119,7 +3151,10 @@ def _run_exact_root_stream_report(
         if merged["configured_attribution_conflict_provider_call_count"]:
             status = "incomplete"
             reasons.append("configured_model_attribution_conflict")
-        if any(value > 0 for value in merged["summary"]["token_missing_call_count"].values()):
+        if any(
+            value > 0
+            for value in merged["summary"]["token_missing_call_count"].values()
+        ):
             status = "incomplete"
             reasons.append("token_coverage_incomplete")
         check_deadline()
@@ -3182,7 +3217,11 @@ def _run_exact_root_stream_report(
         }
     except sqlite3.Error as exc:
         stop_reason = next(
-            (reporter.vm_stop_reason for reporter in reporters if reporter.vm_stop_reason),
+            (
+                reporter.vm_stop_reason
+                for reporter in reporters
+                if reporter.vm_stop_reason
+            ),
             None,
         )
         if stop_reason is not None:
@@ -3324,11 +3363,7 @@ def _run_multi_ledger_report(
         check_deadline=check_deadline,
     )
     reasons = sorted(
-        {
-            reason
-            for ledger in ledgers
-            for reason in ledger["incomplete_reasons"]
-        }
+        {reason for ledger in ledgers for reason in ledger["incomplete_reasons"]}
     )
     if any(ledger["status"] != "complete" for ledger in ledgers):
         status = "incomplete"
@@ -3342,15 +3377,17 @@ def _run_multi_ledger_report(
     if not source_selection_complete:
         status = "incomplete"
         reasons.append("cross_ledger_reconciliation_limited_by_source_coverage")
-    if merged["conflicting_call_id_count"] or merged["rows_excluded_for_missing_call_id"]:
+    if (
+        merged["conflicting_call_id_count"]
+        or merged["rows_excluded_for_missing_call_id"]
+    ):
         status = "incomplete"
         reasons.append("physical_call_deduplication_incomplete")
     if merged["configured_attribution_conflict_provider_call_count"]:
         status = "incomplete"
         reasons.append("configured_model_attribution_conflict")
     if any(
-        value > 0
-        for value in merged["summary"]["token_missing_call_count"].values()
+        value > 0 for value in merged["summary"]["token_missing_call_count"].values()
     ):
         status = "incomplete"
         reasons.append("token_coverage_incomplete")
@@ -3412,7 +3449,7 @@ def _run_multi_ledger_report(
                     "configured_attribution_conflict_provider_call_count",
                     "physical_call_deduplication",
                 )
-            }
+            },
         },
         "selected_window_provider_call_bounds_utc": merged[
             "selected_window_provider_call_bounds_utc"
