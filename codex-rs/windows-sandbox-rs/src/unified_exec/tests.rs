@@ -19,10 +19,12 @@ use codex_utils_pty::ProcessSignal;
 use codex_windows_sandbox_test_support::WindowsSandboxAccountTestGuard;
 use pretty_assertions::assert_eq;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Seek;
 use std::io::SeekFrom;
+use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::AsRawHandle;
 use std::os::windows::io::FromRawHandle;
 use std::os::windows::io::OwnedHandle;
@@ -41,10 +43,71 @@ use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
+use windows_sys::Win32::Foundation::ERROR_NO_MORE_FILES;
+use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+use windows_sys::Win32::Foundation::HANDLE;
+use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+use windows_sys::Win32::Foundation::LocalFree;
 use windows_sys::Win32::Foundation::WAIT_FAILED;
 use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
 use windows_sys::Win32::Foundation::WAIT_TIMEOUT;
+use windows_sys::Win32::Security::ACCESS_ALLOWED_ACE;
+use windows_sys::Win32::Security::ACCESS_DENIED_ACE;
+use windows_sys::Win32::Security::ACE_HEADER;
+use windows_sys::Win32::Security::ACL_SIZE_INFORMATION;
+use windows_sys::Win32::Security::AccessCheck;
+use windows_sys::Win32::Security::AclSizeInformation;
+use windows_sys::Win32::Security::Authorization::GetSecurityInfo;
+use windows_sys::Win32::Security::Authorization::SE_FILE_OBJECT;
+use windows_sys::Win32::Security::CreateWellKnownSid;
+use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
+use windows_sys::Win32::Security::DuplicateToken;
+use windows_sys::Win32::Security::EqualSid;
+use windows_sys::Win32::Security::GENERIC_MAPPING;
+use windows_sys::Win32::Security::GROUP_SECURITY_INFORMATION;
+use windows_sys::Win32::Security::GetAce;
+use windows_sys::Win32::Security::GetAclInformation;
+use windows_sys::Win32::Security::GetLengthSid;
+use windows_sys::Win32::Security::GetTokenInformation;
+use windows_sys::Win32::Security::INHERIT_ONLY_ACE;
+use windows_sys::Win32::Security::INHERITED_ACE;
+use windows_sys::Win32::Security::MapGenericMask;
+use windows_sys::Win32::Security::OWNER_SECURITY_INFORMATION;
+use windows_sys::Win32::Security::SID_AND_ATTRIBUTES;
+use windows_sys::Win32::Security::SecurityImpersonation;
+use windows_sys::Win32::Security::TOKEN_DUPLICATE;
+use windows_sys::Win32::Security::TOKEN_QUERY;
+use windows_sys::Win32::Security::TokenGroups;
+use windows_sys::Win32::Security::TokenRestrictedSids;
+use windows_sys::Win32::Security::TokenUser;
+use windows_sys::Win32::Security::WinCreatorOwnerRightsSid;
+use windows_sys::Win32::Security::WinWorldSid;
+use windows_sys::Win32::Storage::FileSystem::DELETE;
+use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
+use windows_sys::Win32::Storage::FileSystem::FILE_DELETE_CHILD;
+use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS;
+use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_EXECUTE;
+use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_READ;
+use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_WRITE;
+use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_DELETE;
+use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_WRITE;
+use windows_sys::Win32::Storage::FileSystem::READ_CONTROL;
+use windows_sys::Win32::System::Diagnostics::ToolHelp::CreateToolhelp32Snapshot;
+use windows_sys::Win32::System::Diagnostics::ToolHelp::PROCESSENTRY32W;
+use windows_sys::Win32::System::Diagnostics::ToolHelp::Process32FirstW;
+use windows_sys::Win32::System::Diagnostics::ToolHelp::Process32NextW;
+use windows_sys::Win32::System::Diagnostics::ToolHelp::TH32CS_SNAPPROCESS;
+use windows_sys::Win32::System::SystemServices::ACCESS_ALLOWED_ACE_TYPE;
+use windows_sys::Win32::System::SystemServices::ACCESS_DENIED_ACE_TYPE;
+use windows_sys::Win32::System::SystemServices::SE_GROUP_ENABLED;
+use windows_sys::Win32::System::SystemServices::SE_GROUP_LOGON_ID;
+use windows_sys::Win32::System::SystemServices::SE_GROUP_USE_FOR_DENY_ONLY;
+use windows_sys::Win32::System::Threading::GetCurrentProcess;
+use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 use windows_sys::Win32::System::Threading::OpenProcess;
+use windows_sys::Win32::System::Threading::OpenProcessToken;
+use windows_sys::Win32::System::Threading::PROCESS_QUERY_LIMITED_INFORMATION;
 use windows_sys::Win32::System::Threading::PROCESS_SYNCHRONIZE;
 use windows_sys::Win32::System::Threading::WaitForSingleObject;
 
@@ -158,6 +221,530 @@ fn wait_for_process_exit(process: &OwnedHandle, timeout: Duration) -> std::io::R
         result => Err(std::io::Error::other(format!(
             "unexpected process wait result: {result}"
         ))),
+    }
+}
+
+struct DeleteAccessObservation {
+    // Retain the exact child process handle through the fixture's completion.
+    _process: Option<OwnedHandle>,
+    allowed: Option<[bool; 4]>,
+    parent_aces: Option<String>,
+}
+
+struct ObservedSid {
+    sid: Vec<u8>,
+    attributes: u32,
+}
+
+struct ChildSidClasses {
+    user: Vec<u8>,
+    normal_groups: Vec<ObservedSid>,
+    restricted_sids: Vec<ObservedSid>,
+    logon: Option<Vec<u8>>,
+    everyone: Vec<u8>,
+}
+
+fn token_information(token: HANDLE, class: i32) -> Option<Vec<u8>> {
+    const MAX_TOKEN_INFORMATION_BYTES: u32 = 64 * 1024;
+    unsafe {
+        let mut needed = 0;
+        let _ = GetTokenInformation(token, class, std::ptr::null_mut(), 0, &mut needed);
+        if needed == 0 || needed > MAX_TOKEN_INFORMATION_BYTES {
+            return None;
+        }
+        let mut buffer = vec![0u8; needed as usize];
+        if GetTokenInformation(
+            token,
+            class,
+            buffer.as_mut_ptr().cast(),
+            needed,
+            &mut needed,
+        ) == 0
+        {
+            return None;
+        }
+        if needed as usize > buffer.len() {
+            return None;
+        }
+        buffer.truncate(needed as usize);
+        Some(buffer)
+    }
+}
+
+fn copy_sid(sid: *mut std::ffi::c_void) -> Option<Vec<u8>> {
+    if sid.is_null() {
+        return None;
+    }
+    let length = unsafe { GetLengthSid(sid) } as usize;
+    if length == 0 || length > 1024 {
+        return None;
+    }
+    Some(unsafe { std::slice::from_raw_parts(sid.cast::<u8>(), length) }.to_vec())
+}
+
+fn token_sid_entries(token: HANDLE, class: i32) -> Option<Vec<ObservedSid>> {
+    let buffer = token_information(token, class)?;
+    let entries_offset = std::mem::offset_of!(windows_sys::Win32::Security::TOKEN_GROUPS, Groups);
+    if buffer.len() < entries_offset {
+        return None;
+    }
+    let count = unsafe { std::ptr::read_unaligned(buffer.as_ptr().cast::<u32>()) } as usize;
+    if count > 256 {
+        return None;
+    }
+    let entries_size = count.checked_mul(std::mem::size_of::<SID_AND_ATTRIBUTES>())?;
+    if entries_offset.checked_add(entries_size)? > buffer.len() {
+        return None;
+    }
+    let mut entries = Vec::with_capacity(count);
+    for index in 0..count {
+        let offset = entries_offset + index * std::mem::size_of::<SID_AND_ATTRIBUTES>();
+        let entry = unsafe {
+            std::ptr::read_unaligned(buffer.as_ptr().add(offset).cast::<SID_AND_ATTRIBUTES>())
+        };
+        entries.push(ObservedSid {
+            sid: copy_sid(entry.Sid)?,
+            attributes: entry.Attributes,
+        });
+    }
+    Some(entries)
+}
+
+fn token_user_sid(token: HANDLE) -> Option<Vec<u8>> {
+    let buffer = token_information(token, TokenUser)?;
+    if buffer.len() < std::mem::size_of::<SID_AND_ATTRIBUTES>() {
+        return None;
+    }
+    let user = unsafe { std::ptr::read_unaligned(buffer.as_ptr().cast::<SID_AND_ATTRIBUTES>()) };
+    copy_sid(user.Sid)
+}
+
+fn current_process_base_token_has_no_restricted_sids() -> Option<bool> {
+    unsafe {
+        let mut token = std::ptr::null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return None;
+        }
+        let token = OwnedHandle::from_raw_handle(token as _);
+        Some(token_sid_entries(token.as_raw_handle() as HANDLE, TokenRestrictedSids)?.is_empty())
+    }
+}
+
+fn child_sid_classes(token: HANDLE) -> Option<ChildSidClasses> {
+    let user = token_user_sid(token)?;
+    let normal_groups = token_sid_entries(token, TokenGroups)?;
+    let restricted_sids = token_sid_entries(token, TokenRestrictedSids)?;
+    let logon = normal_groups
+        .iter()
+        .find(|group| {
+            (group.attributes as u32 & SE_GROUP_LOGON_ID as u32) == SE_GROUP_LOGON_ID as u32
+        })
+        .map(|group| group.sid.clone())?;
+    let mut everyone = vec![0u8; 68];
+    let mut everyone_length = everyone.len() as u32;
+    if unsafe {
+        CreateWellKnownSid(
+            WinWorldSid,
+            std::ptr::null_mut(),
+            everyone.as_mut_ptr().cast(),
+            &mut everyone_length,
+        )
+    } == 0
+    {
+        return None;
+    }
+    everyone.truncate(everyone_length as usize);
+    if !restricted_sids
+        .iter()
+        .any(|restricted| sids_equal(&restricted.sid, &logon))
+        || !restricted_sids
+            .iter()
+            .any(|restricted| sids_equal(&restricted.sid, &everyone))
+    {
+        return None;
+    }
+    Some(ChildSidClasses {
+        user,
+        normal_groups,
+        restricted_sids,
+        logon: Some(logon),
+        everyone,
+    })
+}
+
+fn sids_equal(left: &[u8], right: &[u8]) -> bool {
+    !left.is_empty()
+        && !right.is_empty()
+        && unsafe { EqualSid(left.as_ptr() as _, right.as_ptr() as _) != 0 }
+}
+
+fn parent_acl_ace_summary(
+    dacl: *mut windows_sys::Win32::Security::ACL,
+    owner: *mut std::ffi::c_void,
+    classes: &ChildSidClasses,
+    base_token_unrestricted: Option<bool>,
+    access_allowed: Option<bool>,
+) -> String {
+    let Some(true) = base_token_unrestricted else {
+        return "inconclusive".to_string();
+    };
+    let Some(access_allowed) = access_allowed else {
+        return "inconclusive".to_string();
+    };
+    unsafe {
+        if dacl.is_null() {
+            return format!("baseline={access_allowed};null_dacl=true;inconclusive");
+        }
+        let mut owner_rights = vec![0u8; 68];
+        let mut owner_rights_length = owner_rights.len() as u32;
+        if CreateWellKnownSid(
+            WinCreatorOwnerRightsSid,
+            std::ptr::null_mut(),
+            owner_rights.as_mut_ptr().cast(),
+            &mut owner_rights_length,
+        ) == 0
+        {
+            return "inconclusive".to_string();
+        }
+        owner_rights.truncate(owner_rights_length as usize);
+        let mut information: ACL_SIZE_INFORMATION = std::mem::zeroed();
+        if GetAclInformation(
+            dacl,
+            (&mut information as *mut ACL_SIZE_INFORMATION).cast(),
+            std::mem::size_of::<ACL_SIZE_INFORMATION>() as u32,
+            AclSizeInformation,
+        ) == 0
+            || information.AceCount > 256
+        {
+            return "inconclusive".to_string();
+        }
+        let mut entries = Vec::new();
+        let mut relevant_count = 0usize;
+        let mapping = GENERIC_MAPPING {
+            GenericRead: FILE_GENERIC_READ,
+            GenericWrite: FILE_GENERIC_WRITE,
+            GenericExecute: FILE_GENERIC_EXECUTE,
+            GenericAll: FILE_ALL_ACCESS,
+        };
+        for index in 0..information.AceCount {
+            let mut raw_ace = std::ptr::null_mut();
+            if GetAce(dacl, index as u32, &mut raw_ace) == 0 || raw_ace.is_null() {
+                return "inconclusive".to_string();
+            }
+            let header = std::ptr::read_unaligned(raw_ace.cast::<ACE_HEADER>());
+            if header.AceSize < 8 {
+                return "inconclusive".to_string();
+            }
+            if header.AceFlags & INHERIT_ONLY_ACE as u8 != 0 {
+                continue;
+            }
+            let raw_mask = std::ptr::read_unaligned(raw_ace.cast::<u8>().add(4).cast::<u32>());
+            let mut mapped_mask = raw_mask;
+            MapGenericMask(&mut mapped_mask, &mapping);
+            if mapped_mask & FILE_DELETE_CHILD == 0 {
+                continue;
+            }
+            if header.AceType != ACCESS_ALLOWED_ACE_TYPE as u8
+                && header.AceType != ACCESS_DENIED_ACE_TYPE as u8
+            {
+                return "inconclusive".to_string();
+            }
+            let sid_offset = std::mem::offset_of!(ACCESS_ALLOWED_ACE, SidStart);
+            if (header.AceSize as usize) < sid_offset + 8 {
+                return "inconclusive".to_string();
+            }
+            let sid_start = if header.AceType == ACCESS_ALLOWED_ACE_TYPE as u8 {
+                std::ptr::addr_of!((*raw_ace.cast::<ACCESS_ALLOWED_ACE>()).SidStart)
+            } else {
+                std::ptr::addr_of!((*raw_ace.cast::<ACCESS_DENIED_ACE>()).SidStart)
+            };
+            let sid_pointer = sid_start.cast_mut().cast();
+            let sid_length = GetLengthSid(sid_pointer) as usize;
+            if sid_length < 8 || sid_length > header.AceSize as usize - sid_offset {
+                return "inconclusive".to_string();
+            }
+            let Some(ace_sid) = copy_sid(sid_pointer) else {
+                return "inconclusive".to_string();
+            };
+            if sids_equal(&ace_sid, &owner_rights) {
+                return "inconclusive".to_string();
+            }
+            let user_match = sids_equal(&ace_sid, &classes.user);
+            let enabled_group_match = classes.normal_groups.iter().any(|group| {
+                group.attributes & SE_GROUP_ENABLED as u32 != 0
+                    && group.attributes & SE_GROUP_USE_FOR_DENY_ONLY as u32 == 0
+                    && sids_equal(&ace_sid, &group.sid)
+            });
+            let deny_only_group_match = classes.normal_groups.iter().any(|group| {
+                group.attributes & SE_GROUP_USE_FOR_DENY_ONLY as u32 != 0
+                    && sids_equal(&ace_sid, &group.sid)
+            });
+            let logon_match = classes
+                .logon
+                .as_ref()
+                .is_some_and(|sid| sids_equal(&ace_sid, sid));
+            let everyone_match = sids_equal(&ace_sid, &classes.everyone);
+            let capability_match = classes.restricted_sids.iter().any(|restricted| {
+                !logon_match && !everyone_match && sids_equal(&ace_sid, &restricted.sid)
+            });
+            let restricted_match = classes
+                .restricted_sids
+                .iter()
+                .any(|restricted| sids_equal(&ace_sid, &restricted.sid));
+            let owner_match = !owner.is_null() && EqualSid(owner, ace_sid.as_ptr() as _) != 0;
+            let allow = header.AceType == ACCESS_ALLOWED_ACE_TYPE as u8;
+            let normal_match =
+                user_match || enabled_group_match || (!allow && deny_only_group_match);
+            if !normal_match && !restricted_match && !owner_match {
+                continue;
+            }
+            relevant_count += 1;
+            if relevant_count > 32 {
+                return "inconclusive".to_string();
+            }
+            entries.push(format!(
+                "{}:{}:{:#010x}:{:#010x}:{:#04x}:inherited={}:user={}:enabled_group={}:deny_only_group={}:restricted={}:capability={}:logon={}:everyone={}:owner={}",
+                index,
+                if allow { "allow" } else { "deny" },
+                raw_mask,
+                mapped_mask,
+                header.AceFlags,
+                header.AceFlags & INHERITED_ACE as u8 != 0,
+                user_match,
+                enabled_group_match,
+                deny_only_group_match,
+                restricted_match,
+                capability_match,
+                logon_match,
+                everyone_match,
+                owner_match,
+            ));
+        }
+        format!("baseline={access_allowed};aces=[{}]", entries.join(","))
+    }
+}
+
+fn direct_child_cmd_pids() -> Option<HashSet<u32>> {
+    // Toolhelp exposes only PID, parent PID, and image name. The caller uses a
+    // before/after delta around this fixture's sole spawn; it does not attest argv.
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snapshot.is_null() || snapshot == INVALID_HANDLE_VALUE {
+            return None;
+        }
+        let snapshot = OwnedHandle::from_raw_handle(snapshot as _);
+        let parent_pid = GetCurrentProcessId();
+        let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        if Process32FirstW(snapshot.as_raw_handle() as HANDLE, &mut entry) == 0 {
+            return None;
+        }
+
+        let mut children = HashSet::new();
+        loop {
+            if entry.th32ParentProcessID == parent_pid {
+                let name_end = entry
+                    .szExeFile
+                    .iter()
+                    .position(|character| *character == 0)
+                    .unwrap_or(entry.szExeFile.len());
+                let name = String::from_utf16_lossy(&entry.szExeFile[..name_end]);
+                if name.eq_ignore_ascii_case("cmd.exe") {
+                    children.insert(entry.th32ProcessID);
+                }
+            }
+            if Process32NextW(snapshot.as_raw_handle() as HANDLE, &mut entry) == 0 {
+                return (windows_sys::Win32::Foundation::GetLastError() == ERROR_NO_MORE_FILES)
+                    .then_some(children);
+            }
+        }
+    }
+}
+
+fn access_check_for_path(
+    token: HANDLE,
+    path: &Path,
+    desired_access: u32,
+    sid_diagnostic: Option<(&ChildSidClasses, Option<bool>)>,
+) -> Option<(bool, Option<String>)> {
+    unsafe {
+        let handle = OpenOptions::new()
+            .access_mode(READ_CONTROL)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(path)
+            .ok()?;
+        let mut owner = std::ptr::null_mut();
+        let mut group = std::ptr::null_mut();
+        let mut dacl = std::ptr::null_mut();
+        let mut descriptor = std::ptr::null_mut();
+        let status = GetSecurityInfo(
+            handle.as_raw_handle() as HANDLE,
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+            &mut owner,
+            &mut group,
+            &mut dacl,
+            std::ptr::null_mut(),
+            &mut descriptor,
+        );
+        if status != ERROR_SUCCESS {
+            if !descriptor.is_null() {
+                LocalFree(descriptor as _);
+            }
+            return None;
+        }
+        let mapping = GENERIC_MAPPING {
+            GenericRead: FILE_GENERIC_READ,
+            GenericWrite: FILE_GENERIC_WRITE,
+            GenericExecute: FILE_GENERIC_EXECUTE,
+            GenericAll: FILE_ALL_ACCESS,
+        };
+        let mut privilege_set = [0u64; 128];
+        let mut privilege_set_size = std::mem::size_of_val(&privilege_set) as u32;
+        let mut granted_access = 0;
+        let mut access_status = 0;
+        let checked = AccessCheck(
+            descriptor,
+            token,
+            desired_access,
+            &mapping,
+            privilege_set.as_mut_ptr().cast(),
+            &mut privilege_set_size,
+            &mut granted_access,
+            &mut access_status,
+        );
+        let allowed = (checked != 0).then_some(access_status != 0);
+        let parent_aces = allowed.and_then(|allowed| {
+            sid_diagnostic.map(|(classes, base_token_unrestricted)| {
+                parent_acl_ace_summary(dacl, owner, classes, base_token_unrestricted, Some(allowed))
+            })
+        });
+        LocalFree(descriptor as _);
+        allowed.map(|allowed| (allowed, parent_aces))
+    }
+}
+
+fn observe_delete_access(
+    before: Option<HashSet<u32>>,
+    outside_file: &Path,
+    outside_parent: &Path,
+    protected_git_dir: &Path,
+    workspace_parent: &Path,
+    base_token_unrestricted: Option<bool>,
+) -> DeleteAccessObservation {
+    let Some(before) = before else {
+        return DeleteAccessObservation {
+            _process: None,
+            allowed: None,
+            parent_aces: None,
+        };
+    };
+    let Some(after) = direct_child_cmd_pids() else {
+        return DeleteAccessObservation {
+            _process: None,
+            allowed: None,
+            parent_aces: None,
+        };
+    };
+    let children: Vec<_> = after.difference(&before).copied().collect();
+    if children.len() != 1 {
+        return DeleteAccessObservation {
+            _process: None,
+            allowed: None,
+            parent_aces: None,
+        };
+    }
+
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, children[0]);
+        if process.is_null() {
+            return DeleteAccessObservation {
+                _process: None,
+                allowed: None,
+                parent_aces: None,
+            };
+        }
+        let process = OwnedHandle::from_raw_handle(process as _);
+        let mut token = std::ptr::null_mut();
+        if OpenProcessToken(
+            process.as_raw_handle() as HANDLE,
+            TOKEN_QUERY | TOKEN_DUPLICATE,
+            &mut token,
+        ) == 0
+        {
+            return DeleteAccessObservation {
+                _process: Some(process),
+                allowed: None,
+                parent_aces: None,
+            };
+        }
+        let token = OwnedHandle::from_raw_handle(token as _);
+        let mut impersonation_token = std::ptr::null_mut();
+        if DuplicateToken(
+            token.as_raw_handle() as HANDLE,
+            SecurityImpersonation,
+            &mut impersonation_token,
+        ) == 0
+        {
+            return DeleteAccessObservation {
+                _process: Some(process),
+                allowed: None,
+                parent_aces: None,
+            };
+        }
+        let impersonation_token = OwnedHandle::from_raw_handle(impersonation_token as _);
+        let classes = child_sid_classes(impersonation_token.as_raw_handle() as HANDLE);
+        let outside_file_check = access_check_for_path(
+            impersonation_token.as_raw_handle() as HANDLE,
+            outside_file,
+            DELETE,
+            None,
+        );
+        let outside_parent_check = access_check_for_path(
+            impersonation_token.as_raw_handle() as HANDLE,
+            outside_parent,
+            FILE_DELETE_CHILD,
+            classes
+                .as_ref()
+                .map(|classes| (classes, base_token_unrestricted)),
+        );
+        let git_check = access_check_for_path(
+            impersonation_token.as_raw_handle() as HANDLE,
+            protected_git_dir,
+            DELETE,
+            None,
+        );
+        let workspace_parent_check = access_check_for_path(
+            impersonation_token.as_raw_handle() as HANDLE,
+            workspace_parent,
+            FILE_DELETE_CHILD,
+            None,
+        );
+        let checks = [
+            outside_file_check.map(|check| check.0),
+            outside_parent_check.as_ref().map(|check| check.0),
+            git_check.map(|check| check.0),
+            workspace_parent_check.map(|check| check.0),
+        ];
+        if checks.iter().any(Option::is_none) {
+            return DeleteAccessObservation {
+                _process: Some(process),
+                allowed: None,
+                parent_aces: None,
+            };
+        }
+        let parent_aces = outside_parent_check.and_then(|check| check.1);
+        DeleteAccessObservation {
+            _process: Some(process),
+            allowed: Some([
+                checks[0].unwrap_or(false),
+                checks[1].unwrap_or(false),
+                checks[2].unwrap_or(false),
+                checks[3].unwrap_or(false),
+            ]),
+            parent_aces,
+        }
     }
 }
 
@@ -765,6 +1352,7 @@ fn legacy_workspace_write_delete_is_limited_to_writable_roots() {
             &script,
             concat!(
                 "@echo off\r\n",
+                "set /p \"__CODEX_DELETE_DIAGNOSTIC_GATE=\"\r\n",
                 "del /f /q \"%WORKSPACE_DELETE%\"\r\n",
                 "del /f /q \"%TEMP_DELETE%\"\r\n",
                 "del /f /q \"%TMP_DELETE%\"\r\n",
@@ -801,6 +1389,11 @@ fn legacy_workspace_write_delete_is_limited_to_writable_roots() {
         ]);
 
         let permission_profile = PermissionProfile::workspace_write();
+        // The legacy spawn reads this same process token as its base token.
+        // Observe its restricted-SID list without changing it; if empty cannot
+        // be proven, the per-ACE attribution remains inconclusive.
+        let base_token_unrestricted = current_process_base_token_has_no_restricted_sids();
+        let before_children = direct_child_cmd_pids();
         let spawned = spawn_windows_sandbox_session_legacy(
             &permission_profile,
             workspace_roots_for(workspace.as_path()).as_slice(),
@@ -817,13 +1410,40 @@ fn legacy_workspace_write_delete_is_limited_to_writable_roots() {
             &[],
             &[],
             /*tty*/ false,
-            /*stdin_open*/ false,
+            /*stdin_open*/ true,
         )
         .await
         .expect("spawn legacy delete session");
+
+        let observation = observe_delete_access(
+            before_children,
+            &outside_file,
+            &outside_root,
+            &protected_git_dir,
+            &workspace,
+            base_token_unrestricted,
+        );
+        let gate_released = spawned
+            .session
+            .writer_sender()
+            .send(b"release\r\n".to_vec())
+            .await
+            .is_ok();
+        spawned.session.close_stdin();
+        if !gate_released {
+            eprintln!("legacy delete access diagnostic: inconclusive");
+        } else if let Some([outside_file_delete, outside_parent_delete_child, git_delete, workspace_delete_child]) = observation.allowed {
+            eprintln!(
+                "legacy delete access diagnostic: outside_file_delete={outside_file_delete} outside_parent_delete_child={outside_parent_delete_child} git_delete={git_delete} workspace_delete_child={workspace_delete_child} parent_aces={}",
+                observation.parent_aces.as_deref().unwrap_or("inconclusive")
+            );
+        } else {
+            eprintln!("legacy delete access diagnostic: inconclusive");
+        }
         let (stdout, exit_code) =
             collect_stdout_and_exit(spawned, codex_home.path(), Duration::from_secs(/*secs*/ 10))
                 .await;
+        drop(observation);
         let stdout = String::from_utf8_lossy(&stdout);
 
         assert_eq!(
