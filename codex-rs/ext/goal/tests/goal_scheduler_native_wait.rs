@@ -906,7 +906,11 @@ async fn run_goal_scheduler_wait(
             admission.original_communication.recipient,
             admission.recipient_path
         );
-        assert!(admission.original_communication.content.contains(UPDATE_BODY));
+        assert!(admission.original_communication.content.is_empty());
+        assert_eq!(
+            admission.original_communication.encrypted_content.as_deref(),
+            Some(UPDATE_BODY)
+        );
         assert!(!admission.original_communication.trigger_turn);
         assert!(admission.original_communication.other_recipients.is_empty());
         assert_eq!(
@@ -929,12 +933,29 @@ async fn fresh_goal_scheduler_keeps_native_wait_quiet_until_complete() -> Result
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn resumed_goal_scheduler_keeps_native_wait_quiet_until_complete(
 ) -> std::result::Result<(), &'static str> {
-    let mut phase = "setup";
+    struct PanicPhase(&'static str);
+
+    impl Drop for PanicPhase {
+        fn drop(&mut self) {
+            if std::thread::panicking() {
+                use std::io::Write as _;
+
+                // A failed diagnostic write must not panic during unwinding.
+                let _ = writeln!(
+                    std::io::stderr().lock(),
+                    "resumed goal native wait panic phase: {}",
+                    self.0
+                );
+            }
+        }
+    }
+
+    let mut phase = PanicPhase("setup");
     // Keep this diagnostic finite and payload-free instead of returning an
     // anyhow backtrace that can displace the failure origin from hosted tails.
-    run_goal_scheduler_wait(Scenario::ResumedComplete, Some(&mut phase))
+    run_goal_scheduler_wait(Scenario::ResumedComplete, Some(&mut phase.0))
         .await
-        .map_err(|_| phase)
+        .map_err(|_| phase.0)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
