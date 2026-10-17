@@ -610,12 +610,25 @@ jobs:
                   stderr=subprocess.DEVNULL,
               ).strip()
 
+          raw_target_commit = subprocess.check_output(
+              ["git", "-C", str(target), "cat-file", "commit", "HEAD"],
+              stdin=subprocess.DEVNULL,
+              stderr=subprocess.DEVNULL,
+          )
+          target_header, header_separator, _ = raw_target_commit.partition(b"\n\n")
+          target_parents = []
+          if header_separator:
+              target_parents = [
+                  line[len(b"parent "):].decode("ascii")
+                  for line in target_header.splitlines()
+                  if line.startswith(b"parent ")
+              ]
           identities = {
               "harness_sha": git_value(host, "rev-parse", "HEAD"),
               "harness_tree": git_value(host, "rev-parse", "HEAD^{tree}"),
               "target_sha": git_value(target, "rev-parse", "HEAD"),
               "target_tree": git_value(target, "rev-parse", "HEAD^{tree}"),
-              "target_parent": git_value(target, "show", "-s", "--format=%P", "HEAD"),
+              "target_parent": target_parents[0] if len(target_parents) == 1 else "",
               "base_sha": git_value(base, "rev-parse", "HEAD"),
               "base_tree": git_value(base, "rev-parse", "HEAD^{tree}"),
           }
@@ -624,7 +637,7 @@ jobs:
               or identities["harness_sha"] != os.environ["GITHUB_SHA"]
               or identities["target_sha"] != expected_target
               or identities["target_tree"] != expected_tree
-              or identities["target_parent"] != expected_parent
+              or target_parents != [expected_parent]
               or identities["base_sha"] != expected_base
               or os.environ["VALIDATION_TARGET_SHA"] != expected_target
               or os.environ["VALIDATION_BASE_REF"] != expected_base
