@@ -71,6 +71,7 @@ use wiremock::matchers::path;
 
 const CHILD_INITIAL: &str = "goal-worker-initial";
 const WAIT_PROMPT: &str = "wait for goal worker";
+const OPERATOR_PROMPT: &str = "operator changes the request";
 const REPORT_PROMPT: &str = "report the final goal handback";
 const SPAWN_CALL: &str = "goal-spawn-call";
 const WAIT_CALL: &str = "goal-wait-call";
@@ -600,7 +601,7 @@ async fn run_goal_scheduler_wait(scenario: Scenario) -> Result<()> {
     if matches!(scenario, Scenario::OperatorSteer) {
         test.codex
             .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
-                text: "operator changes the request".to_string(),
+                text: OPERATOR_PROMPT.to_string(),
                 text_elements: Vec::new(),
             }]))
             .await?;
@@ -693,8 +694,26 @@ async fn run_goal_scheduler_wait(scenario: Scenario) -> Result<()> {
     }
     wait_for_event(&test.codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
     timeout(Duration::from_secs(10), ThreadIdle::wait(&test.codex)).await?;
-    let output = output_mock
-        .single_request()
+    // ResponseMock also records requests rejected by the caller's matcher.
+    // Select the actual root continuation, independently of its output value.
+    let output_prompt = if matches!(scenario, Scenario::OperatorSteer) {
+        OPERATOR_PROMPT
+    } else {
+        WAIT_PROMPT
+    };
+    let root_id = parent_id.to_string();
+    let outputs = output_mock
+        .requests()
+        .into_iter()
+        .filter(|request| {
+            request.body_json()["client_metadata"]["thread_id"].as_str() == Some(root_id.as_str())
+                && request.message_input_texts("user").last().map(String::as_str)
+                    == Some(output_prompt)
+                && request.function_call_output_text(WAIT_CALL).is_some()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(outputs.len(), 1);
+    let output = outputs[0]
         .function_call_output_text(WAIT_CALL)
         .context("native wait output")?;
     let result: Value = serde_json::from_str(&output)?;
@@ -703,7 +722,17 @@ async fn run_goal_scheduler_wait(scenario: Scenario) -> Result<()> {
 
     // Every child idle boundary was consumed above, including the final post-notification one.
     test.submit_turn(REPORT_PROMPT).await?;
-    let report = report_mock.single_request();
+    let reports = report_mock
+        .requests()
+        .into_iter()
+        .filter(|request| {
+            request.body_json()["client_metadata"]["thread_id"].as_str() == Some(root_id.as_str())
+                && request.message_input_texts("user").last().map(String::as_str)
+                    == Some(REPORT_PROMPT)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(reports.len(), 1);
+    let report = &reports[0];
     let messages = report.inputs_of_type("agent_message");
     let handbacks = messages
         .iter()
