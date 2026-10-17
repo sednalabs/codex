@@ -318,13 +318,10 @@ async fn handle_output_item_done_returns_contributed_last_agent_message() {
     let item = assistant_output_text("original assistant text");
 
     let output = handle_output_item_done(
-        &mut ctx,
-        item,
-        /*previously_active_item*/ None,
-        /*already_started*/ false,
+        &mut ctx, item, /*previously_active_item*/ None, /*already_started*/ false,
     )
-        .await
-        .expect("assistant message should complete");
+    .await
+    .expect("assistant message should complete");
 
     assert_eq!(
         output.last_agent_message.as_deref(),
@@ -356,13 +353,10 @@ async fn direct_results_keep_their_own_records_when_call_ids_repeat() {
         }))
         .expect("direct input");
         let result = handle_output_item_done(
-            &mut ctx,
-            call,
-            /*previously_active_item*/ None,
-            /*already_started*/ false,
+            &mut ctx, call, /*previously_active_item*/ None, /*already_started*/ false,
         )
-            .await
-            .expect("direct call should be handled");
+        .await
+        .expect("direct call should be handled");
         assert!(result.needs_follow_up);
         pending.push((
             arguments,
@@ -420,15 +414,13 @@ async fn direct_results_keep_their_own_records_when_call_ids_repeat() {
         .expect("direct input");
         pending.push(
             handle_output_item_done(
-                &mut ctx,
-                call,
-                /*previously_active_item*/ None,
+                &mut ctx, call, /*previously_active_item*/ None,
                 /*already_started*/ false,
             )
-                .await
-                .expect("direct call should be handled")
-                .tool_future
-                .expect("dispatched direct call"),
+            .await
+            .expect("direct call should be handled")
+            .tool_future
+            .expect("dispatched direct call"),
         );
     }
     let current_config = session.get_config().await;

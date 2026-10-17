@@ -3013,26 +3013,25 @@ async fn try_run_sampling_request(
                     | ResponseItem::Other => false,
                 };
 
-                let output_result =
-                    match handle_output_item_done(
-                        &mut ctx,
-                        item,
-                        previously_streamed_item,
-                        already_started_from_streamed_draft,
-                    )
-                    .instrument(handle_responses)
-                    .await
-                    {
-                        Ok(output_result) => {
-                            accepted_retry_items.record(
-                                &accepted_item,
-                                stable_item_id,
-                                accepted_payload,
-                            );
-                            output_result
-                        }
-                        Err(err) => break Err(err),
-                    };
+                let output_result = match handle_output_item_done(
+                    &mut ctx,
+                    item,
+                    previously_streamed_item,
+                    already_started_from_streamed_draft,
+                )
+                .instrument(handle_responses)
+                .await
+                {
+                    Ok(output_result) => {
+                        accepted_retry_items.record(
+                            &accepted_item,
+                            stable_item_id,
+                            accepted_payload,
+                        );
+                        output_result
+                    }
+                    Err(err) => break Err(err),
+                };
                 if let Some(tool_future) = output_result.tool_future {
                     in_flight.push_back(tool_future);
                 }
