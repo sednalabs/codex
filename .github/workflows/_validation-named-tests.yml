@@ -74,7 +74,7 @@ jobs:
           persist-credentials: false
           path: .workflow-src
 
-      - name: Classify fixed schema generation request
+      - name: Classify fixed source-bound request
         id: request_kind
         shell: bash
         env:
@@ -93,8 +93,13 @@ jobs:
               isinstance(payload, dict)
               and payload.get("schema_version") == "codex-config-schema-v1"
           )
+          usage_report_request = (
+              isinstance(payload, dict)
+              and payload.get("schema_version") == "usage-report-exact-root-v1"
+          )
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               output.write(f"schema_generation={str(schema_request).lower()}\n")
+              output.write(f"usage_report_synthetic={str(usage_report_request).lower()}\n")
           if schema_request and (
               payload != {"schema_version": "codex-config-schema-v1"}
               or os.environ["VALIDATION_TARGET_SHA"] != "46014d2f9ad7d7cdf8d9c62da99ea9d2ee1e6c9b"
@@ -102,10 +107,19 @@ jobs:
               or os.environ.get("SPECIAL_MODE_SELECTED") != "false"
           ):
               raise SystemExit("Fixed schema generation request rejected.")
+          if usage_report_request and (
+              payload != {"schema_version": "usage-report-exact-root-v1"}
+              or os.environ["VALIDATION_TARGET_SHA"] != "43dfc7894b59db6992ab7b6f57f36c5d9fd7f39f"
+              or os.environ["VALIDATION_BASE_REF"] != "a319e05bad22a5b2870c9bfad3f49ac74dc0bef3"
+              or os.environ["VALIDATION_EXPECTED_BASE_SHA"] != "a319e05bad22a5b2870c9bfad3f49ac74dc0bef3"
+              or os.environ["VALIDATION_PROFILE"] != "rust_minimal"
+              or os.environ.get("SPECIAL_MODE_SELECTED") != "false"
+          ):
+              raise SystemExit("Fixed usage-report synthetic request rejected.")
           PY
 
       - name: Verify named-test command builder
-        if: ${{ inputs.run_ac392_android_protocol_test != true && steps.request_kind.outputs.schema_generation != 'true' }}
+        if: ${{ inputs.run_ac392_android_protocol_test != true && steps.request_kind.outputs.schema_generation != 'true' && steps.request_kind.outputs.usage_report_synthetic != 'true' }}
         working-directory: .workflow-src
         shell: bash
         run: python3 .github/scripts/test_run_named_rust_tests.py
@@ -454,7 +468,7 @@ jobs:
 
       - name: Inventory and run exact named tests
         id: named_tests
-        if: ${{ inputs.run_ae94_android_helper_tests != true && inputs.run_ae94_tui_provider_tests != true && inputs.run_d0_active_wait_test != true && inputs.run_ac392_android_protocol_test != true && steps.request_kind.outputs.schema_generation != 'true' }}
+        if: ${{ inputs.run_ae94_android_helper_tests != true && inputs.run_ae94_tui_provider_tests != true && inputs.run_d0_active_wait_test != true && inputs.run_ac392_android_protocol_test != true && steps.request_kind.outputs.schema_generation != 'true' && steps.request_kind.outputs.usage_report_synthetic != 'true' }}
         continue-on-error: true
         working-directory: validation-target
         shell: bash
@@ -560,6 +574,138 @@ jobs:
                   output.write("generated=true\n")
           except (OSError, ValueError, KeyError, subprocess.SubprocessError):
               raise SystemExit("Fixed config schema generation failed.") from None
+          PY
+
+      - name: Run fixed exact-root usage-report synthetic tests
+        id: usage_report_synthetic
+        if: ${{ steps.request_kind.outputs.usage_report_synthetic == 'true' }}
+        continue-on-error: true
+        working-directory: validation-target
+        env:
+          OUTPUT_DIR: ${{ runner.temp }}/usage-report-exact-root-output
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+
+          target = Path.cwd()
+          workspace = Path(os.environ["GITHUB_WORKSPACE"])
+          host = workspace / ".workflow-src"
+          base = workspace / "validation-base"
+          output_dir = Path(os.environ["OUTPUT_DIR"])
+          expected_target = "43dfc7894b59db6992ab7b6f57f36c5d9fd7f39f"
+          expected_tree = "d5e6ce716827e065992c438215b69e1d270062aa"
+          expected_parent = "aeb563872125eb5b93bd80dbdaf2685a8fa39c20"
+          expected_base = "a319e05bad22a5b2870c9bfad3f49ac74dc0bef3"
+
+          def git_value(root, *arguments):
+              return subprocess.check_output(
+                  ["git", "-C", str(root), *arguments],
+                  text=True,
+                  stdin=subprocess.DEVNULL,
+                  stderr=subprocess.DEVNULL,
+              ).strip()
+
+          identities = {
+              "harness_sha": git_value(host, "rev-parse", "HEAD"),
+              "harness_tree": git_value(host, "rev-parse", "HEAD^{tree}"),
+              "target_sha": git_value(target, "rev-parse", "HEAD"),
+              "target_tree": git_value(target, "rev-parse", "HEAD^{tree}"),
+              "target_parent": git_value(target, "rev-parse", "HEAD^"),
+              "base_sha": git_value(base, "rev-parse", "HEAD"),
+              "base_tree": git_value(base, "rev-parse", "HEAD^{tree}"),
+          }
+          if (
+              identities["harness_sha"] != os.environ["VALIDATION_EXPECTED_HARNESS_SHA"]
+              or identities["harness_sha"] != os.environ["GITHUB_SHA"]
+              or identities["target_sha"] != expected_target
+              or identities["target_tree"] != expected_tree
+              or identities["target_parent"] != expected_parent
+              or identities["base_sha"] != expected_base
+              or os.environ["VALIDATION_TARGET_SHA"] != expected_target
+              or os.environ["VALIDATION_BASE_REF"] != expected_base
+              or os.environ["VALIDATION_EXPECTED_BASE_SHA"] != expected_base
+              or os.environ["VALIDATION_PROFILE"] != "rust_minimal"
+              or os.environ["GITHUB_REPOSITORY"] != "sednalabs/codex"
+              or git_value(host, "status", "--porcelain", "--untracked-files=no")
+              or git_value(target, "status", "--porcelain", "--untracked-files=no")
+              or git_value(base, "status", "--porcelain", "--untracked-files=no")
+          ):
+              raise SystemExit("Fixed usage-report source identity mismatch.")
+
+          output_dir.mkdir(mode=0o700, parents=False, exist_ok=False)
+          exit_code = None
+          stdout = b""
+          stderr = b""
+          failure_code = ""
+          try:
+              completed = subprocess.run(
+                  [sys.executable, "scripts/test_codex_usage_report_exact_root.py"],
+                  cwd=target,
+                  env={
+                      "PATH": os.environ.get("PATH", ""),
+                      "PYTHONDONTWRITEBYTECODE": "1",
+                      "PYTHONNOUSERSITE": "1",
+                  },
+                  stdin=subprocess.DEVNULL,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.PIPE,
+                  timeout=600,
+                  check=False,
+              )
+              exit_code = completed.returncode
+              stdout = completed.stdout
+              stderr = completed.stderr
+          except subprocess.TimeoutExpired:
+              failure_code = "synthetic_test_timeout"
+          except OSError:
+              failure_code = "synthetic_test_launch_failed"
+          summary = None
+          for output in (stdout, stderr):
+              for line in output.splitlines():
+                  try:
+                      candidate = json.loads(line)
+                  except (UnicodeDecodeError, ValueError):
+                      continue
+                  if candidate == {"status": "passed", "cases": 14}:
+                      summary = candidate
+          passed = exit_code == 0 and summary is not None
+          if not failure_code:
+              if exit_code != 0:
+                  failure_code = "synthetic_tests_failed"
+              elif summary is None:
+                  failure_code = "synthetic_test_summary_missing"
+          receipt = {
+              "schema_version": "usage-report-exact-root-result-v1",
+              "status": "success" if passed else "failure",
+              "failure_code": "" if passed else failure_code,
+              "identity": {
+                  **identities,
+                  "repository": os.environ["GITHUB_REPOSITORY"],
+                  "run_id": os.environ["GITHUB_RUN_ID"],
+                  "profile": os.environ["VALIDATION_PROFILE"],
+              },
+              "command": "python3 scripts/test_codex_usage_report_exact_root.py",
+              "exit_code": exit_code,
+              "cases": summary["cases"] if summary is not None else 0,
+          }
+          result_path = output_dir / "usage-report-exact-root-results.json"
+          descriptor = os.open(
+              result_path,
+              os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+              0o600,
+          )
+          with os.fdopen(descriptor, "w", encoding="utf-8") as result_file:
+              result_file.write(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write("generated=true\n")
+          print(json.dumps({"status": receipt["status"], "failure_code": receipt["failure_code"], "cases": receipt["cases"]}, sort_keys=True))
+          if not passed:
+              raise SystemExit(1)
           PY
 
       - name: Run the fixed ae94 Android helper test set
@@ -1464,7 +1610,7 @@ jobs:
           PY
 
       - name: Append named-test evidence
-        if: ${{ always() && steps.request_kind.outputs.schema_generation != 'true' }}
+        if: ${{ always() && steps.request_kind.outputs.schema_generation != 'true' && steps.request_kind.outputs.usage_report_synthetic != 'true' }}
         shell: bash
         env:
           RESULT_PATH: ${{ github.workspace }}/validation-target/rust-tests-v1-results.json
@@ -1493,11 +1639,43 @@ jobs:
           PY
 
       - name: Upload named-test evidence
-        if: ${{ always() && steps.request_kind.outputs.schema_generation != 'true' }}
+        if: ${{ always() && steps.request_kind.outputs.schema_generation != 'true' && steps.request_kind.outputs.usage_report_synthetic != 'true' }}
         uses: actions/upload-artifact@v7
         with:
           name: ${{ inputs.artifact_name }}
           path: validation-target/rust-tests-v1-results.json
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Append exact-root usage-report test evidence
+        if: ${{ always() && steps.request_kind.outputs.usage_report_synthetic == 'true' && steps.usage_report_synthetic.outputs.generated == 'true' }}
+        shell: bash
+        env:
+          RESULT_PATH: ${{ runner.temp }}/usage-report-exact-root-output/usage-report-exact-root-results.json
+        run: |
+          python3 - <<'PY' >> "${GITHUB_STEP_SUMMARY}"
+          import json
+          import os
+          from pathlib import Path
+
+          receipt = json.loads(Path(os.environ["RESULT_PATH"]).read_text(encoding="utf-8"))
+          identity = receipt["identity"]
+          print("### Exact-root usage-report synthetic qualification")
+          print(f"- Status: `{receipt['status']}`")
+          print(f"- Cases: `{receipt['cases']}`")
+          print(f"- Target SHA: `{identity['target_sha']}`")
+          print(f"- Host SHA: `{identity['harness_sha']}`")
+          print(f"- Base SHA: `{identity['base_sha']}`")
+          if receipt["failure_code"]:
+              print(f"- Failure code: `{receipt['failure_code']}`")
+          PY
+
+      - name: Upload exact-root usage-report evidence
+        if: ${{ always() && steps.request_kind.outputs.usage_report_synthetic == 'true' && steps.usage_report_synthetic.outputs.generated == 'true' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: usage-report-exact-root-${{ github.run_id }}
+          path: ${{ runner.temp }}/usage-report-exact-root-output/usage-report-exact-root-results.json
           if-no-files-found: error
           retention-days: 3
 
@@ -1522,7 +1700,7 @@ jobs:
           retention-days: 3
 
       - name: Preserve failed exact-test result
-        if: ${{ steps.named_tests.outcome == 'failure' || steps.android_helper_tests.outcome == 'failure' || steps.tui_provider_tests.outcome == 'failure' || steps.d0_active_wait_test.outcome == 'failure' || steps.ac392_android_protocol_test.outcome == 'failure' || steps.ac392_android_timeout_test.outcome == 'failure' }}
+        if: ${{ steps.named_tests.outcome == 'failure' || steps.usage_report_synthetic.outcome == 'failure' || steps.android_helper_tests.outcome == 'failure' || steps.tui_provider_tests.outcome == 'failure' || steps.d0_active_wait_test.outcome == 'failure' || steps.ac392_android_protocol_test.outcome == 'failure' || steps.ac392_android_timeout_test.outcome == 'failure' }}
         shell: bash
         run: exit 1
 
