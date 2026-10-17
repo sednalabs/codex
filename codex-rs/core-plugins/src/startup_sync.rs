@@ -1047,10 +1047,7 @@ fn extract_zipball_to_dir(bytes: &[u8], destination: &Path) -> Result<(), String
             .by_index(index)
             .map_err(|err| format!("failed to read curated plugins zip entry: {err}"))?;
         let Some(relative_path) = entry.enclosed_name() else {
-            return Err(format!(
-                "curated plugins zip entry `{}` escapes extraction root",
-                entry.name()
-            ));
+            return Err("curated plugins zip entry escapes extraction root".to_owned());
         };
 
         let mut components = relative_path.components();
