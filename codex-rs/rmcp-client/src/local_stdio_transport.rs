@@ -23,9 +23,9 @@ use crate::bounded_stdio_transport::BoundedStdioTransport;
 use crate::protocol_mode::McpProtocolMode;
 use crate::stdio_server_launcher::COOPERATIVE_STDIO_CLOSE_TIMEOUT;
 use crate::stdio_server_launcher::COOPERATIVE_STDIO_KILL_ERROR_WAIT;
-use crate::stdio_server_launcher::cooperative_close_outcome_after_exit;
 use crate::stdio_server_launcher::StdioServerCloseOutcome;
 use crate::stdio_server_launcher::StdioServerClosePolicy;
+use crate::stdio_server_launcher::cooperative_close_outcome_after_exit;
 use codex_utils_pty::Child;
 
 pub(super) struct LocalStdioTransport {
@@ -108,16 +108,15 @@ impl LocalStdioTransport {
             Ok(Err(error)) => Err(error),
             Err(_) => match child.kill().await {
                 Ok(()) => Ok(StdioServerCloseOutcome::Forced),
-                Err(kill_error) => match tokio::time::timeout(
-                    COOPERATIVE_STDIO_KILL_ERROR_WAIT,
-                    child.wait(),
-                )
-                .await
-                {
-                    Ok(Ok(status)) => cooperative_close_outcome_after_exit(status),
-                    Ok(Err(wait_error)) => Err(wait_error),
-                    Err(_) => Err(kill_error),
-                },
+                Err(kill_error) => {
+                    match tokio::time::timeout(COOPERATIVE_STDIO_KILL_ERROR_WAIT, child.wait())
+                        .await
+                    {
+                        Ok(Ok(status)) => cooperative_close_outcome_after_exit(status),
+                        Ok(Err(wait_error)) => Err(wait_error),
+                        Err(_) => Err(kill_error),
+                    }
+                }
             },
         };
 
@@ -125,9 +124,7 @@ impl LocalStdioTransport {
             (Err(error), Ok(StdioServerCloseOutcome::Forced)) => {
                 (Err(error), StdioServerCloseOutcome::Forced)
             }
-            (Err(error), _) | (Ok(()), Err(error)) => {
-                (Err(error), StdioServerCloseOutcome::Failed)
-            }
+            (Err(error), _) | (Ok(()), Err(error)) => (Err(error), StdioServerCloseOutcome::Failed),
             (Ok(()), Ok(outcome)) => (Ok(()), outcome),
         }
     }

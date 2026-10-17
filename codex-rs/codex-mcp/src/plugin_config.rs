@@ -31,7 +31,9 @@ fn reject_plugin_stdio_close_policy(config: &McpServerConfig) -> Result<(), Stri
         .iter()
         .any(|variable| variable.name().eq_ignore_ascii_case(STDIO_CLOSE_POLICY_ENV));
     if declared_in_env || declared_in_env_vars {
-        return Err("plugin MCP declarations cannot select the host-only stdio close policy".into());
+        return Err(
+            "plugin MCP declarations cannot select the host-only stdio close policy".into(),
+        );
     }
     Ok(())
 }

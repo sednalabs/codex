@@ -273,10 +273,7 @@ for line in sys.stdin:
                 OsString::from("INITIALIZE_RESPONSE_FILE"),
                 OsString::from(initialize_response_file.to_string_lossy().into_owned()),
             ),
-            (
-                OsString::from("MCP_SERVER"),
-                server.into_os_string(),
-            ),
+            (OsString::from("MCP_SERVER"), server.into_os_string()),
             (
                 OsString::from("CLOSE_ACK_FILE"),
                 OsString::from(close_ack_file.to_string_lossy().into_owned()),
@@ -330,7 +327,10 @@ for line in sys.stdin:
         "cooperative close must wait for the server's delayed close acknowledgment"
     );
     assert!(close_ack_file.is_file(), "server completed its close path");
-    assert!(!policy_leak_file.exists(), "host selector is not passed to the child");
+    assert!(
+        !policy_leak_file.exists(),
+        "host selector is not passed to the child"
+    );
     wait_for_process_exit(wrapper_pid).await?;
     wait_for_process_exit(server_pid).await
 }

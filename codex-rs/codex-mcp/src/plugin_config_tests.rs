@@ -976,8 +976,7 @@ fn local_environment_placement_rejects_remote_env_vars() {
 #[test]
 fn plugin_mcp_declarations_cannot_select_host_stdio_close_policy() {
     const SELECTOR: &str = "CODEX_INTERNAL_MCP_STDIO_CLOSE_POLICY";
-    const MESSAGE: &str =
-        "plugin MCP declarations cannot select the host-only stdio close policy";
+    const MESSAGE: &str = "plugin MCP declarations cannot select the host-only stdio close policy";
 
     for contents in [
         serde_json::json!({

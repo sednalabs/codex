@@ -22,10 +22,10 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::ExitStatus;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
-use std::sync::Mutex as StdMutex;
 #[cfg(unix)]
 use std::thread::sleep;
 #[cfg(unix)]
@@ -59,8 +59,8 @@ use rmcp::service::TxJsonRpcMessage;
 use rmcp::transport::Transport;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::BufReader;
-use tokio::sync::watch;
 use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::watch;
 use tokio::time::Instant;
 use tracing::info;
 use tracing::warn;
@@ -104,21 +104,16 @@ pub(super) fn cooperative_close_outcome_after_exit(
     }
 }
 
-async fn terminate_owned_stdio_child(
-    child: &mut Child,
-) -> io::Result<StdioServerCloseOutcome> {
+async fn terminate_owned_stdio_child(child: &mut Child) -> io::Result<StdioServerCloseOutcome> {
     match child.kill().await {
         Ok(()) => Ok(StdioServerCloseOutcome::Forced),
-        Err(kill_error) => match tokio::time::timeout(
-            COOPERATIVE_STDIO_KILL_ERROR_WAIT,
-            child.wait(),
-        )
-        .await
-        {
-            Ok(Ok(status)) => cooperative_close_outcome_after_exit(status),
-            Ok(Err(wait_error)) => Err(wait_error),
-            Err(_) => Err(kill_error),
-        },
+        Err(kill_error) => {
+            match tokio::time::timeout(COOPERATIVE_STDIO_KILL_ERROR_WAIT, child.wait()).await {
+                Ok(Ok(status)) => cooperative_close_outcome_after_exit(status),
+                Ok(Err(wait_error)) => Err(wait_error),
+                Err(_) => Err(kill_error),
+            }
+        }
     }
 }
 
@@ -278,7 +273,6 @@ impl StdioServerLauncher for LocalStdioServerLauncher {
         }
         .boxed()
     }
-
 }
 
 // Local private implementation.
@@ -426,8 +420,7 @@ impl LocalStdioServerLauncher {
                     drop(stderr);
                     drop(transport);
                     drop(job);
-                    let (transport, stderr, process_id, child) =
-                        spawn_transport(build_command())?;
+                    let (transport, stderr, process_id, child) = spawn_transport(build_command())?;
                     (transport, stderr, process_id, child, None)
                 }
             },
@@ -662,11 +655,8 @@ impl StdioServerProcessHandle {
                     return Ok(());
                 };
                 let mut child = child.lock().await;
-                return match tokio::time::timeout(
-                    COOPERATIVE_STDIO_CLOSE_TIMEOUT,
-                    child.wait(),
-                )
-                .await
+                return match tokio::time::timeout(COOPERATIVE_STDIO_CLOSE_TIMEOUT, child.wait())
+                    .await
                 {
                     Ok(Ok(_)) => Ok(()),
                     Ok(Err(error)) => {
@@ -739,7 +729,9 @@ impl Drop for StdioServerProcessHandleInner {
         }
 
         match &self.kind {
-            StdioServerProcessKind::Local(_) if self.close_policy == StdioServerClosePolicy::CooperativeLocal => {
+            StdioServerProcessKind::Local(_)
+                if self.close_policy == StdioServerClosePolicy::CooperativeLocal =>
+            {
                 let child = self
                     .local_child
                     .get_mut()
@@ -907,10 +899,8 @@ impl ExecutorStdioServerLauncher {
             .await
             .map_err(io::Error::other)?;
 
-        let process = StdioServerProcessHandle::executor(
-            program_name.clone(),
-            Arc::clone(&started.process),
-        );
+        let process =
+            StdioServerProcessHandle::executor(program_name.clone(), Arc::clone(&started.process));
         Ok(StdioServerTransport {
             inner: StdioServerTransportInner::Executor(ExecutorProcessTransport::new(
                 started.process,

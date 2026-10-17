@@ -58,9 +58,9 @@ use rmcp::service::RequestHandle;
 use rmcp::service::RoleClient;
 use rmcp::service::RunningService;
 use rmcp::service::ServiceError;
-use rmcp::transport::Transport;
 use rmcp::transport::AuthorizationManager;
 use rmcp::transport::StreamableHttpClientTransport;
+use rmcp::transport::Transport;
 use rmcp::transport::auth::AuthClient;
 use rmcp::transport::auth::AuthError;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
@@ -97,14 +97,14 @@ use crate::oauth_refresh_mode::McpOAuthRefreshMode;
 use crate::protocol_mode::McpProtocolMode;
 use crate::request_cancellation_guard::RequestCancellationGuard;
 use crate::startup_error::is_authentication_required_error;
-use crate::stdio_server_launcher::StdioServerCommand;
 use crate::stdio_server_launcher::COOPERATIVE_STDIO_CLOSE_TIMEOUT;
-use crate::stdio_server_launcher::StdioServerLauncher;
+use crate::stdio_server_launcher::STDIO_CLOSE_POLICY_ENV;
 use crate::stdio_server_launcher::StdioServerCloseOutcome;
 use crate::stdio_server_launcher::StdioServerClosePolicy;
+use crate::stdio_server_launcher::StdioServerCommand;
+use crate::stdio_server_launcher::StdioServerLauncher;
 use crate::stdio_server_launcher::StdioServerProcessHandle;
 use crate::stdio_server_launcher::StdioServerTransport;
-use crate::stdio_server_launcher::STDIO_CLOSE_POLICY_ENV;
 use crate::utils::build_default_headers;
 use codex_config::types::OAuthCredentialsStoreMode;
 
@@ -1248,18 +1248,22 @@ impl RmcpClient {
                     Some(StdioServerCloseOutcome::Failed) => {
                         warn!("cooperative MCP stdio close did not complete cleanly");
                         if let Err(error) = process.terminate().await {
-                            warn!("failed to terminate owned MCP stdio child after close failure: {error}");
+                            warn!(
+                                "failed to terminate owned MCP stdio child after close failure: {error}"
+                            );
                         }
                     }
                     None => {
                         warn!("timed out waiting for cooperative MCP stdio close to finish");
                         if let Err(error) = process.terminate().await {
-                            warn!("failed to terminate owned MCP stdio child after close failure: {error}");
+                            warn!(
+                                "failed to terminate owned MCP stdio child after close failure: {error}"
+                            );
                         }
                     }
-                    Some(StdioServerCloseOutcome::Pending) => unreachable!(
-                        "wait_for_close does not return a pending outcome"
-                    ),
+                    Some(StdioServerCloseOutcome::Pending) => {
+                        unreachable!("wait_for_close does not return a pending outcome")
+                    }
                 }
             } else if let Err(error) = process.terminate().await {
                 warn!("failed to terminate MCP stdio server process: {error}");

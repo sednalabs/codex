@@ -46,8 +46,8 @@ use crate::plugin_config::STDIO_CLOSE_POLICY_ENV;
 use crate::rmcp_client::AsyncManagedClient;
 use crate::rmcp_client::DEFAULT_STARTUP_TIMEOUT;
 use crate::rmcp_client::DEFAULT_TOOL_TIMEOUT;
-use crate::rmcp_client::ManagedClientFuture;
 use crate::rmcp_client::ManagedClient;
+use crate::rmcp_client::ManagedClientFuture;
 use crate::rmcp_client::StartupOutcomeError;
 use crate::rmcp_client::prepare_codex_apps_tools_for_model;
 use crate::rmcp_client::prepare_regular_mcp_tools_for_model;
@@ -413,10 +413,8 @@ impl McpConnectionSet {
             };
             let metadata = McpServerMetadata::from(&server);
             let configured_config = server.config().clone();
-            let close_policy_validation = validate_cooperative_stdio_close_policy(
-                &configured_config,
-                registration,
-            );
+            let close_policy_validation =
+                validate_cooperative_stdio_close_policy(&configured_config, registration);
             let protocol_mode = if matches!(
                 &configured_config.transport,
                 McpServerTransportConfig::StreamableHttp { .. }
@@ -555,7 +553,7 @@ impl McpConnectionSet {
             };
             if close_policy_validation.is_ok()
                 && let Some(previous_view) =
-                reusable_previous.and_then(|previous| previous.servers.get(&server_name))
+                    reusable_previous.and_then(|previous| previous.servers.get(&server_name))
             {
                 let connection = Arc::clone(&previous_view.connection);
                 let reusable_pending_startup = connection.identity.as_ref()
