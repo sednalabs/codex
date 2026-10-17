@@ -1552,6 +1552,15 @@ async fn multi_agent_v2_explicit_root_updates_are_durable_and_idempotent() {
         .get_thread(root.thread_id)
         .await
         .expect("root thread should remain loaded");
+    assert_eq!(root_thread.multi_agent_version(), None);
+    assert_eq!(
+        root_thread
+            .session
+            .get_config()
+            .await
+            .multi_agent_version_from_features(),
+        MultiAgentVersion::V2
+    );
 
     SendMessageHandlerV2
         .handle(invocation(
