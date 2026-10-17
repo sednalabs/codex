@@ -972,3 +972,75 @@ fn local_environment_placement_rejects_remote_env_vars() {
         }
     );
 }
+
+#[test]
+fn plugin_mcp_declarations_cannot_select_host_stdio_close_policy() {
+    const SELECTOR: &str = "CODEX_INTERNAL_MCP_STDIO_CLOSE_POLICY";
+    const MESSAGE: &str =
+        "plugin MCP declarations cannot select the host-only stdio close policy";
+
+    for contents in [
+        serde_json::json!({
+            "demo": {
+                "type": "stdio",
+                "command": "demo-mcp",
+                "env": {"CODEX_INTERNAL_MCP_STDIO_CLOSE_POLICY": "cooperative-local-v1"}
+            }
+        }),
+        serde_json::json!({
+            "demo": {
+                "type": "stdio",
+                "command": "demo-mcp",
+                "env_vars": [SELECTOR]
+            }
+        }),
+    ] {
+        let outcome = parse_plugin_mcp_config(&plugin_root(), &contents.to_string())
+            .expect("parse plugin MCP config");
+        assert!(outcome.servers.is_empty());
+        assert_eq!(outcome.errors.len(), 1);
+        assert_eq!(outcome.errors[0].name, "demo");
+        assert_eq!(outcome.errors[0].message, MESSAGE);
+    }
+
+    let plugin_root = plugin_root();
+    let executor_outcome = parse_executor_plugin_mcp_config(
+        &plugin_root_uri(&plugin_root),
+        r#"{
+            "demo": {
+                "command": "demo-mcp",
+                "env_vars": [{
+                    "name": "CODEX_INTERNAL_MCP_STDIO_CLOSE_POLICY",
+                    "source": "remote"
+                }]
+            }
+        }"#,
+        "executor-1",
+    )
+    .expect("parse executor plugin MCP config");
+    assert!(executor_outcome.servers.is_empty());
+    assert_eq!(executor_outcome.errors.len(), 1);
+    assert_eq!(executor_outcome.errors[0].name, "demo");
+    assert_eq!(executor_outcome.errors[0].message, MESSAGE);
+
+    let outcome = parse_agent_plugin_mcp_config(
+        &plugin_root,
+        &plugin_root.join("data"),
+        &serde_json::json!({
+            "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+            "mcpServers": {
+                "demo": {
+                    "type": "stdio",
+                    "command": "demo-mcp",
+                    "env": {"CODEX_INTERNAL_MCP_STDIO_CLOSE_POLICY": "cooperative-local-v1"}
+                }
+            }
+        })
+        .to_string(),
+    )
+    .expect("parse Agent Plugins MCP config");
+    assert!(outcome.servers.is_empty());
+    assert_eq!(outcome.errors.len(), 1);
+    assert_eq!(outcome.errors[0].name, "demo");
+    assert_eq!(outcome.errors[0].message, MESSAGE);
+}
