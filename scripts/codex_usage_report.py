@@ -137,6 +137,16 @@ def _blank_to_none(value: Any) -> str | None:
     return text if text.strip() else None
 
 
+def _exact_provider_call_id(value: Any) -> str | None:
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or len(value) > MAX_MULTI_LEDGER_INTERNAL_TEXT_CHARS["provider_call_id"]
+    ):
+        return None
+    return value
+
+
 def parse_utc(value: str) -> dt.datetime:
     raw = value.strip()
     if raw.endswith("Z"):
@@ -756,6 +766,12 @@ class UsageReporter:
             if not isinstance(value, str):
                 values[column] = value
                 continue
+            if self.token_only_projection and column == "provider_call_id":
+                # Exact-root streaming validates IDs explicitly so malformed
+                # identifiers are counted as exclusions, not stringified or
+                # converted into a fatal generic text-limit error.
+                values[column] = value
+                continue
             pooled_multi_ledger = self.shared_text_pool is not None
             field_limit = (
                 MAX_MULTI_LEDGER_INTERNAL_TEXT_CHARS.get(
@@ -915,11 +931,6 @@ class UsageReporter:
                     child_id = _blank_to_none(raw_child_id)
                     parent_id = _blank_to_none(raw_parent_id)
                     if request_id is None or parent_id is None or request_id in seen_requests:
-                        self.lineage_walk_incomplete = True
-                        continue
-                    if child_id is not None and edge["status"] != "Completed(None)":
-                        # A child ID on a non-successful or unknown terminal
-                        # status is not enough to establish reportable lineage.
                         self.lineage_walk_incomplete = True
                         continue
                     if len(seen_requests) >= MAX_LINEAGE_NODES:
@@ -1146,7 +1157,7 @@ class UsageReporter:
                 values = self._account_output_text(row)
                 rows_seen += 1
                 remaining -= 1
-                call_id = _blank_to_none(values.get("provider_call_id"))
+                call_id = _exact_provider_call_id(values.get("provider_call_id"))
                 if call_id is not None:
                     selected.add(call_id)
             if self.call_selection_truncated:
@@ -2997,6 +3008,7 @@ def _run_exact_root_stream_report(
             "conflicting_call_id_count": 0,
             "rows_excluded_for_conflicting_call_ids": 0,
             "rows_excluded_for_missing_call_id": 0,
+            "rows_excluded_for_invalid_call_id": 0,
             "configured_attribution_conflict_provider_call_count": 0,
         }
         accumulator = _ExactRootTokenAccumulator(args.thread_id)
@@ -3016,9 +3028,13 @@ def _run_exact_root_stream_report(
                     if latest is None or at > latest:
                         latest = at
                 row = _annotate_exact_root_call(raw_row, reporter, args.thread_id)
-                call_id = _blank_to_none(row.get("provider_call_id"))
-                if call_id is None:
+                raw_call_id = row.get("provider_call_id")
+                call_id = _exact_provider_call_id(raw_call_id)
+                if raw_call_id is None:
                     counters["rows_excluded_for_missing_call_id"] += 1
+                    continue
+                if call_id is None:
+                    counters["rows_excluded_for_invalid_call_id"] += 1
                     continue
                 if (
                     other_index is not None
@@ -3028,7 +3044,7 @@ def _run_exact_root_stream_report(
                     counterpart = reporters[other_index]._probe_token_call(call_id)
                     if (
                         counterpart is not None
-                        and str(counterpart.get("thread_id"))
+                        and counterpart.get("thread_id")
                         in prepared[other_index]["scope_nodes"]
                     ):
                         counterpart = _annotate_exact_root_call(
@@ -3056,7 +3072,7 @@ def _run_exact_root_stream_report(
                     counterpart = reporters[0]._probe_token_call(call_id)
                     if (
                         counterpart is not None
-                        and str(counterpart.get("thread_id"))
+                        and counterpart.get("thread_id")
                         in prepared[0]["scope_nodes"]
                     ):
                         continue
@@ -3092,7 +3108,11 @@ def _run_exact_root_stream_report(
         if not source_selection_complete:
             status = "incomplete"
             reasons.append("cross_ledger_reconciliation_limited_by_source_coverage")
-        if merged["conflicting_call_id_count"] or merged["rows_excluded_for_missing_call_id"]:
+        if (
+            merged["conflicting_call_id_count"]
+            or merged["rows_excluded_for_missing_call_id"]
+            or merged["rows_excluded_for_invalid_call_id"]
+        ):
             status = "incomplete"
             reasons.append("physical_call_deduplication_incomplete")
         if merged["configured_attribution_conflict_provider_call_count"]:
@@ -3149,6 +3169,7 @@ def _run_exact_root_stream_report(
                         "conflicting_call_id_count",
                         "rows_excluded_for_conflicting_call_ids",
                         "rows_excluded_for_missing_call_id",
+                        "rows_excluded_for_invalid_call_id",
                         "configured_attribution_conflict_provider_call_count",
                         "physical_call_deduplication",
                     )

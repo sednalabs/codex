@@ -877,8 +877,6 @@ def _check_streaming_query_indexes(temporary: Path) -> None:
 
 def _check_spawn_edge_status_and_identifier_bounds(temporary: Path) -> None:
     cases = (
-        ("pending-child", "status", "PendingInit"),
-        ("failed-child", "status", 'Errored("failed")'),
         ("oversized-request-id", "request", "x" * 129),
         ("oversized-child-id", "child", "x" * 129),
         ("oversized-parent-id", "parent", "x" * 129),
@@ -892,19 +890,9 @@ def _check_spawn_edge_status_and_identifier_bounds(temporary: Path) -> None:
         connection = sqlite3.connect(database)
         root_id = ROOT_THREAD
         try:
-            if field == "status":
-                connection.execute(
-                    "UPDATE usage_spawn_requests SET status = ? WHERE spawn_request_id = ?",
-                    (value, "spawn-sentinel"),
-                )
-            elif field == "request":
+            if field == "request":
                 connection.execute(
                     "UPDATE usage_spawn_requests SET spawn_request_id = ? WHERE spawn_request_id = ?",
-                    (value, "spawn-sentinel"),
-                )
-            elif field == "child":
-                connection.execute(
-                    "UPDATE usage_spawn_requests SET child_thread_id = ? WHERE spawn_request_id = ?",
                     (value, "spawn-sentinel"),
                 )
             elif field == "blob-request":
@@ -967,6 +955,87 @@ def _check_spawn_edge_status_and_identifier_bounds(temporary: Path) -> None:
             _assert(
                 set(state["scope_nodes"]) == {root_id},
                 f"{name} does not silently add a descendant",
+            )
+        finally:
+            if reporter.conn is not None:
+                reporter.conn.rollback()
+                reporter.conn.close()
+                reporter.conn = None
+
+
+def _check_spawn_child_status_does_not_erase_edge(temporary: Path) -> None:
+    for index, status in enumerate(
+        ("Running", "Interrupted", 'Completed(Some("done"))', 'Errored("failed")')
+    ):
+        database = temporary / f"lineage-child-status-{index}.sqlite"
+        _create_database(database, current_indexes=True)
+        connection = sqlite3.connect(database)
+        try:
+            connection.execute(
+                "UPDATE usage_spawn_requests SET status = ? WHERE spawn_request_id = ?",
+                (status, "spawn-sentinel"),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        reporter = report.UsageReporter(
+            database,
+            report.parse_utc(START),
+            report.parse_utc(END),
+            report.UTC,
+            "UTC",
+            "subtree",
+            ROOT_THREAD,
+            "none",
+            False,
+            all_time=True,
+            token_only_projection=True,
+        )
+        try:
+            state = _prepare_stream_reporter(reporter)
+            _assert(
+                not reporter.lineage_walk_incomplete
+                and "synthetic-child" in state["scope_nodes"],
+                f"exact child metadata confirms lineage despite status {status}",
+            )
+        finally:
+            if reporter.conn is not None:
+                reporter.conn.rollback()
+                reporter.conn.close()
+                reporter.conn = None
+
+    for index, status in enumerate(("PendingInit", 'Errored("failed")')):
+        database = temporary / f"lineage-unresolved-status-{index}.sqlite"
+        _create_database(database, current_indexes=True)
+        connection = sqlite3.connect(database)
+        try:
+            connection.execute(
+                "UPDATE usage_spawn_requests SET status = ?, child_thread_id = NULL WHERE spawn_request_id = ?",
+                (status, "spawn-sentinel"),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        reporter = report.UsageReporter(
+            database,
+            report.parse_utc(START),
+            report.parse_utc(END),
+            report.UTC,
+            "UTC",
+            "subtree",
+            ROOT_THREAD,
+            "none",
+            False,
+            all_time=True,
+            token_only_projection=True,
+        )
+        try:
+            state = _prepare_stream_reporter(reporter)
+            _assert(
+                reporter.lineage_walk_incomplete
+                and "synthetic-child" not in state["scope_nodes"],
+                f"childless {status} request remains unresolved lineage",
             )
         finally:
             if reporter.conn is not None:
@@ -1091,6 +1160,89 @@ def _check_streaming_missing_call_id(temporary: Path) -> None:
     _assert(
         result["deduplication"]["rows_excluded_for_missing_call_id"] == 1,
         "missing stable IDs remain an explicit exclusion count",
+    )
+
+
+def _check_streaming_invalid_call_ids(temporary: Path) -> None:
+    _assert(report._exact_provider_call_id(42) is None, "numeric IDs are not stringified")
+    _assert(
+        report._exact_provider_call_id("x" * 129) is None
+        and report._exact_provider_call_id("   ") is None,
+        "overlength and blank IDs are rejected",
+    )
+    _assert(
+        report._exact_provider_call_id("exact-id") == "exact-id",
+        "valid text IDs are preserved exactly",
+    )
+
+    single = temporary / "streaming-blob-call-id.sqlite"
+    _create_database(single, current_indexes=True)
+    connection = sqlite3.connect(single)
+    try:
+        connection.execute(
+            "UPDATE usage_provider_calls SET provider_call_id = ? WHERE provider_call_id = ?",
+            (sqlite3.Binary(b"root"), "root-alpha"),
+        )
+        connection.execute(
+            "UPDATE usage_provider_calls SET provider_call_id = ? WHERE provider_call_id = ?",
+            ("x" * 129, "child-beta"),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    single_result = report._run_multi_ledger_report(
+        SimpleNamespace(
+            database=single,
+            historical_database=None,
+            all_time=True,
+            start=report.parse_utc(START),
+            end=report.parse_utc(END),
+            timezone="UTC",
+            timezone_value=report.UTC,
+            scope="subtree",
+            thread_id=ROOT_THREAD,
+            credit_mode="none",
+            diagnostics=False,
+        )
+    )
+    _assert(
+        single_result["status"] == "incomplete"
+        and single_result["deduplication"]["rows_excluded_for_invalid_call_id"] == 2,
+        "BLOB and overlength text IDs are excluded and explicitly incomplete",
+    )
+
+    current = temporary / "call-id-collision-current.sqlite"
+    historical = temporary / "call-id-collision-historical.sqlite"
+    _create_database(current, current_indexes=True)
+    _create_database(historical, current_indexes=False)
+    for database, identifier in (
+        (current, "b'root'"),
+        (historical, sqlite3.Binary(b"root")),
+    ):
+        connection = sqlite3.connect(database)
+        try:
+            connection.execute(
+                "DELETE FROM usage_provider_calls WHERE provider_call_id != ?",
+                ("root-alpha",),
+            )
+            connection.execute(
+                "UPDATE usage_provider_calls SET provider_call_id = ? WHERE provider_call_id = ?",
+                (identifier, "root-alpha"),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+    collision_result = _run_multi_report(current, historical)
+    dedupe = collision_result["deduplication"]
+    _assert(
+        collision_result["status"] == "incomplete"
+        and dedupe["rows_excluded_for_invalid_call_id"] == 1,
+        "BLOB and its Python string representation cannot be treated as one stable ID",
+    )
+    _assert(
+        dedupe["identical_mirrored_rows_collapsed"] == 0
+        and dedupe["deduplicated_provider_call_count"] == 1,
+        "the malformed BLOB row is not falsely collapsed into the valid text row",
     )
 
 
@@ -1478,15 +1630,17 @@ def main() -> int:
         _check_cycle_is_incomplete(temporary)
         _check_streaming_query_indexes(temporary)
         _check_spawn_edge_status_and_identifier_bounds(temporary)
+        _check_spawn_child_status_does_not_erase_edge(temporary)
         _check_invalid_root_metadata_rejected(temporary)
         _check_streaming_missing_call_id(temporary)
+        _check_streaming_invalid_call_ids(temporary)
         _check_shared_text_pool()
         _check_multi_ledger_reconciliation(temporary)
         _check_multi_ledger_postprocessing_deadline()
         _check_multi_ledger_partial_selection(temporary)
         _check_requested_subtree_without_recorded_root(temporary)
         _check_large_subtree_uses_compact_projection(temporary)
-    print(json.dumps({"status": "passed", "cases": 12}, separators=(",", ":")))
+    print(json.dumps({"status": "passed", "cases": 14}, separators=(",", ":")))
     return 0
 
 
