@@ -15,7 +15,6 @@ use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::TurnStartParams;
-use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::UserInput;
 use pretty_assertions::assert_eq;
 use std::time::Duration;
