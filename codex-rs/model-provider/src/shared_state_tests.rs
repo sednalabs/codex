@@ -193,7 +193,7 @@ async fn request_auth_for_scope_composes_gateway_credentials_for_regular_provide
         },
     ] {
         let mut info = ModelProviderInfo::create_openai_provider(Some(server.uri()));
-        info.requires_openai_auth = false;
+        info.experimental_bearer_token = Some("provider-token".into());
         info.gateway_oauth = Some(GatewayOAuthConfig {
             authorization_url: format!("{}/authorize", server.uri()),
             token_url: format!("{}/token", server.uri()),
@@ -223,7 +223,11 @@ async fn request_auth_for_scope_composes_gateway_credentials_for_regular_provide
             .expect("regular-provider request auth should compose gateway credentials");
 
         let headers = request_auth.resolved.auth.to_auth_headers();
-        assert_eq!(headers[http::header::AUTHORIZATION], "Bearer primary-token");
+        assert_eq!(
+            headers[http::header::AUTHORIZATION],
+            "Bearer provider-token"
+        );
+        assert!(request_auth.account_auth.is_some());
         match delivery {
             GatewayOAuthDelivery::Header { .. } => {
                 assert_eq!(headers["x-gateway-auth"], "Bearer gateway-token");
