@@ -589,6 +589,7 @@ jobs:
           import json
           import os
           from pathlib import Path
+          import re
           import subprocess
           import sys
 
@@ -692,10 +693,52 @@ jobs:
                   failure_code = "synthetic_tests_failed"
               elif summary is None:
                   failure_code = "synthetic_test_summary_missing"
+
+          def safe_failure_source_line(captured_stderr):
+              if not captured_stderr:
+                  return "none"
+              source_suffix = b"scripts/test_codex_usage_report_exact_root.py"
+              frame_pattern = re.compile(
+                  rb'^\s*File "([^"\r\n]+)", line ([0-9]+)(?:, in [A-Za-z_][A-Za-z0-9_]*)?\s*$'
+              )
+              traceback_seen = False
+              source_seen = False
+              candidate_lines = []
+              for raw_line in captured_stderr.splitlines():
+                  if raw_line.startswith(b"Traceback (most recent call last):"):
+                      traceback_seen = True
+                  match = frame_pattern.match(raw_line)
+                  if match is None:
+                      continue
+                  traceback_seen = True
+                  frame_path = match.group(1).replace(b"\\", b"/")
+                  if frame_path != source_suffix and not frame_path.endswith(
+                      b"/" + source_suffix
+                  ):
+                      continue
+                  source_seen = True
+                  try:
+                      line_number = int(match.group(2))
+                  except ValueError:
+                      continue
+                  if not 1 <= line_number <= 1648:
+                      continue
+                  if 72 <= line_number <= 74 or 1622 <= line_number <= 1648:
+                      continue
+                  candidate_lines.append(line_number)
+              if candidate_lines:
+                  return str(candidate_lines[-1])
+              if traceback_seen and source_seen:
+                  return "unmatched"
+              if traceback_seen:
+                  return "unmatched"
+              return "none"
+
           receipt = {
               "schema_version": "usage-report-exact-root-result-v1",
               "status": "success" if passed else "failure",
               "failure_code": "" if passed else failure_code,
+              "failure_source_line": "" if passed else safe_failure_source_line(stderr),
               "identity": {
                   **identities,
                   "repository": os.environ["GITHUB_REPOSITORY"],
