@@ -35,9 +35,11 @@ pub(crate) struct CertificateClaims {
     pub execution_lease_seconds: u32,
     pub work_item_ref: String,
     pub recipient: String,
-    pub mcp_server: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mcp_server: Option<String>,
     pub method: String,
-    pub tool: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
     pub purpose: String,
     pub iat: i64,
     pub exp: i64,
@@ -57,10 +59,12 @@ pub(crate) struct RequestClaims {
     pub certificate_sha256: String,
     pub runtime_incarnation: Uuid,
     pub execution_nonce: Uuid,
-    pub provider_thread_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_thread_id: Option<String>,
     pub recipient: String,
     pub method: String,
-    pub tool: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
     pub purpose: String,
     pub operation_sha256: String,
     pub nonce: Uuid,
@@ -108,6 +112,20 @@ pub(crate) fn canonical_operation(tool: &str, parameters: &Value) -> Result<Vec<
     let mut canonical = Vec::new();
     serde_json_canonicalizer::to_writer(&operation, &mut canonical)
         .context("canonicalize protected MCP claim operation")?;
+    Ok(canonical)
+}
+
+pub(crate) fn canonical_api_operation(body: &Value) -> Result<Vec<u8>> {
+    let operation = serde_json::json!({
+        "transport": "http",
+        "method": "POST",
+        "route": "/v0/work-items/claim",
+        "parameters": body,
+    });
+    validate_numbers(&operation)?;
+    let mut canonical = Vec::new();
+    serde_json_canonicalizer::to_writer(&operation, &mut canonical)
+        .context("canonicalize protected Ops API claim operation")?;
     Ok(canonical)
 }
 

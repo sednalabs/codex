@@ -3695,11 +3695,11 @@
     },
     {
       "id": "native-runtime-mcp-execution-proof",
-      "title": "Native per-execution proof for a protected MCP claim",
+      "title": "Native per-execution proof for protected MCP and HTTP claims",
       "status": "live",
       "category": "agent-runtime",
       "surface_type": "runtime-credential-proof",
-      "surface": ["protected MCP claim request metadata"],
+      "surface": ["protected MCP and HTTP claim request proofs"],
       "files": [
         "codex-rs/runtime-proof/**",
         "codex-rs/cli/src/main.rs",
@@ -3723,6 +3723,8 @@
         "codex-rs/codex-mcp/src/server.rs",
         "codex-rs/runtime-proof/src/launcher.rs",
         "codex-rs/runtime-proof/src/launcher_tests.rs",
+        "codex-rs/runtime-proof/src/api_claim.rs",
+        "codex-rs/runtime-proof/src/api_claim_tests.rs",
         "codex-rs/runtime-proof/src/bin/codex_runtime_proof_launcher.rs",
         "codex-rs/runtime-proof/Cargo.toml",
         "codex-rs/Cargo.lock",
@@ -3730,7 +3732,7 @@
         ".github/workflows/sedna-branch-build.yml",
         ".github/workflows/sedna-release.yml"
       ],
-      "behavior": "A fixed root-owned Linux one-shot launcher starts the measured codex-dev ELF with a claim-only Ops MCP profile, drops the child to its configured unprivileged UID/GID, verifies the executed file object and child identity before opening systemd LoadCredential inputs, and sends the existing bounded root-peer proof/authentication frames. It accepts no caller-selected argv, task target, prompt, or issuer material; a finite systemd control-group service bounds child cleanup. The Linux CLI consumes those anonymous-FD frames before other startup work, validates immutable configuration and the effective built-in ChatGPT recipient, imports finite ChatGPT credentials into ephemeral storage, and retains process-scoped signing and selected MCP bearer capabilities. Each native Session contributes a fresh execution nonce, including delegated Sessions that share the MCP manager; a short-lived signature covers the exact final MCP claim request. Certificate SHA-256 claims use the verifier's bare lowercase hexadecimal encoding, while operation digests retain their sha256:-prefixed encoding. Resolved provider configuration is compared with the canonical built-in provider before auth resolution and again before HTTP or websocket transport construction, including provider overrides. A protected MCP target accepts only the reserved local environment and always uses the process-local HTTP client; a remote environment descriptor remains rejected even when paired with the local ID. Until the credential-bearing managed-cloud configuration consumer is admitted to the protected recipient contract, eligible business, enterprise and education protected accounts fail closed before credential import and cloud-loader startup; ordinary Codex cloud configuration behavior is unchanged. Synthetic fixtures use only a fixed public fake credential and loopback recipient. Ordinary invocations remain unconfigured when no protected bootstrap is present.",
+      "behavior": "A fixed root-owned Linux one-shot launcher selects one closed MCP or HTTP claim target. Its MCP target starts the measured codex-dev ELF, drops the child to its configured unprivileged UID/GID, verifies the executed file object and child identity before opening systemd LoadCredential inputs, and sends the existing bounded root-peer proof/authentication frames. Its HTTP target measures the running launcher ELF itself before reading a separately provisioned API bearer, then sends only the fixed POST /v0/work-items/claim operation. Both targets use the same root-owned issuer custody and exact operation-bound certificate/proof wire format; the API branch pins agent-ops-api-claim-client, the canonical API recipient, request ID, claim precondition and final-body digest, omits MCP-only fields, and uses one bounded direct request with redirects, retries and request logging disabled. A missing or mismatched API bearer fails closed; API-server signature and caller authentication remain authoritative, and transport uncertainty is never replayed. The MCP target and Linux CLI retain their existing MCP claim behavior. The CLI validates immutable configuration and the effective built-in ChatGPT recipient, imports finite ChatGPT credentials into ephemeral storage, and retains process-scoped signing and selected MCP bearer capabilities. Each native Session contributes a fresh execution nonce, including delegated Sessions that share the MCP manager; a short-lived signature covers the exact final MCP claim request. Certificate SHA-256 claims use the verifier's bare lowercase hexadecimal encoding, while operation digests retain their sha256:-prefixed encoding. Resolved provider configuration is compared with the canonical built-in provider before auth resolution and again before HTTP or websocket transport construction, including provider overrides. A protected MCP target accepts only the reserved local environment and always uses the process-local HTTP client; a remote environment descriptor remains rejected even when paired with the local ID. Until the credential-bearing managed-cloud configuration consumer is admitted to the protected recipient contract, eligible business, enterprise and education protected accounts fail closed before credential import and cloud-loader startup; ordinary Codex cloud configuration behavior is unchanged. Synthetic fixtures use only fixed public fake credentials and loopback recipients. Ordinary invocations remain unconfigured when no protected bootstrap is present.",
       "upstream_equivalent": false,
       "introduced_in": {"carry_commit": null, "upstream_commit": null},
       "guardrail_lane": "core-runtime-surface-smoke; codex.mcp-safety-targeted; codex.downstream-docs-check; sedna-branch-build; sedna-release",
@@ -3744,6 +3746,10 @@
         "protected_runtime_accepts_only_the_fixed_claim_tool_profile",
         "generated_claim_profile_matches_the_protected_runtime_admission",
         "issued_certificate_matches_the_existing_compact_jws_contract",
+        "api_bearer_consistency_is_bound_to_issuer_audience_subject_scope_and_expiry",
+        "api_precondition_and_proof_bind_the_exact_final_body_without_mcp_fields",
+        "api_body_rejects_invalid_fixed_preconditions_before_network_access",
+        "uncertain_api_post_is_not_replayed_and_diagnostics_do_not_expose_bearer",
         "bootstrap_packet_contains_only_the_length_prefixed_certificate_and_ephemeral_seed",
         "fixed_task_prompt_write_obeys_the_execution_deadline_under_backpressure",
         "launcher_policy_rejects_unsafe_project_ids_and_noncanonical_issuer_pins",
@@ -3774,7 +3780,7 @@
         "delegate_provider_override_is_rejected_before_credential_egress"
       ],
       "owner": "downstream",
-      "notes": "The protected launcher supplies the issuer certificate, ephemeral key, and finite authentication inputs through separate anonymous descriptors. The client does not mint authority or trust a thread identifier. Certificate digest fields use bare lowercase hexadecimal to match the Ops verifier; operation digest fields retain the existing sha256:-prefixed wire form. Provider credentials use the existing ChatGPT token import path and ephemeral storage; resolved provider and transport configuration are checked against the effective built-in recipient before egress, including delegate role overrides. Current managed-cloud eligibility semantics are matched before protected auth import: eligible or unknown protected plans fail closed until that consumer is admitted without weakening managed requirements. Synthetic tests bind only exact public fake credentials and loopback mocks; an ignored direct transport fixture imports the real protected frame and proves a retained production HTTP client blocks a send after expiry. The delayed CLI response case tests redaction after erasure only. Preserve fail-closed scope matching, key erasure on protection drift, credential and proof redaction, no proof logging, and the ordinary unconfigured path. The lazy post-sampling estimate filter regression checks direct interest on the built sink stack with an ordinary TRACE positive control. Hosted validation is required; generated dependency lock updates are hosted-only. Prior SessionEnd allocation hypotheses were reverted after hosted core validation still failed, and the available traces do not establish a hook-specific cause.",
+      "notes": "The protected launcher supplies the issuer certificate, ephemeral key, and finite authentication inputs through separate anonymous descriptors. The client does not mint authority or trust a thread identifier. The API target is a maintained fixed HTTP claim client, not an exported signer or generic proxy; its API bearer is an independent protected input and never reuses the MCP token or secret. Missing live bearer, approved API claim policy, and first-use acceptance remain deployment boundaries. Certificate digest fields use bare lowercase hexadecimal to match the Ops verifier; operation digest fields retain the existing sha256:-prefixed wire form. Provider credentials use the existing ChatGPT token import path and ephemeral storage; resolved provider and transport configuration are checked against the effective built-in recipient before egress, including delegate role overrides. Current managed-cloud eligibility semantics are matched before protected auth import: eligible or unknown protected plans fail closed until that consumer is admitted without weakening managed requirements. Synthetic tests bind only exact public fake credentials and loopback mocks; an ignored direct transport fixture imports the real protected frame and proves a retained production HTTP client blocks a send after expiry. The delayed CLI response case tests redaction after erasure only. Preserve fail-closed scope matching, key erasure on protection drift, credential and proof redaction, no proof logging, and the ordinary unconfigured path. The lazy post-sampling estimate filter regression checks direct interest on the built sink stack with an ordinary TRACE positive control. Hosted validation is required; generated dependency lock updates are hosted-only. Prior SessionEnd allocation hypotheses were reverted after hosted core validation still failed, and the available traces do not establish a hook-specific cause.",
       "upstreamability_tier": "downstream-adapter",
       "boundary_type": "runtime-credential-proof",
       "hotspot_files": [
@@ -3784,7 +3790,7 @@
         "codex-rs/core/src/session/turn_tests.rs",
         "codex-rs/core/src/mcp_tool_call.rs"
       ],
-      "extraction_target": "native host capability for narrowly scoped MCP request proof"
+      "extraction_target": "native host capability for narrowly scoped MCP and HTTP request proofs"
     }
   ],
   "superseded_hunks": [

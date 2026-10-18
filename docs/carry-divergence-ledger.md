@@ -3863,6 +3863,21 @@ The unit uses `KillMode=control-group` and a finite stop timeout to clean up
 descendants, and masks `/home`, `/root` and `/run/user` rather than exposing
 host user auth stores to the root service or its child. The normal `codex-dev`
 entrypoint remains user-owned and unchanged.
+
+The same launcher also has a closed HTTP target for the maintained App claim
+route. It measures its own running ELF before reading credentials, signs the
+exact final `POST /v0/work-items/claim` body and request ID, and sends one
+bounded direct request using the API bearer from the fixed
+`ops-api-bearer` system credential. The API certificate binds the measured
+HTTP-sending launcher, `agent-ops-api-claim-client`, the canonical API
+recipient and the fixed body/precondition; MCP-only server, tool and thread
+fields are omitted. The API server remains responsible for authenticating the
+bearer and verifying both signatures. The local JWT field comparison is only
+a fail-early consistency check, never an authentication decision. An absent
+bearer or mismatch fails closed, and an uncertain POST is returned without
+retry. The MCP policy and existing MCP child path remain separate. Source
+support does not appoint or install the API bearer, authorize a claim policy,
+or establish HTTP first use.
 The unit template and binary are packaged for Linux x86_64 and Arm64; packaging
 does not create the host policy, credentials, service account, issuer
 appointment, service installation, or live execution authority.

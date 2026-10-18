@@ -126,9 +126,9 @@ impl RuntimeProofSigner {
         transport_url: Option<&str>,
         tool: &str,
     ) -> Result<bool> {
-        let server_matches = server == self.claims.mcp_server;
+        let server_matches = Some(server) == self.claims.mcp_server.as_deref();
         let recipient_matches = transport_url == Some(self.claims.recipient.as_str());
-        let selected_tool = tool == self.claims.tool;
+        let selected_tool = Some(tool) == self.claims.tool.as_deref();
         if !server_matches && !recipient_matches {
             return Ok(false);
         }
@@ -166,16 +166,21 @@ impl RuntimeProofSigner {
         }
         validate_claim_precondition(parameters)?;
 
-        let operation = wire::canonical_operation(&self.claims.tool, parameters)?;
+        let tool = self
+            .claims
+            .tool
+            .as_deref()
+            .context("protected MCP claim tool is missing")?;
+        let operation = wire::canonical_operation(tool, parameters)?;
         let proof_claims = wire::RequestClaims {
             version: 1,
             certificate_sha256: wire::certificate_digest(self.certificate.as_bytes()),
             runtime_incarnation: self.claims.runtime_incarnation,
             execution_nonce: *execution_nonce,
-            provider_thread_id: provider_thread_id.to_string(),
+            provider_thread_id: Some(provider_thread_id.to_string()),
             recipient: self.claims.recipient.clone(),
             method: self.claims.method.clone(),
-            tool: self.claims.tool.clone(),
+            tool: Some(tool.to_string()),
             purpose: self.claims.purpose.clone(),
             operation_sha256: wire::digest(&operation),
             nonce: Uuid::new_v4(),
@@ -271,10 +276,12 @@ fn validate_certificate(
         || claims.work_item_ref.len() > 128
         || claims.recipient.is_empty()
         || claims.recipient.len() > 2048
-        || claims.mcp_server.is_empty()
-        || claims.mcp_server.len() > 128
+        || claims
+            .mcp_server
+            .as_deref()
+            .is_none_or(|server| server.is_empty() || server.len() > 128)
         || claims.method != "tools/call"
-        || claims.tool != "work_item_claim"
+        || claims.tool.as_deref() != Some("work_item_claim")
         || claims.purpose != "work-claim"
         || claims.iat > now
         || claims.exp <= now
