@@ -125,13 +125,12 @@ pub(crate) async fn pending_subagent_scenario(
                 }
                 1 => {
                     notify_parent_request.notify_one();
-                    let mut args = json!({"timeout_ms": 10000});
-                    if v1 {
-                        let output = call_output(&body, SPAWN).expect("spawn result");
-                        let output: Value =
-                            serde_json::from_str(output).expect("spawn result JSON");
-                        args["targets"] = json!([output["agent_id"]]);
-                    }
+                    let output = call_output(&body, SPAWN).expect("spawn result");
+                    let output: Value = serde_json::from_str(output).expect("spawn result JSON");
+                    let target = output[if v1 { "agent_id" } else { "task_name" }]
+                        .as_str()
+                        .expect("spawn result target string");
+                    let args = json!({"timeout_ms": 10000, "targets": [target]});
                     tool(WAIT_CHILD, namespace, "wait_agent", args)
                 }
                 2 => {
