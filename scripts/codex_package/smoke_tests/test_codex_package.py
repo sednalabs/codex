@@ -389,7 +389,7 @@ def test_packaged_usage_report_covers_recorded_synthetic_spawn_tree(
             spawn_marker = "SYNTHETIC_USAGE_ROOT_MARKER"
             child_marker = "SYNTHETIC_USAGE_CHILD_MARKER"
 
-            server.enqueue_sse_for_request(
+            root_spawn_route = server.enqueue_sse_for_request(
                 lambda request: (
                     request_thread_id(request) == root_id
                     and spawn_marker in json.dumps(request.input())
@@ -422,7 +422,7 @@ def test_packaged_usage_report_covers_recorded_synthetic_spawn_tree(
                     ]
                 ),
             )
-            server.enqueue_sse_for_request(
+            root_wait_route = server.enqueue_sse_for_request(
                 lambda request: (
                     request_thread_id(request) == root_id
                     and has_call_output(request, spawn_call_id)
@@ -452,7 +452,7 @@ def test_packaged_usage_report_covers_recorded_synthetic_spawn_tree(
                     ]
                 ),
             )
-            server.enqueue_sse_for_request(
+            root_final_route = server.enqueue_sse_for_request(
                 lambda request: (
                     request_thread_id(request) == root_id
                     and has_call_output(request, wait_call_id)
@@ -473,7 +473,7 @@ def test_packaged_usage_report_covers_recorded_synthetic_spawn_tree(
                     ]
                 ),
             )
-            server.enqueue_sse_for_request(
+            child_final_route = server.enqueue_sse_for_request(
                 lambda request: (
                     request.header("x-codex-parent-thread-id") == root_id
                     and child_marker in json.dumps(request.input())
@@ -665,6 +665,24 @@ def test_packaged_usage_report_covers_recorded_synthetic_spawn_tree(
                 print(
                     "usage_spawn_failure_classification="
                     + json.dumps(classification, sort_keys=True, separators=(",", ":"))
+                )
+                print(
+                    "usage_spawn_route_state="
+                    + json.dumps(
+                        {
+                            "routes_used": {
+                                "usage-root-spawn": root_spawn_route.used,
+                                "usage-root-wait": root_wait_route.used,
+                                "usage-root-final": root_final_route.used,
+                                "usage-child-final": child_final_route.used,
+                            },
+                            "turn_status": turn.status.value,
+                            "final_assistant_response_present": turn.final_response
+                            is not None,
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
                 )
                 pytest.fail(
                     "Synthetic spawn result did not match the closed V2 result shape",
