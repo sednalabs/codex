@@ -25,7 +25,6 @@ import shutil
 import sqlite3
 import subprocess
 import sys
-import threading
 import tomllib
 from contextlib import closing, contextmanager
 from dataclasses import replace
@@ -422,8 +421,7 @@ def test_packaged_usage_report_covers_recorded_synthetic_spawn_tree(
                     ]
                 ),
             )
-            allow_root_wait = threading.Event()
-            root_wait_route = server.enqueue_sse_for_request(
+            server.enqueue_sse_for_request(
                 lambda request: (
                     request_thread_id(request) == root_id
                     and has_call_output(request, spawn_call_id)
@@ -452,7 +450,6 @@ def test_packaged_usage_report_covers_recorded_synthetic_spawn_tree(
                         ),
                     ]
                 ),
-                gate=allow_root_wait,
             )
             server.enqueue_sse_for_request(
                 lambda request: (
@@ -497,186 +494,98 @@ def test_packaged_usage_report_covers_recorded_synthetic_spawn_tree(
                 ),
             )
 
-            root_result: dict[str, object] = {}
+            turn = root.run(f"{spawn_marker}: start a child and wait for it.")
 
-            def run_root() -> None:
-                try:
-                    root_result["turn"] = root.run(
-                        f"{spawn_marker}: start a child and wait for it."
-                    )
-                except BaseException:
-                    root_result["failed"] = True
-
-            root_thread = threading.Thread(target=run_root, daemon=True)
-            root_thread.start()
-            spawn_failure: tuple[str, str | None] | None = None
-            child_request_failure = False
-            try:
-                if not root_wait_route.selected.wait(timeout=5):
-                    spawn_failure = ("next root request was not selected", None)
-                else:
-                    selected_root_requests = [
-                        request
-                        for request in server.requests()
-                        if request.path == "/v1/responses"
-                        and request_thread_id(request) == root_id
-                        and has_call_output(request, spawn_call_id)
-                        and not has_call_output(request, wait_call_id)
-                    ]
-                    if len(selected_root_requests) != 1:
-                        spawn_failure = (
-                            "next root request was not uniquely observed",
-                            None,
-                        )
-                    else:
-                        spawn_outputs = [
-                            item
-                            for item in selected_root_requests[0].input()
-                            if isinstance(item, dict)
-                            and item.get("type") == "function_call_output"
-                            and item.get("call_id") == spawn_call_id
-                        ]
-                        if len(spawn_outputs) != 1:
-                            spawn_failure = ("spawn result was not unique", None)
-                        else:
-                            output = spawn_outputs[0].get("output")
-                            if not isinstance(output, str):
-                                spawn_failure = (
-                                    "spawn result was missing or non-text",
-                                    None,
-                                )
-                            else:
-                                try:
-                                    result = json.loads(output)
-                                except (TypeError, ValueError):
-                                    spawn_failure = (
-                                        "spawn result was not JSON",
-                                        output,
-                                    )
-                                else:
-                                    valid_keys = isinstance(result, dict) and set(
-                                        result
-                                    ) in ({"task_name"}, {"task_name", "nickname"})
-                                    valid_nickname = isinstance(result, dict) and (
-                                        "nickname" not in result
-                                        or result["nickname"] is None
-                                        or isinstance(result["nickname"], str)
-                                    )
-                                    if not (
-                                        valid_keys
-                                        and valid_nickname
-                                        and result.get("task_name")
-                                        == "/root/usage-worker"
-                                    ):
-                                        spawn_failure = (
-                                            "spawn result did not match the closed V2 result",
-                                            output,
-                                        )
-
-                if spawn_failure is None:
-                    try:
-                        child_request = server.wait_for_request(
-                            lambda request: (
-                                request.path == "/v1/responses"
-                                and request.header("x-codex-parent-thread-id")
-                                == root_id
-                                and child_marker in json.dumps(request.input())
-                                and isinstance(request_thread_id(request), str)
-                                and bool(request_thread_id(request).strip())
-                            ),
-                            timeout_s=5,
-                        )
-                    except (AssertionError, ValueError):
-                        child_request_failure = True
-                    else:
-                        matching_child_requests = [
-                            request
-                            for request in server.requests()
-                            if request.path == "/v1/responses"
-                            and request.header("x-codex-parent-thread-id") == root_id
-                            and child_marker in json.dumps(request.input())
-                            and isinstance(request_thread_id(request), str)
-                            and bool(request_thread_id(request).strip())
-                        ]
-                        child_request_failure = (
-                            len(matching_child_requests) != 1
-                            or child_request is not matching_child_requests[0]
-                        )
-            finally:
-                if spawn_failure is not None or child_request_failure:
-                    response_id = "usage-root-guard-failed"
-                    root_wait_route.response.body = sse(
-                        [
-                            ev_response_created(response_id),
-                            ev_assistant_message(
-                                f"{response_id}-message", "synthetic guard failed"
-                            ),
-                            ev_completed(response_id),
-                        ]
-                    )
-                allow_root_wait.set()
-
-            root_thread.join(timeout=30)
-            if root_thread.is_alive() or root_result.get("failed") is True:
-                pytest.fail("Packaged root/child smoke did not complete", pytrace=False)
-
-            if spawn_failure is not None:
-                reason, output = spawn_failure
-                detail = ""
-                if output is not None:
-                    replacements = {
-                        root_id: "[root-thread]",
-                        server.url: "[mock-server]",
-                        str(package.directory): "[package-dir]",
-                        str(package.cli): "[package-cli]",
-                        "/root/usage-worker": "[expected-task-path]",
-                        spawn_marker: "[fixture-marker]",
-                        child_marker: "[fixture-marker]",
-                        spawn_call_id: "[spawn-call]",
-                        wait_call_id: "[wait-call]",
-                        str(config_path): "[config-path]",
-                        str(codex_home): "[codex-home]",
-                        str(workspace): "[workspace]",
-                        str(temporary): "[temporary-dir]",
-                        str(home): "[home]",
-                    }
-                    sanitized = output
-                    for original in sorted(replacements, key=len, reverse=True):
-                        sanitized = sanitized.replace(original, replacements[original])
-                    detail = f" (characters={len(output)}, excerpt={sanitized[:256]!r})"
+            selected_root_requests = [
+                request
+                for request in server.requests()
+                if request.path == "/v1/responses"
+                and request_thread_id(request) == root_id
+                and has_call_output(request, spawn_call_id)
+                and not has_call_output(request, wait_call_id)
+            ]
+            if len(selected_root_requests) != 1:
                 pytest.fail(
-                    f"Synthetic spawn result failed validation: {reason}{detail}",
+                    "Synthetic spawn result was not uniquely observed", pytrace=False
+                )
+            spawn_outputs = [
+                item
+                for item in selected_root_requests[0].input()
+                if isinstance(item, dict)
+                and item.get("type") == "function_call_output"
+                and item.get("call_id") == spawn_call_id
+            ]
+            if len(spawn_outputs) != 1:
+                pytest.fail("Synthetic spawn result was not unique", pytrace=False)
+            output = spawn_outputs[0].get("output")
+            if not isinstance(output, str):
+                pytest.fail(
+                    "Synthetic spawn result was missing or non-text", pytrace=False
+                )
+            try:
+                result = json.loads(output)
+            except (TypeError, ValueError):
+                result = None
+            valid_keys = isinstance(result, dict) and set(result) in (
+                {"task_name"},
+                {"task_name", "nickname"},
+            )
+            valid_nickname = isinstance(result, dict) and (
+                "nickname" not in result
+                or result["nickname"] is None
+                or isinstance(result["nickname"], str)
+            )
+            if not (
+                valid_keys
+                and valid_nickname
+                and result.get("task_name") == "/root/usage-worker"
+            ):
+                replacements = {
+                    root_id: "[root-thread]",
+                    server.url: "[mock-server]",
+                    str(package.directory): "[package-dir]",
+                    str(package.cli): "[package-cli]",
+                    "/root/usage-worker": "[expected-task-path]",
+                    spawn_marker: "[fixture-marker]",
+                    child_marker: "[fixture-marker]",
+                    spawn_call_id: "[spawn-call]",
+                    wait_call_id: "[wait-call]",
+                    str(config_path): "[config-path]",
+                    str(codex_home): "[codex-home]",
+                    str(workspace): "[workspace]",
+                    str(temporary): "[temporary-dir]",
+                    str(home): "[home]",
+                }
+                sanitized = output
+                for original in sorted(replacements, key=len, reverse=True):
+                    sanitized = sanitized.replace(original, replacements[original])
+                pytest.fail(
+                    "Synthetic spawn result did not match the closed V2 result "
+                    f"(characters={len(output)}, excerpt={sanitized[:256]!r})",
                     pytrace=False,
                 )
-            if child_request_failure:
+
+            child_requests = [
+                request
+                for request in server.requests()
+                if request.path == "/v1/responses"
+                and request.header("x-codex-parent-thread-id") == root_id
+                and child_marker in json.dumps(request.input())
+                and isinstance(request_thread_id(request), str)
+                and bool(request_thread_id(request).strip())
+            ]
+            if len(child_requests) != 1:
                 pytest.fail(
                     "Synthetic child Responses request was not uniquely observed",
                     pytrace=False,
                 )
-
-            turn = root_result.get("turn")
-            if turn is None or turn.final_response != "root complete":
+            child_id = request_thread_id(child_requests[0])
+            if not isinstance(child_id, str) or not child_id.strip():
+                pytest.fail(
+                    "Synthetic child identity was not uniquely observed", pytrace=False
+                )
+            if turn.final_response != "root complete":
                 pytest.fail("Packaged root/child smoke did not complete", pytrace=False)
-
-        child_requests = [
-            request
-            for request in server.requests()
-            if request.path == "/v1/responses"
-            and request.header("x-codex-parent-thread-id") == root_id
-            and child_marker in json.dumps(request.input())
-            and isinstance(request_thread_id(request), str)
-            and bool(request_thread_id(request).strip())
-        ]
-        if len(child_requests) != 1:
-            pytest.fail(
-                "Synthetic child Responses request was not uniquely observed",
-                pytrace=False,
-            )
-        child_id = request_thread_id(child_requests[0])
-        if not isinstance(child_id, str) or not child_id.strip():
-            pytest.fail(
-                "Synthetic child identity was not uniquely observed", pytrace=False
-            )
 
     database_path = codex_home / "usage_1.sqlite"
     if not database_path.is_file():
