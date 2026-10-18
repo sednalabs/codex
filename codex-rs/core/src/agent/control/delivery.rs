@@ -21,8 +21,10 @@ use codex_protocol::AgentPath;
 use codex_protocol::ResponseItemId;
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
+use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_rollout::RolloutRecorder;
 use codex_thread_store::PersistContext;
@@ -497,28 +499,39 @@ impl LocalAgentControl {
             ));
         }
 
+        // Remember only a root that was already loaded and whose input channel
+        // was open before the loader ran. This witness is used solely for the
+        // Completed-root exception; ordinary non-final restored roots retain
+        // the existing load behavior below.
+        let preloaded_root = match state.get_thread(recipient).await {
+            Ok(root) => Some((Arc::clone(&root), root.is_running())),
+            Err(error) if matches!(error.details(), CodexErrorDetails::ThreadNotFound(_)) => None,
+            Err(error) => return Err(error),
+        };
+
         let _residency_pin = self
             .ensure_v2_agent_loaded(resume_config, recipient, /*parent*/ None)
             .await?;
         let recipient_thread = state.get_thread(recipient).await?;
-        if !recipient_thread.is_running()
-            || recipient_thread.multi_agent_version()
-                != Some(codex_protocol::protocol::MultiAgentVersion::V2)
-            || !Arc::ptr_eq(
-                &recipient_thread
-                    .session
-                    .services
-                    .local_agent_runtime
-                    .registry,
-                &self.runtime.registry,
-            )
-            || is_final(&recipient_thread.agent_status().await)
-        {
-            return Err(CodexErr::InvalidRequest(
-                "explicit update root recipient is not a live member of this V2 agent tree"
-                    .to_string(),
-            ));
-        }
+        let completed_root_witness = preloaded_root
+            .as_ref()
+            .filter(|(preloaded, channel_was_open)| {
+                *channel_was_open && Arc::ptr_eq(preloaded, &recipient_thread)
+            })
+            .map(|(preloaded, _)| preloaded);
+        validate_current_explicit_membership(
+            state.as_ref(),
+            &self.runtime.registry,
+            &sender_thread,
+            &recipient_thread,
+            completed_root_witness,
+            &root_thread_id,
+            &caller,
+            &recipient,
+            &sender_path,
+            &root_path,
+        )
+        .await?;
 
         let mut communication = message.into_communication(
             sender_path.clone(),
@@ -541,6 +554,7 @@ impl LocalAgentControl {
             &self.runtime.registry,
             &sender_thread,
             &recipient_thread,
+            completed_root_witness,
             &root_thread_id,
             &caller,
             &recipient,
@@ -625,6 +639,7 @@ impl LocalAgentControl {
                 &self.runtime.registry,
                 &sender_thread,
                 &recipient_thread,
+                completed_root_witness,
                 &root_thread_id,
                 &caller,
                 &recipient,
@@ -712,11 +727,41 @@ async fn valid_explicit_member(
         && !is_final(&thread.agent_status().await)
 }
 
-async fn validate_current_explicit_membership(
+async fn valid_explicit_root_recipient(
+    thread: &Arc<CodexThread>,
+    registry: &Arc<crate::agent::registry::AgentRegistry>,
+    completed_root_witness: Option<&Arc<CodexThread>>,
+    root_thread_id: &ThreadId,
+    recipient_thread_id: &ThreadId,
+    root_path: &AgentPath,
+) -> bool {
+    let status = thread.agent_status().await;
+    let completed_root_is_original_live_session = matches!(&status, AgentStatus::Completed(_))
+        && completed_root_witness.is_some_and(|captured_root| Arc::ptr_eq(thread, captured_root));
+
+    thread.session.thread_id == *root_thread_id
+        && thread.session.thread_id == *recipient_thread_id
+        && thread.is_running()
+        && thread.multi_agent_version() == Some(codex_protocol::protocol::MultiAgentVersion::V2)
+        && Arc::ptr_eq(
+            &thread.session.services.local_agent_runtime.registry,
+            registry,
+        )
+        && registry.agent_id_for_path(root_path) == Some(*root_thread_id)
+        && registry
+            .agent_metadata_for_thread(*recipient_thread_id)
+            .and_then(|metadata| metadata.agent_path)
+            .as_ref()
+            == Some(root_path)
+        && (!is_final(&status) || completed_root_is_original_live_session)
+}
+
+pub(super) async fn validate_current_explicit_membership(
     state: &crate::thread_manager::ThreadManagerState,
     registry: &Arc<crate::agent::registry::AgentRegistry>,
     original_sender: &Arc<CodexThread>,
     original_recipient: &Arc<CodexThread>,
+    completed_root_witness: Option<&Arc<CodexThread>>,
     root_thread_id: &ThreadId,
     sender_thread_id: &ThreadId,
     recipient_thread_id: &ThreadId,
@@ -751,10 +796,12 @@ async fn validate_current_explicit_membership(
             sender_path,
         )
         .await
-        || !valid_explicit_member(
+        || !valid_explicit_root_recipient(
             &current_recipient,
             registry,
-            recipient_thread_id.clone(),
+            completed_root_witness,
+            root_thread_id,
+            recipient_thread_id,
             root_path,
         )
         .await
