@@ -4,6 +4,8 @@ use std::fs;
 use std::io::ErrorKind;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use axum::Form;
@@ -63,6 +65,7 @@ struct TestToolServer {
     tools: Arc<Vec<Tool>>,
     resources: Arc<Vec<Resource>>,
     resource_templates: Arc<Vec<ResourceTemplate>>,
+    side_effect_count: Arc<AtomicUsize>,
 }
 
 const MEMO_URI: &str = "memo://codex/example-note";
@@ -74,11 +77,13 @@ const INITIALIZE_POST_FAILURE_STARTED_CONTROL_PATH: &str =
     "/test/control/initialize-post-failure/wait-started";
 const INITIALIZED_NOTIFICATION_POST_FAILURE_CONTROL_PATH: &str =
     "/test/control/initialized-notification-post-failure";
+const SIDE_EFFECT_COUNT_PATH: &str = "/test/control/side-effect-count";
 const MAX_MCP_POST_BODY_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone, Default)]
 struct PostFailureState {
     armed_failure: Arc<Mutex<Option<ArmedFailure>>>,
+    side_effect_count: Arc<AtomicUsize>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -99,6 +104,7 @@ struct ArmedFailure {
     content_type: Option<HeaderValue>,
     body: Option<String>,
     hold: Option<FailureHold>,
+    dispatch_before_response: bool,
 }
 
 #[derive(Clone)]
@@ -119,6 +125,8 @@ struct ArmSessionPostFailureRequest {
     body: Option<String>,
     #[serde(default)]
     hold_until_released: bool,
+    #[serde(default)]
+    dispatch_before_response: bool,
 }
 
 #[derive(Deserialize)]
@@ -165,6 +173,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("starting rmcp streamable http test server on http://{actual_bind_addr}/mcp");
 
     let router = Router::new()
+        .route(SIDE_EFFECT_COUNT_PATH, get(read_side_effect_count))
         .route(
             SESSION_POST_FAILURE_CONTROL_PATH,
             post(arm_session_post_failure),
@@ -210,7 +219,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .nest_service(
             "/mcp",
             StreamableHttpService::new(
-                || Ok(TestToolServer::new()),
+                {
+                    let side_effect_count = Arc::clone(&post_failure_state.side_effect_count);
+                    move || Ok(TestToolServer::new(Arc::clone(&side_effect_count)))
+                },
                 Arc::new(LocalSessionManager::default()),
                 StreamableHttpServerConfig::default(),
             ),
@@ -368,6 +380,12 @@ impl ServerHandler for TestToolServer {
                 result.structured_content = Some(json!({ "page": 2 }));
                 Ok(result.into())
             }
+            "counter_write" => {
+                let count = self.side_effect_count.fetch_add(1, Ordering::SeqCst) + 1;
+                let mut result = CallToolResult::success(Vec::new());
+                result.structured_content = Some(json!({ "side_effect_count": count }));
+                Ok(result.into())
+            }
             other => Err(McpError::invalid_params(
                 format!("unknown tool: {other}"),
                 None,
@@ -377,15 +395,28 @@ impl ServerHandler for TestToolServer {
 }
 
 impl TestToolServer {
-    fn new() -> Self {
-        let tools = vec![Self::echo_tool(), Self::second_page_tool()];
+    fn new(side_effect_count: Arc<AtomicUsize>) -> Self {
+        let tools = vec![
+            Self::echo_tool(),
+            Self::second_page_tool(),
+            Self::counter_write_tool(),
+        ];
         let resources = vec![Self::memo_resource()];
         let resource_templates = vec![Self::memo_template()];
         Self {
             tools: Arc::new(tools),
             resources: Arc::new(resources),
             resource_templates: Arc::new(resource_templates),
+            side_effect_count,
         }
+    }
+
+    fn counter_write_tool() -> Tool {
+        Tool::new(
+            Cow::Borrowed("counter_write"),
+            Cow::Borrowed("Increment the recovery test server's side-effect counter."),
+            Arc::new(JsonObject::new()),
+        )
     }
 
     fn echo_tool() -> Tool {
@@ -582,6 +613,7 @@ async fn arm_post_failure(
             content_type,
             body: request.body,
             hold,
+            dispatch_before_response: request.dispatch_before_response,
         })
     };
     let mut current_failure = state.armed_failure.lock().await;
@@ -590,6 +622,10 @@ async fn arm_post_failure(
         previous.release.notify_one();
     }
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn read_side_effect_count(State(state): State<PostFailureState>) -> Json<usize> {
+    Json(state.side_effect_count.load(Ordering::SeqCst))
 }
 
 async fn fail_mcp_post_when_armed(
@@ -632,6 +668,7 @@ async fn fail_mcp_post_when_armed(
             let retry_after = failure.retry_after.clone();
             let content_type = failure.content_type.clone();
             let hold = failure.hold.clone();
+            let dispatch_before_response = failure.dispatch_before_response;
             let body = failure
                 .body
                 .clone()
@@ -652,12 +689,16 @@ async fn fail_mcp_post_when_armed(
             if let Some(retry_after) = retry_after {
                 response.headers_mut().insert(RETRY_AFTER, retry_after);
             }
-            Some((response, hold))
+            Some((response, hold, dispatch_before_response))
         } else {
             None
         }
     };
-    if let Some((response, hold)) = armed_response {
+    let request = Request::from_parts(parts, Body::from(body_bytes));
+    if let Some((response, hold, dispatch_before_response)) = armed_response {
+        if dispatch_before_response {
+            let _dispatched_response = next.run(request).await;
+        }
         if let Some(hold) = hold {
             hold.started.notify_one();
             hold.release.notified().await;
@@ -665,8 +706,7 @@ async fn fail_mcp_post_when_armed(
         return response;
     }
 
-    next.run(Request::from_parts(parts, Body::from(body_bytes)))
-        .await
+    next.run(request).await
 }
 
 fn request_mcp_method(body: &[u8]) -> Option<String> {
