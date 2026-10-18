@@ -1038,7 +1038,7 @@ async fn explicit_progress_is_admitted_to_a_completed_loaded_root_without_starti
         )
         .await
         .expect("completed already-loaded root should accept quiet progress");
-    let update_id = ResponseItemId::new(update_id);
+    let update_id = ResponseItemId::from_server(update_id);
 
     let replayed_id = tree
         .control
@@ -1052,7 +1052,7 @@ async fn explicit_progress_is_admitted_to_a_completed_loaded_root_without_starti
         )
         .await
         .expect("same explicit request should replay its durable receipt");
-    assert_eq!(ResponseItemId::new(replayed_id), update_id);
+    assert_eq!(ResponseItemId::from_server(replayed_id), update_id);
 
     let items = explicit_update_rollout_items(&tree.root).await;
     assert_eq!(
@@ -1210,8 +1210,14 @@ async fn explicit_update_rejects_completed_sender_without_persisting_an_admissio
 }
 
 #[tokio::test]
-async fn explicit_update_rejects_root_that_is_not_loaded_before_admission() {
+async fn explicit_update_rejects_completed_root_without_its_original_live_session() {
     let tree = explicit_update_test_tree().await;
+    complete_control_test_thread(&tree.root, "root turn complete before unload").await;
+    assert_eq!(
+        tree.root.agent_status().await,
+        AgentStatus::Completed(Some("root turn complete before unload".to_string()))
+    );
+    assert!(tree.root.is_running(), "completed root channel stays open");
     let rollout_path = tree.root.rollout_path().expect("root rollout path");
     assert!(
         tree.harness
@@ -1239,11 +1245,7 @@ async fn explicit_update_rejects_root_that_is_not_loaded_before_admission() {
         .await;
     assert!(
         result.is_err(),
-        "an absent root is not an admitted recipient"
-    );
-    assert!(
-        tree.harness.manager.get_thread(tree.root_id).await.is_err(),
-        "explicit admission must not replace the captured missing root by reloading it"
+        "a completed root without its original loaded session is not an admitted recipient"
     );
     assert_eq!(
         explicit_update_rollout_items_at(&rollout_path, tree.root_id)
@@ -1258,7 +1260,7 @@ async fn explicit_update_rejects_root_that_is_not_loaded_before_admission() {
             ))
             .count(),
         0,
-        "absent-root rejection must not append an admission"
+        "completed-root rejection must not append an admission"
     );
     assert!(
         !tree
@@ -1267,7 +1269,7 @@ async fn explicit_update_rejects_root_that_is_not_loaded_before_admission() {
             .input_queue
             .has_pending_mailbox_items()
             .await,
-        "absent-root rejection must not enqueue mail"
+        "completed-root rejection must not enqueue mail"
     );
     tree.root
         .shutdown_and_wait()
@@ -1286,33 +1288,15 @@ async fn explicit_update_rejects_root_that_is_not_loaded_before_admission() {
 #[tokio::test]
 async fn explicit_update_rejects_root_replaced_before_membership_recheck() {
     let tree = explicit_update_test_tree().await;
-    // The ordinary Exec root is already resident, so its load/pin path completes
-    // inline. Holding only the existing admission mutex makes this first poll stop
-    // at the recipient's current-membership boundary without adding a test hook.
-    let admission_guard = tree
-        .root
-        .session
-        .explicit_inter_agent_admission
-        .lock()
-        .await;
-    let mut request = Box::pin(tree.control.send_explicit_inter_agent_update(
-        tree.worker_id,
-        tree.root_id,
-        tree.harness.config.clone(),
-        AgentMessage::Plaintext("progress while root is replaced".to_string()),
-        ExplicitInterAgentUpdate {
-            idempotency_key: "replaced-root-must-not-receive".to_string(),
-            intent: InterAgentCommunicationIntent::Progress,
-            supersedes: Vec::new(),
-        },
-        AgentCommunicationContext::new(AgentCommunicationKind::Message, tree.worker_id),
-    ));
-    let first_poll = poll_fn(|cx| Poll::Ready(request.as_mut().poll(cx))).await;
-    assert!(
-        first_poll.is_pending(),
-        "request should wait at the existing per-recipient admission boundary"
-    );
-
+    let state = tree.control.runtime.upgrade().expect("live manager state");
+    let sender_path = tree
+        .control
+        .runtime
+        .registry
+        .agent_metadata_for_thread(tree.worker_id)
+        .and_then(|metadata| metadata.agent_path)
+        .expect("worker should have a registered agent path");
+    let root_path = AgentPath::root();
     assert!(
         tree.harness
             .manager
@@ -1347,14 +1331,22 @@ async fn explicit_update_rejects_root_replaced_before_membership_recheck() {
         &replacement.session.services.local_agent_runtime.registry
     ));
 
-    drop(admission_guard);
-    let result = request
-        .await
-        .expect_err("replaced root must fail current membership revalidation");
-    assert!(matches!(
-        result.details(),
-        CodexErrorDetails::InvalidRequest(_)
-    ));
+    let result = super::delivery::validate_current_explicit_membership(
+        state.as_ref(),
+        &tree.control.runtime.registry,
+        &tree.worker,
+        &tree.root,
+        &tree.root_id,
+        &tree.worker_id,
+        &tree.root_id,
+        &sender_path,
+        &root_path,
+    )
+    .await;
+    assert!(
+        result.is_err(),
+        "replacement must fail the real membership recheck"
+    );
     assert_eq!(
         explicit_update_rollout_items(&replacement)
             .await
@@ -1368,7 +1360,7 @@ async fn explicit_update_rejects_root_replaced_before_membership_recheck() {
             ))
             .count(),
         0,
-        "replacement rejection must not append an admission"
+        "replacement membership recheck must not append an admission"
     );
     assert!(
         !replacement

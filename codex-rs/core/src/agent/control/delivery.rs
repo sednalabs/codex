@@ -712,7 +712,7 @@ async fn valid_explicit_member(
         && !is_final(&thread.agent_status().await)
 }
 
-async fn validate_current_explicit_membership(
+pub(super) async fn validate_current_explicit_membership(
     state: &crate::thread_manager::ThreadManagerState,
     registry: &Arc<crate::agent::registry::AgentRegistry>,
     original_sender: &Arc<CodexThread>,
