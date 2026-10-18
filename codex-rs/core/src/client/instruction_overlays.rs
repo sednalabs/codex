@@ -508,18 +508,20 @@ mod tests {
             SessionSource::SubAgent(SubAgentSource::Other("cli".to_string())),
             SessionSource::Unknown,
         ] {
-            let mut plan = InstructionOverlaysToml::default();
-            plan.model_baseline = Some(InstructionOverlayComponentToml {
-                on_absent: InstructionOverlayOnAbsent::Error,
-                selection: InstructionOverlaySelection::Unique,
-                edits: vec![InstructionOverlayEdit::ReplaceExact {
-                    from: String::new(),
-                    to: "must not run".to_string(),
-                    expected_matches: 1,
-                }],
-            });
-            plan.developer_guidance = Some(active("must not run"));
-            plan.model_switch_guidance = Some(active("must not run"));
+            let plan = InstructionOverlaysToml {
+                model_baseline: Some(InstructionOverlayComponentToml {
+                    on_absent: InstructionOverlayOnAbsent::Error,
+                    selection: InstructionOverlaySelection::Unique,
+                    edits: vec![InstructionOverlayEdit::ReplaceExact {
+                        from: String::new(),
+                        to: "must not run".to_string(),
+                        expected_matches: 1,
+                    }],
+                }),
+                developer_guidance: Some(active("must not run")),
+                model_switch_guidance: Some(active("must not run")),
+                ..Default::default()
+            };
             let baseline = "source-owned baseline";
             let input = vec![developer_fragment(
                 "generic.developer_instructions",
@@ -729,7 +731,7 @@ mod tests {
             )
             .is_err()
         );
-        let mut skipped = plan.clone();
+        let mut skipped = plan;
         skipped.model_baseline.as_mut().unwrap().on_absent = InstructionOverlayOnAbsent::Skip;
         let (placeholder, input) = transform_request_with_provenance(
             &SessionSource::Cli,

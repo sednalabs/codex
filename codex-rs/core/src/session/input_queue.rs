@@ -1201,7 +1201,7 @@ mod tests {
         let sender_path = AgentPath::try_from("/root/worker").expect("sender path");
         let unrelated_path = AgentPath::try_from("/root/unrelated").expect("other path");
         let update_id = ResponseItemId::new("explicit-action-1");
-        let (mut legacy_activity_rx, _) = queue.subscribe_activity(/*turn_state*/ None).await;
+        let (legacy_activity_rx, _) = queue.subscribe_activity(/*turn_state*/ None).await;
         let mut explicit_activity_rx = queue.subscribe_explicit_activity();
         let pending = queue
             .pending_explicit_activity_for_targets(recipient, &[(sender, sender_path.clone())])

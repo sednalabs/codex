@@ -18,6 +18,7 @@ use crate::tui::FrameRequester;
 use crate::tui::Tui;
 #[cfg(not(debug_assertions))]
 use crate::tui::TuiEvent;
+#[cfg(not(debug_assertions))]
 use crate::update_action::UpdateAction;
 #[cfg(not(debug_assertions))]
 use crate::updates;
