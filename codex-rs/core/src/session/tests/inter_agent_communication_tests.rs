@@ -903,7 +903,9 @@ async fn record_inter_agent_communication_preserves_item_id_in_rollout_and_resum
         "child done".to_string(),
         /*trigger_turn*/ false,
     );
-    communication.id = Some(ResponseItemId::new("legacy-public-message-id"));
+    communication.id = Some(ResponseItemId::from_server(
+        "legacy-public-message-id".to_string(),
+    ));
 
     session
         .record_inter_agent_communication(&turn_context, turn_context.model_info(), communication)
