@@ -23,9 +23,9 @@ fn signer() -> RuntimeProofSigner {
             execution_lease_seconds: 900,
             work_item_ref: "example-work-item".to_string(),
             recipient: "https://ops.example/mcp".to_string(),
-            mcp_server: "ops".to_string(),
+            mcp_server: Some("ops".to_string()),
             method: "tools/call".to_string(),
-            tool: "work_item_claim".to_string(),
+            tool: Some("work_item_claim".to_string()),
             purpose: "work-claim".to_string(),
             iat: unix_seconds().unwrap() - 5,
             exp: unix_seconds().unwrap() + 300,
@@ -153,7 +153,7 @@ fn signs_each_final_claim_request_with_native_context_and_fresh_nonce() {
     assert_eq!(header.typ, "runtime-invocation+jwt");
     assert_eq!(header.kid, claims.runtime_incarnation.to_string());
     assert_eq!(claims.execution_nonce, execution_nonce);
-    assert_eq!(claims.provider_thread_id, "native-thread");
+    assert_eq!(claims.provider_thread_id.as_deref(), Some("native-thread"));
     assert_ne!(claims.nonce, delegate_claims.nonce);
     assert_ne!(claims.execution_nonce, delegate_claims.execution_nonce);
     assert_eq!(claims.exp - claims.iat, 60);
@@ -276,9 +276,9 @@ fn issuer_certificate_and_native_invocation_use_one_positive_wire_vector() {
         execution_lease_seconds: 900,
         work_item_ref: "example-work-item".to_string(),
         recipient: "https://ops.example/mcp".to_string(),
-        mcp_server: "ops".to_string(),
+        mcp_server: Some("ops".to_string()),
         method: "tools/call".to_string(),
-        tool: "work_item_claim".to_string(),
+        tool: Some("work_item_claim".to_string()),
         purpose: "work-claim".to_string(),
         iat: now,
         exp: now + 300,
@@ -377,10 +377,13 @@ fn issuer_certificate_and_native_invocation_use_one_positive_wire_vector() {
     );
     assert_eq!(request_claims.runtime_incarnation, runtime_incarnation);
     assert_eq!(request_claims.execution_nonce, execution_nonce);
-    assert_eq!(request_claims.provider_thread_id, "codex-session-thread");
+    assert_eq!(
+        request_claims.provider_thread_id.as_deref(),
+        Some("codex-session-thread")
+    );
     assert_eq!(request_claims.recipient, "https://ops.example/mcp");
     assert_eq!(request_claims.method, "tools/call");
-    assert_eq!(request_claims.tool, "work_item_claim");
+    assert_eq!(request_claims.tool.as_deref(), Some("work_item_claim"));
     assert_eq!(request_claims.purpose, "work-claim");
     let operation = wire::canonical_operation("work_item_claim", &parameters("claim")).unwrap();
     assert_eq!(request_claims.operation_sha256, wire::digest(&operation));

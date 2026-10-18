@@ -133,7 +133,7 @@ fn validate_and_import(
         || frame.runtime_incarnation != claims.runtime_incarnation
         || frame.principal != claims.principal
         || frame.project_id != claims.project_id
-        || frame.mcp_server != claims.mcp_server
+        || Some(frame.mcp_server.as_str()) != claims.mcp_server.as_deref()
         || frame.recipient != claims.recipient
         || !valid_provider_recipient(&frame.provider_recipient, &frame.provider.credential_class)
     {

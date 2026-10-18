@@ -526,13 +526,45 @@ scopes are sent unchanged; scope rejection never triggers an empty-scope login.
 The original device deadline bounds token requests, including response-body
 collection, and cancellation does not publish credentials.
 
-The fixed-policy Linux launcher and inert systemd unit are retained as source
-and branch-package inputs. The launcher accepts no caller-selected arguments,
-checks its measured child and immutable claim-only configuration, and supplies
-finite proof/authentication frames only through the existing anonymous-descriptor
-boundary. Packaging is not issuer appointment, policy or credential provisioning,
-service installation, or live execution authority. The ordinary branch installer
-continues to install only the CLI and its two existing companion executables.
+The Linux package also carries a fixed-policy one-shot launcher and its
+systemd unit template. The launcher has no caller-selected arguments; its
+root-owned policy selects one Work task, principal, project, MCP recipient,
+lease, and task instruction. It starts the measured `codex-dev` ELF through an
+already hashed file descriptor, drops to the configured runtime UID/GID, and
+checks the actual executable and process identity before reading any of the
+fixed `LoadCredential` inputs. It then sends the existing root-peer bootstrap
+and authentication frames, waits for the startup ACK, supplies the fixed task
+prompt through a deadline-bounded pipe, and enforces the certificate deadline
+while supervising the child. Issuer, provider-auth and bearer buffers are
+zeroized after their corresponding signed frame is prepared or sent. Runtime
+directories are populated while root still has owner write access, then child
+ownership and final immutable modes are applied without requiring
+`CAP_DAC_OVERRIDE`; installation state is chowned only after its final mode is
+applied, avoiding an unnecessary `CAP_FOWNER` requirement.
+The unit uses `KillMode=control-group` and a finite stop timeout to clean up
+descendants, and masks `/home`, `/root` and `/run/user` rather than exposing
+host user auth stores to the root service or its child. The normal `codex-dev`
+entrypoint remains user-owned and unchanged.
+
+The same launcher also has a closed HTTP target for the maintained App claim
+route. It measures its own running ELF before reading credentials, signs the
+exact final `POST /v0/work-items/claim` body and request ID, and sends one
+bounded direct request using the API bearer from the fixed
+`ops-api-bearer` system credential. The API certificate binds the measured
+HTTP-sending launcher, `agent-ops-api-claim-client`, the canonical API
+recipient and the fixed body/precondition; MCP-only server, tool and thread
+fields are omitted. The API server remains responsible for authenticating the
+bearer and verifying both signatures. The local JWT field comparison is only
+a fail-early consistency check, never an authentication decision. An absent
+bearer or mismatch fails closed, and an uncertain POST is returned without
+retry. The MCP policy and existing MCP child path remain separate. Source
+support does not appoint or install the API bearer, authorize a claim policy,
+or establish HTTP first use.
+The unit template and binary are packaged for Linux x86_64 and Arm64; packaging
+does not create the host policy, credentials, service account, issuer
+appointment, service installation, or live execution authority. The ordinary
+branch installer continues to install only the CLI and its two existing
+companion executables.
 
 ## Editable client instruction overlays
 

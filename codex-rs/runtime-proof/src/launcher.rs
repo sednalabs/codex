@@ -7,6 +7,7 @@
 //! input only after `/proc/<pid>/exe` is bound to the already verified file
 //! object.
 
+use crate::api_claim;
 use crate::auth::AuthFrame;
 use crate::mcp_oauth::McpOAuthPolicy;
 use crate::mcp_oauth::exchange_client_credentials;
@@ -76,20 +77,46 @@ const READINESS_PACKET: &[u8; 4] = b"ACK1";
 #[serde(deny_unknown_fields)]
 struct LauncherPolicy {
     version: u8,
+    principal: Uuid,
+    project_id: u64,
+    work_item_ref: String,
+    issuer_kid: String,
+    issuer_public_key: String,
+    execution_lease_seconds: u32,
+    target: LauncherTarget,
+}
+
+#[derive(Deserialize)]
+#[serde(
+    tag = "transport",
+    content = "config",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+enum LauncherTarget {
+    Mcp(McpLaunchConfig),
+    Http(ApiClaimConfig),
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct McpLaunchConfig {
     codex_dev_path: PathBuf,
     codex_dev_sha256: String,
     runtime_uid: u32,
     runtime_gid: u32,
     working_directory: PathBuf,
-    principal: Uuid,
-    project_id: u64,
-    work_item_ref: String,
     mcp_recipient: String,
     mcp_oauth: McpOAuthPolicy,
-    issuer_kid: String,
-    issuer_public_key: String,
-    execution_lease_seconds: u32,
     task_prompt: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApiClaimConfig {
+    launcher_sha256: String,
+    expected_generation: u64,
+    expected_updated_at: String,
 }
 
 struct VerifiedExecutable {
@@ -106,6 +133,13 @@ struct RunDirectory {
     config_sha256: String,
 }
 
+struct McpSupervisionContext<'a> {
+    credential_directory: &'a Path,
+    run_directory: &'a RunDirectory,
+    policy: &'a LauncherPolicy,
+    target: &'a McpLaunchConfig,
+}
+
 /// Starts the fixed root-owned task and returns the child exit code.
 pub fn run() -> Result<i32> {
     reject_caller_input()?;
@@ -117,14 +151,25 @@ pub fn run() -> Result<i32> {
     validate_policy(&policy)?;
 
     let credential_directory = credential_directory()?;
-    let runtime_directory = validate_runtime_directory(&policy)?;
+    match &policy.target {
+        LauncherTarget::Mcp(target) => run_mcp(&policy, target, &credential_directory),
+        LauncherTarget::Http(target) => run_http_claim(&policy, target, &credential_directory),
+    }
+}
+
+fn run_mcp(
+    policy: &LauncherPolicy,
+    target: &McpLaunchConfig,
+    credential_directory: &Path,
+) -> Result<i32> {
+    let runtime_directory = validate_runtime_directory(target.runtime_gid)?;
     let working_directory = validate_working_directory(
-        &policy.working_directory,
-        policy.runtime_uid,
-        policy.runtime_gid,
+        &target.working_directory,
+        target.runtime_uid,
+        target.runtime_gid,
     )?;
-    let executable = open_verified_executable(&policy)?;
-    let run_directory = create_run_directory(&runtime_directory, &policy, working_directory)?;
+    let executable = open_verified_executable(&target.codex_dev_path, &target.codex_dev_sha256)?;
+    let run_directory = create_run_directory(&runtime_directory, target, working_directory)?;
 
     let (bootstrap_parent, bootstrap_child) = seqpacket_pair()?;
     let (auth_parent, auth_child) = seqpacket_pair()?;
@@ -137,7 +182,7 @@ pub fn run() -> Result<i32> {
         &bootstrap_source,
         &auth_source,
         &run_directory,
-        &policy,
+        target,
     )?;
     drop(bootstrap_child);
     drop(auth_child);
@@ -145,19 +190,135 @@ pub fn run() -> Result<i32> {
     drop(bootstrap_source);
     drop(auth_source);
 
+    let context = McpSupervisionContext {
+        credential_directory,
+        run_directory: &run_directory,
+        policy,
+        target,
+    };
     let result = supervise_child(
         &mut child,
         &executable,
         &bootstrap_parent,
         &auth_parent,
-        &credential_directory,
-        &run_directory,
-        &policy,
+        &context,
     );
     if result.is_err() {
         terminate_child_group(&mut child);
     }
     result
+}
+
+fn run_http_claim(
+    policy: &LauncherPolicy,
+    target: &ApiClaimConfig,
+    credential_directory: &Path,
+) -> Result<i32> {
+    let executable = open_verified_self_executable(&target.launcher_sha256)?;
+    let mut bearer_bytes = read_credential(
+        credential_directory,
+        api_claim::API_BEARER_CREDENTIAL,
+        api_claim::API_BEARER_MAX_BYTES,
+    )?;
+    let bearer_text = std::str::from_utf8(&bearer_bytes)
+        .map_err(|_| anyhow::anyhow!("fixed Ops API bearer is not UTF-8"))?
+        .to_owned();
+    bearer_bytes.zeroize();
+
+    let now = api_claim::unix_seconds()?;
+    let bearer = api_claim::validate_bearer(bearer_text, policy.principal, now)?;
+    let (issued_at, policy_expires_at, _) = certificate_timing(policy)?;
+    let (expires_at, execution_lease_seconds) =
+        effective_expiry(issued_at, policy_expires_at, bearer.expires_at)?;
+    let issuer_seed = read_issuer_seed(credential_directory, policy)?;
+
+    let mut runtime_seed = Zeroizing::new([0_u8; RUNTIME_SEED_BYTES]);
+    rand::rng().fill_bytes(runtime_seed.as_mut());
+    let runtime_incarnation = Uuid::new_v4();
+    let claims = wire::CertificateClaims {
+        version: 1,
+        runtime_public_key: URL_SAFE_NO_PAD.encode(
+            SigningKey::from_bytes(&runtime_seed)
+                .verifying_key()
+                .as_bytes(),
+        ),
+        runtime_incarnation,
+        provider: api_claim::API_PROVIDER.to_string(),
+        artifact_sha256: executable.digest,
+        principal: policy.principal,
+        project_id: policy.project_id,
+        execution_lease_seconds,
+        work_item_ref: policy.work_item_ref.clone(),
+        recipient: api_claim::API_RECIPIENT.to_string(),
+        mcp_server: None,
+        method: "POST".to_string(),
+        tool: None,
+        purpose: "work-claim".to_string(),
+        iat: issued_at,
+        exp: expires_at,
+    };
+    let certificate = issue_certificate(&claims, &issuer_seed, policy)?;
+    drop(issuer_seed);
+
+    let request_id = Uuid::new_v4();
+    let body = api_claim::build_claim_body(
+        &policy.work_item_ref,
+        target.expected_generation,
+        &target.expected_updated_at,
+        request_id,
+    )?;
+    let proof = api_claim::create_proof(
+        &certificate,
+        &runtime_seed,
+        runtime_incarnation,
+        Uuid::new_v4(),
+        &body,
+        api_claim::unix_seconds()?,
+        expires_at,
+    )?;
+    let client = api_claim::api_http_client()?;
+    api_claim::send_claim(
+        &client,
+        &bearer.value,
+        request_id,
+        &certificate,
+        &proof,
+        &body,
+    )?;
+    runtime_seed.zeroize();
+    Ok(0)
+}
+
+fn open_verified_self_executable(expected_digest: &str) -> Result<VerifiedExecutable> {
+    let file = File::open("/proc/self/exe").context("open running fixed launcher image")?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file()
+        || metadata.uid() != 0
+        || metadata.mode() & 0o022 != 0
+        || metadata.mode() & 0o111 == 0
+        || metadata.mode() & 0o6000 != 0
+        || metadata.len() == 0
+        || metadata.len() > MAX_EXECUTABLE_BYTES
+    {
+        bail!("running fixed launcher image is not a root-owned executable");
+    }
+    let mut magic = [0_u8; 4];
+    if unsafe { libc::pread(file.as_raw_fd(), magic.as_mut_ptr().cast(), magic.len(), 0) }
+        != magic.len() as isize
+        || magic != *b"\x7fELF"
+    {
+        bail!("running fixed launcher image is not a native ELF executable");
+    }
+    let digest = sha256_file(&file)?;
+    if digest != expected_digest {
+        bail!("running fixed launcher image digest differs from policy");
+    }
+    Ok(VerifiedExecutable {
+        file,
+        device: metadata.dev(),
+        inode: metadata.ino(),
+        digest,
+    })
 }
 
 fn reject_caller_input() -> Result<()> {
@@ -175,9 +336,7 @@ fn require_root_launcher() -> Result<()> {
 }
 
 fn validate_policy(policy: &LauncherPolicy) -> Result<()> {
-    if policy.version != 1
-        || policy.runtime_uid == 0
-        || policy.runtime_gid == 0
+    if policy.version != 2
         || policy.principal.is_nil()
         || policy.project_id == 0
         || policy.project_id > ((1_u64 << 53) - 1)
@@ -186,31 +345,50 @@ fn validate_policy(policy: &LauncherPolicy) -> Result<()> {
         || policy.work_item_ref.chars().any(char::is_control)
         || policy.execution_lease_seconds == 0
         || policy.execution_lease_seconds > wire::MAX_CERTIFICATE_SECONDS as u32
-        || policy.task_prompt.trim().is_empty()
-        || policy.task_prompt.len() > 16 * 1024
-        || policy
-            .task_prompt
-            .chars()
-            .any(|character| character.is_control() && character != '\n' && character != '\t')
     {
         bail!("fixed launcher policy is outside the admitted execution contract");
     }
-    validate_sha256(&policy.codex_dev_sha256)?;
-    if !policy.codex_dev_path.is_absolute()
-        || policy.codex_dev_path.canonicalize()? != policy.codex_dev_path
-    {
-        bail!("fixed codex-dev executable path is not canonical and absolute");
+    match &policy.target {
+        LauncherTarget::Mcp(target) => {
+            if target.runtime_uid == 0
+                || target.runtime_gid == 0
+                || target.task_prompt.trim().is_empty()
+                || target.task_prompt.len() > 16 * 1024
+                || target.task_prompt.chars().any(|character| {
+                    character.is_control() && character != '\n' && character != '\t'
+                })
+            {
+                bail!("fixed MCP policy is outside the admitted execution contract");
+            }
+            validate_sha256(&target.codex_dev_sha256)?;
+            if !target.codex_dev_path.is_absolute()
+                || target.codex_dev_path.canonicalize()? != target.codex_dev_path
+            {
+                bail!("fixed codex-dev executable path is not canonical and absolute");
+            }
+            if !target.working_directory.is_absolute()
+                || target.working_directory.canonicalize()? != target.working_directory
+            {
+                bail!("fixed task working directory is not canonical and absolute");
+            }
+            if target.mcp_recipient.len() > 2048 {
+                bail!("fixed MCP recipient exceeds its size limit");
+            }
+            validate_https_recipient(&target.mcp_recipient)?;
+            target.mcp_oauth.validate()?;
+        }
+        LauncherTarget::Http(target) => {
+            validate_sha256(&target.launcher_sha256)?;
+            api_claim::validate_precondition(
+                &policy.work_item_ref,
+                target.expected_generation,
+                &target.expected_updated_at,
+            )
+            .map_err(|_| {
+                anyhow::anyhow!("fixed API claim precondition is outside the admitted contract")
+            })?;
+        }
     }
-    if !policy.working_directory.is_absolute()
-        || policy.working_directory.canonicalize()? != policy.working_directory
-    {
-        bail!("fixed task working directory is not canonical and absolute");
-    }
-    if policy.mcp_recipient.len() > 2048 {
-        bail!("fixed MCP recipient exceeds its size limit");
-    }
-    validate_https_recipient(&policy.mcp_recipient)?;
-    policy.mcp_oauth.validate()?;
     if policy.issuer_kid.is_empty()
         || policy.issuer_kid.len() > 128
         || !policy
@@ -244,7 +422,7 @@ fn credential_directory() -> Result<PathBuf> {
     Ok(path)
 }
 
-fn validate_runtime_directory(policy: &LauncherPolicy) -> Result<PathBuf> {
+fn validate_runtime_directory(runtime_gid: u32) -> Result<PathBuf> {
     let path = Path::new(RUNTIME_DIRECTORY);
     if path.canonicalize()? != path {
         bail!("runtime directory path is not canonical");
@@ -253,7 +431,7 @@ fn validate_runtime_directory(policy: &LauncherPolicy) -> Result<PathBuf> {
     let metadata = fs::metadata(path)?;
     if !metadata.is_dir()
         || metadata.uid() != 0
-        || metadata.gid() != policy.runtime_gid
+        || metadata.gid() != runtime_gid
         || metadata.mode() & 0o007 != 0
         || metadata.mode() & 0o710 != 0o710
         || metadata.mode() & 0o020 != 0
@@ -290,14 +468,12 @@ fn validate_working_directory(path: &Path, runtime_uid: u32, runtime_gid: u32) -
     Ok(path.to_path_buf())
 }
 
-fn open_verified_executable(policy: &LauncherPolicy) -> Result<VerifiedExecutable> {
+fn open_verified_executable(path: &Path, expected_digest: &str) -> Result<VerifiedExecutable> {
     validate_root_controlled_directory_tree(
-        policy
-            .codex_dev_path
-            .parent()
+        path.parent()
             .context("fixed codex-dev path has no parent")?,
     )?;
-    let file = open_nofollow(&policy.codex_dev_path)?;
+    let file = open_nofollow(path)?;
     let metadata = file.metadata()?;
     if !metadata.is_file()
         || metadata.uid() != 0
@@ -317,7 +493,7 @@ fn open_verified_executable(policy: &LauncherPolicy) -> Result<VerifiedExecutabl
         bail!("measured codex-dev image is not a native ELF executable");
     }
     let digest = sha256_file(&file)?;
-    if digest != policy.codex_dev_sha256 {
+    if digest != expected_digest {
         bail!("measured codex-dev image digest differs from fixed policy");
     }
     Ok(VerifiedExecutable {
@@ -330,7 +506,7 @@ fn open_verified_executable(policy: &LauncherPolicy) -> Result<VerifiedExecutabl
 
 fn create_run_directory(
     runtime_directory: &Path,
-    policy: &LauncherPolicy,
+    target: &McpLaunchConfig,
     working_directory: PathBuf,
 ) -> Result<RunDirectory> {
     for _ in 0..8 {
@@ -339,7 +515,7 @@ fn create_run_directory(
             Ok(()) => {
                 return prepare_run_directory(
                     &path,
-                    policy,
+                    target,
                     working_directory,
                     /*launcher_uid*/ 0,
                 );
@@ -353,22 +529,22 @@ fn create_run_directory(
 
 fn prepare_run_directory(
     path: &Path,
-    policy: &LauncherPolicy,
+    target: &McpLaunchConfig,
     working_directory: PathBuf,
     launcher_uid: u32,
 ) -> Result<RunDirectory> {
-    set_owner_and_mode(path, launcher_uid, policy.runtime_gid, /*mode*/ 0o710)?;
+    set_owner_and_mode(path, launcher_uid, target.runtime_gid, /*mode*/ 0o710)?;
     let codex_home = path.join("codex-home");
     fs::create_dir(&codex_home)?;
 
-    let config = render_codex_config(&policy.mcp_recipient);
+    let config = render_codex_config(&target.mcp_recipient);
     let config_path = codex_home.join("config.toml");
     write_owned_file(
         &config_path,
         config.as_bytes(),
         /*mode*/ 0o440,
         launcher_uid,
-        policy.runtime_gid,
+        target.runtime_gid,
     )?;
     let config_sha256 = sha256_hex(config.as_bytes());
 
@@ -378,18 +554,18 @@ fn prepare_run_directory(
         format!("{}\n", Uuid::new_v4()).as_bytes(),
         /*mode*/ 0o600,
         launcher_uid,
-        policy.runtime_gid,
+        target.runtime_gid,
     )?;
     set_owner_and_mode(
         &installation_id,
-        policy.runtime_uid,
-        policy.runtime_gid,
+        target.runtime_uid,
+        target.runtime_gid,
         /*mode*/ 0o600,
     )?;
     set_owner_and_mode(
         &codex_home,
         launcher_uid,
-        policy.runtime_gid,
+        target.runtime_gid,
         /*mode*/ 0o550,
     )?;
 
@@ -400,15 +576,15 @@ fn prepare_run_directory(
         fs::create_dir(&child_path)?;
         set_owner_and_mode(
             &child_path,
-            policy.runtime_uid,
-            policy.runtime_gid,
+            target.runtime_uid,
+            target.runtime_gid,
             /*mode*/ 0o700,
         )?;
     }
     set_owner_and_mode(
         &child_home,
-        policy.runtime_uid,
-        policy.runtime_gid,
+        target.runtime_uid,
+        target.runtime_gid,
         /*mode*/ 0o700,
     )?;
 
@@ -431,7 +607,7 @@ fn spawn_verified_child(
     bootstrap_source: &File,
     auth_source: &File,
     run_directory: &RunDirectory,
-    policy: &LauncherPolicy,
+    target: &McpLaunchConfig,
 ) -> Result<Child> {
     let parent_pid = unsafe { libc::getpid() };
     let executable_source = executable_source.as_raw_fd();
@@ -473,8 +649,8 @@ fn spawn_verified_child(
         .stdout(Stdio::null())
         .stderr(Stdio::null());
 
-    let runtime_uid = policy.runtime_uid;
-    let runtime_gid = policy.runtime_gid;
+    let runtime_uid = target.runtime_uid;
+    let runtime_gid = target.runtime_gid;
     unsafe {
         command.pre_exec(move || {
             if libc::setpgid(0, 0) != 0 {
@@ -523,11 +699,15 @@ fn supervise_child(
     executable: &VerifiedExecutable,
     bootstrap_socket: &File,
     auth_socket: &File,
-    credential_directory: &Path,
-    run_directory: &RunDirectory,
-    policy: &LauncherPolicy,
+    context: &McpSupervisionContext<'_>,
 ) -> Result<i32> {
-    verify_child_image_and_identity(child, executable, policy)?;
+    let McpSupervisionContext {
+        credential_directory,
+        run_directory,
+        policy,
+        target,
+    } = context;
+    verify_child_image_and_identity(child, executable, target)?;
 
     let issuer_seed = read_issuer_seed(credential_directory, policy)?;
     let mut runtime_seed = Zeroizing::new([0_u8; RUNTIME_SEED_BYTES]);
@@ -535,7 +715,7 @@ fn supervise_child(
     let provider = read_provider_auth(credential_directory)?;
     let client_secret = read_mcp_client_secret(credential_directory)?;
     let mcp_access_token = exchange_client_credentials(
-        &policy.mcp_oauth,
+        &target.mcp_oauth,
         &client_secret,
         policy.principal,
         policy.project_id,
@@ -562,10 +742,10 @@ fn supervise_child(
         project_id: policy.project_id,
         execution_lease_seconds,
         work_item_ref: policy.work_item_ref.clone(),
-        recipient: policy.mcp_recipient.clone(),
-        mcp_server: MCP_SERVER.to_string(),
+        recipient: target.mcp_recipient.clone(),
+        mcp_server: Some(MCP_SERVER.to_string()),
         method: "tools/call".to_string(),
-        tool: MCP_TOOL.to_string(),
+        tool: Some(MCP_TOOL.to_string()),
         purpose: "work-claim".to_string(),
         iat: now,
         exp: expires_at,
@@ -585,7 +765,7 @@ fn supervise_child(
             codex_home: run_directory.codex_home.to_string_lossy().into_owned(),
             config_sha256: run_directory.config_sha256.clone(),
             mcp_server: MCP_SERVER.to_string(),
-            recipient: policy.mcp_recipient.clone(),
+            recipient: target.mcp_recipient.clone(),
             provider_recipient: PROVIDER_RECIPIENT.to_string(),
             expires_at,
             provider,
@@ -611,7 +791,7 @@ fn supervise_child(
         bail!("protected runtime expired before task execution started");
     }
     if let Some(mut stdin) = child.stdin.take() {
-        let prompt = make_prompt(policy)?;
+        let prompt = make_prompt(policy, target)?;
         write_prompt_until(&mut stdin, &prompt, task_deadline)?;
     } else {
         bail!("fixed codex-dev task has no prompt input");
@@ -624,7 +804,7 @@ fn effective_expiry(now: i64, policy_expires_at: i64, token_expires_at: i64) -> 
     let expires_at = policy_expires_at.min(token_expires_at);
     let remaining = expires_at.saturating_sub(now);
     if remaining <= 0 {
-        bail!("MCP client-credentials token expired before task admission");
+        bail!("authenticated claim credential expired before task admission");
     }
     let lease_seconds = u32::try_from(remaining)
         .context("effective runtime lease is outside the supported range")?;
@@ -651,7 +831,7 @@ fn task_deadline_for_expiry(
 fn verify_child_image_and_identity(
     child: &Child,
     executable: &VerifiedExecutable,
-    policy: &LauncherPolicy,
+    target: &McpLaunchConfig,
 ) -> Result<()> {
     let proc_executable = PathBuf::from(format!("/proc/{}/exe", child.id()));
     let metadata = fs::metadata(proc_executable)?;
@@ -677,8 +857,8 @@ fn verify_child_image_and_identity(
             no_new_privileges = Some(value.trim() == "1");
         }
     }
-    let expected_uid = [policy.runtime_uid; 4];
-    let expected_gid = [policy.runtime_gid; 4];
+    let expected_uid = [target.runtime_uid; 4];
+    let expected_gid = [target.runtime_gid; 4];
     if uid != Some(expected_uid)
         || gid != Some(expected_gid)
         || groups != Some(0)
@@ -1100,15 +1280,15 @@ fn exit_code(status: ExitStatus) -> i32 {
         .unwrap_or_else(|| 128 + status.signal().unwrap_or(1))
 }
 
-fn issue_task_prompt(policy: &LauncherPolicy) -> String {
+fn issue_task_prompt(policy: &LauncherPolicy, target: &McpLaunchConfig) -> String {
     format!(
         "The only authorized operation in this execution is claiming Work item {} in project {} as principal {}. Follow the fixed task instruction below and stop after this task.\n\n{}",
-        policy.work_item_ref, policy.project_id, policy.principal, policy.task_prompt
+        policy.work_item_ref, policy.project_id, policy.principal, target.task_prompt
     )
 }
 
-fn make_prompt(policy: &LauncherPolicy) -> Result<Zeroizing<Vec<u8>>> {
-    let prompt = issue_task_prompt(policy);
+fn make_prompt(policy: &LauncherPolicy, target: &McpLaunchConfig) -> Result<Zeroizing<Vec<u8>>> {
+    let prompt = issue_task_prompt(policy, target);
     if prompt.len() > 20 * 1024 {
         bail!("fixed task prompt exceeds its size limit");
     }
