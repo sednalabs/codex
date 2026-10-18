@@ -596,6 +596,76 @@ def test_packaged_usage_report_covers_recorded_synthetic_spawn_tree(
                     "usage_spawn_diagnostic_json",
                     json.dumps(diagnostic, sort_keys=True, separators=(",", ":")),
                 )
+                allowed_keys = (
+                    "task_name",
+                    "nickname",
+                    "error",
+                    "code",
+                    "type",
+                    "message",
+                )
+                allowed_error_codes = {
+                    "invalid_arguments",
+                    "invalid_request_error",
+                    "model_not_found",
+                    "permission_denied",
+                    "rate_limit_exceeded",
+                    "context_length_exceeded",
+                }
+                error = result.get("error") if is_object else None
+                code = (
+                    error.get("code")
+                    if isinstance(error, dict)
+                    else result.get("code")
+                    if is_object
+                    else None
+                )
+                error_code = (
+                    code
+                    if isinstance(code, str) and code in allowed_error_codes
+                    else "absent"
+                    if code is None
+                    else "unrecognized"
+                )
+                error_category = (
+                    "unclassified_json" if json_parsed else "unclassified_non_json"
+                )
+                if not json_parsed:
+                    if output.startswith(
+                        ("unsupported call: ", "unsupported custom tool call: ")
+                    ):
+                        error_category = "tool_unavailable"
+                    elif (
+                        output.startswith("Unknown model `")
+                        and " for spawn_agent. Available models: " in output
+                    ):
+                        error_category = "requested_model_unavailable"
+                    elif (
+                        output.startswith("Reasoning effort `")
+                        and " is not supported for model `" in output
+                    ):
+                        error_category = "unsupported_reasoning_effort"
+                    elif output == "agent type is currently not available":
+                        error_category = "requested_role_unavailable"
+                # Keep failure diagnostics closed: never emit response values or arbitrary keys.
+                classification = {
+                    "json_parsed": json_parsed,
+                    "top_level_type": diagnostic["top_level_type"],
+                    "allowed_keys_present": [
+                        key for key in allowed_keys if is_object and key in result
+                    ],
+                    "allowed_value_types": {
+                        key: json_type(result[key])
+                        for key in allowed_keys
+                        if is_object and key in result
+                    },
+                    "error_category": error_category,
+                    "error_code": error_code,
+                }
+                print(
+                    "usage_spawn_failure_classification="
+                    + json.dumps(classification, sort_keys=True, separators=(",", ":"))
+                )
                 pytest.fail(
                     "Synthetic spawn result did not match the closed V2 result shape",
                     pytrace=False,
