@@ -60,7 +60,7 @@ async fn assert_timed_out_git_wrapper_does_not_leave_child_process_running(
         .env("RELEASE_WRAPPER_FILE", &release_wrapper_file);
 
     let (mut wrapper, process_tree) = spawn_git_command(&mut command).expect("spawn Git wrapper");
-    let child_pid = tokio::time::timeout(Duration::from_secs(30), async {
+    let child_pid = match tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             if let Ok(child_pid) = std::fs::read_to_string(&child_pid_file)
                 && !child_pid.trim().is_empty()
@@ -72,7 +72,24 @@ async fn assert_timed_out_git_wrapper_does_not_leave_child_process_running(
         }
     })
     .await
-    .expect("wait for Git wrapper child readiness");
+    {
+        Ok(child_pid) => child_pid,
+        Err(_) => {
+            let wrapper_state = match wrapper.try_wait() {
+                Ok(Some(status)) => status.code().map_or_else(
+                    || "exited-without-code".to_string(),
+                    |code| format!("exit-code:{code}"),
+                ),
+                Ok(None) => "still-running".to_string(),
+                Err(_) => "query-error".to_string(),
+            };
+            panic!(
+                "wait for Git wrapper child readiness: Elapsed(()); child_pid_file_present={}, child_ready_file_present={}, wrapper_state={wrapper_state}",
+                child_pid_file.exists(),
+                child_ready_file.exists(),
+            );
+        }
+    };
 
     if matches!(wrapper_lifetime, GitWrapperLifetime::ExitBeforeTimeout) {
         std::fs::write(&release_wrapper_file, "release").expect("release Git wrapper");
