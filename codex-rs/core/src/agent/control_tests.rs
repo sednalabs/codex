@@ -1024,14 +1024,13 @@ async fn explicit_progress_is_admitted_to_a_completed_loaded_root_without_starti
         intent: InterAgentCommunicationIntent::Progress,
         supersedes: Vec::new(),
     };
-    let message = AgentMessage::Plaintext("completed the first step".to_string());
     let update_id = tree
         .control
         .send_explicit_inter_agent_update(
             tree.worker_id,
             tree.root_id,
             tree.harness.config.clone(),
-            message.clone(),
+            AgentMessage::Plaintext("completed the first step".to_string()),
             update.clone(),
             AgentCommunicationContext::new(AgentCommunicationKind::Message, tree.worker_id),
         )
@@ -1045,7 +1044,7 @@ async fn explicit_progress_is_admitted_to_a_completed_loaded_root_without_starti
             tree.worker_id,
             tree.root_id,
             tree.harness.config.clone(),
-            message,
+            AgentMessage::Plaintext("completed the first step".to_string()),
             update,
             AgentCommunicationContext::new(AgentCommunicationKind::Message, tree.worker_id),
         )
