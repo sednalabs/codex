@@ -233,7 +233,7 @@ impl LocalAgentControl {
             return;
         }
 
-        // Resolve and validate the complete bounded graph before registering any descendant.
+        // Resolve the bounded graph in order, then register the valid, unique subset atomically.
         let stored_threads = stream::iter(
             descendants
                 .thread_ids
@@ -264,7 +264,7 @@ impl LocalAgentControl {
                 Ok(stored_thread) => stored_thread,
                 Err(err) => {
                     warn!("failed to preflight V2 agent metadata for {thread_id}: {err}");
-                    return;
+                    continue;
                 }
             };
             let agent_path = match stored_thread
@@ -285,7 +285,7 @@ impl LocalAgentControl {
                 warn!(
                     "failed to preflight V2 agent metadata: duplicate stored agent path {agent_path}"
                 );
-                return;
+                continue;
             }
             let agent_role = stored_thread
                 .agent_role
