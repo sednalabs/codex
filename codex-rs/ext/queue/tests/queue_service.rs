@@ -157,15 +157,15 @@ fn write_rejecting_prompt_hook(home: &Path) {
         let script = r#"$ErrorActionPreference = 'Stop'
 $payload = [Console]::In.ReadToEnd() | ConvertFrom-Json
 $line = [string]$payload.prompt + [Environment]::NewLine
-[System.IO.File]::AppendAllText($args[0], $line, [System.Text.UTF8Encoding]::new($false))
+$logPath = Join-Path -Path $PSScriptRoot -ChildPath 'queue_prompt_hook.log'
+[System.IO.File]::AppendAllText($logPath, $line, [System.Text.UTF8Encoding]::new($false))
 if ([string]$payload.prompt -ceq 'blocked') {
     [Console]::Out.WriteLine('{"decision":"block","reason":"blocked by queue hook"}')
 }
 "#;
         let command = format!(
-            "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"{}\" \"{}\"",
+            "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"{}\"",
             script_path.display(),
-            log_path.display(),
         );
         (script_path, script.to_string(), command)
     } else {
