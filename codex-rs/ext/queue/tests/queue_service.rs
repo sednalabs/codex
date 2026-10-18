@@ -151,10 +151,27 @@ fn install_registered_queue(
 }
 
 fn write_rejecting_prompt_hook(home: &Path) {
-    let script_path = home.join("queue_prompt_hook.py");
     let log_path = home.join("queue_prompt_hook.log");
-    let script = format!(
-        r#"import json
+    let (script_path, script, command) = if cfg!(windows) {
+        let script_path = home.join("queue_prompt_hook.ps1");
+        let script = r#"$ErrorActionPreference = 'Stop'
+$payload = [Console]::In.ReadToEnd() | ConvertFrom-Json
+$line = [string]$payload.prompt + [Environment]::NewLine
+$logPath = Join-Path -Path $PSScriptRoot -ChildPath 'queue_prompt_hook.log'
+[System.IO.File]::AppendAllText($logPath, $line, [System.Text.UTF8Encoding]::new($false))
+if ([string]$payload.prompt -ceq 'blocked') {
+    [Console]::Out.WriteLine('{"decision":"block","reason":"blocked by queue hook"}')
+}
+"#;
+        let command = format!(
+            "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"{}\"",
+            script_path.display(),
+        );
+        (script_path, script.to_string(), command)
+    } else {
+        let script_path = home.join("queue_prompt_hook.py");
+        let script = format!(
+            r#"import json
 from pathlib import Path
 import sys
 
@@ -164,8 +181,11 @@ with Path(r"{log_path}").open("a", encoding="utf-8") as log:
 if payload["prompt"] == "blocked":
     print(json.dumps({{"decision": "block", "reason": "blocked by queue hook"}}))
 "#,
-        log_path = log_path.display(),
-    );
+            log_path = log_path.display(),
+        );
+        let command = format!("python3 \"{}\"", script_path.display());
+        (script_path, script, command)
+    };
     std::fs::write(&script_path, script)
         .unwrap_or_else(|error| panic!("write queue hook script: {error}"));
     let hooks = serde_json::json!({
@@ -173,11 +193,7 @@ if payload["prompt"] == "blocked":
             "UserPromptSubmit": [{
                 "hooks": [{
                     "type": "command",
-                    "command": format!(
-                        "{} \"{}\"",
-                        if cfg!(windows) { "python" } else { "python3" },
-                        script_path.display()
-                    ),
+                    "command": command,
                 }]
             }]
         }
