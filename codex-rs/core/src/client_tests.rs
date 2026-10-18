@@ -1208,17 +1208,18 @@ fn outgoing_overlay_window_guard_covers_direct_client_consumers() -> anyhow::Res
         model.use_responses_lite = use_lite;
         model.context_window = Some(1_500);
         model.effective_context_window_percent = 100;
-        let error = client
-            .build_responses_request(
-                &prompt,
-                &model,
-                /*effort*/ None,
-                codex_protocol::config_types::ReasoningSummary::None,
-                /*service_tier*/ None,
-                &metadata,
-                /*include_internal*/ true,
-            )
-            .expect_err("direct client must check expanded context before transport");
+        let error = match client.build_responses_request(
+            &prompt,
+            &model,
+            /*effort*/ None,
+            codex_protocol::config_types::ReasoningSummary::None,
+            /*service_tier*/ None,
+            &metadata,
+            /*include_internal*/ true,
+        ) {
+            Ok(_) => panic!("direct client must check expanded context before transport"),
+            Err(error) => error,
+        };
         assert!(matches!(
             error.details(),
             CodexErrorDetails::ContextWindowExceeded
