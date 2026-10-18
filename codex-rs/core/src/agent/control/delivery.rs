@@ -69,6 +69,15 @@ impl AgentMessage {
 
 type ExplicitAdmissionScopeKey = (ThreadId, ThreadId, ThreadId, String);
 
+#[derive(Clone, Copy)]
+pub(super) struct ExplicitUpdateScope<'a> {
+    pub(super) root_thread_id: &'a ThreadId,
+    pub(super) sender_thread_id: &'a ThreadId,
+    pub(super) recipient_thread_id: &'a ThreadId,
+    pub(super) sender_path: &'a AgentPath,
+    pub(super) recipient_path: &'a AgentPath,
+}
+
 #[derive(Default)]
 struct ExplicitAdmissionIndex {
     ordered: Vec<InterAgentCommunicationAdmission>,
@@ -403,9 +412,9 @@ fn explicit_scope_key(
     idempotency_key: &str,
 ) -> ExplicitAdmissionScopeKey {
     (
-        root_thread_id.clone(),
-        sender_thread_id.clone(),
-        recipient_thread_id.clone(),
+        *root_thread_id,
+        *sender_thread_id,
+        *recipient_thread_id,
         idempotency_key.to_string(),
     )
 }
@@ -414,11 +423,7 @@ fn same_explicit_request(
     admission: &InterAgentCommunicationAdmission,
     communication: &InterAgentCommunication,
     update: &ExplicitInterAgentUpdate,
-    root_thread_id: &ThreadId,
-    sender_thread_id: &ThreadId,
-    recipient_thread_id: &ThreadId,
-    sender_path: &AgentPath,
-    recipient_path: &AgentPath,
+    scope: &ExplicitUpdateScope<'_>,
 ) -> bool {
     let mut original_communication = admission.original_communication.clone();
     original_communication.id = None;
@@ -427,16 +432,20 @@ fn same_explicit_request(
     admission.intent == update.intent
         && admission.idempotency_key == update.idempotency_key
         && admission.supersedes == update.supersedes
-        && admission.root_thread_id == *root_thread_id
-        && admission.sender_thread_id == *sender_thread_id
-        && admission.recipient_thread_id == *recipient_thread_id
-        && admission.sender_path == *sender_path
-        && admission.recipient_path == *recipient_path
+        && admission.root_thread_id == *scope.root_thread_id
+        && admission.sender_thread_id == *scope.sender_thread_id
+        && admission.recipient_thread_id == *scope.recipient_thread_id
+        && admission.sender_path == *scope.sender_path
+        && admission.recipient_path == *scope.recipient_path
         && original_communication == requested_communication
 }
 
 impl LocalAgentControl {
     /// Durably admits a root-directed update before making it visible on the quiet mailbox path.
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "The recipient admission mutex serializes membership, durable ledger, and quiet enqueue operations."
+    )]
     pub(super) async fn send_explicit_inter_agent_update(
         &self,
         caller: ThreadId,
@@ -519,17 +528,20 @@ impl LocalAgentControl {
                 *channel_was_open && Arc::ptr_eq(preloaded, &recipient_thread)
             })
             .map(|(preloaded, _)| preloaded);
+        let scope = ExplicitUpdateScope {
+            root_thread_id: &root_thread_id,
+            sender_thread_id: &caller,
+            recipient_thread_id: &recipient,
+            sender_path: &sender_path,
+            recipient_path: &root_path,
+        };
         validate_current_explicit_membership(
             state.as_ref(),
             &self.runtime.registry,
             &sender_thread,
             &recipient_thread,
             completed_root_witness,
-            &root_thread_id,
-            &caller,
-            &recipient,
-            &sender_path,
-            &root_path,
+            &scope,
         )
         .await?;
 
@@ -555,11 +567,7 @@ impl LocalAgentControl {
             &sender_thread,
             &recipient_thread,
             completed_root_witness,
-            &root_thread_id,
-            &caller,
-            &recipient,
-            &sender_path,
-            &root_path,
+            &scope,
         )
         .await?;
 
@@ -597,16 +605,7 @@ impl LocalAgentControl {
                     "stored explicit inter-agent idempotency index is inconsistent".to_string(),
                 )
             })?;
-            if !same_explicit_request(
-                existing,
-                &communication,
-                &update,
-                &root_thread_id,
-                &caller,
-                &recipient,
-                &sender_path,
-                &root_path,
-            ) {
+            if !same_explicit_request(existing, &communication, &update, &scope) {
                 return Err(CodexErr::InvalidRequest(
                     "explicit inter-agent idempotency_key was reused for a changed request"
                         .to_string(),
@@ -622,9 +621,9 @@ impl LocalAgentControl {
                 idempotency_key: update.idempotency_key.clone(),
                 intent: update.intent,
                 original_communication: communication.clone(),
-                root_thread_id: root_thread_id.clone(),
-                sender_thread_id: caller.clone(),
-                recipient_thread_id: recipient.clone(),
+                root_thread_id,
+                sender_thread_id: caller,
+                recipient_thread_id: recipient,
                 sender_path: sender_path.clone(),
                 recipient_path: root_path.clone(),
                 supersedes: update.supersedes.clone(),
@@ -640,11 +639,7 @@ impl LocalAgentControl {
                 &sender_thread,
                 &recipient_thread,
                 completed_root_witness,
-                &root_thread_id,
-                &caller,
-                &recipient,
-                &sender_path,
-                &root_path,
+                &scope,
             )
             .await?;
             recipient_thread
@@ -762,47 +757,43 @@ pub(super) async fn validate_current_explicit_membership(
     original_sender: &Arc<CodexThread>,
     original_recipient: &Arc<CodexThread>,
     completed_root_witness: Option<&Arc<CodexThread>>,
-    root_thread_id: &ThreadId,
-    sender_thread_id: &ThreadId,
-    recipient_thread_id: &ThreadId,
-    sender_path: &AgentPath,
-    root_path: &AgentPath,
+    scope: &ExplicitUpdateScope<'_>,
 ) -> CodexResult<()> {
     let current_root_id = registry
-        .agent_id_for_path(root_path)
-        .ok_or_else(|| CodexErr::ThreadNotFound(recipient_thread_id.clone()))?;
+        .agent_id_for_path(scope.recipient_path)
+        .ok_or_else(|| CodexErr::ThreadNotFound(*scope.recipient_thread_id))?;
     let sender_metadata = registry
-        .agent_metadata_for_thread(sender_thread_id.clone())
+        .agent_metadata_for_thread(*scope.sender_thread_id)
         .ok_or_else(|| {
             CodexErr::InvalidRequest("explicit update sender is no longer registered".into())
         })?;
     let recipient_metadata = registry
-        .agent_metadata_for_thread(recipient_thread_id.clone())
+        .agent_metadata_for_thread(*scope.recipient_thread_id)
         .ok_or_else(|| {
             CodexErr::InvalidRequest("explicit update root is no longer registered".into())
         })?;
-    let current_sender = state.get_thread(sender_thread_id.clone()).await?;
-    let current_recipient = state.get_thread(recipient_thread_id.clone()).await?;
-    if &current_root_id != root_thread_id
-        || sender_metadata.agent_path.as_ref() != Some(sender_path)
-        || recipient_metadata.agent_path.as_ref() != Some(root_path)
-        || registry.agent_id_for_path(sender_path) != Some(sender_thread_id.clone())
+    let current_sender = state.get_thread(*scope.sender_thread_id).await?;
+    let current_recipient = state.get_thread(*scope.recipient_thread_id).await?;
+    if &current_root_id != scope.root_thread_id
+        || sender_metadata.agent_path.as_ref() != Some(scope.sender_path)
+        || recipient_metadata.agent_path.as_ref() != Some(scope.recipient_path)
+        || registry.agent_id_for_path(scope.sender_path) != Some(*scope.sender_thread_id)
         || !Arc::ptr_eq(original_sender, &current_sender)
         || !Arc::ptr_eq(original_recipient, &current_recipient)
         || !valid_explicit_member(
             &current_sender,
             registry,
-            sender_thread_id.clone(),
-            sender_path,
+            *scope.sender_thread_id,
+            scope.sender_path,
         )
         .await
         || !valid_explicit_root_recipient(
             &current_recipient,
             registry,
             completed_root_witness,
-            root_thread_id,
-            recipient_thread_id,
-            root_path,
+            scope.root_thread_id,
+            scope.recipient_thread_id,
+            scope.recipient_path,
         )
         .await
     {
@@ -874,8 +865,8 @@ async fn enqueue_pending_explicit_admissions(
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         delivered.retain(|update_id| {
             !represented_update_ids.contains(update_id)
-                && !(superseded_update_ids.contains(update_id)
-                    && removed_pending_update_ids.contains(update_id))
+                && (!superseded_update_ids.contains(update_id)
+                    || !removed_pending_update_ids.contains(update_id))
         });
         index
             .ordered
@@ -937,9 +928,9 @@ mod tests {
             idempotency_key: "invalid-root-sender-key".to_string(),
             intent: InterAgentCommunicationIntent::Progress,
             original_communication,
-            root_thread_id: root_thread_id.clone(),
-            sender_thread_id: root_thread_id.clone(),
-            recipient_thread_id: root_thread_id.clone(),
+            root_thread_id,
+            sender_thread_id: root_thread_id,
+            recipient_thread_id: root_thread_id,
             sender_path: root_path.clone(),
             recipient_path: root_path,
             supersedes: Vec::new(),

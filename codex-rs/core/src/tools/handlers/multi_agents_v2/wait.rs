@@ -3,6 +3,7 @@ use crate::agent::agent_resolver::resolve_agent_target;
 use crate::agent::api::AgentWaitRegistration;
 use crate::agent::api::AgentWaitResult;
 use crate::agent::api::AgentWaitReturnWhen;
+#[cfg(test)]
 use crate::session::ExplicitMailboxActivity;
 use crate::session::InputQueue;
 use crate::session::InputQueueActivity;
@@ -206,7 +207,7 @@ impl Handler {
                 "outcome",
                 match &outcome {
                     WaitOutcome::MailboxActivity => "mailbox",
-                    WaitOutcome::ExplicitActionableMessage(_) => "explicit_actionable_message",
+                    WaitOutcome::ExplicitActionableMessage => "explicit_actionable_message",
                     WaitOutcome::Steered => "steered",
                     WaitOutcome::TargetTerminal(_) => "target_terminal",
                     WaitOutcome::TimedOut => "timed_out",
@@ -273,7 +274,7 @@ impl WaitAgentResult {
     ) -> Self {
         let message = match outcome {
             WaitOutcome::MailboxActivity => "Wait completed.",
-            WaitOutcome::ExplicitActionableMessage(_) => {
+            WaitOutcome::ExplicitActionableMessage => {
                 "Wait completed for a targeted actionable update."
             }
             WaitOutcome::Steered => "Wait interrupted by new input.",
@@ -316,7 +317,7 @@ impl ToolOutput for WaitAgentResult {
 #[derive(Clone, Debug)]
 enum WaitOutcome {
     MailboxActivity,
-    ExplicitActionableMessage(ExplicitMailboxActivity),
+    ExplicitActionableMessage,
     Steered,
     TargetTerminal(AgentWaitResult),
     TimedOut,
@@ -327,7 +328,7 @@ impl WaitOutcome {
     fn protocol_outcome(&self) -> WaitAgentOutcome {
         match self {
             Self::MailboxActivity => WaitAgentOutcome::UnattributedMailboxActivity,
-            Self::ExplicitActionableMessage(_) => WaitAgentOutcome::ExactTargetActionableMessage,
+            Self::ExplicitActionableMessage => WaitAgentOutcome::ExactTargetActionableMessage,
             Self::Steered => WaitAgentOutcome::OperatorSteer,
             Self::TargetTerminal(result) if result.all_targets => {
                 WaitAgentOutcome::TargetTerminalAll
@@ -364,6 +365,7 @@ fn completed_wait_item(
     }
 }
 
+#[cfg(test)]
 async fn wait_for_activity(
     activity_rx: &mut tokio::sync::watch::Receiver<InputQueueActivity>,
     pending_activity: Option<InputQueueActivity>,
@@ -423,15 +425,16 @@ async fn wait_for_activity_with_explicit(
         return WaitOutcome::TargetTerminal(outcome);
     }
     if let Some(matcher) = explicit_matcher.as_ref()
-        && let Some(activity) = matcher
+        && matcher
             .input_queue
             .pending_explicit_activity_for_targets(
                 matcher.recipient_thread_id,
                 matcher.target_agents,
             )
             .await
+            .is_some()
     {
-        return WaitOutcome::ExplicitActionableMessage(activity);
+        return WaitOutcome::ExplicitActionableMessage;
     }
     if let Some(activity) = pending_activity {
         return activity_wake_outcome(activity, agent_wait);
@@ -454,15 +457,16 @@ async fn wait_for_activity_with_explicit(
                         return WaitOutcome::TargetTerminal(outcome);
                     }
                     if let Some(matcher) = explicit_matcher.as_ref()
-                        && let Some(activity) = matcher
+                        && matcher
                             .input_queue
                             .pending_explicit_activity_for_targets(
                                 matcher.recipient_thread_id,
                                 matcher.target_agents,
                             )
                             .await
+                            .is_some()
                     {
-                        return WaitOutcome::ExplicitActionableMessage(activity);
+                        return WaitOutcome::ExplicitActionableMessage;
                     }
                     return activity_wake_outcome(observed_activity, agent_wait);
                 }
@@ -482,15 +486,16 @@ async fn wait_for_activity_with_explicit(
                         return WaitOutcome::TargetTerminal(outcome);
                     }
                     if let Some(matcher) = explicit_matcher.as_ref()
-                        && let Some(activity) = matcher
+                        && matcher
                             .input_queue
                             .pending_explicit_activity_for_targets(
                                 matcher.recipient_thread_id,
                                 matcher.target_agents,
                             )
                             .await
+                            .is_some()
                     {
-                        return WaitOutcome::ExplicitActionableMessage(activity);
+                        return WaitOutcome::ExplicitActionableMessage;
                     }
                 }
                 Err(_) => return WaitOutcome::SubscriptionLoss,
@@ -920,9 +925,13 @@ mod tests {
             )
             .await;
 
-        let WaitOutcome::ExplicitActionableMessage(activity) = wait.await else {
+        let WaitOutcome::ExplicitActionableMessage = wait.await else {
             panic!("the addressed action should wake the exact-target wait");
         };
+        let activity = input_queue
+            .pending_explicit_activity_for_targets(recipient, &explicit_targets)
+            .await
+            .expect("the actionable message remains pending after the wait wake");
         assert_eq!(activity.update_id, action_id);
         assert_eq!(activity.sender_thread_id, target);
         assert_eq!(activity.recipient_thread_id, recipient);
@@ -934,7 +943,7 @@ mod tests {
         );
         assert_eq!(activity.generation, Some(3));
         assert_eq!(
-            WaitOutcome::ExplicitActionableMessage(activity.clone()).protocol_outcome(),
+            WaitOutcome::ExplicitActionableMessage.protocol_outcome(),
             WaitAgentOutcome::ExactTargetActionableMessage
         );
         assert!(input_queue.has_pending_mailbox_items().await);

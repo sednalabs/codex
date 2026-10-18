@@ -1232,17 +1232,20 @@ async fn explicit_update_rejects_completed_root_without_preload_witness() {
         .and_then(|metadata| metadata.agent_path)
         .expect("worker should have a registered agent path");
     let root_path = AgentPath::root();
+    let scope = super::delivery::ExplicitUpdateScope {
+        root_thread_id: &tree.root_id,
+        sender_thread_id: &tree.worker_id,
+        recipient_thread_id: &tree.root_id,
+        sender_path: &sender_path,
+        recipient_path: &root_path,
+    };
     let result = super::delivery::validate_current_explicit_membership(
         state.as_ref(),
         &tree.control.runtime.registry,
         &tree.worker,
         &tree.root,
         None,
-        &tree.root_id,
-        &tree.worker_id,
-        &tree.root_id,
-        &sender_path,
-        &root_path,
+        &scope,
     )
     .await;
     assert!(
@@ -1397,17 +1400,20 @@ async fn explicit_update_rejects_root_replaced_before_membership_recheck() {
         "the stale root Arc is the only membership predicate that should differ"
     );
 
+    let scope = super::delivery::ExplicitUpdateScope {
+        root_thread_id: &tree.root_id,
+        sender_thread_id: &tree.worker_id,
+        recipient_thread_id: &tree.root_id,
+        sender_path: &sender_path,
+        recipient_path: &root_path,
+    };
     let result = super::delivery::validate_current_explicit_membership(
         state.as_ref(),
         &tree.control.runtime.registry,
         &tree.worker,
         &tree.root,
         None,
-        &tree.root_id,
-        &tree.worker_id,
-        &tree.root_id,
-        &sender_path,
-        &root_path,
+        &scope,
     )
     .await;
     assert!(

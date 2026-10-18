@@ -13,7 +13,6 @@ use std::collections::HashSet;
 use std::fs::File;
 use std::path::PathBuf;
 
-use codex_protocol::AgentPath;
 use codex_protocol::ResponseItemId;
 use codex_protocol::ThreadId;
 use codex_protocol::models::ResponseItem;
@@ -38,9 +37,9 @@ pub(super) fn admission_idempotency_scope(
     idempotency_key: &str,
 ) -> AdmissionIdempotencyScope {
     (
-        root_thread_id.clone(),
-        sender_thread_id.clone(),
-        recipient_thread_id.clone(),
+        *root_thread_id,
+        *sender_thread_id,
+        *recipient_thread_id,
         idempotency_key.to_string(),
     )
 }
@@ -85,19 +84,7 @@ pub(super) async fn select_bounded_context(
                         "explicit inter-agent admission cannot use legacy trigger-turn behavior",
                     ));
                 }
-                validate_admission_fields(
-                    &admission.update_id,
-                    &admission.idempotency_key,
-                    admission.original_communication.id.as_ref(),
-                    &admission.original_communication.author,
-                    &admission.original_communication.recipient,
-                    admission.original_communication.trigger_turn,
-                    admission.original_communication.other_recipients.len(),
-                    &admission.sender_path,
-                    &admission.recipient_path,
-                    &admission.root_thread_id,
-                    &admission.recipient_thread_id,
-                )?;
+                validate_admission_fields(&line.item)?;
                 if !admission_idempotency_scopes.insert(admission_idempotency_scope(
                     &admission.root_thread_id,
                     &admission.sender_thread_id,
@@ -123,7 +110,10 @@ pub(super) async fn select_bounded_context(
                 context_scan.push(line.item.clone()) == ModelContextScanProgress::Complete
             });
             if bounded_context_complete {
-                let mut items = scan.take().expect("bounded scan is present").finish();
+                let mut items = scan
+                    .take()
+                    .ok_or_else(|| migration_error("bounded context scan is not active"))?
+                    .finish();
                 items.retain(|item| !matches!(item, RolloutItem::SessionMeta(_)));
                 bounded_context = Some(items);
             }
@@ -173,7 +163,7 @@ pub(super) async fn select_bounded_context(
             }
             let mut item = admissions_by_id
                 .remove(&update_id)
-                .expect("indexed admission has a rollout record");
+                .ok_or_else(|| migration_error("indexed admission has no rollout record"))?;
             fold_representation_id(&mut item, &represented_response_ids)?;
             omitted_admissions.push(item);
         }
@@ -185,27 +175,22 @@ pub(super) async fn select_bounded_context(
     .map_err(migration_error)?
 }
 
-fn validate_admission_fields(
-    update_id: &ResponseItemId,
-    idempotency_key: &str,
-    communication_id: Option<&ResponseItemId>,
-    author: &AgentPath,
-    recipient: &AgentPath,
-    trigger_turn: bool,
-    other_recipients: usize,
-    sender_path: &AgentPath,
-    recipient_path: &AgentPath,
-    root_thread_id: &ThreadId,
-    recipient_thread_id: &ThreadId,
-) -> ThreadStoreResult<()> {
-    if idempotency_key.trim().is_empty()
-        || communication_id != Some(update_id)
-        || author != sender_path
-        || recipient != recipient_path
-        || root_thread_id != recipient_thread_id
-        || !recipient_path.is_root()
-        || trigger_turn
-        || other_recipients != 0
+fn validate_admission_fields(item: &RolloutItem) -> ThreadStoreResult<()> {
+    let RolloutItem::InterAgentCommunicationMetadata {
+        admission: Some(admission),
+        ..
+    } = item
+    else {
+        return Ok(());
+    };
+    if admission.idempotency_key.trim().is_empty()
+        || admission.original_communication.id.as_ref() != Some(&admission.update_id)
+        || admission.original_communication.author != admission.sender_path
+        || admission.original_communication.recipient != admission.recipient_path
+        || admission.root_thread_id != admission.recipient_thread_id
+        || !admission.recipient_path.is_root()
+        || admission.original_communication.trigger_turn
+        || !admission.original_communication.other_recipients.is_empty()
     {
         return Err(migration_error(
             "explicit inter-agent admission has inconsistent identity or scope",
@@ -269,6 +254,7 @@ fn fold_representation_id(
     item: &mut RolloutItem,
     response_ids: &HashMap<ResponseItemId, ResponseItemId>,
 ) -> ThreadStoreResult<()> {
+    validate_admission_fields(item)?;
     let RolloutItem::InterAgentCommunicationMetadata {
         trigger_turn,
         admission: Some(admission),
@@ -281,19 +267,6 @@ fn fold_representation_id(
             "explicit inter-agent admission cannot use legacy trigger-turn behavior",
         ));
     }
-    validate_admission_fields(
-        &admission.update_id,
-        &admission.idempotency_key,
-        admission.original_communication.id.as_ref(),
-        &admission.original_communication.author,
-        &admission.original_communication.recipient,
-        admission.original_communication.trigger_turn,
-        admission.original_communication.other_recipients.len(),
-        &admission.sender_path,
-        &admission.recipient_path,
-        &admission.root_thread_id,
-        &admission.recipient_thread_id,
-    )?;
     if let Some(response_id) = response_ids.get(&admission.update_id) {
         if admission
             .represented_response_id

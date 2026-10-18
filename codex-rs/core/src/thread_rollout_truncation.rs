@@ -139,16 +139,17 @@ fn fork_turn_positions_in_rollout(items: &[RolloutItem]) -> Vec<ForkTurnPosition
             }
             RolloutItem::InterAgentCommunicationMetadata {
                 trigger_turn,
-                admission,
+                admission: None,
             } => {
-                if admission.is_none() {
-                    let position = ForkTurnPosition::TopLevel(index);
-                    rollback_turn_positions.push(position);
-                    if *trigger_turn {
-                        fork_turn_positions.push(position);
-                    }
+                let position = ForkTurnPosition::TopLevel(index);
+                rollback_turn_positions.push(position);
+                if *trigger_turn {
+                    fork_turn_positions.push(position);
                 }
             }
+            RolloutItem::InterAgentCommunicationMetadata {
+                admission: Some(_), ..
+            } => {}
             RolloutItem::EventMsg(EventMsg::ThreadRolledBack(rollback)) => {
                 let num_turns = usize::try_from(rollback.num_turns).unwrap_or(usize::MAX);
                 if num_turns == 0 {
