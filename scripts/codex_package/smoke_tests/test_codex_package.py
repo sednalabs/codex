@@ -549,18 +549,18 @@ def test_packaged_usage_report_covers_recorded_synthetic_spawn_tree(
                                 try:
                                     result = json.loads(output)
                                 except (TypeError, ValueError):
-                                    spawn_failure = ("spawn result was not JSON", output)
+                                    spawn_failure = (
+                                        "spawn result was not JSON",
+                                        output,
+                                    )
                                 else:
                                     valid_keys = isinstance(result, dict) and set(
                                         result
                                     ) in ({"task_name"}, {"task_name", "nickname"})
-                                    valid_nickname = (
-                                        isinstance(result, dict)
-                                        and (
-                                            "nickname" not in result
-                                            or result["nickname"] is None
-                                            or isinstance(result["nickname"], str)
-                                        )
+                                    valid_nickname = isinstance(result, dict) and (
+                                        "nickname" not in result
+                                        or result["nickname"] is None
+                                        or isinstance(result["nickname"], str)
                                     )
                                     if not (
                                         valid_keys
@@ -642,13 +642,8 @@ def test_packaged_usage_report_covers_recorded_synthetic_spawn_tree(
                     }
                     sanitized = output
                     for original in sorted(replacements, key=len, reverse=True):
-                        sanitized = sanitized.replace(
-                            original, replacements[original]
-                        )
-                    detail = (
-                        f" (characters={len(output)}, "
-                        f"excerpt={sanitized[:256]!r})"
-                    )
+                        sanitized = sanitized.replace(original, replacements[original])
+                    detail = f" (characters={len(output)}, excerpt={sanitized[:256]!r})"
                 pytest.fail(
                     f"Synthetic spawn result failed validation: {reason}{detail}",
                     pytrace=False,
