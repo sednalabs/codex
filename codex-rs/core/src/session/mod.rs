@@ -4435,20 +4435,19 @@ impl Session {
                 .metadata
                 .as_ref()
                 .and_then(|metadata| metadata.inter_agent_update_id.as_ref());
-            if item_id == Some(response_id) || update_id == Some(&admission.update_id) {
-                if item_id != Some(response_id)
+            if (item_id == Some(response_id) || update_id == Some(&admission.update_id))
+                && (item_id != Some(response_id)
                     || update_id != Some(&admission.update_id)
                     || !explicit_response_matches_admission(
                         &envelope.item,
                         response_id,
                         &admission.original_communication,
                     )
-                    || represented.replace(envelope).is_some()
-                {
-                    return Err(CodexErr::Fatal(
-                        "persisted explicit inter-agent representation is inconsistent".into(),
-                    ));
-                }
+                    || represented.replace(envelope).is_some())
+            {
+                return Err(CodexErr::Fatal(
+                    "persisted explicit inter-agent representation is inconsistent".into(),
+                ));
             }
         }
         let Some(envelope) = represented else {
