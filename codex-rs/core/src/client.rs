@@ -81,6 +81,7 @@ use codex_api::auth_header_telemetry;
 use codex_api::build_session_headers;
 use codex_api::create_text_param_for_request;
 use codex_api::response_create_client_metadata;
+use codex_config::InstructionOverlayComponent;
 use codex_config::InstructionOverlaysToml;
 use codex_http_client::ClientRouteClass;
 use codex_http_client::HttpClientFactory;
@@ -315,6 +316,7 @@ impl RequestRouteTelemetry {
 pub struct ModelClient {
     state: Arc<ModelClientState>,
     instruction_overlays: Arc<InstructionOverlaysToml>,
+    instruction_overlay_origin_fences: Arc<[InstructionOverlayComponent]>,
     client_owned_base_instructions: Option<[u8; 32]>,
     model_baseline_origin_known: bool,
     agent_identity_policy: AgentIdentityAuthPolicy,
@@ -1045,6 +1047,7 @@ impl ModelClient {
                 last_inference_tools: StdMutex::new(None),
             }),
             instruction_overlays: Arc::new(InstructionOverlaysToml::default()),
+            instruction_overlay_origin_fences: Arc::default(),
             client_owned_base_instructions: None,
             model_baseline_origin_known: true,
             agent_identity_policy,
@@ -1070,6 +1073,14 @@ impl ModelClient {
         instruction_overlays: InstructionOverlaysToml,
     ) -> Self {
         self.instruction_overlays = Arc::new(instruction_overlays);
+        self
+    }
+
+    pub(crate) fn with_instruction_overlay_origin_fences(
+        mut self,
+        fences: Vec<InstructionOverlayComponent>,
+    ) -> Self {
+        self.instruction_overlay_origin_fences = fences.into();
         self
     }
 
@@ -1490,12 +1501,20 @@ impl ModelClient {
         prompt: &Prompt,
         model_info: &ModelInfo,
     ) -> Result<(String, Vec<ResponseItem>)> {
+        let mut fenced = self.instruction_overlay_origin_fences.to_vec();
+        if !self.model_baseline_origin_known && self.client_owned_base_instructions.is_none() {
+            fenced.extend([
+                InstructionOverlayComponent::ModelBaseline,
+                InstructionOverlayComponent::ReviewBaseline,
+            ]);
+        }
         let (baseline, mut input) = instruction_overlays::transform_request(
             &self.state.session_source,
             self.instruction_overlays.as_ref(),
             &prompt.base_instructions.text,
             prompt.base_instructions.provenance.as_ref(),
             self.base_instructions_are_client_owned(&prompt.base_instructions),
+            &fenced,
             prompt.get_formatted_input_for_request(model_info),
         )
         .map_err(|error| CodexErr::InvalidRequest(error.to_string()))?;

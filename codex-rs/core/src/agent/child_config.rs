@@ -450,6 +450,14 @@ mod instruction_overlay_origin_tests {
             );
             assert_eq!(child.client_owned_developer_instructions, client_owned);
             assert_eq!(
+                child
+                    .instruction_overlay_origin_fences(
+                        &codex_protocol::protocol::SessionSource::Cli
+                    )
+                    .contains(&codex_config::InstructionOverlayComponent::DeveloperGuidance),
+                !client_owned
+            );
+            assert_eq!(
                 turn.developer_instructions.as_deref(),
                 Some("parent guidance")
             );

@@ -1643,6 +1643,50 @@ impl Config {
             })
     }
 
+    pub(crate) fn instruction_overlay_origin_fences(
+        &self,
+        source: &codex_protocol::protocol::SessionSource,
+    ) -> Vec<codex_config::InstructionOverlayComponent> {
+        use codex_config::InstructionOverlayComponent;
+        use codex_protocol::protocol::SessionSource;
+        use codex_protocol::protocol::SubAgentSource;
+        let mut fenced = Vec::new();
+        if self.developer_instructions.is_some() && !self.client_owned_developer_instructions {
+            fenced.push(InstructionOverlayComponent::DeveloperGuidance);
+        }
+        if self
+            .multi_agent_v2
+            .multi_agent_mode_hint_text
+            .as_deref()
+            .is_some_and(|text| {
+                !self.multi_agent_text_is_client_owned("multi_agent_mode_hint_text", text)
+            })
+        {
+            fenced.push(InstructionOverlayComponent::MultiAgentMode);
+        }
+        let (key, text) = if matches!(
+            source,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
+        ) {
+            (
+                "subagent_usage_hint_text",
+                self.multi_agent_v2.subagent_usage_hint_text.as_deref(),
+            )
+        } else {
+            (
+                "root_agent_usage_hint_text",
+                self.multi_agent_v2.root_agent_usage_hint_text.as_deref(),
+            )
+        };
+        if text.is_some_and(|text| !self.multi_agent_text_is_client_owned(key, text)) {
+            fenced.extend([
+                InstructionOverlayComponent::MultiAgentRole,
+                InstructionOverlayComponent::MultiAgentUsageHint,
+            ]);
+        }
+        fenced
+    }
+
     pub fn sqlite_config(&self) -> &codex_state::SqliteConfig {
         &self.sqlite
     }

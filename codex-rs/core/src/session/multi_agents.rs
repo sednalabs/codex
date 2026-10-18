@@ -181,6 +181,22 @@ mod instruction_overlay_origin_tests {
             let step = StepContext::for_test(Arc::new(turn));
             assert_eq!(mode_text_is_client_owned(&step), client_owned);
             assert_eq!(usage_text_is_client_owned(&step), client_owned);
+            let fenced = step
+                .turn
+                .config
+                .instruction_overlay_origin_fences(&SessionSource::Cli);
+            assert_eq!(
+                fenced.contains(&codex_config::InstructionOverlayComponent::MultiAgentMode),
+                !client_owned
+            );
+            assert_eq!(
+                fenced.contains(&codex_config::InstructionOverlayComponent::MultiAgentRole),
+                !client_owned
+            );
+            assert_eq!(
+                fenced.contains(&codex_config::InstructionOverlayComponent::MultiAgentUsageHint),
+                !client_owned
+            );
         }
         let (_session, mut turn) = make_session_and_context().await;
         Arc::make_mut(&mut turn.config)

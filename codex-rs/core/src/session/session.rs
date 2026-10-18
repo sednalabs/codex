@@ -1814,6 +1814,9 @@ impl Session {
                 )
                 .with_executed_tool_calls(executed_tool_calls.clone())
                 .with_instruction_overlays(config.instruction_overlays.clone())
+                .with_instruction_overlay_origin_fences(
+                    config.instruction_overlay_origin_fences(&session_configuration.session_source),
+                )
                 .with_client_owned_base_instructions(
                     config.base_instructions.clone().filter(|_| config.client_owned_base_instructions),
                     if config.base_instructions.is_some() {

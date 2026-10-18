@@ -51,6 +51,11 @@ and subagent usage hints, and subagent developer-guidance substitution. A child
 inherits known parent eligibility with the value, not a stale Boolean from a
 different value. Old mode/role/usage tags without positive classification remain
 non-targetable; their text is not retroactively relabeled.
+Current explicit managed or unknown-origin selections also fence their whole
+component against stale positive tags retained from an earlier configuration
+with identical wording. This conservative fence uses the same `on_absent`
+error/skip policy, including `all_classified`; a past tag cannot authorize editing
+the newly selected managed component. Other eligible components are unaffected.
 
 Append/prepend add text to an **existing** selected component; neither `replace`
 nor `on_absent` creates a missing component. To create ordinary client developer

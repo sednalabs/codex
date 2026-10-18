@@ -44,6 +44,7 @@ pub(super) fn transform_request(
     baseline: &str,
     baseline_provenance: Option<&BaseInstructionsProvenance>,
     client_owned_baseline: bool,
+    fenced_components: &[InstructionOverlayComponent],
     input: Vec<ResponseItem>,
 ) -> Result<(Option<String>, Vec<ResponseItem>)> {
     let Some(components) = eligible_components(source) else {
@@ -52,6 +53,19 @@ pub(super) fn transform_request(
 
     plan.validate_components(components)
         .map_err(|error| anyhow::anyhow!("instruction overlay plan invalid: {error}"))?;
+    // A current managed/unknown selection must not inherit authority from an earlier
+    // positive historical tag when unchanged text kept its existing world-state snapshot.
+    for component in components
+        .iter()
+        .filter(|component| fenced_components.contains(component))
+    {
+        if plan
+            .component(*component)
+            .is_some_and(|component| !component.edits.is_empty())
+        {
+            let _ = apply_component(plan, *component, /*body*/ None)?;
+        }
+    }
     let mut transformed_baseline = None;
     let mut transformed_input = input;
     let mut selected_instances = 0usize;
@@ -61,9 +75,10 @@ pub(super) fn transform_request(
     } else {
         InstructionOverlayComponent::ModelBaseline
     };
-    if plan
-        .component(baseline_component)
-        .is_some_and(|p| !p.edits.is_empty())
+    if !fenced_components.contains(&baseline_component)
+        && plan
+            .component(baseline_component)
+            .is_some_and(|p| !p.edits.is_empty())
     {
         // Incremental-tools requests carry their selected base as a typed input item and use
         // empty text with no provenance as the scalar placeholder. Empty explicit bases still
@@ -112,11 +127,12 @@ pub(super) fn transform_request(
         }
     }
     for component in components.iter().copied().filter(|component| {
-        !matches!(
-            component,
-            InstructionOverlayComponent::ModelBaseline
-                | InstructionOverlayComponent::ReviewBaseline
-        )
+        !fenced_components.contains(component)
+            && !matches!(
+                component,
+                InstructionOverlayComponent::ModelBaseline
+                    | InstructionOverlayComponent::ReviewBaseline
+            )
     }) {
         apply_tagged_component(
             plan,
@@ -459,6 +475,7 @@ mod tests {
             baseline,
             provenance,
             /*client_owned_baseline*/ true,
+            /*fenced_components*/ &[],
             input.to_vec(),
         )?;
         Ok((
@@ -512,6 +529,7 @@ mod tests {
             "managed configured baseline",
             Some(&BaseInstructionsProvenance::Custom),
             /*client_owned_baseline*/ false,
+            /*fenced_components*/ &[],
             original.clone(),
         )
         .expect("skip non-client sources");
@@ -525,10 +543,76 @@ mod tests {
                 "managed configured baseline",
                 Some(&BaseInstructionsProvenance::Custom),
                 /*client_owned_baseline*/ false,
+                /*fenced_components*/ &[],
                 original,
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn current_origin_fences_reject_stale_positive_tags_after_same_text_origin_change() {
+        for (component, kind, text) in [
+            (
+                InstructionOverlayComponent::ModelBaseline,
+                "client.base_instructions",
+                "same wording",
+            ),
+            (
+                InstructionOverlayComponent::ReviewBaseline,
+                "client.base_instructions",
+                "same wording",
+            ),
+            (
+                InstructionOverlayComponent::DeveloperGuidance,
+                "client.developer_instructions",
+                "same wording",
+            ),
+            (
+                InstructionOverlayComponent::MultiAgentMode,
+                "client.multi_agent.mode_instructions",
+                "<multi_agent_mode>same wording</multi_agent_mode>",
+            ),
+            (
+                InstructionOverlayComponent::MultiAgentRole,
+                "client.multi_agent.role_instructions",
+                "same wording",
+            ),
+            (
+                InstructionOverlayComponent::MultiAgentUsageHint,
+                "client.multi_agent.usage_hint",
+                "same wording",
+            ),
+        ] {
+            let source = if component == InstructionOverlayComponent::ReviewBaseline {
+                SessionSource::SubAgent(SubAgentSource::Review)
+            } else {
+                SessionSource::Cli
+            };
+            let original = vec![developer_fragment(kind, text)];
+            for on_absent in ["error", "skip"] {
+                let plan: InstructionOverlaysToml = toml::from_str(&format!(
+                    "[{}]\non_absent = '{on_absent}'\nedits = [{{ op = 'replace', text = 'replacement' }}]",
+                    component.as_str(),
+                )).unwrap();
+                let result = super::transform_request(
+                    &source,
+                    &plan,
+                    "",
+                    /*baseline_provenance*/ None,
+                    /*client_owned_baseline*/ false,
+                    &[component],
+                    original.clone(),
+                );
+                if on_absent == "error" {
+                    assert!(result.is_err());
+                } else {
+                    let (baseline, input) = result.unwrap();
+                    assert!(baseline.is_none());
+                    assert_eq!(input, original);
+                }
+            }
+        }
     }
 
     fn developer_fragment(kind: &str, text: &str) -> ResponseItem {
