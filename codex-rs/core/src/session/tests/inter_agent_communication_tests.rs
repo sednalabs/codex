@@ -137,10 +137,12 @@ async fn make_explicit_test_session(
         SessionSource::Exec,
         LocalAgentControl::default(),
         codex_home,
-        /*enable_usage_state*/ true,
         /*parent_thread_id*/ None,
         Some(thread_store),
-        /*enable_multi_agent_v2*/ true,
+        SessionTestFeatures {
+            enable_usage_state: true,
+            enable_multi_agent_v2: true,
+        },
     )
     .await
     .expect("create explicit inter-agent test session");
