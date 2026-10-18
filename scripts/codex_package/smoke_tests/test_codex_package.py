@@ -402,7 +402,7 @@ def test_packaged_usage_report_covers_recorded_synthetic_spawn_tree(
                             spawn_call_id,
                             "spawn_agent",
                             {
-                                "task_name": "usage-worker",
+                                "task_name": "usage_worker",
                                 "message": child_marker,
                                 "agent_type": "default",
                                 "model": "gpt-6-luna",
@@ -435,7 +435,7 @@ def test_packaged_usage_report_covers_recorded_synthetic_spawn_tree(
                             wait_call_id,
                             "wait_agent",
                             {
-                                "targets": ["/root/usage-worker"],
+                                "targets": ["/root/usage_worker"],
                                 "return_when": "all",
                                 "timeout_ms": 20_000,
                             },
@@ -541,7 +541,7 @@ def test_packaged_usage_report_covers_recorded_synthetic_spawn_tree(
             if not (
                 valid_keys
                 and valid_nickname
-                and result.get("task_name") == "/root/usage-worker"
+                and result.get("task_name") == "/root/usage_worker"
             ):
 
                 def json_type(value: object) -> str:
@@ -587,7 +587,7 @@ def test_packaged_usage_report_covers_recorded_synthetic_spawn_tree(
                         sum(key not in known_keys for key in result) if is_object else 0
                     ),
                     "expected_task_name_matches": (
-                        is_object and result.get("task_name") == "/root/usage-worker"
+                        is_object and result.get("task_name") == "/root/usage_worker"
                     ),
                     "nickname_type_valid": valid_nickname,
                     "closed_key_set_valid": valid_keys,
