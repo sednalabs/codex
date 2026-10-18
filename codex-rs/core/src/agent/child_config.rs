@@ -387,16 +387,20 @@ mod instruction_overlay_origin_tests {
     use codex_config::ConfigLayerEntry;
     use codex_config::ConfigLayerSource;
     use codex_config::ConfigLayerStack;
-    use codex_protocol::models::BaseInstructionsProvenance;
     use std::sync::Arc;
 
     #[tokio::test]
     async fn fresh_child_transfers_parent_baseline_eligibility_without_promoting_unknown_history() {
         let (mut session, turn) = make_session_and_context().await;
-        session.state.lock().await.base_instructions_provenance =
-            Some(BaseInstructionsProvenance::Model {
-                model: "fixture".into(),
-            });
+        let parent_base = session.get_base_instructions().await;
+        session.services.model_client = session
+            .services
+            .model_client
+            .clone()
+            .with_client_owned_base_instructions(
+                Some(parent_base.text),
+                /*model_baseline_origin_known*/ false,
+            );
         let step = StepContext::for_test(Arc::new(turn));
         let spawn = || SpawnConfigOptions {
             version: SpawnConfigVersion::V2,
