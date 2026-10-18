@@ -158,15 +158,13 @@ fn role_instructions_are_client_owned(config: &Config, config_file: &Path) -> bo
             let discovered = layer.config_folder().is_some_and(|folder| {
                 config_file.parent() == Some(folder.as_path().join("agents").as_path())
             });
-            (declared || discovered).then(|| {
-                matches!(
-                    layer.name,
-                    ConfigLayerSource::PackagedDefaults { .. }
-                        | ConfigLayerSource::User { .. }
-                        | ConfigLayerSource::Project { .. }
-                        | ConfigLayerSource::SessionFlags
-                )
-            })
+            (declared || discovered).then_some(matches!(
+                layer.name,
+                ConfigLayerSource::PackagedDefaults { .. }
+                    | ConfigLayerSource::User { .. }
+                    | ConfigLayerSource::Project { .. }
+                    | ConfigLayerSource::SessionFlags
+            ))
         })
         .unwrap_or(false)
 }

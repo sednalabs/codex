@@ -1123,7 +1123,7 @@ fn overlay_baseline_eligibility_never_promotes_unknown_or_managed_custom_sources
     assert!(client.base_instructions_are_client_owned(&base));
     let other = codex_protocol::models::BaseInstructions {
         text: "other".into(),
-        ..base.clone()
+        ..base
     };
     assert!(!client.base_instructions_are_client_owned(&other));
     let inferred_legacy_model = codex_protocol::models::BaseInstructions {
