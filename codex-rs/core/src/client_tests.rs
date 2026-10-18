@@ -1108,6 +1108,70 @@ fn invalid_instruction_overlay_request_is_non_retryable_without_literal_leakage(
     assert!(!format!("{error:?}").contains(literal));
 }
 
+#[test]
+fn overlay_baseline_eligibility_never_promotes_unknown_or_managed_custom_sources() {
+    let base = codex_protocol::models::BaseInstructions {
+        text: "synthetic baseline".into(),
+        provenance: Some(codex_protocol::models::BaseInstructionsProvenance::Custom),
+    };
+    let client = test_model_client(SessionSource::Cli);
+    assert!(!client.base_instructions_are_client_owned(&base));
+    let client = client.with_client_owned_base_instructions(
+        Some(base.text.clone()),
+        /*model_baseline_origin_known*/ false,
+    );
+    assert!(client.base_instructions_are_client_owned(&base));
+    let other = codex_protocol::models::BaseInstructions {
+        text: "other".into(),
+        ..base.clone()
+    };
+    assert!(!client.base_instructions_are_client_owned(&other));
+    let inferred_legacy_model = codex_protocol::models::BaseInstructions {
+        provenance: Some(codex_protocol::models::BaseInstructionsProvenance::Model {
+            model: "fixture".into(),
+        }),
+        ..other
+    };
+    assert!(!client.base_instructions_are_client_owned(&inferred_legacy_model));
+    let fresh = test_model_client(SessionSource::Cli);
+    assert!(fresh.base_instructions_are_client_owned(&inferred_legacy_model));
+}
+
+#[test]
+fn overlay_estimate_charges_transformed_body_without_changing_raw_prompt() -> anyhow::Result<()> {
+    let text = "x".repeat(32 * 1024);
+    let plan = InstructionOverlaysToml {
+        model_baseline: Some(InstructionOverlayComponentToml {
+            on_absent: InstructionOverlayOnAbsent::Error,
+            selection: Default::default(),
+            edits: vec![InstructionOverlayEdit::Append { text }; 4],
+        }),
+        ..Default::default()
+    };
+    let client = test_model_client(SessionSource::Cli).with_instruction_overlays(plan);
+    let prompt = Prompt {
+        base_instructions: codex_protocol::models::BaseInstructions {
+            text: "baseline".into(),
+            provenance: Some(codex_protocol::models::BaseInstructionsProvenance::Model {
+                model: "fixture".into(),
+            }),
+        },
+        ..Default::default()
+    };
+    let raw = prompt.base_instructions.clone();
+    for use_lite in [false, true] {
+        let mut model = test_model_info();
+        model.use_responses_lite = use_lite;
+        let estimate = client
+            .estimate_instruction_overlay_request(&prompt, &model)?
+            .unwrap();
+        assert!(estimate >= 32 * 1024);
+        assert_eq!(prompt.base_instructions, raw);
+        assert!(prompt.input.is_empty());
+    }
+    Ok(())
+}
+
 fn output_with_tool_result_metadata(metadata: ToolResultMetadata) -> ResponseItem {
     let mut call = ExecutedToolCall::new("test_tool".to_string(), json!({ "query": "keep" }));
     call.set_tool_result_sources(ToolResultSources::new(vec![ToolResultSource {

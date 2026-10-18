@@ -7,7 +7,7 @@ use super::WorldStateSection;
 use super::WorldStateUpdate;
 use crate::context::BaseInstructionsFragment;
 
-pub(crate) struct BaseInstructionsState(pub(crate) String);
+pub(crate) struct BaseInstructionsState(pub(crate) String, pub(crate) bool);
 
 impl WorldStateSection for BaseInstructionsState {
     const ID: &'static str = "base_instructions";
@@ -17,7 +17,7 @@ impl WorldStateSection for BaseInstructionsState {
         &self,
         previous: PreviousSectionState<'_, Self::Snapshot>,
     ) -> SectionTransition<Self::Snapshot> {
-        let fragment = BaseInstructionsFragment(self.0.clone());
+        let fragment = BaseInstructionsFragment(self.0.clone()).with_client_ownership(self.1);
         let hash = WorldStateHash::from_fragment(&fragment);
         let updates = WorldStateUpdate::optional_prefix_boxed_fragment(
             (matches!(previous, PreviousSectionState::Absent) && !self.0.is_empty())

@@ -583,6 +583,14 @@ distinct from operator-defined agent roles: those roles remain included on
 otherwise eligible root and ThreadSpawn requests. Managed, administrative,
 security, provider-enforced, and unclassified content is excluded.
 
+Eligibility is attached at known client-value producers using the existing
+winning configuration-layer origin; ambiguous generic/legacy tags do not
+establish ownership. Sampling and eligible WebSocket prewarm account for the
+transformed request view through the existing context-window policy, using
+coarse content estimates without double-adding measured server usage. Overlay
+append/prepend require an existing target; `developer_instructions` remains the
+supported way to create ordinary client guidance before applying edits.
+
 Rollback is configuration reconstruction: restore or remove the setting at
 its existing layer and start a new process/session. This source carry and its
 synthetic tests do not claim installed or live acceptance. The instruction

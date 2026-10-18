@@ -87,7 +87,11 @@ impl Session {
         } else {
             model_instructions
         };
-        let base_instructions = self.get_prompt_base_instructions().await.text;
+        let base_instructions = self.get_prompt_base_instructions().await;
+        let client_owned_base_instructions = self
+            .services
+            .model_client
+            .base_instructions_are_client_owned(&base_instructions);
         let previous_model = {
             let state = self.state.lock().await;
             state
@@ -101,7 +105,7 @@ impl Session {
                             BaseInstructionsProvenance::Model { model } => Some(model),
                             BaseInstructionsProvenance::Custom => None,
                         })
-                        .filter(|_| base_instructions != model_instructions)
+                        .filter(|_| base_instructions.text != model_instructions)
                         .cloned()
                 })
         };
@@ -150,7 +154,10 @@ impl Session {
                 definitions,
                 Some(Arc::clone(&extension_metrics)),
             )?);
-            world_state.add_section(BaseInstructionsState(base_instructions));
+            world_state.add_section(BaseInstructionsState(
+                base_instructions.text,
+                client_owned_base_instructions,
+            ));
         }
         world_state.add_section(ModelInstructionsState::new(
             &model_info.slug,

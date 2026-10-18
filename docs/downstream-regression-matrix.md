@@ -1270,6 +1270,12 @@ overlay limitation. `config_schema_matches_fixture` covers the generated
 configuration schema contract. These names describe consumer coverage; this
 matrix does not assert that a hosted run passed.
 
+Origin and accounting regressions cover the winning managed/client layer,
+originless overrides, legacy tags, preserved baseline provenance, and transformed
+request estimates feeding Total/BodyAfterPrefix/full-window arithmetic. The
+same request-view check is used before normal sampling and direct WebSocket
+prewarm; estimates remain heuristic rather than tokenizer-accurate guarantees.
+
 The canonical package consumer is
 `test_cli_instruction_overlays_in_synthetic_linux_package` in
 `scripts/codex_package/smoke_tests/test_codex_package.py`. It exercises the

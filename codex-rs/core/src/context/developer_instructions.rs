@@ -4,19 +4,35 @@ use codex_protocol::models::ContentItemKind;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DeveloperInstructions {
     instructions: String,
+    client_owned: bool,
 }
 
 impl DeveloperInstructions {
     pub(crate) fn new(instructions: impl Into<String>) -> Self {
         Self {
             instructions: instructions.into(),
+            client_owned: false,
+        }
+    }
+
+    pub(crate) fn client_owned(instructions: impl Into<String>) -> Self {
+        Self {
+            instructions: instructions.into(),
+            client_owned: true,
         }
     }
 }
 
 impl ContextualUserFragment for DeveloperInstructions {
     fn content_kind(&self) -> ContentItemKind {
-        ContentItemKind("generic.developer_instructions".to_string())
+        ContentItemKind(
+            if self.client_owned {
+                "client.developer_instructions"
+            } else {
+                "generic.developer_instructions"
+            }
+            .to_string(),
+        )
     }
 
     fn role(&self) -> &'static str {

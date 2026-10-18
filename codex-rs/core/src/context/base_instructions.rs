@@ -7,6 +7,14 @@ pub(crate) struct BaseInstructionsFragment(pub(crate) String);
 
 impl BaseInstructionsFragment {
     pub(crate) const KIND: &str = "model.base_instructions";
+    pub(crate) const CLIENT_KIND: &str = "client.base_instructions";
+
+    pub(crate) fn with_client_ownership(self, client_owned: bool) -> impl ContextualUserFragment {
+        ClassifiedBaseInstructionsFragment {
+            fragment: self,
+            client_owned,
+        }
+    }
 
     pub(crate) fn matches_item(item: &ResponseItem) -> bool {
         let ResponseItem::Message {
@@ -16,10 +24,42 @@ impl BaseInstructionsFragment {
         else {
             return false;
         };
-        metadata
-            .content_item_kinds
-            .as_ref()
-            .is_some_and(|kinds| kinds.iter().any(|kind| kind.as_str() == Self::KIND))
+        metadata.content_item_kinds.as_ref().is_some_and(|kinds| {
+            kinds
+                .iter()
+                .any(|kind| matches!(kind.as_str(), Self::KIND | Self::CLIENT_KIND))
+        })
+    }
+}
+
+struct ClassifiedBaseInstructionsFragment {
+    fragment: BaseInstructionsFragment,
+    client_owned: bool,
+}
+
+impl ContextualUserFragment for ClassifiedBaseInstructionsFragment {
+    fn content_kind(&self) -> ContentItemKind {
+        ContentItemKind(
+            if self.client_owned {
+                BaseInstructionsFragment::CLIENT_KIND
+            } else {
+                BaseInstructionsFragment::KIND
+            }
+            .to_string(),
+        )
+    }
+
+    fn role(&self) -> &'static str {
+        self.fragment.role()
+    }
+    fn markers(&self) -> (&'static str, &'static str) {
+        Self::type_markers()
+    }
+    fn type_markers() -> (&'static str, &'static str) {
+        ("", "")
+    }
+    fn body(&self) -> String {
+        self.fragment.body()
     }
 }
 
