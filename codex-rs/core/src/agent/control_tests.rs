@@ -1244,7 +1244,7 @@ async fn explicit_update_rejects_completed_root_without_preload_witness() {
         &tree.control.runtime.registry,
         &tree.worker,
         &tree.root,
-        None,
+        /*completed_root_witness*/ None,
         &scope,
     )
     .await;
@@ -1412,7 +1412,7 @@ async fn explicit_update_rejects_root_replaced_before_membership_recheck() {
         &tree.control.runtime.registry,
         &tree.worker,
         &tree.root,
-        None,
+        /*completed_root_witness*/ None,
         &scope,
     )
     .await;
