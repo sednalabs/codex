@@ -1210,82 +1210,6 @@ async fn explicit_update_rejects_completed_sender_without_persisting_an_admissio
 }
 
 #[tokio::test]
-async fn explicit_update_rejects_completed_root_without_its_original_live_session() {
-    let tree = explicit_update_test_tree().await;
-    complete_control_test_thread(&tree.root, "root turn complete before unload").await;
-    assert_eq!(
-        tree.root.agent_status().await,
-        AgentStatus::Completed(Some("root turn complete before unload".to_string()))
-    );
-    assert!(tree.root.is_running(), "completed root channel stays open");
-    let rollout_path = tree.root.rollout_path().expect("root rollout path");
-    assert!(
-        tree.harness
-            .manager
-            .remove_thread(&tree.root_id)
-            .await
-            .is_some()
-    );
-    assert!(tree.harness.manager.get_thread(tree.root_id).await.is_err());
-
-    let result = tree
-        .control
-        .send_explicit_inter_agent_update(
-            tree.worker_id,
-            tree.root_id,
-            tree.harness.config.clone(),
-            AgentMessage::Plaintext("progress to absent root".to_string()),
-            ExplicitInterAgentUpdate {
-                idempotency_key: "absent-root-must-not-reload-for-admission".to_string(),
-                intent: InterAgentCommunicationIntent::Progress,
-                supersedes: Vec::new(),
-            },
-            AgentCommunicationContext::new(AgentCommunicationKind::Message, tree.worker_id),
-        )
-        .await;
-    assert!(
-        result.is_err(),
-        "a completed root without its original loaded session is not an admitted recipient"
-    );
-    assert_eq!(
-        explicit_update_rollout_items_at(&rollout_path, tree.root_id)
-            .await
-            .iter()
-            .filter(|item| matches!(
-                item,
-                RolloutItem::InterAgentCommunicationMetadata {
-                    admission: Some(_),
-                    ..
-                }
-            ))
-            .count(),
-        0,
-        "completed-root rejection must not append an admission"
-    );
-    assert!(
-        !tree
-            .root
-            .session
-            .input_queue
-            .has_pending_mailbox_items()
-            .await,
-        "completed-root rejection must not enqueue mail"
-    );
-    tree.root
-        .shutdown_and_wait()
-        .await
-        .expect("removed original root should shut down cleanly");
-
-    let report = tree
-        .harness
-        .manager
-        .shutdown_all_threads_bounded(Duration::from_secs(5))
-        .await;
-    assert_eq!(report.submit_failed, Vec::<ThreadId>::new());
-    assert_eq!(report.timed_out, Vec::<ThreadId>::new());
-}
-
-#[tokio::test]
 async fn explicit_update_rejects_root_replaced_before_membership_recheck() {
     let tree = explicit_update_test_tree().await;
     let state = tree.control.runtime.upgrade().expect("live manager state");
@@ -1330,6 +1254,12 @@ async fn explicit_update_rejects_root_replaced_before_membership_recheck() {
         &tree.control.runtime.registry,
         &replacement.session.services.local_agent_runtime.registry
     ));
+    complete_control_test_thread(&replacement, "replacement root completed").await;
+    assert_eq!(
+        replacement.agent_status().await,
+        AgentStatus::Completed(Some("replacement root completed".to_string()))
+    );
+    assert!(replacement.is_running(), "completed replacement stays open");
 
     let result = super::delivery::validate_current_explicit_membership(
         state.as_ref(),
@@ -1345,7 +1275,7 @@ async fn explicit_update_rejects_root_replaced_before_membership_recheck() {
     .await;
     assert!(
         result.is_err(),
-        "replacement must fail the real membership recheck"
+        "a Completed replacement without the original root Arc must fail revalidation"
     );
     assert_eq!(
         explicit_update_rollout_items(&replacement)
