@@ -1295,6 +1295,20 @@ async fn explicit_update_rejects_root_replaced_before_membership_recheck() {
         .and_then(|metadata| metadata.agent_path)
         .expect("worker should have a registered agent path");
     let root_path = AgentPath::root();
+    complete_control_test_thread(&tree.root, "original root completed").await;
+    assert_eq!(
+        tree.root.agent_status().await,
+        AgentStatus::Completed(Some("original root completed".to_string()))
+    );
+    assert!(tree.root.is_running(), "completed original root stays open");
+    tree.root
+        .shutdown_and_wait()
+        .await
+        .expect("original root should shut down before its writer is replaced");
+    assert!(
+        !tree.root.is_running(),
+        "shutdown closes the original channel"
+    );
     assert!(
         tree.harness
             .manager
@@ -1324,23 +1338,71 @@ async fn explicit_update_rejects_root_replaced_before_membership_recheck() {
         Some(codex_protocol::protocol::MultiAgentVersion::V2)
     );
     assert!(replacement.is_running());
+    set_control_test_thread_running(&replacement).await;
+    assert_eq!(replacement.agent_status().await, AgentStatus::Running);
+    assert!(replacement.is_running(), "replacement root channel is open");
+    assert!(tree.worker.is_running(), "original sender remains open");
+    assert_eq!(tree.worker.agent_status().await, AgentStatus::Running);
+    assert_eq!(
+        tree.worker.multi_agent_version(),
+        Some(codex_protocol::protocol::MultiAgentVersion::V2)
+    );
+    let current_sender = state
+        .get_thread(tree.worker_id)
+        .await
+        .expect("original sender remains registered");
+    let current_root = state
+        .get_thread(tree.root_id)
+        .await
+        .expect("replacement root remains registered");
+    assert!(Arc::ptr_eq(&tree.worker, &current_sender));
+    assert!(Arc::ptr_eq(&replacement, &current_root));
+    assert_eq!(
+        tree.control
+            .runtime
+            .registry
+            .agent_id_for_path(&sender_path),
+        Some(tree.worker_id)
+    );
+    assert_eq!(
+        tree.control.runtime.registry.agent_id_for_path(&root_path),
+        Some(tree.root_id)
+    );
+    assert_eq!(
+        tree.control
+            .runtime
+            .registry
+            .agent_metadata_for_thread(tree.worker_id)
+            .and_then(|metadata| metadata.agent_path),
+        Some(sender_path.clone())
+    );
+    assert_eq!(
+        tree.control
+            .runtime
+            .registry
+            .agent_metadata_for_thread(tree.root_id)
+            .and_then(|metadata| metadata.agent_path),
+        Some(root_path.clone())
+    );
     assert!(Arc::ptr_eq(
         &tree.control.runtime.registry,
         &replacement.session.services.local_agent_runtime.registry
     ));
-    complete_control_test_thread(&replacement, "replacement root completed").await;
-    assert_eq!(
-        replacement.agent_status().await,
-        AgentStatus::Completed(Some("replacement root completed".to_string()))
+    assert!(Arc::ptr_eq(
+        &tree.control.runtime.registry,
+        &tree.worker.session.services.local_agent_runtime.registry
+    ));
+    assert!(
+        !Arc::ptr_eq(&tree.root, &current_root),
+        "the stale root Arc is the only membership predicate that should differ"
     );
-    assert!(replacement.is_running(), "completed replacement stays open");
 
     let result = super::delivery::validate_current_explicit_membership(
         state.as_ref(),
         &tree.control.runtime.registry,
         &tree.worker,
         &tree.root,
-        Some(&tree.root),
+        None,
         &tree.root_id,
         &tree.worker_id,
         &tree.root_id,
@@ -1350,7 +1412,7 @@ async fn explicit_update_rejects_root_replaced_before_membership_recheck() {
     .await;
     assert!(
         result.is_err(),
-        "a Completed replacement without the original root Arc must fail revalidation"
+        "a different current recipient Arc must fail revalidation"
     );
     assert_eq!(
         explicit_update_rollout_items(&replacement)
@@ -1375,10 +1437,6 @@ async fn explicit_update_rejects_root_replaced_before_membership_recheck() {
             .await,
         "replacement rejection must not enqueue mail"
     );
-    tree.root
-        .shutdown_and_wait()
-        .await
-        .expect("removed original root should shut down cleanly");
 
     let report = tree
         .harness
