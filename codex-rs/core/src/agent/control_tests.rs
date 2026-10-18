@@ -1210,6 +1210,76 @@ async fn explicit_update_rejects_completed_sender_without_persisting_an_admissio
 }
 
 #[tokio::test]
+async fn explicit_update_rejects_completed_root_without_preload_witness() {
+    let tree = explicit_update_test_tree().await;
+    complete_control_test_thread(&tree.root, "root completed without preload witness").await;
+    assert_eq!(
+        tree.root.agent_status().await,
+        AgentStatus::Completed(Some("root completed without preload witness".to_string()))
+    );
+    assert!(tree.root.is_running(), "completed root channel stays open");
+
+    let state = tree.control.runtime.upgrade().expect("live manager state");
+    let sender_path = tree
+        .control
+        .runtime
+        .registry
+        .agent_metadata_for_thread(tree.worker_id)
+        .and_then(|metadata| metadata.agent_path)
+        .expect("worker should have a registered agent path");
+    let root_path = AgentPath::root();
+    let result = super::delivery::validate_current_explicit_membership(
+        state.as_ref(),
+        &tree.control.runtime.registry,
+        &tree.worker,
+        &tree.root,
+        None,
+        &tree.root_id,
+        &tree.worker_id,
+        &tree.root_id,
+        &sender_path,
+        &root_path,
+    )
+    .await;
+    assert!(
+        result.is_err(),
+        "a Completed current root without pre-load eligibility must be rejected"
+    );
+    assert_eq!(
+        explicit_update_rollout_items(&tree.root)
+            .await
+            .iter()
+            .filter(|item| matches!(
+                item,
+                RolloutItem::InterAgentCommunicationMetadata {
+                    admission: Some(_),
+                    ..
+                }
+            ))
+            .count(),
+        0,
+        "missing witness rejection must not append an admission"
+    );
+    assert!(
+        !tree
+            .root
+            .session
+            .input_queue
+            .has_pending_mailbox_items()
+            .await,
+        "missing witness rejection must not enqueue mail"
+    );
+
+    let report = tree
+        .harness
+        .manager
+        .shutdown_all_threads_bounded(Duration::from_secs(5))
+        .await;
+    assert_eq!(report.submit_failed, Vec::<ThreadId>::new());
+    assert_eq!(report.timed_out, Vec::<ThreadId>::new());
+}
+
+#[tokio::test]
 async fn explicit_update_rejects_root_replaced_before_membership_recheck() {
     let tree = explicit_update_test_tree().await;
     let state = tree.control.runtime.upgrade().expect("live manager state");
@@ -1266,6 +1336,7 @@ async fn explicit_update_rejects_root_replaced_before_membership_recheck() {
         &tree.control.runtime.registry,
         &tree.worker,
         &tree.root,
+        Some(&tree.root),
         &tree.root_id,
         &tree.worker_id,
         &tree.root_id,
