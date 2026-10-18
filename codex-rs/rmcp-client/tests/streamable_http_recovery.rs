@@ -21,12 +21,14 @@ use streamable_http_test_support::arm_initialize_post_failure;
 use streamable_http_test_support::arm_initialize_post_json_rpc_failure;
 use streamable_http_test_support::arm_initialized_notification_post_json_rpc_failure;
 use streamable_http_test_support::arm_session_post_failure;
+use streamable_http_test_support::arm_session_post_failure_after_dispatch;
 use streamable_http_test_support::arm_session_post_failure_with_retry_after;
 use streamable_http_test_support::arm_session_post_json_rpc_failure;
 use streamable_http_test_support::call_echo_tool;
 use streamable_http_test_support::create_client;
 use streamable_http_test_support::create_client_with_http_client;
 use streamable_http_test_support::expected_echo_result;
+use streamable_http_test_support::read_side_effect_count;
 use streamable_http_test_support::spawn_streamable_http_server;
 
 const JSON_RPC_INTERNAL_ERROR_CODE: i64 = -32603;
@@ -431,21 +433,24 @@ async fn streamable_http_404_tool_call_is_uncertain_and_next_call_recovers() -> 
     assert_eq!(warmup, expected_echo_result("warmup"));
     assert_eq!(http_client.initialize_attempts(), 1);
 
-    arm_session_post_failure(
-        &base_url,
-        /*status*/ 404,
-        /*remaining*/ 1,
-        /*www_authenticate_headers*/ &[],
-    )
-    .await?;
+    arm_session_post_failure_after_dispatch(&base_url, /*status*/ 404, /*remaining*/ 1).await?;
 
-    let uncertain = call_echo_tool(&client, "uncertain").await.unwrap_err();
+    let uncertain = client
+        .call_tool(
+            "counter_write".to_string(),
+            Some(serde_json::json!({})),
+            /*meta*/ None,
+            /*timeout*/ Some(Duration::from_secs(5)),
+        )
+        .await
+        .unwrap_err();
     let uncertain_message = uncertain.to_string();
     assert!(uncertain_message.contains("MCP session expired during tools/call"));
     assert!(uncertain_message.contains("this invocation was not retried"));
     assert!(uncertain_message.contains("result is unknown"));
     assert!(uncertain_message.contains("separate independent call"));
     assert!(uncertain_message.contains("read-only"));
+    assert_eq!(read_side_effect_count(&base_url).await?, 1);
     assert_eq!(http_client.initialize_attempts(), 1);
     assert_eq!(http_client.tool_call_attempts(), 2);
 
@@ -453,6 +458,38 @@ async fn streamable_http_404_tool_call_is_uncertain_and_next_call_recovers() -> 
     assert_eq!(recovered, expected_echo_result("distinct-follow-up"));
     assert_eq!(http_client.initialize_attempts(), 2);
     assert_eq!(http_client.tool_call_attempts(), 3);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn streamable_http_404_recovers_safe_resource_reads() -> anyhow::Result<()> {
+    let (_server, base_url) = spawn_streamable_http_server().await?;
+    let client = create_client(&base_url).await?;
+    let timeout = Some(Duration::from_secs(5));
+
+    let expected_resources = client.list_resources(/*params*/ None, timeout).await?;
+    arm_session_post_failure(
+        &base_url,
+        /*status*/ 404,
+        /*remaining*/ 1,
+        /*www_authenticate_headers*/ &[],
+    )
+    .await?;
+    let recovered_resources = client.list_resources(/*params*/ None, timeout).await?;
+    assert_eq!(recovered_resources, expected_resources);
+
+    let read_params = rmcp::model::ReadResourceRequestParams::new("memo://codex/example-note");
+    let expected_resource = client.read_resource(read_params.clone(), timeout).await?;
+    arm_session_post_failure(
+        &base_url,
+        /*status*/ 404,
+        /*remaining*/ 1,
+        /*www_authenticate_headers*/ &[],
+    )
+    .await?;
+    let recovered_resource = client.read_resource(read_params, timeout).await?;
+    assert_eq!(recovered_resource, expected_resource);
 
     Ok(())
 }
