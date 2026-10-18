@@ -798,14 +798,21 @@ def test_packaged_usage_report_covers_recorded_synthetic_spawn_tree(
         pytest.fail("Bounded packaged usage report failed", pytrace=False)
     if not isinstance(report, dict):
         pytest.fail("Bounded packaged usage report had an invalid shape", pytrace=False)
-    contributions = report.get("scope_contributions")
-    coverage = report.get("lineage_coverage")
-    summary = report.get("summary")
-    root_descendant_models = (
-        contributions.get("root_vs_descendants_by_actual_model")
-        if isinstance(contributions, dict)
+    source_coverage = report.get("source_coverage")
+    ledger_sources = (
+        source_coverage.get("ledger_sources")
+        if isinstance(source_coverage, dict)
         else None
     )
+    coverage = (
+        ledger_sources[0]
+        if isinstance(ledger_sources, list) and len(ledger_sources) == 1
+        else None
+    )
+    contributions = report.get("scope_totals")
+    deduplication = report.get("deduplication")
+    summary = report.get("summary")
+    root_descendant_models = report.get("root_vs_descendants_by_actual_model")
     root_models = (
         root_descendant_models.get("requested_root")
         if isinstance(root_descendant_models, dict)
@@ -817,10 +824,10 @@ def test_packaged_usage_report_covers_recorded_synthetic_spawn_tree(
         else None
     )
     own_contribution = (
-        contributions.get("own") if isinstance(contributions, dict) else None
+        contributions.get("requested_root") if isinstance(contributions, dict) else None
     )
     descendant_contribution = (
-        contributions.get("descendants_excluding_anchor")
+        contributions.get("all_descendants")
         if isinstance(contributions, dict)
         else None
     )
@@ -855,11 +862,12 @@ def test_packaged_usage_report_covers_recorded_synthetic_spawn_tree(
     report_checks = (
         completed.returncode == 0,
         report.get("status") == "complete",
-        report.get("recorder_completeness")
-        == "unknown; report covers recorded ledger rows only",
+        isinstance(source_coverage, dict)
+        and source_coverage.get("recorder_completeness")
+        == "unknown; reports cover recorded ledger rows only",
         report.get("scope") == {"kind": "subtree", "thread_id": root_id},
         isinstance(coverage, dict)
-        and coverage.get("participating_thread_count") == 2
+        and coverage.get("thread_count") == 2
         and coverage.get("descendant_thread_count") == 1
         and coverage.get("unresolved_thread_count") == 0,
         isinstance(summary, dict)
@@ -868,12 +876,17 @@ def test_packaged_usage_report_covers_recorded_synthetic_spawn_tree(
         and isinstance(token_subtotals, dict)
         and token_subtotals.get("total_tokens") == 20,
         isinstance(contributions, dict)
-        and contributions.get("anchor_thread_id") == root_id
         and isinstance(own_contribution, dict)
         and own_contribution.get("provider_call_count") == 3
         and isinstance(descendant_contribution, dict)
         and descendant_contribution.get("provider_call_count") == 1
-        and contributions.get("disjoint_call_counts_reconcile") is True,
+        and isinstance(summary, dict)
+        and own_contribution["provider_call_count"]
+        + descendant_contribution["provider_call_count"]
+        == summary.get("provider_call_count")
+        and isinstance(deduplication, dict)
+        and deduplication.get("deduplicated_provider_call_count")
+        == summary.get("provider_call_count"),
         model_usage(root_models) == {"synthetic-root-provider-model": (3, 15)},
         model_usage(descendant_models) == {"synthetic-child-provider-model": (1, 5)},
     )
