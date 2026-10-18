@@ -277,7 +277,14 @@ fn run_http_claim(
         expires_at,
     )?;
     let client = api_claim::api_http_client()?;
-    api_claim::send_claim(&client, &bearer.value, request_id, &proof, &body)?;
+    api_claim::send_claim(
+        &client,
+        &bearer.value,
+        request_id,
+        &certificate,
+        &proof,
+        &body,
+    )?;
     runtime_seed.zeroize();
     Ok(0)
 }

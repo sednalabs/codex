@@ -30,6 +30,7 @@ pub(crate) const API_BEARER_CREDENTIAL: &str = "ops-api-bearer";
 pub(crate) const API_BEARER_MAX_BYTES: usize = 16 * 1024;
 const MAX_TOKEN_CLAIMS_BYTES: usize = 8 * 1024;
 const MAX_REQUEST_BYTES: usize = 16 * 1024;
+const MAX_CLAIM_RESPONSE_BYTES: usize = 1024 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -241,10 +242,46 @@ pub(crate) fn send_claim(
     client: &HttpClient,
     bearer: &SecretString,
     request_id: Uuid,
+    certificate: &str,
     proof: &str,
     body: &Value,
 ) -> Result<()> {
-    send_claim_to(client, API_RECIPIENT, bearer, request_id, proof, body)
+    send_claim_to(
+        client,
+        API_RECIPIENT,
+        bearer,
+        request_id,
+        certificate,
+        proof,
+        body,
+    )
+}
+
+fn validate_claim_receipt(response_body: &[u8], expected_work_item_ref: &str) -> Result<()> {
+    let receipt: Value = serde_json::from_slice(response_body).map_err(|_| {
+        anyhow::anyhow!("fixed Ops API claim receipt is invalid; outcome unknown; do not replay")
+    })?;
+    let Some(receipt) = receipt.as_object() else {
+        bail!("fixed Ops API claim receipt is invalid; outcome unknown; do not replay");
+    };
+    if receipt.keys().any(|key| {
+        !matches!(
+            key.as_str(),
+            "outcome" | "work_item" | "blockers" | "queue_claim"
+        )
+    }) {
+        bail!("fixed Ops API claim receipt is invalid; outcome unknown; do not replay");
+    }
+    let outcome = receipt.get("outcome").and_then(Value::as_str);
+    let work_item_ref = receipt
+        .get("work_item")
+        .and_then(Value::as_object)
+        .and_then(|work_item| work_item.get("work_item_ref"))
+        .and_then(Value::as_str);
+    if outcome != Some("claimed") || work_item_ref != Some(expected_work_item_ref) {
+        bail!("fixed Ops API claim returned no matching claimed receipt; do not replay");
+    }
+    Ok(())
 }
 
 async fn send_claim_to_async(
@@ -252,13 +289,22 @@ async fn send_claim_to_async(
     recipient: &str,
     bearer: &SecretString,
     request_id: Uuid,
+    certificate: &str,
     proof: &str,
     body: &Value,
 ) -> Result<()> {
+    let expected_work_item_ref = body
+        .get("work_item_ref")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("fixed Ops API claim body has no work item reference"))?;
     let body = Zeroizing::new(serde_json::to_vec(body)?);
     if body.len() > MAX_REQUEST_BYTES {
         bail!("fixed Ops API claim body exceeds its size limit");
     }
+    let proof_envelope = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&wire::ProofEnvelope {
+        certificate,
+        proof,
+    })?);
     let mut authorization = Zeroizing::new(String::with_capacity(bearer.0.len() + 7));
     authorization.push_str("Bearer ");
     authorization.push_str(&bearer.0);
@@ -266,7 +312,7 @@ async fn send_claim_to_async(
         .post(format!("{recipient}{API_ROUTE}"))
         .header("authorization", authorization.as_str())
         .header("content-type", "application/json")
-        .header("x-ops-runtime-proof", proof)
+        .header("x-ops-runtime-proof", proof_envelope)
         .header("x-ops-request-id", request_id.to_string())
         .body(body.as_slice().to_vec())
         .timeout(REQUEST_TIMEOUT)
@@ -276,7 +322,30 @@ async fn send_claim_to_async(
     if request.status().as_u16() != 200 {
         bail!("fixed Ops API claim returned a non-success status; do not replay");
     }
-    Ok(())
+    if request
+        .content_length()
+        .is_some_and(|length| length > MAX_CLAIM_RESPONSE_BYTES as u64)
+    {
+        bail!("fixed Ops API claim receipt exceeds its size limit; outcome unknown; do not replay");
+    }
+    let mut request = request;
+    let mut receipt_body = Zeroizing::new(Vec::with_capacity(1024));
+    while let Some(chunk) = request.chunk().await.map_err(|_| {
+        anyhow::anyhow!("read fixed Ops API claim receipt; outcome unknown; do not replay")
+    })? {
+        let next_length = receipt_body.len().checked_add(chunk.len()).ok_or_else(|| {
+            anyhow::anyhow!(
+                "fixed Ops API claim receipt size overflowed; outcome unknown; do not replay"
+            )
+        })?;
+        if next_length > MAX_CLAIM_RESPONSE_BYTES {
+            bail!(
+                "fixed Ops API claim receipt exceeds its size limit; outcome unknown; do not replay"
+            );
+        }
+        receipt_body.extend_from_slice(&chunk);
+    }
+    validate_claim_receipt(&receipt_body, expected_work_item_ref)
 }
 
 fn send_claim_to(
@@ -284,6 +353,7 @@ fn send_claim_to(
     recipient: &str,
     bearer: &SecretString,
     request_id: Uuid,
+    certificate: &str,
     proof: &str,
     body: &Value,
 ) -> Result<()> {
@@ -292,7 +362,13 @@ fn send_claim_to(
         .build()
         .map_err(|_| anyhow::anyhow!("build fixed Ops API runtime"))?;
     runtime.block_on(send_claim_to_async(
-        client, recipient, bearer, request_id, proof, body,
+        client,
+        recipient,
+        bearer,
+        request_id,
+        certificate,
+        proof,
+        body,
     ))
 }
 
