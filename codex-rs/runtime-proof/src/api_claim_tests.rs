@@ -10,7 +10,13 @@ use std::thread;
 use std::time::Instant;
 
 fn test_body(request_id: Uuid) -> Value {
-    build_claim_body("w12345", 7, "2026-10-04T05:00:00Z", request_id).expect("fixed API claim body")
+    build_claim_body(
+        "w12345",
+        /*expected_generation*/ 7,
+        "2026-10-04T05:00:00Z",
+        request_id,
+    )
+    .expect("fixed API claim body")
 }
 
 fn jwt(payload: Value) -> String {
@@ -126,8 +132,8 @@ fn api_precondition_and_proof_bind_the_exact_final_body_without_mcp_fields() {
         runtime_incarnation,
         execution_nonce,
         &body,
-        100,
-        140,
+        /*now*/ 100,
+        /*certificate_expires_at*/ 140,
     )
     .expect("sign exact final API body");
     let envelope = URL_SAFE_NO_PAD.encode(
@@ -211,9 +217,25 @@ fn api_precondition_and_proof_bind_the_exact_final_body_without_mcp_fields() {
 #[test]
 fn api_body_rejects_invalid_fixed_preconditions_before_network_access() {
     let request_id = Uuid::new_v4();
-    assert!(build_claim_body("w012", 1, "2026-10-04T05:00:00Z", request_id).is_err());
+    assert!(
+        build_claim_body(
+            "w012",
+            /*expected_generation*/ 1,
+            "2026-10-04T05:00:00Z",
+            request_id
+        )
+        .is_err()
+    );
     assert!(build_claim_body("w1", u64::MAX, "2026-10-04T05:00:00Z", request_id).is_err());
-    assert!(build_claim_body("w1", 1, "not-a-timestamp", request_id).is_err());
+    assert!(
+        build_claim_body(
+            "w1",
+            /*expected_generation*/ 1,
+            "not-a-timestamp",
+            request_id
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -274,8 +296,8 @@ fn uncertain_api_post_is_not_replayed_and_diagnostics_do_not_expose_bearer() {
         runtime_incarnation,
         Uuid::from_u128(3),
         &body,
-        100,
-        140,
+        /*now*/ 100,
+        /*certificate_expires_at*/ 140,
     )
     .expect("sign actual final API body");
     let result = send_claim_to(
@@ -389,8 +411,8 @@ fn api_200_claim_response_requires_the_matching_claimed_target() {
         runtime_incarnation,
         Uuid::from_u128(3),
         &body,
-        100,
-        140,
+        /*now*/ 100,
+        /*certificate_expires_at*/ 140,
     )
     .expect("sign final API body");
     send_claim_to(
