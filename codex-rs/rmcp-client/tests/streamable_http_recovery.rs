@@ -375,6 +375,35 @@ async fn streamable_http_tools_list_honors_retry_after_and_restores_catalogue() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn streamable_http_retry_after_does_not_extend_operation_deadline() -> anyhow::Result<()> {
+    let (_server, base_url) = spawn_streamable_http_server().await?;
+    let client = create_client(&base_url).await?;
+    let timeout = Some(Duration::from_secs(5));
+    let expected = client.list_tools(/*params*/ None, timeout).await?;
+
+    arm_session_post_failure_with_retry_after(
+        &base_url,
+        /*status*/ 503,
+        /*remaining*/ 1,
+        /*www_authenticate_headers*/ &[],
+        Some("60"),
+    )
+    .await?;
+
+    let error = client
+        .list_tools(
+            /*params*/ None,
+            /*timeout*/ Some(Duration::from_millis(50)),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("timed out"));
+    assert_eq!(client.list_tools(/*params*/ None, timeout).await?, expected);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn streamable_http_tool_call_does_not_retry_rate_limit_response() -> anyhow::Result<()> {
     let (_server, base_url) = spawn_streamable_http_server().await?;
     let client = create_client(&base_url).await?;

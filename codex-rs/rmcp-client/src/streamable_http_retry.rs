@@ -16,6 +16,7 @@ use crate::elicitation_client_service::ElicitationClientService;
 use crate::http_client_adapter::StreamableHttpClientAdapterError;
 use crate::oauth::OAuthRuntime;
 
+use super::ClientOperationError;
 use super::InitializeContext;
 use super::PendingTransport;
 use super::RmcpClient;
@@ -84,7 +85,10 @@ impl RmcpClient {
                     let Some(retry_delay_ms) = retry_delay_ms else {
                         return Err(error);
                     };
-                    let delay = Duration::from_millis(retry_delay_ms);
+                    let delay = Self::retry_delay_for_initialize_error(
+                        &error,
+                        Duration::from_millis(retry_delay_ms),
+                    );
                     warn!(
                         attempt = attempt + 1,
                         max_attempts = STREAMABLE_HTTP_RETRY_DELAYS_MS.len() + 1,
@@ -152,6 +156,10 @@ impl RmcpClient {
         error: &StreamableHttpError<StreamableHttpClientAdapterError>,
     ) -> bool {
         match error {
+            StreamableHttpError::Client(StreamableHttpClientAdapterError::HttpStatus {
+                status,
+                ..
+            }) => StatusCode::from_u16(*status).is_ok_and(is_retryable_http_status),
             StreamableHttpError::Client(StreamableHttpClientAdapterError::HttpRequest(
                 ExecServerError::HttpRequest(_),
             )) => true,
@@ -177,6 +185,65 @@ impl RmcpClient {
             _ => false,
         }
     }
+
+    pub(super) fn retry_delay(error: &ClientOperationError, fallback: Duration) -> Duration {
+        let ClientOperationError::Service(rmcp::service::ServiceError::TransportSend(error)) =
+            error
+        else {
+            return fallback;
+        };
+        error
+            .error
+            .downcast_ref::<StreamableHttpError<StreamableHttpClientAdapterError>>()
+            .and_then(retry_after_delay)
+            .unwrap_or(fallback)
+    }
+
+    fn retry_delay_for_initialize_error(error: &anyhow::Error, fallback: Duration) -> Duration {
+        for source in error.chain() {
+            let initialize_error = source
+                .downcast_ref::<HandshakeError>()
+                .map(|error| &error.source)
+                .or_else(|| source.downcast_ref::<rmcp::service::ClientInitializeError>());
+            if let Some(initialize_error) = initialize_error {
+                return Self::initialize_retry_after_delay(initialize_error).unwrap_or(fallback);
+            }
+        }
+        fallback
+    }
+
+    fn initialize_retry_after_delay(
+        error: &rmcp::service::ClientInitializeError,
+    ) -> Option<Duration> {
+        match error {
+            rmcp::service::ClientInitializeError::LegacyFallbackFailed { fallback, .. } => {
+                Self::initialize_retry_after_delay(fallback)
+            }
+            rmcp::service::ClientInitializeError::TransportError { error, .. } => error
+                .error
+                .downcast_ref::<StreamableHttpError<StreamableHttpClientAdapterError>>()
+                .and_then(retry_after_delay),
+            _ => None,
+        }
+    }
+}
+
+fn retry_after_delay(
+    error: &StreamableHttpError<StreamableHttpClientAdapterError>,
+) -> Option<Duration> {
+    let StreamableHttpError::Client(StreamableHttpClientAdapterError::HttpStatus {
+        status,
+        retry_after,
+        ..
+    }) = error
+    else {
+        return None;
+    };
+    matches!(
+        StatusCode::from_u16(*status).ok(),
+        Some(StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE)
+    )
+    .then(|| retry_after.remaining_delay())
 }
 
 fn is_retryable_unexpected_server_response(message: &str) -> bool {

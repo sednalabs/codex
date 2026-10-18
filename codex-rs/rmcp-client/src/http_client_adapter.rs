@@ -23,6 +23,7 @@ use codex_exec_server::HttpHeader;
 use codex_exec_server::HttpRedirectPolicy;
 use codex_exec_server::HttpRequestParams;
 use codex_exec_server::HttpResponseBodyStream;
+use codex_http_client::RetryAfter;
 use futures::StreamExt;
 use futures::stream;
 use futures::stream::BoxStream;
@@ -33,6 +34,7 @@ use http::StatusCode;
 use http::header::ACCEPT;
 use http::header::AUTHORIZATION;
 use http::header::CONTENT_TYPE;
+use http::header::RETRY_AFTER;
 use http::header::WWW_AUTHENTICATE;
 use rmcp::model::ClientJsonRpcMessage;
 use rmcp::model::ClientNotification;
@@ -111,6 +113,12 @@ pub(crate) enum StreamableHttpClientAdapterError {
     Header(String),
     #[error("MCP response body exceeds {maximum_bytes} bytes")]
     ResponseTooLarge { maximum_bytes: usize },
+    #[error("HTTP {status}: {body}")]
+    HttpStatus {
+        status: u16,
+        body: String,
+        retry_after: RetryAfter,
+    },
 }
 
 impl StreamableHttpClientAdapter {
@@ -316,6 +324,14 @@ impl StreamableHttpClient for StreamableHttpClientAdapter {
         let content_type = response_header(&response.headers, CONTENT_TYPE);
         let session_id = response_header(&response.headers, HEADER_SESSION_ID);
         if !status_is_success(response.status) {
+            let retry_after = match StatusCode::from_u16(response.status).ok() {
+                Some(StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE) => {
+                    response_header(&response.headers, RETRY_AFTER)
+                        .as_deref()
+                        .and_then(RetryAfter::from_header)
+                }
+                _ => None,
+            };
             let body = collect_body(&mut body_stream, maximum_response_bytes).await?;
             if !retryable_post_response_status(mcp_method.as_deref(), response.status)
                 && (content_type
@@ -355,6 +371,15 @@ impl StreamableHttpClient for StreamableHttpClientAdapter {
                     Some(request.id.clone()),
                 );
                 return Ok(StreamableHttpPostResponse::Json(legacy_error, session_id));
+            }
+            if let Some(retry_after) = retry_after {
+                return Err(StreamableHttpError::Client(
+                    StreamableHttpClientAdapterError::HttpStatus {
+                        status: response.status,
+                        body: body_preview(String::from_utf8_lossy(&body).to_string()),
+                        retry_after,
+                    },
+                ));
             }
             return Err(StreamableHttpError::UnexpectedServerResponse(
                 format!(
