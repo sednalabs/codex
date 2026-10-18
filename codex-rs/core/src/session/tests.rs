@@ -7230,13 +7230,20 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
             session_source,
             agent_control,
             codex_home.path(),
-            /*enable_usage_state*/ false,
             /*parent_thread_id*/ None,
             /*shared_thread_store*/ None,
-            /*enable_multi_agent_v2*/ false,
+            SessionTestFeatures {
+                enable_usage_state: false,
+                enable_multi_agent_v2: false,
+            },
         )
         .await?;
     Ok((session, rx_event))
+}
+
+struct SessionTestFeatures {
+    enable_usage_state: bool,
+    enable_multi_agent_v2: bool,
 }
 
 async fn make_session_with_usage_state_and_agent_control_and_rx(
@@ -7244,18 +7251,17 @@ async fn make_session_with_usage_state_and_agent_control_and_rx(
     session_source: SessionSource,
     agent_control: LocalAgentControl,
     codex_home: &Path,
-    enable_usage_state: bool,
     parent_thread_id: Option<ThreadId>,
     shared_thread_store: Option<Arc<dyn codex_thread_store::ThreadStore>>,
-    enable_multi_agent_v2: bool,
+    features: SessionTestFeatures,
 ) -> anyhow::Result<(
     Arc<Session>,
     async_channel::Receiver<Event>,
     Arc<dyn codex_thread_store::ThreadStore>,
 )> {
     let mut config = build_test_config(codex_home).await;
-    config.ephemeral = !enable_usage_state;
-    if enable_multi_agent_v2 {
+    config.ephemeral = !features.enable_usage_state;
+    if features.enable_multi_agent_v2 {
         let _ = config.features.enable(Feature::MultiAgentV2);
     }
     let config = Arc::new(config);
@@ -7403,10 +7409,12 @@ async fn completed_response_usage_joins_real_session_lineage_and_survives_writer
         SessionSource::Exec,
         LocalAgentControl::default(),
         codex_home.path(),
-        /*enable_usage_state*/ true,
         /*parent_thread_id*/ None,
         /*shared_thread_store*/ None,
-        /*enable_multi_agent_v2*/ false,
+        SessionTestFeatures {
+            enable_usage_state: true,
+            enable_multi_agent_v2: false,
+        },
     )
     .await
     .expect("create persistent root session");
@@ -7423,10 +7431,12 @@ async fn completed_response_usage_joins_real_session_lineage_and_survives_writer
             child_source,
             LocalAgentControl::default(),
             codex_home.path(),
-            /*enable_usage_state*/ true,
             /*parent_thread_id*/ Some(root.thread_id()),
             /*shared_thread_store*/ Some(thread_store),
-            /*enable_multi_agent_v2*/ false,
+            SessionTestFeatures {
+                enable_usage_state: true,
+                enable_multi_agent_v2: false,
+            },
         )
         .await
         .expect("create child session on shared state store");

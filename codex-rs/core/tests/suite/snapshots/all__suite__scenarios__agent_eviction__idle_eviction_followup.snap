@@ -7,12 +7,12 @@ Scenario: A parent delegates an API migration, queues a note while the worker is
 
 ## Window 1
 -- request 1 (turn) --
-00:additional_tools/developer (2; hash=122dc70cb8c7e8f0):
+00:additional_tools/developer (2; hash=4986aa4f48fe8e93):
         - namespace/functions; hash=f859506569b16c70
           - custom/exec
           - function/wait
           - function/request_user_input
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=2c8d6295978dbe63
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=378b13f23460236a
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents
@@ -66,12 +66,12 @@ Scenario: A parent delegates an API migration, queues a note while the worker is
 
 ## Window 2 (after request 6: input diverged at item 03)
 -- request 7 (turn) --
-00:additional_tools/developer (2; hash=122dc70cb8c7e8f0):
+00:additional_tools/developer (2; hash=4986aa4f48fe8e93):
         - namespace/functions; hash=f859506569b16c70
           - custom/exec
           - function/wait
           - function/request_user_input
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=2c8d6295978dbe63
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=378b13f23460236a
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents
