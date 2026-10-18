@@ -143,15 +143,7 @@ pub(crate) fn build_claim_body(
     expected_updated_at: &str,
     request_id: Uuid,
 ) -> Result<Value> {
-    if !is_canonical_work_item_ref(work_item_ref)
-        || expected_generation > ((1_u64 << 53) - 1)
-        || expected_updated_at.is_empty()
-        || expected_updated_at.len() > 64
-        || expected_updated_at.chars().any(char::is_control)
-        || chrono::DateTime::parse_from_rfc3339(expected_updated_at).is_err()
-    {
-        bail!("fixed Ops API claim precondition is invalid");
-    }
+    validate_precondition(work_item_ref, expected_generation, expected_updated_at)?;
     Ok(serde_json::json!({
         "work_item_ref": work_item_ref,
         "claim_precondition": {
@@ -162,7 +154,24 @@ pub(crate) fn build_claim_body(
     }))
 }
 
-pub(crate) fn is_canonical_work_item_ref(value: &str) -> bool {
+pub(crate) fn validate_precondition(
+    work_item_ref: &str,
+    expected_generation: u64,
+    expected_updated_at: &str,
+) -> Result<()> {
+    if !is_canonical_work_item_ref(work_item_ref)
+        || expected_generation > ((1_u64 << 53) - 1)
+        || expected_updated_at.is_empty()
+        || expected_updated_at.len() > 64
+        || expected_updated_at.chars().any(char::is_control)
+        || chrono::DateTime::parse_from_rfc3339(expected_updated_at).is_err()
+    {
+        bail!("fixed Ops API claim precondition is invalid");
+    }
+    Ok(())
+}
+
+fn is_canonical_work_item_ref(value: &str) -> bool {
     let digits = value.strip_prefix('w').unwrap_or_default();
     !digits.is_empty()
         && digits.len() <= 16

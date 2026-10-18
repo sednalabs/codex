@@ -372,15 +372,14 @@ fn validate_policy(policy: &LauncherPolicy) -> Result<()> {
         }
         LauncherTarget::Http(target) => {
             validate_sha256(&target.launcher_sha256)?;
-            if !api_claim::is_canonical_work_item_ref(&policy.work_item_ref)
-                || target.expected_generation > ((1_u64 << 53) - 1)
-                || target.expected_updated_at.is_empty()
-                || target.expected_updated_at.len() > 64
-                || target.expected_updated_at.chars().any(char::is_control)
-                || chrono::DateTime::parse_from_rfc3339(&target.expected_updated_at).is_err()
-            {
-                bail!("fixed API claim precondition is outside the admitted contract");
-            }
+            api_claim::validate_precondition(
+                &policy.work_item_ref,
+                target.expected_generation,
+                &target.expected_updated_at,
+            )
+            .map_err(|_| {
+                anyhow::anyhow!("fixed API claim precondition is outside the admitted contract")
+            })?;
         }
     }
     if policy.issuer_kid.is_empty()
