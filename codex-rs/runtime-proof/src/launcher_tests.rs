@@ -10,27 +10,29 @@ use std::time::Instant;
 fn fixed_policy(seed: &[u8; RUNTIME_SEED_BYTES]) -> LauncherPolicy {
     let issuer = SigningKey::from_bytes(seed);
     LauncherPolicy {
-        version: 1,
-        codex_dev_path: PathBuf::from("/"),
-        codex_dev_sha256: "a".repeat(64),
-        runtime_uid: 65534,
-        runtime_gid: 65534,
-        working_directory: PathBuf::from("/"),
+        version: 2,
         principal: Uuid::from_u128(1),
         project_id: 17,
         work_item_ref: "w12345".to_string(),
-        mcp_recipient: "https://mcp.example/".to_string(),
-        mcp_oauth: crate::mcp_oauth::McpOAuthPolicy {
-            token_endpoint: "https://issuer.example/oauth/token".to_string(),
-            expected_issuer: "https://issuer.example/".to_string(),
-            client_id: "codex-work-claim".to_string(),
-            audience: "https://mcp.example/".to_string(),
-            requested_scope: "ops:write".to_string(),
-        },
         issuer_kid: "issuer-v1".to_string(),
         issuer_public_key: URL_SAFE_NO_PAD.encode(issuer.verifying_key().as_bytes()),
         execution_lease_seconds: 60,
-        task_prompt: "Claim the fixed Work item after checking its current state.".to_string(),
+        target: LauncherTarget::Mcp(McpLaunchConfig {
+            codex_dev_path: PathBuf::from("/"),
+            codex_dev_sha256: "a".repeat(64),
+            runtime_uid: 65534,
+            runtime_gid: 65534,
+            working_directory: PathBuf::from("/"),
+            mcp_recipient: "https://mcp.example/".to_string(),
+            mcp_oauth: crate::mcp_oauth::McpOAuthPolicy {
+                token_endpoint: "https://issuer.example/oauth/token".to_string(),
+                expected_issuer: "https://issuer.example/".to_string(),
+                client_id: "codex-work-claim".to_string(),
+                audience: "https://mcp.example/".to_string(),
+                requested_scope: "ops:write".to_string(),
+            },
+            task_prompt: "Claim the fixed Work item after checking its current state.".to_string(),
+        }),
     }
 }
 
@@ -46,9 +48,9 @@ fn fixed_claims() -> wire::CertificateClaims {
         execution_lease_seconds: 60,
         work_item_ref: "w12345".to_string(),
         recipient: "https://mcp.example/".to_string(),
-        mcp_server: MCP_SERVER.to_string(),
+        mcp_server: Some(MCP_SERVER.to_string()),
         method: "tools/call".to_string(),
-        tool: MCP_TOOL.to_string(),
+        tool: Some(MCP_TOOL.to_string()),
         purpose: "work-claim".to_string(),
         iat: 1_800_000_000,
         exp: 1_800_000_060,
@@ -224,8 +226,11 @@ fn runtime_home_layout_preserves_child_write_and_protected_config_boundaries() {
     };
     let seed = [7_u8; RUNTIME_SEED_BYTES];
     let mut policy = fixed_policy(&seed);
-    policy.runtime_uid = runtime_uid;
-    policy.runtime_gid = runtime_gid;
+    let LauncherTarget::Mcp(target) = &mut policy.target else {
+        panic!("fixture selects the fixed MCP launcher target");
+    };
+    target.runtime_uid = runtime_uid;
+    target.runtime_gid = runtime_gid;
 
     let base = std::env::temp_dir().join(format!(
         "codex-runtime-proof-layout-{}-{}",
@@ -238,7 +243,7 @@ fn runtime_home_layout_preserves_child_write_and_protected_config_boundaries() {
     let run_path = base.join("run");
     fs::create_dir(&run_path).expect("create run directory before applying service modes");
 
-    let run = prepare_run_directory(&run_path, &policy, PathBuf::from("/"), launcher_uid)
+    let run = prepare_run_directory(&run_path, target, PathBuf::from("/"), launcher_uid)
         .expect("prepare the same home layout used by the systemd service");
 
     assert_owned_mode(&run_path, launcher_uid, runtime_gid, /*mode*/ 0o710);
@@ -295,8 +300,8 @@ fn runtime_home_layout_preserves_child_write_and_protected_config_boundaries() {
         )
         .env("CODEX_RUNTIME_PROOF_LAYOUT_RUNTIME_TMP", run.child_home.join("tmp"));
     if launcher_uid == 0 {
-        let runtime_uid = policy.runtime_uid;
-        let runtime_gid = policy.runtime_gid;
+        let runtime_uid = target.runtime_uid;
+        let runtime_gid = target.runtime_gid;
         unsafe {
             child.pre_exec(move || {
                 if libc::setgroups(0, std::ptr::null()) != 0
@@ -420,4 +425,42 @@ fn launcher_policy_rejects_unsafe_project_ids_and_noncanonical_issuer_pins() {
     policy.project_id = 17;
     policy.issuer_public_key.push('=');
     assert!(validate_policy(&policy).is_err());
+}
+
+#[test]
+fn fixed_http_policy_accepts_only_the_canonical_work_and_api_precondition() {
+    let seed = [23_u8; RUNTIME_SEED_BYTES];
+    let issuer = SigningKey::from_bytes(&seed);
+    let policy_value = serde_json::json!({
+        "version": 2,
+        "principal": Uuid::from_u128(1),
+        "project_id": 17,
+        "work_item_ref": "w12345",
+        "issuer_kid": "issuer-v1",
+        "issuer_public_key": URL_SAFE_NO_PAD.encode(issuer.verifying_key().as_bytes()),
+        "execution_lease_seconds": 60,
+        "target": {
+            "transport": "http",
+            "config": {
+                "launcher_sha256": "a".repeat(64),
+                "expected_generation": 7,
+                "expected_updated_at": "2026-10-04T05:00:00Z"
+            }
+        }
+    });
+    let mut policy: LauncherPolicy =
+        serde_json::from_value(policy_value.clone()).expect("parse the closed API launcher policy");
+    validate_policy(&policy).expect("the closed fixed API policy is valid");
+
+    policy.work_item_ref = "example-work-item".to_string();
+    assert!(validate_policy(&policy).is_err());
+
+    for field in ["recipient", "mcp_server", "tool"] {
+        let mut value = policy_value.clone();
+        value["target"]["config"][field] = serde_json::json!("caller-selected");
+        assert!(
+            serde_json::from_value::<LauncherPolicy>(value).is_err(),
+            "fixed API policy must reject caller-selected {field}"
+        );
+    }
 }

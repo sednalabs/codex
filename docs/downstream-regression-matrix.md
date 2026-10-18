@@ -1176,6 +1176,17 @@ installation, issuer appointment, or first use. Its runtime-home regression
 checks that the child can write its private state and read its installation ID
 without changing generated configuration or adding CODEX_HOME settings.
 
+The same root-owned launcher policy has a separate fixed HTTP target for
+`POST /v0/work-items/claim`. Its certificate binds the measured launcher ELF,
+`agent-ops-api-claim-client`, the canonical API recipient, and the exact final
+body, precondition, and request ID. The request uses a separately provisioned
+API bearer from the fixed `ops-api-bearer` system credential; it never reuses
+the MCP token or secret. The client sends one bounded direct request with
+retries, redirects, and request logging disabled, and preserves an uncertain
+outcome without replay. The API server authenticates the bearer and verifies
+the proof; local JWT comparisons only check policy consistency. Source and
+hosted package proof do not appoint the bearer or establish HTTP first use.
+
 The protected CLI fixture additionally consumes the exact delegated process's
 non-timeout wait result before root finalization: the positive case requires
 completion, and the provider-override case requires the expected provider-pin
