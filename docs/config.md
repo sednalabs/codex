@@ -46,6 +46,11 @@ wording. Legacy generic developer/base tags are not promoted. A stored baseline
 with unknown or `Custom` provenance is not evidence of client ownership; an
 explicit current client-owned baseline can still be selected. The fixed review
 rubric and known model-selected baselines remain eligible.
+The same winning-origin requirement applies to configured V2 mode hints, root
+and subagent usage hints, and subagent developer-guidance substitution. A child
+inherits known parent eligibility with the value, not a stale Boolean from a
+different value. Old mode/role/usage tags without positive classification remain
+non-targetable; their text is not retroactively relabeled.
 
 Append/prepend add text to an **existing** selected component; neither `replace`
 nor `on_absent` creates a missing component. To create ordinary client developer

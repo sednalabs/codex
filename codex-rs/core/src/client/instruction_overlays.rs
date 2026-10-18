@@ -360,9 +360,9 @@ fn target_kind(component: InstructionOverlayComponent) -> &'static str {
         InstructionOverlayComponent::DeveloperGuidance => "client.developer_instructions",
         InstructionOverlayComponent::ModelBaseline => "client.base_instructions",
         InstructionOverlayComponent::ReviewBaseline => "client.base_instructions",
-        InstructionOverlayComponent::MultiAgentMode => "multi_agent.mode_instructions",
-        InstructionOverlayComponent::MultiAgentRole => "multi_agent.role_instructions",
-        InstructionOverlayComponent::MultiAgentUsageHint => "multi_agent.usage_hint",
+        InstructionOverlayComponent::MultiAgentMode => "client.multi_agent.mode_instructions",
+        InstructionOverlayComponent::MultiAgentRole => "client.multi_agent.role_instructions",
+        InstructionOverlayComponent::MultiAgentUsageHint => "client.multi_agent.usage_hint",
         InstructionOverlayComponent::ModelSwitchGuidance => "model_switch.instructions",
         InstructionOverlayComponent::CollaborationGuidance => "collaboration_mode.instructions",
         InstructionOverlayComponent::PersistentGuidance => "persistent_mode.instructions",
@@ -482,10 +482,16 @@ mod tests {
         let mut plan = InstructionOverlaysToml {
             developer_guidance: Some(active("replacement")),
             model_baseline: Some(active("replacement")),
+            multi_agent_mode: Some(active("replacement")),
+            multi_agent_role: Some(active("replacement")),
+            multi_agent_usage_hint: Some(active("replacement")),
             ..Default::default()
         };
         plan.developer_guidance.as_mut().unwrap().on_absent = InstructionOverlayOnAbsent::Skip;
         plan.model_baseline.as_mut().unwrap().on_absent = InstructionOverlayOnAbsent::Skip;
+        plan.multi_agent_mode.as_mut().unwrap().on_absent = InstructionOverlayOnAbsent::Skip;
+        plan.multi_agent_role.as_mut().unwrap().on_absent = InstructionOverlayOnAbsent::Skip;
+        plan.multi_agent_usage_hint.as_mut().unwrap().on_absent = InstructionOverlayOnAbsent::Skip;
         let original = vec![
             developer_fragment("generic.developer_instructions", "ordinary unknown source"),
             developer_fragment(
@@ -493,6 +499,12 @@ mod tests {
                 "mandatory guidance",
             ),
             developer_fragment("model.base_instructions", "unknown historical baseline"),
+            developer_fragment(
+                "multi_agent.mode_instructions",
+                "<multi_agent_mode>unknown mode</multi_agent_mode>",
+            ),
+            developer_fragment("multi_agent.role_instructions", "unknown role source"),
+            developer_fragment("multi_agent.usage_hint", "unknown usage source"),
         ];
         let (baseline, input) = super::transform_request(
             &SessionSource::Cli,
@@ -1066,10 +1078,13 @@ mod tests {
         let mut input = (0..32)
             .map(|_| developer_fragment("client.developer_instructions", "dev"))
             .collect::<Vec<_>>();
-        input.extend((0..32).map(|_| developer_fragment("multi_agent.usage_hint", "usage")));
+        input.extend((0..32).map(|_| developer_fragment("client.multi_agent.usage_hint", "usage")));
         assert!(transform_request(&SessionSource::Cli, &plan, "base", &input).is_ok());
 
-        input.push(developer_fragment("multi_agent.usage_hint", "one too many"));
+        input.push(developer_fragment(
+            "client.multi_agent.usage_hint",
+            "one too many",
+        ));
         assert!(transform_request(&SessionSource::Cli, &plan, "base", &input).is_err());
     }
 
@@ -1220,7 +1235,7 @@ mod tests {
         };
         let original = format!("{MULTI_AGENT_MODE_OPEN_TAG}old mode{MULTI_AGENT_MODE_CLOSE_TAG}");
         let input = vec![developer_fragment(
-            "multi_agent.mode_instructions",
+            "client.multi_agent.mode_instructions",
             &original,
         )];
         let (_, output) = transform_request(&SessionSource::Cli, &plan, "base", &input)

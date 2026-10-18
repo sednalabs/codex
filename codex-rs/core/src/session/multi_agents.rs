@@ -11,6 +11,36 @@ use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 
+pub(super) fn mode_text_is_client_owned(step_context: &StepContext) -> bool {
+    let config = &step_context.turn.config;
+    config
+        .multi_agent_v2
+        .multi_agent_mode_hint_text
+        .as_deref()
+        .is_none_or(|text| {
+            config.multi_agent_text_is_client_owned("multi_agent_mode_hint_text", text)
+        })
+}
+
+pub(super) fn usage_text_is_client_owned(step_context: &StepContext) -> bool {
+    let config = &step_context.turn.config;
+    let (key, text) = if matches!(
+        step_context.turn.session_source,
+        SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
+    ) {
+        (
+            "subagent_usage_hint_text",
+            config.multi_agent_v2.subagent_usage_hint_text.as_deref(),
+        )
+    } else {
+        (
+            "root_agent_usage_hint_text",
+            config.multi_agent_v2.root_agent_usage_hint_text.as_deref(),
+        )
+    };
+    text.is_none_or(|text| config.multi_agent_text_is_client_owned(key, text))
+}
+
 pub(super) fn usage_hint_text(step_context: &StepContext) -> Option<MultiAgentRoleInstructions> {
     let turn_context = step_context.turn.as_ref();
     if turn_context.multi_agent_version != MultiAgentVersion::V2 {
@@ -117,5 +147,46 @@ pub(crate) fn effective_multi_agent_mode(step_context: &StepContext) -> Option<M
         | SessionSource::Custom(_)
         | SessionSource::Unknown => Some(multi_agent_mode),
         SessionSource::Internal(_) | SessionSource::SubAgent(_) => None,
+    }
+}
+
+#[cfg(test)]
+mod instruction_overlay_origin_tests {
+    use super::*;
+    use crate::session::tests::make_session_and_context;
+    use codex_config::ConfigLayerEntry;
+    use codex_config::ConfigLayerSource;
+    use codex_config::ConfigLayerStack;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn configured_mode_and_usage_hints_require_their_actual_winning_client_origin() {
+        for client_owned in [false, true] {
+            let (_session, mut turn) = make_session_and_context().await;
+            turn.session_source = SessionSource::Cli;
+            let config = Arc::make_mut(&mut turn.config);
+            config.multi_agent_v2.multi_agent_mode_hint_text = Some("mode guidance".into());
+            config.multi_agent_v2.root_agent_usage_hint_text = Some("root guidance".into());
+            let source = if client_owned {
+                ConfigLayerSource::SessionFlags
+            } else {
+                ConfigLayerSource::LegacyManagedConfigTomlFromFile {
+                    file: config.codex_home.join("managed.toml"),
+                }
+            };
+            config.config_layer_stack = ConfigLayerStack::new(vec![ConfigLayerEntry::new(
+                source,
+                toml::from_str("[features.multi_agent_v2]\nmulti_agent_mode_hint_text = 'mode guidance'\nroot_agent_usage_hint_text = 'root guidance'").unwrap(),
+            )], Default::default(), Default::default()).unwrap();
+            let step = StepContext::for_test(Arc::new(turn));
+            assert_eq!(mode_text_is_client_owned(&step), client_owned);
+            assert_eq!(usage_text_is_client_owned(&step), client_owned);
+        }
+        let (_session, mut turn) = make_session_and_context().await;
+        Arc::make_mut(&mut turn.config)
+            .multi_agent_v2
+            .multi_agent_mode_hint_text = Some("unclassified override".into());
+        let step = StepContext::for_test(Arc::new(turn));
+        assert!(!mode_text_is_client_owned(&step));
     }
 }

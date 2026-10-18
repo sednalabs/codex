@@ -8,6 +8,7 @@ use codex_protocol::protocol::MULTI_AGENT_MODE_OPEN_TAG;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MultiAgentModeInstructions {
     multi_agent_mode: MultiAgentMode,
+    client_owned: bool,
 }
 
 impl MultiAgentModeInstructions {
@@ -19,13 +20,28 @@ impl MultiAgentModeInstructions {
             return None;
         }
 
-        Some(Self { multi_agent_mode })
+        Some(Self {
+            multi_agent_mode,
+            client_owned: false,
+        })
+    }
+
+    pub(crate) fn with_client_ownership(mut self, client_owned: bool) -> Self {
+        self.client_owned = client_owned;
+        self
     }
 }
 
 impl ContextualUserFragment for MultiAgentModeInstructions {
     fn content_kind(&self) -> ContentItemKind {
-        ContentItemKind("multi_agent.mode_instructions".to_string())
+        ContentItemKind(
+            if self.client_owned {
+                "client.multi_agent.mode_instructions"
+            } else {
+                "multi_agent.mode_instructions"
+            }
+            .to_string(),
+        )
     }
 
     fn role(&self) -> &'static str {

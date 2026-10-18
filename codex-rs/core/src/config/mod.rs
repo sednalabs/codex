@@ -1610,7 +1610,7 @@ async fn config_toml_from_layers(layers: &ConfigLayerStack) -> std::io::Result<C
 impl Config {
     pub(crate) fn instruction_origin_is_client_owned(stack: &ConfigLayerStack, key: &str) -> bool {
         stack
-            .origins_with_path_filter(|path| path.len() == 1 && path[0] == key)
+            .origins_with_path_filter(|path| path.iter().map(String::as_str).eq(key.split('.')))
             .get(key)
             .is_some_and(|origin| {
                 matches!(
@@ -1620,6 +1620,26 @@ impl Config {
                         | ConfigLayerSource::Project { .. }
                         | ConfigLayerSource::SessionFlags
                 )
+            })
+    }
+
+    pub(crate) fn multi_agent_text_is_client_owned(&self, key: &str, text: &str) -> bool {
+        let path = format!("features.multi_agent_v2.{key}");
+        if !Self::instruction_origin_is_client_owned(&self.config_layer_stack, &path) {
+            return false;
+        }
+        let effective = self.config_layer_stack.effective_config();
+        effective
+            .get("features")
+            .and_then(|features| features.get("multi_agent_v2"))
+            .and_then(|config| config.get(key))
+            .and_then(TomlValue::as_str)
+            .is_some_and(|value| {
+                if key == "subagent_developer_instructions" {
+                    value.trim() == text
+                } else {
+                    value == text
+                }
             })
     }
 

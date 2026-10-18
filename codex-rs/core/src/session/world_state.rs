@@ -360,9 +360,12 @@ impl Session {
         }
         let mut multi_agent_mode = MultiAgentModeState::new(
             super::multi_agents::effective_multi_agent_mode(step_context),
-        );
+        )
+        .with_client_ownership(super::multi_agents::mode_text_is_client_owned(step_context));
         if let Some(usage_hint_text) = super::multi_agents::usage_hint_text(step_context) {
-            let usage_hint = MultiAgentUsageHintState::new(usage_hint_text);
+            let usage_hint = MultiAgentUsageHintState::new(usage_hint_text).with_client_ownership(
+                super::multi_agents::usage_text_is_client_owned(step_context),
+            );
             multi_agent_mode = multi_agent_mode.with_usage_hint(&usage_hint);
             world_state.add_section(usage_hint);
         }
