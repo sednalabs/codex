@@ -691,7 +691,20 @@ async fn run_goal_scheduler_wait(
                 .context("selected child progress continuation has no text result")?;
             assert!(
                 progress_output.is_empty(),
-                "selected child progress send returned non-success output"
+                "selected child progress send returned non-success output; \
+                 original_result_total_chars={}; redacted_result_excerpt={:?}",
+                progress_output.chars().count(),
+                progress_output
+                    .replace(&parent_id.to_string(), "<fixture-root>")
+                    .replace(&child_id.to_string(), "<fixture-child>")
+                    .replace(test.cwd_path().to_string_lossy().as_ref(), "<fixture-cwd>")
+                    .replace(
+                        test.codex_home_path().to_string_lossy().as_ref(),
+                        "<fixture-home>"
+                    )
+                    .chars()
+                    .take(256)
+                    .collect::<String>()
             );
         }
         let marker = timeout(Duration::from_secs(10), marker_rx.recv())
