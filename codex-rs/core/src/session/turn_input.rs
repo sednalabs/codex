@@ -237,12 +237,6 @@ impl PreparedTurnInputSettings {
     }
 }
 
-#[tracing::instrument(
-    name = "codex.turn_input",
-    level = "trace",
-    skip_all,
-    fields(conversation.id = %session.thread_id, turn.id)
-)]
 pub(super) async fn handle(
     session: &Arc<Session>,
     request: impl Into<WithTurnExtensionData<TurnInputRequest>>,
@@ -259,6 +253,12 @@ pub(super) async fn handle(
     .await
 }
 
+#[tracing::instrument(
+    name = "codex.turn_input",
+    level = "trace",
+    skip_all,
+    fields(conversation.id = %session.thread_id, turn.id)
+)]
 pub(super) async fn handle_with_automatic_turn_context(
     session: &Arc<Session>,
     request: impl Into<WithTurnExtensionData<TurnInputRequest>>,
