@@ -13,7 +13,6 @@ use std::collections::HashSet;
 use std::fs::File;
 use std::path::PathBuf;
 
-use codex_protocol::AgentPath;
 use codex_protocol::ResponseItemId;
 use codex_protocol::ThreadId;
 use codex_protocol::models::ResponseItem;
