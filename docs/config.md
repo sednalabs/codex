@@ -77,6 +77,10 @@ with existing measured usage, not added to it, avoiding repeated charging of
 history already measured by the provider. It is not a tokenizer-accurate upper
 bound; provider context limits still apply. Exceeding the local budget rejects
 the request without sending or rewriting stored history.
+Direct eligible client consumers, including local compaction, also check the
+transformed view against the full model window at request construction. They
+retain their existing recovery/trimming policy rather than being charged the
+session's old measured usage during a compaction attempt.
 
 For example:
 

@@ -1172,6 +1172,77 @@ fn overlay_estimate_charges_transformed_body_without_changing_raw_prompt() -> an
     Ok(())
 }
 
+#[test]
+fn outgoing_overlay_window_guard_covers_direct_client_consumers() -> anyhow::Result<()> {
+    let client =
+        test_model_client(SessionSource::Cli).with_instruction_overlays(InstructionOverlaysToml {
+            model_baseline: Some(InstructionOverlayComponentToml {
+                edits: vec![
+                    InstructionOverlayEdit::Append {
+                        text: "x".repeat(32 * 1024)
+                    };
+                    4
+                ],
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+    let prompt = Prompt {
+        base_instructions: codex_protocol::models::BaseInstructions {
+            text: "baseline".into(),
+            provenance: Some(codex_protocol::models::BaseInstructionsProvenance::Model {
+                model: "fixture".into(),
+            }),
+        },
+        ..Default::default()
+    };
+    let metadata = test_responses_metadata_for_client(
+        &client,
+        /*turn_id*/ None,
+        format!("{}:0", client.state.thread_id),
+        /*parent_thread_id*/ None,
+        TestCodexResponsesRequestKind::Turn,
+    );
+    for use_lite in [false, true] {
+        let mut model = test_model_info();
+        model.use_responses_lite = use_lite;
+        model.context_window = Some(1_500);
+        model.effective_context_window_percent = 100;
+        let error = client
+            .build_responses_request(
+                &prompt,
+                &model,
+                /*effort*/ None,
+                codex_protocol::config_types::ReasoningSummary::None,
+                /*service_tier*/ None,
+                &metadata,
+                /*include_internal*/ true,
+            )
+            .expect_err("direct client must check expanded context before transport");
+        assert!(matches!(
+            error.details(),
+            CodexErrorDetails::ContextWindowExceeded
+        ));
+        model.context_window = Some(200_000);
+        assert!(
+            client
+                .build_responses_request(
+                    &prompt,
+                    &model,
+                    /*effort*/ None,
+                    codex_protocol::config_types::ReasoningSummary::None,
+                    /*service_tier*/ None,
+                    &metadata,
+                    /*include_internal*/ true,
+                )
+                .is_ok()
+        );
+        assert_eq!(prompt.base_instructions.text, "baseline");
+        assert!(prompt.input.is_empty());
+    }
+    Ok(())
+}
+
 fn output_with_tool_result_metadata(metadata: ToolResultMetadata) -> ResponseItem {
     let mut call = ExecutedToolCall::new("test_tool".to_string(), json!({ "query": "keep" }));
     call.set_tool_result_sources(ToolResultSources::new(vec![ToolResultSource {

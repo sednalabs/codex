@@ -1542,12 +1542,23 @@ impl ModelClient {
             return Ok(None);
         }
         let (baseline, input) = self.transformed_instruction_input(prompt, model_info)?;
+        self.estimate_transformed_instruction_input(prompt, model_info, &baseline, &input)
+            .map(Some)
+    }
+
+    fn estimate_transformed_instruction_input(
+        &self,
+        prompt: &Prompt,
+        model_info: &ModelInfo,
+        baseline: &str,
+        input: &[ResponseItem],
+    ) -> Result<i64> {
         let text_tokens = |text: &str| {
             i64::try_from(codex_utils_output_truncation::approx_token_count(text))
                 .unwrap_or(i64::MAX)
         };
-        let mut tokens = text_tokens(&baseline);
-        for item in &input {
+        let mut tokens = text_tokens(baseline);
+        for item in input {
             tokens = tokens.saturating_add(crate::context_manager::estimate_item_token_count(item));
         }
         let tools = if model_info.use_responses_lite {
@@ -1559,7 +1570,7 @@ impl ModelClient {
         if let Some(schema) = &prompt.output_schema {
             tokens = tokens.saturating_add(text_tokens(&serde_json::to_string(schema)?));
         }
-        Ok(Some(tokens))
+        Ok(tokens)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1575,6 +1586,24 @@ impl ModelClient {
     ) -> Result<ResponsesApiRequest> {
         let (base_instructions, mut input) =
             self.transformed_instruction_input(prompt, model_info)?;
+        // Local compaction also uses this client directly, outside sampling/prewarm session
+        // checks. Preserve its recovery/trimming policy: check only the full window here,
+        // using this actual request copy rather than stale measured session usage.
+        if instruction_overlays::has_active_plan(
+            &self.state.session_source,
+            self.instruction_overlays.as_ref(),
+        ) && let Some(limit) = model_info
+            .resolved_context_window()
+            .map(|window| window.saturating_mul(model_info.effective_context_window_percent) / 100)
+            && self.estimate_transformed_instruction_input(
+                prompt,
+                model_info,
+                &base_instructions,
+                &input,
+            )? >= limit
+        {
+            return Err(CodexErr::ContextWindowExceeded);
+        }
         let is_openai = self.state.provider.info().is_openai();
         // These prompt-only items are rebuilt on every request. Hash their visible payloads
         // within the thread so retries and resumed sessions preserve their identity.
