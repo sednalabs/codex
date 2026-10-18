@@ -878,7 +878,24 @@ def test_packaged_usage_report_covers_recorded_synthetic_spawn_tree(
         model_usage(descendant_models) == {"synthetic-child-provider-model": (1, 5)},
     )
     if not all(report_checks):
-        pytest.fail("Packaged root/child usage report did not reconcile", pytrace=False)
+        check_names = (
+            "return",
+            "status",
+            "completeness",
+            "scope",
+            "coverage",
+            "totals",
+            "contributions",
+            "root_models",
+            "child_models",
+        )
+        failed_checks = ", ".join(
+            name for name, passed in zip(check_names, report_checks) if not passed
+        )
+        pytest.fail(
+            "Packaged root/child usage report did not reconcile: " + failed_checks,
+            pytrace=False,
+        )
 
 
 @pytest.mark.skipif(
