@@ -676,6 +676,7 @@ async fn trusted_project_role_overlay_reaches_the_spawned_child_request() -> Res
     root_config.agent_roles = discovered.agent_roles;
     root_config.cwd = discovered.cwd.clone();
     root_config.codex_home = discovered.codex_home.clone();
+    root_config.config_layer_stack = discovered.config_layer_stack;
     root_config.features.enable(Feature::Collab)?;
     root_config.features.enable(Feature::MultiAgentV2)?;
     let root = test
