@@ -1165,10 +1165,10 @@ async fn explicit_update_rejects_completed_sender_without_persisting_an_admissio
             tree.worker_id,
             tree.root_id,
             tree.harness.config.clone(),
-            AgentMessage::Plaintext("late worker progress".to_string()),
+            AgentMessage::Plaintext("late worker request".to_string()),
             ExplicitInterAgentUpdate {
                 idempotency_key: "completed-worker-must-not-send".to_string(),
-                intent: InterAgentCommunicationIntent::Progress,
+                intent: InterAgentCommunicationIntent::ActionRequired,
                 supersedes: Vec::new(),
             },
             AgentCommunicationContext::new(AgentCommunicationKind::Message, tree.worker_id),
@@ -1191,13 +1191,19 @@ async fn explicit_update_rejects_completed_sender_without_persisting_an_admissio
         "rejected sender must not leave a durable admission"
     );
     assert!(
-        !tree
-            .root
+        tree.root
             .session
             .input_queue
-            .has_pending_mailbox_items()
-            .await,
-        "rejected sender must not enqueue mail"
+            .pending_explicit_activity_for_targets(
+                tree.root_id,
+                &[(
+                    tree.worker_id,
+                    AgentPath::root().join("worker").expect("worker path"),
+                )],
+            )
+            .await
+            .is_none(),
+        "rejected sender must not enqueue a typed root-directed update"
     );
 
     let report = tree
