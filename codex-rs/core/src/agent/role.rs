@@ -126,8 +126,49 @@ async fn apply_role_to_config_inner(
     {
         return Ok(());
     }
-    *config = role_overrides::build_next_config(config, role_layer_toml, &overrides)?;
+    let role_is_client_owned =
+        is_built_in || role_instructions_are_client_owned(config, config_file);
+    *config = role_overrides::build_next_config(
+        config,
+        role_layer_toml,
+        &overrides,
+        role_is_client_owned,
+    )?;
     Ok(())
+}
+
+// Reuse the enabled layer/file association used by role discovery. A synthesized session layer
+// cannot itself establish that a managed or originless role file is operator-owned.
+fn role_instructions_are_client_owned(config: &Config, config_file: &Path) -> bool {
+    config
+        .config_layer_stack
+        .layers_high_to_low()
+        .find_map(|layer| {
+            let declared = layer
+                .config
+                .get("agents")
+                .and_then(TomlValue::as_table)
+                .is_some_and(|agents| {
+                    agents.values().any(|role| {
+                        role.get("config_file")
+                            .and_then(TomlValue::as_str)
+                            .is_some_and(|file| Path::new(file) == config_file)
+                    })
+                });
+            let discovered = layer.config_folder().is_some_and(|folder| {
+                config_file.parent() == Some(folder.as_path().join("agents").as_path())
+            });
+            (declared || discovered).then(|| {
+                matches!(
+                    layer.name,
+                    ConfigLayerSource::PackagedDefaults { .. }
+                        | ConfigLayerSource::User { .. }
+                        | ConfigLayerSource::Project { .. }
+                        | ConfigLayerSource::SessionFlags
+                )
+            })
+        })
+        .unwrap_or(false)
 }
 
 async fn load_role_layer_toml(
@@ -181,6 +222,7 @@ mod role_overrides {
         config: &Config,
         role_layer_toml: TomlValue,
         overrides: &AgentRoleOverrides,
+        role_is_client_owned: bool,
     ) -> anyhow::Result<Config> {
         let mut next_config = config.clone();
         next_config.config_layer_stack = build_config_layer_stack(config, &role_layer_toml)?;
@@ -200,8 +242,18 @@ mod role_overrides {
         if let Some(model) = &overrides.model {
             next_config.model = Some(model.clone());
         }
-        if let Some(instructions) = &overrides.developer_instructions {
-            next_config.developer_instructions = Some(instructions.clone());
+        if overrides.developer_instructions.is_some() {
+            // A role is a session layer, not permission to displace a higher managed layer.
+            let effective_config = next_config.config_layer_stack.effective_config();
+            next_config.developer_instructions = effective_config
+                .get("developer_instructions")
+                .and_then(TomlValue::as_str)
+                .map(str::to_owned);
+            next_config.client_owned_developer_instructions = role_is_client_owned
+                && Config::instruction_origin_is_client_owned(
+                    &next_config.config_layer_stack,
+                    "developer_instructions",
+                );
         }
         if let Some(effort) = overrides.model_reasoning_effort.clone() {
             next_config.model_reasoning_effort = Some(effort);
@@ -515,6 +567,7 @@ mod instruction_overlay_role_tests {
         apply_role_to_config(&mut trusted, /*role_name*/ Some("project-role"))
             .await
             .expect("trusted project-discovered role applies");
+        assert!(trusted.client_owned_developer_instructions);
         assert_eq!(
             trusted
                 .instruction_overlays
@@ -630,6 +683,7 @@ mod instruction_overlay_role_tests {
         tokio::fs::write(
             &managed_config,
             r#"
+                developer_instructions = "managed ordinary guidance"
                 [instruction_overlays.model_baseline]
                 edits = [{ op = "replace", text = "managed-baseline" }]
             "#,
@@ -651,13 +705,18 @@ mod instruction_overlay_role_tests {
         install_role(
             &mut config,
             &home,
-            "[instruction_overlays.model_baseline]\nedits = [{ op = 'replace', text = 'role-baseline' }]",
+            "developer_instructions = 'role ordinary guidance'\n[instruction_overlays.model_baseline]\nedits = [{ op = 'replace', text = 'role-baseline' }]",
         )
         .await;
 
         apply_role_to_config(&mut config, /*role_name*/ Some("custom"))
             .await
             .expect("role layer applies without replacing managed precedence");
+        assert_eq!(
+            config.developer_instructions.as_deref(),
+            Some("managed ordinary guidance")
+        );
+        assert!(!config.client_owned_developer_instructions);
         assert_eq!(
             config
                 .instruction_overlays

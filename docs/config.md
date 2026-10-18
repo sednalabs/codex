@@ -34,15 +34,53 @@ unchanged history, so append/prepend applies once per selected instance in that
 request and does not accumulate in stored history.
 
 `developer_guidance` selects client prose tagged
-`generic.developer_instructions`, including configured developer guidance and
+`client.developer_instructions`, including positively identified configured developer guidance and
 client-generated namespace-description updates. Additional tagged fragments
 can make `unique` selection ambiguous; explicit `all_classified` edits each
 instance, with exact-match counts checked independently per instance.
+
+The winning configured value must come from enabled packaged, user/profile,
+trusted project, or session layers. Managed/administrative values and values
+without a known origin remain non-targetable, even if they use ordinary developer
+wording. Legacy generic developer/base tags are not promoted. A stored baseline
+with unknown or `Custom` provenance is not evidence of client ownership; an
+explicit current client-owned baseline can still be selected. The fixed review
+rubric and known model-selected baselines remain eligible.
+The same winning-origin requirement applies to configured V2 mode hints, root
+and subagent usage hints, and subagent developer-guidance substitution. A child
+inherits known parent eligibility with the value, not a stale Boolean from a
+different value. Old mode/role/usage tags without positive classification remain
+non-targetable; their text is not retroactively relabeled.
+Current explicit managed or unknown-origin selections also fence their whole
+component against stale positive tags retained from an earlier configuration
+with identical wording. This conservative fence uses the same `on_absent`
+error/skip policy, including `all_classified`; a past tag cannot authorize editing
+the newly selected managed component. Other eligible components are unaffected.
+
+Append/prepend add text to an **existing** selected component; neither `replace`
+nor `on_absent` creates a missing component. To create ordinary client developer
+guidance, set `developer_instructions = "Your guidance"` in an enabled user/profile,
+trusted project, or session configuration layer, then optionally overlay it.
+`on_absent = "skip"` leaves a missing or unclassified component unchanged;
+the default `error` rejects the request instead. There is no provider/system
+component creation option.
 
 Limits are at most 64 operations, 32 KiB per literal, 256 KiB of literals
 across selected components, 256 KiB per transformed component body, 64 selected
 text instances, and 4 MiB combined final selected text per request. Output
 growth is checked before expansion; oversized transformations fail closed.
+Those memory bounds are not context-window allowances. Before sampling and
+eligible WebSocket prewarm, the transformed request copy is also checked through
+the existing context-window policy: scalar baseline once, formatted input,
+model-visible tools, and output schema. The coarse content estimate is compared
+with existing measured usage, not added to it, avoiding repeated charging of
+history already measured by the provider. It is not a tokenizer-accurate upper
+bound; provider context limits still apply. Exceeding the local budget rejects
+the request without sending or rewriting stored history.
+Direct eligible client consumers, including local compaction, also check the
+transformed view against the full model window at request construction. They
+retain their existing recovery/trimming policy rather than being charged the
+session's old measured usage during a compaction attempt.
 
 For example:
 

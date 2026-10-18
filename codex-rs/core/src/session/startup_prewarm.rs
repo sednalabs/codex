@@ -28,7 +28,6 @@ use codex_otel::STARTUP_PREWARM_AGE_AT_FIRST_TURN_METRIC;
 use codex_otel::STARTUP_PREWARM_DURATION_METRIC;
 use codex_otel::SessionTelemetry;
 use codex_protocol::error::Result as CodexResult;
-use codex_protocol::models::BaseInstructions;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 
@@ -328,7 +327,7 @@ async fn schedule_startup_prewarm_inner(
     if websocket_ready {
         return Ok(client_session);
     }
-    let base_instructions = session.get_prompt_base_instructions().await.text;
+    let base_instructions = session.get_prompt_base_instructions().await;
     let startup_turn_context = session
         .new_startup_prewarm_turn_with_sub_id(INITIAL_SUBMIT_ID.to_owned())
         .await;
@@ -414,10 +413,7 @@ async fn schedule_startup_prewarm_inner(
     let startup_prompt = build_prompt(
         prompt_input,
         step_context.as_ref(),
-        BaseInstructions {
-            text: base_instructions,
-            provenance: None,
-        },
+        base_instructions,
         session
             .current_window_uses_incremental_tools(&step_context)
             .await,
@@ -431,6 +427,13 @@ async fn schedule_startup_prewarm_inner(
     let responses_metadata = session
         .responses_metadata(step_context.as_ref(), CodexResponsesRequestKind::Prewarm)
         .await;
+    super::context_window::check_instruction_overlay_request(
+        &session,
+        &startup_turn_context.config,
+        &step_context.settings.model_info,
+        &startup_prompt,
+    )
+    .await?;
     let websocket_warmup_started_at = Instant::now();
     // Prewarm establishes the request baseline before the first turn can change effort.
     client_session

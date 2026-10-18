@@ -29,11 +29,22 @@ const NORMAL_COMPONENTS: &[InstructionOverlayComponent] = &[
 const REVIEW_COMPONENTS: &[InstructionOverlayComponent] =
     &[InstructionOverlayComponent::ReviewBaseline];
 
+pub(super) fn has_active_plan(source: &SessionSource, plan: &InstructionOverlaysToml) -> bool {
+    eligible_components(source).is_some_and(|components| {
+        components.iter().any(|component| {
+            plan.component(*component)
+                .is_some_and(|component| !component.edits.is_empty())
+        })
+    })
+}
+
 pub(super) fn transform_request(
     source: &SessionSource,
     plan: &InstructionOverlaysToml,
     baseline: &str,
     baseline_provenance: Option<&BaseInstructionsProvenance>,
+    client_owned_baseline: bool,
+    fenced_components: &[InstructionOverlayComponent],
     input: Vec<ResponseItem>,
 ) -> Result<(Option<String>, Vec<ResponseItem>)> {
     let Some(components) = eligible_components(source) else {
@@ -42,6 +53,19 @@ pub(super) fn transform_request(
 
     plan.validate_components(components)
         .map_err(|error| anyhow::anyhow!("instruction overlay plan invalid: {error}"))?;
+    // A current managed/unknown selection must not inherit authority from an earlier
+    // positive historical tag when unchanged text kept its existing world-state snapshot.
+    for component in components
+        .iter()
+        .filter(|component| fenced_components.contains(component))
+    {
+        if plan
+            .component(*component)
+            .is_some_and(|component| !component.edits.is_empty())
+        {
+            let _ = apply_component(plan, *component, /*body*/ None)?;
+        }
+    }
     let mut transformed_baseline = None;
     let mut transformed_input = input;
     let mut selected_instances = 0usize;
@@ -51,14 +75,16 @@ pub(super) fn transform_request(
     } else {
         InstructionOverlayComponent::ModelBaseline
     };
-    if plan
-        .component(baseline_component)
-        .is_some_and(|p| !p.edits.is_empty())
+    if !fenced_components.contains(&baseline_component)
+        && plan
+            .component(baseline_component)
+            .is_some_and(|p| !p.edits.is_empty())
     {
         // Incremental-tools requests carry their selected base as a typed input item and use
         // empty text with no provenance as the scalar placeholder. Empty explicit bases still
         // have provenance and remain independently selectable.
-        let scalar_selected = !baseline.is_empty() || baseline_provenance.is_some();
+        let scalar_selected =
+            client_owned_baseline && (!baseline.is_empty() || baseline_provenance.is_some());
         if scalar_selected {
             selected_instances = selected_instances.saturating_add(1);
             if selected_instances > MAX_INSTRUCTION_OVERLAY_INSTANCES {
@@ -101,11 +127,12 @@ pub(super) fn transform_request(
         }
     }
     for component in components.iter().copied().filter(|component| {
-        !matches!(
-            component,
-            InstructionOverlayComponent::ModelBaseline
-                | InstructionOverlayComponent::ReviewBaseline
-        )
+        !fenced_components.contains(component)
+            && !matches!(
+                component,
+                InstructionOverlayComponent::ModelBaseline
+                    | InstructionOverlayComponent::ReviewBaseline
+            )
     }) {
         apply_tagged_component(
             plan,
@@ -346,12 +373,12 @@ fn apply_candidates(
 
 fn target_kind(component: InstructionOverlayComponent) -> &'static str {
     match component {
-        InstructionOverlayComponent::DeveloperGuidance => "generic.developer_instructions",
-        InstructionOverlayComponent::ModelBaseline => "model.base_instructions",
-        InstructionOverlayComponent::ReviewBaseline => "model.base_instructions",
-        InstructionOverlayComponent::MultiAgentMode => "multi_agent.mode_instructions",
-        InstructionOverlayComponent::MultiAgentRole => "multi_agent.role_instructions",
-        InstructionOverlayComponent::MultiAgentUsageHint => "multi_agent.usage_hint",
+        InstructionOverlayComponent::DeveloperGuidance => "client.developer_instructions",
+        InstructionOverlayComponent::ModelBaseline => "client.base_instructions",
+        InstructionOverlayComponent::ReviewBaseline => "client.base_instructions",
+        InstructionOverlayComponent::MultiAgentMode => "client.multi_agent.mode_instructions",
+        InstructionOverlayComponent::MultiAgentRole => "client.multi_agent.role_instructions",
+        InstructionOverlayComponent::MultiAgentUsageHint => "client.multi_agent.usage_hint",
         InstructionOverlayComponent::ModelSwitchGuidance => "model_switch.instructions",
         InstructionOverlayComponent::CollaborationGuidance => "collaboration_mode.instructions",
         InstructionOverlayComponent::PersistentGuidance => "persistent_mode.instructions",
@@ -442,8 +469,15 @@ mod tests {
         provenance: Option<&BaseInstructionsProvenance>,
         input: &[ResponseItem],
     ) -> Result<(String, Vec<ResponseItem>)> {
-        let (transformed_baseline, output) =
-            super::transform_request(source, plan, baseline, provenance, input.to_vec())?;
+        let (transformed_baseline, output) = super::transform_request(
+            source,
+            plan,
+            baseline,
+            provenance,
+            /*client_owned_baseline*/ true,
+            /*fenced_components*/ &[],
+            input.to_vec(),
+        )?;
         Ok((
             transformed_baseline.unwrap_or_else(|| baseline.to_string()),
             output,
@@ -457,6 +491,127 @@ mod tests {
             edits: vec![InstructionOverlayEdit::Replace {
                 text: text.to_string(),
             }],
+        }
+    }
+
+    #[test]
+    fn unknown_and_managed_origins_cannot_be_selected_by_client_tags() {
+        let mut plan = InstructionOverlaysToml {
+            developer_guidance: Some(active("replacement")),
+            model_baseline: Some(active("replacement")),
+            multi_agent_mode: Some(active("replacement")),
+            multi_agent_role: Some(active("replacement")),
+            multi_agent_usage_hint: Some(active("replacement")),
+            ..Default::default()
+        };
+        plan.developer_guidance.as_mut().unwrap().on_absent = InstructionOverlayOnAbsent::Skip;
+        plan.model_baseline.as_mut().unwrap().on_absent = InstructionOverlayOnAbsent::Skip;
+        plan.multi_agent_mode.as_mut().unwrap().on_absent = InstructionOverlayOnAbsent::Skip;
+        plan.multi_agent_role.as_mut().unwrap().on_absent = InstructionOverlayOnAbsent::Skip;
+        plan.multi_agent_usage_hint.as_mut().unwrap().on_absent = InstructionOverlayOnAbsent::Skip;
+        let original = vec![
+            developer_fragment("generic.developer_instructions", "ordinary unknown source"),
+            developer_fragment(
+                "managed_config.developer_instructions",
+                "mandatory guidance",
+            ),
+            developer_fragment("model.base_instructions", "unknown historical baseline"),
+            developer_fragment(
+                "multi_agent.mode_instructions",
+                "<multi_agent_mode>unknown mode</multi_agent_mode>",
+            ),
+            developer_fragment("multi_agent.role_instructions", "unknown role source"),
+            developer_fragment("multi_agent.usage_hint", "unknown usage source"),
+        ];
+        let (baseline, input) = super::transform_request(
+            &SessionSource::Cli,
+            &plan,
+            "managed configured baseline",
+            Some(&BaseInstructionsProvenance::Custom),
+            /*client_owned_baseline*/ false,
+            /*fenced_components*/ &[],
+            original.clone(),
+        )
+        .expect("skip non-client sources");
+        assert!(baseline.is_none());
+        assert_eq!(input, original);
+        plan.model_baseline.as_mut().unwrap().on_absent = InstructionOverlayOnAbsent::Error;
+        assert!(
+            super::transform_request(
+                &SessionSource::Cli,
+                &plan,
+                "managed configured baseline",
+                Some(&BaseInstructionsProvenance::Custom),
+                /*client_owned_baseline*/ false,
+                /*fenced_components*/ &[],
+                original,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn current_origin_fences_reject_stale_positive_tags_after_same_text_origin_change() {
+        for (component, kind, text) in [
+            (
+                InstructionOverlayComponent::ModelBaseline,
+                "client.base_instructions",
+                "same wording",
+            ),
+            (
+                InstructionOverlayComponent::ReviewBaseline,
+                "client.base_instructions",
+                "same wording",
+            ),
+            (
+                InstructionOverlayComponent::DeveloperGuidance,
+                "client.developer_instructions",
+                "same wording",
+            ),
+            (
+                InstructionOverlayComponent::MultiAgentMode,
+                "client.multi_agent.mode_instructions",
+                "<multi_agent_mode>same wording</multi_agent_mode>",
+            ),
+            (
+                InstructionOverlayComponent::MultiAgentRole,
+                "client.multi_agent.role_instructions",
+                "same wording",
+            ),
+            (
+                InstructionOverlayComponent::MultiAgentUsageHint,
+                "client.multi_agent.usage_hint",
+                "same wording",
+            ),
+        ] {
+            let source = if component == InstructionOverlayComponent::ReviewBaseline {
+                SessionSource::SubAgent(SubAgentSource::Review)
+            } else {
+                SessionSource::Cli
+            };
+            let original = vec![developer_fragment(kind, text)];
+            for on_absent in ["error", "skip"] {
+                let plan: InstructionOverlaysToml = toml::from_str(&format!(
+                    "[{}]\non_absent = '{on_absent}'\nedits = [{{ op = 'replace', text = 'replacement' }}]",
+                    component.as_str(),
+                )).unwrap();
+                let result = super::transform_request(
+                    &source,
+                    &plan,
+                    "",
+                    /*baseline_provenance*/ None,
+                    /*client_owned_baseline*/ false,
+                    &[component],
+                    original.clone(),
+                );
+                if on_absent == "error" {
+                    assert!(result.is_err());
+                } else {
+                    let (baseline, input) = result.unwrap();
+                    assert!(baseline.is_none());
+                    assert_eq!(input, original);
+                }
+            }
         }
     }
 
@@ -524,7 +679,7 @@ mod tests {
             };
             let baseline = "source-owned baseline";
             let input = vec![developer_fragment(
-                "generic.developer_instructions",
+                "client.developer_instructions",
                 "guarded",
             )];
             let (actual_baseline, actual_input) =
@@ -551,7 +706,7 @@ mod tests {
             ..Default::default()
         };
         let input = vec![developer_fragment(
-            "generic.developer_instructions",
+            "client.developer_instructions",
             "security policy",
         )];
         let (review_baseline, review_input) = transform_request(
@@ -586,7 +741,7 @@ mod tests {
             ..Default::default()
         };
         let source = SessionSource::Cli;
-        let input = vec![developer_fragment("generic.developer_instructions", "old")];
+        let input = vec![developer_fragment("client.developer_instructions", "old")];
         let (_, output) = transform_request(&source, &plan, "base", &input).expect("edit");
         let ResponseItem::Message {
             id,
@@ -606,16 +761,16 @@ mod tests {
         );
         assert_eq!(
             metadata.content_item_kinds.as_ref().expect("kind metadata")[0].as_str(),
-            "generic.developer_instructions"
+            "client.developer_instructions"
         );
         assert_eq!(
             input,
-            vec![developer_fragment("generic.developer_instructions", "old")]
+            vec![developer_fragment("client.developer_instructions", "old")]
         );
 
         let ambiguous = vec![
-            developer_fragment("generic.developer_instructions", "one"),
-            developer_fragment("generic.developer_instructions", "two"),
+            developer_fragment("client.developer_instructions", "one"),
+            developer_fragment("client.developer_instructions", "two"),
         ];
         assert!(transform_request(&source, &plan, "base", &ambiguous).is_err());
     }
@@ -627,7 +782,7 @@ mod tests {
             ..Default::default()
         };
         let input = vec![
-            developer_fragment("generic.developer_instructions", "policy"),
+            developer_fragment("client.developer_instructions", "policy"),
             developer_fragment(
                 "model_switch.instructions",
                 "<model_switch>transition text</model_switch>",
@@ -695,7 +850,7 @@ mod tests {
         }
 
         let typed_base = vec![developer_fragment(
-            "model.base_instructions",
+            "client.base_instructions",
             "typed incremental base",
         )];
         let plan = InstructionOverlaysToml {
@@ -749,7 +904,7 @@ mod tests {
     fn scalar_and_typed_baselines_obey_selection_without_mutating_raw_input() {
         let source = SessionSource::Cli;
         let raw = vec![developer_fragment(
-            "model.base_instructions",
+            "client.base_instructions",
             "typed source base",
         )];
         let unique = InstructionOverlaysToml {
@@ -790,7 +945,7 @@ mod tests {
         assert_eq!(
             raw,
             vec![developer_fragment(
-                "model.base_instructions",
+                "client.base_instructions",
                 "typed source base",
             )]
         );
@@ -813,7 +968,7 @@ mod tests {
             ..Default::default()
         };
         let raw = vec![developer_fragment(
-            "generic.developer_instructions",
+            "client.developer_instructions",
             &oversized,
         )];
         let original = raw.clone();
@@ -826,7 +981,7 @@ mod tests {
         )
         .expect("bounded replacements shrink oversized source fragments");
         assert_eq!(baseline, "short scalar");
-        let mut expected = developer_fragment("generic.developer_instructions", "short typed");
+        let mut expected = developer_fragment("client.developer_instructions", "short typed");
         let ResponseItem::Message { id, .. } = &mut expected else {
             unreachable!("developer fragment is a message")
         };
@@ -849,7 +1004,7 @@ mod tests {
             ..Default::default()
         };
         let raw = (0..=MAX_INSTRUCTION_OVERLAY_INSTANCES)
-            .map(|_| developer_fragment("generic.developer_instructions", "bad match"))
+            .map(|_| developer_fragment("client.developer_instructions", "bad match"))
             .collect::<Vec<_>>();
         let error = transform_request(&SessionSource::Cli, &plan, "base", &raw)
             .expect_err("the 65th classified target exceeds the cap first");
@@ -928,8 +1083,8 @@ mod tests {
             ..Default::default()
         };
         let raw = vec![
-            developer_fragment("generic.developer_instructions", "first"),
-            developer_fragment("generic.developer_instructions", "second"),
+            developer_fragment("client.developer_instructions", "first"),
+            developer_fragment("client.developer_instructions", "second"),
         ];
         let (_, output) = transform_request(&SessionSource::Cli, &plan, "base", &raw)
             .expect("all classified instances selected");
@@ -972,13 +1127,13 @@ mod tests {
             ..Default::default()
         };
         let raw = vec![
-            developer_fragment("generic.developer_instructions", "match"),
-            developer_fragment("generic.developer_instructions", "unrelated"),
+            developer_fragment("client.developer_instructions", "match"),
+            developer_fragment("client.developer_instructions", "unrelated"),
         ];
         assert!(transform_request(&SessionSource::Cli, &plan, "base", &raw).is_err());
         assert_eq!(
             raw[0],
-            developer_fragment("generic.developer_instructions", "match")
+            developer_fragment("client.developer_instructions", "match")
         );
         edit.edits = vec![InstructionOverlayEdit::Append {
             text: "x".repeat(128),
@@ -988,7 +1143,7 @@ mod tests {
             ..Default::default()
         };
         let many = (0..=MAX_INSTRUCTION_OVERLAY_INSTANCES)
-            .map(|_| developer_fragment("generic.developer_instructions", "x"))
+            .map(|_| developer_fragment("client.developer_instructions", "x"))
             .collect::<Vec<_>>();
         assert!(transform_request(&SessionSource::Cli, &crowded, "base", &many).is_err());
     }
@@ -1005,12 +1160,15 @@ mod tests {
             ..Default::default()
         };
         let mut input = (0..32)
-            .map(|_| developer_fragment("generic.developer_instructions", "dev"))
+            .map(|_| developer_fragment("client.developer_instructions", "dev"))
             .collect::<Vec<_>>();
-        input.extend((0..32).map(|_| developer_fragment("multi_agent.usage_hint", "usage")));
+        input.extend((0..32).map(|_| developer_fragment("client.multi_agent.usage_hint", "usage")));
         assert!(transform_request(&SessionSource::Cli, &plan, "base", &input).is_ok());
 
-        input.push(developer_fragment("multi_agent.usage_hint", "one too many"));
+        input.push(developer_fragment(
+            "client.multi_agent.usage_hint",
+            "one too many",
+        ));
         assert!(transform_request(&SessionSource::Cli, &plan, "base", &input).is_err());
     }
 
@@ -1028,7 +1186,7 @@ mod tests {
             ..Default::default()
         };
         let input = (0..17)
-            .map(|_| developer_fragment("generic.developer_instructions", ""))
+            .map(|_| developer_fragment("client.developer_instructions", ""))
             .collect::<Vec<_>>();
         assert!(transform_request(&SessionSource::Cli, &plan, "base", &input).is_err());
         assert!(input.iter().all(|item| matches!(item, ResponseItem::Message { content, .. } if content == &vec![ContentItem::InputText { text: String::new() }])));
@@ -1088,7 +1246,7 @@ mod tests {
             ..Default::default()
         };
         let raw = vec![developer_fragment(
-            "model.base_instructions",
+            "client.base_instructions",
             "<review>old</review>",
         )];
         let (baseline, output) = transform_request(
@@ -1111,7 +1269,7 @@ mod tests {
         assert!(id.is_none());
         assert_eq!(
             raw[0],
-            developer_fragment("model.base_instructions", "<review>old</review>")
+            developer_fragment("client.base_instructions", "<review>old</review>")
         );
     }
 
@@ -1124,7 +1282,7 @@ mod tests {
             ..Default::default()
         };
         let raw = vec![developer_fragment(
-            "model.base_instructions",
+            "client.base_instructions",
             "typed original",
         )];
         let (baseline, output) =
@@ -1142,7 +1300,7 @@ mod tests {
         );
         assert_eq!(
             raw[0],
-            developer_fragment("model.base_instructions", "typed original")
+            developer_fragment("client.base_instructions", "typed original")
         );
         let strict = InstructionOverlaysToml {
             model_baseline: Some(active("updated")),
@@ -1161,7 +1319,7 @@ mod tests {
         };
         let original = format!("{MULTI_AGENT_MODE_OPEN_TAG}old mode{MULTI_AGENT_MODE_CLOSE_TAG}");
         let input = vec![developer_fragment(
-            "multi_agent.mode_instructions",
+            "client.multi_agent.mode_instructions",
             &original,
         )];
         let (_, output) = transform_request(&SessionSource::Cli, &plan, "base", &input)

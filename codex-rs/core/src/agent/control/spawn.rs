@@ -146,7 +146,11 @@ fn retain_forked_developer_message(item: &mut ResponseItem, usage_hint_texts: &[
         // Persisted role hints can predate the current bundled wording and lack markers.
         if matches!(
             content_item.kind().as_str(),
-            "guardian.approved_action" | "multi_agent.role_instructions" | "multi_agent.usage_hint"
+            "guardian.approved_action"
+                | "multi_agent.role_instructions"
+                | "multi_agent.usage_hint"
+                | "client.multi_agent.role_instructions"
+                | "client.multi_agent.usage_hint"
         ) {
             return false;
         }
@@ -165,6 +169,39 @@ fn retain_forked_developer_message(item: &mut ResponseItem, usage_hint_texts: &[
                 .any(|usage_hint_text| usage_hint_text == text))
     });
     !content.is_empty() && set_annotated_content(item, content).is_some()
+}
+
+#[cfg(test)]
+mod instruction_overlay_origin_tests {
+    use super::*;
+    use codex_protocol::models::ContentItemKind;
+    use codex_protocol::models::InternalChatMessageMetadataPassthrough;
+
+    #[test]
+    fn positive_role_and_usage_kinds_preserve_existing_fork_retention_filter() {
+        for kind in [
+            "multi_agent.role_instructions",
+            "multi_agent.usage_hint",
+            "client.multi_agent.role_instructions",
+            "client.multi_agent.usage_hint",
+        ] {
+            let mut item = ResponseItem::Message {
+                id: None,
+                role: "developer".into(),
+                content: vec![ContentItem::InputText {
+                    text: "synthetic role guidance".into(),
+                }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: Some(
+                    InternalChatMessageMetadataPassthrough {
+                        content_item_kinds: Some(vec![ContentItemKind(kind.into())]),
+                        ..Default::default()
+                    },
+                ),
+            };
+            assert!(!retain_forked_developer_message(&mut item, &[]));
+        }
+    }
 }
 
 async fn load_agent_model_context(

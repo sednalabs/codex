@@ -1727,6 +1727,13 @@ async fn run_sampling_request(
             )
             .await?;
         }
+        super::context_window::check_instruction_overlay_request(
+            &sess,
+            &turn_context.config,
+            &step_context.settings.model_info,
+            &prompt,
+        )
+        .await?;
         let err = match try_run_sampling_request(
             tool_runtime.clone(),
             Arc::clone(&sess),

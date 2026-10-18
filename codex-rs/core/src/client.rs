@@ -81,6 +81,7 @@ use codex_api::auth_header_telemetry;
 use codex_api::build_session_headers;
 use codex_api::create_text_param_for_request;
 use codex_api::response_create_client_metadata;
+use codex_config::InstructionOverlayComponent;
 use codex_config::InstructionOverlaysToml;
 use codex_http_client::ClientRouteClass;
 use codex_http_client::HttpClientFactory;
@@ -102,6 +103,8 @@ use codex_protocol::auth::AuthMode;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::config_types::Verbosity as VerbosityConfig;
+use codex_protocol::models::BaseInstructions;
+use codex_protocol::models::BaseInstructionsProvenance;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
@@ -313,6 +316,9 @@ impl RequestRouteTelemetry {
 pub struct ModelClient {
     state: Arc<ModelClientState>,
     instruction_overlays: Arc<InstructionOverlaysToml>,
+    instruction_overlay_origin_fences: Arc<[InstructionOverlayComponent]>,
+    client_owned_base_instructions: Option<[u8; 32]>,
+    model_baseline_origin_known: bool,
     agent_identity_policy: AgentIdentityAuthPolicy,
     prompt_cache_key_override: Option<String>,
     codex_responses_headers: Option<Arc<CodexResponsesHeaders>>,
@@ -1041,6 +1047,9 @@ impl ModelClient {
                 last_inference_tools: StdMutex::new(None),
             }),
             instruction_overlays: Arc::new(InstructionOverlaysToml::default()),
+            instruction_overlay_origin_fences: Arc::default(),
+            client_owned_base_instructions: None,
+            model_baseline_origin_known: true,
             agent_identity_policy,
             prompt_cache_key_override: None,
             codex_responses_headers: None,
@@ -1067,10 +1076,43 @@ impl ModelClient {
         self
     }
 
+    pub(crate) fn with_instruction_overlay_origin_fences(
+        mut self,
+        fences: Vec<InstructionOverlayComponent>,
+    ) -> Self {
+        self.instruction_overlay_origin_fences = fences.into();
+        self
+    }
+
     pub(crate) fn reasoning_effort_override_enabled(&self, model_info: &ModelInfo) -> bool {
         self.state.reasoning_effort_override_enabled
             && self.state.provider.info().is_openai()
             && model_info.supports_reasoning_effort_updates
+    }
+
+    pub(crate) fn with_client_owned_base_instructions(
+        mut self,
+        instructions: Option<String>,
+        model_baseline_origin_known: bool,
+    ) -> Self {
+        // Retain value identity without adding instruction literals to ModelClient's Debug output.
+        self.client_owned_base_instructions =
+            instructions.map(|instructions| Sha256::digest(instructions.as_bytes()).into());
+        self.model_baseline_origin_known = model_baseline_origin_known;
+        self
+    }
+
+    pub(crate) fn base_instructions_are_client_owned(
+        &self,
+        instructions: &BaseInstructions,
+    ) -> bool {
+        (self.model_baseline_origin_known
+            && matches!(
+                instructions.provenance,
+                Some(BaseInstructionsProvenance::Model { .. })
+            ))
+            || self.client_owned_base_instructions
+                == Some(Sha256::digest(instructions.text.as_bytes()).into())
     }
 
     pub(crate) fn with_restored_history(mut self, restored_history: bool) -> Self {
@@ -1454,6 +1496,83 @@ impl ModelClient {
         }
     }
 
+    fn transformed_instruction_input(
+        &self,
+        prompt: &Prompt,
+        model_info: &ModelInfo,
+    ) -> Result<(String, Vec<ResponseItem>)> {
+        let mut fenced = self.instruction_overlay_origin_fences.to_vec();
+        if !self.model_baseline_origin_known && self.client_owned_base_instructions.is_none() {
+            fenced.extend([
+                InstructionOverlayComponent::ModelBaseline,
+                InstructionOverlayComponent::ReviewBaseline,
+            ]);
+        }
+        let (baseline, mut input) = instruction_overlays::transform_request(
+            &self.state.session_source,
+            self.instruction_overlays.as_ref(),
+            &prompt.base_instructions.text,
+            prompt.base_instructions.provenance.as_ref(),
+            self.base_instructions_are_client_owned(&prompt.base_instructions),
+            &fenced,
+            prompt.get_formatted_input_for_request(model_info),
+        )
+        .map_err(|error| CodexErr::InvalidRequest(error.to_string()))?;
+        if !self.reasoning_effort_override_enabled(model_info) {
+            input.retain(|item| !matches!(item, ResponseItem::ConfigurationUpdate { .. }));
+        }
+        Ok((
+            baseline.unwrap_or_else(|| prompt.base_instructions.text.clone()),
+            input,
+        ))
+    }
+
+    /// The existing coarse content estimator, applied to the actual request copy rather than
+    /// raw history. It is not a tokenizer-accurate upper bound. Count the scalar prefix once,
+    /// formatted items (including typed incremental prefixes), visible tool metadata and schema.
+    pub(crate) fn estimate_instruction_overlay_request(
+        &self,
+        prompt: &Prompt,
+        model_info: &ModelInfo,
+    ) -> Result<Option<i64>> {
+        if !instruction_overlays::has_active_plan(
+            &self.state.session_source,
+            self.instruction_overlays.as_ref(),
+        ) {
+            return Ok(None);
+        }
+        let (baseline, input) = self.transformed_instruction_input(prompt, model_info)?;
+        self.estimate_transformed_instruction_input(prompt, model_info, &baseline, &input)
+            .map(Some)
+    }
+
+    fn estimate_transformed_instruction_input(
+        &self,
+        prompt: &Prompt,
+        model_info: &ModelInfo,
+        baseline: &str,
+        input: &[ResponseItem],
+    ) -> Result<i64> {
+        let text_tokens = |text: &str| {
+            i64::try_from(codex_utils_output_truncation::approx_token_count(text))
+                .unwrap_or(i64::MAX)
+        };
+        let mut tokens = text_tokens(baseline);
+        for item in input {
+            tokens = tokens.saturating_add(crate::context_manager::estimate_item_token_count(item));
+        }
+        let tools = if model_info.use_responses_lite {
+            serde_json::to_string(&create_tools_json_for_responses_lite(&prompt.tools)?)?
+        } else {
+            serde_json::to_string(&create_tools_raw_json_for_responses_api(&prompt.tools)?)?
+        };
+        tokens = tokens.saturating_add(text_tokens(&tools));
+        if let Some(schema) = &prompt.output_schema {
+            tokens = tokens.saturating_add(text_tokens(&serde_json::to_string(schema)?));
+        }
+        Ok(tokens)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn build_responses_request(
         &self,
@@ -1465,20 +1584,25 @@ impl ModelClient {
         responses_metadata: &CodexResponsesMetadata,
         include_internal: bool,
     ) -> Result<ResponsesApiRequest> {
-        let (transformed_base_instructions, mut input) = instruction_overlays::transform_request(
+        let (base_instructions, mut input) =
+            self.transformed_instruction_input(prompt, model_info)?;
+        // Local compaction also uses this client directly, outside sampling/prewarm session
+        // checks. Preserve its recovery/trimming policy: check only the full window here,
+        // using this actual request copy rather than stale measured session usage.
+        if instruction_overlays::has_active_plan(
             &self.state.session_source,
             self.instruction_overlays.as_ref(),
-            &prompt.base_instructions.text,
-            prompt.base_instructions.provenance.as_ref(),
-            prompt.get_formatted_input_for_request(model_info),
-        )
-        .map_err(|error| CodexErr::InvalidRequest(error.to_string()))?;
-        let base_instructions =
-            transformed_base_instructions.unwrap_or_else(|| prompt.base_instructions.text.clone());
-        if !self.reasoning_effort_override_enabled(model_info) {
-            // Unsupported models and disabled overrides must also accept saved history.
-            // Filter only the request copy; persisted history remains unchanged.
-            input.retain(|item| !matches!(item, ResponseItem::ConfigurationUpdate { .. }));
+        ) && let Some(limit) = model_info
+            .resolved_context_window()
+            .map(|window| window.saturating_mul(model_info.effective_context_window_percent) / 100)
+            && self.estimate_transformed_instruction_input(
+                prompt,
+                model_info,
+                &base_instructions,
+                &input,
+            )? >= limit
+        {
+            return Err(CodexErr::ContextWindowExceeded);
         }
         let is_openai = self.state.provider.info().is_openai();
         // These prompt-only items are rebuilt on every request. Hash their visible payloads

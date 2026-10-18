@@ -54,8 +54,12 @@ pub(crate) async fn prepare_agent_spawn_config(
     options: SpawnConfigOptions<'_>,
 ) -> Result<PreparedSpawnConfig, String> {
     let turn = step_context.turn.as_ref();
-    let mut config =
-        build_agent_spawn_config(&session.get_base_instructions().await, step_context)?;
+    let base_instructions = session.get_base_instructions().await;
+    let mut config = build_agent_spawn_config(&base_instructions, step_context)?;
+    config.client_owned_base_instructions = session
+        .services
+        .model_client
+        .base_instructions_are_client_owned(&base_instructions);
     if options.version == SpawnConfigVersion::V1 && options.full_history_fork {
         reject_full_fork_agent_type_override(options.role_name)?;
     }
@@ -78,6 +82,9 @@ pub(crate) async fn prepare_agent_spawn_config(
             config
                 .developer_instructions
                 .clone_from(&turn.developer_instructions);
+            config.client_owned_developer_instructions =
+                turn.config.client_owned_developer_instructions
+                    && turn.config.developer_instructions == turn.developer_instructions;
         }
     }
     apply_spawn_agent_service_tier(session, &mut config).await?;
@@ -117,6 +124,8 @@ pub(crate) fn build_agent_spawn_config(
     config.model_reasoning_summary = Some(settings.reasoning_summary);
     config.base_instructions = Some(base_instructions.text.clone());
     config.base_instructions_provenance = base_instructions.provenance.clone();
+    // Only the caller holding the parent's current client eligibility may transfer ownership.
+    config.client_owned_base_instructions = false;
     Ok(config)
 }
 
@@ -125,6 +134,7 @@ pub(crate) fn build_agent_resume_config(turn: &TurnContext) -> Result<Config, St
     // For resume, keep base instructions sourced from rollout/session metadata.
     config.base_instructions = None;
     config.base_instructions_provenance = None;
+    config.client_owned_base_instructions = false;
     Ok(config)
 }
 
@@ -142,6 +152,8 @@ fn build_agent_shared_config(turn: &TurnContext) -> Result<Config, String> {
         .cloned();
     config.model_reasoning_summary = Some(turn.reasoning_summary());
     config.developer_instructions = turn.developer_instructions.clone();
+    config.client_owned_developer_instructions = turn.config.client_owned_developer_instructions
+        && turn.config.developer_instructions == turn.developer_instructions;
     if turn.multi_agent_version == MultiAgentVersion::V2
         && let Some(developer_instructions) = turn
             .config
@@ -149,6 +161,10 @@ fn build_agent_shared_config(turn: &TurnContext) -> Result<Config, String> {
             .subagent_developer_instructions
             .clone()
     {
+        config.client_owned_developer_instructions = turn.config.multi_agent_text_is_client_owned(
+            "subagent_developer_instructions",
+            &developer_instructions,
+        );
         config.developer_instructions = Some(developer_instructions);
     }
     apply_spawn_agent_runtime_overrides(&mut config, turn)?;
@@ -362,4 +378,93 @@ fn validate_spawn_agent_reasoning_effort(
     Err(format!(
         "Reasoning effort `{requested_reasoning_effort}` is not supported for model `{model}`. Supported reasoning efforts: {supported}"
     ))
+}
+
+#[cfg(test)]
+mod instruction_overlay_origin_tests {
+    use super::*;
+    use crate::session::tests::make_session_and_context;
+    use codex_config::ConfigLayerEntry;
+    use codex_config::ConfigLayerSource;
+    use codex_config::ConfigLayerStack;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn fresh_child_transfers_parent_baseline_eligibility_without_promoting_unknown_history() {
+        let (mut session, turn) = make_session_and_context().await;
+        let parent_base = session.get_base_instructions().await;
+        session.services.model_client = session
+            .services
+            .model_client
+            .clone()
+            .with_client_owned_base_instructions(
+                Some(parent_base.text),
+                /*model_baseline_origin_known*/ false,
+            );
+        let step = StepContext::for_test(Arc::new(turn));
+        let spawn = || SpawnConfigOptions {
+            version: SpawnConfigVersion::V2,
+            full_history_fork: false,
+            role_name: None,
+            model: None,
+            reasoning_effort: None,
+        };
+        let child = prepare_agent_spawn_config(&session, &step, spawn())
+            .await
+            .unwrap();
+        assert!(child.config.client_owned_base_instructions);
+        session.services.model_client = session
+            .services
+            .model_client
+            .clone()
+            .with_client_owned_base_instructions(
+                /*instructions*/ None, /*model_baseline_origin_known*/ false,
+            );
+        let child = prepare_agent_spawn_config(&session, &step, spawn())
+            .await
+            .unwrap();
+        assert!(!child.config.client_owned_base_instructions);
+    }
+
+    #[tokio::test]
+    async fn child_subagent_guidance_recomputes_winning_nested_origin() {
+        for client_owned in [false, true] {
+            let (_session, mut turn) = make_session_and_context().await;
+            turn.multi_agent_version = MultiAgentVersion::V2;
+            turn.developer_instructions = Some("parent guidance".into());
+            let config = Arc::make_mut(&mut turn.config);
+            config.developer_instructions = turn.developer_instructions.clone();
+            config.client_owned_developer_instructions = true;
+            config.multi_agent_v2.subagent_developer_instructions = Some("child guidance".into());
+            let source = if client_owned {
+                ConfigLayerSource::SessionFlags
+            } else {
+                ConfigLayerSource::LegacyManagedConfigTomlFromFile {
+                    file: config.codex_home.join("managed.toml"),
+                }
+            };
+            config.config_layer_stack = ConfigLayerStack::new(vec![ConfigLayerEntry::new(
+                source,
+                toml::from_str("[features.multi_agent_v2]\nsubagent_developer_instructions = ' child guidance '").unwrap(),
+            )], Default::default(), Default::default()).unwrap();
+            let child = build_agent_shared_config(&turn).unwrap();
+            assert_eq!(
+                child.developer_instructions.as_deref(),
+                Some("child guidance")
+            );
+            assert_eq!(child.client_owned_developer_instructions, client_owned);
+            assert_eq!(
+                child
+                    .instruction_overlay_origin_fences(
+                        &codex_protocol::protocol::SessionSource::Cli
+                    )
+                    .contains(&codex_config::InstructionOverlayComponent::DeveloperGuidance),
+                !client_owned
+            );
+            assert_eq!(
+                turn.developer_instructions.as_deref(),
+                Some("parent guidance")
+            );
+        }
+    }
 }

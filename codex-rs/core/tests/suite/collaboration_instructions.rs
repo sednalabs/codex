@@ -284,6 +284,7 @@ async fn configured_developer_overlay_changes_only_its_tagged_request_fragment()
     let test = test_codex()
         .with_config(|config| {
             config.developer_instructions = Some("synthetic developer guidance".to_string());
+            config.client_owned_developer_instructions = true;
             config.instruction_overlays.developer_guidance = Some(append_overlay(
                 "\nsynthetic caller note",
                 InstructionOverlaySelection::Unique,
@@ -479,6 +480,7 @@ async fn fork_reconstructs_the_configured_overlay_on_its_child_client() -> Resul
     let test = test_codex()
         .with_config(|config| {
             config.developer_instructions = Some("synthetic fork guidance".to_string());
+            config.client_owned_developer_instructions = true;
             config.instruction_overlays.developer_guidance = Some(append_overlay(
                 " fork child marker",
                 InstructionOverlaySelection::Unique,
@@ -533,6 +535,7 @@ async fn resume_and_config_rollback_change_only_new_outgoing_requests() -> Resul
     .await;
     let mut configured_builder = test_codex().with_config(|config| {
         config.developer_instructions = Some("synthetic resume guidance".to_string());
+        config.client_owned_developer_instructions = true;
         config.instruction_overlays.developer_guidance = Some(append_overlay(
             " reconstructed config marker",
             InstructionOverlaySelection::Unique,
@@ -552,6 +555,7 @@ async fn resume_and_config_rollback_change_only_new_outgoing_requests() -> Resul
 
     let mut resume_builder = test_codex().with_config(|config| {
         config.developer_instructions = Some("synthetic resume guidance".to_string());
+        config.client_owned_developer_instructions = true;
         config.instruction_overlays.developer_guidance = Some(append_overlay(
             " reconstructed config marker",
             InstructionOverlaySelection::Unique,
@@ -564,6 +568,7 @@ async fn resume_and_config_rollback_change_only_new_outgoing_requests() -> Resul
 
     let mut rollback_builder = test_codex().with_config(|config| {
         config.developer_instructions = Some("synthetic resume guidance".to_string());
+        config.client_owned_developer_instructions = true;
     });
     let rolled_back = rollback_builder.restart(&server, &resumed).await?;
     rolled_back.submit_text_turn("after rollback").await?;
@@ -605,6 +610,7 @@ async fn thread_spawn_child_inherits_the_resolved_overlay_plan() -> Result<()> {
     let test = test_codex()
         .with_config(|config| {
             config.developer_instructions = Some("synthetic child guidance".to_string());
+            config.client_owned_developer_instructions = true;
             config.instruction_overlays.developer_guidance = Some(append_overlay(
                 " inherited child marker",
                 InstructionOverlaySelection::Unique,
@@ -670,6 +676,7 @@ async fn trusted_project_role_overlay_reaches_the_spawned_child_request() -> Res
     root_config.agent_roles = discovered.agent_roles;
     root_config.cwd = discovered.cwd.clone();
     root_config.codex_home = discovered.codex_home.clone();
+    root_config.config_layer_stack = discovered.config_layer_stack;
     root_config.features.enable(Feature::Collab)?;
     root_config.features.enable(Feature::MultiAgentV2)?;
     let root = test

@@ -187,8 +187,9 @@ impl WorldStateSection for TopLevelToolsState {
                 } else {
                     format!("Updated instructions for the {name} namespace:\n{instructions}")
                 };
-                namespace_updates
-                    .push(WorldStateUpdate::fragment(DeveloperInstructions::new(text)));
+                namespace_updates.push(WorldStateUpdate::fragment(
+                    DeveloperInstructions::client_owned(text),
+                ));
             }
         }
         let mut updates = Vec::new();

@@ -693,8 +693,14 @@ pub struct Config {
     /// Origin of the configured base instructions when supplied by another session or lockfile.
     pub base_instructions_provenance: Option<BaseInstructionsProvenance>,
 
+    /// Eligibility of the winning configured value, never inferred from saved provenance.
+    pub client_owned_base_instructions: bool,
+
     /// Developer instructions override injected as a separate message.
     pub developer_instructions: Option<String>,
+
+    /// Eligibility resolved before ordinary guidance loses its configuration-layer origin.
+    pub client_owned_developer_instructions: bool,
 
     /// Immutable request-local edits for selected client-owned instruction components.
     pub instruction_overlays: codex_config::InstructionOverlaysToml,
@@ -1602,6 +1608,85 @@ async fn config_toml_from_layers(layers: &ConfigLayerStack) -> std::io::Result<C
 }
 
 impl Config {
+    pub(crate) fn instruction_origin_is_client_owned(stack: &ConfigLayerStack, key: &str) -> bool {
+        stack
+            .origins_with_path_filter(|path| path.iter().map(String::as_str).eq(key.split('.')))
+            .get(key)
+            .is_some_and(|origin| {
+                matches!(
+                    origin.name,
+                    ConfigLayerSource::PackagedDefaults { .. }
+                        | ConfigLayerSource::User { .. }
+                        | ConfigLayerSource::Project { .. }
+                        | ConfigLayerSource::SessionFlags
+                )
+            })
+    }
+
+    pub(crate) fn multi_agent_text_is_client_owned(&self, key: &str, text: &str) -> bool {
+        let path = format!("features.multi_agent_v2.{key}");
+        if !Self::instruction_origin_is_client_owned(&self.config_layer_stack, &path) {
+            return false;
+        }
+        let effective = self.config_layer_stack.effective_config();
+        effective
+            .get("features")
+            .and_then(|features| features.get("multi_agent_v2"))
+            .and_then(|config| config.get(key))
+            .and_then(TomlValue::as_str)
+            .is_some_and(|value| {
+                if key == "subagent_developer_instructions" {
+                    value.trim() == text
+                } else {
+                    value == text
+                }
+            })
+    }
+
+    pub(crate) fn instruction_overlay_origin_fences(
+        &self,
+        source: &codex_protocol::protocol::SessionSource,
+    ) -> Vec<codex_config::InstructionOverlayComponent> {
+        use codex_config::InstructionOverlayComponent;
+        use codex_protocol::protocol::SessionSource;
+        use codex_protocol::protocol::SubAgentSource;
+        let mut fenced = Vec::new();
+        if self.developer_instructions.is_some() && !self.client_owned_developer_instructions {
+            fenced.push(InstructionOverlayComponent::DeveloperGuidance);
+        }
+        if self
+            .multi_agent_v2
+            .multi_agent_mode_hint_text
+            .as_deref()
+            .is_some_and(|text| {
+                !self.multi_agent_text_is_client_owned("multi_agent_mode_hint_text", text)
+            })
+        {
+            fenced.push(InstructionOverlayComponent::MultiAgentMode);
+        }
+        let (key, text) = if matches!(
+            source,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
+        ) {
+            (
+                "subagent_usage_hint_text",
+                self.multi_agent_v2.subagent_usage_hint_text.as_deref(),
+            )
+        } else {
+            (
+                "root_agent_usage_hint_text",
+                self.multi_agent_v2.root_agent_usage_hint_text.as_deref(),
+            )
+        };
+        if text.is_some_and(|text| !self.multi_agent_text_is_client_owned(key, text)) {
+            fenced.extend([
+                InstructionOverlayComponent::MultiAgentRole,
+                InstructionOverlayComponent::MultiAgentUsageHint,
+            ]);
+        }
+        fenced
+    }
+
     pub fn sqlite_config(&self) -> &codex_state::SqliteConfig {
         &self.sqlite
     }
@@ -4041,6 +4126,20 @@ impl Config {
             "model instructions file",
         )
         .await?;
+        let client_owned_base_instructions = base_instructions.is_none()
+            && Self::instruction_origin_is_client_owned(
+                &config_layer_stack,
+                if file_base_instructions.is_some() {
+                    "model_instructions_file"
+                } else {
+                    "instructions"
+                },
+            );
+        let client_owned_developer_instructions = developer_instructions.is_none()
+            && Self::instruction_origin_is_client_owned(
+                &config_layer_stack,
+                "developer_instructions",
+            );
         let base_instructions = base_instructions
             .or(file_base_instructions)
             .or(cfg.instructions.clone());
@@ -4364,8 +4463,10 @@ impl Config {
             notify: cfg.notify,
             base_instructions,
             base_instructions_provenance,
+            client_owned_base_instructions,
             personality,
             developer_instructions,
+            client_owned_developer_instructions,
             instruction_overlays: cfg.instruction_overlays.unwrap_or_default(),
             compact_prompt,
             include_permissions_instructions,
@@ -5018,3 +5119,133 @@ mod tests;
 #[cfg(test)]
 #[path = "config_loader_tests.rs"]
 mod config_loader_tests;
+
+#[cfg(test)]
+mod instruction_overlay_origin_tests {
+    use super::*;
+    use codex_config::ConfigLayerEntry;
+
+    #[tokio::test]
+    async fn instruction_eligibility_uses_winning_origin_and_rejects_originless_overrides() {
+        let home = tempfile::tempdir().expect("synthetic config home");
+        let home_path = AbsolutePathBuf::from_absolute_path(home.path()).unwrap();
+        let value: TomlValue =
+            toml::from_str("instructions = 'baseline'\ndeveloper_instructions = 'guidance'")
+                .unwrap();
+        for (source, expected) in [
+            (ConfigLayerSource::SessionFlags, true),
+            (
+                ConfigLayerSource::User {
+                    file: home_path.join("config.toml"),
+                    profile: None,
+                },
+                true,
+            ),
+            (
+                ConfigLayerSource::Project {
+                    dot_codex_folder: home_path.join(".codex"),
+                },
+                true,
+            ),
+            (
+                ConfigLayerSource::System {
+                    file: home_path.join("system.toml"),
+                },
+                false,
+            ),
+            (
+                ConfigLayerSource::EnterpriseManaged {
+                    id: "fixture".into(),
+                    name: "fixture".into(),
+                },
+                false,
+            ),
+            (
+                ConfigLayerSource::LegacyManagedConfigTomlFromFile {
+                    file: home_path.join("managed.toml"),
+                },
+                false,
+            ),
+        ] {
+            let stack = ConfigLayerStack::new(
+                vec![ConfigLayerEntry::new(source, value.clone())],
+                Default::default(),
+                Default::default(),
+            )
+            .unwrap();
+            let config = Config::load_config_with_layer_stack(
+                LOCAL_FS.as_ref(),
+                value.clone().try_into().unwrap(),
+                ConfigOverrides {
+                    cwd: Some(home.path().to_path_buf()),
+                    ..Default::default()
+                },
+                home_path.clone(),
+                stack.clone(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(config.client_owned_base_instructions, expected);
+            assert_eq!(config.client_owned_developer_instructions, expected);
+            let config = Config::load_config_with_layer_stack(
+                LOCAL_FS.as_ref(),
+                value.clone().try_into().unwrap(),
+                ConfigOverrides {
+                    cwd: Some(home.path().to_path_buf()),
+                    base_instructions: Some("originless baseline".into()),
+                    developer_instructions: Some("originless guidance".into()),
+                    ..Default::default()
+                },
+                home_path.clone(),
+                stack,
+            )
+            .await
+            .unwrap();
+            assert!(!config.client_owned_base_instructions);
+            assert!(!config.client_owned_developer_instructions);
+        }
+    }
+
+    #[test]
+    fn managed_winner_and_disabled_client_layers_cannot_promote_instruction_origin() {
+        let home = tempfile::tempdir().unwrap();
+        let path = AbsolutePathBuf::from_absolute_path(home.path()).unwrap();
+        let value: TomlValue = toml::from_str("developer_instructions = 'guidance'").unwrap();
+        let stack = ConfigLayerStack::new(
+            vec![
+                ConfigLayerEntry::new(ConfigLayerSource::SessionFlags, value.clone()),
+                ConfigLayerEntry::new(
+                    ConfigLayerSource::LegacyManagedConfigTomlFromFile {
+                        file: path.join("managed.toml"),
+                    },
+                    value.clone(),
+                ),
+            ],
+            Default::default(),
+            Default::default(),
+        )
+        .unwrap();
+        assert!(!Config::instruction_origin_is_client_owned(
+            &stack,
+            "developer_instructions"
+        ));
+        let stack = ConfigLayerStack::new(
+            vec![ConfigLayerEntry::new_disabled(
+                ConfigLayerSource::SessionFlags,
+                value,
+                "untrusted fixture",
+            )],
+            Default::default(),
+            Default::default(),
+        )
+        .unwrap();
+        assert!(!Config::instruction_origin_is_client_owned(
+            &stack,
+            "developer_instructions"
+        ));
+        assert!(!Config::instruction_origin_is_client_owned(
+            &ConfigLayerStack::default(),
+            "developer_instructions"
+        ));
+    }
+}
