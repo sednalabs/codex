@@ -76,13 +76,19 @@ impl Deref for SharedChildLease {
     type Target = Child;
 
     fn deref(&self) -> &Self::Target {
-        self.child.as_ref().expect("leased child is present")
+        match self.child.as_ref() {
+            Some(child) => child,
+            None => unreachable!("leased child is present while borrowed"),
+        }
     }
 }
 
 impl DerefMut for SharedChildLease {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.child.as_mut().expect("leased child is present")
+        match self.child.as_mut() {
+            Some(child) => child,
+            None => unreachable!("leased child is present while borrowed"),
+        }
     }
 }
 
