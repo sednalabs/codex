@@ -1025,7 +1025,6 @@ async fn explicit_progress_is_admitted_to_a_completed_loaded_root_without_starti
         supersedes: Vec::new(),
     };
     let message = AgentMessage::Plaintext("completed the first step".to_string());
-    let context = AgentCommunicationContext::new(AgentCommunicationKind::Message, tree.worker_id);
     let update_id = tree
         .control
         .send_explicit_inter_agent_update(
@@ -1034,7 +1033,7 @@ async fn explicit_progress_is_admitted_to_a_completed_loaded_root_without_starti
             tree.harness.config.clone(),
             message.clone(),
             update.clone(),
-            context.clone(),
+            AgentCommunicationContext::new(AgentCommunicationKind::Message, tree.worker_id),
         )
         .await
         .expect("completed already-loaded root should accept quiet progress");
@@ -1048,7 +1047,7 @@ async fn explicit_progress_is_admitted_to_a_completed_loaded_root_without_starti
             tree.harness.config.clone(),
             message,
             update,
-            context,
+            AgentCommunicationContext::new(AgentCommunicationKind::Message, tree.worker_id),
         )
         .await
         .expect("same explicit request should replay its durable receipt");
