@@ -487,8 +487,9 @@ fn spawn_request_usage_id(record: &SpawnRequestUsageRecord) -> anyhow::Result<St
         record.parent_turn_id.as_bytes(),
         record.tool_call_id.as_bytes(),
     ] {
-        let length =
-            u32::try_from(component.len()).expect("spawn identity component bound fits in u32");
+        let length = u32::try_from(component.len()).map_err(|_| {
+            anyhow::Error::msg("spawn identity component exceeds the supported encoding")
+        })?;
         identity.extend_from_slice(&length.to_be_bytes());
         identity.extend_from_slice(component);
     }
