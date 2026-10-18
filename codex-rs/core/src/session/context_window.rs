@@ -233,4 +233,82 @@ mod instruction_overlay_budget_tests {
         assert!(expanded.token_limit_reached);
         assert_eq!(expanded.base_window_tokens_remaining, Some(0));
     }
+
+    #[tokio::test]
+    async fn sampling_and_prewarm_budget_check_rejects_expansion_without_double_charging_history() {
+        use crate::session::tests::make_session_and_context;
+        use codex_config::InstructionOverlayComponentToml;
+        use codex_config::InstructionOverlayEdit;
+        use codex_config::InstructionOverlaysToml;
+        use codex_protocol::error::CodexErrorDetails;
+        use codex_protocol::models::BaseInstructions;
+        use codex_protocol::models::BaseInstructionsProvenance;
+
+        let (mut session, turn) = make_session_and_context().await;
+        session
+            .state
+            .lock()
+            .await
+            .history
+            .set_token_usage_full(/*context_window*/ 1_000);
+        assert_eq!(session.get_total_token_usage().await, 1_000);
+        let mut config = turn.config.as_ref().clone();
+        config.token_budget = None;
+        config.model_auto_compact_token_limit_scope = AutoCompactTokenLimitScope::Total;
+        let mut model = turn.model_info().as_ref().clone();
+        model.context_window = Some(1_500);
+        model.effective_context_window_percent = 100;
+        model.auto_compact_token_limit = Some(1_500);
+        let prompt = Prompt {
+            base_instructions: BaseInstructions {
+                text: "baseline".into(),
+                provenance: Some(BaseInstructionsProvenance::Model {
+                    model: "fixture".into(),
+                }),
+            },
+            ..Default::default()
+        };
+        let raw = prompt.base_instructions.clone();
+        let plan = |text: String, count: usize| InstructionOverlaysToml {
+            model_baseline: Some(InstructionOverlayComponentToml {
+                edits: vec![InstructionOverlayEdit::Append { text }; count],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        session.services.model_client = session
+            .services
+            .model_client
+            .clone()
+            .with_client_owned_base_instructions(
+                /*instructions*/ None, /*model_baseline_origin_known*/ true,
+            )
+            .with_instruction_overlays(plan("x".repeat(32 * 1024), /*count*/ 4));
+        let error = check_instruction_overlay_request(&session, &config, &model, &prompt)
+            .await
+            .expect_err("expanded request must reject before transport");
+        assert!(matches!(
+            error.details(),
+            CodexErrorDetails::ContextWindowExceeded
+        ));
+        session.services.model_client = session
+            .services
+            .model_client
+            .clone()
+            .with_instruction_overlays(plan("x".repeat(2_050), /*count*/ 1));
+        let estimate = session
+            .services
+            .model_client
+            .estimate_instruction_overlay_request(&prompt, &model)
+            .unwrap()
+            .unwrap();
+        assert!(estimate > 500 && estimate < 1_000);
+        // Adding that estimate to measured history would exceed this limit; max must not.
+        check_instruction_overlay_request(&session, &config, &model, &prompt)
+            .await
+            .unwrap();
+        assert_eq!(session.get_total_token_usage().await, 1_000);
+        assert_eq!(prompt.base_instructions, raw);
+        assert!(prompt.input.is_empty());
+    }
 }
