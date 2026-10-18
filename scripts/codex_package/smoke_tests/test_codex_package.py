@@ -246,6 +246,7 @@ def test_cli_instruction_inspection_with_synthetic_linux_configuration(
 def test_packaged_usage_report_covers_recorded_synthetic_spawn_tree(
     package: SmokePackage,
     tmp_path: Path,
+    record_property,
 ) -> None:
     """A packaged root/child spawn is visible to the adjacent bounded reporter."""
     home = tmp_path / "home"
@@ -522,9 +523,11 @@ def test_packaged_usage_report_covers_recorded_synthetic_spawn_tree(
                 pytest.fail(
                     "Synthetic spawn result was missing or non-text", pytrace=False
                 )
+            json_parsed = True
             try:
                 result = json.loads(output)
             except (TypeError, ValueError):
+                json_parsed = False
                 result = None
             valid_keys = isinstance(result, dict) and set(result) in (
                 {"task_name"},
@@ -540,28 +543,61 @@ def test_packaged_usage_report_covers_recorded_synthetic_spawn_tree(
                 and valid_nickname
                 and result.get("task_name") == "/root/usage-worker"
             ):
-                replacements = {
-                    root_id: "[root-thread]",
-                    server.url: "[mock-server]",
-                    str(package.directory): "[package-dir]",
-                    str(package.cli): "[package-cli]",
-                    "/root/usage-worker": "[expected-task-path]",
-                    spawn_marker: "[fixture-marker]",
-                    child_marker: "[fixture-marker]",
-                    spawn_call_id: "[spawn-call]",
-                    wait_call_id: "[wait-call]",
-                    str(config_path): "[config-path]",
-                    str(codex_home): "[codex-home]",
-                    str(workspace): "[workspace]",
-                    str(temporary): "[temporary-dir]",
-                    str(home): "[home]",
+
+                def json_type(value: object) -> str:
+                    if value is None:
+                        return "null"
+                    if type(value) is bool:
+                        return "boolean"
+                    if type(value) is int:
+                        return "integer"
+                    if type(value) is float:
+                        return "number"
+                    if isinstance(value, str):
+                        return "string"
+                    if isinstance(value, list):
+                        return "array"
+                    if isinstance(value, dict):
+                        return "object"
+                    return "other"
+
+                is_object = isinstance(result, dict)
+                known_keys = {"task_name", "nickname"}
+                diagnostic = {
+                    "json_parsed": json_parsed,
+                    "top_level_type": json_type(result)
+                    if json_parsed
+                    else "invalid_json",
+                    "task_name_present": is_object and "task_name" in result,
+                    "task_name_type": (
+                        json_type(result["task_name"])
+                        if is_object and "task_name" in result
+                        else "absent"
+                    ),
+                    "nickname_present": is_object and "nickname" in result,
+                    "nickname_type": (
+                        json_type(result["nickname"])
+                        if is_object and "nickname" in result
+                        else "absent"
+                    ),
+                    "known_key_count": (
+                        sum(key in result for key in known_keys) if is_object else 0
+                    ),
+                    "unknown_key_count": (
+                        sum(key not in known_keys for key in result) if is_object else 0
+                    ),
+                    "expected_task_name_matches": (
+                        is_object and result.get("task_name") == "/root/usage-worker"
+                    ),
+                    "nickname_type_valid": valid_nickname,
+                    "closed_key_set_valid": valid_keys,
                 }
-                sanitized = output
-                for original in sorted(replacements, key=len, reverse=True):
-                    sanitized = sanitized.replace(original, replacements[original])
+                record_property(
+                    "usage_spawn_diagnostic_json",
+                    json.dumps(diagnostic, sort_keys=True, separators=(",", ":")),
+                )
                 pytest.fail(
-                    "Synthetic spawn result did not match the closed V2 result "
-                    f"(characters={len(output)}, excerpt={sanitized[:256]!r})",
+                    "Synthetic spawn result did not match the closed V2 result shape",
                     pytrace=False,
                 )
 

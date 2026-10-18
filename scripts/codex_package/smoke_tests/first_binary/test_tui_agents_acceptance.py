@@ -176,6 +176,8 @@ def browser_output_diagnostic(record_property):
         "provider_observation_path": None,
         "stage_observation_path": None,
         "responses_server": None,
+        "assertion_stage": "fixture_setup",
+        "test_completed": False,
     }
     yield state
 
@@ -311,6 +313,81 @@ def browser_output_diagnostic(record_property):
         "synthetic_browser_provider_tool_name": provider_tool_name,
         "source_stage_observations": source_stage_observations,
     }
+    if not state["test_completed"]:
+        assertion_stages = {
+            "fixture_setup",
+            "tui_round_trip",
+            "response_count",
+            "prompt_round_trip",
+            "browser_namespace",
+            "browser_tool_names",
+            "function_call_output",
+            "typed_output_list",
+            "typed_output_types",
+            "provider_request",
+            "manifest_reference",
+            "manifest_contents",
+            "manifest_metadata",
+            "tool_advertisement",
+            "typed_output_text",
+            "capture_text_metadata",
+            "restoration_metadata",
+            "text_redaction",
+            "image_data_uris",
+            "image_decode",
+            "image_fixture_match",
+            "saved_capture_bytes",
+            "saved_capture_hash",
+            "server_context_exit",
+        }
+        assertion_stage = state["assertion_stage"]
+        if assertion_stage not in assertion_stages:
+            assertion_stage = "unknown"
+
+        fixture_call_outputs = [
+            item
+            for item in call_outputs
+            if item.get("call_id") == _BROWSER_FIXTURE_CALL_ID
+        ]
+        typed_output_shape = None
+        if len(fixture_call_outputs) == 1:
+            output = fixture_call_outputs[0].get("output")
+            if isinstance(output, list):
+                output_types = [
+                    item.get("type") if isinstance(item, dict) else None
+                    for item in output
+                ]
+                known_types = {"input_text", "input_image"}
+                typed_output_shape = {
+                    "is_list": True,
+                    "item_count": len(output),
+                    "input_text_count": output_types.count("input_text"),
+                    "input_image_count": output_types.count("input_image"),
+                    "other_type_count": sum(
+                        isinstance(item_type, str) and item_type not in known_types
+                        for item_type in output_types
+                    ),
+                    "missing_type_count": sum(
+                        not isinstance(item_type, str) for item_type in output_types
+                    ),
+                }
+            else:
+                typed_output_shape = {
+                    "is_list": False,
+                    "item_count": 0,
+                    "input_text_count": 0,
+                    "input_image_count": 0,
+                    "other_type_count": 0,
+                    "missing_type_count": 0,
+                }
+
+        diagnostic.update(
+            {
+                "assertion_stage": assertion_stage,
+                "fixture_call_output_count": len(fixture_call_outputs),
+                "typed_output_shape": typed_output_shape,
+            }
+        )
     record_property(
         "browser_output_diagnostic_json",
         json.dumps(diagnostic, sort_keys=True, separators=(",", ":")),
@@ -605,6 +682,7 @@ def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate
             response_id="browser-visual-fixture-followup",
         )
         with PackagedTui(isolated, "resume", browser_thread_id) as tui:
+            browser_output_diagnostic["assertion_stage"] = "tui_round_trip"
             tui.until_all(
                 (
                     "/review - review any changes and find issues",
@@ -623,7 +701,9 @@ def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate
         requests = [
             request for request in server.requests() if request.path == "/v1/responses"
         ]
+        browser_output_diagnostic["assertion_stage"] = "response_count"
         assert len(requests) == 2, {"response_request_count": len(requests)}
+        browser_output_diagnostic["assertion_stage"] = "prompt_round_trip"
         assert requests[0].message_input_texts("user")[-1:] == [prompt]
         request_body = requests[0].body_json()
         advertised = request_body.get("tools")
@@ -637,6 +717,7 @@ def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate
                     additional_tools = item.get("tools", [])
                     if isinstance(additional_tools, list):
                         advertised.extend(additional_tools)
+        browser_output_diagnostic["assertion_stage"] = "tool_advertisement"
         browser_namespace = next(
             (
                 tool
@@ -646,14 +727,17 @@ def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate
             ),
             None,
         )
+        browser_output_diagnostic["assertion_stage"] = "browser_namespace"
         assert browser_namespace is not None, {
             "advertised_tool_count": len(advertised),
         }
+        browser_output_diagnostic["assertion_stage"] = "browser_tool_names"
         assert {tool.get("name") for tool in browser_namespace.get("tools", [])} >= {
             "browser_observe",
             "browser_step",
         }
 
+        browser_output_diagnostic["assertion_stage"] = "function_call_output"
         call_outputs = [
             item
             for item in requests[1].input()
@@ -662,15 +746,19 @@ def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate
         ]
         assert len(call_outputs) == 1, {"browser_call_output_count": len(call_outputs)}
         output = call_outputs[0].get("output")
+        browser_output_diagnostic["assertion_stage"] = "typed_output_list"
         assert isinstance(output, list), {
             "typed_multimodal_output_is_list": isinstance(output, list)
         }
+        browser_output_diagnostic["assertion_stage"] = "typed_output_types"
         output_types = [part.get("type") for part in output]
         assert output_types == ["input_text", "input_image", "input_image"], {
             "typed_output_item_count": len(output_types),
             "typed_input_image_count": output_types.count("input_image"),
         }
+        browser_output_diagnostic["assertion_stage"] = "typed_output_text"
         text = output[0].get("text", "")
+        browser_output_diagnostic["assertion_stage"] = "provider_request"
         recorded_request = json.loads(
             (fixture_dir / "provider-request.json").read_text(encoding="utf-8")
         )
@@ -684,10 +772,12 @@ def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate
         ]
         assert recorded_request["arguments"]["save_artifact"] is True
 
+        browser_output_diagnostic["assertion_stage"] = "manifest_reference"
         assert (
             Path(text.split("artifact_manifest: ", 1)[1].splitlines()[0]).name
             == manifest_path.name
         )
+        browser_output_diagnostic["assertion_stage"] = "manifest_contents"
         manifest_on_disk = json.loads(manifest_path.read_text(encoding="utf-8"))
         assert [capture["label"] for capture in manifest_on_disk["captures"]] == [
             "top",
@@ -705,9 +795,11 @@ def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate
                 "scroll": {"x": 0, "y": 1200},
             },
         ]
+        browser_output_diagnostic["assertion_stage"] = "manifest_metadata"
         assert [
             capture["metadata"] for capture in manifest_on_disk["captures"]
         ] == expected_metadata
+        browser_output_diagnostic["assertion_stage"] = "capture_text_metadata"
         text_captures = [
             json.loads(line.partition("capture: ")[2])
             for line in text.splitlines()
@@ -723,6 +815,7 @@ def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate
         ]
         assert [capture["label"] for capture in text_captures] == ["top", "bottom"]
         assert [capture["metadata"] for capture in text_captures] == expected_metadata
+        browser_output_diagnostic["assertion_stage"] = "restoration_metadata"
         restoration = next(
             line for line in text.splitlines() if line.startswith("restoration: ")
         )
@@ -730,16 +823,20 @@ def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate
             json.loads(restoration.partition("restoration: ")[2])
             == manifest_on_disk["restoration"]
         )
+        browser_output_diagnostic["assertion_stage"] = "text_redaction"
         assert "artifact_manifest: browser-fixture/manifest.json" in text
         assert "data:image/png;base64," not in text
+        browser_output_diagnostic["assertion_stage"] = "image_data_uris"
         encoded_images = [part.get("image_url", "") for part in output[1:]]
         assert all(
             image.startswith("data:image/png;base64,") for image in encoded_images
         )
+        browser_output_diagnostic["assertion_stage"] = "image_decode"
         model_images = [
             base64.b64decode(image.split(",", 1)[1], validate=True)
             for image in encoded_images
         ]
+        browser_output_diagnostic["assertion_stage"] = "image_fixture_match"
         assert model_images == image_bytes, {
             "model_image_count": len(model_images),
             "model_image_bytes_match_fixture": model_images == image_bytes,
@@ -747,13 +844,17 @@ def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate
         for capture, image in zip(
             manifest_on_disk["captures"], model_images, strict=True
         ):
+            browser_output_diagnostic["assertion_stage"] = "saved_capture_bytes"
             saved = (fixture_dir / capture["path"]).read_bytes()
             assert saved == image, {
                 "capture_order": capture["order"],
                 "saved_png_matches_typed_image": saved == image,
             }
+            browser_output_diagnostic["assertion_stage"] = "saved_capture_hash"
             hash_matches = hashlib.sha256(saved).hexdigest() == capture["sha256"]
             assert hash_matches, {
                 "capture_order": capture["order"],
                 "saved_png_hash_matches_manifest": hash_matches,
             }
+        browser_output_diagnostic["assertion_stage"] = "server_context_exit"
+    browser_output_diagnostic["test_completed"] = True

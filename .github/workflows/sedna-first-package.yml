@@ -747,7 +747,7 @@ jobs:
             --app-server-archive "dist/codex-app-server-${TARGET}.tar.gz" \
             --symbols-archive "dist/symbols.tar.gz"
 
-      - name: Retain existing value-free Browser stage diagnostic
+      - name: Retain existing value-free package consumer diagnostic
         if: ${{ always() && steps.package_consumers.outcome != 'skipped' }}
         shell: bash
         run: |
@@ -758,11 +758,86 @@ jobs:
           import xml.etree.ElementTree as ET
 
           report = Path(os.environ["RUNNER_TEMP"]) / "sedna-first-consumers.xml"
-          observations = []
+          browser_observations = []
+          usage_observations = []
+          rejected_usage_observation_count = 0
+          usage_keys = {
+              "json_parsed",
+              "top_level_type",
+              "task_name_present",
+              "task_name_type",
+              "nickname_present",
+              "nickname_type",
+              "known_key_count",
+              "unknown_key_count",
+              "expected_task_name_matches",
+              "nickname_type_valid",
+              "closed_key_set_valid",
+          }
+          top_level_types = {
+              "invalid_json",
+              "object",
+              "array",
+              "string",
+              "boolean",
+              "integer",
+              "number",
+              "null",
+          }
+          value_types = {
+              "absent",
+              "null",
+              "string",
+              "boolean",
+              "integer",
+              "number",
+              "array",
+              "object",
+          }
+
+          def valid_usage_observation(value):
+              if not isinstance(value, dict) or set(value) != usage_keys:
+                  return False
+              boolean_keys = (
+                  "json_parsed",
+                  "task_name_present",
+                  "nickname_present",
+                  "expected_task_name_matches",
+                  "nickname_type_valid",
+                  "closed_key_set_valid",
+              )
+              if any(type(value[key]) is not bool for key in boolean_keys):
+                  return False
+              count_keys = ("known_key_count", "unknown_key_count")
+              if any(
+                  type(value[key]) is not int or value[key] < 0
+                  for key in count_keys
+              ):
+                  return False
+              enum_values = (
+                  ("top_level_type", top_level_types),
+                  ("task_name_type", value_types),
+                  ("nickname_type", value_types),
+              )
+              return all(
+                  type(value[key]) is str and value[key] in allowed
+                  for key, allowed in enum_values
+              )
+
           if report.exists():
               for prop in ET.parse(report).iter("property"):
                   if prop.get("name") == "browser_output_diagnostic_json":
-                      observations.append(json.loads(prop.attrib["value"]))
+                      browser_observations.append(json.loads(prop.attrib["value"]))
+                  elif prop.get("name") == "usage_spawn_diagnostic_json":
+                      try:
+                          observation = json.loads(prop.attrib["value"])
+                      except (KeyError, TypeError, ValueError):
+                          rejected_usage_observation_count += 1
+                          continue
+                      if valid_usage_observation(observation):
+                          usage_observations.append(observation)
+                      else:
+                          rejected_usage_observation_count += 1
           payload = {
               "sourceCommit": os.environ["SOURCE_SHA"],
               "sourceTree": os.environ["SOURCE_TREE"],
@@ -770,19 +845,27 @@ jobs:
               "workflowHostTree": os.environ["WORKFLOW_HOST_TREE"],
               "workflowRunId": os.environ["GITHUB_RUN_ID"],
               "target": os.environ["TARGET"],
-              "diagnosticCount": len(observations),
-              "browserOutputDiagnostics": observations,
+              "diagnosticCount": (
+                  len(browser_observations)
+                  + len(usage_observations)
+                  + rejected_usage_observation_count
+              ),
+              "browserOutputDiagnosticCount": len(browser_observations),
+              "browserOutputDiagnostics": browser_observations,
+              "usageSpawnDiagnosticCount": len(usage_observations),
+              "usageSpawnDiagnostics": usage_observations,
+              "rejectedUsageSpawnDiagnosticCount": rejected_usage_observation_count,
           }
           encoded = json.dumps(payload, sort_keys=True, indent=2) + "\n"
-          (Path(os.environ["RUNNER_TEMP"]) / "sedna-first-browser-diagnostic.json").write_text(encoded)
+          (Path(os.environ["RUNNER_TEMP"]) / "sedna-first-consumer-diagnostic.json").write_text(encoded)
           print(encoded)
           PY
 
-      - name: Upload value-free Browser stage diagnostic
+      - name: Upload value-free package consumer diagnostic
         if: ${{ always() && steps.package_consumers.outcome != 'skipped' }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: sedna-first-browser-diagnostic-${{ needs.identity.outputs.source_short }}-${{ matrix.arch }}-${{ github.run_id }}
-          path: ${{ runner.temp }}/sedna-first-browser-diagnostic.json
+          name: sedna-first-consumer-diagnostic-${{ needs.identity.outputs.source_short }}-${{ matrix.arch }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/sedna-first-consumer-diagnostic.json
           if-no-files-found: error
           retention-days: 3
