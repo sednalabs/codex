@@ -7,6 +7,7 @@ use crate::agent::api::AgentControl;
 use crate::agent::api::AgentInfo;
 use crate::agent::api::AgentInput;
 use crate::agent::api::AgentTarget;
+use crate::agent::api::ExplicitInterAgentUpdate;
 use crate::agent::api::SendRequest;
 use crate::agent::api::SpawnRequest;
 use crate::agent::next_thread_spawn_depth;
@@ -44,6 +45,7 @@ use codex_extension_api::empty_extension_registry;
 use codex_features::Feature;
 use codex_history::CompactedItem;
 use codex_history::InitialHistory;
+use codex_history::InterAgentCommunicationIntent;
 use codex_history::ResumedHistory;
 use codex_history::RolloutItem;
 use codex_login::AuthManager;
@@ -96,6 +98,7 @@ use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::protocol::TurnEnvironmentSelections;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::protocol::WorldStateItem;
+use codex_rollout::RolloutRecorder;
 use codex_thread_store::ArchiveThreadParams;
 use codex_thread_store::InMemoryThreadStore;
 use codex_thread_store::LocalThreadStore;
@@ -1005,6 +1008,453 @@ async fn send_inter_agent_communication_without_turn_queues_message_without_trig
 }
 
 #[tokio::test]
+async fn explicit_progress_is_admitted_to_a_completed_loaded_root_without_starting_a_turn() {
+    let tree = explicit_update_test_tree().await;
+    complete_control_test_thread(&tree.root, "root turn complete").await;
+    assert_eq!(
+        tree.root.agent_status().await,
+        AgentStatus::Completed(Some("root turn complete".to_string()))
+    );
+    assert!(tree.root.is_running(), "completed root channel stays open");
+    assert_eq!(tree.worker.agent_status().await, AgentStatus::Running);
+    assert!(tree.root.session.active_turn.lock().await.is_none());
+
+    let update = ExplicitInterAgentUpdate {
+        idempotency_key: "worker-progress-after-root-completion".to_string(),
+        intent: InterAgentCommunicationIntent::Progress,
+        supersedes: Vec::new(),
+    };
+    let message = AgentMessage::Plaintext("completed the first step".to_string());
+    let context = AgentCommunicationContext::new(AgentCommunicationKind::Message, tree.worker_id);
+    let update_id = tree
+        .control
+        .send_explicit_inter_agent_update(
+            tree.worker_id,
+            tree.root_id,
+            tree.harness.config.clone(),
+            message.clone(),
+            update.clone(),
+            context.clone(),
+        )
+        .await
+        .expect("completed already-loaded root should accept quiet progress");
+    let update_id = ResponseItemId::new(update_id);
+
+    let replayed_id = tree
+        .control
+        .send_explicit_inter_agent_update(
+            tree.worker_id,
+            tree.root_id,
+            tree.harness.config.clone(),
+            message,
+            update,
+            context,
+        )
+        .await
+        .expect("same explicit request should replay its durable receipt");
+    assert_eq!(ResponseItemId::new(replayed_id), update_id);
+
+    let items = explicit_update_rollout_items(&tree.root).await;
+    assert_eq!(
+        items
+            .iter()
+            .filter(|item| matches!(
+                item,
+                RolloutItem::InterAgentCommunicationMetadata {
+                    admission: Some(admission),
+                    ..
+                } if admission.update_id == update_id
+            ))
+            .count(),
+        1,
+        "replay must not append a second admission"
+    );
+    assert!(
+        !items.iter().any(|item| matches!(
+            item,
+            RolloutItem::ResponseItem(response)
+                if response
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.inter_agent_update_id.as_ref())
+                    == Some(&update_id)
+        )),
+        "quiet admission must not be represented before the root processes it"
+    );
+    assert!(tree.root.session.active_turn.lock().await.is_none());
+    assert_eq!(
+        tree.root.session.clone_history().await.raw_items().count(),
+        0,
+        "quiet admission must not add model-visible history"
+    );
+    assert!(
+        tree.root
+            .session
+            .input_queue
+            .has_pending_mailbox_items()
+            .await
+    );
+
+    let queued = tree.root.session.input_queue.drain_mailbox().await;
+    assert_eq!(queued.len(), 1, "replay must not duplicate queued mail");
+    assert_eq!(queued[0].communication.id.as_ref(), Some(&update_id));
+    let turn = tree.root.session.new_default_turn().await;
+    tree.root
+        .session
+        .record_inter_agent_communication(
+            turn.as_ref(),
+            turn.model_info(),
+            queued[0].communication.clone(),
+        )
+        .await
+        .expect("the admitted update should later be represented once");
+
+    let items = explicit_update_rollout_items(&tree.root).await;
+    let represented = items
+        .iter()
+        .filter_map(|item| match item {
+            RolloutItem::ResponseItem(response)
+                if response
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.inter_agent_update_id.as_ref())
+                    == Some(&update_id) =>
+            {
+                Some(response)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(represented.len(), 1);
+    assert_eq!(represented[0].item.id(), Some(&update_id));
+    assert_eq!(
+        tree.root.agent_status().await,
+        AgentStatus::Completed(Some("root turn complete".to_string()))
+    );
+    assert!(
+        tree.root.is_running(),
+        "representation does not close the root"
+    );
+    assert!(tree.root.session.active_turn.lock().await.is_none());
+
+    let report = tree
+        .harness
+        .manager
+        .shutdown_all_threads_bounded(Duration::from_secs(5))
+        .await;
+    assert_eq!(report.submit_failed, Vec::<ThreadId>::new());
+    assert_eq!(report.timed_out, Vec::<ThreadId>::new());
+}
+
+#[tokio::test]
+async fn explicit_update_rejects_completed_sender_without_persisting_an_admission() {
+    let tree = explicit_update_test_tree().await;
+    complete_control_test_thread(&tree.worker, "worker turn complete").await;
+    assert_eq!(
+        tree.worker.agent_status().await,
+        AgentStatus::Completed(Some("worker turn complete".to_string()))
+    );
+    assert!(
+        tree.worker.is_running(),
+        "completed sender channel stays open"
+    );
+
+    let result = tree
+        .control
+        .send_explicit_inter_agent_update(
+            tree.worker_id,
+            tree.root_id,
+            tree.harness.config.clone(),
+            AgentMessage::Plaintext("late worker progress".to_string()),
+            ExplicitInterAgentUpdate {
+                idempotency_key: "completed-worker-must-not-send".to_string(),
+                intent: InterAgentCommunicationIntent::Progress,
+                supersedes: Vec::new(),
+            },
+            AgentCommunicationContext::new(AgentCommunicationKind::Message, tree.worker_id),
+        )
+        .await;
+    assert!(result.is_err(), "completed senders remain rejected");
+    assert_eq!(
+        explicit_update_rollout_items(&tree.root)
+            .await
+            .iter()
+            .filter(|item| matches!(
+                item,
+                RolloutItem::InterAgentCommunicationMetadata {
+                    admission: Some(admission),
+                    ..
+                } if admission.idempotency_key == "completed-worker-must-not-send"
+            ))
+            .count(),
+        0,
+        "rejected sender must not leave a durable admission"
+    );
+    assert!(
+        !tree
+            .root
+            .session
+            .input_queue
+            .has_pending_mailbox_items()
+            .await,
+        "rejected sender must not enqueue mail"
+    );
+
+    let report = tree
+        .harness
+        .manager
+        .shutdown_all_threads_bounded(Duration::from_secs(5))
+        .await;
+    assert_eq!(report.submit_failed, Vec::<ThreadId>::new());
+    assert_eq!(report.timed_out, Vec::<ThreadId>::new());
+}
+
+#[tokio::test]
+async fn explicit_update_rejects_root_that_is_not_loaded_before_admission() {
+    let tree = explicit_update_test_tree().await;
+    let rollout_path = tree.root.rollout_path().expect("root rollout path");
+    assert!(
+        tree.harness
+            .manager
+            .remove_thread(&tree.root_id)
+            .await
+            .is_some()
+    );
+    assert!(tree.harness.manager.get_thread(tree.root_id).await.is_err());
+
+    let result = tree
+        .control
+        .send_explicit_inter_agent_update(
+            tree.worker_id,
+            tree.root_id,
+            tree.harness.config.clone(),
+            AgentMessage::Plaintext("progress to absent root".to_string()),
+            ExplicitInterAgentUpdate {
+                idempotency_key: "absent-root-must-not-reload-for-admission".to_string(),
+                intent: InterAgentCommunicationIntent::Progress,
+                supersedes: Vec::new(),
+            },
+            AgentCommunicationContext::new(AgentCommunicationKind::Message, tree.worker_id),
+        )
+        .await;
+    assert!(
+        result.is_err(),
+        "an absent root is not an admitted recipient"
+    );
+    assert!(
+        tree.harness.manager.get_thread(tree.root_id).await.is_err(),
+        "explicit admission must not replace the captured missing root by reloading it"
+    );
+    assert_eq!(
+        explicit_update_rollout_items_at(&rollout_path, tree.root_id)
+            .await
+            .iter()
+            .filter(|item| matches!(
+                item,
+                RolloutItem::InterAgentCommunicationMetadata {
+                    admission: Some(_),
+                    ..
+                }
+            ))
+            .count(),
+        0,
+        "absent-root rejection must not append an admission"
+    );
+    assert!(
+        !tree
+            .root
+            .session
+            .input_queue
+            .has_pending_mailbox_items()
+            .await,
+        "absent-root rejection must not enqueue mail"
+    );
+    tree.root
+        .shutdown_and_wait()
+        .await
+        .expect("removed original root should shut down cleanly");
+
+    let report = tree
+        .harness
+        .manager
+        .shutdown_all_threads_bounded(Duration::from_secs(5))
+        .await;
+    assert_eq!(report.submit_failed, Vec::<ThreadId>::new());
+    assert_eq!(report.timed_out, Vec::<ThreadId>::new());
+}
+
+#[tokio::test]
+async fn explicit_update_rejects_root_replaced_before_membership_recheck() {
+    let tree = explicit_update_test_tree().await;
+    // The ordinary Exec root is already resident, so its load/pin path completes
+    // inline. Holding only the existing admission mutex makes this first poll stop
+    // at the recipient's current-membership boundary without adding a test hook.
+    let admission_guard = tree
+        .root
+        .session
+        .explicit_inter_agent_admission
+        .lock()
+        .await;
+    let mut request = Box::pin(tree.control.send_explicit_inter_agent_update(
+        tree.worker_id,
+        tree.root_id,
+        tree.harness.config.clone(),
+        AgentMessage::Plaintext("progress while root is replaced".to_string()),
+        ExplicitInterAgentUpdate {
+            idempotency_key: "replaced-root-must-not-receive".to_string(),
+            intent: InterAgentCommunicationIntent::Progress,
+            supersedes: Vec::new(),
+        },
+        AgentCommunicationContext::new(AgentCommunicationKind::Message, tree.worker_id),
+    ));
+    let first_poll = poll_fn(|cx| Poll::Ready(request.as_mut().poll(cx))).await;
+    assert!(
+        first_poll.is_pending(),
+        "request should wait at the existing per-recipient admission boundary"
+    );
+
+    assert!(
+        tree.harness
+            .manager
+            .remove_thread(&tree.root_id)
+            .await
+            .is_some()
+    );
+    let _replacement_residency_pin = tree
+        .control
+        .ensure_v2_agent_loaded(
+            tree.harness.config.clone(),
+            tree.root_id,
+            /*parent*/ None,
+        )
+        .await
+        .expect("the registered root should reload as a different physical session");
+    let replacement = tree
+        .harness
+        .manager
+        .get_thread(tree.root_id)
+        .await
+        .expect("replacement root should be registered");
+    assert!(!Arc::ptr_eq(&tree.root, &replacement));
+    assert_eq!(replacement.session.thread_id, tree.root_id);
+    assert_eq!(
+        replacement.multi_agent_version(),
+        Some(codex_protocol::protocol::MultiAgentVersion::V2)
+    );
+    assert!(replacement.is_running());
+    assert!(Arc::ptr_eq(
+        &tree.control.runtime.registry,
+        &replacement.session.services.local_agent_runtime.registry
+    ));
+
+    drop(admission_guard);
+    let result = request
+        .await
+        .expect_err("replaced root must fail current membership revalidation");
+    assert!(matches!(
+        result.details(),
+        CodexErrorDetails::InvalidRequest(_)
+    ));
+    assert_eq!(
+        explicit_update_rollout_items(&replacement)
+            .await
+            .iter()
+            .filter(|item| matches!(
+                item,
+                RolloutItem::InterAgentCommunicationMetadata {
+                    admission: Some(admission),
+                    ..
+                } if admission.idempotency_key == "replaced-root-must-not-receive"
+            ))
+            .count(),
+        0,
+        "replacement rejection must not append an admission"
+    );
+    assert!(
+        !replacement
+            .session
+            .input_queue
+            .has_pending_mailbox_items()
+            .await,
+        "replacement rejection must not enqueue mail"
+    );
+    tree.root
+        .shutdown_and_wait()
+        .await
+        .expect("removed original root should shut down cleanly");
+
+    let report = tree
+        .harness
+        .manager
+        .shutdown_all_threads_bounded(Duration::from_secs(5))
+        .await;
+    assert_eq!(report.submit_failed, Vec::<ThreadId>::new());
+    assert_eq!(report.timed_out, Vec::<ThreadId>::new());
+}
+
+#[tokio::test]
+async fn explicit_update_rejects_a_closed_root_channel_without_persisting_an_admission() {
+    let tree = explicit_update_test_tree().await;
+    tree.root
+        .shutdown_and_wait()
+        .await
+        .expect("root should shut down cleanly");
+    assert!(!tree.root.is_running(), "shutdown closes the root channel");
+    assert_eq!(tree.worker.agent_status().await, AgentStatus::Running);
+    assert!(tree.worker.is_running(), "worker remains a live sender");
+    let rollout_path = tree.root.rollout_path().expect("root rollout path");
+
+    let result = tree
+        .control
+        .send_explicit_inter_agent_update(
+            tree.worker_id,
+            tree.root_id,
+            tree.harness.config.clone(),
+            AgentMessage::Plaintext("progress to a closed root".to_string()),
+            ExplicitInterAgentUpdate {
+                idempotency_key: "closed-root-must-not-receive".to_string(),
+                intent: InterAgentCommunicationIntent::Progress,
+                supersedes: Vec::new(),
+            },
+            AgentCommunicationContext::new(AgentCommunicationKind::Message, tree.worker_id),
+        )
+        .await;
+    assert!(result.is_err(), "closed root must be rejected");
+    assert_eq!(
+        explicit_update_rollout_items_at(&rollout_path, tree.root_id)
+            .await
+            .iter()
+            .filter(|item| matches!(
+                item,
+                RolloutItem::InterAgentCommunicationMetadata {
+                    admission: Some(admission),
+                    ..
+                } if admission.idempotency_key == "closed-root-must-not-receive"
+            ))
+            .count(),
+        0,
+        "closed-root rejection must not leave an admission"
+    );
+    assert!(
+        !tree
+            .worker
+            .session
+            .input_queue
+            .has_pending_mailbox_items()
+            .await,
+        "closed-root rejection must not enqueue to the sender"
+    );
+
+    let report = tree
+        .harness
+        .manager
+        .shutdown_all_threads_bounded(Duration::from_secs(5))
+        .await;
+    assert_eq!(report.submit_failed, Vec::<ThreadId>::new());
+    assert_eq!(report.timed_out, Vec::<ThreadId>::new());
+}
+
+#[tokio::test]
 async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
     check_v2_agent_reload(V2ReloadRoute::Sender).await;
 }
@@ -1169,6 +1619,145 @@ async fn spawn_v2_reload_test_child(
         )
         .await
         .expect("spawn_agent should succeed")
+}
+
+struct ExplicitUpdateTestTree {
+    harness: AgentControlHarness,
+    root_id: ThreadId,
+    root: Arc<CodexThread>,
+    worker_id: ThreadId,
+    worker: Arc<CodexThread>,
+    control: LocalAgentControl,
+}
+
+async fn explicit_update_test_tree() -> ExplicitUpdateTestTree {
+    let (home, mut config) = test_config().await;
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("enable Multi Agent V2");
+    config
+        .features
+        .enable(Feature::Sqlite)
+        .expect("enable SQLite");
+    let harness = AgentControlHarness::new_with_config(home, config).await;
+    let (root_id, root) = harness.start_paginated_thread().await;
+    let control = root
+        .session
+        .services
+        .local_agent_runtime
+        .control(root.session.session_id());
+    let worker_id = spawn_v2_reload_test_child(&control, harness.config.clone(), &root, "worker")
+        .await
+        .thread_id;
+    let worker = harness
+        .manager
+        .get_thread(worker_id)
+        .await
+        .expect("worker should remain loaded");
+    set_control_test_thread_running(&root).await;
+    set_control_test_thread_running(&worker).await;
+    assert_eq!(
+        root.multi_agent_version(),
+        Some(codex_protocol::protocol::MultiAgentVersion::V2)
+    );
+    assert_eq!(
+        worker.multi_agent_version(),
+        Some(codex_protocol::protocol::MultiAgentVersion::V2)
+    );
+    ExplicitUpdateTestTree {
+        harness,
+        root_id,
+        root,
+        worker_id,
+        worker,
+        control,
+    }
+}
+
+async fn set_control_test_thread_running(thread: &CodexThread) {
+    let turn = thread.session.new_default_turn().await;
+    thread
+        .session
+        .send_event(
+            turn.as_ref(),
+            EventMsg::TurnStarted(TurnStartedEvent {
+                turn_attribution: None,
+                turn_id: turn.sub_id.clone(),
+                root_turn_id: None,
+                trace_id: None,
+                started_at: None,
+                model_context_window: None,
+                collaboration_mode_kind: ModeKind::Default,
+            }),
+        )
+        .await;
+    assert_eq!(thread.agent_status().await, AgentStatus::Running);
+}
+
+async fn complete_control_test_thread(thread: &CodexThread, last_agent_message: &str) {
+    let turn = thread.session.new_default_turn().await;
+    thread
+        .session
+        .send_event(
+            turn.as_ref(),
+            EventMsg::TurnStarted(TurnStartedEvent {
+                turn_attribution: None,
+                turn_id: turn.sub_id.clone(),
+                root_turn_id: None,
+                trace_id: None,
+                started_at: None,
+                model_context_window: None,
+                collaboration_mode_kind: ModeKind::Default,
+            }),
+        )
+        .await;
+    assert_eq!(thread.agent_status().await, AgentStatus::Running);
+    let mut status_rx = thread.subscribe_status();
+    thread
+        .session
+        .send_event(
+            turn.as_ref(),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                root_turn_id: None,
+                turn_id: turn.sub_id.clone(),
+                started_at: None,
+                last_agent_message: Some(last_agent_message.to_string()),
+                error: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            }),
+        )
+        .await;
+    timeout(Duration::from_secs(5), status_rx.changed())
+        .await
+        .expect("turn completion should update the status watch")
+        .expect("status watch should remain open");
+    assert_eq!(
+        status_rx.borrow_and_update().clone(),
+        AgentStatus::Completed(Some(last_agent_message.to_string()))
+    );
+}
+
+async fn explicit_update_rollout_items(thread: &CodexThread) -> Vec<RolloutItem> {
+    let path = thread.rollout_path().expect("thread rollout path");
+    explicit_update_rollout_items_at(&path, thread.session.thread_id).await
+}
+
+async fn explicit_update_rollout_items_at(
+    path: &std::path::Path,
+    thread_id: ThreadId,
+) -> Vec<RolloutItem> {
+    if codex_rollout::existing_rollout_path(path).await.is_none() {
+        return Vec::new();
+    }
+    let (items, stored_thread_id, parse_errors) = RolloutRecorder::load_rollout_items(path)
+        .await
+        .expect("read test thread rollout");
+    assert_eq!(stored_thread_id, Some(thread_id));
+    assert_eq!(parse_errors, 0);
+    items
 }
 
 async fn check_v2_agent_reload(route: V2ReloadRoute) {
