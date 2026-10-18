@@ -2744,7 +2744,7 @@ async fn plaintext_multi_agent_v2_completion_sends_agent_message(
                                 .filter(|item| item["role"] == "user")
                                 .flat_map(|item| item["content"].as_array().into_iter().flatten())
                                 .filter_map(|content| content["text"].as_str())
-                                .last();
+                                .next_back();
                             let has_wait_output = input.into_iter().flatten().any(|item| {
                                 item["type"] == "function_call_output" && item["call_id"] == call_id
                             });

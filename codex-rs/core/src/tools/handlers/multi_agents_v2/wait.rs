@@ -3,8 +3,6 @@ use crate::agent::agent_resolver::resolve_agent_target;
 use crate::agent::api::AgentWaitRegistration;
 use crate::agent::api::AgentWaitResult;
 use crate::agent::api::AgentWaitReturnWhen;
-#[cfg(test)]
-use crate::session::ExplicitMailboxActivity;
 use crate::session::InputQueue;
 use crate::session::InputQueueActivity;
 use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
