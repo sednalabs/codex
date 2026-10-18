@@ -4,8 +4,11 @@ use std::fs;
 use std::io::ErrorKind;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use axum::Form;
 use axum::Router;
 use axum::body::Body;
 use axum::body::to_bytes;
@@ -19,9 +22,11 @@ use axum::http::StatusCode;
 use axum::http::header::AUTHORIZATION;
 use axum::http::header::CONTENT_TYPE;
 use axum::http::header::HOST;
+use axum::http::header::RETRY_AFTER;
 use axum::http::header::WWW_AUTHENTICATE;
 use axum::middleware;
 use axum::middleware::Next;
+use axum::response::IntoResponse;
 use axum::response::Response;
 use axum::routing::get;
 use axum::routing::post;
@@ -50,6 +55,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use serde_json::json;
 use tokio::sync::Mutex;
+use tokio::sync::Notify;
 use tokio::task;
 use tokio::time::sleep;
 
@@ -58,6 +64,7 @@ struct TestToolServer {
     tools: Arc<Vec<Tool>>,
     resources: Arc<Vec<Resource>>,
     resource_templates: Arc<Vec<ResourceTemplate>>,
+    side_effect_count: Arc<AtomicUsize>,
 }
 
 const MEMO_URI: &str = "memo://codex/example-note";
@@ -65,13 +72,17 @@ const MEMO_CONTENT: &str = "This is a sample MCP resource served by the rmcp tes
 const MCP_SESSION_ID_HEADER: &str = "mcp-session-id";
 const SESSION_POST_FAILURE_CONTROL_PATH: &str = "/test/control/session-post-failure";
 const INITIALIZE_POST_FAILURE_CONTROL_PATH: &str = "/test/control/initialize-post-failure";
+const INITIALIZE_POST_FAILURE_STARTED_CONTROL_PATH: &str =
+    "/test/control/initialize-post-failure/wait-started";
 const INITIALIZED_NOTIFICATION_POST_FAILURE_CONTROL_PATH: &str =
     "/test/control/initialized-notification-post-failure";
+const SIDE_EFFECT_COUNT_PATH: &str = "/test/control/side-effect-count";
 const MAX_MCP_POST_BODY_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone, Default)]
 struct PostFailureState {
     armed_failure: Arc<Mutex<Option<ArmedFailure>>>,
+    side_effect_count: Arc<AtomicUsize>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -81,15 +92,24 @@ enum ArmedFailureTarget {
     Session,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 struct ArmedFailure {
     target: ArmedFailureTarget,
     status: StatusCode,
     remaining: usize,
     /// Raw `WWW-Authenticate` challenge header field values returned with the failure.
     www_authenticate_headers: Vec<HeaderValue>,
+    retry_after: Option<HeaderValue>,
     content_type: Option<HeaderValue>,
     body: Option<String>,
+    hold: Option<FailureHold>,
+    dispatch_before_response: bool,
+}
+
+#[derive(Clone)]
+struct FailureHold {
+    started: Arc<Notify>,
+    release: Arc<Notify>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -99,8 +119,19 @@ struct ArmSessionPostFailureRequest {
     /// Raw `WWW-Authenticate` challenge header field values to add to the failure.
     #[serde(default)]
     www_authenticate_headers: Vec<String>,
+    retry_after: Option<String>,
     content_type: Option<String>,
     body: Option<String>,
+    #[serde(default)]
+    hold_until_released: bool,
+    #[serde(default)]
+    dispatch_before_response: bool,
+}
+
+#[derive(Deserialize)]
+struct TokenRequest {
+    grant_type: String,
+    refresh_token: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -166,6 +197,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("starting rmcp streamable http test server on http://{actual_bind_addr}/mcp");
 
     let router = Router::new()
+        .route(SIDE_EFFECT_COUNT_PATH, get(read_side_effect_count))
         .route(
             SESSION_POST_FAILURE_CONTROL_PATH,
             post(arm_session_post_failure),
@@ -173,6 +205,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route(
             INITIALIZE_POST_FAILURE_CONTROL_PATH,
             post(arm_initialize_post_failure),
+        )
+        .route(
+            INITIALIZE_POST_FAILURE_STARTED_CONTROL_PATH,
+            get(wait_initialize_post_failure_started),
         )
         .route(
             INITIALIZED_NOTIFICATION_POST_FAILURE_CONTROL_PATH,
@@ -203,22 +239,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }),
         )
-        .route(
-            "/oauth/token",
-            post(|| async {
-                (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({
-                        "error": "invalid_grant",
-                        "error_description": "refresh token expired or revoked",
-                    })),
-                )
-            }),
-        )
+        .route("/oauth/token", post(refresh_token))
         .nest_service(
             "/mcp",
             StreamableHttpService::new(
-                || Ok(TestToolServer::new()),
+                {
+                    let side_effect_count = Arc::clone(&post_failure_state.side_effect_count);
+                    move || Ok(TestToolServer::new(Arc::clone(&side_effect_count)))
+                },
                 Arc::new(LocalSessionManager::default()),
                 StreamableHttpServerConfig::default(),
             ),
@@ -263,11 +291,32 @@ impl ServerHandler for TestToolServer {
 
     fn list_tools(
         &self,
-        _request: Option<PaginatedRequestParams>,
+        request: Option<PaginatedRequestParams>,
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
     ) -> impl std::future::Future<Output = Result<ListToolsResult, McpError>> + Send + '_ {
         let tools = self.tools.clone();
-        async move { Ok(ListToolsResult::with_all_items((*tools).clone())) }
+        async move {
+            if std::env::var_os("MCP_PAGINATE_TOOLS").is_some() {
+                return match request.as_ref().and_then(|params| params.cursor.as_deref()) {
+                    None => {
+                        let mut result = ListToolsResult::with_all_items(
+                            tools.iter().take(1).cloned().collect(),
+                        );
+                        result.next_cursor = Some(String::new());
+                        Ok(result)
+                    }
+                    Some("") => Ok(ListToolsResult::with_all_items(
+                        tools.iter().skip(1).cloned().collect(),
+                    )),
+                    Some(cursor) => Err(McpError::invalid_params(
+                        ["unknown tool cursor: ", cursor].concat(),
+                        None,
+                    )),
+                };
+            }
+
+            Ok(ListToolsResult::with_all_items((*tools).clone()))
+        }
     }
 
     fn list_resources(
@@ -342,6 +391,17 @@ impl ServerHandler for TestToolServer {
                 result.structured_content = Some(structured_content);
                 Ok(result.into())
             }
+            "second_page_tool" => {
+                let mut result = CallToolResult::success(Vec::new());
+                result.structured_content = Some(json!({ "page": 2 }));
+                Ok(result.into())
+            }
+            "counter_write" => {
+                let count = self.side_effect_count.fetch_add(1, Ordering::SeqCst) + 1;
+                let mut result = CallToolResult::success(Vec::new());
+                result.structured_content = Some(json!({ "side_effect_count": count }));
+                Ok(result.into())
+            }
             other => Err(McpError::invalid_params(
                 format!("unknown tool: {other}"),
                 None,
@@ -351,15 +411,28 @@ impl ServerHandler for TestToolServer {
 }
 
 impl TestToolServer {
-    fn new() -> Self {
-        let tools = vec![Self::echo_tool()];
+    fn new(side_effect_count: Arc<AtomicUsize>) -> Self {
+        let tools = vec![
+            Self::echo_tool(),
+            Self::second_page_tool(),
+            Self::counter_write_tool(),
+        ];
         let resources = vec![Self::memo_resource()];
         let resource_templates = vec![Self::memo_template()];
         Self {
             tools: Arc::new(tools),
             resources: Arc::new(resources),
             resource_templates: Arc::new(resource_templates),
+            side_effect_count,
         }
+    }
+
+    fn counter_write_tool() -> Tool {
+        Tool::new(
+            Cow::Borrowed("counter_write"),
+            Cow::Borrowed("Increment the recovery test server's side-effect counter."),
+            Arc::new(JsonObject::new()),
+        )
     }
 
     fn echo_tool() -> Tool {
@@ -397,6 +470,16 @@ impl TestToolServer {
         }))
         .expect("echo tool output schema should deserialize");
         tool.output_schema = Some(Arc::new(output_schema));
+        tool.annotations = Some(ToolAnnotations::new().read_only(true));
+        tool
+    }
+
+    fn second_page_tool() -> Tool {
+        let mut tool = Tool::new(
+            Cow::Borrowed("second_page_tool"),
+            Cow::Borrowed("Return proof that a tool discovered after a cursor is callable."),
+            Arc::new(JsonObject::new()),
+        );
         tool.annotations = Some(ToolAnnotations::new().read_only(true));
         tool
     }
@@ -466,6 +549,41 @@ async fn require_gateway_bearer(
     }
 }
 
+async fn refresh_token(
+    Form(request): Form<TokenRequest>,
+) -> Result<Json<serde_json::Value>, Response> {
+    if request.grant_type != "refresh_token" {
+        return Err(StatusCode::BAD_REQUEST.into_response());
+    }
+
+    if let Ok(expected_refresh_token) = std::env::var("MCP_EXPECT_REFRESH_TOKEN")
+        && request.refresh_token.as_deref() != Some(expected_refresh_token.as_str())
+    {
+        return Err(StatusCode::UNAUTHORIZED.into_response());
+    }
+
+    let access_token = std::env::var("MCP_REFRESH_ACCESS_TOKEN").map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "invalid_grant",
+                "error_description": "refresh token expired or revoked",
+            })),
+        )
+            .into_response()
+    })?;
+    let mut response = json!({
+        "access_token": access_token,
+        "token_type": "Bearer",
+        "expires_in": 3600,
+        "scope": "profile",
+    });
+    if let Some(refresh_token) = request.refresh_token {
+        response["refresh_token"] = json!(refresh_token);
+    }
+    Ok(Json(response))
+}
+
 async fn arm_session_post_failure(
     State(state): State<PostFailureState>,
     Json(request): Json<ArmSessionPostFailureRequest>,
@@ -478,6 +596,22 @@ async fn arm_initialize_post_failure(
     Json(request): Json<ArmSessionPostFailureRequest>,
 ) -> Result<StatusCode, StatusCode> {
     arm_post_failure(state, request, ArmedFailureTarget::Initialize).await
+}
+
+async fn wait_initialize_post_failure_started(State(state): State<PostFailureState>) -> StatusCode {
+    let hold = state
+        .armed_failure
+        .lock()
+        .await
+        .as_ref()
+        .and_then(|failure| failure.hold.clone());
+    let Some(hold) = hold else {
+        return StatusCode::NOT_FOUND;
+    };
+    match tokio::time::timeout(Duration::from_secs(10), hold.started.notified()).await {
+        Ok(()) => StatusCode::NO_CONTENT,
+        Err(_) => StatusCode::REQUEST_TIMEOUT,
+    }
 }
 
 async fn arm_initialized_notification_post_failure(
@@ -502,6 +636,14 @@ async fn arm_post_failure(
         .content_type
         .map(|value| HeaderValue::from_str(&value).map_err(|_| StatusCode::BAD_REQUEST))
         .transpose()?;
+    let retry_after = request
+        .retry_after
+        .map(|value| HeaderValue::from_str(&value).map_err(|_| StatusCode::BAD_REQUEST))
+        .transpose()?;
+    let hold = request.hold_until_released.then(|| FailureHold {
+        started: Arc::new(Notify::new()),
+        release: Arc::new(Notify::new()),
+    });
     let armed_failure = if request.remaining == 0 {
         None
     } else {
@@ -510,12 +652,23 @@ async fn arm_post_failure(
             status,
             remaining: request.remaining,
             www_authenticate_headers,
+            retry_after,
             content_type,
             body: request.body,
+            hold,
+            dispatch_before_response: request.dispatch_before_response,
         })
     };
-    *state.armed_failure.lock().await = armed_failure;
+    let mut current_failure = state.armed_failure.lock().await;
+    let previous = std::mem::replace(&mut *current_failure, armed_failure);
+    if let Some(previous) = previous.and_then(|failure| failure.hold) {
+        previous.release.notify_one();
+    }
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn read_side_effect_count(State(state): State<PostFailureState>) -> Json<usize> {
+    Json(state.side_effect_count.load(Ordering::SeqCst))
 }
 
 async fn fail_mcp_post_when_armed(
@@ -538,7 +691,7 @@ async fn fail_mcp_post_when_armed(
     let has_session_id = parts.headers.contains_key(MCP_SESSION_ID_HEADER);
     let mcp_method = request_mcp_method(&body_bytes);
 
-    {
+    let armed_response = {
         let mut armed_failure = state.armed_failure.lock().await;
         if let Some(failure) = armed_failure.as_mut()
             && failure.remaining > 0
@@ -559,12 +712,15 @@ async fn fail_mcp_post_when_armed(
             failure.remaining -= 1;
             let status = failure.status;
             let www_authenticate_headers = failure.www_authenticate_headers.clone();
+            let retry_after = failure.retry_after.clone();
             let content_type = failure.content_type.clone();
+            let hold = failure.hold.clone();
+            let dispatch_before_response = failure.dispatch_before_response;
             let body = failure
                 .body
                 .clone()
                 .unwrap_or_else(|| format!("forced session failure with status {status}"));
-            if failure.remaining == 0 {
+            if failure.remaining == 0 && hold.is_none() {
                 *armed_failure = None;
             }
             let mut response = Response::new(Body::from(body));
@@ -577,12 +733,27 @@ async fn fail_mcp_post_when_armed(
                     .headers_mut()
                     .append(WWW_AUTHENTICATE, www_authenticate_header);
             }
-            return response;
+            if let Some(retry_after) = retry_after {
+                response.headers_mut().insert(RETRY_AFTER, retry_after);
+            }
+            Some((response, hold, dispatch_before_response))
+        } else {
+            None
         }
+    };
+    let request = Request::from_parts(parts, Body::from(body_bytes));
+    if let Some((response, hold, dispatch_before_response)) = armed_response {
+        if dispatch_before_response {
+            let _dispatched_response = next.run(request).await;
+        }
+        if let Some(hold) = hold {
+            hold.started.notify_one();
+            hold.release.notified().await;
+        }
+        return response;
     }
 
-    next.run(Request::from_parts(parts, Body::from(body_bytes)))
-        .await
+    next.run(request).await
 }
 
 fn request_mcp_method(body: &[u8]) -> Option<String> {

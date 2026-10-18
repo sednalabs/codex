@@ -146,6 +146,14 @@
       "execution_argv": ["cargo", "test", "--locked", "-p", "codex-protocol", "--lib", "--", "--test-threads=1"]
     },
     {
+      "package": "codex-rmcp-client",
+      "target_kind": "integration",
+      "target": "streamable_http_recovery",
+      "profiles": ["rust_minimal", "rust_integration"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-rmcp-client", "--test", "streamable_http_recovery", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-rmcp-client", "--test", "streamable_http_recovery", "--", "--test-threads=1"]
+    },
+    {
       "package": "codex-state",
       "target_kind": "lib",
       "target": "",

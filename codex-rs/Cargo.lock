@@ -4519,6 +4519,7 @@ dependencies = [
  "codex-utils-pty",
  "futures",
  "http 1.4.2",
+ "httpdate",
  "keyring",
  "libc",
  "memchr",

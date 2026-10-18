@@ -49,6 +49,7 @@ use tokio::process::Command;
 use tokio::time::sleep;
 
 const SESSION_POST_FAILURE_CONTROL_PATH: &str = "/test/control/session-post-failure";
+const SIDE_EFFECT_COUNT_PATH: &str = "/test/control/side-effect-count";
 const INITIALIZE_POST_FAILURE_CONTROL_PATH: &str = "/test/control/initialize-post-failure";
 const INITIALIZED_NOTIFICATION_POST_FAILURE_CONTROL_PATH: &str =
     "/test/control/initialized-notification-post-failure";
@@ -195,18 +196,65 @@ pub(crate) async fn arm_session_post_failure(
     remaining: usize,
     www_authenticate_headers: &[&str],
 ) -> anyhow::Result<()> {
+    arm_session_post_failure_with_retry_after(
+        base_url,
+        status,
+        remaining,
+        www_authenticate_headers,
+        /*retry_after*/ None,
+    )
+    .await
+}
+
+pub(crate) async fn arm_session_post_failure_with_retry_after(
+    base_url: &str,
+    status: u16,
+    remaining: usize,
+    www_authenticate_headers: &[&str],
+    retry_after: Option<&str>,
+) -> anyhow::Result<()> {
     let response = control_client()?
         .post(format!("{base_url}{SESSION_POST_FAILURE_CONTROL_PATH}"))
         .json(&json!({
             "status": status,
             "remaining": remaining,
             "www_authenticate_headers": www_authenticate_headers,
+            "retry_after": retry_after,
         }))
         .send()
         .await?;
 
     assert_eq!(response.status(), http::StatusCode::NO_CONTENT);
     Ok(())
+}
+
+pub(crate) async fn arm_session_post_failure_after_dispatch(
+    base_url: &str,
+    status: u16,
+    remaining: usize,
+) -> anyhow::Result<()> {
+    let response = control_client()?
+        .post(format!("{base_url}{SESSION_POST_FAILURE_CONTROL_PATH}"))
+        .json(&json!({
+            "status": status,
+            "remaining": remaining,
+            "dispatch_before_response": true,
+        }))
+        .send()
+        .await?;
+
+    assert_eq!(response.status(), http::StatusCode::NO_CONTENT);
+    Ok(())
+}
+
+pub(crate) async fn read_side_effect_count(base_url: &str) -> anyhow::Result<usize> {
+    Ok(control_client()?
+        .get(format!("{base_url}{SIDE_EFFECT_COUNT_PATH}"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?)
 }
 
 pub(crate) async fn arm_session_post_json_rpc_failure(
