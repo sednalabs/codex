@@ -191,14 +191,15 @@ jobs:
         file "${stage_dir}/codex-runtime-proof-launcher" | grep -F 'x86-64'
         readelf -l "${stage_dir}/codex-runtime-proof-launcher" | grep -F '/lib64/ld-linux-x86-64.so.2'
 
-        tar -C "${stage_dir}" -czf "../dist/${archive_base}.tar.gz" .
+        tar -czf "${GITHUB_WORKSPACE}/dist/${archive_base}.tar.gz" -C "${stage_dir}" .
 
-        python3 - <<'PY' > "../dist/${archive_base}.json"
+        ARCHIVE_PATH="${GITHUB_WORKSPACE}/dist/${archive_base}.tar.gz" python3 - <<'PY' > "../dist/${archive_base}.json"
         import hashlib
         import json
         import os
         import subprocess
         import sys
+        import tarfile
 
         payload = {
             "repository": os.environ["GITHUB_REPOSITORY"],
@@ -216,6 +217,22 @@ jobs:
         )
         with open(launcher_path, "rb") as launcher_file:
             payload["runtimeProofLauncherSha256"] = hashlib.sha256(launcher_file.read()).hexdigest()
+        with tarfile.open(os.environ["ARCHIVE_PATH"], "r:gz") as archive:
+            members = [
+                member
+                for member in archive.getmembers()
+                if member.name in {"./codex-runtime-proof-launcher", "codex-runtime-proof-launcher"}
+            ]
+            if len(members) != 1 or not members[0].isfile():
+                raise SystemExit("preview archive is missing the runtime-proof launcher")
+            packaged_launcher = archive.extractfile(members[0])
+            if packaged_launcher is None:
+                raise SystemExit("preview archive runtime-proof launcher is unreadable")
+            archive_digest = hashlib.sha256()
+            for block in iter(lambda: packaged_launcher.read(1024 * 1024), b""):
+                archive_digest.update(block)
+            if archive_digest.hexdigest() != payload["runtimeProofLauncherSha256"]:
+                raise SystemExit("preview archive runtime-proof launcher does not match its manifest")
         json.dump(payload, sys.stdout, indent=2)
         sys.stdout.write("\n")
         PY
