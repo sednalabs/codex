@@ -24,7 +24,7 @@
       "behavior": "An explicitly subscribed background unified-exec process queues one bounded metadata-only completion fragment for the owning session's next model input. The existing ordered exit watcher emits after output drain and deferred network-denial settlement, and InputQueue wakes notification-aware blocked waits without starting an idle turn. Opaque process-instance UUIDs deduplicate reused process IDs; bounded overflow coalesces final-state counts rather than injecting output or silently losing terminal state.",
       "upstream_equivalent": false,
       "introduced_in": {
-        "carry_commit": "fb3fe0d23f8cc4d978489dba722af008166c158c",
+        "carry_commit": null,
         "upstream_commit": null
       },
       "guardrail_lane": "codex.core-unified-exec-targeted; codex.core-multi-agent-orchestration-targeted",
@@ -1017,7 +1017,7 @@
       "behavior": "Curated plugin ZIP extraction preserves ordinary read, write, and executable permissions while masking special Unix mode bits at the filesystem permission boundary.",
       "upstream_equivalent": false,
       "introduced_in": {
-        "carry_commit": null,
+        "carry_commit": "fb3fe0d23f8cc4d978489dba722af008166c158c",
         "upstream_commit": null
       },
       "guardrail_lane": "codex.core-startup-sync-targeted",
