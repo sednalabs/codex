@@ -1867,6 +1867,95 @@ async fn explicit_action_remains_queued_for_an_interrupted_recipient() {
 }
 
 #[tokio::test]
+async fn explicit_action_does_not_start_after_tree_shutdown_is_requested() {
+    let tree = explicit_update_test_tree().await;
+    *tree.worker.session.active_turn.lock().await = Some(ActiveTurn::default());
+    let initial_turn_start_count = explicit_update_rollout_items(&tree.worker)
+        .await
+        .iter()
+        .filter(|item| matches!(item, RolloutItem::EventMsg(EventMsg::TurnStarted(_))))
+        .count();
+    let message = "action should wait for the shutting-down recipient";
+    let update = ExplicitInterAgentUpdate {
+        idempotency_key: "shutting-down-recipient-action".to_string(),
+        intent: InterAgentCommunicationIntent::ActionRequired,
+        supersedes: Vec::new(),
+    };
+    let update_id = tree
+        .control
+        .send_explicit_inter_agent_update(
+            /*caller*/ tree.root_id,
+            /*recipient*/ tree.worker_id,
+            /*resume_config*/ tree.harness.config.clone(),
+            /*message*/ AgentMessage::Plaintext(message.to_string()),
+            /*update*/ update,
+            /*context*/ AgentCommunicationContext::new(
+                AgentCommunicationKind::Message,
+                tree.root_id,
+            ),
+        )
+        .await
+        .expect("the live recipient may durably retain an action before shutdown");
+    let update_id = ResponseItemId::from_server(update_id);
+    assert!(
+        tree.worker
+            .session
+            .input_queue
+            .has_pending_mailbox_items()
+            .await,
+        "the action should remain queued behind the existing reservation"
+    );
+
+    tree.control.runtime.request_shutdown();
+    *tree.worker.session.active_turn.lock().await = None;
+    tree.worker
+        .session
+        .maybe_start_turn_for_pending_work_with_sub_id(
+            /*sub_id*/ "shutdown-action-must-not-start".to_string(),
+        )
+        .await;
+
+    assert!(tree.worker.session.active_turn.lock().await.is_none());
+    let items = explicit_update_rollout_items(&tree.worker).await;
+    assert_eq!(
+        items
+            .iter()
+            .filter(|item| matches!(item, RolloutItem::EventMsg(EventMsg::TurnStarted(_))))
+            .count(),
+        initial_turn_start_count,
+        "runtime shutdown must fence a pending explicit action from starting a turn"
+    );
+    assert_eq!(
+        items
+            .iter()
+            .filter(|item| matches!(
+                item,
+                RolloutItem::InterAgentCommunicationMetadata {
+                    admission: Some(admission),
+                    ..
+                } if admission.update_id == update_id
+            ))
+            .count(),
+        1,
+        "shutdown must not erase the durable action admission"
+    );
+    assert!(!items.iter().any(|item| matches!(
+        item,
+        RolloutItem::ResponseItem(response)
+            if response.metadata.as_ref().and_then(|metadata|
+                metadata.inter_agent_update_id.as_ref()) == Some(&update_id)
+    )));
+
+    let report = tree
+        .harness
+        .manager
+        .shutdown_all_threads_bounded(Duration::from_secs(/*secs*/ 5))
+        .await;
+    assert_eq!(report.submit_failed, Vec::<ThreadId>::new());
+    assert_eq!(report.timed_out, Vec::<ThreadId>::new());
+}
+
+#[tokio::test]
 async fn explicit_update_rejects_completed_sender_without_persisting_an_admission() {
     let tree = explicit_update_test_tree().await;
     complete_control_test_thread(&tree.worker, "worker turn complete").await;
