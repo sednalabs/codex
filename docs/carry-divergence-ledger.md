@@ -21,3 +21,22 @@ alone does not establish wake, cancellation, or takeover capability. Retire
 behavior only when an equivalent replacement is demonstrated or its loss is
 explicitly accepted. Tests should protect these consumer-visible contracts and
 meaningful security boundaries, not incidental file, module, or handler layout.
+
+## Upgrading and retiring carries
+
+Pin the upstream revision being considered, then compare it against current
+downstream `main` and its accepted capabilities. First look for equivalent
+upstream behavior or a documented native interface; assess each remaining
+behavioral difference as a candidate residual carry. Preserve current-main
+ancestry and accepted capabilities when composing the upgrade.
+
+Use existing hosted lockfile, schema, and focused-consumer validation routes
+for the exact candidate. Validate the exact package artifact with its consumer
+in the same run. Then satisfy required pull-request checks, merge-queue checks,
+and confirm the actual merge before calling the upgrade landed.
+
+For state or profile cutovers, verify compatibility and define a specific
+rollback for the affected state as well as the executable; restoring an old
+executable alone does not reverse a migration. Record each justified residual
+carry's rationale and removal condition. If an upgrade would materially lose
+behavior, seek acceptance of that loss before retiring the carry.
