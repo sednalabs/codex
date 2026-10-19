@@ -409,8 +409,48 @@ async fn thread_spawn_goal_continuation_precedes_parent_handback() -> Result<()>
     let mut parent_followup_matched = false;
     let mut parent_wait_started = false;
     let mut child_continuation_started = false;
-    let mut started_turns = Vec::<TurnStartedNotification>::new();
-    let event_observer = async {
+    let pre_observation = timeout(READ_TIMEOUT, async {
+        // Resolve the already-matched provider requests before reading app-server stdout.
+        // This leaves any earlier notifications queued for matching against the actual
+        // continuation request's thread and turn metadata.
+        let (parent_followup_request, continuation_request) = tokio::try_join!(
+            async {
+                parent_followup_matched_rx
+                    .await
+                    .map_err(|_| anyhow::anyhow!("parent follow-up route match sender closed"))
+            },
+            async {
+                continuation_matched_rx
+                    .await
+                    .map_err(|_| anyhow::anyhow!("continuation route match sender closed"))
+            }
+        )?;
+        let parent_followup_request: serde_json::Value =
+            serde_json::from_slice(&parent_followup_request)?;
+        assert!(
+            parent_followup_request["client_metadata"]["thread_id"] == json!(thread.id)
+                && parent_followup_request["client_metadata"]["turn_id"]
+                    == json!(parent_turn.turn.id),
+            "parent follow-up request metadata did not match the parent turn"
+        );
+        parent_followup_matched = true;
+
+        let continuation_request_json: serde_json::Value =
+            serde_json::from_slice(&continuation_request)?;
+        assert!(request_contains(
+            &continuation_request_json,
+            CONTINUATION_PROMPT
+        ));
+        let child_thread_id = continuation_request_json["client_metadata"]["thread_id"]
+            .as_str()
+            .expect("continuation request has a child thread id")
+            .to_owned();
+        let continuation_turn_id = continuation_request_json["client_metadata"]["turn_id"]
+            .as_str()
+            .expect("continuation request has a continuation turn id")
+            .to_owned();
+
+        let mut initial_child_turn_id = None;
         loop {
             let message = mcp.read_next_message().await?;
             let JSONRPCMessage::Notification(notification) = message else {
@@ -432,12 +472,11 @@ async fn thread_spawn_goal_continuation_precedes_parent_handback() -> Result<()>
                     {
                         assert_eq!(tool, CollabAgentTool::SpawnAgent);
                         assert_eq!(status, CollabAgentToolCallStatus::Completed);
-                        spawn_child_thread_id = Some(
-                            receiver_thread_ids
-                                .first()
-                                .expect("spawn result has a child thread")
-                                .clone(),
-                        );
+                        let spawned_thread_id = receiver_thread_ids
+                            .first()
+                            .expect("spawn result has a child thread");
+                        assert_eq!(spawned_thread_id, &child_thread_id);
+                        spawn_child_thread_id = Some(spawned_thread_id.clone());
                     }
                 }
                 "item/started" => {
@@ -460,42 +499,37 @@ async fn thread_spawn_goal_continuation_precedes_parent_handback() -> Result<()>
                     }
                 }
                 "turn/started" => {
-                    started_turns.push(serde_json::from_value(
+                    let started: TurnStartedNotification = serde_json::from_value(
                         notification.params.clone().expect("notification params"),
-                    )?);
+                    )?;
+                    if started.thread_id == child_thread_id {
+                        if started.turn.id == continuation_turn_id {
+                            child_continuation_started = true;
+                        } else if initial_child_turn_id.is_none() {
+                            initial_child_turn_id = Some(started.turn.id.clone());
+                        }
+                    }
                 }
                 _ => {}
             }
             notifications.push(notification);
 
-            if let Some(child_thread_id) = spawn_child_thread_id.as_deref() {
-                child_continuation_started = started_turns
-                    .iter()
-                    .filter(|started| started.thread_id == child_thread_id)
-                    .count()
-                    >= 2;
-                if parent_wait_started && child_continuation_started {
-                    return Ok::<(), anyhow::Error>(());
-                }
+            if spawn_child_thread_id.is_some()
+                && parent_wait_started
+                && child_continuation_started
+                && initial_child_turn_id.is_some()
+            {
+                let initial_child_turn_id = initial_child_turn_id
+                    .as_deref()
+                    .expect("initial child turn was observed");
+                assert_ne!(initial_child_turn_id, continuation_turn_id);
+                break Ok::<_, anyhow::Error>((
+                    child_thread_id,
+                    initial_child_turn_id.to_owned(),
+                    continuation_turn_id,
+                ));
             }
         }
-    };
-    let parent_route_observer = async {
-        let request = parent_followup_matched_rx
-            .await
-            .map_err(|_| anyhow::anyhow!("parent follow-up route match sender closed"))?;
-        let request: serde_json::Value = serde_json::from_slice(&request)
-            .map_err(|_| anyhow::anyhow!("parent follow-up request was not valid JSON"))?;
-        assert!(
-            request["client_metadata"]["thread_id"] == json!(thread.id)
-                && request["client_metadata"]["turn_id"] == json!(parent_turn.turn.id),
-            "parent follow-up request metadata did not match the parent turn"
-        );
-        parent_followup_matched = true;
-        Ok::<(), anyhow::Error>(())
-    };
-    let pre_observation = timeout(READ_TIMEOUT, async {
-        tokio::try_join!(event_observer, parent_route_observer).map(|_| ())
     })
     .await;
     if pre_observation.is_err() {
@@ -503,33 +537,8 @@ async fn thread_spawn_goal_continuation_precedes_parent_handback() -> Result<()>
             "pre-observation timed out: parent_followup_matched={parent_followup_matched}, parent_wait_started={parent_wait_started}, child_continuation_started={child_continuation_started}"
         ));
     }
-    pre_observation.expect("pre-observation timeout was checked")?;
-
-    let child_thread_id = spawn_child_thread_id.expect("spawned child thread id");
-    let child_turns = started_turns
-        .iter()
-        .filter(|started| started.thread_id == child_thread_id)
-        .collect::<Vec<_>>();
-    assert_eq!(child_turns.len(), 2);
-    let initial_child_turn_id = child_turns[0].turn.id.clone();
-    let continuation_turn_id = child_turns[1].turn.id.clone();
-    assert_ne!(initial_child_turn_id, continuation_turn_id);
-
-    let continuation_request = timeout(READ_TIMEOUT, continuation_matched_rx).await??;
-    let continuation_request_json: serde_json::Value =
-        serde_json::from_slice(&continuation_request)?;
-    assert!(request_contains(
-        &continuation_request_json,
-        CONTINUATION_PROMPT
-    ));
-    assert_eq!(
-        continuation_request_json["client_metadata"]["thread_id"],
-        json!(child_thread_id)
-    );
-    assert_eq!(
-        continuation_request_json["client_metadata"]["turn_id"],
-        json!(continuation_turn_id)
-    );
+    let (child_thread_id, initial_child_turn_id, continuation_turn_id) =
+        pre_observation.expect("pre-observation timeout was checked")??;
 
     // Observe the entire bounded interval while the matched response's sender is
     // still withheld. Keep the in-flight app-server read alive across the
