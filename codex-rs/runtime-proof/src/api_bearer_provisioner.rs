@@ -12,7 +12,6 @@ use codex_rmcp_client::perform_fixed_ops_api_access_token_login;
 use std::ffi::CStr;
 use std::fs;
 use std::fs::File;
-use std::io::Read as _;
 use std::io::Write as _;
 use std::mem::MaybeUninit;
 use std::os::fd::AsRawFd as _;
@@ -253,11 +252,11 @@ fn cleanup_bearer_source_at(
     let source_file = unsafe { File::from_raw_fd(source_fd) };
     let source_metadata = source_file.metadata()?;
     validate_bearer_file_metadata(&source_metadata, expected_owner, Some(0o600))?;
-    let source_bytes = zeroize::Zeroizing::new(crate::launcher::read_bounded(
+    let source_bytes = crate::launcher::read_bounded(
         source_file,
         crate::api_claim::API_BEARER_CREDENTIAL_MAX_BYTES,
-    )?);
-    if source_bytes.as_slice() != loaded_bearer.as_slice() {
+    )?;
+    if source_bytes.as_slice() != loaded_bearer {
         bail!("volatile Ops API bearer source changed before cleanup");
     }
 
