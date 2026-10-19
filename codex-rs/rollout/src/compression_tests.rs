@@ -306,7 +306,7 @@ async fn physical_fence_blocks_materialization_and_bound_helper_does_not_relock(
     assert_eq!(fs::read(&compressed)?, compressed_before);
     assert!(!path.exists());
     // Reusing the writer's typed guard must not try to acquire the same lock again.
-    assert_eq!(materialize_rollout_with_guard(&guard)?, path);
+    assert_eq!(materialize_rollout_with_guard(&guard)?, guard.path());
     assert_eq!(fs::read(&path)?, original);
     // Already-plain references are reads, not a competing writer acquisition.
     assert_eq!(crate::materialize_rollout_for_reference(&path).await?, path);
@@ -326,6 +326,96 @@ async fn physical_fence_blocks_materialization_and_bound_helper_does_not_relock(
     let (items, _, parse_errors) = RolloutRecorder::load_rollout_items(&path).await?;
     assert_eq!(items.len(), 3);
     assert_eq!(parse_errors, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn materialization_and_resume_preserve_caller_path_alias() -> anyhow::Result<()> {
+    let home = TempDir::new()?;
+    let uuid = Uuid::new_v4();
+    let thread_id = ThreadId::from_string(&uuid.to_string())?;
+    let path = rollout_path(home.path(), "2025-01-03T12-00-00", uuid);
+    write_rollout(&path, thread_id, "caller path alias")?;
+    // This spelling differs from canonical identity on Linux as well as Windows,
+    // without relying on Windows short-name aliases or symlink privileges.
+    let alias = home
+        .path()
+        .join("sessions/../sessions/2025/01/03")
+        .join(path.file_name().expect("rollout file name"));
+    assert_ne!(alias, fs::canonicalize(&path)?);
+    let compressed_alias = compressed_rollout_path(&alias);
+    let original = fs::read(&path)?;
+    compress_now(&path)?;
+    assert_eq!(
+        crate::materialize_rollout_for_reference(&compressed_alias).await?,
+        alias
+    );
+    assert_eq!(fs::read(&alias)?, original);
+
+    compress_now(&path)?;
+    let config = RolloutConfig {
+        codex_home: home.path().to_path_buf(),
+        sqlite: codex_state::SqliteConfig::new_for_testing(home.path().abs()),
+        cwd: home.path().to_path_buf(),
+        model_provider_id: "test-provider".to_string(),
+        generate_memories: true,
+    };
+    let recorder =
+        RolloutRecorder::new(&config, RolloutRecorderParams::resume(compressed_alias)).await?;
+    assert_eq!(recorder.rollout_path(), alias.as_path());
+    recorder
+        .record_canonical_items(&[RolloutItem::EventMsg(EventMsg::UserMessage(
+            UserMessageEvent {
+                message: "after aliased resume".to_owned(),
+                ..Default::default()
+            },
+        ))])
+        .await?;
+    recorder.flush().await?;
+    recorder.shutdown().await?;
+    let (items, loaded_id, parse_errors) = RolloutRecorder::load_rollout_items(&alias).await?;
+    assert_eq!(items.len(), 3);
+    assert_eq!(loaded_id, Some(thread_id));
+    assert_eq!(parse_errors, 0);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn compressed_file_symlink_returns_existing_materialized_target() -> anyhow::Result<()> {
+    let home = TempDir::new()?;
+    let uuid = Uuid::new_v4();
+    let path = rollout_path(home.path(), "2025-01-03T12-00-00", uuid);
+    write_rollout(
+        &path,
+        ThreadId::from_string(&uuid.to_string())?,
+        "file symlink",
+    )?;
+    let expected = fs::canonicalize(&path)?;
+    let original = fs::read(&path)?;
+    compress_now(&path)?;
+    let alias = home.path().join("alias.jsonl.zst");
+    std::os::unix::fs::symlink(compressed_rollout_path(&path), &alias)?;
+    assert_eq!(
+        crate::materialize_rollout_for_reference(&alias).await?,
+        expected
+    );
+    assert_eq!(fs::read(&expected)?, original);
+    assert!(!plain_rollout_path(&alias).exists());
+    assert!(fs::symlink_metadata(&alias)?.file_type().is_symlink());
+
+    compress_now(&path)?;
+    let config = RolloutConfig {
+        codex_home: home.path().to_path_buf(),
+        sqlite: codex_state::SqliteConfig::new_for_testing(home.path().abs()),
+        cwd: home.path().to_path_buf(),
+        model_provider_id: "test-provider".to_string(),
+        generate_memories: true,
+    };
+    let recorder = RolloutRecorder::new(&config, RolloutRecorderParams::resume(alias)).await?;
+    assert_eq!(recorder.rollout_path(), expected.as_path());
+    assert_eq!(fs::read(recorder.rollout_path())?, original);
+    recorder.shutdown().await?;
     Ok(())
 }
 

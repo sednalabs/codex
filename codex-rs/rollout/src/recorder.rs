@@ -1936,7 +1936,6 @@ impl RolloutWriterState {
             }
             Err(err) => return Err(err),
         };
-        self.rollout_path = physical_lock.path().to_path_buf();
         self.physical_lock = Some(physical_lock);
         self.writer = Some(JsonlWriter {
             file: Box::new(file),
@@ -2109,6 +2108,7 @@ async fn open_rollout_for_append(
     let path = path.to_path_buf();
     tokio::task::spawn_blocking(move || {
         let _writer_lock = writer_lock;
+        let plain_path = compression::plain_rollout_path(&path);
         let physical_lock = Arc::new(PhysicalRolloutGuard::acquire(&path, false)?);
         let refresh_modified_time = !physical_lock.path().try_exists()?;
         compression::materialize_rollout_with_guard(&physical_lock)?;
@@ -2122,12 +2122,8 @@ async fn open_rollout_for_append(
         }
         ensure_rollout_is_newline_terminated(&mut file)?;
         let ordinal_state = ordinal_state_for_rollout(&mut file, physical_lock.path())?;
-        Ok((
-            physical_lock.path().to_path_buf(),
-            file,
-            ordinal_state,
-            physical_lock,
-        ))
+        let plain_path = compression::materialized_path_for_caller(&plain_path, &physical_lock)?;
+        Ok((plain_path, file, ordinal_state, physical_lock))
     })
     .await
     .map_err(IoError::other)?

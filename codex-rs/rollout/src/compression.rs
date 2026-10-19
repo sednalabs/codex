@@ -132,10 +132,25 @@ pub(crate) fn materialize_rollout_for_append_blocking(path: &Path) -> io::Result
         return Ok(plain_path);
     }
     let guard = crate::writer_lock::PhysicalRolloutGuard::acquire(path, false)?;
-    materialize_rollout_with_guard(&guard)
+    materialize_rollout_with_guard(&guard)?;
+    materialized_path_for_caller(&plain_path, &guard)
 }
 
-/// The writer already owns this path; never recursively acquire its fence.
+/// Preserve caller spelling when it names the bound file. A compressed file
+/// symlink need not have any corresponding plain alias; do not invent one.
+pub(crate) fn materialized_path_for_caller(
+    plain_path: &Path,
+    guard: &crate::writer_lock::PhysicalRolloutGuard,
+) -> io::Result<PathBuf> {
+    match std::fs::canonicalize(plain_path) {
+        Ok(path) if path == guard.path() => Ok(plain_path.to_path_buf()),
+        Ok(_) => Ok(guard.path().to_path_buf()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(guard.path().to_path_buf()),
+        Err(err) => Err(err),
+    }
+}
+
+/// The writer already owns this canonical path; never recursively acquire its fence.
 pub(crate) fn materialize_rollout_with_guard(
     guard: &crate::writer_lock::PhysicalRolloutGuard,
 ) -> io::Result<PathBuf> {
