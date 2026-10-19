@@ -6,6 +6,7 @@ use codex_protocol::protocol::SessionSource;
 use serde::de::Error as _;
 use serde_json::Value;
 
+mod append_state;
 pub(crate) mod compression;
 pub(crate) mod config;
 pub(crate) mod list;

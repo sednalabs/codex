@@ -284,6 +284,77 @@ async fn append_rollout_item_materializes_compressed_rollout() -> anyhow::Result
 }
 
 #[tokio::test]
+async fn physical_fence_blocks_materialization_and_bound_helper_does_not_relock()
+-> anyhow::Result<()> {
+    let home = TempDir::new()?;
+    let uuid = Uuid::new_v4();
+    let thread_id = ThreadId::from_string(&uuid.to_string())?;
+    let path = rollout_path(home.path(), "2025-01-03T12-00-00", uuid);
+    write_rollout(&path, thread_id, "fenced transcript")?;
+    let original = fs::read(&path)?;
+    compress_now(&path)?;
+    let compressed = compressed_rollout_path(&path);
+    let compressed_before = fs::read(&compressed)?;
+    let guard = crate::writer_lock::PhysicalRolloutGuard::acquire(&compressed, false)?;
+    assert_eq!(
+        crate::materialize_rollout_for_reference(&path)
+            .await
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::WouldBlock,
+    );
+    assert_eq!(fs::read(&compressed)?, compressed_before);
+    assert!(!path.exists());
+    // Reusing the writer's typed guard must not try to acquire the same lock again.
+    assert_eq!(materialize_rollout_with_guard(&guard)?, path);
+    assert_eq!(fs::read(&path)?, original);
+    // Already-plain references are reads, not a competing writer acquisition.
+    assert_eq!(crate::materialize_rollout_for_reference(&path).await?, path);
+    let item = RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
+        message: "after fence release".to_owned(),
+        ..Default::default()
+    }));
+    assert_eq!(
+        append_rollout_item_to_path(&path, &item)
+            .await
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::WouldBlock
+    );
+    drop(guard);
+    append_rollout_item_to_path(&path, &item).await?;
+    let (items, _, parse_errors) = RolloutRecorder::load_rollout_items(&path).await?;
+    assert_eq!(items.len(), 3);
+    assert_eq!(parse_errors, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn worker_skips_physical_writer_until_its_fence_is_released() -> anyhow::Result<()> {
+    let home = TempDir::new()?;
+    let uuid = Uuid::new_v4();
+    let path = rollout_path(home.path(), "2025-01-03T12-00-00", uuid);
+    write_rollout(
+        &path,
+        ThreadId::from_string(&uuid.to_string())?,
+        "cold but owned",
+    )?;
+    set_old_mtime(&path)?;
+    let before = fs::read(&path)?;
+    // No logical lock in this home: this models a physical writer owned elsewhere.
+    let guard = crate::writer_lock::PhysicalRolloutGuard::acquire(&path, false)?;
+    worker::run(home.path().to_path_buf(), Startup).await?;
+    assert_eq!(fs::read(&path)?, before);
+    assert!(!compressed_rollout_path(&path).exists());
+    drop(guard);
+    fs::remove_file(home.path().join(".tmp/rollout-compression.lock"))?;
+    worker::run(home.path().to_path_buf(), Startup).await?;
+    assert!(!path.exists());
+    assert!(compressed_rollout_path(&path).exists());
+    Ok(())
+}
+
+#[tokio::test]
 async fn search_rollout_matches_uses_logical_path_for_compressed_rollout() -> anyhow::Result<()> {
     let home = TempDir::new()?;
     let uuid = Uuid::from_u128(15);

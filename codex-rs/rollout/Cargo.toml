@@ -29,6 +29,7 @@ codex-utils-path = { workspace = true }
 codex-utils-string = { workspace = true }
 memchr = { workspace = true }
 regex = { workspace = true }
+same-file = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tempfile = { workspace = true }

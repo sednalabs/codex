@@ -129,6 +129,22 @@ pub(crate) fn materialize_rollout_for_append_blocking(path: &Path) -> io::Result
         metrics::materialize("missing");
         return Ok(plain_path);
     }
+    let guard = crate::writer_lock::PhysicalRolloutGuard::acquire(path, false)?;
+    materialize_rollout_with_guard(&guard)
+}
+
+/// The writer already owns this path; never recursively acquire its fence.
+pub(crate) fn materialize_rollout_with_guard(
+    guard: &crate::writer_lock::PhysicalRolloutGuard,
+) -> io::Result<PathBuf> {
+    let plain_path = guard.path().to_path_buf();
+    if plain_path.try_exists()? {
+        return Ok(plain_path);
+    }
+    let compressed_path = path::compressed_rollout_path(&plain_path);
+    if !compressed_path.try_exists()? {
+        return Ok(plain_path);
+    }
 
     let started_at = Instant::now();
     let temp_path = temp_path_for(plain_path.as_path(), "decompress");
@@ -138,13 +154,14 @@ pub(crate) fn materialize_rollout_for_append_blocking(path: &Path) -> io::Result
             std::fs::create_dir_all(parent)?;
         }
         stage = "read_metadata";
-        let metadata = std::fs::metadata(compressed_path.as_path())?;
+        let input = File::open(compressed_path.as_path())?;
+        let metadata = input.metadata()?;
+        let source_identity = same_file::Handle::from_file(input.try_clone()?)?;
         let permissions = metadata.permissions();
         stage = "create_temp";
         let mut output = create_file_with_permissions(temp_path.as_path(), &permissions)?;
         {
             stage = "open_source";
-            let input = File::open(compressed_path.as_path())?;
             stage = "decode_and_write";
             let mut decoder = zstd::stream::read::Decoder::new(input)?;
             io::copy(&mut decoder, &mut output)?;
@@ -154,10 +171,24 @@ pub(crate) fn materialize_rollout_for_append_blocking(path: &Path) -> io::Result
         stage = "sync";
         output.sync_all()?;
         stage = "publish";
+        if same_file::Handle::from_path(&compressed_path)? != source_identity {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "compressed rollout was replaced",
+            ));
+        }
         match std::fs::hard_link(temp_path.as_path(), plain_path.as_path()) {
             Ok(()) => {}
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {}
             Err(_) => persist_temp_file_noclobber(temp_path.as_path(), plain_path.as_path())?,
+        }
+        if same_file::Handle::from_path(&plain_path)?
+            != same_file::Handle::from_file(output.try_clone()?)?
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "plain rollout changed during materialization",
+            ));
         }
         stage = "set_metadata";
         output.set_times(std::fs::FileTimes::new().set_modified(metadata.modified()?))?;
@@ -166,6 +197,12 @@ pub(crate) fn materialize_rollout_for_append_blocking(path: &Path) -> io::Result
         drop(output);
         let _ = std::fs::remove_file(temp_path.as_path());
         stage = "remove_source";
+        if same_file::Handle::from_path(&compressed_path)? != source_identity {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "compressed rollout was replaced",
+            ));
+        }
         match std::fs::remove_file(compressed_path.as_path()) {
             Ok(()) => {}
             Err(err) if err.kind() == io::ErrorKind::NotFound => {}
@@ -923,6 +960,19 @@ mod worker {
                 /*compressed_bytes*/ None,
             ));
         };
+        // The logical home lock is intentionally preserved. This second, physical
+        // path fence also excludes writers/materializers from other homes and aliases.
+        let _physical_guard = match crate::writer_lock::PhysicalRolloutGuard::acquire(path, false) {
+            Ok(guard) => guard,
+            Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
+                return Ok(CompressionMeasurement::new(
+                    CompressionOutcome::SkippedBusy,
+                    source_bytes,
+                    /*compressed_bytes*/ None,
+                ));
+            }
+            Err(err) => return Err(err),
+        };
         if !same_file_state(path, &before)
             .inspect_err(|err| FailureMetric::File(trigger).record("recheck_source", err))?
         {
@@ -967,24 +1017,27 @@ mod worker {
     }
 
     struct FileState {
+        identity: same_file::Handle,
         len: u64,
         modified: SystemTime,
         permissions: Permissions,
     }
 
     fn cold_file_state(path: &Path) -> io::Result<ColdFileState> {
-        let metadata = match std::fs::metadata(path) {
-            Ok(metadata) => metadata,
+        let file = match File::open(path) {
+            Ok(file) => file,
             Err(err) if err.kind() == io::ErrorKind::NotFound => {
                 return Ok(ColdFileState::NotCold(None));
             }
             Err(err) => return Err(err),
         };
+        let metadata = file.metadata()?;
         if !metadata.is_file() {
             return Ok(ColdFileState::NotCold(None));
         }
         let modified = metadata.modified()?;
         let state = FileState {
+            identity: same_file::Handle::from_file(file)?,
             len: metadata.len(),
             modified,
             permissions: metadata.permissions(),
@@ -999,10 +1052,14 @@ mod worker {
     }
 
     fn same_file_state(path: &Path, expected: &FileState) -> io::Result<bool> {
-        match std::fs::metadata(path) {
-            Ok(metadata) => Ok(metadata.len() == expected.len
-                && metadata.modified()? == expected.modified
-                && metadata.permissions() == expected.permissions),
+        match File::open(path) {
+            Ok(file) => {
+                let metadata = file.metadata()?;
+                Ok(same_file::Handle::from_file(file)? == expected.identity
+                    && metadata.len() == expected.len
+                    && metadata.modified()? == expected.modified
+                    && metadata.permissions() == expected.permissions)
+            }
             Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
             Err(err) => Err(err),
         }

@@ -1,6 +1,7 @@
 //! Shared cross-process ownership for local thread writers and rollout publication.
 //! Thread lock-file creation and removal uses the existing home coordination lock.
 
+use std::ffi::OsStr;
 use std::fs;
 use std::fs::File;
 use std::fs::OpenOptions;
@@ -16,6 +17,77 @@ use tracing::warn;
 
 const WRITER_LOCK_DIR: &str = "thread-writer-locks";
 const COORDINATION_LOCK_FILE: &str = ".coordination.lock";
+const PHYSICAL_LOCK_DIR: &str = ".rollout-writer-locks";
+
+/// Private path ownership, shared even when different profiles reference the same history.
+/// Unlike an inode lock, this survives plain/compressed representation replacement.
+pub(crate) struct PhysicalRolloutGuard {
+    _lock: WriterLockGuard,
+    path: PathBuf,
+}
+
+impl PhysicalRolloutGuard {
+    pub(crate) fn acquire(path: &Path, create_parent: bool) -> io::Result<Self> {
+        let plain = crate::compression::plain_rollout_path(path);
+        let compressed = plain.with_extension("jsonl.zst");
+        for candidate in [path, plain.as_path(), compressed.as_path()] {
+            if fs::symlink_metadata(candidate)
+                .is_ok_and(|metadata| metadata.file_type().is_symlink())
+            {
+                // Resolve symlinks even if try_exists would conceal a dangling link.
+                fs::canonicalize(candidate)?;
+            }
+        }
+        let existing = if path.try_exists()? {
+            Some(path)
+        } else if plain.try_exists()? {
+            Some(plain.as_path())
+        } else if compressed.try_exists()? {
+            Some(compressed.as_path())
+        } else {
+            None
+        };
+        let path = if let Some(existing) = existing {
+            crate::compression::plain_rollout_path(&fs::canonicalize(existing)?)
+        } else {
+            let parent = plain
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."));
+            if create_parent {
+                fs::create_dir_all(parent)?;
+            }
+            fs::canonicalize(parent)?.join(
+                plain
+                    .file_name()
+                    .ok_or_else(|| io::Error::other("rollout has no file name"))?,
+            )
+        };
+        // Dangling file symlinks must not create a second lock namespace.
+        if fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "unresolved rollout symlink",
+            ));
+        }
+        let parent = path
+            .parent()
+            .ok_or_else(|| io::Error::other("rollout has no parent"))?;
+        let coordinator = Arc::new(WriterLockCoordinator {
+            directory: parent.join(PHYSICAL_LOCK_DIR),
+            cleanup_attempted: AtomicBool::new(true),
+        });
+        let name = path
+            .file_name()
+            .ok_or_else(|| io::Error::other("rollout has no file name"))?;
+        let lock = coordinator.acquire_named(name)?;
+        Ok(Self { _lock: lock, path })
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+}
 
 /// Coordinates writer ownership within one Codex home.
 pub struct WriterLockCoordinator {
@@ -41,6 +113,10 @@ impl WriterLockCoordinator {
 
     /// Acquires exclusive writer ownership, returning `WouldBlock` for an active writer.
     pub fn acquire(self: &Arc<Self>, thread_id: ThreadId) -> io::Result<WriterLockGuard> {
+        self.acquire_named(OsStr::new(&thread_id.to_string()))
+    }
+
+    fn acquire_named(self: &Arc<Self>, name: &OsStr) -> io::Result<WriterLockGuard> {
         let _coordination_lock = self.lock_coordination()?;
         if !self.cleanup_attempted.swap(true, Ordering::Relaxed)
             && let Err(err) = self.remove_stale_thread_locks()
@@ -48,7 +124,9 @@ impl WriterLockCoordinator {
             warn!("failed to clean up stale thread writer locks: {err}");
         }
 
-        let path = self.directory.join(format!("{thread_id}.lock"));
+        let mut file_name = name.to_os_string();
+        file_name.push(".lock");
+        let path = self.directory.join(file_name);
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -67,7 +145,7 @@ impl WriterLockCoordinator {
             Err(std::fs::TryLockError::WouldBlock) => {
                 return Err(io::Error::new(
                     io::ErrorKind::WouldBlock,
-                    format!("thread {thread_id} already has an active writer"),
+                    "rollout already has an active writer",
                 ));
             }
             Err(std::fs::TryLockError::Error(err)) => {
