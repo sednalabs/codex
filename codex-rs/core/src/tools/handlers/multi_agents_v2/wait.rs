@@ -3,6 +3,7 @@ use crate::agent::agent_resolver::resolve_agent_target;
 use crate::agent::api::AgentWaitRegistration;
 use crate::agent::api::AgentWaitResult;
 use crate::agent::api::AgentWaitReturnWhen;
+use crate::session::ExplicitActivitySignal;
 use crate::session::InputQueue;
 use crate::session::InputQueueActivity;
 use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
@@ -394,7 +395,7 @@ async fn wait_for_activity(
 }
 
 struct ExplicitActivityWait<'a> {
-    activity_rx: watch::Receiver<Option<u64>>,
+    activity_rx: watch::Receiver<ExplicitActivitySignal>,
     input_queue: &'a InputQueue,
     recipient_thread_id: ThreadId,
     target_agents: &'a [(ThreadId, codex_protocol::AgentPath)],

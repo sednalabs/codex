@@ -450,16 +450,21 @@ pub(super) async fn submission_loop(
     if let Some(updates) = &mut mailbox {
         updates.mark_changed();
     }
-    if let Err(_error) = sess
-        .services
-        .local_agent_runtime
-        .control(sess.session_id())
-        .reconcile_explicit_inter_agent_admissions(&sess)
-        .await
-    {
-        warn!(thread_id = %sess.thread_id(), "failed to reconcile explicit inter-agent admissions");
+    // A ready latch or rescan revision may predate this subscription. Readiness only permits
+    // scanning; the retained rollout and current registration checks remain authoritative.
+    let explicit_signal = *explicit_activity.borrow_and_update();
+    if explicit_signal.registration_ready {
+        if let Err(_error) = sess
+            .services
+            .local_agent_runtime
+            .control(sess.session_id())
+            .reconcile_explicit_inter_agent_admissions(&sess)
+            .await
+        {
+            warn!(thread_id = %sess.thread_id(), "failed to reconcile explicit inter-agent admissions");
+        }
+        maybe_start_turn_for_explicit_activity(&sess).await;
     }
-    maybe_start_turn_for_explicit_activity(&sess).await;
     loop {
         let sub = tokio::select! {
             biased;
@@ -492,7 +497,12 @@ pub(super) async fn submission_loop(
             activity = explicit_activity.changed() => {
                 match activity {
                     Ok(()) => {
-                        explicit_activity.borrow_and_update();
+                        let signal = *explicit_activity.borrow_and_update();
+                        if !signal.registration_ready {
+                            // Hints received before ready/resume finalization are retained by the
+                            // watch and will be rescanned when registration becomes ready.
+                            continue;
+                        }
                         if let Err(_error) = sess
                             .services
                             .local_agent_runtime

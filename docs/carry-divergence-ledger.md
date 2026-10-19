@@ -618,6 +618,11 @@ nonempty target list the wait returns the existing exact-target outcome; with
 no targets it returns the existing targetless outcome. A body-free activity is
 matched to the direct recipient, sender, update identity, and pending queue
 generation; the recipient subscribes before its canonical readback/snapshot.
+The recipient-ready state is latched after ready/resume lifecycle work and
+startup-membership release; later in-flight-write notifications advance only a
+rescan revision. Neither state
+authorizes a wake or delivery: a checked flush, canonical ledger, addressed
+queue entry, and current recipient validation remain authoritative.
 For an eligible idle V2 recipient, the recipient-owned loop may start work
 after durable admission is read back and existing startup, shutdown, session,
 and interruption checks pass. Ordinary queue-only messages and explicit

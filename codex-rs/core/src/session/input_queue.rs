@@ -92,6 +92,15 @@ pub(crate) enum InputQueueActivity {
     Steer,
 }
 
+/// Retained, body-free notification state for the recipient-owned explicit-admission loop.
+/// `registration_ready` is latched only after thread-ready/resume lifecycle work completes;
+/// `revision` only advances the watch and is never an admission or queue generation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ExplicitActivitySignal {
+    pub(crate) registration_ready: bool,
+    pub(crate) revision: u64,
+}
+
 /// Body-free provenance attached only to a durably admitted explicit update.
 /// `generation` is local to this input queue and distinct from the persisted update identity. A
 /// missing generation fails closed for wake delivery while retaining the queued communication.
@@ -115,7 +124,7 @@ pub(crate) struct TurnInputQueue {
 /// Session-scoped pending input storage and active-turn mailbox delivery coordination.
 pub(crate) struct InputQueue {
     activity_tx: watch::Sender<InputQueueActivity>,
-    explicit_activity_tx: watch::Sender<Option<u64>>,
+    explicit_activity_tx: watch::Sender<ExplicitActivitySignal>,
     controller: Option<(ThreadId, Arc<dyn AgentControl>, watch::Receiver<bool>)>,
     mailbox_state: Mutex<MailboxQueueState>,
 }
@@ -138,7 +147,7 @@ pub(crate) struct PendingMailboxCommunication {
 impl InputQueue {
     pub(crate) fn new() -> Self {
         let (activity_tx, _) = watch::channel(InputQueueActivity::Mailbox);
-        let (explicit_activity_tx, _) = watch::channel(None);
+        let (explicit_activity_tx, _) = watch::channel(ExplicitActivitySignal::default());
         Self {
             activity_tx,
             explicit_activity_tx,
@@ -214,14 +223,25 @@ impl InputQueue {
 
     /// Subscribe before `WaitAgent` snapshots pending mail; the receiver preserves any arrival
     /// across that queue snapshot.
-    pub(crate) fn subscribe_explicit_activity(&self) -> watch::Receiver<Option<u64>> {
+    pub(crate) fn subscribe_explicit_activity(&self) -> watch::Receiver<ExplicitActivitySignal> {
         self.explicit_activity_tx.subscribe()
     }
 
     /// Notify the recipient loop to rescan durable explicit admissions. The notification carries
     /// no action identity; the retained rollout and current registration checks remain authority.
     pub(crate) fn notify_explicit_admission_rescan(&self) {
-        self.explicit_activity_tx.send_replace(None);
+        self.explicit_activity_tx.send_modify(|signal| {
+            signal.revision = signal.revision.wrapping_add(1);
+        });
+    }
+
+    /// Latch that manager registration and ready/resume lifecycle work completed. This is a
+    /// rescan condition, not authority to deliver or start a turn by itself.
+    pub(crate) fn notify_explicit_recipient_ready(&self) {
+        self.explicit_activity_tx.send_modify(|signal| {
+            signal.registration_ready = true;
+            signal.revision = signal.revision.wrapping_add(1);
+        });
     }
 
     /// Record an in-flight durable admission before its cancellable append/flush awaits. This is
@@ -430,7 +450,9 @@ impl InputQueue {
             )
         }) && let Some(generation) = activity.generation
         {
-            self.explicit_activity_tx.send_replace(Some(generation));
+            self.explicit_activity_tx.send_modify(|signal| {
+                signal.revision = signal.revision.wrapping_add(1);
+            });
         }
         if state
             .pending
@@ -1312,7 +1334,9 @@ mod tests {
             .changed()
             .await
             .expect("explicit action notification");
-        assert_eq!(*explicit_activity_rx.borrow_and_update(), Some(0));
+        let signal = *explicit_activity_rx.borrow_and_update();
+        assert!(!signal.registration_ready);
+        assert_eq!(signal.revision, 1);
         assert!(
             !legacy_activity_rx
                 .has_changed()
@@ -1343,6 +1367,39 @@ mod tests {
                 .pending_explicit_activity_for_recipient(ThreadId::new())
                 .await
                 .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_rescan_state_survives_late_subscription_without_waking() {
+        let queue = InputQueue::new();
+        queue.notify_explicit_admission_rescan();
+
+        let mut early_activity_rx = queue.subscribe_explicit_activity();
+        let hint = *early_activity_rx.borrow_and_update();
+        assert!(!hint.registration_ready);
+        assert_eq!(hint.revision, 1);
+        queue.notify_explicit_admission_rescan();
+        early_activity_rx
+            .changed()
+            .await
+            .expect("rescan notification is retained for an existing subscriber");
+        assert!(!early_activity_rx.borrow_and_update().registration_ready);
+        drop(early_activity_rx);
+
+        // Both state changes happen with no receiver, as on a late-created submission loop.
+        queue.notify_explicit_recipient_ready();
+        queue.notify_explicit_admission_rescan();
+        let mut late_activity_rx = queue.subscribe_explicit_activity();
+        let late_signal = *late_activity_rx.borrow_and_update();
+        assert!(late_signal.registration_ready);
+        assert_eq!(late_signal.revision, 4);
+        assert!(
+            queue
+                .pending_explicit_activity_for_recipient(ThreadId::new())
+                .await
+                .is_none(),
+            "a rescan hint without an addressed actionable item is not a wake"
         );
     }
 

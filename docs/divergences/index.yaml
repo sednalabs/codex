@@ -174,6 +174,7 @@
         "explicit_update_rejects_a_closed_root_channel_without_persisting_an_admission",
         "active_target_wait_wakes_for_unselected_sender_action_but_not_progress_or_legacy_id",
         "targetless_wait_wakes_for_recipient_local_result_ready",
+        "explicit_rescan_state_survives_late_subscription_without_waking",
         "explicit_action_snapshot_is_targeted_and_subscribe_before_snapshot_is_wake_safe",
         "explicit_snapshot_catches_preexisting_matching_action_but_not_progress"
       ],

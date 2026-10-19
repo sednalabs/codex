@@ -2501,7 +2501,7 @@ impl ThreadManagerState {
             .thread
             .session
             .input_queue
-            .notify_explicit_admission_rescan();
+            .notify_explicit_recipient_ready();
         Ok(new_thread)
     }
 
