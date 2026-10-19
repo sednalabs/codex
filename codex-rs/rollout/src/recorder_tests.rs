@@ -147,11 +147,13 @@ fn write_session_file(root: &Path, ts: &str, uuid: Uuid) -> std::io::Result<Path
 fn append_repair_terminates_nonempty_rollout_tail() -> std::io::Result<()> {
     let home = TempDir::new().expect("temp dir");
     let rollout_path = home.path().join("rollout.jsonl");
-    fs::write(&rollout_path, b"{\"type\":\"event_msg\"}")?;
-    drop(open_log_file(&rollout_path)?);
-    drop(open_log_file(&rollout_path)?);
+    let bytes = serialize_rollout_item(&agent_message_item("complete tail"), None)?;
+    fs::write(&rollout_path, &bytes[..bytes.len() - 1])?;
+    let guard = PhysicalRolloutGuard::acquire(&rollout_path, false)?;
+    drop(open_log_file(&guard, true)?);
+    drop(open_log_file(&guard, true)?);
 
-    assert_eq!(fs::read(&rollout_path)?, b"{\"type\":\"event_msg\"}\n");
+    assert_eq!(fs::read(&rollout_path)?, bytes);
     Ok(())
 }
 
@@ -166,7 +168,9 @@ async fn opening_existing_rollout_preserves_modified_time() -> std::io::Result<(
         .open(&rollout_path)?
         .set_times(std::fs::FileTimes::new().set_modified(modified))?;
 
-    drop(open_log_file(&rollout_path)?);
+    let guard = PhysicalRolloutGuard::acquire(&rollout_path, false)?;
+    drop(open_log_file(&guard, true)?);
+    drop(guard);
     assert_eq!(fs::metadata(&rollout_path)?.modified()?, modified);
 
     drop(open_rollout_for_append(&rollout_path, /*writer_lock*/ None).await?);
@@ -996,10 +1000,17 @@ async fn writer_state_retries_write_error_before_reporting_flush_success() -> st
     let read_only_file = std::fs::OpenOptions::new().read(true).open(&rollout_path)?;
     let mut state = RolloutWriterState {
         writer: Some(JsonlWriter {
-            file: tokio::fs::File::from_std(read_only_file),
+            file: Box::new(read_only_file),
         }),
+        physical_lock: Some(Arc::new(PhysicalRolloutGuard::acquire(
+            &rollout_path,
+            false,
+        )?)),
+        writer_lock: None,
+        pending_append: None,
+        worker_failure: None,
         deferred_creation: false,
-        pending_items: Vec::new(),
+        pending_items: VecDeque::new(),
         meta: None,
         cwd: home.path().to_path_buf(),
         rollout_path: rollout_path.clone(),
@@ -1022,6 +1033,129 @@ async fn writer_state_retries_write_error_before_reporting_flush_success() -> st
         text_after_retry.contains("queued-after-writer-error"),
         "flush should retry after reopening and write buffered items"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn writer_state_retains_serialized_meta_and_ordinals_across_real_io_failures()
+-> std::io::Result<()> {
+    use crate::append_state::tests::FaultFile;
+    for flush_error in [false, true] {
+        let home = TempDir::new()?;
+        let path = home.path().join("rollout.jsonl");
+        let guard = Arc::new(PhysicalRolloutGuard::acquire(&path, true)?);
+        let file = open_log_file(&guard, true)?;
+        let faulty = FaultFile::new(
+            file,
+            if flush_error { vec![] } else { vec![1025] },
+            flush_error,
+        );
+        let first_bytes = faulty.first_write.clone();
+        let thread_id = ThreadId::new();
+        let RolloutItem::SessionMeta(mut meta_line) =
+            paginated_session_meta_item(thread_id, home.path())
+        else {
+            unreachable!()
+        };
+        meta_line.meta.originator = "metadata identity ".repeat(256);
+        let mut state = RolloutWriterState {
+            writer: Some(JsonlWriter {
+                file: Box::new(faulty),
+            }),
+            physical_lock: Some(guard),
+            writer_lock: None,
+            pending_append: None,
+            worker_failure: None,
+            deferred_creation: false,
+            pending_items: vec![agent_message_item("exactly once after meta")].into(),
+            meta: Some(meta_line.meta),
+            cwd: home.path().to_path_buf(),
+            rollout_path: path.clone(),
+            ordinal_state: RolloutOrdinalState::for_new_rollout(ThreadHistoryMode::Paginated, None),
+            last_logged_error: None,
+        };
+        state.flush().await?;
+        let expected = first_bytes.lock().unwrap().clone();
+        assert!(expected.len() > 1025);
+        assert!(
+            fs::read(&path)?.starts_with(&expected),
+            "meta's original timestamp/ordinal/bytes must survive retry"
+        );
+        assert!(state.meta.is_none());
+        assert!(state.pending_items.is_empty());
+        assert!(state.pending_append.is_none());
+        state.flush().await?;
+        let lines = read_rollout_lines(&path)?;
+        assert_eq!(lines.len(), 2);
+        assert_eq!(
+            lines.iter().map(|line| line.ordinal).collect::<Vec<_>>(),
+            vec![Some(0), Some(1)]
+        );
+        assert!(
+            matches!(&lines[0].item, RolloutItem::SessionMeta(meta) if meta.meta.id == thread_id)
+        );
+        let (_, loaded_id, parse_errors) = RolloutRecorder::load_rollout_items(&path).await?;
+        assert_eq!(loaded_id, Some(thread_id));
+        assert_eq!(parse_errors, 0);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn writer_state_worker_panic_retains_checkpoint_and_fails_closed() -> std::io::Result<()> {
+    use crate::append_state::tests::FaultFile;
+    let home = TempDir::new()?;
+    let path = home.path().join("rollout.jsonl");
+    let guard = Arc::new(PhysicalRolloutGuard::acquire(&path, true)?);
+    let mut faulty = FaultFile::new(open_log_file(&guard, true)?, vec![1025], false);
+    faulty.panic_on_write_error = true;
+    let first_bytes = faulty.first_write.clone();
+    let mut state = RolloutWriterState {
+        writer: Some(JsonlWriter {
+            file: Box::new(faulty),
+        }),
+        physical_lock: Some(guard),
+        writer_lock: None,
+        pending_append: None,
+        worker_failure: None,
+        deferred_creation: false,
+        pending_items: vec![agent_message_item(&"x".repeat(4096))].into(),
+        meta: None,
+        cwd: home.path().to_path_buf(),
+        rollout_path: path.clone(),
+        ordinal_state: RolloutOrdinalState::for_new_rollout(ThreadHistoryMode::Paginated, None),
+        last_logged_error: None,
+    };
+    for _ in 0..2 {
+        let err = state
+            .flush()
+            .await
+            .expect_err("worker panic is sticky, never a fresh append");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("worker failed"));
+        assert_eq!(fs::read(&path)?, first_bytes.lock().unwrap()[..1025]);
+        assert!(state.pending_append.is_some());
+        assert_eq!(state.pending_items.len(), 1);
+        assert_eq!(state.ordinal_state.current()?, Some(0));
+    }
+    Ok(())
+}
+
+#[test]
+fn append_open_preserves_unterminated_tail_on_rejection() -> std::io::Result<()> {
+    let home = TempDir::new().expect("temp dir");
+    let rollout_path = home.path().join("rollout.jsonl");
+    let original = b"{\"timestamp\":\"partial";
+    fs::write(&rollout_path, original)?;
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .append(true)
+        .open(&rollout_path)?;
+
+    let err = ensure_rollout_is_newline_terminated(&mut file)
+        .expect_err("unterminated tail must fail closed");
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    assert_eq!(fs::read(&rollout_path)?, original);
     Ok(())
 }
 
@@ -1110,52 +1244,63 @@ async fn resumed_paginated_rollout_continues_after_decimal_token_count() -> std:
 }
 
 #[tokio::test]
-async fn resumed_paginated_rollout_repairs_unsafe_tail() -> std::io::Result<()> {
+async fn resumed_paginated_rollout_terminates_complete_valid_tail() -> std::io::Result<()> {
     let valid_unterminated = serde_json::to_string(&RolloutLine {
         timestamp: "2026-07-09T00:00:05Z".to_string(),
         ordinal: Some(5),
         item: agent_message_item("valid unterminated"),
     })?;
-    for (name, tail, expected_ordinals) in [
-        (
-            "valid unterminated",
-            valid_unterminated,
-            vec![Some(0), Some(4), Some(5), Some(6)],
-        ),
-        (
-            "invalid unterminated",
-            "{\"timestamp\":\"unterminated\"".to_string(),
-            vec![Some(0), Some(4), Some(5)],
-        ),
-    ] {
-        let home = TempDir::new().expect("temp dir");
-        let config = test_config(home.path());
-        let rollout_path = home.path().join("rollout.jsonl");
-        write_paginated_rollout(&rollout_path, ThreadId::new(), &[4])?;
-        let mut file = fs::OpenOptions::new().append(true).open(&rollout_path)?;
-        write!(file, "{tail}")?;
-        drop(file);
+    let home = TempDir::new().expect("temp dir");
+    let config = test_config(home.path());
+    let rollout_path = home.path().join("rollout.jsonl");
+    write_paginated_rollout(&rollout_path, ThreadId::new(), &[4])?;
+    let mut file = fs::OpenOptions::new().append(true).open(&rollout_path)?;
+    write!(file, "{valid_unterminated}")?;
+    drop(file);
 
-        let recorder =
-            RolloutRecorder::new(&config, RolloutRecorderParams::resume(rollout_path.clone()))
-                .await?;
-        recorder
-            .record_canonical_items(&[agent_message_item("after-tail-repair")])
-            .await?;
-        recorder.flush().await?;
+    let recorder =
+        RolloutRecorder::new(&config, RolloutRecorderParams::resume(rollout_path.clone())).await?;
+    recorder
+        .record_canonical_items(&[agent_message_item("after-tail-repair")])
+        .await?;
+    recorder.flush().await?;
 
-        let contents = fs::read_to_string(&rollout_path)?;
-        assert!(contents.ends_with('\n'), "{name} tail should be terminated");
-        let ordinals = contents
-            .lines()
-            .filter_map(|line| crate::parse_rollout_line(line).ok())
-            .map(|line| line.ordinal)
-            .collect::<Vec<_>>();
-        assert_eq!(
-            ordinals, expected_ordinals,
-            "unexpected ordinals after repairing {name} tail"
-        );
-        recorder.shutdown().await?;
+    let contents = fs::read_to_string(&rollout_path)?;
+    assert!(contents.ends_with('\n'));
+    let ordinals = contents
+        .lines()
+        .map(crate::parse_rollout_line)
+        .collect::<serde_json::Result<Vec<_>>>()?
+        .into_iter()
+        .map(|line| line.ordinal)
+        .collect::<Vec<_>>();
+    assert_eq!(ordinals, vec![Some(0), Some(4), Some(5), Some(6)]);
+    recorder.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn resumed_paginated_rollout_rejects_unknown_malformed_tail() -> std::io::Result<()> {
+    let home = TempDir::new()?;
+    let path = home.path().join("rollout.jsonl");
+    write_paginated_rollout(&path, ThreadId::new(), &[4])?;
+    File::options()
+        .append(true)
+        .open(&path)?
+        .write_all(b"{\"timestamp\":\"unterminated\"")?;
+    let before = fs::read(&path)?;
+    for _ in 0..2 {
+        let result = RolloutRecorder::new(
+            &test_config(home.path()),
+            RolloutRecorderParams::resume(path.clone()),
+        )
+        .await;
+        let err = match result {
+            Ok(_) => panic!("malformed unknown tail must fail closed"),
+            Err(err) => err,
+        };
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(fs::read(&path)?, before);
     }
     Ok(())
 }
