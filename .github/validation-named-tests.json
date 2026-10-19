@@ -90,6 +90,14 @@
       "execution_argv": ["cargo", "test", "--locked", "-p", "codex-goal-extension", "--test", "goal_scheduler_native_wait", "--", "--test-threads=1"]
     },
     {
+      "package": "codex-keyring-store",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal", "rust_integration"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-keyring-store", "--lib", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-keyring-store", "--lib", "--", "--test-threads=1"]
+    },
+    {
       "package": "codex-mcp",
       "target_kind": "lib",
       "target": "",
@@ -147,11 +155,27 @@
     },
     {
       "package": "codex-rmcp-client",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal", "rust_integration"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-rmcp-client", "--lib", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-rmcp-client", "--lib", "--", "--test-threads=1"]
+    },
+    {
+      "package": "codex-rmcp-client",
       "target_kind": "integration",
       "target": "streamable_http_recovery",
       "profiles": ["rust_minimal", "rust_integration"],
       "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-rmcp-client", "--test", "streamable_http_recovery", "--", "--list"],
       "execution_argv": ["cargo", "test", "--locked", "-p", "codex-rmcp-client", "--test", "streamable_http_recovery", "--", "--test-threads=1"]
+    },
+    {
+      "package": "codex-rmcp-client",
+      "target_kind": "integration",
+      "target": "streamable_http_oauth_store_pinning",
+      "profiles": ["rust_minimal", "rust_integration"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-rmcp-client", "--test", "streamable_http_oauth_store_pinning", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-rmcp-client", "--test", "streamable_http_oauth_store_pinning", "--", "--test-threads=1"]
     },
     {
       "package": "codex-state",
