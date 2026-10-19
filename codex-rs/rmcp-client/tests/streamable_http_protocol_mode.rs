@@ -72,19 +72,19 @@ async fn current_protocol_mode_discovers_and_sends_stateless_http_requests() -> 
         "protocol-mode-test",
         &format!("{}/mcp", server.uri()),
         Some("test-bearer".to_string()),
-        None,
-        None,
+        /*http_headers*/ None,
+        /*env_http_headers*/ None,
         OAuthCredentialsStoreMode::File,
         AuthKeyringBackendKind::default(),
         Environment::default_for_tests().get_http_client(),
-        None,
+        /*auth_provider*/ None,
         McpProtocolMode::V20260728,
     )
     .await?;
 
     initialize_client(&client).await?;
     let result = client
-        .list_tools(None, Some(std::time::Duration::from_secs(5)))
+        .list_tools(/*params*/ None, Some(std::time::Duration::from_secs(5)))
         .await?;
     assert!(result.tools.is_empty());
     client.shutdown().await;

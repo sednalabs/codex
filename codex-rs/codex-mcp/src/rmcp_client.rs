@@ -1214,6 +1214,8 @@ struct StartServerTaskParams {
 }
 
 #[instrument(level = "trace", skip_all, fields(server_name = %server_name))]
+// Keep per-server protocol selection explicit at the RMCP client boundary.
+#[allow(clippy::too_many_arguments)]
 async fn make_rmcp_client(
     server_name: &str,
     server: EffectiveMcpServer,
