@@ -111,10 +111,29 @@ struct PkceState {
     token_error: Option<&'static str>,
 }
 
+fn has_urlencoded_form_content_type(headers: &axum::http::HeaderMap) -> bool {
+    headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|media_type| {
+            media_type
+                .trim()
+                .eq_ignore_ascii_case("application/x-www-form-urlencoded")
+        })
+}
+
 async fn pkce_device(
     State(state): State<PkceState>,
+    headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> (AxumStatusCode, Json<serde_json::Value>) {
+    if !has_urlencoded_form_content_type(&headers) {
+        return (
+            AxumStatusCode::UNSUPPORTED_MEDIA_TYPE,
+            Json(json!({"error": "expected application/x-www-form-urlencoded"})),
+        );
+    }
     let form = url::form_urlencoded::parse(&body)
         .into_owned()
         .collect::<HashMap<_, _>>();
@@ -140,8 +159,15 @@ async fn pkce_device(
 
 async fn pkce_token(
     State(state): State<PkceState>,
+    headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> (AxumStatusCode, Json<serde_json::Value>) {
+    if !has_urlencoded_form_content_type(&headers) {
+        return (
+            AxumStatusCode::UNSUPPORTED_MEDIA_TYPE,
+            Json(json!({"error": "expected application/x-www-form-urlencoded"})),
+        );
+    }
     let form = url::form_urlencoded::parse(&body)
         .into_owned()
         .collect::<HashMap<_, _>>();
