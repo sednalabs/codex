@@ -1317,9 +1317,9 @@ mod tests {
                 FIXED_API_CLAIM_RESOURCE,
                 FIXED_API_CLAIM_CLIENT_ID,
                 &scope,
-                8765,
+                /*callback_port*/ 8765,
                 "http://127.0.0.1:8765/callback",
-                300,
+                /*timeout_secs*/ 300,
             )
             .is_ok()
         );
@@ -1334,9 +1334,9 @@ mod tests {
                     FIXED_API_CLAIM_RESOURCE,
                     FIXED_API_CLAIM_CLIENT_ID,
                     &scope,
-                    8765,
+                    /*callback_port*/ 8765,
                     callback,
-                    300,
+                    /*timeout_secs*/ 300,
                 )
                 .is_err()
             );
@@ -1347,9 +1347,9 @@ mod tests {
                 FIXED_API_CLAIM_RESOURCE,
                 FIXED_API_CLAIM_CLIENT_ID,
                 &["ops:write offline_access".to_string()],
-                8765,
+                /*callback_port*/ 8765,
                 "http://127.0.0.1:8765/callback",
-                300,
+                /*timeout_secs*/ 300,
             )
             .is_err()
         );
