@@ -11,6 +11,8 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 
+use crate::file_identity::FileIdentity;
+
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 #[cfg(unix)]
@@ -156,7 +158,7 @@ pub(crate) fn materialize_rollout_with_guard(
         stage = "read_metadata";
         let input = File::open(compressed_path.as_path())?;
         let metadata = input.metadata()?;
-        let source_identity = same_file::Handle::from_file(input.try_clone()?)?;
+        let source_identity = FileIdentity::from_file(input.try_clone()?)?;
         let permissions = metadata.permissions();
         stage = "create_temp";
         let mut output = create_file_with_permissions(temp_path.as_path(), &permissions)?;
@@ -171,7 +173,7 @@ pub(crate) fn materialize_rollout_with_guard(
         stage = "sync";
         output.sync_all()?;
         stage = "publish";
-        if same_file::Handle::from_path(&compressed_path)? != source_identity {
+        if FileIdentity::from_path(&compressed_path)? != source_identity {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "compressed rollout was replaced",
@@ -182,9 +184,7 @@ pub(crate) fn materialize_rollout_with_guard(
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {}
             Err(_) => persist_temp_file_noclobber(temp_path.as_path(), plain_path.as_path())?,
         }
-        if same_file::Handle::from_path(&plain_path)?
-            != same_file::Handle::from_file(output.try_clone()?)?
-        {
+        if FileIdentity::from_path(&plain_path)? != FileIdentity::from_file(output.try_clone()?)? {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "plain rollout changed during materialization",
@@ -197,7 +197,7 @@ pub(crate) fn materialize_rollout_with_guard(
         drop(output);
         let _ = std::fs::remove_file(temp_path.as_path());
         stage = "remove_source";
-        if same_file::Handle::from_path(&compressed_path)? != source_identity {
+        if FileIdentity::from_path(&compressed_path)? != source_identity {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "compressed rollout was replaced",
@@ -389,6 +389,7 @@ mod worker {
 
     use crate::ARCHIVED_SESSIONS_SUBDIR;
     use crate::SESSIONS_SUBDIR;
+    use crate::file_identity::FileIdentity;
 
     use super::RolloutCompressionTrigger;
     use super::RolloutFile;
@@ -1017,7 +1018,7 @@ mod worker {
     }
 
     struct FileState {
-        identity: same_file::Handle,
+        identity: FileIdentity,
         len: u64,
         modified: SystemTime,
         permissions: Permissions,
@@ -1037,7 +1038,7 @@ mod worker {
         }
         let modified = metadata.modified()?;
         let state = FileState {
-            identity: same_file::Handle::from_file(file)?,
+            identity: FileIdentity::from_file(file)?,
             len: metadata.len(),
             modified,
             permissions: metadata.permissions(),
@@ -1055,7 +1056,7 @@ mod worker {
         match File::open(path) {
             Ok(file) => {
                 let metadata = file.metadata()?;
-                Ok(same_file::Handle::from_file(file)? == expected.identity
+                Ok(FileIdentity::from_file(file)? == expected.identity
                     && metadata.len() == expected.len
                     && metadata.modified()? == expected.modified
                     && metadata.permissions() == expected.permissions)

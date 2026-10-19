@@ -170,7 +170,6 @@ fn owned_append_conflicts_are_sticky_and_never_modify_foreign_bytes() -> io::Res
             "replace" => {
                 let replacement = home.path().join("replacement");
                 fs::write(&replacement, &original)?;
-                fs::remove_file(&path)?;
                 fs::rename(replacement, &path)?;
             }
             "witness" => {

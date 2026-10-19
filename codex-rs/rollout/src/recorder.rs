@@ -2081,6 +2081,10 @@ async fn session_meta_item(session_meta: SessionMeta, cwd: &Path) -> RolloutItem
 /// This is for metadata updates to unloaded threads. Live sessions should use
 /// `RolloutRecorder::record_canonical_items` so rollout writes remain ordered
 /// with the rest of the session stream.
+///
+/// This one-shot helper does not retain a checkpoint after returning an error.
+/// An I/O error may mean that part or all of the line reached the file; replaying
+/// the call is not a durable, idempotent operation.
 pub async fn append_rollout_item_to_path(
     rollout_path: &Path,
     item: &RolloutItem,

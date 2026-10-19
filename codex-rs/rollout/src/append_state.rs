@@ -8,6 +8,8 @@ use std::io::SeekFrom;
 use std::io::Write;
 use std::path::Path;
 
+use crate::file_identity::FileIdentity;
+
 /// The small synchronous boundary also permits real partial-progress I/O tests.
 pub(crate) trait AppendIo: Read + Seek + Write {
     fn file(&self) -> &File;
@@ -26,7 +28,7 @@ pub(crate) struct PendingAppend {
 }
 
 struct Checkpoint {
-    identity: same_file::Handle,
+    identity: FileIdentity,
     start: u64,
     witness: Vec<u8>,
 }
@@ -66,7 +68,7 @@ impl PendingAppend {
             file.seek(SeekFrom::Start(start - witness.len() as u64))?;
             file.read_exact(&mut witness)?;
             self.checkpoint = Some(Checkpoint {
-                identity: same_file::Handle::from_file(file.file().try_clone()?)?,
+                identity: FileIdentity::from_file(file.file().try_clone()?)?,
                 start,
                 witness,
             });
@@ -89,8 +91,8 @@ impl PendingAppend {
             .checkpoint
             .as_ref()
             .expect("append checkpoint established");
-        let identity = same_file::Handle::from_file(file.file().try_clone()?)?;
-        let path_identity = match same_file::Handle::from_path(path) {
+        let identity = FileIdentity::from_file(file.file().try_clone()?)?;
+        let path_identity = match FileIdentity::from_path(path) {
             Ok(identity) => identity,
             Err(err) if err.kind() == io::ErrorKind::NotFound => {
                 return Err(self.conflict("rollout path disappeared during an owned append"));

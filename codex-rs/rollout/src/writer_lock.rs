@@ -21,6 +21,8 @@ const PHYSICAL_LOCK_DIR: &str = ".rollout-writer-locks";
 
 /// Private path ownership, shared even when different profiles reference the same history.
 /// Unlike an inode lock, this survives plain/compressed representation replacement.
+/// Only participating writers are coordinated. Identity checks do not make a
+/// later publication or unlink atomic against nonparticipating filesystem users.
 pub(crate) struct PhysicalRolloutGuard {
     _lock: WriterLockGuard,
     path: PathBuf,
