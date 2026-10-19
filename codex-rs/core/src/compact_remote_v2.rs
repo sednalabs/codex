@@ -27,10 +27,12 @@ use crate::responses_metadata::CompactionTurnMetadata;
 use crate::responses_retry::ResponsesStreamRequest;
 use crate::responses_retry::ResponsesStreamRetryState;
 use crate::responses_retry::handle_response_stream_error;
+use crate::session::ProviderResponseUsageContext;
 use crate::session::RequestEffortUsage;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
+use chrono::Utc;
 use codex_analytics::CompactionImplementation;
 use codex_analytics::CompactionPhase;
 use codex_analytics::CompactionReason;
@@ -302,6 +304,14 @@ async fn run_remote_compaction_request_v2(
             // Replay the routing token without letting this request change foreground routing.
             let turn_state = Arc::new(turn_state.map(OnceLock::from).unwrap_or_default());
             let http_executor = ResponsesHttpExecutor::new(&sess.services.model_client);
+            let response_usage_context = ProviderResponseUsageContext {
+                started_at: Utc::now().to_rfc3339(),
+                provider: turn_context.config.model_provider_id.clone(),
+                requested_model: settings.model_info.slug.clone(),
+                actual_model_used: None,
+                requested_service_tier: settings.service_tier.clone(),
+                actual_service_tier: None,
+            };
             let stream = tokio::select! {
                 biased;
                 _ = cancellation.cancelled() => return Err(CodexErr::TurnAborted),
@@ -316,6 +326,7 @@ async fn run_remote_compaction_request_v2(
                 turn_context,
                 stream,
                 CompactionRequestKind::Background(&cancellation),
+                response_usage_context,
             )
             .await;
         }
@@ -329,6 +340,14 @@ async fn run_remote_compaction_request_v2(
         .min(MAX_REMOTE_COMPACTION_V2_STREAM_RETRIES);
     let mut retry_state = ResponsesStreamRetryState::default();
     loop {
+        let response_usage_context = ProviderResponseUsageContext {
+            started_at: Utc::now().to_rfc3339(),
+            provider: turn_context.config.model_provider_id.clone(),
+            requested_model: settings.model_info.slug.clone(),
+            actual_model_used: None,
+            requested_service_tier: step_context.settings.service_tier.clone(),
+            actual_service_tier: None,
+        };
         let result = match client_session
             .stream(
                 prompt,
@@ -349,6 +368,7 @@ async fn run_remote_compaction_request_v2(
                     turn_context,
                     stream,
                     CompactionRequestKind::Foreground,
+                    response_usage_context,
                 )
                 .await
             }
@@ -377,10 +397,13 @@ async fn collect_compaction_output(
     turn_context: &TurnContext,
     mut stream: ResponseStream,
     request_kind: CompactionRequestKind<'_>,
+    mut response_usage_context: ProviderResponseUsageContext,
 ) -> CodexResult<RemoteCompactionV2Output> {
     let mut output_item_count = 0usize;
     let mut compaction_count = 0usize;
     let mut compaction_output = None;
+    let mut response_server_model: Option<String> = None;
+    let mut response_server_model_conflict = false;
     let mut completed_response_id = None;
     let mut completed_token_usage = None;
     loop {
@@ -425,6 +448,15 @@ async fn collect_compaction_output(
                     }
                 }
             }
+            ResponseEvent::ServerModel(server_model) => {
+                if let Some(previous) = response_server_model.as_deref() {
+                    if previous != server_model.as_str() {
+                        response_server_model_conflict = true;
+                    }
+                } else {
+                    response_server_model = Some(server_model);
+                }
+            }
             ResponseEvent::Completed {
                 response_id,
                 token_usage,
@@ -438,11 +470,16 @@ async fn collect_compaction_output(
                         }
                     }
                     CompactionRequestKind::Foreground => {
+                        response_usage_context.actual_model_used =
+                            (!response_server_model_conflict)
+                                .then(|| response_server_model.clone())
+                                .flatten();
                         sess.record_observed_response_completed(
                             turn_context,
                             &response_id,
                             token_usage.as_ref(),
                             usage_metadata.as_ref(),
+                            response_usage_context,
                         )
                         .await;
                     }
@@ -1266,6 +1303,14 @@ mod tests {
             &turn_context,
             stream,
             CompactionRequestKind::Background(&cancellation),
+            crate::session::ProviderResponseUsageContext {
+                started_at: chrono::Utc::now().to_rfc3339(),
+                provider: turn_context.config.model_provider_id.clone(),
+                requested_model: turn_context.initial_settings.model_info.slug.clone(),
+                actual_model_used: None,
+                requested_service_tier: turn_context.initial_settings.service_tier.clone(),
+                actual_service_tier: None,
+            },
         )
         .await;
 
@@ -1315,6 +1360,14 @@ mod tests {
             &turn_context,
             stream,
             CompactionRequestKind::Foreground,
+            crate::session::ProviderResponseUsageContext {
+                started_at: chrono::Utc::now().to_rfc3339(),
+                provider: turn_context.config.model_provider_id.clone(),
+                requested_model: turn_context.initial_settings.model_info.slug.clone(),
+                actual_model_used: None,
+                requested_service_tier: turn_context.initial_settings.service_tier.clone(),
+                actual_service_tier: None,
+            },
         )
         .await
         .expect("compaction should be collected");

@@ -2743,6 +2743,14 @@ async fn spawn_agent_fork_sanitizes_inherited_compaction_metadata() {
             "child-response",
             Some(&child_usage),
             /*usage_metadata*/ None,
+            crate::session::ProviderResponseUsageContext {
+                started_at: chrono::Utc::now().to_rfc3339(),
+                provider: turn_context.config.model_provider_id.clone(),
+                requested_model: turn_context.model_info().slug.clone(),
+                actual_model_used: None,
+                requested_service_tier: turn_context.initial_settings.service_tier.clone(),
+                actual_service_tier: None,
+            },
         )
         .await;
     child_thread

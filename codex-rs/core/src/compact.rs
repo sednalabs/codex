@@ -19,6 +19,7 @@ use crate::hook_runtime::run_post_compact_hooks;
 use crate::hook_runtime::run_pre_compact_hooks;
 use crate::responses_metadata::CodexResponsesMetadata;
 use crate::responses_metadata::CompactionTurnMetadata;
+use crate::session::ProviderResponseUsageContext;
 use crate::session::RequestEffortUsage;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
@@ -26,6 +27,7 @@ use crate::session::turn::get_last_assistant_message_from_turn;
 use crate::session::turn_context::TurnContext;
 use crate::state::AutoCompactWindowIds;
 use crate::util::backoff;
+use chrono::Utc;
 use codex_analytics::CodexCompactionEvent;
 use codex_analytics::CompactionImplementation;
 use codex_analytics::CompactionPhase;
@@ -796,6 +798,7 @@ async fn drain_to_completed(
     prompt: &Prompt,
     phase: CompactionPhase,
 ) -> CodexResult<CompactionResponse> {
+    let response_started_at = Utc::now().to_rfc3339();
     let mut stream = client_session
         .stream(
             prompt,
@@ -815,6 +818,8 @@ async fn drain_to_completed(
         )
         .await?;
     let mut output = Vec::new();
+    let mut response_server_model: Option<String> = None;
+    let mut response_server_model_conflict = false;
     loop {
         let maybe_event = stream.next().await;
         let Some(event) = maybe_event else {
@@ -849,17 +854,37 @@ async fn drain_to_completed(
             Ok(ResponseEvent::RateLimits(snapshot)) => {
                 sess.update_rate_limits(turn_context, snapshot).await;
             }
+            Ok(ResponseEvent::ServerModel(server_model)) => {
+                if let Some(previous) = response_server_model.as_deref() {
+                    if previous != server_model.as_str() {
+                        response_server_model_conflict = true;
+                    }
+                } else {
+                    response_server_model = Some(server_model);
+                }
+            }
             Ok(ResponseEvent::Completed {
                 response_id,
                 token_usage,
                 usage_metadata,
                 ..
             }) => {
+                let usage_context = ProviderResponseUsageContext {
+                    started_at: response_started_at,
+                    provider: turn_context.config.model_provider_id.clone(),
+                    requested_model: turn_context.model_info().slug.clone(),
+                    actual_model_used: (!response_server_model_conflict)
+                        .then(|| response_server_model.clone())
+                        .flatten(),
+                    requested_service_tier: turn_context.config.service_tier.clone(),
+                    actual_service_tier: None,
+                };
                 sess.record_observed_response_completed(
                     turn_context,
                     &response_id,
                     token_usage.as_ref(),
                     usage_metadata.as_ref(),
+                    usage_context,
                 )
                 .await;
                 sess.update_token_usage_info(turn_context, token_usage.as_ref())
