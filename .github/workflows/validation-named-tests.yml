@@ -662,6 +662,7 @@ jobs:
             --test_verbose_timeout_warnings \
             --test_sharding_strategy=disabled \
             --local_test_jobs=1 \
+            --test_output=all \
             --test_env=CODEX_BAZEL_LOCAL_ONLY=1 \
             "--action_env=SystemRoot=${WINDOWS_SYSTEM_ROOT}" \
             "--host_action_env=SystemRoot=${WINDOWS_SYSTEM_ROOT}" \
@@ -696,8 +697,9 @@ jobs:
             "suite::subagent_notifications::guardian_subagent_notification_tests::guardian_circuit_breaker_notifies_parent::strict_notifies_parent"
             "suite::scenarios::agent_message_board::board_unsubscribe_survives_post_and_resume_until_resubscribed::channels_only"
           )
+          failed=0
           for selector in "${selectors[@]}"; do
-            ../.github/scripts/run-bazel-ci.sh \
+            if ../.github/scripts/run-bazel-ci.sh \
               --print-failed-action-summary \
               --print-failed-test-logs \
               --windows-msvc-host-platform \
@@ -722,5 +724,11 @@ jobs:
               --test_arg=--nocapture \
               --test_arg=--test-threads=1 \
               -- \
-              //codex-rs/core:core-all-test
+              //codex-rs/core:core-all-test; then
+              :
+            else
+              echo "Fixed mailbox event selector failed: ${selector}" >&2
+              failed=1
+            fi
           done
+          exit "${failed}"
