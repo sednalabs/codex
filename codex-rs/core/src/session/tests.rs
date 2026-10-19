@@ -13794,7 +13794,26 @@ async fn terminal_goal_handback_joins_the_completing_turn_idle_result() {
         }
     }
 
-    let (mut session, turn_context) = make_session_and_context().await;
+    let (mut session, mut turn_context) =
+        make_multi_agent_v2_usage_hint_test_session(/*enable_multi_agent_v2*/ true).await;
+    let parent_thread_id = ThreadId::new();
+    let session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id,
+        depth: 1,
+        agent_path: Some(AgentPath::try_from("/root/goal-child").expect("canonical child path")),
+        agent_nickname: Some("goal-child".to_string()),
+        agent_role: None,
+    });
+    session
+        .state
+        .lock()
+        .await
+        .session_configuration
+        .session_source = session_source.clone();
+    let turn_context_mut =
+        Arc::get_mut(&mut turn_context).expect("V2 turn context should be unshared");
+    turn_context_mut.session_source = session_source;
+    assert_eq!(MultiAgentVersion::V2, turn_context_mut.multi_agent_version);
     let continuation = GoalTurnContinuation {
         goal_id: "resumed-goal".to_string(),
         turn_id: turn_context.sub_id.clone(),
@@ -13821,7 +13840,10 @@ async fn terminal_goal_handback_joins_the_completing_turn_idle_result() {
     let mut extensions =
         codex_extension_api::ExtensionRegistryBuilder::<crate::config::Config>::new();
     extensions.thread_lifecycle_contributor(Arc::new(StartedContinuationOnIdle));
-    session.services.extensions = Arc::new(extensions.build());
+    Arc::get_mut(&mut session)
+        .expect("V2 test session should be unshared")
+        .services
+        .extensions = Arc::new(extensions.build());
     session
         .emit_thread_idle_lifecycle_if_idle(
             codex_extension_api::ThreadIdleCause::Completed,
