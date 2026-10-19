@@ -1003,6 +1003,38 @@
       "extraction_target": "upstreamable MCP OAuth device login flow"
     },
     {
+      "id": "startup-plugin-archive-permission-sanitization",
+      "title": "Sanitize curated plugin archive permissions",
+      "status": "live",
+      "category": "security",
+      "surface_type": "archive-extraction",
+      "surface": ["curated plugin ZIP file permissions"],
+      "files": [
+        "codex-rs/core-plugins/src/startup_sync.rs",
+        "codex-rs/core-plugins/src/startup_sync_tests.rs",
+        "justfile"
+      ],
+      "behavior": "Curated plugin ZIP extraction preserves ordinary read, write, and executable permissions while masking special Unix mode bits at the filesystem permission boundary.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.core-startup-sync-targeted",
+      "tests": [
+        "zipball_extraction_masks_special_mode_bits_and_preserves_executables"
+      ],
+      "owner": "downstream",
+      "notes": "Keep the mask at the permission-application boundary instead of relying on a ZIP reader's current metadata normalization. Preserve executable mode for plugin files; do not install setuid, setgid, or sticky bits from a remote archive.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "client-hardening-fix",
+      "hotspot_files": [
+        "codex-rs/core-plugins/src/startup_sync.rs",
+        "codex-rs/core-plugins/src/startup_sync_tests.rs"
+      ],
+      "extraction_target": "upstream curated plugin ZIP permission-boundary sanitization"
+    },
+    {
       "id": "startup-plugin-sync-bounded-wait",
       "title": "Startup plugin sync bounded wait and completion re-arm",
       "status": "upstream-equivalent",

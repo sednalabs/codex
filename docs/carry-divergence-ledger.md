@@ -3902,3 +3902,9 @@ caller-selected path, URL, client, scope, or command option and sends no claim.
 The unit template and binary are packaged for Linux x86_64 and Arm64; packaging
 does not create the host policy, credentials, service account, issuer
 appointment, service installation, or live execution authority.
+
+Curated plugin ZIP extraction applies Unix permissions only after masking to
+ordinary `0o777` bits. This keeps executable plugin files usable while making
+the filesystem permission boundary independent of the ZIP reader's current
+special-bit normalization. The focused extraction regression includes an
+archive carrying setuid metadata and a direct permission-helper assertion.

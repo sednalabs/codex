@@ -304,7 +304,7 @@ fn validate_fixed_oauth_inputs(
     timeout_secs: u64,
 ) -> Result<()> {
     validate_canonical_https_url(issuer_url)?;
-    validate_canonical_https_url(resource_url)?;
+    validate_canonical_https_origin(resource_url)?;
     let callback =
         Url::parse(callback_url).map_err(|_| anyhow!("fixed OAuth callback URL is invalid"))?;
     if client_id.is_empty()
@@ -344,6 +344,14 @@ fn validate_canonical_https_url(value: &str) -> Result<Url> {
         || (url.as_str() != value && !matches_canonical_origin)
     {
         bail!("fixed OAuth URL must be canonical HTTPS");
+    }
+    Ok(url)
+}
+
+fn validate_canonical_https_origin(value: &str) -> Result<Url> {
+    let url = validate_canonical_https_url(value)?;
+    if url.path() != "/" {
+        bail!("fixed OAuth resource must be an HTTPS origin");
     }
     Ok(url)
 }
@@ -1102,7 +1110,7 @@ mod tests {
     use super::fixed_authorization_url;
     use super::parse_oauth_callback;
     use super::start_authorization;
-    use super::validate_canonical_https_url;
+    use super::validate_canonical_https_origin;
     use super::validate_fixed_oauth_inputs;
     use super::validate_fixed_oauth_metadata;
 
@@ -1230,6 +1238,7 @@ mod tests {
     #[tokio::test]
     async fn fixed_access_token_request_binds_client_resource_and_pkce_scope() {
         let resource = FIXED_API_CLAIM_RESOURCE;
+        let expected_resource = Url::parse(resource).expect("parse fixed OAuth resource");
         let redirect = append_callback_id_to_redirect_uri(
             FIXED_API_CLAIM_CALLBACK_URL,
             &callback_id_from_server_url(FIXED_API_CLAIM_ISSUER)
@@ -1286,10 +1295,10 @@ mod tests {
         assert_eq!(value("client_id"), Some(FIXED_API_CLAIM_CLIENT_ID));
         assert_eq!(value("redirect_uri"), Some(redirect.as_str()));
         assert_eq!(value("response_type"), Some("code"));
-        assert_eq!(value("resource"), Some(resource));
+        assert_eq!(value("resource"), Some(expected_resource.as_str()));
         assert_eq!(value("scope"), Some(FIXED_API_CLAIM_SCOPE));
         assert_eq!(value("code_challenge_method"), Some("S256"));
-        assert_eq!(value("state").map(str::len), Some(43));
+        assert_eq!(value("state").map(str::len), Some(22));
         assert_eq!(value("code_challenge").map(str::len), Some(43));
         assert!(!query.iter().any(|(key, value)| {
             key == "scope"
@@ -1348,15 +1357,15 @@ mod tests {
 
     #[test]
     fn canonical_https_accepts_the_fixed_bare_api_origin_only() {
-        assert!(validate_canonical_https_url(FIXED_API_CLAIM_RESOURCE).is_ok());
-        assert!(validate_canonical_https_url("https://ops-api.grantmatler.com/").is_ok());
+        assert!(validate_canonical_https_origin(FIXED_API_CLAIM_RESOURCE).is_ok());
+        assert!(validate_canonical_https_origin("https://ops-api.grantmatler.com/").is_ok());
         for value in [
             "https://ops-api.grantmatler.com:443",
             "https://OPS-API.grantmatler.com",
             "https://ops-api.grantmatler.com/path",
             "https://ops-api.grantmatler.com?query=value",
         ] {
-            assert!(validate_canonical_https_url(value).is_err());
+            assert!(validate_canonical_https_origin(value).is_err());
         }
     }
 

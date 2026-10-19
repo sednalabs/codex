@@ -143,6 +143,14 @@ Focused targeted lanes for iterative work on the current carry seams:
   - Explicit full-history registry/code audit against the checked-out head and
     current upstream mirror.
 
+## Curated plugin archive permissions
+
+`codex.core-startup-sync-targeted` covers both the existing startup synchronization
+regressions and `zipball_extraction_masks_special_mode_bits_and_preserves_executables`.
+The archive test feeds special Unix mode bits through curated plugin extraction
+and confirms executable permissions remain available while setuid, setgid, and
+sticky bits cannot reach the filesystem.
+
 ## Sedna release update routing
 
 The installer and update surfaces share one boundary: automatic discovery is
