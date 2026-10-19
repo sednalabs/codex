@@ -17,6 +17,7 @@ use codex_app_server_protocol::ItemCompletedNotification;
 use codex_app_server_protocol::ItemStartedNotification;
 use codex_app_server_protocol::JSONRPCMessage;
 use codex_app_server_protocol::MergeStrategy;
+use codex_app_server_protocol::SubAgentActivityKind;
 use codex_app_server_protocol::ThreadGoalSetResponse;
 use codex_app_server_protocol::ThreadGoalStatus;
 use codex_app_server_protocol::ThreadGoalUpdatedNotification;
@@ -226,6 +227,7 @@ async fn thread_spawn_goal_continuation_precedes_parent_handback() -> Result<()>
 
     let (continuation_release_tx, continuation_release_rx) = oneshot::channel();
     let mut continuation_release_tx = Some(continuation_release_tx);
+    let (parent_followup_matched_tx, parent_followup_matched_rx) = oneshot::channel();
     let (continuation_matched_tx, continuation_matched_rx) = oneshot::channel();
     let continuation_route = StreamingSseRequestRoute::new(
         |request| {
@@ -283,22 +285,25 @@ async fn thread_spawn_goal_continuation_precedes_parent_handback() -> Result<()>
                 responses::ev_completed("parent-spawn"),
             ],
         ),
-        route(
+        StreamingSseRequestRoute::new(
             |request| {
-                request_contains(request, SPAWN_CALL_ID)
-                    && !request_contains(request, WAIT_CALL_ID)
+                request_contains(request, SPAWN_CALL_ID) && !request_contains(request, WAIT_CALL_ID)
             },
-            vec![
-                responses::ev_response_created("parent-wait"),
-                responses::ev_function_call_with_namespace(
-                    WAIT_CALL_ID,
-                    "collaboration",
-                    "wait_agent",
-                    r#"{"timeout_ms":60000}"#,
-                ),
-                responses::ev_completed("parent-wait"),
-            ],
-        ),
+            vec![StreamingSseChunk {
+                gate: None,
+                body: responses::sse(vec![
+                    responses::ev_response_created("parent-wait"),
+                    responses::ev_function_call_with_namespace(
+                        WAIT_CALL_ID,
+                        "collaboration",
+                        "wait_agent",
+                        r#"{"timeout_ms":60000}"#,
+                    ),
+                    responses::ev_completed("parent-wait"),
+                ]),
+            }],
+        )
+        .with_request_matched(parent_followup_matched_tx),
         route(
             |request| request_contains(request, WAIT_CALL_ID),
             vec![
@@ -402,9 +407,51 @@ async fn thread_spawn_goal_continuation_precedes_parent_handback() -> Result<()>
 
     let mut notifications = Vec::new();
     let mut spawn_child_thread_id = None;
+    let mut parent_followup_matched = false;
     let mut parent_wait_started = false;
-    let mut started_turns = Vec::<TurnStartedNotification>::new();
-    timeout(READ_TIMEOUT, async {
+    let mut child_continuation_started = false;
+    let pre_observation = timeout(READ_TIMEOUT, async {
+        // Resolve the already-matched provider requests before reading app-server stdout.
+        // This leaves any earlier notifications queued for matching against the actual
+        // continuation request's thread and turn metadata.
+        let (parent_followup_request, continuation_request) = tokio::try_join!(
+            async {
+                parent_followup_matched_rx
+                    .await
+                    .map_err(|_| anyhow::anyhow!("parent follow-up route match sender closed"))
+            },
+            async {
+                continuation_matched_rx
+                    .await
+                    .map_err(|_| anyhow::anyhow!("continuation route match sender closed"))
+            }
+        )?;
+        let parent_followup_request: serde_json::Value =
+            serde_json::from_slice(&parent_followup_request)?;
+        assert!(
+            parent_followup_request["client_metadata"]["thread_id"] == json!(thread.id)
+                && parent_followup_request["client_metadata"]["turn_id"]
+                    == json!(parent_turn.turn.id),
+            "parent follow-up request metadata did not match the parent turn"
+        );
+        parent_followup_matched = true;
+
+        let continuation_request_json: serde_json::Value =
+            serde_json::from_slice(&continuation_request)?;
+        assert!(request_contains(
+            &continuation_request_json,
+            CONTINUATION_PROMPT
+        ));
+        let child_thread_id = continuation_request_json["client_metadata"]["thread_id"]
+            .as_str()
+            .expect("continuation request has a child thread id")
+            .to_owned();
+        let continuation_turn_id = continuation_request_json["client_metadata"]["turn_id"]
+            .as_str()
+            .expect("continuation request has a continuation turn id")
+            .to_owned();
+
+        let mut initial_child_turn_id = None;
         loop {
             let message = mcp.read_next_message().await?;
             let JSONRPCMessage::Notification(notification) = message else {
@@ -415,23 +462,19 @@ async fn thread_spawn_goal_continuation_precedes_parent_handback() -> Result<()>
                     let completed: ItemCompletedNotification = serde_json::from_value(
                         notification.params.clone().expect("notification params"),
                     )?;
-                    if let ThreadItem::CollabAgentToolCall {
+                    if let ThreadItem::SubAgentActivity {
                         id,
-                        tool,
-                        status,
-                        receiver_thread_ids,
+                        kind,
+                        agent_thread_id: spawned_thread_id,
                         ..
                     } = completed.item
                         && id == SPAWN_CALL_ID
                     {
-                        assert_eq!(tool, CollabAgentTool::SpawnAgent);
-                        assert_eq!(status, CollabAgentToolCallStatus::Completed);
-                        spawn_child_thread_id = Some(
-                            receiver_thread_ids
-                                .first()
-                                .expect("spawn result has a child thread")
-                                .clone(),
-                        );
+                        assert_eq!(completed.thread_id, thread.id);
+                        assert_eq!(completed.turn_id, parent_turn.turn.id);
+                        assert_eq!(kind, SubAgentActivityKind::Started);
+                        assert_eq!(spawned_thread_id, child_thread_id);
+                        spawn_child_thread_id = Some(spawned_thread_id);
                     }
                 }
                 "item/started" => {
@@ -454,52 +497,46 @@ async fn thread_spawn_goal_continuation_precedes_parent_handback() -> Result<()>
                     }
                 }
                 "turn/started" => {
-                    started_turns.push(serde_json::from_value(
+                    let started: TurnStartedNotification = serde_json::from_value(
                         notification.params.clone().expect("notification params"),
-                    )?);
+                    )?;
+                    if started.thread_id == child_thread_id {
+                        if started.turn.id == continuation_turn_id {
+                            child_continuation_started = true;
+                        } else if initial_child_turn_id.is_none() {
+                            initial_child_turn_id = Some(started.turn.id.clone());
+                        }
+                    }
                 }
                 _ => {}
             }
             notifications.push(notification);
 
-            if let Some(child_thread_id) = spawn_child_thread_id.as_deref() {
-                let child_turn_count = started_turns
-                    .iter()
-                    .filter(|started| started.thread_id == child_thread_id)
-                    .count();
-                if parent_wait_started && child_turn_count >= 2 {
-                    return Ok::<(), anyhow::Error>(());
-                }
+            if spawn_child_thread_id.is_some()
+                && parent_wait_started
+                && child_continuation_started
+                && initial_child_turn_id.is_some()
+            {
+                let initial_child_turn_id = initial_child_turn_id
+                    .as_deref()
+                    .expect("initial child turn was observed");
+                assert_ne!(initial_child_turn_id, continuation_turn_id);
+                break Ok::<_, anyhow::Error>((
+                    child_thread_id,
+                    initial_child_turn_id.to_owned(),
+                    continuation_turn_id,
+                ));
             }
         }
     })
-    .await??;
-
-    let child_thread_id = spawn_child_thread_id.expect("spawned child thread id");
-    let child_turns = started_turns
-        .iter()
-        .filter(|started| started.thread_id == child_thread_id)
-        .collect::<Vec<_>>();
-    assert_eq!(child_turns.len(), 2);
-    let initial_child_turn_id = child_turns[0].turn.id.clone();
-    let continuation_turn_id = child_turns[1].turn.id.clone();
-    assert_ne!(initial_child_turn_id, continuation_turn_id);
-
-    let continuation_request = timeout(READ_TIMEOUT, continuation_matched_rx).await??;
-    let continuation_request_json: serde_json::Value =
-        serde_json::from_slice(&continuation_request)?;
-    assert!(request_contains(
-        &continuation_request_json,
-        CONTINUATION_PROMPT
-    ));
-    assert_eq!(
-        continuation_request_json["client_metadata"]["thread_id"],
-        json!(child_thread_id)
-    );
-    assert_eq!(
-        continuation_request_json["client_metadata"]["turn_id"],
-        json!(continuation_turn_id)
-    );
+    .await;
+    if pre_observation.is_err() {
+        return Err(anyhow::anyhow!(
+            "pre-observation timed out: parent_followup_matched={parent_followup_matched}, parent_wait_started={parent_wait_started}, child_continuation_started={child_continuation_started}"
+        ));
+    }
+    let (child_thread_id, initial_child_turn_id, continuation_turn_id) =
+        pre_observation.expect("pre-observation timeout was checked")?;
 
     // Observe the entire bounded interval while the matched response's sender is
     // still withheld. Keep the in-flight app-server read alive across the
@@ -636,10 +673,9 @@ async fn thread_spawn_goal_continuation_precedes_parent_handback() -> Result<()>
             if notification.method != "thread/goal/updated" {
                 return None;
             }
-            let update: ThreadGoalUpdatedNotification = serde_json::from_value(
-                notification.params.clone().expect("notification params"),
-            )
-            .expect("valid goal update notification");
+            let update: ThreadGoalUpdatedNotification =
+                serde_json::from_value(notification.params.clone().expect("notification params"))
+                    .expect("valid goal update notification");
             (update.thread_id == child_thread_id
                 && update.turn_id.as_deref() == Some(continuation_turn_id.as_str())
                 && update.goal.status == ThreadGoalStatus::Complete)
@@ -666,10 +702,9 @@ async fn thread_spawn_goal_continuation_precedes_parent_handback() -> Result<()>
             if notification.method != "item/started" {
                 return None;
             }
-            let started: ItemStartedNotification = serde_json::from_value(
-                notification.params.clone().expect("notification params"),
-            )
-            .expect("valid item start notification");
+            let started: ItemStartedNotification =
+                serde_json::from_value(notification.params.clone().expect("notification params"))
+                    .expect("valid item start notification");
             (started.thread_id == thread.id
                 && matches!(
                     started.item,
@@ -691,10 +726,9 @@ async fn thread_spawn_goal_continuation_precedes_parent_handback() -> Result<()>
             if notification.method != "item/completed" {
                 return None;
             }
-            let completed: ItemCompletedNotification = serde_json::from_value(
-                notification.params.clone().expect("notification params"),
-            )
-            .expect("valid item completion notification");
+            let completed: ItemCompletedNotification =
+                serde_json::from_value(notification.params.clone().expect("notification params"))
+                    .expect("valid item completion notification");
             (completed.thread_id == thread.id
                 && matches!(
                     completed.item,
@@ -717,15 +751,14 @@ async fn thread_spawn_goal_continuation_precedes_parent_handback() -> Result<()>
             if notification.method != "turn/completed" {
                 return None;
             }
-            let completed: TurnCompletedNotification = serde_json::from_value(
-                notification.params.clone().expect("notification params"),
-            )
-            .expect("valid turn completion notification");
+            let completed: TurnCompletedNotification =
+                serde_json::from_value(notification.params.clone().expect("notification params"))
+                    .expect("valid turn completion notification");
             (completed.thread_id == thread.id
                 && completed.turn.id == parent_turn.turn.id
                 && completed.turn.status == TurnStatus::Completed
                 && completed.turn.error.is_none())
-                .then_some(index)
+            .then_some(index)
         })
         .collect::<Vec<_>>();
     assert_eq!(parent_turn_completed_indices.len(), 1);
@@ -745,16 +778,14 @@ async fn thread_spawn_goal_continuation_precedes_parent_handback() -> Result<()>
     let request_json = |request: &[u8]| {
         serde_json::from_slice::<serde_json::Value>(request).expect("valid provider request JSON")
     };
-    let request_contains_bytes = |request: &[u8], text: &str| {
-        String::from_utf8_lossy(request).contains(text)
-    };
+    let request_contains_bytes =
+        |request: &[u8], text: &str| String::from_utf8_lossy(request).contains(text);
     let initial_child_request = request_order
         .iter()
         .find(|request| {
             request_contains_bytes(request, CHILD_PROMPT)
                 && !request_contains_bytes(request, CREATE_GOAL_CALL_ID)
-                && request_json(request)["client_metadata"]["thread_id"]
-                    == json!(child_thread_id)
+                && request_json(request)["client_metadata"]["thread_id"] == json!(child_thread_id)
         })
         .expect("initial child provider request");
     assert_eq!(
@@ -765,8 +796,7 @@ async fn thread_spawn_goal_continuation_precedes_parent_handback() -> Result<()>
         .iter()
         .find(|request| {
             request_contains_bytes(request, UPDATE_GOAL_CALL_ID)
-                && request_json(request)["client_metadata"]["thread_id"]
-                    == json!(child_thread_id)
+                && request_json(request)["client_metadata"]["thread_id"] == json!(child_thread_id)
                 && request_json(request)["client_metadata"]["turn_id"]
                     == json!(continuation_turn_id)
         })
@@ -784,8 +814,7 @@ async fn thread_spawn_goal_continuation_precedes_parent_handback() -> Result<()>
         .find(|request| {
             request_contains_bytes(request, WAIT_CALL_ID)
                 && request_json(request)["client_metadata"]["thread_id"] == json!(thread.id)
-                && request_json(request)["client_metadata"]["turn_id"]
-                    == json!(parent_turn.turn.id)
+                && request_json(request)["client_metadata"]["turn_id"] == json!(parent_turn.turn.id)
         })
         .expect("parent follow-up after native child handback");
     assert_eq!(
@@ -814,8 +843,7 @@ async fn thread_spawn_goal_continuation_precedes_parent_handback() -> Result<()>
         .iter()
         .position(|request| {
             request_contains_bytes(request, CONTINUATION_PROMPT)
-                && request_json(request)["client_metadata"]["thread_id"]
-                    == json!(child_thread_id)
+                && request_json(request)["client_metadata"]["thread_id"] == json!(child_thread_id)
                 && request_json(request)["client_metadata"]["turn_id"]
                     == json!(continuation_turn_id)
         })
