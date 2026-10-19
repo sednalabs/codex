@@ -1310,6 +1310,20 @@ async fn explicit_sibling_action_is_persisted_and_represented_for_its_direct_rec
         .expect("sibling should remain loaded");
     set_control_test_thread_running(&sibling_thread).await;
     *sibling_thread.session.active_turn.lock().await = Some(ActiveTurn::default());
+    let reserved_turn_state = {
+        let active_turn = sibling_thread.session.active_turn.lock().await;
+        Arc::clone(
+            &active_turn
+                .as_ref()
+                .expect("the sibling turn reservation should remain present")
+                .turn_state,
+        )
+    };
+    let initial_turn_start_count = explicit_update_rollout_items(&sibling_thread)
+        .await
+        .iter()
+        .filter(|item| matches!(item, RolloutItem::EventMsg(EventMsg::TurnStarted(_))))
+        .count();
 
     let update = ExplicitInterAgentUpdate {
         idempotency_key: "sibling-result-ready".to_string(),
@@ -1330,6 +1344,35 @@ async fn explicit_sibling_action_is_persisted_and_represented_for_its_direct_rec
         .await
         .expect("an authorized child may send to a different direct child");
     let update_id = ResponseItemId::from_server(update_id);
+
+    sibling_thread
+        .session
+        .maybe_start_turn_for_pending_work_with_sub_id(
+            /*sub_id*/ "sibling-action-must-not-steal-an-active-turn".to_string(),
+        )
+        .await;
+    let active_turn = sibling_thread.session.active_turn.lock().await;
+    assert!(active_turn.as_ref().is_some_and(|turn| {
+        Arc::ptr_eq(&turn.turn_state, &reserved_turn_state)
+    }));
+    drop(active_turn);
+    assert!(
+        sibling_thread
+            .session
+            .input_queue
+            .has_pending_mailbox_items()
+            .await,
+        "an action must remain queued while another turn owns the shared reservation"
+    );
+    assert_eq!(
+        explicit_update_rollout_items(&sibling_thread)
+            .await
+            .iter()
+            .filter(|item| matches!(item, RolloutItem::EventMsg(EventMsg::TurnStarted(_))))
+            .count(),
+        initial_turn_start_count,
+        "the pending action must not start a second turn"
+    );
 
     let queued = sibling_thread.session.input_queue.drain_mailbox().await;
     assert_eq!(queued.len(), 1);
@@ -1706,6 +1749,118 @@ async fn explicit_action_starts_an_idle_recipient_and_is_represented_once() {
         .harness
         .manager
         .shutdown_all_threads_bounded(Duration::from_secs(5))
+        .await;
+    assert_eq!(report.submit_failed, Vec::<ThreadId>::new());
+    assert_eq!(report.timed_out, Vec::<ThreadId>::new());
+}
+
+#[tokio::test]
+async fn explicit_action_remains_queued_for_an_interrupted_recipient() {
+    let tree = explicit_update_test_tree().await;
+    tree.worker.session.mark_interrupted();
+    assert_eq!(tree.worker.agent_status().await, AgentStatus::Interrupted);
+
+    let recipient_path = AgentPath::try_from(/*path*/ "/root/worker").expect("worker path");
+    let initial_history_count = tree
+        .worker
+        .session
+        .clone_history()
+        .await
+        .raw_items()
+        .count();
+    let initial_turn_start_count = explicit_update_rollout_items(&tree.worker)
+        .await
+        .iter()
+        .filter(|item| matches!(item, RolloutItem::EventMsg(EventMsg::TurnStarted(_))))
+        .count();
+    let message = "action should wait for the interrupted recipient";
+    let update = ExplicitInterAgentUpdate {
+        idempotency_key: "interrupted-recipient-action".to_string(),
+        intent: InterAgentCommunicationIntent::ActionRequired,
+        supersedes: Vec::new(),
+    };
+    let update_id = tree
+        .control
+        .send_explicit_inter_agent_update(
+            /*caller*/ tree.root_id,
+            /*recipient*/ tree.worker_id,
+            /*resume_config*/ tree.harness.config.clone(),
+            /*message*/ AgentMessage::Plaintext(message.to_string()),
+            /*update*/ update,
+            /*context*/ AgentCommunicationContext::new(
+                AgentCommunicationKind::Message,
+                tree.root_id,
+            ),
+        )
+        .await
+        .expect("a registered interrupted recipient may retain a durable action");
+    let update_id = ResponseItemId::from_server(update_id);
+
+    tree.worker
+        .session
+        .maybe_start_turn_for_pending_work_with_sub_id(
+            /*sub_id*/ "interrupted-action-must-remain-queued".to_string(),
+        )
+        .await;
+
+    assert_eq!(tree.worker.agent_status().await, AgentStatus::Interrupted);
+    assert!(tree.worker.session.active_turn.lock().await.is_none());
+    assert_eq!(
+        tree.worker
+            .session
+            .input_queue
+            .pending_actionable_explicit_update_ids(
+                tree.worker_id,
+                Some(&recipient_path),
+            )
+            .await,
+        vec![update_id.clone()],
+        "interruption must not consume the durable recipient action"
+    );
+    let items = explicit_update_rollout_items(&tree.worker).await;
+    assert_eq!(
+        items
+            .iter()
+            .filter(|item| matches!(
+                item,
+                RolloutItem::InterAgentCommunicationMetadata {
+                    admission: Some(admission),
+                    ..
+                } if admission.update_id == update_id
+            ))
+            .count(),
+        1,
+        "the action admission remains durable exactly once"
+    );
+    assert!(!items.iter().any(|item| matches!(
+        item,
+        RolloutItem::ResponseItem(response)
+            if response.metadata.as_ref().and_then(|metadata|
+                metadata.inter_agent_update_id.as_ref()) == Some(&update_id)
+    )));
+    assert_eq!(
+        items
+            .iter()
+            .filter(|item| matches!(item, RolloutItem::EventMsg(EventMsg::TurnStarted(_))))
+            .count(),
+        initial_turn_start_count,
+        "the interrupted recipient must not start an automatic turn"
+    );
+    assert_eq!(
+        tree.worker
+            .session
+            .clone_history()
+            .await
+            .raw_items()
+            .count(),
+        initial_history_count,
+        "the queued action must not enter interrupted model history"
+    );
+
+    let report = tree
+        .harness
+        .manager
+        .shutdown_all_threads_bounded(Duration::from_secs(/*secs*/ 5))
         .await;
     assert_eq!(report.submit_failed, Vec::<ThreadId>::new());
     assert_eq!(report.timed_out, Vec::<ThreadId>::new());
