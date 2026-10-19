@@ -19,7 +19,6 @@ jobs:
     env:
       CARGO_INCREMENTAL: "0"
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
-      CARGO_TARGET_DIR: ${{ runner.temp }}/rollout-clippy-target
       CODEX_REPO_ROOT: ${{ github.workspace }}/source
     steps:
       - name: Verify workflow-host identity and dispatch binding
@@ -53,6 +52,7 @@ jobs:
           [[ "$(git -C source rev-parse HEAD^)" == "2bc2447f9f40036dd65c28b5777728fb593f458a" ]]
           output="$RUNNER_TEMP/rollout-clippy-evidence"
           mkdir -p "$output"
+          printf 'CARGO_TARGET_DIR=%s/rollout-clippy-target\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
           {
             printf 'repository=%s\n' "$GITHUB_REPOSITORY"
             printf 'source_sha=%s\n' "$(git -C source rev-parse HEAD)"
