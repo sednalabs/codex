@@ -163,7 +163,6 @@ pub(crate) fn materialize_rollout_with_guard(
         stage = "create_temp";
         let mut output = create_file_with_permissions(temp_path.as_path(), &permissions)?;
         {
-            stage = "open_source";
             stage = "decode_and_write";
             let mut decoder = zstd::stream::read::Decoder::new(input)?;
             io::copy(&mut decoder, &mut output)?;

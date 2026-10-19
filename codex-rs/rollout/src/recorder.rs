@@ -2,7 +2,6 @@
 
 use std::collections::HashSet;
 use std::collections::VecDeque;
-use std::fs;
 use std::fs::File;
 use std::io::Error as IoError;
 use std::io::Read;
