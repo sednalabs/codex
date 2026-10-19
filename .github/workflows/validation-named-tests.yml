@@ -564,9 +564,9 @@ jobs:
 
   keyring_module_lock:
     if: >-
-      ${{ inputs.target_sha == '846ea480537028afd502d1930247e2291d370570' &&
-          inputs.request_json == '{"schema_version":"rust-tests-v1","profile":"rust_minimal","package":"codex-keyring-store","target_kind":"lib","target":"","tests":["error_kind_tests::preserves_typed_causes_without_guessing_from_messages","error_kind_tests::classifies_native_backend_errors","error_kind_tests::unavailable_secret_service_is_not_connected","error_kind_tests::secret_service_dbus_io_error_preserves_its_kind","error_display_tests::payload_bearing_errors_redact_credentials_and_end_the_source_chain"],"execution_mode":"exact"}' &&
-          inputs.base_ref == '6bdf5e8a98b8c29ad7c63cfbc86afd24d4914287' &&
+      ${{ inputs.target_sha == 'faa4caf026c1ef25e35cb2d6c300ba3858befb28' &&
+          inputs.request_json == '{"schema_version":"rust-tests-v1","profile":"rust_minimal","package":"codex-keyring-store","target_kind":"lib","target":"","tests":["error_kind::tests::preserves_typed_causes_without_guessing_from_messages","error_kind::tests::classifies_native_backend_errors","error_kind::tests::unavailable_secret_service_is_not_connected","error_kind::tests::secret_service_dbus_io_error_preserves_its_kind","error_display_tests::payload_bearing_errors_redact_credentials_and_end_the_source_chain"],"execution_mode":"exact"}' &&
+          inputs.base_ref == '6ef37e21c5b5db2050e0aa5d9543b27d3de8f23d' &&
           inputs.profile == 'rust_minimal' &&
           inputs.windows_validation_mode == 'none' &&
           inputs.prepare_codex_cli_for_exact_usage_test != true &&
