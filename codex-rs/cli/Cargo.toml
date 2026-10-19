@@ -131,9 +131,11 @@ insta = { workspace = true }
 jsonwebtoken = { workspace = true }
 predicates = { workspace = true }
 pretty_assertions = { workspace = true }
+rcgen = { workspace = true }
 sha2 = { workspace = true }
 sqlx = { workspace = true }
 tar = { workspace = true }
+tokio-rustls = { workspace = true }
 tokio-tungstenite = { workspace = true }
 vt100 = { workspace = true }
 wiremock = { workspace = true }
