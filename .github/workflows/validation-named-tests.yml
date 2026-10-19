@@ -135,7 +135,7 @@ jobs:
 
   named_tests:
     if: >-
-      ${{ inputs.windows_validation_mode == 'none' && inputs.prepare_codex_cli_for_exact_usage_test != true && inputs.run_ae94_android_helper_tests != true && inputs.run_ae94_tui_provider_tests != true && inputs.run_d0_active_wait_test != true && inputs.run_ac392_android_protocol_test != true && inputs.run_a89_android_png_fixture_preflight != true && inputs.run_native_browser_source_validation != true && !(github.ref == 'refs/heads/validation/host-830-generated-files-0e803f47' && inputs.expected_workflow_host_sha == github.sha && inputs.target_sha == '0e803f47bcf85c35fb55a1f800b7c2d292534f7f' && inputs.base_ref == '83086188ae0614bd882818ff1aa23f3194962012' && inputs.profile == 'rust_minimal' && inputs.request_json == '{"schema_version":"rust-tests-v1","profile":"rust_minimal","package":"codex-keyring-store","target_kind":"lib","target":"","tests":["error_kind::tests::preserves_typed_causes_without_guessing_from_messages","error_kind::tests::classifies_native_backend_errors","error_kind::tests::unavailable_secret_service_is_not_connected","error_kind::tests::secret_service_dbus_io_error_preserves_its_kind","error_display_tests::payload_bearing_errors_redact_credentials_and_end_the_source_chain"],"execution_mode":"exact"}') }}
+      ${{ inputs.windows_validation_mode == 'none' && inputs.prepare_codex_cli_for_exact_usage_test != true && inputs.run_ae94_android_helper_tests != true && inputs.run_ae94_tui_provider_tests != true && inputs.run_d0_active_wait_test != true && inputs.run_ac392_android_protocol_test != true && inputs.run_a89_android_png_fixture_preflight != true && inputs.run_native_browser_source_validation != true && !(github.ref == 'refs/heads/validation/host-830-generated-sqlx-6de3cf12' && inputs.expected_workflow_host_sha == github.sha && inputs.target_sha == '6de3cf12e8167afa7f5db95ab027a5dbdad2db9a' && inputs.base_ref == '83086188ae0614bd882818ff1aa23f3194962012' && inputs.profile == 'rust_minimal' && inputs.request_json == '{"schema_version":"rust-tests-v1","profile":"rust_minimal","package":"codex-keyring-store","target_kind":"lib","target":"","tests":["error_kind::tests::preserves_typed_causes_without_guessing_from_messages","error_kind::tests::classifies_native_backend_errors","error_kind::tests::unavailable_secret_service_is_not_connected","error_kind::tests::secret_service_dbus_io_error_preserves_its_kind","error_display_tests::payload_bearing_errors_redact_credentials_and_end_the_source_chain"],"execution_mode":"exact"}') }}
     permissions:
       contents: read
     uses: ./.github/workflows/_validation-named-tests.yml
@@ -564,7 +564,7 @@ jobs:
 
   keyring_module_lock:
     if: >-
-      ${{ github.ref == 'refs/heads/validation/host-830-generated-files-0e803f47' && inputs.expected_workflow_host_sha == github.sha && inputs.target_sha == '0e803f47bcf85c35fb55a1f800b7c2d292534f7f' && inputs.base_ref == '83086188ae0614bd882818ff1aa23f3194962012' && inputs.profile == 'rust_minimal' && inputs.request_json == '{"schema_version":"rust-tests-v1","profile":"rust_minimal","package":"codex-keyring-store","target_kind":"lib","target":"","tests":["error_kind::tests::preserves_typed_causes_without_guessing_from_messages","error_kind::tests::classifies_native_backend_errors","error_kind::tests::unavailable_secret_service_is_not_connected","error_kind::tests::secret_service_dbus_io_error_preserves_its_kind","error_display_tests::payload_bearing_errors_redact_credentials_and_end_the_source_chain"],"execution_mode":"exact"}' &&
+      ${{ github.ref == 'refs/heads/validation/host-830-generated-sqlx-6de3cf12' && inputs.expected_workflow_host_sha == github.sha && inputs.target_sha == '6de3cf12e8167afa7f5db95ab027a5dbdad2db9a' && inputs.base_ref == '83086188ae0614bd882818ff1aa23f3194962012' && inputs.profile == 'rust_minimal' && inputs.request_json == '{"schema_version":"rust-tests-v1","profile":"rust_minimal","package":"codex-keyring-store","target_kind":"lib","target":"","tests":["error_kind::tests::preserves_typed_causes_without_guessing_from_messages","error_kind::tests::classifies_native_backend_errors","error_kind::tests::unavailable_secret_service_is_not_connected","error_kind::tests::secret_service_dbus_io_error_preserves_its_kind","error_display_tests::payload_bearing_errors_redact_credentials_and_end_the_source_chain"],"execution_mode":"exact"}' &&
           inputs.windows_validation_mode == 'none' &&
           inputs.prepare_codex_cli_for_exact_usage_test != true &&
           inputs.run_ae94_android_helper_tests != true &&
@@ -622,7 +622,7 @@ jobs:
             echo "workflow host does not match the exact dispatched H identity." >&2
             exit 1
           fi
-          if [[ "${target_sha}" != "${TARGET_SHA}" || "${target_sha}" != "0e803f47bcf85c35fb55a1f800b7c2d292534f7f" || "${target_tree}" != "3f610b6359adbbd1abdfb20468952550f642d847" || "${target_parent}" != "7fdaf2ce766456fc8b40ddba954da57f27810b25" ]]; then
+          if [[ "${target_sha}" != "${TARGET_SHA}" || "${target_sha}" != "6de3cf12e8167afa7f5db95ab027a5dbdad2db9a" || "${target_tree}" != "19056322d6adc6288c8122fcf2b42d2cc4224e28" || "${target_parent}" != "34ca3af1c7f531823a7965ca83c315870b15f438" ]]; then
             echo "candidate commit, tree, or direct parent differs from the fixed generation source." >&2
             exit 1
           fi
@@ -652,8 +652,62 @@ jobs:
       - name: Install candidate native Rust toolchain
         uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
 
+      - name: Snapshot exact input Cargo.lock identity and graph
+        id: cargo_lock_baseline
+        continue-on-error: true
+        working-directory: validation-target
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import tomllib
+          from pathlib import Path
+
+          path = Path("codex-rs/Cargo.lock")
+          if not path.is_file() or path.is_symlink():
+              raise SystemExit("candidate Cargo.lock is missing or not a regular file")
+          packages = tomllib.loads(path.read_text(encoding="utf-8")).get("package", [])
+          normalized = []
+          for package in packages:
+              dependencies = package.get("dependencies", [])
+              if not isinstance(dependencies, list) or any(not isinstance(item, str) for item in dependencies):
+                  raise SystemExit("candidate Cargo.lock has an invalid dependency list")
+              normalized.append({
+                  "name": package["name"],
+                  "version": package["version"],
+                  "source": package.get("source"),
+                  "checksum": package.get("checksum"),
+                  "dependencies": sorted(dependencies),
+              })
+          identities = [
+              (item["name"], item["version"], item["source"] or "", item["checksum"] or "")
+              for item in normalized
+          ]
+          if len(identities) != len(set(identities)):
+              raise SystemExit("candidate Cargo.lock contains duplicate package identities")
+          core_packages = [item for item in normalized if item["name"] == "codex-core"]
+          sqlx_packages = [item for item in normalized if item["name"] == "sqlx"]
+          if len(core_packages) != 1 or len(sqlx_packages) != 1 or sqlx_packages[0]["version"] != "0.9.0":
+              raise SystemExit("candidate Cargo.lock does not contain the exact expected core/SQLx package identities")
+          if "sqlx" in core_packages[0]["dependencies"]:
+              raise SystemExit("candidate input Cargo.lock already contains the expected new direct edge")
+
+          payload = {
+              "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+              "packages": normalized,
+          }
+          baseline_path = Path(os.environ["RUNNER_TEMP"]) / "validation-cargo-lock-before.json"
+          baseline_path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
+              env.write(f"VALIDATION_INPUT_CARGO_LOCK_SHA256={payload['sha256']}\n")
+          PY
+
       - name: Reconcile only the candidate's necessary locked dependencies
         id: cargo_lock_update
+        if: ${{ steps.cargo_lock_baseline.outcome == 'success' }}
         continue-on-error: true
         working-directory: validation-target
         shell: bash
@@ -662,9 +716,89 @@ jobs:
           cargo fetch --manifest-path codex-rs/Cargo.toml
           echo "VALIDATION_RESOLVED_CARGO_LOCK_SHA256=$(sha256sum codex-rs/Cargo.lock | cut -d ' ' -f 1)" >> "${GITHUB_ENV}"
 
+      - name: Verify only the exact direct SQLx lock edge changed
+        id: cargo_lock_graph_check
+        if: ${{ steps.cargo_lock_update.outcome == 'success' }}
+        continue-on-error: true
+        working-directory: validation-target
+        shell: bash
+        env:
+          LOCK_BASELINE_PATH: ${{ runner.temp }}/validation-cargo-lock-before.json
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import tomllib
+          from pathlib import Path
+
+          def normalized_packages(value):
+              packages = value.get("package", [])
+              normalized = []
+              for package in packages:
+                  dependencies = package.get("dependencies", [])
+                  if not isinstance(dependencies, list) or any(not isinstance(item, str) for item in dependencies):
+                      raise ValueError("invalid dependency list")
+                  normalized.append({
+                      "name": package["name"],
+                      "version": package["version"],
+                      "source": package.get("source"),
+                      "checksum": package.get("checksum"),
+                      "dependencies": sorted(dependencies),
+                  })
+              identities = [
+                  (item["name"], item["version"], item["source"] or "", item["checksum"] or "")
+                  for item in normalized
+              ]
+              if len(identities) != len(set(identities)):
+                  raise ValueError("duplicate package identities")
+              return {
+                  (item["name"], item["version"], item["source"] or "", item["checksum"] or ""): item
+                  for item in normalized
+              }
+
+          baseline = json.loads(Path(os.environ["LOCK_BASELINE_PATH"]).read_text(encoding="utf-8"))
+          before = {
+              (item["name"], item["version"], item["source"] or "", item["checksum"] or ""): item
+              for item in baseline["packages"]
+          }
+          path = Path("codex-rs/Cargo.lock")
+          if not path.is_file() or path.is_symlink():
+              raise SystemExit("resolved Cargo.lock is missing or not a regular file")
+          after = normalized_packages(tomllib.loads(path.read_text(encoding="utf-8")))
+          if set(before) != set(after):
+              raise SystemExit("Cargo resolution changed the package identity/version/source/checksum set")
+
+          core_keys = [key for key in before if key[0] == "codex-core"]
+          sqlx_keys = [key for key in after if key[0] == "sqlx"]
+          if len(core_keys) != 1 or len(sqlx_keys) != 1 or sqlx_keys[0][1] != "0.9.0":
+              raise SystemExit("resolved Cargo.lock does not contain exactly the expected core and SQLx packages")
+
+          changed_core_edges = 0
+          for key in before:
+              old_dependencies = before[key]["dependencies"]
+              new_dependencies = after[key]["dependencies"]
+              if key == core_keys[0]:
+                  if "sqlx" in old_dependencies or new_dependencies != sorted(old_dependencies + ["sqlx"]):
+                      raise SystemExit("codex-core dependency delta is not exactly one new sqlx edge")
+                  changed_core_edges = 1
+              elif old_dependencies != new_dependencies:
+                  raise SystemExit("Cargo resolution changed a dependency edge outside codex-core -> sqlx")
+          if changed_core_edges != 1:
+              raise SystemExit("Cargo resolution did not produce exactly one codex-core -> sqlx edge")
+
+          resolved_sha = hashlib.sha256(path.read_bytes()).hexdigest()
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
+              env.write("VALIDATION_CARGO_LOCK_GRAPH_CHECK=success\n")
+              env.write("VALIDATION_CARGO_LOCK_GRAPH_DELTA_COUNT=1\n")
+              env.write(f"VALIDATION_RESOLVED_CARGO_LOCK_SHA256={resolved_sha}\n")
+          print(json.dumps({"status": "success", "changed_dependency_edges": 1}))
+          PY
+
       - name: Check exact resolved dependencies without exceptions
         id: cargo_deny
-        if: ${{ steps.cargo_lock_update.outcome == 'success' }}
+        if: ${{ steps.cargo_lock_update.outcome == 'success' && steps.cargo_lock_graph_check.outcome == 'success' }}
         continue-on-error: true
         uses: EmbarkStudios/cargo-deny-action@82eb9f621fbc699dd0918f3ea06864c14cc84246 # v2
         with:
@@ -702,6 +836,7 @@ jobs:
         env:
           IDENTITY_OUTCOME: ${{ steps.identity.outcome }}
           CARGO_LOCK_OUTCOME: ${{ steps.cargo_lock_update.outcome }}
+          CARGO_LOCK_GRAPH_CHECK_OUTCOME: ${{ steps.cargo_lock_graph_check.outcome }}
           DENY_OUTCOME: ${{ steps.cargo_deny.outcome }}
           SCHEMA_OUTCOME: ${{ steps.config_schema.outcome }}
           MODULE_UPDATE_OUTCOME: ${{ steps.module_lock_update.outcome }}
@@ -726,6 +861,7 @@ jobs:
           outcomes = {
               "identity": os.environ.get("IDENTITY_OUTCOME", "unknown"),
               "cargo_lock_update": os.environ.get("CARGO_LOCK_OUTCOME", "unknown"),
+              "cargo_lock_graph_check": os.environ.get("CARGO_LOCK_GRAPH_CHECK_OUTCOME", "unknown"),
               "cargo_deny": os.environ.get("DENY_OUTCOME", "unknown"),
               "config_schema": os.environ.get("SCHEMA_OUTCOME", "unknown"),
               "module_lock_update": os.environ.get("MODULE_UPDATE_OUTCOME", "unknown"),
@@ -751,7 +887,9 @@ jobs:
               "run_id": os.environ.get("GITHUB_RUN_ID", ""),
               "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", ""),
               "rust_toolchain": "1.95.0",
+              "input_cargo_lock_sha256": os.environ.get("VALIDATION_INPUT_CARGO_LOCK_SHA256", ""),
               "resolved_cargo_lock_sha256": checked_lock,
+              "cargo_lock_graph_delta_count": int(os.environ.get("VALIDATION_CARGO_LOCK_GRAPH_DELTA_COUNT", "0")),
               "cargo_lock_unchanged_after_policy_and_generation": lock_unchanged,
               "files": files,
           }
