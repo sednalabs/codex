@@ -190,11 +190,18 @@ fn legacy_deletion_token_access_diagnostic() -> Result<()> {
         let no_everyone = token(base_raw, &[cap, logon], flags)?;
         let caps_only = token(base_raw, &[cap], flags)?;
         let full_restriction = token(base_raw, &[cap], DISABLE_MAX_PRIVILEGE | LUA_TOKEN)?;
+        let readonly_home = tempfile::tempdir()?;
+        let readonly_caps = crate::cap::load_or_create_cap_sids(readonly_home.path())?;
+        let readonly_sid = LocalSid::from_string(&readonly_caps.readonly)?;
+        let (actual_readonly, _) =
+            create_readonly_token_with_cap_from(base_raw, readonly_sid.as_ptr())?;
+        let actual_readonly = OwnedHandle::from_raw_handle(actual_readonly as _);
         let tokens = [
             ("current", &current),
             ("no-everyone", &no_everyone),
             ("caps-only", &caps_only),
             ("caps-only-full", &full_restriction),
+            ("actual-read-only", &actual_readonly),
         ];
         let file_mapping = GENERIC_MAPPING {
             GenericRead: FILE_GENERIC_READ,
