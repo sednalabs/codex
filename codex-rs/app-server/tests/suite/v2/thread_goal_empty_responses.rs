@@ -538,7 +538,7 @@ async fn thread_spawn_goal_continuation_precedes_parent_handback() -> Result<()>
         ));
     }
     let (child_thread_id, initial_child_turn_id, continuation_turn_id) =
-        pre_observation.expect("pre-observation timeout was checked")??;
+        pre_observation.expect("pre-observation timeout was checked")?;
 
     // Observe the entire bounded interval while the matched response's sender is
     // still withheld. Keep the in-flight app-server read alive across the
