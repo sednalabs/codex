@@ -818,6 +818,103 @@ async fn status_line_uses_secondary_fallback_for_unsupported_window() {
 }
 
 #[tokio::test]
+async fn weekly_limit_pacing_uses_valid_reset_and_marks_stale_or_invalid_data() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let captured_at = chrono::Local::now();
+    let snapshot = crate::status::RateLimitSnapshotDisplay {
+        limit_name: "codex".to_string(),
+        normal_model_slug: None,
+        captured_at,
+        primary: None,
+        secondary: Some(crate::status::RateLimitWindowDisplay {
+            used_percent: 60.0,
+            resets_at: None,
+            resets_at_unix_seconds: Some(
+                captured_at.timestamp() + (7 * 24 * 60 * 60 / 2),
+            ),
+            window_minutes: Some(7 * 24 * 60),
+        }),
+        credits: None,
+        individual_limit: None,
+    };
+    let window = snapshot.secondary.as_ref();
+
+    assert_eq!(
+        chat.status_line_weekly_limit_display(&snapshot, window, captured_at, "weekly"),
+        Some("weekly 40% left (over 10%)".to_string())
+    );
+
+    chat.local_settings.tui.weekly_limit_pacing_style =
+        codex_config::types::WeeklyLimitPacingStyle::Ratio;
+    assert_eq!(
+        chat.status_line_weekly_limit_display(&snapshot, window, captured_at, "weekly"),
+        Some("weekly 40%/50%".to_string())
+    );
+
+    assert_eq!(
+        chat.status_line_weekly_limit_display(
+            &snapshot,
+            window,
+            captured_at + chrono::Duration::minutes(16),
+            "weekly"
+        ),
+        Some("weekly 40% left (stale)".to_string())
+    );
+
+    for reset in [None, Some(captured_at.timestamp()), Some(i64::MAX)] {
+        let mut invalid_snapshot = snapshot.clone();
+        invalid_snapshot
+            .secondary
+            .as_mut()
+            .expect("weekly window")
+            .resets_at_unix_seconds = reset;
+        assert_eq!(
+            chat.status_line_weekly_limit_display(
+                &invalid_snapshot,
+                invalid_snapshot.secondary.as_ref(),
+                captured_at,
+                "weekly"
+            ),
+            Some("weekly 40% left".to_string())
+        );
+    }
+
+    for window_minutes in [None, Some(0), Some(i64::MAX)] {
+        let mut invalid_snapshot = snapshot.clone();
+        invalid_snapshot
+            .secondary
+            .as_mut()
+            .expect("weekly window")
+            .window_minutes = window_minutes;
+        assert_eq!(
+            chat.status_line_weekly_limit_display(
+                &invalid_snapshot,
+                invalid_snapshot.secondary.as_ref(),
+                captured_at,
+                "weekly"
+            ),
+            Some("weekly 40% left".to_string())
+        );
+    }
+
+    let mut nonfinite_snapshot = snapshot;
+    nonfinite_snapshot
+        .secondary
+        .as_mut()
+        .expect("weekly window")
+        .used_percent = f64::NAN;
+    assert_eq!(
+        chat.status_line_weekly_limit_display(
+            &nonfinite_snapshot,
+            nonfinite_snapshot.secondary.as_ref(),
+            captured_at,
+            "weekly"
+        ),
+        Some("weekly NaN% left".to_string())
+    );
+}
+
+#[tokio::test]
 async fn status_line_legacy_limit_items_prefer_matching_windows() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 

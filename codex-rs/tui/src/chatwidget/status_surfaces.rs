@@ -783,12 +783,15 @@ impl ChatWidget {
                 self.status_line_limit_display(Some(window), &label)
             }
             StatusLineItem::WeeklyLimit => {
-                let (window, is_secondary) = self
-                    .rate_limit_snapshots_by_limit_id
-                    .get("codex")
-                    .and_then(weekly_status_window)?;
+                let snapshot = self.rate_limit_snapshots_by_limit_id.get("codex")?;
+                let (window, is_secondary) = weekly_status_window(snapshot)?;
                 let label = limit_label_for_window(window.window_minutes, is_secondary);
-                self.status_line_limit_display(Some(window), &label)
+                self.status_line_weekly_limit_display(
+                    snapshot,
+                    Some(window),
+                    chrono::Local::now(),
+                    &label,
+                )
             }
             StatusLineItem::CodexVersion => Some(CODEX_CLI_VERSION.to_string()),
             StatusLineItem::ContextWindowSize => self

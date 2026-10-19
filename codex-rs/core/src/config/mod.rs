@@ -57,6 +57,7 @@ use codex_config::types::TuiKeymap;
 use codex_config::types::TuiNotificationSettings;
 use codex_config::types::TuiPetAnchor;
 use codex_config::types::UriBasedFileOpener;
+use codex_config::types::WeeklyLimitPacingStyle;
 use codex_config::types::WindowsSandboxModeToml;
 use codex_core_plugins::PluginLoadOutcome;
 use codex_core_plugins::PluginsConfigInput;
@@ -850,6 +851,9 @@ pub struct Config {
     ///
     /// When unset, the TUI defaults to: `model-with-reasoning` and `current-dir`.
     pub tui_status_line: Option<Vec<String>>,
+
+    /// How the weekly rate-limit status-line item describes pacing.
+    pub tui_weekly_limit_pacing_style: WeeklyLimitPacingStyle,
 
     /// Whether to color status line items with colors from the active syntax theme.
     pub tui_status_line_use_colors: bool,
@@ -4679,6 +4683,11 @@ impl Config {
                 .map(|t| t.alternate_screen)
                 .unwrap_or_default(),
             tui_status_line: cfg.tui.as_ref().and_then(|t| t.status_line.clone()),
+            tui_weekly_limit_pacing_style: cfg
+                .tui
+                .as_ref()
+                .map(|t| t.weekly_limit_pacing_style)
+                .unwrap_or_default(),
             tui_status_line_use_colors: cfg
                 .tui
                 .as_ref()

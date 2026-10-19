@@ -68,6 +68,7 @@ use codex_config::types::Tui;
 use codex_config::types::TuiKeymap;
 use codex_config::types::TuiNotificationSettings;
 use codex_config::types::TuiPetAnchor;
+use codex_config::types::WeeklyLimitPacingStyle;
 use codex_config::types::WindowsSandboxModeToml;
 use codex_config::types::WindowsToml;
 use codex_exec_server::LOCAL_FS;
@@ -1275,6 +1276,7 @@ fn config_toml_deserializes_model_availability_nux() {
             right_click_paste: Default::default(),
             alternate_screen: AltScreenMode::default(),
             status_line: None,
+            weekly_limit_pacing_style: WeeklyLimitPacingStyle::default(),
             status_line_use_colors: true,
             terminal_title: None,
             theme: None,
@@ -4487,6 +4489,7 @@ fn tui_config_missing_notifications_field_defaults_to_enabled() {
             right_click_paste: Default::default(),
             alternate_screen: AltScreenMode::Auto,
             status_line: None,
+            weekly_limit_pacing_style: WeeklyLimitPacingStyle::default(),
             status_line_use_colors: true,
             terminal_title: None,
             theme: None,
@@ -4499,6 +4502,47 @@ fn tui_config_missing_notifications_field_defaults_to_enabled() {
             model_availability_nux: ModelAvailabilityNuxConfig::default(),
             terminal_resize_reflow_max_rows: None,
         }
+    );
+}
+
+#[tokio::test]
+async fn runtime_config_resolves_weekly_limit_pacing_style_default_and_override() {
+    let default_config = Config::load_from_base_config_with_overrides(
+        ConfigToml::default(),
+        ConfigOverrides::default(),
+        tempdir().expect("tempdir").abs(),
+    )
+    .await
+    .expect("load default config");
+    assert_eq!(
+        default_config.tui_weekly_limit_pacing_style,
+        WeeklyLimitPacingStyle::Qualitative
+    );
+
+    let qualitative_toml = toml::from_str::<ConfigToml>(
+        "[tui]\nweekly_limit_pacing_style = \"qualitative\"\n",
+    )
+    .expect("parse qualitative config");
+    assert_eq!(
+        qualitative_toml
+            .tui
+            .expect("tui config")
+            .weekly_limit_pacing_style,
+        WeeklyLimitPacingStyle::Qualitative
+    );
+
+    let ratio_toml = toml::from_str::<ConfigToml>("[tui]\nweekly_limit_pacing_style = \"ratio\"\n")
+        .expect("parse ratio config");
+    let ratio_config = Config::load_from_base_config_with_overrides(
+        ratio_toml,
+        ConfigOverrides::default(),
+        tempdir().expect("tempdir").abs(),
+    )
+    .await
+    .expect("load ratio config");
+    assert_eq!(
+        ratio_config.tui_weekly_limit_pacing_style,
+        WeeklyLimitPacingStyle::Ratio
     );
 }
 
