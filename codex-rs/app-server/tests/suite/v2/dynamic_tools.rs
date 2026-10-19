@@ -178,7 +178,10 @@ async fn thread_start_normalizes_legacy_dynamic_tools_into_model_request() -> Re
 
 #[tokio::test]
 async fn thread_resume_restores_persisted_browser_dynamic_tools() -> Result<()> {
-    let responses = vec![create_final_assistant_message_sse_response("Done")?];
+    let responses = vec![
+        create_final_assistant_message_sse_response("Done")?,
+        create_final_assistant_message_sse_response("Done")?,
+    ];
     let server = create_mock_responses_server_sequence_unchecked(responses).await;
 
     let codex_home = TempDir::new()?;
@@ -222,7 +225,33 @@ async fn thread_resume_restores_persisted_browser_dynamic_tools() -> Result<()> 
     )
     .await??;
     let thread = to_response::<ThreadStartResponse>(start_response)?.thread;
-    let thread_id = thread.id;
+    let thread_id = thread.id.clone();
+
+    // Persist a real turn before shutting down: a bare thread/start does not
+    // create the rollout that thread/resume loads.
+    let seed_turn_request = initial
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread_id.clone(),
+            client_user_message_id: None,
+            input: vec![V2UserInput::Text {
+                text: "Initialize the existing Browser session".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    let seed_turn_response: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        initial.read_stream_until_response_message(RequestId::Integer(seed_turn_request)),
+    )
+    .await??;
+    to_response::<TurnStartResponse>(seed_turn_response)?;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        initial.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
     let exit = initial.shutdown_gracefully().await?;
     anyhow::ensure!(exit.success(), "initial app-server exited unsuccessfully");
     drop(initial);
@@ -270,7 +299,18 @@ async fn thread_resume_restores_persisted_browser_dynamic_tools() -> Result<()> 
     .await??;
 
     let bodies = responses_bodies(&server).await?;
-    let namespace = find_tool(&bodies[0], "codex_browser")
+    assert_eq!(bodies.len(), 2);
+    assert!(
+        bodies[0]
+            .to_string()
+            .contains("Initialize the existing Browser session")
+    );
+    assert!(
+        bodies[1]
+            .to_string()
+            .contains("Continue the existing Browser session")
+    );
+    let namespace = find_tool(&bodies[1], "codex_browser")
         .context("persisted Browser namespace must reach the resumed model request")?;
     let tools = namespace
         .get("tools")

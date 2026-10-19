@@ -63,8 +63,8 @@ async fn device_login_preserves_configured_and_discovered_scopes_on_rejection() 
                 "resource": format!("{base}/mcp"),
                 "authorization_servers": [base]
             })))
-            // The SDK probes this document before fetching it for discovery.
-            .expect(2)
+            // The SDK probes the resource endpoint for a challenge, then fetches this document once.
+            .expect(1)
             .mount(&server)
             .await;
         Mock::given(method("GET"))
