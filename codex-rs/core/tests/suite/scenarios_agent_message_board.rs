@@ -24,9 +24,12 @@ use core_test_support::streaming_sse::start_streaming_sse_server;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_match;
+use futures::FutureExt;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
+use std::panic::AssertUnwindSafe;
+use std::panic::resume_unwind;
 use tokio::sync::oneshot;
 
 #[path = "scenarios_agent_message_board_remote.rs"]
@@ -706,10 +709,28 @@ async fn board_unsubscribe_survives_post_and_resume_until_resubscribed(
     .await;
     release_wait.send(()).expect("release wait after spawn");
     eprintln!("test-phase=board-root-initial-turn-complete-wait");
-    wait_for_event(&resumed.codex, |event| {
+    let root_turn_complete = AssertUnwindSafe(wait_for_event(&resumed.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
-    })
+    }))
+    .catch_unwind()
     .await;
+    if let Err(payload) = root_turn_complete {
+        let expected_root_follow_up_present = streaming.requests().await.iter().any(|body| {
+            serde_json::from_slice::<Value>(body)
+                .ok()
+                .and_then(|request| request["input"].as_array().cloned())
+                .is_some_and(|input| {
+                    input.iter().any(|item| {
+                        item["type"] == "function_call_output"
+                            && item["call_id"] == "settle-worker"
+                    })
+                })
+        });
+        eprintln!(
+            "diagnostic=board-expected-root-follow-up-request-present value={expected_root_follow_up_present}"
+        );
+        resume_unwind(payload);
+    }
     let child = resumed.thread_manager.get_thread(child_id).await?;
     eprintln!("test-phase=board-child-initial-turn-complete-wait");
     wait_for_event(&child, |event| matches!(event, EventMsg::TurnComplete(_))).await;

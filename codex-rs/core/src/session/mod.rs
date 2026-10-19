@@ -2767,7 +2767,22 @@ impl Session {
         if let Some(status) = agent_status_from_event(&event.msg) {
             self.agent_status.send_replace(status);
         }
-        if let Err(e) = self.tx_event.send(event).await {
+        let diagnostic_guardian_abort = matches!(
+            &event.msg,
+            EventMsg::TurnAborted(aborted)
+                if aborted.reason == TurnAbortReason::Interrupted
+                    && aborted.error.as_ref().is_some_and(|error| {
+                        error.codex_error_info == Some(CodexErrorInfo::TooManyDenials)
+                    })
+        );
+        let send_result = self.tx_event.send(event).await;
+        if diagnostic_guardian_abort {
+            eprintln!(
+                "diagnostic=guardian-abort-event-channel-accepted value={}",
+                send_result.is_ok()
+            );
+        }
+        if let Err(e) = send_result {
             debug!("dropping event because channel is closed: {e}");
         }
     }
