@@ -366,7 +366,9 @@ impl CodexThread {
     }
 
     pub async fn emit_thread_idle_lifecycle_if_idle(&self, cause: ThreadIdleCause) {
-        self.session.emit_thread_idle_lifecycle_if_idle(cause).await;
+        self.session
+            .emit_thread_idle_lifecycle_if_idle(cause, None)
+            .await;
     }
 
     /// Checkpoint initialization without activating speculative persistence.

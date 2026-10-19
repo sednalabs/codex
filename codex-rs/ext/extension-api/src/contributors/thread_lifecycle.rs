@@ -73,6 +73,9 @@ pub struct ThreadIdleInput<'a> {
     pub session_store: &'a ExtensionData,
     /// Store scoped to this thread runtime.
     pub thread_store: &'a ExtensionData,
+    /// Store for the turn whose finalization invoked idle callbacks, when available.
+    /// It remains turn-scoped so a fast continuation cannot overwrite its result.
+    pub completing_turn_store: Option<&'a ExtensionData>,
 }
 
 /// Input supplied during runtime teardown, before persistent history closes.

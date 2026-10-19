@@ -12698,7 +12698,7 @@ async fn thread_idle_lifecycle_waits_for_trigger_turn_mailbox_work() {
         .await;
 
     session
-        .emit_thread_idle_lifecycle_if_idle(codex_extension_api::ThreadIdleCause::Completed)
+        .emit_thread_idle_lifecycle_if_idle(codex_extension_api::ThreadIdleCause::Completed, None)
         .await;
 
     assert_eq!(0, calls.load(std::sync::atomic::Ordering::SeqCst));
@@ -13529,4 +13529,238 @@ async fn rejected_mcp_refresh_then_corrected_user_config_blocks_ordinary_replace
             .is_some_and(|server| server.enabled),
         "rejection must not permit same-name ordinary-auth replacement in this session"
     );
+}
+
+fn synthetic_goal_turn_outcome() -> AgentTurnOutcome {
+    AgentTurnOutcome {
+        thread_id: ThreadId::new(),
+        turn_id: "origin-turn".to_string(),
+        source: codex_protocol::protocol::SessionSource::Cli,
+        parent_turn_id: None,
+        initiating_agent_path: None,
+        status: AgentStatus::Completed(Some("turn response".to_string())),
+        error_info: None,
+    }
+}
+
+fn synthetic_goal_completion() -> EventMsg {
+    EventMsg::TurnComplete(TurnCompleteEvent {
+        root_turn_id: None,
+        turn_id: "origin-turn".to_string(),
+        last_agent_message: Some("turn response".to_string()),
+        error: None,
+        started_at: None,
+        completed_at: None,
+        duration_ms: None,
+        time_to_first_token_ms: None,
+    })
+}
+
+fn parent_response_for_goal_handoff(
+    continuation: &GoalTurnContinuation,
+    attempt: Option<&GoalContinuationAttempt>,
+) -> String {
+    let mut outcome = synthetic_goal_turn_outcome();
+    append_goal_handoff_disposition(&mut outcome, continuation, attempt);
+    let AgentStatus::Completed(Some(response)) = outcome.status else {
+        panic!("goal handback must preserve the completed turn status")
+    };
+    response
+}
+
+#[test]
+fn goal_completion_handback_suppresses_only_matching_started_continuation() {
+    let continuation = GoalTurnContinuation {
+        goal_id: "goal-1".to_string(),
+        turn_id: "origin-turn".to_string(),
+    };
+    let outcome = synthetic_goal_turn_outcome();
+    let event = synthetic_goal_completion();
+    assert_eq!(
+        Some(continuation.clone()),
+        successful_goal_turn_continuation(
+            "origin-turn",
+            &event,
+            &outcome,
+            Some(continuation.clone())
+        )
+    );
+    assert_eq!(
+        None,
+        successful_goal_turn_continuation(
+            "other-turn",
+            &event,
+            &outcome,
+            Some(continuation.clone())
+        )
+    );
+    assert_eq!(
+        None,
+        successful_goal_turn_continuation("origin-turn", &event, &outcome, None),
+        "ordinary no-goal turns retain immediate parent handback"
+    );
+    let mut errored_outcome = synthetic_goal_turn_outcome();
+    errored_outcome.status = AgentStatus::Errored("turn failed".to_string());
+    assert_eq!(
+        None,
+        successful_goal_turn_continuation(
+            "origin-turn",
+            &event,
+            &errored_outcome,
+            Some(continuation.clone())
+        ),
+        "errored turns retain immediate parent handback"
+    );
+    let aborted = EventMsg::TurnAborted(codex_protocol::protocol::TurnAbortedEvent {
+        root_turn_id: None,
+        turn_id: Some("origin-turn".to_string()),
+        reason: TurnAbortReason::Interrupted,
+        error: None,
+        started_at: None,
+        completed_at: None,
+        duration_ms: None,
+    });
+    assert_eq!(
+        None,
+        successful_goal_turn_continuation(
+            "origin-turn",
+            &aborted,
+            &outcome,
+            Some(continuation.clone())
+        ),
+        "aborted turns retain immediate parent handback"
+    );
+
+    let started = GoalContinuationAttempt {
+        goal_id: "goal-1".to_string(),
+        origin_turn_id: "origin-turn".to_string(),
+        result: GoalContinuationAttemptResult::Started {
+            continuation_turn_id: "next-turn".to_string(),
+        },
+    };
+    assert!(accepted_goal_continuation(&continuation, Some(&started)));
+    let wrong_origin = GoalContinuationAttempt {
+        origin_turn_id: "other-turn".to_string(),
+        ..started.clone()
+    };
+    assert!(!accepted_goal_continuation(
+        &continuation,
+        Some(&wrong_origin)
+    ));
+    let wrong_goal = GoalContinuationAttempt {
+        goal_id: "other-goal".to_string(),
+        ..started.clone()
+    };
+    assert!(!accepted_goal_continuation(
+        &continuation,
+        Some(&wrong_goal)
+    ));
+    let missing_continuation_id = GoalContinuationAttempt {
+        result: GoalContinuationAttemptResult::Started {
+            continuation_turn_id: String::new(),
+        },
+        ..started.clone()
+    };
+    assert!(!accepted_goal_continuation(
+        &continuation,
+        Some(&missing_continuation_id)
+    ));
+    let rejected = GoalContinuationAttempt {
+        result: GoalContinuationAttemptResult::NotSubmitted {
+            disposition: GoalContinuationDisposition::Status(ThreadGoalStatus::Active),
+        },
+        ..started
+    };
+    assert!(!accepted_goal_continuation(&continuation, Some(&rejected)));
+    let other_goal_attempt = GoalContinuationAttempt {
+        goal_id: "other-goal".to_string(),
+        ..rejected.clone()
+    };
+    let response = parent_response_for_goal_handoff(&continuation, Some(&other_goal_attempt));
+    assert!(response.contains("did not match this goal turn"));
+    assert!(!response.contains("remains active"));
+}
+
+#[test]
+fn goal_completion_handback_reports_rejection_and_preserves_nonactive_dispositions() {
+    let continuation = GoalTurnContinuation {
+        goal_id: "goal-1".to_string(),
+        turn_id: "origin-turn".to_string(),
+    };
+
+    let rejected = GoalContinuationAttempt {
+        goal_id: continuation.goal_id.clone(),
+        origin_turn_id: continuation.turn_id.clone(),
+        result: GoalContinuationAttemptResult::NotSubmitted {
+            disposition: GoalContinuationDisposition::Status(ThreadGoalStatus::Active),
+        },
+    };
+    let response = parent_response_for_goal_handoff(&continuation, Some(&rejected));
+    assert!(response.starts_with("turn response"));
+    assert!(response.contains("remains active"));
+    assert!(response.contains("does not complete that goal"));
+
+    // The native unavailable-tools/shutdown path also maps to Skipped + Unknown.
+    let skipped = GoalContinuationAttempt {
+        result: GoalContinuationAttemptResult::Skipped {
+            disposition: GoalContinuationDisposition::Unknown,
+        },
+        ..rejected.clone()
+    };
+    let response = parent_response_for_goal_handoff(&continuation, Some(&skipped));
+    assert!(response.contains("status was not confirmed"));
+
+    let response = parent_response_for_goal_handoff(&continuation, None);
+    assert!(response.contains("did not run or return a result"));
+    assert!(response.contains("does not establish goal completion"));
+
+    let failed = GoalContinuationAttempt {
+        result: GoalContinuationAttemptResult::Failed {
+            disposition: GoalContinuationDisposition::Unknown,
+        },
+        ..rejected.clone()
+    };
+    let response = parent_response_for_goal_handoff(&continuation, Some(&failed));
+    assert!(response.contains("attempt failed"));
+
+    let paused = GoalContinuationAttempt {
+        result: GoalContinuationAttemptResult::Skipped {
+            disposition: GoalContinuationDisposition::Status(ThreadGoalStatus::Paused),
+        },
+        ..rejected.clone()
+    };
+    let response = parent_response_for_goal_handoff(&continuation, Some(&paused));
+    assert!(response.contains("is paused"));
+    assert!(!response.contains("remains active"));
+
+    for (status, expected_state) in [
+        (ThreadGoalStatus::Blocked, "is blocked"),
+        (ThreadGoalStatus::UsageLimited, "is usage-limited"),
+        (ThreadGoalStatus::BudgetLimited, "is budget-limited"),
+    ] {
+        let current_status = GoalContinuationAttempt {
+            result: GoalContinuationAttemptResult::Skipped {
+                disposition: GoalContinuationDisposition::Status(status),
+            },
+            ..rejected.clone()
+        };
+        let response = parent_response_for_goal_handoff(&continuation, Some(&current_status));
+        assert!(response.contains(expected_state));
+        assert!(!response.contains("remains active"));
+    }
+
+    for disposition in [
+        GoalContinuationDisposition::Status(ThreadGoalStatus::Complete),
+        GoalContinuationDisposition::NoGoal,
+    ] {
+        let inactive = GoalContinuationAttempt {
+            result: GoalContinuationAttemptResult::Skipped { disposition },
+            ..rejected.clone()
+        };
+        assert_eq!(
+            "turn response",
+            parent_response_for_goal_handoff(&continuation, Some(&inactive)),
+            "completed and cleared goals must not be relabeled as active"
+        );
+    }
 }

@@ -883,8 +883,14 @@ impl Session {
             self.send_event(turn_context.as_ref(), event).await;
         }
         if cleared_active_turn {
-            self.emit_thread_idle_lifecycle_if_idle(idle_cause).await;
+            self.emit_thread_idle_lifecycle_if_idle(
+                idle_cause,
+                Some(turn_context.extension_data.as_ref()),
+            )
+            .await;
         }
+        self.resolve_deferred_parent_outcome(turn_context.as_ref())
+            .await;
         // Private reviewers already flushed the terminal event before delivering it.
         // Other buffering writers still need a barrier for the terminal event.
         if !saved_guardian_completion && let Err(err) = self.flush_rollout().await {

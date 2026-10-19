@@ -78,6 +78,10 @@ use codex_exec_server::EnvironmentManager;
 use codex_execpolicy::prefix_rule_migration;
 use codex_extension_api::ConversationHistorySnapshot;
 use codex_extension_api::ExtensionDataInit;
+use codex_extension_api::GoalContinuationAttempt;
+use codex_extension_api::GoalContinuationAttemptResult;
+use codex_extension_api::GoalContinuationDisposition;
+use codex_extension_api::GoalTurnContinuation;
 use codex_extension_api::PromptSlot;
 use codex_extension_api::TurnContextContributionInput;
 use codex_features::FEATURES;
@@ -390,6 +394,7 @@ use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionConfiguredEvent;
 use codex_protocol::protocol::SessionNetworkProxyRuntime;
 use codex_protocol::protocol::StreamErrorEvent;
+use codex_protocol::protocol::ThreadGoalStatus;
 use codex_protocol::protocol::ThreadMemoryMode;
 use codex_protocol::protocol::TokenCountEvent;
 use codex_protocol::protocol::TokenUsage;
@@ -553,6 +558,108 @@ pub(crate) const INITIAL_SUBMIT_ID: &str = "";
 pub(crate) const SUBMISSION_CHANNEL_CAPACITY: usize = 512;
 const CYBER_VERIFY_URL: &str = "https://chatgpt.com/cyber";
 const CYBER_SAFETY_URL: &str = "https://developers.openai.com/codex/concepts/cyber-safety";
+
+struct DeferredAgentTurnOutcome {
+    continuation: GoalTurnContinuation,
+    outcome: Mutex<Option<AgentTurnOutcome>>,
+}
+
+fn successful_goal_turn_continuation(
+    turn_id: &str,
+    msg: &EventMsg,
+    outcome: &AgentTurnOutcome,
+    continuation: Option<GoalTurnContinuation>,
+) -> Option<GoalTurnContinuation> {
+    let EventMsg::TurnComplete(event) = msg else {
+        return None;
+    };
+    if event.error.is_some()
+        || event.turn_id != turn_id
+        || !matches!(&outcome.status, AgentStatus::Completed(_))
+    {
+        return None;
+    }
+    continuation.filter(|continuation| {
+        continuation.turn_id == event.turn_id && !continuation.goal_id.trim().is_empty()
+    })
+}
+
+fn accepted_goal_continuation(
+    continuation: &GoalTurnContinuation,
+    attempt: Option<&GoalContinuationAttempt>,
+) -> bool {
+    attempt.is_some_and(|attempt| attempt.started_for(continuation))
+}
+
+fn append_goal_handoff_disposition(
+    outcome: &mut AgentTurnOutcome,
+    continuation: &GoalTurnContinuation,
+    attempt: Option<&GoalContinuationAttempt>,
+) {
+    let matching_attempt = attempt.filter(|attempt| {
+        attempt.goal_id == continuation.goal_id && attempt.origin_turn_id == continuation.turn_id
+    });
+    let (attempt_description, disposition) = match (attempt.is_some(), matching_attempt) {
+        (true, None) => (
+            "the native idle result did not match this goal turn",
+            GoalContinuationDisposition::Unknown,
+        ),
+        (false, None) => (
+            "the idle continuation did not run or return a result",
+            GoalContinuationDisposition::Unknown,
+        ),
+        (_, Some(attempt)) => match &attempt.result {
+            GoalContinuationAttemptResult::NotSubmitted { disposition } => (
+                "automatic continuation was not submitted",
+                disposition.clone(),
+            ),
+            GoalContinuationAttemptResult::Skipped { disposition } => {
+                ("the idle continuation was skipped", disposition.clone())
+            }
+            GoalContinuationAttemptResult::Failed { disposition } => {
+                ("the idle continuation attempt failed", disposition.clone())
+            }
+            GoalContinuationAttemptResult::Started { .. } => (
+                "the reported continuation did not match this goal turn",
+                GoalContinuationDisposition::Unknown,
+            ),
+        },
+    };
+    let state = match disposition {
+        GoalContinuationDisposition::Status(ThreadGoalStatus::Active) => "still active",
+        GoalContinuationDisposition::Status(ThreadGoalStatus::Paused) => "paused",
+        GoalContinuationDisposition::Status(ThreadGoalStatus::Blocked) => "blocked",
+        GoalContinuationDisposition::Status(ThreadGoalStatus::UsageLimited) => "usage-limited",
+        GoalContinuationDisposition::Status(ThreadGoalStatus::BudgetLimited) => "budget-limited",
+        GoalContinuationDisposition::Status(ThreadGoalStatus::Complete)
+        | GoalContinuationDisposition::NoGoal => return,
+        GoalContinuationDisposition::Unknown => {
+            let note = format!(
+                "For logical goal {}, {attempt_description}, and its current status was not confirmed. This completed turn's response alone does not establish goal completion.",
+                continuation.goal_id
+            );
+            append_to_completed_response(outcome, &note);
+            return;
+        }
+    };
+    let note = format!(
+        "Logical goal {} is {state}; {attempt_description}. This completed turn's response is not a goal-completion result.",
+        continuation.goal_id
+    );
+    append_to_completed_response(outcome, &note);
+}
+
+fn append_to_completed_response(outcome: &mut AgentTurnOutcome, note: &str) {
+    let AgentStatus::Completed(response) = &mut outcome.status else {
+        return;
+    };
+    let original_response = response.take().unwrap_or_default();
+    *response = Some(if original_response.is_empty() {
+        note.to_string()
+    } else {
+        format!("{original_response}\n\n{note}")
+    });
+}
 
 impl Session {
     /// Spawn and initialize a new session.
@@ -2547,23 +2654,62 @@ impl Session {
             return;
         }
 
+        let outcome = AgentTurnOutcome {
+            thread_id: self.thread_id,
+            turn_id: turn_context.sub_id.clone(),
+            source: turn_context.session_source.clone(),
+            parent_turn_id: turn_context.turn_metadata_state.parent_turn_id(),
+            initiating_agent_path: turn_context
+                .turn_metadata_state
+                .initiating_agent_path()
+                .cloned(),
+            status,
+            error_info,
+        };
+        let continuation = turn_context
+            .extension_data
+            .get::<GoalTurnContinuation>()
+            .map(|continuation| continuation.as_ref().clone());
+        if let Some(continuation) =
+            successful_goal_turn_continuation(&turn_context.sub_id, msg, &outcome, continuation)
+        {
+            turn_context
+                .extension_data
+                .insert(DeferredAgentTurnOutcome {
+                    continuation,
+                    outcome: Mutex::new(Some(outcome)),
+                });
+            return;
+        }
+        self.route_parent_terminal_outcome(outcome).await;
+    }
+
+    /// Resolves a deferred child result only after its own native idle attempt has returned.
+    /// The outcome lives on the completing turn context, so a fast next turn cannot replace it.
+    pub(crate) async fn resolve_deferred_parent_outcome(&self, turn_context: &TurnContext) {
+        let Some(deferred) = turn_context
+            .extension_data
+            .get::<DeferredAgentTurnOutcome>()
+        else {
+            return;
+        };
+        let Some(mut outcome) = deferred.outcome.lock().await.take() else {
+            return;
+        };
+
+        let attempt = turn_context.extension_data.get::<GoalContinuationAttempt>();
+        if accepted_goal_continuation(&deferred.continuation, attempt.as_deref()) {
+            return;
+        }
+
+        append_goal_handoff_disposition(&mut outcome, &deferred.continuation, attempt.as_deref());
+        self.route_parent_terminal_outcome(outcome).await;
+    }
+
+    async fn route_parent_terminal_outcome(&self, outcome: AgentTurnOutcome) {
         self.services
             .agent_control
-            .turn_finished(
-                AgentTurnOutcome {
-                    thread_id: self.thread_id,
-                    turn_id: turn_context.sub_id.clone(),
-                    source: turn_context.session_source.clone(),
-                    parent_turn_id: turn_context.turn_metadata_state.parent_turn_id(),
-                    initiating_agent_path: turn_context
-                        .turn_metadata_state
-                        .initiating_agent_path()
-                        .cloned(),
-                    status,
-                    error_info,
-                },
-                &self.services.rollout_thread_trace,
-            )
+            .turn_finished(outcome, &self.services.rollout_thread_trace)
             .await;
     }
 

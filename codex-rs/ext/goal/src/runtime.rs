@@ -8,9 +8,11 @@ use codex_core::ThreadManager;
 use codex_core::TurnInput;
 use codex_core::TurnInputRequest;
 use codex_core::TurnStartOptions;
+use codex_extension_api::GoalContinuationDisposition;
 use codex_protocol::ThreadId;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::ThreadGoal;
+use codex_protocol::protocol::ThreadGoalStatus;
 
 use crate::accounting::BudgetLimitedGoalDisposition;
 use crate::accounting::GoalAccountingState;
@@ -42,6 +44,25 @@ pub(crate) enum ActiveGoalStopReason {
     UsageLimit,
     ExecutionUnavailable { expected_goal_id: String },
     EmptyResponse,
+}
+
+pub(crate) enum GoalStartAttempt {
+    Started {
+        goal_id: String,
+        origin_turn_id: Option<String>,
+        continuation_turn_id: String,
+    },
+    NotSubmitted {
+        goal_id: String,
+    },
+    Skipped {
+        goal_id: Option<String>,
+        disposition: GoalContinuationDisposition,
+    },
+    Failed {
+        goal_id: Option<String>,
+        disposition: GoalContinuationDisposition,
+    },
 }
 
 struct GoalRuntimeInner {
@@ -433,10 +454,13 @@ impl GoalRuntimeHandle {
         Ok(())
     }
 
-    pub(crate) async fn continue_if_idle(&self) -> Result<(), String> {
+    pub(crate) async fn continue_if_idle(&self) -> Result<GoalStartAttempt, String> {
         if !self.tools_available() {
             self.inner.accounting_state.clear_active_goal();
-            return Ok(());
+            return Ok(GoalStartAttempt::Skipped {
+                goal_id: None,
+                disposition: GoalContinuationDisposition::Unknown,
+            });
         }
         // Hold this through the read/start window so external set/clear cannot
         // change the goal after we read it but before the continuation launches.
@@ -450,16 +474,25 @@ impl GoalRuntimeHandle {
             .await
             .map_err(|err| err.to_string())?
         {
-            return Ok(());
+            return Ok(GoalStartAttempt::Skipped {
+                goal_id: None,
+                disposition: GoalContinuationDisposition::Unknown,
+            });
         }
 
         let Some(thread_manager) = self.inner.thread_manager.upgrade() else {
             tracing::debug!("skipping goal continuation because thread manager is unavailable");
-            return Ok(());
+            return Ok(GoalStartAttempt::Skipped {
+                goal_id: None,
+                disposition: GoalContinuationDisposition::Unknown,
+            });
         };
         let Ok(thread) = thread_manager.get_thread(self.inner.thread_id).await else {
             tracing::debug!("skipping goal continuation because live thread is unavailable");
-            return Ok(());
+            return Ok(GoalStartAttempt::Skipped {
+                goal_id: None,
+                disposition: GoalContinuationDisposition::Unknown,
+            });
         };
 
         let Some(goal) = self
@@ -471,23 +504,33 @@ impl GoalRuntimeHandle {
             .map_err(|err| err.to_string())?
         else {
             self.inner.accounting_state.clear_active_goal();
-            return Ok(());
+            return Ok(GoalStartAttempt::Skipped {
+                goal_id: None,
+                disposition: GoalContinuationDisposition::NoGoal,
+            });
         };
         if goal.status != codex_state::ThreadGoalStatus::Active {
             self.inner.accounting_state.clear_active_goal();
-            return Ok(());
+            return Ok(GoalStartAttempt::Skipped {
+                goal_id: Some(goal.goal_id),
+                disposition: GoalContinuationDisposition::Status(protocol_goal_status_from_state(
+                    goal.status,
+                )),
+            });
         }
+        let goal_id = goal.goal_id.clone();
         let start_options = thread
             .thread_extension_data()
             .get::<TurnStartOptions>()
             .map(|options| options.as_ref().clone())
             .unwrap_or_default();
+        let origin_turn_id = start_options.parent_turn_id.clone();
         let item = continuation_steering_item(
             &protocol_goal_from_state(goal),
             thread.config().await.update_plan_enabled,
         );
 
-        match thread
+        let attempt = match thread
             .start_turn_if_idle(
                 TurnInputRequest::new(TurnInput::ResponseItem(item)).on_start(TurnStartOptions {
                     turn_trigger: Some("goal".to_string()),
@@ -500,20 +543,32 @@ impl GoalRuntimeHandle {
                 // Turn-stop evaluation takes the same permit, so even a fast response
                 // cannot finish before this host-admitted continuation is identified.
                 self.inner.accounting_state.mark_goal_continuation(turn_id);
+                GoalStartAttempt::Started {
+                    goal_id,
+                    origin_turn_id,
+                    continuation_turn_id: turn_id,
+                }
             }
             Ok(StartIfIdleSubmission::NotSubmitted { reason }) => {
                 tracing::debug!(
                     ?reason,
                     "skipping goal continuation because automatic idle work was rejected"
                 );
+                GoalStartAttempt::NotSubmitted {
+                    goal_id: goal_id.clone(),
+                }
             }
             Err(error) => {
                 tracing::debug!(
                     %error,
                     "skipping goal continuation because turn input submission failed"
                 );
+                GoalStartAttempt::Failed {
+                    goal_id: Some(goal_id.clone()),
+                    disposition: GoalContinuationDisposition::Status(ThreadGoalStatus::Active),
+                }
             }
-        }
+        };
 
         let current_turn_is_goal_active = self
             .inner
@@ -531,7 +586,7 @@ impl GoalRuntimeHandle {
                 .accounting_state
                 .reset_idle_progress_baseline_and_clear_active_goal();
         }
-        Ok(())
+        Ok(attempt)
     }
 
     pub(crate) async fn inject_active_turn_steering(&self, item: ResponseItem) {
@@ -691,5 +746,16 @@ impl GoalRuntimeHandle {
                 .is_none_or(|expected_goal_id| goal.goal_id == expected_goal_id)
                 .then_some(goal.status)
         }))
+    }
+}
+
+fn protocol_goal_status_from_state(status: codex_state::ThreadGoalStatus) -> ThreadGoalStatus {
+    match status {
+        codex_state::ThreadGoalStatus::Active => ThreadGoalStatus::Active,
+        codex_state::ThreadGoalStatus::Paused => ThreadGoalStatus::Paused,
+        codex_state::ThreadGoalStatus::Blocked => ThreadGoalStatus::Blocked,
+        codex_state::ThreadGoalStatus::UsageLimited => ThreadGoalStatus::UsageLimited,
+        codex_state::ThreadGoalStatus::BudgetLimited => ThreadGoalStatus::BudgetLimited,
+        codex_state::ThreadGoalStatus::Complete => ThreadGoalStatus::Complete,
     }
 }

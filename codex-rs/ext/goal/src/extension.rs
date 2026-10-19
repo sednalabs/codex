@@ -9,6 +9,10 @@ use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionEventSink;
 use codex_extension_api::ExtensionFuture;
 use codex_extension_api::ExtensionRegistryBuilder;
+use codex_extension_api::GoalContinuationAttempt;
+use codex_extension_api::GoalContinuationAttemptResult;
+use codex_extension_api::GoalContinuationDisposition;
+use codex_extension_api::GoalTurnContinuation;
 use codex_extension_api::ThreadIdleInput;
 use codex_extension_api::ThreadLifecycleContributor;
 use codex_extension_api::ThreadResumeInput;
@@ -183,6 +187,10 @@ where
                 return;
             };
 
+            let expected_continuation = input
+                .completing_turn_store
+                .and_then(|turn_store| turn_store.get::<GoalTurnContinuation>());
+
             let accounting = runtime.accounting_state();
             if let Some(turn_id) = accounting.interrupted_turn_id() {
                 if let Err(err) = runtime
@@ -193,12 +201,83 @@ where
                 }
                 accounting.finish_turn(&turn_id);
             }
-            if let Err(err) = runtime.continue_if_idle().await {
-                tracing::warn!(
-                    "failed to continue active goal for idle thread {}: {err}",
-                    runtime.thread_id()
-                );
-            }
+            let attempt = runtime.continue_if_idle().await;
+            let Some((turn_store, expected)) = input
+                .completing_turn_store
+                .zip(expected_continuation.as_deref())
+            else {
+                if let Err(err) = attempt {
+                    tracing::warn!(
+                        "failed to continue active goal for idle thread {}: {err}",
+                        runtime.thread_id()
+                    );
+                }
+                return;
+            };
+            let bind_unstarted_result = |goal_id: Option<String>, result| {
+                let matches_goal = goal_id
+                    .as_deref()
+                    .is_none_or(|goal_id| goal_id == expected.goal_id);
+                GoalContinuationAttempt {
+                    goal_id: goal_id.unwrap_or_else(|| expected.goal_id.clone()),
+                    origin_turn_id: if matches_goal {
+                        expected.turn_id.clone()
+                    } else {
+                        String::new()
+                    },
+                    result,
+                }
+            };
+            let attempt = match attempt {
+                Ok(crate::runtime::GoalStartAttempt::Started {
+                    goal_id,
+                    origin_turn_id,
+                    continuation_turn_id,
+                }) => GoalContinuationAttempt {
+                    goal_id,
+                    origin_turn_id: origin_turn_id.unwrap_or_default(),
+                    result: GoalContinuationAttemptResult::Started {
+                        continuation_turn_id,
+                    },
+                },
+                Ok(crate::runtime::GoalStartAttempt::NotSubmitted { goal_id }) => {
+                    bind_unstarted_result(
+                        Some(goal_id),
+                        GoalContinuationAttemptResult::NotSubmitted {
+                            disposition: GoalContinuationDisposition::Status(
+                                ThreadGoalStatus::Active,
+                            ),
+                        },
+                    )
+                }
+                Ok(crate::runtime::GoalStartAttempt::Skipped {
+                    goal_id,
+                    disposition,
+                }) => bind_unstarted_result(
+                    goal_id,
+                    GoalContinuationAttemptResult::Skipped { disposition },
+                ),
+                Ok(crate::runtime::GoalStartAttempt::Failed {
+                    goal_id,
+                    disposition,
+                }) => bind_unstarted_result(
+                    goal_id,
+                    GoalContinuationAttemptResult::Failed { disposition },
+                ),
+                Err(err) => {
+                    tracing::warn!(
+                        "failed to continue active goal for idle thread {}: {err}",
+                        runtime.thread_id()
+                    );
+                    bind_unstarted_result(
+                        None,
+                        GoalContinuationAttemptResult::Failed {
+                            disposition: GoalContinuationDisposition::Unknown,
+                        },
+                    )
+                }
+            };
+            turn_store.insert(attempt);
         })
     }
 
@@ -360,9 +439,8 @@ where
                 return;
             }
             let accounting = runtime.accounting_state();
-            if accounting
-                .current_active_goal_id_for_turn(turn_id)
-                .is_some()
+            let active_goal_id = accounting.current_active_goal_id_for_turn(turn_id);
+            if active_goal_id.is_some()
                 && let Some(options) = input.thread_store.get::<TurnStartOptions>()
             {
                 input.thread_store.insert_if(
@@ -372,6 +450,15 @@ where
                     },
                     |current| current.is_some(),
                 );
+            }
+            if let Some(expected_goal_id) = active_goal_id
+                && accounting.current_turn_id().as_deref() == Some(turn_id)
+                && !expected_goal_id.trim().is_empty()
+            {
+                input.turn_store.insert(GoalTurnContinuation {
+                    goal_id: expected_goal_id,
+                    turn_id: turn_id.to_string(),
+                });
             }
             accounting.finish_turn(turn_id);
         })

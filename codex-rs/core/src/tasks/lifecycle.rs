@@ -56,7 +56,11 @@ impl Session {
         }
     }
 
-    pub(crate) async fn emit_thread_idle_lifecycle_if_idle(&self, cause: ThreadIdleCause) {
+    pub(crate) async fn emit_thread_idle_lifecycle_if_idle(
+        &self,
+        cause: ThreadIdleCause,
+        completing_turn_store: Option<&ExtensionData>,
+    ) {
         let cause = {
             let active_turn = self.active_turn.lock().await;
             if active_turn.is_some() {
@@ -78,6 +82,7 @@ impl Session {
                     cause,
                     session_store: &self.services.session_extension_data,
                     thread_store: &self.services.thread_extension_data,
+                    completing_turn_store,
                 })
                 .await;
         }
