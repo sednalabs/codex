@@ -427,13 +427,13 @@ jobs:
           EXPECTED_WORKFLOW_HOST_SHA: ${{ inputs.expected_workflow_host_sha }}
         run: |
           set -euo pipefail
-          expected_base="a89b02855334af7c0521882271cb97b818981d1a"
+          expected_base="6bdf5e8a98b8c29ad7c63cfbc86afd24d4914287"
           case "${WINDOWS_VALIDATION_MODE}" in
             delete_diagnostic)
-              expected_target="448804d4c375b023469e034b5d5f9f0ae97ba587"
-              expected_tree="7502bc052cf6ecb6a28042fcdff7ffe71fbadafa"
-              expected_parent="b48b6d0df22ec0ad4993b2c21fa57460fb4f4359"
-              expected_base_depth=38
+              expected_target="83b550b9cb80801112bf33db73b52efc66ebb9ef"
+              expected_tree="71a902cdd17275eca3e45f2c9944d94637d806ef"
+              expected_parent="6bdf5e8a98b8c29ad7c63cfbc86afd24d4914287"
+              expected_base_depth=1
               ;;
             voice_runtime)
               expected_target="1f769231c112a57a67800431aa472256a7e11697"
@@ -450,7 +450,7 @@ jobs:
           actual_tree="$(git rev-parse 'HEAD^{tree}')"
           actual_parent="$(git rev-parse 'HEAD^')"
           actual_base="$(git rev-parse "HEAD~${expected_base_depth}")"
-          if [[ "${WORKFLOW_HOST_REF}" != "refs/heads/validation/receiver-exact-cargo-20261016" ]]; then
+          if [[ "${WORKFLOW_HOST_REF}" != "refs/heads/validation/host-windows-delete-83b550b9" ]]; then
             echo "Windows receiver validation must run from the fixed validation-host ref." >&2
             exit 1
           fi
@@ -495,20 +495,34 @@ jobs:
           "WINDOWS_SYSTEM_ROOT=$env:SystemRoot" >> $env:GITHUB_ENV
           "WINDOWS_PROCESSOR_ARCHITECTURE=$env:PROCESSOR_ARCHITECTURE" >> $env:GITHUB_ENV
 
-      - name: Inventory the exact DELETE diagnostic test
+      - name: Inventory the token diagnostic and unchanged DELETE contract
         if: ${{ inputs.windows_validation_mode == 'delete_diagnostic' }}
         shell: bash
         working-directory: codex-rs
         run: |
           set -euo pipefail
-          selector="unified_exec::tests::legacy_workspace_write_delete_is_limited_to_writable_roots"
           inventory="${RUNNER_TEMP}/windows-delete-diagnostic-inventory.txt"
           cargo test --locked -p codex-windows-sandbox --lib -- --list | tee "${inventory}"
-          matches="$(grep -Fxc "${selector}: test" "${inventory}" || true)"
-          if [[ "${matches}" != "1" ]]; then
-            echo "Expected exactly one matching DELETE diagnostic test; observed ${matches}." >&2
-            exit 1
-          fi
+          selectors=(
+            "token::tests::legacy_deletion_token_access_diagnostic"
+            "unified_exec::tests::legacy_workspace_write_delete_is_limited_to_writable_roots"
+          )
+          for selector in "${selectors[@]}"; do
+            matches="$(grep -Fxc "${selector}: test" "${inventory}" || true)"
+            if [[ "${matches}" != "1" ]]; then
+              echo "Expected exactly one matching fixed Windows test; observed ${matches}." >&2
+              exit 1
+            fi
+          done
+
+      - name: Run the finite token-access discriminator
+        if: ${{ inputs.windows_validation_mode == 'delete_diagnostic' }}
+        shell: bash
+        working-directory: codex-rs
+        run: >-
+          cargo test --locked -p codex-windows-sandbox --lib
+          token::tests::legacy_deletion_token_access_diagnostic
+          -- --exact --nocapture --test-threads=1
 
       - name: Run the exact DELETE diagnostic without waiving its assertion
         if: ${{ inputs.windows_validation_mode == 'delete_diagnostic' }}
