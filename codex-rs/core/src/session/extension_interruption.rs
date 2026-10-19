@@ -101,7 +101,12 @@ impl Session {
         warning: EventMsg,
         error: Option<ErrorEvent>,
     ) {
-        let Some(turn) = self.turn_context_for_sub_id(turn_id).await else {
+        let turn = self.turn_context_for_sub_id(turn_id).await;
+        tracing::info!(
+            diagnostic = "guardian_warning_turn_context_present",
+            present = turn.is_some()
+        );
+        let Some(turn) = turn else {
             return;
         };
         self.send_event(turn.as_ref(), warning).await;

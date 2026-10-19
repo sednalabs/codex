@@ -145,12 +145,19 @@ pub async fn start_streaming_sse_server(
                             }
 
                             for chunk in chunks {
+                                let gated = chunk.gate.is_some();
                                 if let Some(gate) = chunk.gate
                                     && gate.await.is_err() {
                                         return;
                                     }
+                                if gated {
+                                    eprintln!("test-phase=sse-gated-chunk-open");
+                                }
                                 if stream.write_all(chunk.body.as_bytes()).await.is_err() {
                                     return;
+                                }
+                                if gated {
+                                    eprintln!("test-phase=sse-gated-chunk-written");
                                 }
                                 let _ = stream.flush().await;
                             }

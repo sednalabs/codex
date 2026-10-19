@@ -582,13 +582,13 @@ impl Session {
         reason: TurnAbortReason,
         error: Option<ErrorEvent>,
     ) -> bool {
-        let active_turn = {
+        let (active_turn, active_sub_id_match) = {
             let mut active = self.active_turn.lock().await;
-            if active
+            let active_sub_id_match = active
                 .as_ref()
                 .and_then(|active_turn| active_turn.task.as_ref())
-                .is_some_and(|task| task.turn_context.sub_id == turn_id)
-            {
+                .is_some_and(|task| task.turn_context.sub_id == turn_id);
+            let active_turn = if active_sub_id_match {
                 if matches!(
                     reason,
                     TurnAbortReason::Interrupted | TurnAbortReason::BudgetLimited
@@ -598,13 +598,26 @@ impl Session {
                 active.take()
             } else {
                 None
-            }
+            };
+            (active_turn, active_sub_id_match)
         };
+        tracing::info!(
+            diagnostic = "guardian_abort_active_sub_id_match",
+            matched = active_sub_id_match
+        );
         let Some(active_turn) = active_turn else {
+            tracing::info!(
+                diagnostic = "guardian_abort_emitted",
+                emitted = false
+            );
             return false;
         };
 
         self.finish_turn_abort(active_turn, reason, error).await;
+        tracing::info!(
+            diagnostic = "guardian_abort_emitted",
+            emitted = true
+        );
         true
     }
 

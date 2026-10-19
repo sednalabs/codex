@@ -693,6 +693,7 @@ async fn board_unsubscribe_survives_post_and_resume_until_resubscribed(
             text_elements: vec![],
         }]))
         .await?;
+    eprintln!("test-phase=board-spawn-activity-wait");
     let child_id = wait_for_event_match(&resumed.codex, |event| match event {
         EventMsg::ItemCompleted(event) => match &event.item {
             TurnItem::SubAgentActivity(activity) if activity.id == "spawn-worker" => {
@@ -704,11 +705,13 @@ async fn board_unsubscribe_survives_post_and_resume_until_resubscribed(
     })
     .await;
     release_wait.send(()).expect("release wait after spawn");
+    eprintln!("test-phase=board-root-initial-turn-complete-wait");
     wait_for_event(&resumed.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })
     .await;
     let child = resumed.thread_manager.get_thread(child_id).await?;
+    eprintln!("test-phase=board-child-initial-turn-complete-wait");
     wait_for_event(&child, |event| matches!(event, EventMsg::TurnComplete(_))).await;
     assert!(
         streaming
@@ -726,12 +729,14 @@ async fn board_unsubscribe_survives_post_and_resume_until_resubscribed(
                 text_elements: vec![],
             }]))
             .await?;
+        eprintln!("test-phase=board-phase-turn-started-wait");
         let turn_id = wait_for_event_match(&resumed.codex, |event| match event {
             EventMsg::TurnStarted(event) => Some(event.turn_id.clone()),
             _ => None,
         })
         .await;
         // The gate keeps the recipient active until the child's post and fanout finish.
+        eprintln!("test-phase=board-phase-agent-message-completed-wait");
         wait_for_event(&resumed.codex, |event| {
             matches!(event, EventMsg::ItemCompleted(event)
                 if matches!(&event.item, TurnItem::AgentMessage(message) if message.id == phase))
@@ -743,6 +748,7 @@ async fn board_unsubscribe_survives_post_and_resume_until_resubscribed(
                 text_elements: vec![],
             }]))
             .await?;
+        eprintln!("test-phase=board-phase-child-turn-complete-wait");
         wait_for_event(&child, |event| matches!(event, EventMsg::TurnComplete(_))).await;
         let requests = streaming
             .requests()
@@ -761,6 +767,7 @@ async fn board_unsubscribe_survives_post_and_resume_until_resubscribed(
             serde_json::from_str(output["output"].as_str().context("child post result")?)?;
         assert_eq!(reply.author.as_str(), "/root/worker");
         release.send(()).expect("release active recipient");
+        eprintln!("test-phase=board-phase-root-turn-complete-wait");
         wait_for_event(&resumed.codex, |event| {
             matches!(event, EventMsg::TurnComplete(_))
         })

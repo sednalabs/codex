@@ -95,7 +95,15 @@ impl ReviewHost for super::super::runtime::ReviewRuntime {
         &self,
     ) -> Option<(String, Arc<codex_protocol::openai_models::ModelInfo>)> {
         let active = self.session.active_turn.lock().await;
-        let turn = &active.as_ref()?.task.as_ref()?.turn_context;
+        let turn = active
+            .as_ref()
+            .and_then(|active| active.task.as_ref())
+            .map(|task| &task.turn_context);
+        tracing::info!(
+            diagnostic = "guardian_servicing_turn_present",
+            present = turn.is_some()
+        );
+        let turn = turn?;
         Some((turn.sub_id.clone(), Arc::clone(turn.model_info())))
     }
 
