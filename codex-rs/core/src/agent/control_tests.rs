@@ -31,6 +31,7 @@ use crate::responses_metadata::CodexResponsesRequestKind;
 use crate::session::ProviderResponseUsageContext;
 use crate::session::SessionSettingsUpdate;
 use crate::session::step_context::StepContext;
+use crate::state::ActiveTurn;
 use crate::thread_manager::ForkSnapshot;
 use crate::thread_manager::StartThreadOptions;
 use crate::tools::handlers::multi_agents_common::thread_spawn_source;
@@ -1308,6 +1309,7 @@ async fn explicit_sibling_action_is_persisted_and_represented_for_its_direct_rec
         .await
         .expect("sibling should remain loaded");
     set_control_test_thread_running(&sibling_thread).await;
+    *sibling_thread.session.active_turn.lock().await = Some(ActiveTurn::default());
 
     let update = ExplicitInterAgentUpdate {
         idempotency_key: "sibling-result-ready".to_string(),
@@ -1329,22 +1331,19 @@ async fn explicit_sibling_action_is_persisted_and_represented_for_its_direct_rec
         .expect("an authorized child may send to a different direct child");
     let update_id = ResponseItemId::from_server(update_id);
 
-    timeout(Duration::from_secs(/*secs*/ 5), async {
-        loop {
-            let items = explicit_update_rollout_items(&sibling_thread).await;
-            if items.iter().any(|item| matches!(
-                item,
-                RolloutItem::ResponseItem(response)
-                    if response.metadata.as_ref().and_then(|metadata|
-                        metadata.inter_agent_update_id.as_ref()) == Some(&update_id)
-            )) {
-                break;
-            }
-            sleep(Duration::from_millis(/*millis*/ 10)).await;
-        }
-    })
-    .await
-    .expect("the addressed sibling should represent its durable action");
+    let queued = sibling_thread.session.input_queue.drain_mailbox().await;
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].communication.id.as_ref(), Some(&update_id));
+    let turn = sibling_thread.session.new_default_turn().await;
+    sibling_thread
+        .session
+        .record_inter_agent_communication(
+            turn.as_ref(),
+            turn.model_info(),
+            queued[0].communication.clone(),
+        )
+        .await
+        .expect("the addressed sibling should represent its durable action");
 
     let replayed_id = tree
         .control
@@ -1394,6 +1393,12 @@ async fn explicit_sibling_action_is_persisted_and_represented_for_its_direct_rec
             .count(),
         1
     );
+    assert!(
+        sibling_thread.session.active_turn.lock().await.is_some(),
+        "the recipient remains live through the idempotent retry"
+    );
+    assert_eq!(sibling_thread.agent_status().await, AgentStatus::Running);
+    *sibling_thread.session.active_turn.lock().await = None;
 
     let report = tree
         .harness
