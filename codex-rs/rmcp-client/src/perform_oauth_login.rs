@@ -10,7 +10,7 @@ use anyhow::anyhow;
 use anyhow::bail;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use codex_exec_server::HttpClient;
+use codex_exec_server::HttpClient as ExecServerHttpClient;
 use codex_exec_server::RouteAwareHttpClient;
 use codex_http_client::HttpClientBuilder;
 use codex_http_client::HttpClientFactory;
@@ -53,7 +53,7 @@ const FIXED_API_CLAIM_TIMEOUT_SECS: u64 = 300;
 struct OAuthHttpContext {
     http_headers: Option<HashMap<String, String>>,
     env_http_headers: Option<HashMap<String, String>>,
-    http_client: Arc<dyn HttpClient>,
+    http_client: Arc<dyn ExecServerHttpClient>,
 }
 
 struct CallbackServerGuard {
@@ -175,21 +175,20 @@ async fn perform_oauth_access_token_login(
     let (tx, rx) = oneshot::channel();
     spawn_callback_server(server, tx, callback_path);
 
-    let http_client: Arc<dyn HttpClient> = Arc::new(
-        HttpClientBuilder::new()
-            .without_redirects()
-            .without_retries()
-            .without_request_logging()
-            .connect_timeout(Duration::from_secs(3))
-            .build_direct()
-            .map_err(|_| anyhow!("build fixed OAuth HTTP client"))?,
-    );
-    let oauth_http_client: Arc<dyn OAuthHttpClient> =
-        Arc::new(OAuthHttpClientAdapter::new_with_max_timeout(
+    let http_client = HttpClientBuilder::new()
+        .without_redirects()
+        .without_retries()
+        .without_request_logging()
+        .connect_timeout(Duration::from_secs(3))
+        .build_direct()
+        .map_err(|_| anyhow!("build fixed OAuth HTTP client"))?;
+    let oauth_http_client: Arc<dyn OAuthHttpClient> = Arc::new(
+        OAuthHttpClientAdapter::new_direct_with_max_timeout(
             http_client,
             HeaderMap::new(),
             Duration::from_secs(10),
-        ));
+        ),
+    );
 
     let (mut oauth_state, authorization_url) = start_fixed_oauth_authorization(
         issuer_url,
@@ -581,7 +580,7 @@ pub async fn perform_oauth_login_return_url_with_http_client(
     timeout_secs: Option<i64>,
     callback_port: Option<u16>,
     callback_url: Option<&str>,
-    http_client: Arc<dyn HttpClient>,
+    http_client: Arc<dyn ExecServerHttpClient>,
 ) -> Result<OauthLoginHandle> {
     let http_context = OAuthHttpContext {
         http_headers,
@@ -1072,6 +1071,7 @@ fn append_query_param(url: &str, key: &str, value: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::time::Duration;
 
     use axum::Json;
     use axum::Router;
@@ -1086,7 +1086,13 @@ mod tests {
     use tokio::net::TcpListener;
 
     use super::CallbackOutcome;
+    use super::FIXED_API_CLAIM_CALLBACK_URL;
+    use super::FIXED_API_CLAIM_CLIENT_ID;
+    use super::FIXED_API_CLAIM_ISSUER;
+    use super::FIXED_API_CLAIM_RESOURCE;
     use super::FIXED_API_CLAIM_SCOPE;
+    use super::HttpClientBuilder;
+    use super::OauthCallbackResult;
     use super::OAuthHttpClientAdapter;
     use super::OAuthProviderError;
     use super::access_token_from_response;
@@ -1097,6 +1103,7 @@ mod tests {
     use super::fixed_authorization_url;
     use super::parse_oauth_callback;
     use super::start_authorization;
+    use super::validate_canonical_https_url;
     use super::validate_fixed_oauth_inputs;
     use super::validate_fixed_oauth_metadata;
 
@@ -1231,13 +1238,19 @@ mod tests {
         )
         .expect("append the fixed callback identifier");
         assert_eq!(redirect, "http://127.0.0.1:8765/callback/gGLT7yyzxEu8");
+        let http_client = HttpClientBuilder::new()
+            .without_redirects()
+            .without_retries()
+            .without_request_logging()
+            .connect_timeout(Duration::from_secs(3))
+            .build_direct()
+            .expect("build fixed OAuth HTTP client");
         let mut manager = rmcp::transport::AuthorizationManager::new_with_oauth_http_client(
             resource,
-            Arc::new(OAuthHttpClientAdapter::new(
-                Arc::new(RouteAwareHttpClient::new(HttpClientFactory::new(
-                    OutboundProxyPolicy::ReqwestDefault,
-                ))),
+            Arc::new(OAuthHttpClientAdapter::new_direct_with_max_timeout(
+                http_client,
                 HeaderMap::new(),
+                Duration::from_secs(10),
             )),
         )
         .await
@@ -1257,7 +1270,7 @@ mod tests {
         let authorization_url = fixed_authorization_url(
             &mut manager,
             FIXED_API_CLAIM_CLIENT_ID,
-            redirect,
+            &redirect,
             &[FIXED_API_CLAIM_SCOPE.to_string()],
         )
         .await
@@ -1272,7 +1285,7 @@ mod tests {
                 .map(|(_, value)| value.as_ref())
         };
         assert_eq!(value("client_id"), Some(FIXED_API_CLAIM_CLIENT_ID));
-        assert_eq!(value("redirect_uri"), Some(redirect));
+        assert_eq!(value("redirect_uri"), Some(redirect.as_str()));
         assert_eq!(value("response_type"), Some("code"));
         assert_eq!(value("resource"), Some(resource));
         assert_eq!(value("scope"), Some(FIXED_API_CLAIM_SCOPE));

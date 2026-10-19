@@ -4103,6 +4103,7 @@ dependencies = [
  "webbrowser",
  "which 8.0.5",
  "wiremock",
+ "zeroize",
 ]
 
 [[package]]
