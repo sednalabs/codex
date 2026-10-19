@@ -148,13 +148,13 @@ fn physical_fence_is_shared_by_distinct_homes_and_directory_and_file_aliases() -
         Arc::new(WriterLockCoordinator::new(first_home.path())).acquire(thread_id)?;
     let _second_logical =
         Arc::new(WriterLockCoordinator::new(second_home.path())).acquire(thread_id)?;
-    let owner = PhysicalRolloutGuard::acquire(&first_alias, false)?;
+    let owner = PhysicalRolloutGuard::acquire(&first_alias, /*create_parent*/ false)?;
     for alias in [
         &second_alias,
         &file_alias,
         &path.with_extension("jsonl.zst"),
     ] {
-        let err = match PhysicalRolloutGuard::acquire(alias, false) {
+        let err = match PhysicalRolloutGuard::acquire(alias, /*create_parent*/ false) {
             Ok(_) => panic!("aliases must contend on the same physical lock"),
             Err(err) => err,
         };
@@ -162,7 +162,7 @@ fn physical_fence_is_shared_by_distinct_homes_and_directory_and_file_aliases() -
     }
     assert_eq!(owner.path(), fs::canonicalize(&path)?.as_path());
     drop(owner);
-    drop(PhysicalRolloutGuard::acquire(&second_alias, false)?);
+    drop(PhysicalRolloutGuard::acquire(&second_alias, /*create_parent*/ false)?);
     assert!(path.exists());
     Ok(())
 }
