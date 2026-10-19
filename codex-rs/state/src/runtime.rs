@@ -13,6 +13,7 @@ use crate::migrations::runtime_memories_migrator;
 use crate::migrations::runtime_queue_migrator;
 use crate::migrations::runtime_state_migrator;
 use crate::migrations::runtime_thread_history_migrator;
+use crate::migrations::runtime_usage_migrator;
 use crate::model::ThreadRow;
 use crate::model::anchor_from_item;
 use crate::model::datetime_to_epoch_millis;
@@ -61,6 +62,7 @@ mod thread_read_state;
 mod thread_section_order;
 mod thread_sections;
 mod threads;
+mod usage;
 
 pub use external_agent_config_imports::ExternalAgentConfigImportDetailsRecord;
 pub use external_agent_config_imports::ExternalAgentConfigImportFailureRecord;
@@ -86,6 +88,9 @@ pub use thread_read_state::ReadStateOperation;
 pub use thread_read_state::ReadStateUpdate;
 pub use thread_read_state::ThreadReadState;
 pub use threads::ThreadFilterOptions;
+pub use usage::ProviderCallUsageRecord;
+pub use usage::ProviderCallUsageWriteOutcome;
+pub use usage::UsageThreadRecord;
 
 // "Partition" is the retained-log-content bucket we cap at 10 MiB:
 // - one bucket per non-null thread_id
@@ -106,6 +111,7 @@ pub struct StateRuntime {
     memories: MemoryStore,
     memories_v2: Arc<tokio::sync::OnceCell<MemoryStore>>,
     thread_queue: SqliteQueueStore,
+    usage_pool: Arc<SqlitePool>,
     thread_updated_at_millis: Arc<AtomicI64>,
     thread_recency_at_millis: Arc<AtomicI64>,
     reclamation: Arc<reclamation::SqliteReclamationWorker>,
@@ -142,11 +148,13 @@ impl StateRuntime {
         let goals_migrator = runtime_goals_migrator();
         let memories_migrator = runtime_memories_migrator();
         let queue_migrator = runtime_queue_migrator();
+        let usage_migrator = runtime_usage_migrator();
         let state_path = sqlite.state_db_path();
         let logs_path = sqlite.logs_db_path();
         let goals_path = sqlite.goals_db_path();
         let memories_path = sqlite.memories_db_path();
         let queue_path = sqlite.queue_db_path();
+        let usage_path = sqlite.usage_db_path();
         let has_memories_v2 = tokio::fs::try_exists(sqlite.memories_v2_db_path()).await?;
         let pool = match sqlite
             .open_state_db(&state_migrator, telemetry_override)
@@ -211,6 +219,24 @@ impl StateRuntime {
                 return Err(err);
             }
         };
+        let usage_pool = match sqlite
+            .open_usage_db(&usage_migrator, telemetry_override)
+            .await
+        {
+            Ok(db) => Arc::new(db),
+            Err(err) => {
+                warn!("failed to open usage db at {}: {err}", usage_path.display());
+                close_sqlite_pools(&[
+                    pool.as_ref(),
+                    logs_pool.as_ref(),
+                    goals_pool.as_ref(),
+                    memories_pool.as_ref(),
+                    queue_pool.as_ref(),
+                ])
+                .await;
+                return Err(err);
+            }
+        };
         let started = Instant::now();
         let backfill_state_result = ensure_backfill_state_row_in_pool(pool.as_ref()).await;
         crate::telemetry::record_init_result(
@@ -227,6 +253,7 @@ impl StateRuntime {
                 goals_pool.as_ref(),
                 memories_pool.as_ref(),
                 queue_pool.as_ref(),
+                usage_pool.as_ref(),
             ])
             .await;
             return Err(err);
@@ -256,6 +283,7 @@ impl StateRuntime {
                         goals_pool.as_ref(),
                         memories_pool.as_ref(),
                         queue_pool.as_ref(),
+                        usage_pool.as_ref(),
                     ])
                     .await;
                     return Err(err);
@@ -269,6 +297,7 @@ impl StateRuntime {
             memories: MemoryStore::new(Arc::clone(&memories_pool), Arc::clone(&pool)),
             memories_v2: Arc::new(tokio::sync::OnceCell::new()),
             thread_queue: SqliteQueueStore::new(queue_pool),
+            usage_pool,
             pool,
             logs_pool,
             sqlite,
@@ -308,6 +337,11 @@ impl StateRuntime {
         &self.thread_queue
     }
 
+    /// Return the durable usage-ledger SQLite pool.
+    pub fn usage_pool(&self) -> Arc<SqlitePool> {
+        Arc::clone(&self.usage_pool)
+    }
+
     /// Close all SQLite pools and wait for outstanding pool workers to exit.
     pub async fn close(&self) {
         self.reclamation.close().await;
@@ -317,6 +351,7 @@ impl StateRuntime {
             memories.close().await;
         }
         self.thread_goals.close().await;
+        self.usage_pool.close().await;
         self.logs_pool.close().await;
         self.pool.close().await;
     }

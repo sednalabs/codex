@@ -37,6 +37,7 @@ const MEMORIES_DB_FILENAME: &str = "memories_1.sqlite";
 const QUEUE_DB_FILENAME: &str = "queue_1.sqlite";
 const STATE_DB_FILENAME: &str = "state_5.sqlite";
 const THREAD_HISTORY_DB_FILENAME: &str = "thread_history_1.sqlite";
+const USAGE_DB_FILENAME: &str = "usage_1.sqlite";
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum RecoveryMode {
@@ -131,7 +132,17 @@ const THREAD_HISTORY_DB: RuntimeDbSpec = RuntimeDbSpec {
     recovery: RecoveryMode::Unavailable,
 };
 
-const RUNTIME_DBS: [RuntimeDbSpec; 7] = [
+const USAGE_DB: RuntimeDbSpec = RuntimeDbSpec {
+    label: "usage DB",
+    filename: USAGE_DB_FILENAME,
+    kind: DbKind::Usage,
+    open_phase: "open_usage",
+    migrate_phase: "migrate_usage",
+    background_reclamation: false,
+    recovery: RecoveryMode::Unavailable,
+};
+
+const RUNTIME_DBS: [RuntimeDbSpec; 8] = [
     STATE_DB,
     LOGS_DB,
     GOALS_DB,
@@ -139,6 +150,7 @@ const RUNTIME_DBS: [RuntimeDbSpec; 7] = [
     MEMORIES_V2_DB,
     QUEUE_DB,
     THREAD_HISTORY_DB,
+    USAGE_DB,
 ];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -224,6 +236,11 @@ impl SqliteConfig {
         THREAD_HISTORY_DB.path(self.home())
     }
 
+    /// Return the path to the durable usage ledger database.
+    pub fn usage_db_path(&self) -> PathBuf {
+        USAGE_DB.path(self.home())
+    }
+
     /// Return the paths to every database managed by the state runtime.
     pub fn runtime_db_paths(&self) -> Vec<RuntimeDbPath> {
         RUNTIME_DBS
@@ -290,6 +307,15 @@ impl SqliteConfig {
         telemetry_override: Option<&dyn DbTelemetry>,
     ) -> anyhow::Result<SqlitePool> {
         self.open_runtime_db(THREAD_HISTORY_DB, migrator, telemetry_override)
+            .await
+    }
+
+    pub(super) async fn open_usage_db(
+        &self,
+        migrator: &Migrator,
+        telemetry_override: Option<&dyn DbTelemetry>,
+    ) -> anyhow::Result<SqlitePool> {
+        self.open_runtime_db(USAGE_DB, migrator, telemetry_override)
             .await
     }
 

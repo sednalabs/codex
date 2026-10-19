@@ -108,6 +108,7 @@ use codex_protocol::protocol::ReasoningRawContentDeltaEvent;
 use codex_protocol::protocol::SafetyBufferingEvent;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::TurnDiffEvent;
+use chrono::Utc;
 use codex_protocol::protocol::WarningEvent;
 use codex_protocol::user_input::UserInput;
 use codex_skills::ToolMentionKind;
@@ -2665,6 +2666,7 @@ async fn try_run_sampling_request(
     let effort = sess
         .reasoning_effort_for_request(&step_context.settings, super::RequestEffortUsage::Sampling)
         .await;
+    let response_started_at = Utc::now().to_rfc3339();
     let mut stream = client_session
         .stream(
             prompt,
@@ -2711,6 +2713,11 @@ async fn try_run_sampling_request(
         !sess.services.extensions.turn_item_contributors().is_empty();
     let mut active_item_is_streaming_to_client = false;
     let receiving_span = trace_span!("receiving_stream");
+    // The response stream reports the executed model through its OpenAI-Model
+    // header event. Keep that response-local evidence separate from requested
+    // step settings, and do not infer an actual model when headers disagree.
+    let mut response_server_model: Option<String> = None;
+    let mut response_server_model_conflict = false;
     let outcome: CodexResult<SamplingRequestResult> = loop {
         let handle_responses = trace_span!(
             parent: &receiving_span,
@@ -3012,6 +3019,13 @@ async fn try_run_sampling_request(
                 }
             }
             ResponseEvent::ServerModel(server_model) => {
+                if let Some(previous) = response_server_model.as_deref() {
+                    if previous != server_model.as_str() {
+                        response_server_model_conflict = true;
+                    }
+                } else {
+                    response_server_model = Some(server_model.clone());
+                }
                 if !turn_context
                     .server_model_warning_emitted
                     .load(Ordering::Relaxed)
@@ -3094,6 +3108,16 @@ async fn try_run_sampling_request(
                     &response_id,
                     token_usage.as_ref(),
                     usage_metadata.as_ref(),
+                    super::ProviderResponseUsageContext {
+                        started_at: response_started_at,
+                        provider: turn_context.config.model_provider_id.clone(),
+                        requested_model: step_context.settings.model_info.slug.clone(),
+                        actual_model_used: (!response_server_model_conflict)
+                            .then(|| response_server_model.clone())
+                            .flatten(),
+                        requested_service_tier: step_context.settings.service_tier.clone(),
+                        actual_service_tier: None,
+                    },
                 )
                 .await;
                 let budget_result = sess

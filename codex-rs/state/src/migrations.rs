@@ -10,6 +10,7 @@ pub(crate) static MEMORIES_MIGRATOR: Migrator = sqlx_macros::migrate!("./memory_
 pub(crate) static QUEUE_MIGRATOR: Migrator = sqlx_macros::migrate!("./queue_migrations");
 pub(crate) static THREAD_HISTORY_MIGRATOR: Migrator =
     sqlx_macros::migrate!("./thread_history_migrations");
+pub(crate) static USAGE_MIGRATOR: Migrator = sqlx_macros::migrate!("./usage_migrations");
 
 /// Allow an older Codex binary to open a database that has already been
 /// migrated by a newer binary running in parallel.
@@ -52,6 +53,10 @@ pub(crate) fn runtime_queue_migrator() -> Migrator {
 #[allow(dead_code)]
 pub(crate) fn runtime_thread_history_migrator() -> Migrator {
     runtime_migrator(&THREAD_HISTORY_MIGRATOR)
+}
+
+pub(crate) fn runtime_usage_migrator() -> Migrator {
+    runtime_migrator(&USAGE_MIGRATOR)
 }
 
 pub(crate) async fn repair_legacy_recency_migration_version(
