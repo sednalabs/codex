@@ -28,6 +28,7 @@ const API_AUDIENCE: &str = "ops-api";
 pub(crate) const API_SCOPE: &str = "ops:write";
 pub(crate) const API_BEARER_CREDENTIAL: &str = "ops-api-bearer";
 pub(crate) const API_BEARER_MAX_BYTES: usize = 16 * 1024;
+pub(crate) const API_BEARER_CREDENTIAL_MAX_BYTES: usize = API_BEARER_MAX_BYTES + 256;
 const MAX_TOKEN_CLAIMS_BYTES: usize = 8 * 1024;
 const MAX_REQUEST_BYTES: usize = 16 * 1024;
 const MAX_CLAIM_RESPONSE_BYTES: usize = 1024 * 1024;
@@ -37,6 +38,21 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 pub(crate) struct ApiBearer {
     pub(crate) value: SecretString,
     pub(crate) expires_at: i64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApiBearerCredential {
+    version: u8,
+    generation: Uuid,
+    access_token: SecretString,
+}
+
+#[derive(serde::Serialize)]
+struct ApiBearerCredentialRef<'a> {
+    version: u8,
+    generation: Uuid,
+    access_token: &'a str,
 }
 
 #[derive(Deserialize)]
@@ -87,7 +103,40 @@ impl ScopeClaim {
     }
 }
 
+pub(crate) fn encode_bearer_credential(value: &SecretString) -> Result<Zeroizing<Vec<u8>>> {
+    let credential = ApiBearerCredentialRef {
+        version: 1,
+        generation: Uuid::new_v4(),
+        access_token: &value.0,
+    };
+    Ok(Zeroizing::new(serde_json::to_vec(&credential)?))
+}
+
+pub(crate) fn decode_bearer_credential(bytes: &[u8]) -> Result<SecretString> {
+    if bytes.is_empty() || bytes.len() > API_BEARER_CREDENTIAL_MAX_BYTES {
+        bail!("fixed Ops API credential envelope exceeds its size limit");
+    }
+    let credential: ApiBearerCredential = serde_json::from_slice(bytes)
+        .map_err(|_| anyhow::anyhow!("fixed Ops API credential envelope is invalid"))?;
+    if credential.version != 1 || credential.generation.is_nil() {
+        bail!("fixed Ops API credential envelope is outside its versioned contract");
+    }
+    Ok(credential.access_token)
+}
+
 pub(crate) fn validate_bearer(value: String, principal: Uuid, now: i64) -> Result<ApiBearer> {
+    validate_bearer_profile(value, Some(principal), now)
+}
+
+pub(crate) fn validate_bearer_for_provisioning(value: String, now: i64) -> Result<ApiBearer> {
+    validate_bearer_profile(value, None, now)
+}
+
+fn validate_bearer_profile(
+    value: String,
+    expected_principal: Option<Uuid>,
+    now: i64,
+) -> Result<ApiBearer> {
     let value = SecretString(value);
     if value.0.is_empty()
         || value.0.len() > API_BEARER_MAX_BYTES
@@ -116,7 +165,9 @@ pub(crate) fn validate_bearer(value: String, principal: Uuid, now: i64) -> Resul
     }
     let claims: TokenClaims = serde_json::from_slice(&claims_bytes)
         .map_err(|_| anyhow::anyhow!("fixed Ops API bearer claims are invalid"))?;
-    let subject_matches = claims.sub == principal.to_string();
+    let token_principal = Uuid::parse_str(&claims.sub).ok();
+    let subject_matches = token_principal.is_some()
+        && expected_principal.is_none_or(|principal| token_principal == Some(principal));
     let has_scope = claims.scope.as_deref().is_some_and(|scope| scope == API_SCOPE)
         || claims.scp.as_ref().is_some_and(|scopes| scopes.contains(API_SCOPE));
     let scope_claims_are_consistent = claims.scope.as_deref().is_none_or(|scope| scope == API_SCOPE)

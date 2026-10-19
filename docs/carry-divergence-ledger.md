@@ -3880,19 +3880,24 @@ package acceptance alone does not appoint or install the API bearer, authorize
 a claim policy, or establish HTTP first use.
 
 The same measured launcher has a single `provision-api-bearer` mode for the
-already-defined HTTP profile. It requires a root-owned HTTP claim policy and a
-running ELF matching that policy before starting the fixed issuer's
-pre-registered authorization-code flow. The flow uses the existing Codex
-callback and PKCE implementation, a fixed loopback redirect, the API resource,
-and only `ops:write`; it does not write the persistent MCP credential store or
-persist a refresh token. The returned access token is checked against the policy principal
-and the exact issuer, API audience, scope, and bounded expiry, then atomically
-written only to the root-owned file named by the claim unit's explicit
-`LoadCredential=ops-api-bearer:` source. The mode has no caller-selected path,
-URL, client, scope, or command option, creates no claim policy, and sends no
-claim. This source path is inert until its fixed public client is approved,
-concrete caller policy is installed, and the expected principal completes the
-interactive authorization flow.
+fixed HTTP profile. It requires interactive `sudo` through the installed
+root-owned launcher path; `SUDO_UID` is used only to run the fixed browser
+opener as the unprivileged desktop user, never as the OAuth principal. The
+existing Codex callback and PKCE implementation uses a fixed loopback redirect,
+the API resource, and only `ops:write`; it does not write the persistent MCP
+credential store or persist a refresh token. Before storage, the returned token
+must match the fixed issuer, API audience, exact scope, UUID-shaped subject, and
+bounded expiry. Provisioning does not require or activate the root claim policy:
+the HTTP launcher later checks the token subject against that policy before
+signing or sending a claim. The short-lived credential is atomically written
+only to `/run/credstore/ops-api-bearer` in a versioned envelope with a fresh
+generation value; the fixed unit loads it through source-less
+`LoadCredential=ops-api-bearer`. After systemd has copied it into the private
+credential directory, the launcher removes only the exact loaded envelope under
+the same lock used by provisioning. A replacement credential, including one
+with the same token but a different generation, is preserved. The unit remains
+inactive while the root claim policy is absent. The mode accepts no
+caller-selected path, URL, client, scope, or command option and sends no claim.
 
 The unit template and binary are packaged for Linux x86_64 and Arm64; packaging
 does not create the host policy, credentials, service account, issuer

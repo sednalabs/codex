@@ -1192,10 +1192,17 @@ and PKCE path with the fixed API issuer, resource, client, loopback redirect, an
 `ops:write` scope. Its regressions check the exact client/resource/scope and
 S256 request, reject unsafe callback or issuer metadata and unsupported
 token-type/lifetime responses, discard the refresh response without persistence,
-and verify atomic replacement of only one root-owned credential basename. The
-token subject, exact issuer/audience/scope, and expiry must match the root policy
-before the existing systemd input is replaced. These source tests do not create
-the client, obtain a token, activate the policy, or claim a Work item.
+and verify atomic replacement of only one root-owned credential basename. It
+supports the installed root-owned launcher under interactive `sudo`; `SUDO_UID`
+selects only the unprivileged browser process and does not attest the OAuth
+subject. Provisioning checks issuer/audience/scope/UUID-subject-shape/expiry
+without requiring the claim policy. At actual use, the fixed HTTP launcher still
+requires the token subject to match the root policy before signing or sending.
+The volatile `/run/credstore` source is a versioned envelope with a unique
+generation; the launcher removes only the exact loaded envelope under the same
+lock as replacement, preserving a concurrent same-token replacement. The claim
+unit remains conditioned on the separate root policy. These source tests do not
+create the client, obtain a token, activate the policy, or claim a Work item.
 
 The protected CLI fixture additionally consumes the exact delegated process's
 non-timeout wait result before root finalization: the positive case requires

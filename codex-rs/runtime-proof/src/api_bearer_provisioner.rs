@@ -1,18 +1,18 @@
 //! Fixed local OAuth provisioning for the existing Ops API system credential.
 //!
 //! This path accepts no caller-selected OAuth, path, or command parameters. It
-//! uses the exact API client contract, verifies the resulting access token
-//! against the root-owned claim policy, and atomically replaces only the
-//! systemd credential source consumed by the fixed claim service.
+//! uses the exact API client contract, validates the returned access token's
+//! fixed issuer/audience/scope/lifetime, and atomically replaces only the
+//! volatile systemd credential source consumed by the fixed claim service.
 
 use crate::api_claim;
-use crate::provider_auth::SecretString;
 use anyhow::Result;
 use anyhow::bail;
 use codex_rmcp_client::perform_fixed_ops_api_access_token_login;
 use std::ffi::CStr;
 use std::fs;
 use std::fs::File;
+use std::io::Read as _;
 use std::io::Write as _;
 use std::mem::MaybeUninit;
 use std::os::fd::AsRawFd as _;
@@ -25,11 +25,12 @@ use std::process::Command;
 use std::process::Stdio;
 use uuid::Uuid;
 
-const BEARER_SOURCE_PATH: &str = "/etc/codex/runtime-proof/ops-api-bearer";
+const BEARER_SOURCE_PATH: &str = "/run/credstore/ops-api-bearer";
+const BEARER_LOCK_NAME: &str = ".codex-runtime-proof-api-bearer.lock";
 const XDG_OPEN_PATH: &str = "/usr/bin/xdg-open";
 const MAX_PASSWD_BUFFER: usize = 64 * 1024;
 
-pub(crate) fn run(principal: Uuid) -> Result<i32> {
+pub(crate) fn run() -> Result<i32> {
     require_interactive_root_invocation()?;
     let bearer_parent = Path::new(BEARER_SOURCE_PATH)
         .parent()
@@ -48,27 +49,50 @@ pub(crate) fn run(principal: Uuid) -> Result<i32> {
     })?;
 
     let now = api_claim::unix_seconds()?;
-    let bearer = api_claim::validate_bearer(access_token.access_token().to_string(), principal, now)?;
+    let bearer = api_claim::validate_bearer_for_provisioning(
+        access_token.access_token().to_string(),
+        now,
+    )?;
     if bearer.expires_at <= now || bearer.expires_at > access_token.expires_at() {
         bail!("fixed Ops API access token expiry does not match its OAuth lifetime");
     }
-    replace_bearer_source(Path::new(BEARER_SOURCE_PATH), &bearer.value)
+    let credential = api_claim::encode_bearer_credential(&bearer.value)?;
+    replace_bearer_source(Path::new(BEARER_SOURCE_PATH), &credential)
         .map_err(|_| anyhow::anyhow!("write fixed Ops API system credential"))?;
     Ok(0)
 }
 
 fn require_interactive_root_invocation() -> Result<()> {
     if unsafe { libc::geteuid() } != 0
-        || unsafe { libc::getuid() } == 0
+        || invoking_uid_from_sudo_env().is_err()
         || unsafe { libc::isatty(libc::STDIN_FILENO) } != 1
     {
-        bail!("fixed API bearer provisioning requires an interactive root invocation");
+        bail!("fixed API bearer provisioning requires interactive sudo");
     }
     Ok(())
 }
 
+fn invoking_uid_from_sudo_env() -> Result<libc::uid_t> {
+    let value = std::env::var("SUDO_UID")
+        .map_err(|_| anyhow::anyhow!("resolve the invoking sudo user"))?;
+    parse_invoking_uid(&value)
+}
+
+fn parse_invoking_uid(value: &str) -> Result<libc::uid_t> {
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        bail!("resolve the invoking sudo user");
+    }
+    let uid = value
+        .parse::<libc::uid_t>()
+        .map_err(|_| anyhow::anyhow!("resolve the invoking sudo user"))?;
+    if uid == 0 {
+        bail!("fixed API bearer provisioning requires a non-root sudo caller");
+    }
+    Ok(uid)
+}
+
 fn invoking_user_identity() -> Result<(libc::uid_t, libc::gid_t, String)> {
-    let uid = unsafe { libc::getuid() };
+    let uid = invoking_uid_from_sudo_env()?;
     let mut buffer = vec![0_u8; MAX_PASSWD_BUFFER];
     let mut passwd = MaybeUninit::<libc::passwd>::uninit();
     let mut entry = std::ptr::null_mut();
@@ -166,7 +190,7 @@ fn open_authorization_url_as_invoking_user(authorization_url: &str) -> Result<()
 }
 
 fn validate_fixed_parent(parent: &Path) -> Result<()> {
-    if parent != Path::new("/etc/codex/runtime-proof") || parent.canonicalize()? != parent {
+    if parent != Path::new("/run/credstore") || parent.canonicalize()? != parent {
         bail!("fixed Ops API credential directory is not canonical");
     }
     for path in parent.ancestors() {
@@ -178,8 +202,8 @@ fn validate_fixed_parent(parent: &Path) -> Result<()> {
     Ok(())
 }
 
-fn replace_bearer_source(path: &Path, bearer: &SecretString) -> Result<()> {
-    const FIXED_PARENT: &str = "/etc/codex/runtime-proof";
+fn replace_bearer_source(path: &Path, credential: &[u8]) -> Result<()> {
+    const FIXED_PARENT: &str = "/run/credstore";
     const FIXED_NAME: &str = "ops-api-bearer";
     if path != Path::new(BEARER_SOURCE_PATH) || path.parent() != Some(Path::new(FIXED_PARENT)) {
         bail!("Ops API credential target is not the fixed systemd input");
@@ -187,16 +211,177 @@ fn replace_bearer_source(path: &Path, bearer: &SecretString) -> Result<()> {
     validate_fixed_parent(Path::new(FIXED_PARENT))?;
 
     let parent = open_fixed_directory(Path::new(FIXED_PARENT))?;
-    let parent_metadata = parent.metadata()?;
-    if !parent_metadata.is_dir()
-        || parent_metadata.uid() != 0
-        || parent_metadata.mode() & 0o022 != 0
-    {
-        bail!("fixed Ops API credential directory changed during provisioning");
+    validate_credential_store_directory(&parent, 0)?;
+
+    let _lock = lock_credential_store(&parent, 0)?;
+    let destination = std::ffi::CString::new(FIXED_NAME)?;
+    atomic_replace_credential_at(&parent, &destination, credential, 0)
+}
+
+/// Removes the volatile source only when it still contains the exact bearer
+/// that systemd copied into this unit's private credential directory.
+pub(crate) fn cleanup_loaded_bearer_source(credentials_directory: &Path) -> Result<()> {
+    let Some(loaded_bearer) = read_loaded_bearer(credentials_directory)? else {
+        return Ok(());
+    };
+    let parent_path = Path::new("/run/credstore");
+    validate_fixed_parent(parent_path)?;
+    let parent = open_fixed_directory(parent_path)?;
+    validate_credential_store_directory(&parent, 0)?;
+    cleanup_bearer_source_at(&parent, &loaded_bearer, 0)
+}
+
+fn cleanup_bearer_source_at(
+    parent: &File,
+    loaded_bearer: &[u8],
+    expected_owner: libc::uid_t,
+) -> Result<()> {
+    let _lock = lock_credential_store(parent, expected_owner)?;
+    let source_name = std::ffi::CString::new("ops-api-bearer")?;
+    let source_fd = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            source_name.as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+        )
+    };
+    if source_fd < 0 {
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::NotFound {
+            bail!("volatile Ops API bearer source was not found");
+        }
+        return Err(error.into());
+    }
+    let source_file = unsafe { File::from_raw_fd(source_fd) };
+    let source_metadata = source_file.metadata()?;
+    validate_bearer_file_metadata(&source_metadata, expected_owner, Some(0o600))?;
+    let source_bytes = zeroize::Zeroizing::new(read_bounded(
+        source_file,
+        crate::api_claim::API_BEARER_CREDENTIAL_MAX_BYTES,
+    )?);
+    if source_bytes.as_slice() != loaded_bearer.as_slice() {
+        bail!("volatile Ops API bearer source changed before cleanup");
     }
 
-    let destination = std::ffi::CString::new(FIXED_NAME)?;
-    atomic_replace_credential_at(&parent, &destination, bearer.0.as_bytes(), 0)
+    let mut current = MaybeUninit::<libc::stat>::uninit();
+    if unsafe {
+        libc::fstatat(
+            parent.as_raw_fd(),
+            source_name.as_ptr(),
+            current.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } != 0
+    {
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::NotFound {
+            bail!("volatile Ops API bearer source changed before cleanup");
+        }
+        return Err(error.into());
+    }
+    let current = unsafe { current.assume_init() };
+    if current.st_dev != source_metadata.dev() || current.st_ino != source_metadata.ino() {
+        bail!("volatile Ops API bearer source changed before cleanup");
+    }
+    if unsafe { libc::unlinkat(parent.as_raw_fd(), source_name.as_ptr(), 0) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    if unsafe { libc::fsync(parent.as_raw_fd()) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(())
+}
+
+fn read_loaded_bearer(directory: &Path) -> Result<Option<zeroize::Zeroizing<Vec<u8>>>> {
+    if !directory.is_absolute() || directory.canonicalize()? != directory {
+        bail!("systemd credentials directory is not canonical and absolute");
+    }
+    let directory_metadata = fs::metadata(directory)?;
+    if !directory_metadata.is_dir()
+        || directory_metadata.uid() != 0
+        || directory_metadata.mode() & 0o077 != 0
+    {
+        bail!("systemd credentials directory is not root-only");
+    }
+    let name = std::ffi::CString::new("ops-api-bearer")?;
+    let directory_file = open_fixed_directory(directory)?;
+    let fd = unsafe {
+        libc::openat(
+            directory_file.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+        )
+    };
+    if fd < 0 {
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::NotFound {
+            return Ok(None);
+        }
+        return Err(error.into());
+    }
+    let file = unsafe { File::from_raw_fd(fd) };
+    let metadata = file.metadata()?;
+    validate_bearer_file_metadata(&metadata, 0, None)?;
+    Ok(Some(read_bounded(
+        file,
+        crate::api_claim::API_BEARER_CREDENTIAL_MAX_BYTES,
+    )?))
+}
+
+fn validate_bearer_file_metadata(
+    metadata: &fs::Metadata,
+    expected_owner: libc::uid_t,
+    expected_mode: Option<u32>,
+) -> Result<()> {
+    let mode = metadata.mode() & 0o777;
+    if !metadata.is_file()
+        || metadata.uid() != expected_owner
+        || (mode != 0o400 && mode != 0o600)
+        || expected_mode.is_some_and(|expected| mode != expected)
+        || metadata.len() == 0
+        || metadata.len() > crate::api_claim::API_BEARER_CREDENTIAL_MAX_BYTES as u64
+    {
+        bail!("fixed Ops API credential is outside its protected file contract");
+    }
+    Ok(())
+}
+
+fn validate_credential_store_directory(
+    directory: &File,
+    expected_owner: libc::uid_t,
+) -> Result<()> {
+    let metadata = directory.metadata()?;
+    if !metadata.is_dir() || metadata.uid() != expected_owner || metadata.mode() & 0o022 != 0 {
+        bail!("fixed Ops API credential directory is not root controlled");
+    }
+    Ok(())
+}
+
+fn lock_credential_store(directory: &File, expected_owner: libc::uid_t) -> Result<File> {
+    let lock_name = std::ffi::CString::new(BEARER_LOCK_NAME)?;
+    let fd = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            lock_name.as_ptr(),
+            libc::O_RDWR | libc::O_CREAT | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            0o600,
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let lock = unsafe { File::from_raw_fd(fd) };
+    let metadata = lock.metadata()?;
+    if !metadata.is_file()
+        || metadata.uid() != expected_owner
+        || metadata.mode() & 0o777 != 0o600
+    {
+        bail!("fixed Ops API credential lock is outside its file contract");
+    }
+    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(lock)
 }
 
 fn atomic_replace_credential_at(
@@ -305,11 +490,19 @@ mod tests {
 
     #[test]
     fn bearer_source_requires_exact_fixed_path() {
-        assert!(replace_bearer_source(
+    assert!(replace_bearer_source(
             Path::new("/tmp/ops-api-bearer"),
-            &SecretString("synthetic-token".to_string())
+            b"synthetic-token"
         )
         .is_err());
+    }
+
+    #[test]
+    fn sudo_invoker_uid_must_be_non_root_decimal() {
+        assert_eq!(parse_invoking_uid("1000").ok(), Some(1000));
+        assert!(parse_invoking_uid("0").is_err());
+        assert!(parse_invoking_uid("+1000").is_err());
+        assert!(parse_invoking_uid("1000\n").is_err());
     }
 
     #[test]
@@ -354,6 +547,62 @@ mod tests {
             unsafe { libc::geteuid() },
         )
         .is_err());
+        fs::remove_dir_all(directory).expect("remove isolated credential directory");
+    }
+
+    #[test]
+    fn cleanup_removes_only_the_exact_loaded_credential_generation() {
+        let directory = std::env::temp_dir().join(format!("codex-runtime-proof-{}", Uuid::new_v4()));
+        fs::create_dir(&directory).expect("create isolated credential directory");
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
+            .expect("restrict isolated credential directory");
+        let credential_path = directory.join("ops-api-bearer");
+        let token = crate::provider_auth::SecretString("same-token".to_string());
+        let loaded = crate::api_claim::encode_bearer_credential(&token)
+            .expect("encode loaded credential");
+        fs::write(&credential_path, &loaded).expect("write source credential");
+        fs::set_permissions(&credential_path, fs::Permissions::from_mode(0o600))
+            .expect("restrict source credential");
+
+        let parent = open_fixed_directory(&directory).expect("open credential directory");
+        cleanup_bearer_source_at(
+            &parent,
+            &loaded,
+            unsafe { libc::geteuid() },
+        )
+        .expect("remove the credential systemd loaded");
+        assert!(!credential_path.exists());
+        fs::remove_dir_all(directory).expect("remove isolated credential directory");
+    }
+
+    #[test]
+    fn cleanup_preserves_a_replacement_even_when_it_reuses_the_same_access_token() {
+        let directory = std::env::temp_dir().join(format!("codex-runtime-proof-{}", Uuid::new_v4()));
+        fs::create_dir(&directory).expect("create isolated credential directory");
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
+            .expect("restrict isolated credential directory");
+        let credential_path = directory.join("ops-api-bearer");
+        let token = crate::provider_auth::SecretString("same-token".to_string());
+        let loaded = crate::api_claim::encode_bearer_credential(&token)
+            .expect("encode previously loaded credential");
+        let replacement = crate::api_claim::encode_bearer_credential(&token)
+            .expect("encode replacement credential");
+        assert_ne!(loaded.as_slice(), replacement.as_slice());
+        fs::write(&credential_path, &replacement).expect("write replacement credential");
+        fs::set_permissions(&credential_path, fs::Permissions::from_mode(0o600))
+            .expect("restrict replacement credential");
+
+        let parent = open_fixed_directory(&directory).expect("open credential directory");
+        assert!(cleanup_bearer_source_at(
+            &parent,
+            &loaded,
+            unsafe { libc::geteuid() },
+        )
+        .is_err());
+        assert_eq!(
+            fs::read(&credential_path).expect("read preserved replacement"),
+            replacement.as_slice()
+        );
         fs::remove_dir_all(directory).expect("remove isolated credential directory");
     }
 }
