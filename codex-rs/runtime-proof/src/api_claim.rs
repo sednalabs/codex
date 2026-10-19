@@ -25,7 +25,7 @@ const API_ROUTE: &str = "/v0/work-items/claim";
 pub(crate) const API_PROVIDER: &str = "agent-ops-api-claim-client";
 const API_ISSUER: &str = "https://auth.grantmatler.com/realms/agent-ops";
 const API_AUDIENCE: &str = "ops-api";
-const API_SCOPE: &str = "ops:write";
+pub(crate) const API_SCOPE: &str = "ops:write";
 pub(crate) const API_BEARER_CREDENTIAL: &str = "ops-api-bearer";
 pub(crate) const API_BEARER_MAX_BYTES: usize = 16 * 1024;
 const MAX_TOKEN_CLAIMS_BYTES: usize = 8 * 1024;
@@ -64,7 +64,9 @@ impl Audience {
     fn contains(&self, expected: &str) -> bool {
         match self {
             Self::One(audience) => audience == expected,
-            Self::Many(audiences) => audiences.iter().any(|audience| audience == expected),
+            Self::Many(audiences) => {
+                audiences.len() == 1 && audiences.first().is_some_and(|audience| audience == expected)
+            }
         }
     }
 }
@@ -79,8 +81,8 @@ enum ScopeClaim {
 impl ScopeClaim {
     fn contains(&self, expected: &str) -> bool {
         match self {
-            Self::One(scopes) => scopes.split_whitespace().any(|scope| scope == expected),
-            Self::Many(scopes) => scopes.iter().any(|scope| scope == expected),
+            Self::One(scopes) => scopes == expected,
+            Self::Many(scopes) => scopes.len() == 1 && scopes.first().is_some_and(|scope| scope == expected),
         }
     }
 }
@@ -115,18 +117,15 @@ pub(crate) fn validate_bearer(value: String, principal: Uuid, now: i64) -> Resul
     let claims: TokenClaims = serde_json::from_slice(&claims_bytes)
         .map_err(|_| anyhow::anyhow!("fixed Ops API bearer claims are invalid"))?;
     let subject_matches = claims.sub == principal.to_string();
-    let has_scope = claims
-        .scope
-        .as_deref()
-        .is_some_and(|scopes| scopes.split_whitespace().any(|scope| scope == API_SCOPE))
-        || claims
-            .scp
-            .as_ref()
-            .is_some_and(|scopes| scopes.contains(API_SCOPE));
+    let has_scope = claims.scope.as_deref().is_some_and(|scope| scope == API_SCOPE)
+        || claims.scp.as_ref().is_some_and(|scopes| scopes.contains(API_SCOPE));
+    let scope_claims_are_consistent = claims.scope.as_deref().is_none_or(|scope| scope == API_SCOPE)
+        && claims.scp.as_ref().is_none_or(|scopes| scopes.contains(API_SCOPE));
     if claims.iss != API_ISSUER
         || !claims.aud.contains(API_AUDIENCE)
         || !subject_matches
         || !has_scope
+        || !scope_claims_are_consistent
         || claims.nbf.is_some_and(|not_before| not_before > now)
         || claims.exp <= now
     {

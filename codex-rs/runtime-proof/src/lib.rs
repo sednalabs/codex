@@ -2,6 +2,8 @@
 
 #[cfg(target_os = "linux")]
 mod api_claim;
+#[cfg(target_os = "linux")]
+mod api_bearer_provisioner;
 mod auth;
 #[cfg(target_os = "linux")]
 pub mod launcher;

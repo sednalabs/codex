@@ -3875,9 +3875,25 @@ fields are omitted. The API server remains responsible for authenticating the
 bearer and verifying both signatures. The local JWT field comparison is only
 a fail-early consistency check, never an authentication decision. An absent
 bearer or mismatch fails closed, and an uncertain POST is returned without
-retry. The MCP policy and existing MCP child path remain separate. Source
-support does not appoint or install the API bearer, authorize a claim policy,
-or establish HTTP first use.
+retry. The MCP policy and existing MCP child path remain separate. Source or
+package acceptance alone does not appoint or install the API bearer, authorize
+a claim policy, or establish HTTP first use.
+
+The same measured launcher has a single `provision-api-bearer` mode for the
+already-defined HTTP profile. It requires a root-owned HTTP claim policy and a
+running ELF matching that policy before starting the fixed issuer's
+pre-registered authorization-code flow. The flow uses the existing Codex
+callback and PKCE implementation, a fixed loopback redirect, the API resource,
+and only `ops:write`; it does not write the persistent MCP credential store or
+persist a refresh token. The returned access token is checked against the policy principal
+and the exact issuer, API audience, scope, and bounded expiry, then atomically
+written only to the root-owned file named by the claim unit's explicit
+`LoadCredential=ops-api-bearer:` source. The mode has no caller-selected path,
+URL, client, scope, or command option, creates no claim policy, and sends no
+claim. This source path is inert until its fixed public client is approved,
+concrete caller policy is installed, and the expected principal completes the
+interactive authorization flow.
+
 The unit template and binary are packaged for Linux x86_64 and Arm64; packaging
 does not create the host policy, credentials, service account, issuer
 appointment, service installation, or live execution authority.

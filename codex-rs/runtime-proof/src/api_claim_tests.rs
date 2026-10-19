@@ -72,9 +72,9 @@ fn api_bearer_consistency_is_bound_to_issuer_audience_subject_scope_and_expiry()
     let now = 1_800_000_000;
     let valid_claims = serde_json::json!({
         "iss": API_ISSUER,
-        "aud": [API_AUDIENCE],
+        "aud": API_AUDIENCE,
         "sub": principal.to_string(),
-        "scope": "openid ops:write",
+        "scope": API_SCOPE,
         "exp": now + 60,
     });
     let valid = validate_bearer(jwt(valid_claims.clone()), principal, now)
@@ -84,12 +84,15 @@ fn api_bearer_consistency_is_bound_to_issuer_audience_subject_scope_and_expiry()
     for (field, value) in [
         ("iss", serde_json::json!("https://wrong.example/")),
         ("aud", serde_json::json!("ops-mcp")),
+        ("aud", serde_json::json!([API_AUDIENCE, "account"])),
         ("sub", serde_json::json!(Uuid::from_u128(2).to_string())),
         (
             "sub",
             serde_json::json!(principal.to_string().to_uppercase()),
         ),
         ("scope", serde_json::json!("ops:read")),
+        ("scope", serde_json::json!("openid ops:write")),
+        ("scp", serde_json::json!([API_SCOPE, "ops:read"])),
         ("exp", serde_json::json!(now)),
     ] {
         let mut claims = valid_claims.clone();
@@ -99,6 +102,21 @@ fn api_bearer_consistency_is_bound_to_issuer_audience_subject_scope_and_expiry()
             "mismatched {field} must fail closed"
         );
     }
+}
+
+#[test]
+fn api_bearer_rejects_inconsistent_scope_claims() {
+    let principal = Uuid::from_u128(0xabcdef);
+    let now = 1_800_000_000;
+    let claims = serde_json::json!({
+        "iss": API_ISSUER,
+        "aud": API_AUDIENCE,
+        "sub": principal.to_string(),
+        "scope": API_SCOPE,
+        "scp": "ops:read",
+        "exp": now + 60,
+    });
+    assert!(validate_bearer(jwt(claims), principal, now).is_err());
 }
 
 #[test]

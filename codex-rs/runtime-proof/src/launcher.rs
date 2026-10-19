@@ -157,6 +157,29 @@ pub fn run() -> Result<i32> {
     }
 }
 
+/// Provisions only the fixed API bearer credential after the matching root
+/// policy and launcher image have been verified.
+pub fn provision_api_bearer() -> Result<i32> {
+    let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
+    if arguments.len() != 1
+        || arguments[0].as_os_str() != std::ffi::OsStr::new("provision-api-bearer")
+    {
+        bail!("fixed API bearer provisioning does not accept caller-selected arguments");
+    }
+    require_root_launcher()?;
+
+    let policy_bytes = read_root_file(Path::new(POLICY_PATH), MAX_POLICY_BYTES)?;
+    let policy: LauncherPolicy =
+        serde_json::from_slice(&policy_bytes).context("parse fixed launcher policy")?;
+    validate_policy(&policy)?;
+    let LauncherTarget::Http(target) = &policy.target else {
+        bail!("fixed API bearer provisioning requires an API claim policy");
+    };
+    let executable = open_verified_self_executable(&target.launcher_sha256)?;
+    drop(executable);
+    crate::api_bearer_provisioner::run(policy.principal)
+}
+
 fn run_mcp(
     policy: &LauncherPolicy,
     target: &McpLaunchConfig,

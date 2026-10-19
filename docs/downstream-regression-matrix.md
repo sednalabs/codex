@@ -1187,6 +1187,16 @@ outcome without replay. The API server authenticates the bearer and verifies
 the proof; local JWT comparisons only check policy consistency. Source and
 hosted package proof do not appoint the bearer or establish HTTP first use.
 
+The bounded `provision-api-bearer` mode reuses the existing Codex OAuth callback
+and PKCE path with the fixed API issuer, resource, client, loopback redirect, and
+`ops:write` scope. Its regressions check the exact client/resource/scope and
+S256 request, reject unsafe callback or issuer metadata and unsupported
+token-type/lifetime responses, discard the refresh response without persistence,
+and verify atomic replacement of only one root-owned credential basename. The
+token subject, exact issuer/audience/scope, and expiry must match the root policy
+before the existing systemd input is replaced. These source tests do not create
+the client, obtain a token, activate the policy, or claim a Work item.
+
 The protected CLI fixture additionally consumes the exact delegated process's
 non-timeout wait result before root finalization: the positive case requires
 completion, and the provider-override case requires the expected provider-pin
