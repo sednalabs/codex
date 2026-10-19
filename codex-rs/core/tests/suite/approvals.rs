@@ -3672,7 +3672,9 @@ async fn matched_prefix_rule_runs_unsandboxed_under_zsh_fork() -> Result<()> {
     let outside_path = outside_dir
         .path()
         .join("zsh-fork-prefix-rule-unsandboxed.txt");
-    let command = format!("touch {outside_path:?}");
+    let command = format!(
+        "builtin print -r -- CODEX_ZSH_FORK_PHASE_SCRIPT_STARTED; touch {outside_path:?}; __codex_zsh_fork_phase_status=$?; builtin print -r -- CODEX_ZSH_FORK_PHASE_TOUCH_RETURNED:$__codex_zsh_fork_phase_status; exit $__codex_zsh_fork_phase_status"
+    );
     let rules = r#"prefix_rule(pattern=["touch"], decision="allow")"#.to_string();
 
     let server = start_mock_server().await;
@@ -3744,28 +3746,40 @@ async fn matched_prefix_rule_runs_unsandboxed_under_zsh_fork() -> Result<()> {
         )
         .await?;
 
-    wait_for_completion_without_approval(&test).await;
+    let completion_or_approval = wait_for_event(&test.codex, |event| {
+        matches!(
+            event,
+            EventMsg::ExecApprovalRequest(_) | EventMsg::TurnComplete(_)
+        )
+    })
+    .await;
+    assert!(
+        matches!(completion_or_approval, EventMsg::TurnComplete(_)),
+        "zsh-fork prefix test expected turn completion without approval"
+    );
 
     let result = parse_result(&results.single_request().function_call_output(call_id));
-    if result.exit_code != Some(0) {
-        let exit_code = result
-            .exit_code
-            .map(|code| code.to_string())
-            .unwrap_or_else(|| "missing".to_string());
-        eprintln!(
-            "zsh_fork_prefix_diagnostic exit_present={} exit_code={} output_empty={} output_bytes={} outside_target_created={}",
-            result.exit_code.is_some(),
-            exit_code,
-            result.stdout.is_empty(),
-            result.stdout.len(),
-            outside_path.exists(),
-        );
+    let outside_target_created = outside_path.exists();
+    if result.exit_code != Some(0) || !outside_target_created {
+        let script_started = result
+            .stdout
+            .contains("CODEX_ZSH_FORK_PHASE_SCRIPT_STARTED");
+        let touch_returned = result.stdout.lines().find_map(|line| {
+            line.strip_prefix("CODEX_ZSH_FORK_PHASE_TOUCH_RETURNED:")
+        });
+        let phase = match (script_started, touch_returned) {
+            (false, None) => "before_script_started",
+            (true, None) => "touch_did_not_return",
+            (true, Some("0")) => "touch_returned_zero",
+            (true, Some(_)) => "touch_returned_nonzero",
+            (false, Some(_)) => "inconsistent_markers",
+        };
+        eprintln!("zsh_fork_prefix_failure_phase={phase}");
     }
     assert_eq!(result.exit_code.unwrap_or(0), 0);
     assert!(
-        outside_path.exists(),
-        "expected matched prefix_rule to rerun touch unsandboxed; output: {}",
-        result.stdout
+        outside_target_created,
+        "expected matched prefix rule to run touch unsandboxed"
     );
 
     Ok(())

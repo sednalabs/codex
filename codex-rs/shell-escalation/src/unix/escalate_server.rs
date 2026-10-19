@@ -275,7 +275,9 @@ async fn handle_escalate_session_with_policy(
         workdir,
         env,
     } = tokio::select! {
-        request = socket.receive::<EscalateRequest>() => request?,
+        request = socket.receive::<EscalateRequest>() => {
+            request.context("phase=receive_escalate_request")?
+        },
         _ = parent_cancellation_token.cancelled() => return Ok(()),
         _ = session_cancellation_token.cancelled() => return Ok(()),
     };
@@ -296,7 +298,8 @@ async fn handle_escalate_session_with_policy(
                 .send(EscalateResponse {
                     action: EscalateAction::Run,
                 })
-                .await?;
+                .await
+                .context("phase=send_run_response")?;
         }
         EscalationDecision::Escalate(execution) => {
             socket
@@ -760,7 +763,40 @@ mod tests {
             },
             response
         );
-        server_task.await?
+        let server_result = match server_task.await {
+            Ok(result) => result,
+            Err(_) => {
+                eprintln!("escalate_run_failure_phase=join_task");
+                return Err(anyhow::anyhow!("escalation server task join failed"));
+            }
+        };
+        if let Err(error) = &server_result {
+            let phase = error.chain().find_map(|cause| match cause.to_string().as_str() {
+                "phase=receive_escalate_request" => Some("receive_request"),
+                "phase=send_run_response" => Some("send_run_response"),
+                _ => None,
+            });
+            let errno = error.chain().find_map(|cause| {
+                cause
+                    .downcast_ref::<std::io::Error>()
+                    .and_then(std::io::Error::raw_os_error)
+            });
+            let phase_label = match (phase, errno) {
+                (Some("receive_request"), Some(22)) => "receive_request_os_errno_22",
+                (Some("send_run_response"), Some(22)) => "send_run_response_os_errno_22",
+                (Some("receive_request"), Some(_)) => "receive_request_other_os_error",
+                (Some("send_run_response"), Some(_)) => "send_run_response_other_os_error",
+                (Some("receive_request"), None) => "receive_request_non_os_error",
+                (Some("send_run_response"), None) => "send_run_response_non_os_error",
+                (None, Some(22)) => "unknown_phase_os_errno_22",
+                (None, Some(_)) => "unknown_phase_other_os_error",
+                (None, None) => "unknown_phase_non_os_error",
+                _ => "unknown_failure_category",
+            };
+            eprintln!("escalate_run_failure_phase={phase_label}");
+            return Err(anyhow::anyhow!("escalation Run response phase failed"));
+        }
+        server_result
     }
 
     #[tokio::test]
