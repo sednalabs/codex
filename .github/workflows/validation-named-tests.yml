@@ -441,11 +441,11 @@ jobs:
               ;;
             rollout_identity)
               expected_base="6bdf5e8a98b8c29ad7c63cfbc86afd24d4914287"
-              expected_host_ref="refs/heads/validation/host-windows-rollout-80560f45"
-              expected_target="80560f458e220ca59830e739c7df5d1ef2c83ccf"
-              expected_tree="7fa4a32dacac3918b65657d21f398fae1066b618"
-              expected_parent="de4d8f19af203b2129142bdec359a66f4c7c5b0e"
-              expected_base_depth=3
+              expected_host_ref="refs/heads/validation/host-windows-rollout-39fee43e"
+              expected_target="39fee43e50395dfbf50db8773444eb21aca625a7"
+              expected_tree="b32a2107e7adcb88621640238adccc929a51dd33"
+              expected_parent="1946589b56c0987f4fbeb54e555938d4c78bfd9d"
+              expected_base_depth=5
               ;;
             voice_runtime)
               expected_target="1f769231c112a57a67800431aa472256a7e11697"
@@ -573,6 +573,11 @@ jobs:
             "file_identity::tests::file_identity_detects_same_content_replacement_with_original_handle_retained"
             "file_identity::tests::windows_file_identity_compares_all_128_bits"
             "file_identity::tests::windows_file_identity_rejects_unusable_id_sentinels"
+            "compression::tests::materialization_and_resume_preserve_caller_path_alias"
+            "compression::tests::resume_materializes_compressed_rollout_path"
+            "compression::tests::append_rollout_item_materializes_compressed_rollout"
+            "compression::tests::append_materialization_preserves_compressed_rollout_permissions"
+            "recorder::tests::append_rollout_item_to_path_assigns_next_paginated_ordinal"
           )
           inventory="${RUNNER_TEMP}/windows-rollout-identity-inventory.txt"
           cargo test --locked -p codex-rollout --lib -- --list | tee "${inventory}"
@@ -583,9 +588,13 @@ jobs:
               exit 1
             fi
           done
+          result=0
           for selector in "${selectors[@]}"; do
-            cargo test --locked -p codex-rollout --lib "${selector}" -- --exact --test-threads=1
+            if ! cargo test --locked -p codex-rollout --lib "${selector}" -- --exact --test-threads=1; then
+              result=1
+            fi
           done
+          exit "${result}"
 
       - name: Prepare native Windows Bazel environment
         if: ${{ inputs.windows_validation_mode == 'voice_runtime' }}
