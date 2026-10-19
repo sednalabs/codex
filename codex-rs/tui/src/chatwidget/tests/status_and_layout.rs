@@ -829,9 +829,7 @@ async fn weekly_limit_pacing_uses_valid_reset_and_marks_stale_or_invalid_data() 
         secondary: Some(crate::status::RateLimitWindowDisplay {
             used_percent: 60.0,
             resets_at: None,
-            resets_at_unix_seconds: Some(
-                captured_at.timestamp() + (7 * 24 * 60 * 60 / 2),
-            ),
+            resets_at_unix_seconds: Some(captured_at.timestamp() + (7 * 24 * 60 * 60 / 2)),
             window_minutes: Some(7 * 24 * 60),
         }),
         credits: None,
@@ -858,8 +856,7 @@ async fn weekly_limit_pacing_uses_valid_reset_and_marks_stale_or_invalid_data() 
         .secondary
         .as_mut()
         .expect("weekly window")
-        .resets_at_unix_seconds =
-        Some(future_capture.timestamp() + (7 * 24 * 60 * 60 / 2));
+        .resets_at_unix_seconds = Some(future_capture.timestamp() + (7 * 24 * 60 * 60 / 2));
     for style in [
         codex_config::types::WeeklyLimitPacingStyle::Qualitative,
         codex_config::types::WeeklyLimitPacingStyle::Ratio,

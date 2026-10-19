@@ -1082,10 +1082,7 @@ fn spawn_approved_task_tool_call(
     );
     app_server
         .thread_tool_transport()
-        .configure(
-            &mut thread_start_params,
-            app.config.codex_home.as_path(),
-        )
+        .configure(&mut thread_start_params, app.config.codex_home.as_path())
         .expect("thread tool transport configuration should succeed");
     let features = app.config.features.get().clone();
     tokio::spawn(async move {

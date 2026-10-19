@@ -40,7 +40,7 @@ impl PtyIo {
             // unique, unchanged owner for the lifetime of `AsyncFd`.
             unsafe { AsyncFd::register(File::from(fd)) }
         })
-            .map_err(|_| io::Error::other("PTY I/O requires a Tokio runtime with I/O enabled"))??;
+        .map_err(|_| io::Error::other("PTY I/O requires a Tokio runtime with I/O enabled"))??;
         Ok(Self { fd: Arc::new(fd) })
     }
 

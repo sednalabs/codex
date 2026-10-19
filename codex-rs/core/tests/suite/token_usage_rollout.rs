@@ -155,11 +155,14 @@ fn ev_completed_with_response_usage(
 fn request_has_call_output(request: &wiremock::Request, call_id: &str) -> bool {
     serde_json::from_slice::<serde_json::Value>(&request.body)
         .ok()
-        .and_then(|body| body.get("input").and_then(serde_json::Value::as_array).cloned())
+        .and_then(|body| {
+            body.get("input")
+                .and_then(serde_json::Value::as_array)
+                .cloned()
+        })
         .is_some_and(|items| {
             items.iter().any(|item| {
-                item.get("type").and_then(serde_json::Value::as_str)
-                    == Some("function_call_output")
+                item.get("type").and_then(serde_json::Value::as_str) == Some("function_call_output")
                     && item.get("call_id").and_then(serde_json::Value::as_str) == Some(call_id)
             })
         })
@@ -394,7 +397,11 @@ async fn completed_response_usage_reopens_with_root_child_lineage_and_replay_ded
     .bind(&root_thread_id)
     .fetch_all(pool.as_ref())
     .await?;
-    assert_eq!(root_rows.len(), 3, "replay deduplicates and conflict keeps first write");
+    assert_eq!(
+        root_rows.len(),
+        3,
+        "replay deduplicates and conflict keeps first write"
+    );
     let replay = root_rows
         .iter()
         .find(|row| row.0 == ROOT_RESPONSE_ID)
@@ -426,7 +433,10 @@ async fn completed_response_usage_reopens_with_root_child_lineage_and_replay_ded
         .find(|row| row.0 == "response-unknown-model")
         .context("unknown-model response persisted")?;
     assert_eq!(unknown.1, "gpt-6-sol");
-    assert_eq!(unknown.2, None, "requested model is not actual-model evidence");
+    assert_eq!(
+        unknown.2, None,
+        "requested model is not actual-model evidence"
+    );
     let root_total = root_rows.iter().filter_map(|row| row.7).sum::<i64>();
     assert_eq!(root_total, 101_067);
 

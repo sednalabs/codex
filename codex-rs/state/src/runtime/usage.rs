@@ -60,11 +60,17 @@ impl StateRuntime {
         &self,
         record: &ProviderCallUsageRecord,
     ) -> anyhow::Result<ProviderCallUsageWriteOutcome> {
-        ensure!(!record.provider_call_id.trim().is_empty(), "provider_call_id is required");
+        ensure!(
+            !record.provider_call_id.trim().is_empty(),
+            "provider_call_id is required"
+        );
         ensure!(!record.provider.trim().is_empty(), "provider is required");
         ensure!(!record.thread_id.trim().is_empty(), "thread_id is required");
         ensure!(!record.turn_id.trim().is_empty(), "turn_id is required");
-        ensure!(!record.response_id.trim().is_empty(), "response_id is required for idempotency");
+        ensure!(
+            !record.response_id.trim().is_empty(),
+            "response_id is required for idempotency"
+        );
         ensure!(
             !record
                 .provider_account_scope
@@ -130,7 +136,8 @@ impl StateRuntime {
         }
 
         if record.provider_account_scope.is_none()
-            && let Some(existing_call_id) = find_legacy_provider_call(&mut transaction, record).await?
+            && let Some(existing_call_id) =
+                find_legacy_provider_call(&mut transaction, record).await?
         {
             ensure!(
                 provider_call_response_matches(&mut transaction, &existing_call_id, record).await?,
@@ -208,7 +215,10 @@ impl StateRuntime {
         .into_iter()
         .flatten()
         {
-            ensure!(!parent.trim().is_empty(), "thread lineage IDs cannot be empty");
+            ensure!(
+                !parent.trim().is_empty(),
+                "thread lineage IDs cannot be empty"
+            );
         }
         ensure!(
             record.parent_thread_id.as_deref() != Some(record.thread_id.as_str()),
@@ -344,7 +354,10 @@ async fn find_legacy_provider_call(
     .bind(&record.response_id)
     .fetch_all(&mut **transaction)
     .await?;
-    ensure!(existing.len() <= 1, "ambiguous legacy rows for provider response identity");
+    ensure!(
+        existing.len() <= 1,
+        "ambiguous legacy rows for provider response identity"
+    );
     Ok(existing.into_iter().next())
 }
 
@@ -362,25 +375,32 @@ async fn provider_call_response_matches(
     let Some(row) = row else {
         anyhow::bail!("response identity points to a missing provider-call row");
     };
-    let optional_string_matches = |column: &str, incoming: &Option<String>| -> anyhow::Result<bool> {
-        let stored: Option<String> = row.try_get(column)?;
-        Ok(stored.as_deref() == incoming.as_deref())
-    };
+    let optional_string_matches =
+        |column: &str, incoming: &Option<String>| -> anyhow::Result<bool> {
+            let stored: Option<String> = row.try_get(column)?;
+            Ok(stored.as_deref() == incoming.as_deref())
+        };
     let optional_bool_matches = |column: &str, incoming: Option<bool>| -> anyhow::Result<bool> {
         let stored: Option<i64> = row.try_get(column)?;
         Ok(stored == incoming.map(|value| if value { 1_i64 } else { 0_i64 }))
     };
     Ok(row.try_get::<String, _>("thread_id")? == record.thread_id
         && row.try_get::<Option<String>, _>("turn_id")?.as_deref() == Some(record.turn_id.as_str())
-        && row.try_get::<Option<String>, _>("provider")?.as_deref() == Some(record.provider.as_str())
-        && row.try_get::<Option<String>, _>("requested_model")?.as_deref()
+        && row.try_get::<Option<String>, _>("provider")?.as_deref()
+            == Some(record.provider.as_str())
+        && row
+            .try_get::<Option<String>, _>("requested_model")?
+            .as_deref()
             == Some(record.requested_model.as_str())
         && optional_string_matches("actual_model_used", &record.actual_model_used)?
         && row.try_get::<Option<String>, _>("request_id")?.as_deref()
             == Some(record.response_id.as_str())
         && optional_string_matches("requested_service_tier", &record.requested_service_tier)?
         && optional_string_matches("actual_service_tier", &record.actual_service_tier)?
-        && optional_string_matches("actual_service_tier_source", &record.actual_service_tier_source)?
+        && optional_string_matches(
+            "actual_service_tier_source",
+            &record.actual_service_tier_source,
+        )?
         && optional_bool_matches("fast_mode_requested", record.fast_mode_requested)?
         && optional_bool_matches("fast_mode_used", record.fast_mode_used)?
         && optional_string_matches("billing_surface", &record.billing_surface)?

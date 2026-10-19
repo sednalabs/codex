@@ -4519,10 +4519,9 @@ async fn runtime_config_resolves_weekly_limit_pacing_style_default_and_override(
         WeeklyLimitPacingStyle::Qualitative
     );
 
-    let qualitative_toml = toml::from_str::<ConfigToml>(
-        "[tui]\nweekly_limit_pacing_style = \"qualitative\"\n",
-    )
-    .expect("parse qualitative config");
+    let qualitative_toml =
+        toml::from_str::<ConfigToml>("[tui]\nweekly_limit_pacing_style = \"qualitative\"\n")
+            .expect("parse qualitative config");
     assert_eq!(
         qualitative_toml
             .tui
