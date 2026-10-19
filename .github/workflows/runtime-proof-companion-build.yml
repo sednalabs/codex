@@ -7,7 +7,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: runtime-proof-companion-4dace0c4
+  group: runtime-proof-companion-336efa36
   cancel-in-progress: false
 
 jobs:
@@ -35,7 +35,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: sednalabs/codex
-          ref: 4dace0c423eae6368e3adf970982cbc99c4bab09
+          ref: 336efa36bf847ebbf00a7b1c6b7a5d0cf66e462f
           fetch-depth: 1
           persist-credentials: false
 
@@ -44,7 +44,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          expected_commit="4dace0c423eae6368e3adf970982cbc99c4bab09"
+          expected_commit="336efa36bf847ebbf00a7b1c6b7a5d0cf66e462f"
           source_commit="$(git rev-parse HEAD)"
           if [[ "${source_commit}" != "${expected_commit}" ]]; then
             echo "Checked-out companion source did not match the fixed commit." >&2
@@ -112,7 +112,7 @@ jobs:
           set -euo pipefail
           stage_dir="${RUNNER_TEMP}/runtime-proof-companion-payload"
           output_dir="${RUNNER_TEMP}/runtime-proof-companion-output"
-          archive_name="runtime-proof-companion-4dace0c4-${TARGET}.tar.gz"
+          archive_name="runtime-proof-companion-336efa36-${TARGET}.tar.gz"
           archive_path="${output_dir}/${archive_name}"
           mkdir -p "${stage_dir}" "${output_dir}"
 
@@ -182,7 +182,7 @@ jobs:
                   f'{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{os.environ["GITHUB_RUN_ID"]}'
               ),
               "artifactName": (
-                  f'runtime-proof-companion-4dace0c4-'
+                  f'runtime-proof-companion-336efa36-'
                   f'{os.environ["GITHUB_RUN_ID"]}-'
                   f'{os.environ["GITHUB_RUN_ATTEMPT"]}'
               ),
@@ -207,7 +207,7 @@ jobs:
         id: upload
         uses: actions/upload-artifact@v7
         with:
-          name: runtime-proof-companion-4dace0c4-${{ github.run_id }}-${{ github.run_attempt }}
+          name: runtime-proof-companion-336efa36-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/runtime-proof-companion-output/*
           if-no-files-found: error
           compression-level: 0
@@ -223,7 +223,7 @@ jobs:
           {
             echo "### Runtime-proof companion artifact"
             echo
-            echo "- Fixed source commit: \`4dace0c423eae6368e3adf970982cbc99c4bab09\`"
+            echo "- Fixed source commit: \`336efa36bf847ebbf00a7b1c6b7a5d0cf66e462f\`"
             echo "- Source tree: \`${{ steps.source.outputs.tree }}\`"
             echo "- Workflow host commit: \`${GITHUB_SHA}\`"
             echo "- Run: \`${GITHUB_RUN_ID}\` (attempt \`${GITHUB_RUN_ATTEMPT}\`)"
