@@ -54,17 +54,25 @@ fn file_identity_detects_same_content_replacement_with_original_handle_retained(
 #[cfg(windows)]
 #[test]
 fn windows_file_identity_compares_all_128_bits() {
-    let first = WindowsFileId {
-        volume: 7,
-        id: [0; 16],
-    };
-    let mut second = WindowsFileId {
-        volume: 7,
-        id: [0; 16],
-    };
-    second.id[15] = 1;
+    let first = WindowsFileId::new(7, [1; 16]).unwrap();
+    let mut second = WindowsFileId::new(7, [1; 16]).unwrap();
+    second.id[15] = 2;
     assert_ne!(first, second);
-    second.id[15] = 0;
+    second.id[15] = 1;
     second.volume = 8;
     assert_ne!(first, second);
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_file_identity_rejects_unusable_id_sentinels() {
+    for id in [[0; 16], [u8::MAX; 16]] {
+        assert_eq!(
+            WindowsFileId::new(7, id).unwrap_err().kind(),
+            io::ErrorKind::Unsupported
+        );
+    }
+    let mut valid = [0; 16];
+    valid[15] = 1;
+    assert!(WindowsFileId::new(7, valid).is_ok());
 }

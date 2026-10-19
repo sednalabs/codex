@@ -20,6 +20,21 @@ struct WindowsFileId {
 }
 
 #[cfg(windows)]
+impl WindowsFileId {
+    fn new(volume: u64, id: [u8; 16]) -> io::Result<Self> {
+        // Windows documents zero as unsupported and all ones as unavailable.
+        // A successful query with either sentinel is not proof of identity.
+        if id == [0; 16] || id == [u8::MAX; 16] {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "filesystem did not provide a usable 128-bit file identity",
+            ));
+        }
+        Ok(Self { volume, id })
+    }
+}
+
+#[cfg(windows)]
 #[derive(Debug)]
 pub(crate) struct FileIdentity {
     // Retain the handle, so an unlinked file's identifier cannot be recycled
@@ -55,10 +70,7 @@ impl FileIdentity {
         }
         Ok(Self {
             _file: file,
-            key: WindowsFileId {
-                volume: info.VolumeSerialNumber,
-                id: info.FileId.Identifier,
-            },
+            key: WindowsFileId::new(info.VolumeSerialNumber, info.FileId.Identifier)?,
         })
     }
 
