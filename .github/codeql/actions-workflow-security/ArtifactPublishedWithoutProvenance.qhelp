@@ -1,0 +1,17 @@
+<!DOCTYPE qhelp SYSTEM "qhelp.dtd">
+<qhelp>
+  <overview>
+    <p>
+      Published artifacts need provenance that lets maintainers and consumers
+      tie an asset back to the workflow, source commit, and release metadata
+      that produced it.
+    </p>
+  </overview>
+  <recommendation>
+    <p>
+      Add checksums, signing material, release metadata, and preferably GitHub
+      artifact attestations for published assets. Keep short-lived preview
+      artifacts clearly separate from official release assets.
+    </p>
+  </recommendation>
+</qhelp>
