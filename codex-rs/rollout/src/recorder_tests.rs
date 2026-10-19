@@ -1102,6 +1102,46 @@ async fn writer_state_retains_serialized_meta_and_ordinals_across_real_io_failur
 }
 
 #[tokio::test]
+async fn writer_state_missing_physical_fence_fails_closed() -> std::io::Result<()> {
+    let home = TempDir::new()?;
+    let path = home.path().join("rollout.jsonl");
+    let file = File::options()
+        .read(true)
+        .append(true)
+        .create_new(true)
+        .open(&path)?;
+    let mut state = RolloutWriterState {
+        writer: Some(JsonlWriter {
+            file: Box::new(file),
+        }),
+        physical_lock: None,
+        writer_lock: None,
+        pending_append: None,
+        worker_failure: None,
+        deferred_creation: false,
+        pending_items: vec![agent_message_item("must not reach the file")].into(),
+        meta: None,
+        cwd: home.path().to_path_buf(),
+        rollout_path: path.clone(),
+        ordinal_state: RolloutOrdinalState::for_new_rollout(ThreadHistoryMode::Paginated, None),
+        last_logged_error: None,
+    };
+    for _ in 0..2 {
+        let err = state
+            .flush()
+            .await
+            .expect_err("a missing physical fence must fail closed");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("no physical fence"));
+        assert!(fs::read(&path)?.is_empty());
+        assert!(state.pending_append.is_some());
+        assert_eq!(state.pending_items.len(), 1);
+        assert_eq!(state.ordinal_state.current()?, Some(0));
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn writer_state_worker_panic_retains_checkpoint_and_fails_closed() -> std::io::Result<()> {
     use crate::append_state::tests::FaultFile;
     let home = TempDir::new()?;

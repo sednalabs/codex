@@ -1923,18 +1923,17 @@ impl RolloutWriterState {
         };
         let (file, physical_lock) = match opened {
             Ok(opened) => opened,
-            Err(err)
-                if err.kind() == std::io::ErrorKind::NotFound && self.pending_append.is_some() =>
-            {
-                return Err(self
-                    .pending_append
-                    .as_ref()
-                    .expect("pending append")
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .conflict("rollout path disappeared during an owned append"));
+            Err(err) => {
+                if err.kind() == std::io::ErrorKind::NotFound
+                    && let Some(pending) = &self.pending_append
+                {
+                    return Err(pending
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .conflict("rollout path disappeared during an owned append"));
+                }
+                return Err(err);
             }
-            Err(err) => return Err(err),
         };
         self.physical_lock = Some(physical_lock);
         self.writer = Some(JsonlWriter {
@@ -1960,18 +1959,21 @@ impl RolloutWriterState {
         self.ensure_writer_open().await?;
         while self.meta.is_some() || !self.pending_items.is_empty() || self.pending_append.is_some()
         {
-            if self.pending_append.is_none() {
+            let pending = if let Some(pending) = &self.pending_append {
+                Arc::clone(pending)
+            } else {
                 let ordinal = self.ordinal_state.current()?;
                 let item = if let Some(meta) = &self.meta {
                     session_meta_item(meta.clone(), &self.cwd).await
                 } else {
                     self.pending_items[0].clone()
                 };
-                self.pending_append = Some(Arc::new(Mutex::new(PendingAppend::new(
+                let pending = Arc::new(Mutex::new(PendingAppend::new(
                     serialize_rollout_item(&item, ordinal)?,
-                ))));
-            }
-            let pending = Arc::clone(self.pending_append.as_ref().expect("pending append"));
+                )));
+                self.pending_append = Some(Arc::clone(&pending));
+                pending
+            };
             let mut writer = self
                 .writer
                 .take()
@@ -1979,13 +1981,19 @@ impl RolloutWriterState {
             let physical_lock = self
                 .physical_lock
                 .clone()
-                .expect("writer owns physical fence");
+                .ok_or_else(|| {
+                    pending
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .conflict("rollout writer has no physical fence; refusing further writes")
+                })?;
             let writer_lock = self.writer_lock.clone();
+            let pending_for_write = Arc::clone(&pending);
             // A blocking transaction owns its file and both guards until all I/O is
             // finished. Even a cancelled caller cannot release a fence under a write.
             let joined = tokio::task::spawn_blocking(move || {
                 let _writer_lock = writer_lock;
-                let result = pending
+                let result = pending_for_write
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .finish(writer.file.as_mut(), physical_lock.path());
@@ -1995,10 +2003,7 @@ impl RolloutWriterState {
             let (writer, result) = match joined {
                 Ok(joined) => joined,
                 Err(err) => {
-                    return Err(self
-                        .pending_append
-                        .as_ref()
-                        .expect("retained pending append")
+                    return Err(pending
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .conflict(&format!(

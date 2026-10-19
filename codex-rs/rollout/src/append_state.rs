@@ -87,10 +87,9 @@ impl PendingAppend {
         file: &mut (impl AppendIo + ?Sized),
         path: &Path,
     ) -> io::Result<usize> {
-        let checkpoint = self
-            .checkpoint
-            .as_ref()
-            .expect("append checkpoint established");
+        let Some(checkpoint) = self.checkpoint.as_ref() else {
+            return Err(self.conflict("rollout append checkpoint is missing"));
+        };
         let identity = FileIdentity::from_file(file.file().try_clone()?)?;
         let path_identity = match FileIdentity::from_path(path) {
             Ok(identity) => identity,

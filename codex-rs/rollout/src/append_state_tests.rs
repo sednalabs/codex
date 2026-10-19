@@ -89,6 +89,30 @@ fn append_file(path: &Path) -> io::Result<File> {
         .open(path)
 }
 
+#[test]
+fn owned_append_missing_checkpoint_fails_closed() -> io::Result<()> {
+    let home = TempDir::new()?;
+    let path = home.path().join("rollout.jsonl");
+    let original = b"existing bytes\n";
+    fs::write(&path, original)?;
+    let mut file = append_file(&path)?;
+    let mut pending = PendingAppend::new(b"owned append\n".to_vec());
+
+    let err = pending
+        .verified_prefix(&mut file, &path)
+        .expect_err("a missing checkpoint must fail closed");
+    assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    assert!(err.to_string().contains("checkpoint is missing"));
+    assert!(pending.checkpoint.is_none());
+    let retry = pending
+        .finish(&mut file, &path)
+        .expect_err("the conflict must remain sticky on retry");
+    assert_eq!(retry.to_string(), err.to_string());
+    assert!(pending.checkpoint.is_none());
+    assert_eq!(fs::read(&path)?, original);
+    Ok(())
+}
+
 #[tokio::test]
 async fn owned_append_retries_only_suffix_after_repeated_partial_progress() -> io::Result<()> {
     let home = TempDir::new()?;
