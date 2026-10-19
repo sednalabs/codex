@@ -508,7 +508,11 @@ async fn streamable_http_404_custom_operations_are_uncertain_and_next_call_recov
     arm_session_post_failure_after_dispatch(&base_url, /*status*/ 404, /*remaining*/ 1).await?;
 
     let uncertain_request = client
-        .send_custom_request_with_timeout("test/counter-write", None, Some(Duration::from_secs(5)))
+        .send_custom_request_with_timeout(
+            "test/counter-write",
+            /*params*/ None,
+            Some(Duration::from_secs(5)),
+        )
         .await
         .unwrap_err();
     assert!(
@@ -528,7 +532,7 @@ async fn streamable_http_404_custom_operations_are_uncertain_and_next_call_recov
     arm_session_post_failure_after_dispatch(&base_url, /*status*/ 404, /*remaining*/ 1).await?;
 
     let uncertain_notification = client
-        .send_custom_notification("notifications/test-counter-write", None)
+        .send_custom_notification("notifications/test-counter-write", /*params*/ None)
         .await
         .unwrap_err();
     assert!(
