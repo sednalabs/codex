@@ -115,7 +115,10 @@ impl Session {
             {
                 // Extension aborts bypass normal task completion; user interrupts do not.
                 session
-                    .emit_thread_idle_lifecycle_if_idle(ThreadIdleCause::Interrupted, None)
+                    .emit_thread_idle_lifecycle_if_idle(
+                        ThreadIdleCause::Interrupted,
+                        /*completing_turn_store*/ None,
+                    )
                     .await;
             }
         }));

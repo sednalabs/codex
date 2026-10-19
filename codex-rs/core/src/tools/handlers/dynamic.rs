@@ -248,7 +248,7 @@ mod browser_tests {
                     detail: Some(codex_protocol::models::DEFAULT_IMAGE_DETAIL),
                 },
             ],
-            true,
+            /*success*/ true,
         );
         let result = output.code_mode_result(&ToolPayload::Function {
             arguments: "{}".to_string(),

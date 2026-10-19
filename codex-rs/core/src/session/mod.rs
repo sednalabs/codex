@@ -673,16 +673,18 @@ pub(crate) struct ProviderResponseUsageContext {
     pub(crate) actual_service_tier: Option<String>,
 }
 
-fn normalized_completed_response_token_usage(
-    usage: Option<&TokenUsage>,
-) -> (
+type NormalizedCompletedResponseTokenUsage = (
     Option<i64>,
     Option<i64>,
     Option<i64>,
     Option<i64>,
     Option<i64>,
     &'static str,
-) {
+);
+
+fn normalized_completed_response_token_usage(
+    usage: Option<&TokenUsage>,
+) -> NormalizedCompletedResponseTokenUsage {
     let missing = (None, None, None, None, None, "provider_usage_missing");
     let Some(usage) = usage else {
         return missing;

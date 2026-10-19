@@ -3345,7 +3345,7 @@ fn normalized_completed_response_token_usage_rejects_invalid_input_dimensions() 
     }
 
     assert_eq!(
-        super::normalized_completed_response_token_usage(None),
+        super::normalized_completed_response_token_usage(/*usage*/ None),
         (None, None, None, None, None, "provider_usage_missing")
     );
 }
@@ -12724,7 +12724,10 @@ async fn thread_idle_lifecycle_waits_for_trigger_turn_mailbox_work() {
         .await;
 
     session
-        .emit_thread_idle_lifecycle_if_idle(codex_extension_api::ThreadIdleCause::Completed, None)
+        .emit_thread_idle_lifecycle_if_idle(
+            codex_extension_api::ThreadIdleCause::Completed,
+            /*completing_turn_store*/ None,
+        )
         .await;
 
     assert_eq!(0, calls.load(std::sync::atomic::Ordering::SeqCst));
@@ -13622,7 +13625,12 @@ fn goal_completion_handback_suppresses_only_matching_started_continuation() {
     );
     assert_eq!(
         None,
-        successful_goal_turn_continuation("origin-turn", &event, &outcome, None),
+        successful_goal_turn_continuation(
+            "origin-turn",
+            &event,
+            &outcome,
+            /*continuation*/ None,
+        ),
         "ordinary no-goal turns retain immediate parent handback"
     );
     let mut errored_outcome = synthetic_goal_turn_outcome();
@@ -13736,7 +13744,7 @@ fn goal_completion_handback_reports_rejection_and_preserves_nonactive_dispositio
     let response = parent_response_for_goal_handoff(&continuation, Some(&skipped));
     assert!(response.contains("status was not confirmed"));
 
-    let response = parent_response_for_goal_handoff(&continuation, None);
+    let response = parent_response_for_goal_handoff(&continuation, /*attempt*/ None);
     assert!(response.contains("did not run or return a result"));
     assert!(response.contains("does not establish goal completion"));
 

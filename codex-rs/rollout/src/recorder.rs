@@ -1968,9 +1968,9 @@ impl RolloutWriterState {
                 } else {
                     self.pending_items[0].clone()
                 };
-                let pending = Arc::new(Mutex::new(PendingAppend::new(
-                    serialize_rollout_item(&item, ordinal)?,
-                )));
+                let pending = Arc::new(Mutex::new(PendingAppend::new(serialize_rollout_item(
+                    &item, ordinal,
+                )?)));
                 self.pending_append = Some(Arc::clone(&pending));
                 pending
             };
@@ -1978,15 +1978,12 @@ impl RolloutWriterState {
                 .writer
                 .take()
                 .ok_or_else(|| IoError::other("rollout writer is not open"))?;
-            let physical_lock = self
-                .physical_lock
-                .clone()
-                .ok_or_else(|| {
-                    pending
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .conflict("rollout writer has no physical fence; refusing further writes")
-                })?;
+            let physical_lock = self.physical_lock.clone().ok_or_else(|| {
+                pending
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .conflict("rollout writer has no physical fence; refusing further writes")
+            })?;
             let writer_lock = self.writer_lock.clone();
             let pending_for_write = Arc::clone(&pending);
             // A blocking transaction owns its file and both guards until all I/O is
