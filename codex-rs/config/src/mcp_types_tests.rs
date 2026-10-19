@@ -289,10 +289,7 @@ fn deserialize_streamable_http_server_config_with_protocol_mode() {
     )
     .expect("should deserialize a per-server protocol preference");
 
-    assert_eq!(
-        cfg.protocol_mode,
-        Some(McpServerProtocolMode::V20260728)
-    );
+    assert_eq!(cfg.protocol_mode, Some(McpServerProtocolMode::V20260728));
 
     let serialized = toml::to_string(&cfg).expect("protocol preference should serialize");
     assert!(serialized.contains("protocol_mode = \"2026-07-28\""));
@@ -308,7 +305,11 @@ fn protocol_mode_is_only_supported_for_streamable_http_servers() {
     )
     .expect_err("stdio servers must not accept the HTTP protocol setting");
 
-    assert!(error.to_string().contains("protocol_mode is not supported for stdio"));
+    assert!(
+        error
+            .to_string()
+            .contains("protocol_mode is not supported for stdio")
+    );
 }
 
 #[test]

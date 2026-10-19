@@ -2252,8 +2252,7 @@ async fn per_server_protocol_mode_overrides_global_and_extension_registration_wi
             expected_configured_mode
         );
         assert_eq!(
-            manager.servers["extension"].protocol_mode,
-            registration_mode,
+            manager.servers["extension"].protocol_mode, registration_mode,
             "an explicit extension registration retains precedence over its config field"
         );
     }
