@@ -338,6 +338,8 @@ jobs:
         id: committed_readiness
         if: ${{ needs.identity.outputs.native_830_source == 'true' && (github.event_name == 'pull_request' || inputs.operation == 'package') }}
         shell: bash
+        env:
+          CODEX_REPO_ROOT: ${{ github.workspace }}
         run: |
           set -euo pipefail
           python3 scripts/codex_package/test_cargo.py
