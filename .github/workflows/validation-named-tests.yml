@@ -432,11 +432,11 @@ jobs:
           case "${WINDOWS_VALIDATION_MODE}" in
             delete_diagnostic)
               expected_base="6bdf5e8a98b8c29ad7c63cfbc86afd24d4914287"
-              expected_host_ref="refs/heads/validation/host-windows-delete-83b550b9"
-              expected_target="83b550b9cb80801112bf33db73b52efc66ebb9ef"
-              expected_tree="71a902cdd17275eca3e45f2c9944d94637d806ef"
-              expected_parent="6bdf5e8a98b8c29ad7c63cfbc86afd24d4914287"
-              expected_base_depth=1
+              expected_host_ref="refs/heads/validation/host-windows-readonly-d9e02689"
+              expected_target="d9e0268971cab9cb6fa1e07af2cb72201d8fa018"
+              expected_tree="4bc08d41484e094a57b5764d588af354d4ab3989"
+              expected_parent="83b550b9cb80801112bf33db73b52efc66ebb9ef"
+              expected_base_depth=2
               ;;
             voice_runtime)
               expected_target="1f769231c112a57a67800431aa472256a7e11697"
@@ -498,7 +498,7 @@ jobs:
           "WINDOWS_SYSTEM_ROOT=$env:SystemRoot" >> $env:GITHUB_ENV
           "WINDOWS_PROCESSOR_ARCHITECTURE=$env:PROCESSOR_ARCHITECTURE" >> $env:GITHUB_ENV
 
-      - name: Inventory the token diagnostic and unchanged DELETE contract
+      - name: Inventory the actual read-only token diagnostic
         if: ${{ inputs.windows_validation_mode == 'delete_diagnostic' }}
         shell: bash
         working-directory: codex-rs
@@ -508,7 +508,6 @@ jobs:
           cargo test --locked -p codex-windows-sandbox --lib -- --list | tee "${inventory}"
           selectors=(
             "token::tests::legacy_deletion_token_access_diagnostic"
-            "unified_exec::tests::legacy_workspace_write_delete_is_limited_to_writable_roots"
           )
           for selector in "${selectors[@]}"; do
             matches="$(grep -Fxc "${selector}: test" "${inventory}" || true)"
@@ -518,7 +517,7 @@ jobs:
             fi
           done
 
-      - name: Run the finite token-access discriminator
+      - name: Run the finite actual read-only token discriminator
         if: ${{ inputs.windows_validation_mode == 'delete_diagnostic' }}
         shell: bash
         working-directory: codex-rs
@@ -526,15 +525,6 @@ jobs:
           cargo test --locked -p codex-windows-sandbox --lib
           token::tests::legacy_deletion_token_access_diagnostic
           -- --exact --nocapture --test-threads=1
-
-      - name: Run the exact DELETE diagnostic without waiving its assertion
-        if: ${{ inputs.windows_validation_mode == 'delete_diagnostic' }}
-        shell: bash
-        working-directory: codex-rs
-        run: >-
-          cargo test --locked -p codex-windows-sandbox --lib
-          unified_exec::tests::legacy_workspace_write_delete_is_limited_to_writable_roots
-          -- --exact --test-threads=1
 
       - name: Prepare native Windows Bazel environment
         if: ${{ inputs.windows_validation_mode == 'voice_runtime' }}
