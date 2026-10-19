@@ -10,6 +10,36 @@ use tokio::sync::Mutex as TokioMutex;
 use tokio::sync::Notify;
 use tokio::sync::oneshot;
 
+/// One body-matched response route for the streaming SSE test server.
+///
+/// In routed mode each request must match exactly one unused route. Routes are
+/// consumed once, and a missing or ambiguous match fails closed.
+pub struct StreamingSseRequestRoute {
+    matcher: Arc<dyn Fn(&serde_json::Value) -> bool + Send + Sync>,
+    chunks: Vec<StreamingSseChunk>,
+    request_matched: Option<oneshot::Sender<Vec<u8>>>,
+}
+
+impl StreamingSseRequestRoute {
+    pub fn new(
+        matcher: impl Fn(&serde_json::Value) -> bool + Send + Sync + 'static,
+        chunks: Vec<StreamingSseChunk>,
+    ) -> Self {
+        Self {
+            matcher: Arc::new(matcher),
+            chunks,
+            request_matched: None,
+        }
+    }
+
+    /// Sends the exact captured request body after this route is uniquely
+    /// selected and consumed.
+    pub fn with_request_matched(mut self, request_matched: oneshot::Sender<Vec<u8>>) -> Self {
+        self.request_matched = Some(request_matched);
+        self
+    }
+}
+
 /// Streaming SSE chunk payload gated by a per-chunk signal.
 #[derive(Debug)]
 pub struct StreamingSseChunk {
@@ -52,19 +82,54 @@ impl StreamingSseServer {
 
 /// Starts a lightweight HTTP server that supports:
 /// - GET /v1/models -> empty models response
-/// - POST /v1/responses -> SSE stream gated per-chunk, served in order
+/// - GET responses routes -> 426 to select the HTTP fallback
+/// - POST responses and Guardian routes -> SSE stream gated per-chunk, served in order
 ///
 /// Returns the server handle and a list of receivers that fire when each
 /// response stream finishes sending its final chunk.
 pub async fn start_streaming_sse_server(
     responses: Vec<Vec<StreamingSseChunk>>,
 ) -> (StreamingSseServer, Vec<oneshot::Receiver<i64>>) {
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind streaming SSE server");
-    let addr = listener.local_addr().expect("streaming SSE server address");
-    let uri = format!("http://{addr}");
+    let (state, completion_receivers) = fifo_state(responses);
+    (
+        start_streaming_sse_server_with_state(state).await,
+        completion_receivers,
+    )
+}
 
+/// Starts a streaming SSE server that selects each response by request body.
+/// Unlike the default FIFO server, each POST must match exactly one unused
+/// route; unmatched or ambiguous requests receive a 500 response.
+pub async fn start_streaming_sse_server_with_routes(
+    routes: Vec<StreamingSseRequestRoute>,
+) -> (StreamingSseServer, Vec<oneshot::Receiver<i64>>) {
+    let mut completion_receivers = Vec::with_capacity(routes.len());
+    let mut routed_streams = Vec::with_capacity(routes.len());
+    for route in routes {
+        let (completion, completion_receiver) = oneshot::channel();
+        completion_receivers.push(completion_receiver);
+        routed_streams.push(Some(RoutedStream {
+            matcher: route.matcher,
+            chunks: route.chunks,
+            completion,
+            request_matched: route.request_matched,
+        }));
+    }
+    let state = StreamingSseState {
+        responses: VecDeque::new(),
+        completions: VecDeque::new(),
+        routes: routed_streams,
+        route_matching: true,
+    };
+    (
+        start_streaming_sse_server_with_state(state).await,
+        completion_receivers,
+    )
+}
+
+fn fifo_state(
+    responses: Vec<Vec<StreamingSseChunk>>,
+) -> (StreamingSseState, Vec<oneshot::Receiver<i64>>) {
     let mut completion_senders = Vec::with_capacity(responses.len());
     let mut completion_receivers = Vec::with_capacity(responses.len());
     for _ in 0..responses.len() {
@@ -73,10 +138,25 @@ pub async fn start_streaming_sse_server(
         completion_receivers.push(rx);
     }
 
-    let state = Arc::new(TokioMutex::new(StreamingSseState {
-        responses: VecDeque::from(responses),
-        completions: VecDeque::from(completion_senders),
-    }));
+    (
+        StreamingSseState {
+            responses: VecDeque::from(responses),
+            completions: VecDeque::from(completion_senders),
+            routes: Vec::new(),
+            route_matching: false,
+        },
+        completion_receivers,
+    )
+}
+
+async fn start_streaming_sse_server_with_state(state: StreamingSseState) -> StreamingSseServer {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind streaming SSE server");
+    let addr = listener.local_addr().expect("streaming SSE server address");
+    let uri = format!("http://{addr}");
+
+    let state = Arc::new(TokioMutex::new(state));
     let requests = Arc::new(TokioMutex::new(Vec::new()));
     let request_notify = Arc::new(Notify::new());
     let requests_for_task = Arc::clone(&requests);
@@ -116,7 +196,13 @@ pub async fn start_streaming_sse_server(
                             return;
                         }
 
-                        if method == "POST" && path == "/v1/responses" {
+                        let responses_route = matches!(path, "/v1/responses" | "/backend-api/codex/responses");
+                        if method == "GET" && responses_route {
+                            let _ = write_http_response(&mut stream, /*status*/ 426, "websockets unsupported", "text/plain").await;
+                            return;
+                        }
+
+                        if method == "POST" && (responses_route || path == "/backend-api/codex/guardian") {
                             let body = match read_request_body(&mut stream, &request, body_prefix)
                                 .await
                             {
@@ -126,9 +212,34 @@ pub async fn start_streaming_sse_server(
                                     return;
                                 }
                             };
-                            requests.lock().await.push(body);
+                            requests.lock().await.push(body.clone());
                             request_notify.notify_one();
-                            let Some((chunks, completion)) = take_next_stream(&state).await else {
+                            let route_matching = { state.lock().await.route_matching };
+                            let selected = if route_matching {
+                                match serde_json::from_slice::<serde_json::Value>(&body) {
+                                    Ok(request) => {
+                                        match take_matching_stream(&state, &request).await {
+                                            Ok(mut selected) => {
+                                                if let Some(matched) = selected.request_matched.take() {
+                                                    let _ = matched.send(body);
+                                                }
+                                                Some((selected.chunks, selected.completion))
+                                            }
+                                            Err(reason) => {
+                                                let _ = write_http_response(&mut stream, /*status*/ 500, reason, "text/plain").await;
+                                                return;
+                                            }
+                                        }
+                                    }
+                                    Err(_) => {
+                                        let _ = write_http_response(&mut stream, /*status*/ 400, "invalid JSON request body", "text/plain").await;
+                                        return;
+                                    }
+                                }
+                            } else {
+                                take_next_stream(&state).await
+                            };
+                            let Some((chunks, completion)) = selected else {
                                 let _ = write_http_response(&mut stream, /*status*/ 500, "no responses queued", "text/plain").await;
                                 return;
                             };
@@ -160,21 +271,33 @@ pub async fn start_streaming_sse_server(
         }
     });
 
-    (
-        StreamingSseServer {
-            uri,
-            requests,
-            request_notify,
-            shutdown: shutdown_tx,
-            task,
-        },
-        completion_receivers,
-    )
+    StreamingSseServer {
+        uri,
+        requests,
+        request_notify,
+        shutdown: shutdown_tx,
+        task,
+    }
 }
 
 struct StreamingSseState {
     responses: VecDeque<Vec<StreamingSseChunk>>,
     completions: VecDeque<oneshot::Sender<i64>>,
+    routes: Vec<Option<RoutedStream>>,
+    route_matching: bool,
+}
+
+struct RoutedStream {
+    matcher: Arc<dyn Fn(&serde_json::Value) -> bool + Send + Sync>,
+    chunks: Vec<StreamingSseChunk>,
+    completion: oneshot::Sender<i64>,
+    request_matched: Option<oneshot::Sender<Vec<u8>>>,
+}
+
+struct SelectedRoutedStream {
+    chunks: Vec<StreamingSseChunk>,
+    completion: oneshot::Sender<i64>,
+    request_matched: Option<oneshot::Sender<Vec<u8>>>,
 }
 
 async fn take_next_stream(
@@ -184,6 +307,38 @@ async fn take_next_stream(
     let chunks = guard.responses.pop_front()?;
     let completion = guard.completions.pop_front()?;
     Some((chunks, completion))
+}
+
+async fn take_matching_stream(
+    state: &TokioMutex<StreamingSseState>,
+    request: &serde_json::Value,
+) -> Result<SelectedRoutedStream, &'static str> {
+    let mut guard = state.lock().await;
+    let matching_indices = guard
+        .routes
+        .iter()
+        .enumerate()
+        .filter_map(|(index, route)| {
+            route
+                .as_ref()
+                .is_some_and(|route| (route.matcher)(request))
+                .then_some(index)
+        })
+        .collect::<Vec<_>>();
+    if matching_indices.is_empty() {
+        return Err("no matching response route");
+    }
+    if matching_indices.len() != 1 {
+        return Err("ambiguous response route");
+    }
+    let route = guard.routes[matching_indices[0]]
+        .take()
+        .expect("uniquely matched route remains available");
+    Ok(SelectedRoutedStream {
+        chunks: route.chunks,
+        completion: route.completion,
+        request_matched: route.request_matched,
+    })
 }
 
 async fn read_http_request(stream: &mut tokio::net::TcpStream) -> (String, Vec<u8>) {
@@ -687,6 +842,8 @@ data: {"type":"response.completed","response":{"id":"resp-1"}}
                 }],
             ]),
             completions: VecDeque::from(vec![first_tx, second_tx]),
+            routes: Vec::new(),
+            route_matching: false,
         });
 
         let (first_chunks, first_completion) =
@@ -703,6 +860,121 @@ data: {"type":"response.completed","response":{"id":"resp-1"}}
 
         let third = take_next_stream(&state).await;
         assert!(third.is_none());
+    }
+
+    #[tokio::test]
+    async fn routed_requests_match_once_and_unmatched_request_does_not_consume_routes() {
+        let (matched_tx, matched_rx) = oneshot::channel();
+        let routes = vec![
+            StreamingSseRequestRoute::new(
+                |request| request["kind"].as_str() == Some("parent"),
+                vec![StreamingSseChunk {
+                    gate: None,
+                    body: "event: parent\n\n".to_string(),
+                }],
+            ),
+            StreamingSseRequestRoute::new(
+                |request| request["kind"].as_str() == Some("child"),
+                vec![StreamingSseChunk {
+                    gate: None,
+                    body: "event: child\n\n".to_string(),
+                }],
+            )
+            .with_request_matched(matched_tx),
+        ];
+        let (server, _) = start_streaming_sse_server_with_routes(routes).await;
+
+        let mut unmatched = connect(server.uri()).await;
+        send_request(
+            &mut unmatched,
+            "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 16\r\n\r\n{\"kind\":\"other\"}",
+        )
+        .await;
+        let response = timeout(Duration::from_secs(5), read_to_end(&mut unmatched))
+            .await
+            .expect("unmatched response timed out");
+        let (headers, body) = split_response(&response);
+        assert_eq!(status_code(headers), 500);
+        assert_eq!(body, "no matching response route");
+
+        // Sequentially issue child before parent although the routes were
+        // registered in the opposite order; this checks body routing, not a
+        // concurrent-request race.
+        let child_body = r#"{"kind":"child"}"#;
+        let mut child = connect(server.uri()).await;
+        send_request(
+            &mut child,
+            &format!(
+                "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\n\r\n{}",
+                child_body.len(),
+                child_body
+            ),
+        )
+        .await;
+        let child_response = timeout(Duration::from_secs(5), read_to_end(&mut child))
+            .await
+            .expect("child response timed out");
+        let (_, child_body_response) = split_response(&child_response);
+        assert_eq!(child_body_response, "event: child\n\n");
+        assert_eq!(
+            timeout(Duration::from_secs(5), matched_rx)
+                .await
+                .expect("child route match signal timed out")
+                .expect("child route match body"),
+            child_body.as_bytes().to_vec()
+        );
+
+        let parent_body = r#"{"kind":"parent"}"#;
+        let mut parent = connect(server.uri()).await;
+        send_request(
+            &mut parent,
+            &format!(
+                "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\n\r\n{}",
+                parent_body.len(),
+                parent_body
+            ),
+        )
+        .await;
+        let parent_response = timeout(Duration::from_secs(5), read_to_end(&mut parent))
+            .await
+            .expect("parent response timed out");
+        let (_, parent_body_response) = split_response(&parent_response);
+        assert_eq!(parent_body_response, "event: parent\n\n");
+
+        assert_eq!(server.requests().await.len(), 3);
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn routed_ambiguous_request_fails_closed() {
+        let route = || {
+            StreamingSseRequestRoute::new(
+                |request| request["kind"].as_str() == Some("same"),
+                vec![StreamingSseChunk {
+                    gate: None,
+                    body: "event: should-not-be-selected\n\n".to_string(),
+                }],
+            )
+        };
+        let (server, _) = start_streaming_sse_server_with_routes(vec![route(), route()]).await;
+        let body = r#"{"kind":"same"}"#;
+        let mut stream = connect(server.uri()).await;
+        send_request(
+            &mut stream,
+            &format!(
+                "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            ),
+        )
+        .await;
+        let response = timeout(Duration::from_secs(5), read_to_end(&mut stream))
+            .await
+            .expect("ambiguous response timed out");
+        let (headers, response_body) = split_response(&response);
+        assert_eq!(status_code(headers), 500);
+        assert_eq!(response_body, "ambiguous response route");
+        server.shutdown().await;
     }
 
     #[tokio::test]

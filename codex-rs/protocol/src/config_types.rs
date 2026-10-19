@@ -1,11 +1,14 @@
 use codex_utils_absolute_path::AbsolutePathBuf;
+use codex_utils_redacted_string::RedactedString;
 use schemars::JsonSchema;
-use schemars::Schema;
-use schemars::SchemaGenerator;
+use schemars::r#gen::SchemaGenerator;
+use schemars::schema::InstanceType;
+use schemars::schema::Metadata;
+use schemars::schema::Schema;
+use schemars::schema::SchemaObject;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt;
 use std::num::NonZeroU64;
@@ -18,6 +21,23 @@ use ts_rs::TS;
 use wildmatch::WildMatchPattern;
 
 use crate::openai_models::ReasoningEffort;
+
+/// Limit for the text included in `codex.tool_result` log records.
+/// This does not affect model-visible output. Raising it can expose more tool data to logs.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, JsonSchema)]
+#[serde(default)]
+pub struct ToolResultLogConfig {
+    /// Maximum UTF-8 bytes before the truncation notice. Defaults to 2048.
+    pub max_bytes: usize,
+}
+
+impl Default for ToolResultLogConfig {
+    fn default() -> Self {
+        Self {
+            max_bytes: 2 * 1024,
+        }
+    }
+}
 
 /// Selects which part of the active context is charged against
 /// `model_auto_compact_token_limit`.
@@ -170,8 +190,8 @@ pub enum ApprovalsReviewer {
 }
 
 impl JsonSchema for ApprovalsReviewer {
-    fn schema_name() -> Cow<'static, str> {
-        "ApprovalsReviewer".into()
+    fn schema_name() -> String {
+        "ApprovalsReviewer".to_string()
     }
 
     fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
@@ -252,15 +272,21 @@ impl Default for ShellEnvironmentPolicy {
 }
 
 fn string_enum_schema_with_description(values: &[&str], description: &str) -> Schema {
-    let enum_values = values
-        .iter()
-        .map(|value| Value::String((*value).to_string()))
-        .collect::<Vec<_>>();
-    schemars::json_schema!({
-        "type": "string",
-        "description": description,
-        "enum": enum_values,
-    })
+    let mut schema = SchemaObject {
+        instance_type: Some(InstanceType::String.into()),
+        metadata: Some(Box::new(Metadata {
+            description: Some(description.to_string()),
+            ..Default::default()
+        })),
+        ..Default::default()
+    };
+    schema.enum_values = Some(
+        values
+            .iter()
+            .map(|value| Value::String((*value).to_string()))
+            .collect(),
+    );
+    Schema::Object(schema)
 }
 
 #[derive(
@@ -285,6 +311,7 @@ pub enum WindowsSandboxProxySettingsMode {
     Preserve,
 }
 
+/// Deprecated: `friendly` and `pragmatic` no longer select a style.
 #[derive(
     Debug,
     Serialize,
@@ -312,7 +339,6 @@ pub enum Personality {
 /// configured mode hint defines the policy instead of a built-in policy.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Display, JsonSchema, TS, Default)]
 #[serde(rename_all = "camelCase", from = "MultiAgentModeWire")]
-#[schemars(!from)]
 #[ts(rename_all = "camelCase")]
 #[strum(serialize_all = "camelCase")]
 pub enum MultiAgentMode {
@@ -353,6 +379,31 @@ pub enum WebSearchMode {
     Cached,
     Indexed,
     Live,
+}
+
+impl WebSearchMode {
+    /// Restricts search to the access permitted by both modes.
+    pub fn restrict_to(self, requested: Self) -> Self {
+        match (self, requested) {
+            (Self::Disabled, _) | (_, Self::Disabled) => Self::Disabled,
+            (Self::Cached, _) | (_, Self::Cached) => Self::Cached,
+            (Self::Indexed, _) | (_, Self::Indexed) => Self::Indexed,
+            (Self::Live, Self::Live) => Self::Live,
+        }
+    }
+}
+
+/// A model-facing surface on which a tool can be exposed.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Display, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum ToolExposureSurface {
+    /// Nested tools available to Code Mode scripts.
+    CodeMode,
+    /// Tools discovered later through tool search.
+    Deferred,
+    /// Tools present in the model's initial tool list.
+    Direct,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Display, JsonSchema, TS)]
@@ -522,7 +573,7 @@ pub struct ModelProviderAuthInfo {
 
     /// Command arguments.
     #[serde(default)]
-    pub args: Vec<String>,
+    pub args: Vec<RedactedString>,
 
     /// Maximum time to wait for the token command to exit successfully.
     #[serde(default = "default_provider_auth_timeout_ms")]
@@ -630,16 +681,6 @@ pub enum ModeKind {
         alias = "custom"
     )]
     Default,
-    #[doc(hidden)]
-    #[serde(skip_serializing, skip_deserializing)]
-    #[schemars(skip)]
-    #[ts(skip)]
-    PairProgramming,
-    #[doc(hidden)]
-    #[serde(skip_serializing, skip_deserializing)]
-    #[schemars(skip)]
-    #[ts(skip)]
-    Execute,
 }
 
 pub const TUI_VISIBLE_COLLABORATION_MODES: [ModeKind; 2] = [ModeKind::Default, ModeKind::Plan];
@@ -649,8 +690,6 @@ impl ModeKind {
         match self {
             Self::Plan => "Plan",
             Self::Default => "Default",
-            Self::PairProgramming => "Pair Programming",
-            Self::Execute => "Execute",
         }
     }
 
@@ -761,6 +800,32 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     #[test]
+    fn web_search_mode_restrictions_never_expand_either_mode() {
+        use WebSearchMode::Cached;
+        use WebSearchMode::Disabled;
+        use WebSearchMode::Indexed;
+        use WebSearchMode::Live;
+
+        let modes = [Disabled, Cached, Indexed, Live];
+        let expected = [
+            [Disabled, Disabled, Disabled, Disabled],
+            [Disabled, Cached, Cached, Cached],
+            [Disabled, Cached, Indexed, Indexed],
+            [Disabled, Cached, Indexed, Live],
+        ];
+
+        for (parent_index, parent) in modes.into_iter().enumerate() {
+            for (requested_index, requested) in modes.into_iter().enumerate() {
+                assert_eq!(
+                    parent.restrict_to(requested),
+                    expected[parent_index][requested_index],
+                    "parent: {parent:?}, requested: {requested:?}",
+                );
+            }
+        }
+    }
+
+    #[test]
     fn apply_mask_can_clear_optional_fields() {
         let mode = CollaborationMode {
             mode: ModeKind::Default,
@@ -849,9 +914,6 @@ mod tests {
         for mode in TUI_VISIBLE_COLLABORATION_MODES {
             assert!(mode.is_tui_visible());
         }
-
-        assert!(!ModeKind::PairProgramming.is_tui_visible());
-        assert!(!ModeKind::Execute.is_tui_visible());
     }
 
     #[test]

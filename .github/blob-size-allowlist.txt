@@ -9,5 +9,3 @@ codex-rs/models-manager/models.json
 codex-rs/tui/tests/fixtures/oss-story.jsonl
 codex-rs/tui_app_server/tests/fixtures/oss-story.jsonl
 codex-rs/tui/src/app.rs
-# The planner fixture suite is an intentional checked-in validation asset.
-.github/scripts/test_ci_planners.py

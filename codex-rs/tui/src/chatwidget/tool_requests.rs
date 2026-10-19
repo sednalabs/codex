@@ -14,7 +14,7 @@ impl ChatWidget {
         );
     }
 
-    pub(super) fn on_apply_patch_approval_request(
+    pub(crate) fn on_apply_patch_approval_request(
         &mut self,
         _id: String,
         ev: ApplyPatchApprovalRequestEvent,
@@ -31,8 +31,8 @@ impl ChatWidget {
     /// In-progress assessments temporarily own the live status footer so the
     /// user can see what is being reviewed, including parallel review
     /// aggregation. Terminal assessments clear or update that footer state and
-    /// render the final approved/denied history cell when guardian returns a
-    /// decision.
+    /// render denied or timed-out decisions in history. Approved assessments
+    /// silently complete after updating the footer.
     pub(super) fn on_guardian_assessment(&mut self, ev: GuardianAssessmentEvent) {
         let permission_request_summary = |subject: &str, reason: &Option<String>| {
             reason
@@ -54,8 +54,11 @@ impl ChatWidget {
                     .ok()
                     .or_else(|| Some(command.join(" ")))
             }
+            GuardianAssessmentAction::WriteStdin { .. } => {
+                Some(auto_review_denials::action_summary(action))
+            }
             GuardianAssessmentAction::ApplyPatch { files, .. } => Some(if files.len() == 1 {
-                format!("apply_patch touching {}", files[0].display())
+                format!("apply_patch touching {}", files[0].render_for_ui())
             } else {
                 format!("apply_patch touching {} files", files.len())
             }),
@@ -85,7 +88,8 @@ impl ChatWidget {
                 argv.clone()
             })
             .filter(|command| !command.is_empty()),
-            GuardianAssessmentAction::ApplyPatch { .. }
+            GuardianAssessmentAction::WriteStdin { .. }
+            | GuardianAssessmentAction::ApplyPatch { .. }
             | GuardianAssessmentAction::NetworkAccess { .. }
             | GuardianAssessmentAction::McpToolCall { .. }
             | GuardianAssessmentAction::RequestPermissions { .. } => None,
@@ -119,8 +123,8 @@ impl ChatWidget {
             return;
         }
 
-        // Terminal assessments remove the matching pending footer entry first,
-        // then render the final approved/denied history cell below.
+        // Terminal assessments remove the matching pending footer entry before
+        // any decision-specific history handling.
         if self
             .status_state
             .pending_guardian_review_status
@@ -138,30 +142,15 @@ impl ChatWidget {
                     status.details_max_lines,
                 );
             } else if self.status_state.current_status.is_guardian_review() {
-                self.set_status_header(String::from("Working"));
+                self.restore_reasoning_status_header();
             }
         } else if self.status_state.pending_guardian_review_status.is_empty()
             && self.status_state.current_status.is_guardian_review()
         {
-            self.set_status_header(String::from("Working"));
+            self.restore_reasoning_status_header();
         }
 
         if ev.status == GuardianAssessmentStatus::Approved {
-            let cell = if let Some(command) = guardian_command(&ev.action) {
-                history_cell::new_approval_decision_cell(
-                    history_cell::ApprovalDecisionSubject::Command(command),
-                    crate::history_cell::ReviewDecision::Approved,
-                    history_cell::ApprovalDecisionActor::Guardian,
-                )
-            } else if let Some(summary) = guardian_action_summary(&ev.action) {
-                history_cell::new_guardian_approved_action_request(summary)
-            } else {
-                let summary = serde_json::to_string(&ev.action)
-                    .unwrap_or_else(|_| "<unrenderable guardian action>".to_string());
-                history_cell::new_guardian_approved_action_request(summary)
-            };
-
-            self.add_boxed_history(cell);
             self.request_redraw();
             return;
         }
@@ -175,10 +164,16 @@ impl ChatWidget {
                 )
             } else {
                 match &ev.action {
+                    GuardianAssessmentAction::WriteStdin { .. } => {
+                        history_cell::new_guardian_timed_out_action_request(format!(
+                            "codex could {}",
+                            auto_review_denials::action_summary(&ev.action)
+                        ))
+                    }
                     GuardianAssessmentAction::ApplyPatch { files, .. } => {
                         let files = files
                             .iter()
-                            .map(|path| path.display().to_string())
+                            .map(codex_utils_path_uri::LegacyAppPathString::render_for_ui)
                             .collect::<Vec<_>>();
                         history_cell::new_guardian_timed_out_patch_request(files)
                     }
@@ -219,10 +214,16 @@ impl ChatWidget {
             )
         } else {
             match &ev.action {
+                GuardianAssessmentAction::WriteStdin { .. } => {
+                    history_cell::new_guardian_denied_action_request(format!(
+                        "codex to {}",
+                        auto_review_denials::action_summary(&ev.action)
+                    ))
+                }
                 GuardianAssessmentAction::ApplyPatch { files, .. } => {
                     let files = files
                         .iter()
-                        .map(|path| path.display().to_string())
+                        .map(codex_utils_path_uri::LegacyAppPathString::render_for_ui)
                         .collect::<Vec<_>>();
                     history_cell::new_guardian_denied_patch_request(files)
                 }
@@ -287,6 +288,7 @@ impl ChatWidget {
 
         let available_decisions = ev.effective_available_decisions();
         let request = ApprovalRequest::Exec(ExecApprovalRequest {
+            kind: ev.kind,
             thread_id: self.thread_id.unwrap_or_default(),
             thread_label: None,
             id: ev.effective_approval_id(),
@@ -371,7 +373,22 @@ impl ChatWidget {
                     self.bottom_pane
                         .push_approval_request(request, &self.config.features);
                 }
+                McpServerElicitationRequest::UserVerification {
+                    title, description, ..
+                } => {
+                    self.bottom_pane.push_user_verification_request(
+                        thread_id,
+                        crate::bottom_pane::user_verification::UserVerificationRequest {
+                            thread_label: None,
+                            server_name: params.server_name,
+                            request_id,
+                            title,
+                            description,
+                        },
+                    );
+                }
                 McpServerElicitationRequest::OpenAiForm { .. }
+                | McpServerElicitationRequest::OpenAiElicitationForm { .. }
                 | McpServerElicitationRequest::Url { .. } => {
                     self.app_event_tx.resolve_elicitation(
                         thread_id,
@@ -394,6 +411,21 @@ impl ChatWidget {
     pub(crate) fn push_approval_request(&mut self, request: ApprovalRequest) {
         self.bottom_pane
             .push_approval_request(request, &self.config.features);
+        self.set_ambient_pet_notification(
+            crate::pets::PetNotificationKind::Waiting,
+            /*body*/ None,
+        );
+        self.request_redraw();
+    }
+
+    pub(crate) fn push_user_verification_request(
+        &mut self,
+        thread_id: ThreadId,
+        request: crate::bottom_pane::user_verification::UserVerificationRequest,
+    ) {
+        // Inactive-thread prompts must leave the foreground stream and command activity intact.
+        self.bottom_pane
+            .push_user_verification_request(thread_id, request);
         self.set_ambient_pet_notification(
             crate::pets::PetNotificationKind::Waiting,
             /*body*/ None,

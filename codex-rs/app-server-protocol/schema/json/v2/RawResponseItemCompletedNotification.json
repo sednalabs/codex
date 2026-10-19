@@ -1,5 +1,6 @@
 {
-  "$defs": {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
     "AgentMessageInputContent": {
       "oneOf": [
         {
@@ -8,14 +9,16 @@
               "type": "string"
             },
             "type": {
-              "const": "input_text",
+              "enum": [
+                "input_text"
+              ],
               "title": "InputTextAgentMessageInputContentType",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "text"
+            "text",
+            "type"
           ],
           "title": "InputTextAgentMessageInputContent",
           "type": "object"
@@ -26,19 +29,33 @@
               "type": "string"
             },
             "type": {
-              "const": "encrypted_content",
+              "enum": [
+                "encrypted_content"
+              ],
               "title": "EncryptedContentAgentMessageInputContentType",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "encrypted_content"
+            "encrypted_content",
+            "type"
           ],
           "title": "EncryptedContentAgentMessageInputContent",
           "type": "object"
         }
       ]
+    },
+    "ConfigurationReasoning": {
+      "description": "Reasoning settings interpreted by the backend for the routed model.",
+      "properties": {
+        "effort": {
+          "$ref": "#/definitions/ReasoningEffort"
+        }
+      },
+      "required": [
+        "effort"
+      ],
+      "type": "object"
     },
     "ContentItem": {
       "oneOf": [
@@ -48,42 +65,68 @@
               "type": "string"
             },
             "type": {
-              "const": "input_text",
+              "enum": [
+                "input_text"
+              ],
               "title": "InputTextContentItemType",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "text"
+            "text",
+            "type"
           ],
           "title": "InputTextContentItem",
           "type": "object"
         },
         {
+          "anyOf": [
+            {
+              "properties": {
+                "image_url": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "image_url"
+              ],
+              "title": "ImageUrlContentItem",
+              "type": "object"
+            },
+            {
+              "properties": {
+                "file_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "file_id"
+              ],
+              "title": "FileIdContentItem",
+              "type": "object"
+            }
+          ],
           "properties": {
             "detail": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/ImageDetail"
+                  "$ref": "#/definitions/ImageDetail"
                 },
                 {
                   "type": "null"
                 }
               ]
             },
-            "image_url": {
-              "type": "string"
-            },
             "type": {
-              "const": "input_image",
+              "enum": [
+                "input_image"
+              ],
               "title": "InputImageContentItemType",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "image_url"
+            "type"
           ],
           "title": "InputImageContentItem",
           "type": "object"
@@ -94,32 +137,50 @@
               "type": "string"
             },
             "type": {
-              "const": "input_audio",
+              "enum": [
+                "input_audio"
+              ],
               "title": "InputAudioContentItemType",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "audio_url"
+            "audio_url",
+            "type"
           ],
           "title": "InputAudioContentItem",
           "type": "object"
         },
         {
           "properties": {
+            "annotations": {
+              "items": true,
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "logprobs": {
+              "items": true,
+              "type": [
+                "array",
+                "null"
+              ]
+            },
             "text": {
               "type": "string"
             },
             "type": {
-              "const": "output_text",
+              "enum": [
+                "output_text"
+              ],
               "title": "OutputTextContentItemType",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "text"
+            "text",
+            "type"
           ],
           "title": "OutputTextContentItem",
           "type": "object"
@@ -133,14 +194,14 @@
         },
         {
           "items": {
-            "$ref": "#/$defs/FunctionCallOutputContentItem"
+            "$ref": "#/definitions/FunctionCallOutputContentItem"
           },
           "type": "array"
         }
       ]
     },
     "FunctionCallOutputContentItem": {
-      "description": "Responses API compatible content items that can be returned by a tool call.\nThis is a subset of ContentItem with the types we support as function call outputs.",
+      "description": "Responses API compatible content items that can be returned by a tool call. This is a subset of ContentItem with the types we support as function call outputs.",
       "oneOf": [
         {
           "properties": {
@@ -148,42 +209,68 @@
               "type": "string"
             },
             "type": {
-              "const": "input_text",
+              "enum": [
+                "input_text"
+              ],
               "title": "InputTextFunctionCallOutputContentItemType",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "text"
+            "text",
+            "type"
           ],
           "title": "InputTextFunctionCallOutputContentItem",
           "type": "object"
         },
         {
+          "anyOf": [
+            {
+              "properties": {
+                "image_url": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "image_url"
+              ],
+              "title": "ImageUrlFunctionCallOutputContentItem",
+              "type": "object"
+            },
+            {
+              "properties": {
+                "file_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "file_id"
+              ],
+              "title": "FileIdFunctionCallOutputContentItem",
+              "type": "object"
+            }
+          ],
           "properties": {
             "detail": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/ImageDetail"
+                  "$ref": "#/definitions/ImageDetail"
                 },
                 {
                   "type": "null"
                 }
               ]
             },
-            "image_url": {
-              "type": "string"
-            },
             "type": {
-              "const": "input_image",
+              "enum": [
+                "input_image"
+              ],
               "title": "InputImageFunctionCallOutputContentItemType",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "image_url"
+            "type"
           ],
           "title": "InputImageFunctionCallOutputContentItem",
           "type": "object"
@@ -194,14 +281,16 @@
               "type": "string"
             },
             "type": {
-              "const": "input_audio",
+              "enum": [
+                "input_audio"
+              ],
               "title": "InputAudioFunctionCallOutputContentItemType",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "audio_url"
+            "audio_url",
+            "type"
           ],
           "title": "InputAudioFunctionCallOutputContentItem",
           "type": "object"
@@ -212,14 +301,16 @@
               "type": "string"
             },
             "type": {
-              "const": "encrypted_content",
+              "enum": [
+                "encrypted_content"
+              ],
               "title": "EncryptedContentFunctionCallOutputContentItemType",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "encrypted_content"
+            "encrypted_content",
+            "type"
           ],
           "title": "EncryptedContentFunctionCallOutputContentItem",
           "type": "object"
@@ -236,7 +327,7 @@
       "type": "string"
     },
     "InternalChatMessageMetadataPassthrough": {
-      "description": "Internal Responses API passthrough metadata copied into underlying chat messages.\n\nResponses API strongly types this payload. Do not modify it without first getting API\napproval and making the corresponding Responses API change.",
+      "description": "Internal Responses API passthrough metadata copied into underlying chat messages.\n\nResponses API strongly types this payload. Do not modify it without first getting API approval and making the corresponding Responses API change.",
       "properties": {
         "turn_id": {
           "type": [
@@ -250,64 +341,58 @@
     "LocalShellAction": {
       "oneOf": [
         {
-          "$ref": "#/$defs/LocalShellExecAction",
           "properties": {
+            "command": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "env": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": [
+                "object",
+                "null"
+              ]
+            },
+            "timeout_ms": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "type": {
-              "const": "exec",
+              "enum": [
+                "exec"
+              ],
               "title": "ExecLocalShellActionType",
               "type": "string"
+            },
+            "user": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "working_directory": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           "required": [
+            "command",
             "type"
           ],
           "title": "ExecLocalShellAction",
           "type": "object"
         }
       ]
-    },
-    "LocalShellExecAction": {
-      "properties": {
-        "command": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "env": {
-          "additionalProperties": {
-            "type": "string"
-          },
-          "type": [
-            "object",
-            "null"
-          ]
-        },
-        "timeout_ms": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "user": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "working_directory": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "command"
-      ],
-      "type": "object"
     },
     "LocalShellStatus": {
       "enum": [
@@ -318,19 +403,35 @@
       "type": "string"
     },
     "MessagePhase": {
-      "description": "Classifies an assistant message as interim commentary or final answer text.\n\nProviders do not emit this consistently, so callers must treat `None` as\n\"phase unknown\" and keep compatibility behavior for legacy models.",
+      "description": "Classifies assistant text as commentary, a partial answer, or a terminal answer.\n\nProviders do not emit this consistently, so callers must treat `None` as \"phase unknown\" and keep compatibility behavior for legacy models.",
       "oneOf": [
         {
-          "const": "commentary",
-          "description": "Mid-turn assistant text (for example preamble/progress narration).\n\nAdditional tool calls or assistant output may follow before turn\ncompletion.",
+          "description": "Mid-turn assistant text (for example preamble/progress narration).\n\nAdditional tool calls or assistant output may follow before turn completion.",
+          "enum": [
+            "commentary"
+          ],
           "type": "string"
         },
         {
-          "const": "final_answer",
-          "description": "The assistant's terminal answer text for the current turn.",
+          "description": "Stable answer text that may be followed by more assistant output or tools.",
+          "enum": [
+            "partial_answer"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The assistant's declared terminal answer text for the current turn.",
+          "enum": [
+            "final_answer"
+          ],
           "type": "string"
         }
       ]
+    },
+    "ReasoningEffort": {
+      "description": "A non-empty reasoning effort value advertised by the model.",
+      "minLength": 1,
+      "type": "string"
     },
     "ReasoningItemContent": {
       "oneOf": [
@@ -340,14 +441,16 @@
               "type": "string"
             },
             "type": {
-              "const": "reasoning_text",
+              "enum": [
+                "reasoning_text"
+              ],
               "title": "ReasoningTextReasoningItemContentType",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "text"
+            "text",
+            "type"
           ],
           "title": "ReasoningTextReasoningItemContent",
           "type": "object"
@@ -358,14 +461,16 @@
               "type": "string"
             },
             "type": {
-              "const": "text",
+              "enum": [
+                "text"
+              ],
               "title": "TextReasoningItemContentType",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "text"
+            "text",
+            "type"
           ],
           "title": "TextReasoningItemContent",
           "type": "object"
@@ -380,14 +485,16 @@
               "type": "string"
             },
             "type": {
-              "const": "summary_text",
+              "enum": [
+                "summary_text"
+              ],
               "title": "SummaryTextReasoningItemReasoningSummaryType",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "text"
+            "text",
+            "type"
           ],
           "title": "SummaryTextReasoningItemReasoningSummary",
           "type": "object"
@@ -398,26 +505,59 @@
       "oneOf": [
         {
           "properties": {
+            "id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "role": {
+              "type": "string"
+            },
+            "tools": {
+              "items": true,
+              "type": "array"
+            },
+            "type": {
+              "enum": [
+                "additional_tools"
+              ],
+              "title": "AdditionalToolsResponseItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "role",
+            "tools",
+            "type"
+          ],
+          "title": "AdditionalToolsResponseItem",
+          "type": "object"
+        },
+        {
+          "properties": {
             "content": {
               "items": {
-                "$ref": "#/$defs/ContentItem"
+                "$ref": "#/definitions/ContentItem"
               },
               "type": "array"
             },
+            "encrypted_content": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "id": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/ResponseItemId"
-                },
-                {
-                  "type": "null"
-                }
+              "type": [
+                "string",
+                "null"
               ]
             },
             "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
+                  "$ref": "#/definitions/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -427,7 +567,7 @@
             "phase": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/MessagePhase"
+                  "$ref": "#/definitions/MessagePhase"
                 },
                 {
                   "type": "null"
@@ -437,16 +577,24 @@
             "role": {
               "type": "string"
             },
+            "status": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "type": {
-              "const": "message",
+              "enum": [
+                "message"
+              ],
               "title": "MessageResponseItemType",
               "type": "string"
             }
           },
           "required": [
-            "type",
+            "content",
             "role",
-            "content"
+            "type"
           ],
           "title": "MessageResponseItem",
           "type": "object"
@@ -458,24 +606,20 @@
             },
             "content": {
               "items": {
-                "$ref": "#/$defs/AgentMessageInputContent"
+                "$ref": "#/definitions/AgentMessageInputContent"
               },
               "type": "array"
             },
             "id": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/ResponseItemId"
-                },
-                {
-                  "type": "null"
-                }
+              "type": [
+                "string",
+                "null"
               ]
             },
             "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
+                  "$ref": "#/definitions/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -486,16 +630,18 @@
               "type": "string"
             },
             "type": {
-              "const": "agent_message",
+              "enum": [
+                "agent_message"
+              ],
               "title": "AgentMessageResponseItemType",
               "type": "string"
             }
           },
           "required": [
-            "type",
             "author",
+            "content",
             "recipient",
-            "content"
+            "type"
           ],
           "title": "AgentMessageResponseItem",
           "type": "object"
@@ -505,7 +651,7 @@
             "content": {
               "default": null,
               "items": {
-                "$ref": "#/$defs/ReasoningItemContent"
+                "$ref": "#/definitions/ReasoningItemContent"
               },
               "type": [
                 "array",
@@ -519,19 +665,15 @@
               ]
             },
             "id": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/ResponseItemId"
-                },
-                {
-                  "type": "null"
-                }
+              "type": [
+                "string",
+                "null"
               ]
             },
             "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
+                  "$ref": "#/definitions/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -540,19 +682,21 @@
             },
             "summary": {
               "items": {
-                "$ref": "#/$defs/ReasoningItemReasoningSummary"
+                "$ref": "#/definitions/ReasoningItemReasoningSummary"
               },
               "type": "array"
             },
             "type": {
-              "const": "reasoning",
+              "enum": [
+                "reasoning"
+              ],
               "title": "ReasoningResponseItemType",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "summary"
+            "summary",
+            "type"
           ],
           "title": "ReasoningResponseItem",
           "type": "object"
@@ -560,7 +704,7 @@
         {
           "properties": {
             "action": {
-              "$ref": "#/$defs/LocalShellAction"
+              "$ref": "#/definitions/LocalShellAction"
             },
             "call_id": {
               "description": "Set when using the Responses API.",
@@ -569,21 +713,23 @@
                 "null"
               ]
             },
+            "encrypted_content": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "id": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/ResponseItemId"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Legacy id field retained for compatibility with older payloads."
+              "description": "Legacy id field retained for compatibility with older payloads.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
+                  "$ref": "#/definitions/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -591,18 +737,20 @@
               ]
             },
             "status": {
-              "$ref": "#/$defs/LocalShellStatus"
+              "$ref": "#/definitions/LocalShellStatus"
             },
             "type": {
-              "const": "local_shell_call",
+              "enum": [
+                "local_shell_call"
+              ],
               "title": "LocalShellCallResponseItemType",
               "type": "string"
             }
           },
           "required": [
-            "type",
+            "action",
             "status",
-            "action"
+            "type"
           ],
           "title": "LocalShellCallResponseItem",
           "type": "object"
@@ -615,20 +763,31 @@
             "call_id": {
               "type": "string"
             },
+            "encrypted_content": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "encrypted_function_args": {
+              "items": {
+                "type": "string"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
             "id": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/ResponseItemId"
-                },
-                {
-                  "type": "null"
-                }
+              "type": [
+                "string",
+                "null"
               ]
             },
             "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
+                  "$ref": "#/definitions/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -644,17 +803,25 @@
                 "null"
               ]
             },
+            "status": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "type": {
-              "const": "function_call",
+              "enum": [
+                "function_call"
+              ],
               "title": "FunctionCallResponseItemType",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "name",
             "arguments",
-            "call_id"
+            "call_id",
+            "name",
+            "type"
           ],
           "title": "FunctionCallResponseItem",
           "type": "object"
@@ -668,23 +835,25 @@
                 "null"
               ]
             },
+            "encrypted_content": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "execution": {
               "type": "string"
             },
             "id": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/ResponseItemId"
-                },
-                {
-                  "type": "null"
-                }
+              "type": [
+                "string",
+                "null"
               ]
             },
             "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
+                  "$ref": "#/definitions/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -698,15 +867,17 @@
               ]
             },
             "type": {
-              "const": "tool_search_call",
+              "enum": [
+                "tool_search_call"
+              ],
               "title": "ToolSearchCallResponseItemType",
               "type": "string"
             }
           },
           "required": [
-            "type",
+            "arguments",
             "execution",
-            "arguments"
+            "type"
           ],
           "title": "ToolSearchCallResponseItem",
           "type": "object"
@@ -714,41 +885,53 @@
         {
           "properties": {
             "call_id": {
-              "type": "string"
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "id": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/ResponseItemId"
-                },
-                {
-                  "type": "null"
-                }
+              "type": [
+                "string",
+                "null"
               ]
             },
             "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
+                  "$ref": "#/definitions/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
                 }
               ]
             },
+            "name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "namespace": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "output": {
-              "$ref": "#/$defs/FunctionCallOutputBody"
+              "$ref": "#/definitions/FunctionCallOutputBody"
             },
             "type": {
-              "const": "function_call_output",
+              "enum": [
+                "function_call_output"
+              ],
               "title": "FunctionCallOutputResponseItemType",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "call_id",
-            "output"
+            "output",
+            "type"
           ],
           "title": "FunctionCallOutputResponseItem",
           "type": "object"
@@ -758,14 +941,16 @@
             "call_id": {
               "type": "string"
             },
+            "encrypted_content": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "id": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/ResponseItemId"
-                },
-                {
-                  "type": "null"
-                }
+              "type": [
+                "string",
+                "null"
               ]
             },
             "input": {
@@ -774,7 +959,7 @@
             "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
+                  "$ref": "#/definitions/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -797,16 +982,18 @@
               ]
             },
             "type": {
-              "const": "custom_tool_call",
+              "enum": [
+                "custom_tool_call"
+              ],
               "title": "CustomToolCallResponseItemType",
               "type": "string"
             }
           },
           "required": [
-            "type",
             "call_id",
+            "input",
             "name",
-            "input"
+            "type"
           ],
           "title": "CustomToolCallResponseItem",
           "type": "object"
@@ -817,19 +1004,15 @@
               "type": "string"
             },
             "id": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/ResponseItemId"
-                },
-                {
-                  "type": "null"
-                }
+              "type": [
+                "string",
+                "null"
               ]
             },
             "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
+                  "$ref": "#/definitions/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -843,18 +1026,20 @@
               ]
             },
             "output": {
-              "$ref": "#/$defs/FunctionCallOutputBody"
+              "$ref": "#/definitions/FunctionCallOutputBody"
             },
             "type": {
-              "const": "custom_tool_call_output",
+              "enum": [
+                "custom_tool_call_output"
+              ],
               "title": "CustomToolCallOutputResponseItemType",
               "type": "string"
             }
           },
           "required": [
-            "type",
             "call_id",
-            "output"
+            "output",
+            "type"
           ],
           "title": "CustomToolCallOutputResponseItem",
           "type": "object"
@@ -871,19 +1056,15 @@
               "type": "string"
             },
             "id": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/ResponseItemId"
-                },
-                {
-                  "type": "null"
-                }
+              "type": [
+                "string",
+                "null"
               ]
             },
             "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
+                  "$ref": "#/definitions/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -898,16 +1079,18 @@
               "type": "array"
             },
             "type": {
-              "const": "tool_search_output",
+              "enum": [
+                "tool_search_output"
+              ],
               "title": "ToolSearchOutputResponseItemType",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "status",
             "execution",
-            "tools"
+            "status",
+            "tools",
+            "type"
           ],
           "title": "ToolSearchOutputResponseItem",
           "type": "object"
@@ -917,27 +1100,29 @@
             "action": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/ResponsesApiWebSearchAction"
+                  "$ref": "#/definitions/ResponsesApiWebSearchAction"
                 },
                 {
                   "type": "null"
                 }
               ]
             },
+            "encrypted_content": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "id": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/ResponseItemId"
-                },
-                {
-                  "type": "null"
-                }
+              "type": [
+                "string",
+                "null"
               ]
             },
             "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
+                  "$ref": "#/definitions/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -951,7 +1136,9 @@
               ]
             },
             "type": {
-              "const": "web_search_call",
+              "enum": [
+                "web_search_call"
+              ],
               "title": "WebSearchCallResponseItemType",
               "type": "string"
             }
@@ -964,20 +1151,22 @@
         },
         {
           "properties": {
+            "encrypted_content": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "id": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/ResponseItemId"
-                },
-                {
-                  "type": "null"
-                }
+              "type": [
+                "string",
+                "null"
               ]
             },
             "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
+                  "$ref": "#/definitions/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -997,15 +1186,17 @@
               "type": "string"
             },
             "type": {
-              "const": "image_generation_call",
+              "enum": [
+                "image_generation_call"
+              ],
               "title": "ImageGenerationCallResponseItemType",
               "type": "string"
             }
           },
           "required": [
-            "type",
+            "result",
             "status",
-            "result"
+            "type"
           ],
           "title": "ImageGenerationCallResponseItem",
           "type": "object"
@@ -1016,19 +1207,15 @@
               "type": "string"
             },
             "id": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/ResponseItemId"
-                },
-                {
-                  "type": "null"
-                }
+              "type": [
+                "string",
+                "null"
               ]
             },
             "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
+                  "$ref": "#/definitions/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -1036,22 +1223,47 @@
               ]
             },
             "type": {
-              "const": "compaction",
+              "enum": [
+                "compaction"
+              ],
               "title": "CompactionResponseItemType",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "encrypted_content"
+            "encrypted_content",
+            "type"
           ],
           "title": "CompactionResponseItem",
           "type": "object"
         },
         {
+          "description": "A durable input control interpreted by the backend at its position in history.",
+          "properties": {
+            "reasoning": {
+              "$ref": "#/definitions/ConfigurationReasoning"
+            },
+            "type": {
+              "enum": [
+                "configuration_update"
+              ],
+              "title": "ConfigurationUpdateResponseItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "reasoning",
+            "type"
+          ],
+          "title": "ConfigurationUpdateResponseItem",
+          "type": "object"
+        },
+        {
           "properties": {
             "type": {
-              "const": "compaction_trigger",
+              "enum": [
+                "compaction_trigger"
+              ],
               "title": "CompactionTriggerResponseItemType",
               "type": "string"
             }
@@ -1071,19 +1283,15 @@
               ]
             },
             "id": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/ResponseItemId"
-                },
-                {
-                  "type": "null"
-                }
+              "type": [
+                "string",
+                "null"
               ]
             },
             "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
+                  "$ref": "#/definitions/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -1091,7 +1299,9 @@
               ]
             },
             "type": {
-              "const": "context_compaction",
+              "enum": [
+                "context_compaction"
+              ],
               "title": "ContextCompactionResponseItemType",
               "type": "string"
             }
@@ -1105,7 +1315,9 @@
         {
           "properties": {
             "type": {
-              "const": "other",
+              "enum": [
+                "other"
+              ],
               "title": "OtherResponseItemType",
               "type": "string"
             }
@@ -1117,10 +1329,6 @@
           "type": "object"
         }
       ]
-    },
-    "ResponseItemId": {
-      "description": "A Responses API item ID. New IDs require an explicit prefix; deserialization\nremains permissive so legacy rollouts can still be read.",
-      "type": "string"
     },
     "ResponsesApiWebSearchAction": {
       "oneOf": [
@@ -1142,7 +1350,9 @@
               ]
             },
             "type": {
-              "const": "search",
+              "enum": [
+                "search"
+              ],
               "title": "SearchResponsesApiWebSearchActionType",
               "type": "string"
             }
@@ -1156,7 +1366,9 @@
         {
           "properties": {
             "type": {
-              "const": "open_page",
+              "enum": [
+                "open_page"
+              ],
               "title": "OpenPageResponsesApiWebSearchActionType",
               "type": "string"
             },
@@ -1182,7 +1394,9 @@
               ]
             },
             "type": {
-              "const": "find_in_page",
+              "enum": [
+                "find_in_page"
+              ],
               "title": "FindInPageResponsesApiWebSearchActionType",
               "type": "string"
             },
@@ -1202,7 +1416,9 @@
         {
           "properties": {
             "type": {
-              "const": "other",
+              "enum": [
+                "other"
+              ],
               "title": "OtherResponsesApiWebSearchActionType",
               "type": "string"
             }
@@ -1216,10 +1432,9 @@
       ]
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "item": {
-      "$ref": "#/$defs/ResponseItem"
+      "$ref": "#/definitions/ResponseItem"
     },
     "threadId": {
       "type": "string"
@@ -1229,9 +1444,9 @@
     }
   },
   "required": [
+    "item",
     "threadId",
-    "turnId",
-    "item"
+    "turnId"
   ],
   "title": "RawResponseItemCompletedNotification",
   "type": "object"

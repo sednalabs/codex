@@ -18,8 +18,6 @@ use codex_app_server_protocol::CommandExecWriteParams;
 use codex_app_server_protocol::CommandExecWriteResponse;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::ServerNotification;
-#[cfg(test)]
-use codex_app_server_protocol::ServerNotificationEnvelope;
 use codex_core::config::StartedNetworkProxy;
 use codex_core::exec::ExecExpiration;
 use codex_core::exec::ExecExpirationOutcome;
@@ -39,8 +37,6 @@ use tokio::sync::watch;
 use crate::error_code::internal_error;
 use crate::error_code::invalid_params;
 use crate::error_code::invalid_request;
-use crate::extensions::NotificationDispatchKind;
-use crate::extensions::dispatch_notification_to_connection;
 use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::ConnectionRequestId;
 use crate::outgoing_message::OutgoingMessageSender;
@@ -279,7 +275,7 @@ impl CommandExecManager {
                 &env,
                 &arg0,
                 size.unwrap_or_default(),
-                &[],
+                codex_utils_pty::ChildFds::Inherited(&[]),
             )
             .await
         } else if stream_stdin {
@@ -610,20 +606,19 @@ fn spawn_process_output(params: SpawnProcessOutputParams) -> tokio::task::JoinHa
             };
             let cap_reached = Some(observed_num_bytes) == output_bytes_cap;
             if let (true, Some(process_id)) = (stream_output, process_id.as_ref()) {
-                dispatch_notification_to_connection(
-                    outgoing.as_ref(),
-                    connection_id,
-                    NotificationDispatchKind::CommandExecOutputDelta,
-                    ServerNotification::CommandExecOutputDelta(
-                        CommandExecOutputDeltaNotification {
-                            process_id: process_id.clone(),
-                            stream,
-                            delta_base64: STANDARD.encode(capped_chunk),
-                            cap_reached,
-                        },
-                    ),
-                )
-                .await;
+                outgoing
+                    .send_server_notification_to_connection_and_wait(
+                        connection_id,
+                        ServerNotification::CommandExecOutputDelta(
+                            CommandExecOutputDeltaNotification {
+                                process_id: process_id.clone(),
+                                stream,
+                                delta_base64: STANDARD.encode(capped_chunk),
+                                cap_reached,
+                            },
+                        ),
+                    )
+                    .await;
             } else if !stream_output {
                 buffer.extend_from_slice(capped_chunk);
             }
@@ -692,7 +687,6 @@ fn command_no_longer_running_error(process_id: &InternalProcessId) -> JSONRPCErr
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-    use std::path::PathBuf;
 
     use crate::error_code::INVALID_REQUEST_ERROR_CODE;
     use codex_protocol::config_types::WindowsSandboxLevel;
@@ -725,7 +719,6 @@ mod tests {
             SandboxType::WindowsRestrictedToken,
             vec![cwd],
             WindowsSandboxLevel::Disabled,
-            /*windows_sandbox_private_desktop*/ false,
             PermissionProfile::read_only(),
             /*arg0*/ None,
         )
@@ -843,7 +836,6 @@ mod tests {
                     SandboxType::None,
                     vec![cwd.clone()],
                     WindowsSandboxLevel::Disabled,
-                    /*windows_sandbox_private_desktop*/ false,
                     PermissionProfile::read_only(),
                     /*arg0*/ None,
                 ),
@@ -891,8 +883,11 @@ mod tests {
             panic!("expected execution response after termination");
         };
         assert_eq!(response.id, request_id.request_id);
-        let response: CommandExecResponse =
-            serde_json::from_value(response.result).expect("deserialize command/exec response");
+        let codex_app_server_protocol::ClientResponsePayload::OneOffCommandExec(response) =
+            *response.result
+        else {
+            panic!("expected command/exec response");
+        };
         assert_ne!(response.exit_code, 0);
         assert_eq!(response.stdout, "");
         // The deferred response now drains any already-emitted stderr before
@@ -934,7 +929,6 @@ mod tests {
                     SandboxType::None,
                     vec![cwd],
                     WindowsSandboxLevel::Disabled,
-                    /*windows_sandbox_private_desktop*/ false,
                     PermissionProfile::read_only(),
                     /*arg0*/ None,
                 ),
@@ -967,8 +961,11 @@ mod tests {
             panic!("expected execution response after cancellation");
         };
         assert_eq!(response.id, request_id.request_id);
-        let response: CommandExecResponse =
-            serde_json::from_value(response.result).expect("deserialize command/exec response");
+        let codex_app_server_protocol::ClientResponsePayload::OneOffCommandExec(response) =
+            *response.result
+        else {
+            panic!("expected command/exec response");
+        };
         assert_ne!(response.exit_code, EXEC_TIMEOUT_EXIT_CODE);
     }
 
@@ -1078,189 +1075,5 @@ mod tests {
 
         assert_eq!(err.code, INVALID_REQUEST_ERROR_CODE);
         assert_eq!(err.message, "command/exec \"proc-13\" is no longer running");
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    #[tokio::test]
-    async fn streamed_command_output_does_not_wait_for_transport_write_completion() {
-        let (tx, rx) = mpsc::channel(2);
-        let (response_tx, response_rx) = tokio::sync::oneshot::channel::<CommandExecResponse>();
-        let permission_profile = PermissionProfile::read_only();
-        tokio::spawn({
-            let mut write_complete_sentinels = Vec::<tokio::sync::oneshot::Sender<()>>::new();
-            let mut rx = rx;
-            let response_tx = response_tx;
-            async move {
-                while let Some(OutgoingEnvelope::ToConnection {
-                    message: notification,
-                    write_complete_tx,
-                    ..
-                }) = rx.recv().await
-                {
-                    if let OutgoingMessage::Response(response) = notification {
-                        let response: CommandExecResponse = serde_json::from_value(response.result)
-                            .expect("deserialize command/exec response");
-                        let _ = response_tx.send(response);
-                        break;
-                    }
-                    if let Some(write_complete_tx) = write_complete_tx {
-                        write_complete_sentinels.push(write_complete_tx);
-                    }
-                }
-            }
-        });
-
-        let manager = CommandExecManager::default();
-        manager
-            .start(StartCommandExecParams {
-                outgoing: Arc::new(OutgoingMessageSender::new(
-                    tx,
-                    codex_analytics::AnalyticsEventsClient::disabled(),
-                )),
-                request_id: ConnectionRequestId {
-                    connection_id: ConnectionId(14),
-                    request_id: codex_app_server_protocol::RequestId::Integer(14),
-                },
-                process_id: Some("proc-14".to_string()),
-                exec_request: ExecRequest::new(
-                    vec![
-                        "sh".to_string(),
-                        "-c".to_string(),
-                        "printf 'streaming-output'".to_string(),
-                    ],
-                    AbsolutePathBuf::try_from(PathBuf::from(".")).unwrap(),
-                    HashMap::new(),
-                    /*network*/ None,
-                    /*network_environment_id*/ None,
-                    ExecExpiration::DefaultTimeout,
-                    codex_core::exec::ExecCapturePolicy::ShellTool,
-                    SandboxType::None,
-                    /*windows_sandbox_workspace_roots*/ Vec::new(),
-                    WindowsSandboxLevel::Disabled,
-                    /*windows_sandbox_private_desktop*/ false,
-                    permission_profile,
-                    /*arg0*/ None,
-                ),
-                started_network_proxy: None,
-                tty: false,
-                stream_stdin: false,
-                stream_stdout_stderr: true,
-                output_bytes_cap: None,
-                size: None,
-            })
-            .await
-            .expect("streaming command/exec should start");
-
-        let response = timeout(Duration::from_secs(2), response_rx)
-            .await
-            .expect("timed out waiting for command completion")
-            .expect("response channel should not be closed");
-
-        assert_eq!(response.exit_code, 0);
-        assert_eq!(response.stdout, "");
-        assert_eq!(response.stderr, "");
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    #[tokio::test]
-    async fn streamed_output_delta_delivery_waits_for_queue_capacity_instead_of_dropping_chunks() {
-        let (tx, mut rx) = mpsc::channel(1);
-        let outgoing = Arc::new(OutgoingMessageSender::new(
-            tx,
-            codex_analytics::AnalyticsEventsClient::disabled(),
-        ));
-        let (output_tx, output_rx) = mpsc::channel(4);
-        let (_stdio_timeout_tx, stdio_timeout_rx) = watch::channel(false);
-
-        let handle = spawn_process_output(SpawnProcessOutputParams {
-            connection_id: ConnectionId(21),
-            process_id: Some("proc-21".to_string()),
-            output_rx,
-            stdio_timeout_rx,
-            outgoing,
-            stream: CommandExecOutputStream::Stdout,
-            stream_output: true,
-            output_bytes_cap: None,
-        });
-
-        let first_chunk = vec![b'a'; OUTPUT_CHUNK_SIZE_HINT];
-        let second_chunk = b"b".to_vec();
-        output_tx
-            .send(first_chunk.clone())
-            .await
-            .expect("first chunk should queue");
-        output_tx
-            .send(second_chunk.clone())
-            .await
-            .expect("second chunk should queue");
-        drop(output_tx);
-
-        let first_envelope = timeout(Duration::from_secs(1), rx.recv())
-            .await
-            .expect("should receive first output delta")
-            .expect("channel should remain open");
-        let OutgoingEnvelope::ToConnection {
-            connection_id,
-            message,
-            ..
-        } = first_envelope
-        else {
-            panic!("expected connection-scoped output delta");
-        };
-        assert_eq!(connection_id, ConnectionId(21));
-        let OutgoingMessage::AppServerNotification(ServerNotificationEnvelope {
-            notification: ServerNotification::CommandExecOutputDelta(notification),
-            ..
-        }) = message
-        else {
-            panic!("expected command/exec output delta notification");
-        };
-        assert_eq!(notification.process_id, "proc-21");
-        assert_eq!(notification.stream, CommandExecOutputStream::Stdout);
-        assert_eq!(
-            STANDARD
-                .decode(notification.delta_base64)
-                .expect("delta should be valid base64"),
-            first_chunk
-        );
-        assert!(!notification.cap_reached);
-
-        let second_envelope = timeout(Duration::from_secs(1), rx.recv())
-            .await
-            .expect("should receive second output delta")
-            .expect("channel should remain open");
-        let OutgoingEnvelope::ToConnection {
-            connection_id,
-            message,
-            ..
-        } = second_envelope
-        else {
-            panic!("expected connection-scoped output delta");
-        };
-        assert_eq!(connection_id, ConnectionId(21));
-        let OutgoingMessage::AppServerNotification(ServerNotificationEnvelope {
-            notification: ServerNotification::CommandExecOutputDelta(notification),
-            ..
-        }) = message
-        else {
-            panic!("expected command/exec output delta notification");
-        };
-        assert_eq!(notification.process_id, "proc-21");
-        assert_eq!(notification.stream, CommandExecOutputStream::Stdout);
-        assert_eq!(
-            STANDARD
-                .decode(notification.delta_base64)
-                .expect("delta should be valid base64"),
-            second_chunk
-        );
-        assert!(!notification.cap_reached);
-
-        assert_eq!(
-            timeout(Duration::from_secs(1), handle)
-                .await
-                .expect("output task should finish")
-                .expect("output task should not panic"),
-            ""
-        );
     }
 }

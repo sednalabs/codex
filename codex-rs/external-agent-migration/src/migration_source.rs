@@ -2,8 +2,13 @@ use crate::ClaSource;
 use crate::CurSource;
 use crate::RewriteProfile;
 use crate::detect::plugins;
+use crate::detect::sessions::detect_cla_session_connectors;
+use crate::detect::sessions::detect_cla_session_connectors_by_source_path;
+use crate::detect::sessions::detect_cur_session_connectors;
+use crate::detect::sessions::detect_cur_session_connectors_by_source_path;
 use crate::detect::sessions::detect_recent_cla_sessions_with_limits;
 use crate::detect::sessions::detect_recent_cur_sessions_with_limits;
+use crate::model::DetectedConnectorCandidate;
 use crate::model::ExternalAgentSessionImportLimits;
 use crate::sessions::ExternalAgentSessionMigration;
 use crate::sessions::SessionMetadataMode;
@@ -68,6 +73,14 @@ impl ExternalAgentSource {
         }
     }
 
+    pub(super) fn skills_dir_names(self, scope: &MigrationScope) -> &'static [&'static str] {
+        match (self, scope) {
+            // skills-cursor is Cursor-managed and only exists under the home config.
+            (Self::Cur, MigrationScope::Home) => &["skills", "skills-cursor"],
+            _ => &["skills"],
+        }
+    }
+
     pub(super) fn supports_memory(self) -> bool {
         match self {
             Self::Cla => true,
@@ -83,69 +96,13 @@ impl ExternalAgentSource {
         }
     }
 
-    pub(super) fn repo_settings_sources(self, repo_root: &Path) -> Vec<PathBuf> {
-        let source_dir = repo_root.join(self.config_dir());
-        match self {
-            Self::Cla => vec![
-                source_dir.join(ClaSource::SETTINGS_FILE),
-                source_dir.join(ClaSource::LOCAL_SETTINGS_FILE),
-            ],
-            Self::Cur => vec![
-                source_dir.join(CurSource::PROJECT_CONFIG_FILE),
-                source_dir.join(CurSource::SANDBOX_CONFIG_FILE),
-            ],
-        }
-    }
-
-    pub(super) fn repo_mcp_sources(self, repo_root: &Path) -> Vec<PathBuf> {
-        match self {
-            Self::Cla => vec![
-                repo_root.join(ClaSource::MCP_CONFIG_FILE),
-                repo_root.join(ClaSource::PROJECT_CONFIG_FILE),
-            ],
-            Self::Cur => vec![
-                repo_root
-                    .join(CurSource::CONFIG_DIR)
-                    .join(CurSource::MCP_CONFIG_FILE),
-            ],
-        }
-    }
-
-    pub(super) fn repo_hook_sources(self, repo_root: &Path) -> Vec<PathBuf> {
-        let source_dir = repo_root.join(self.config_dir());
-        match self {
-            Self::Cla => vec![
-                source_dir.join(ClaSource::SETTINGS_FILE),
-                source_dir.join(ClaSource::LOCAL_SETTINGS_FILE),
-                source_dir.join(ClaSource::HOOKS_DIR),
-            ],
-            Self::Cur => vec![
-                source_dir.join(CurSource::HOOKS_CONFIG_FILE),
-                source_dir.join(CurSource::HOOKS_DIR),
-            ],
-        }
-    }
-
-    pub(super) fn repo_instruction_sources(self, repo_root: &Path) -> Vec<PathBuf> {
-        match self {
-            Self::Cla => vec![
-                repo_root.join(ClaSource::CONFIG_MD),
-                repo_root
-                    .join(ClaSource::CONFIG_DIR)
-                    .join(ClaSource::CONFIG_MD),
-            ],
-            Self::Cur => vec![repo_root.join(CurSource::LEGACY_RULES_FILE)],
-        }
-    }
-
     pub(super) fn effective_settings(
         self,
-        source_config_dir: &Path,
         source_settings: &Path,
     ) -> io::Result<Option<JsonValue>> {
         match self {
             Self::Cla => ClaSource::effective_settings(source_settings),
-            Self::Cur => CurSource::effective_settings(source_config_dir, source_settings),
+            Self::Cur => CurSource::effective_settings(source_settings),
         }
     }
 
@@ -204,6 +161,34 @@ impl ExternalAgentSource {
         }
     }
 
+    pub(super) fn detect_session_connectors(
+        self,
+        sessions: &[ExternalAgentSessionMigration],
+        connector_metadata_roots: &[PathBuf],
+        external_agent_home: &Path,
+    ) -> Vec<DetectedConnectorCandidate> {
+        match self {
+            Self::Cla => detect_cla_session_connectors(sessions, connector_metadata_roots),
+            Self::Cur => detect_cur_session_connectors(sessions, external_agent_home),
+        }
+    }
+
+    pub(super) fn detect_session_connectors_by_source_path(
+        self,
+        sessions: &[ExternalAgentSessionMigration],
+        connector_metadata_roots: &[PathBuf],
+        external_agent_home: &Path,
+    ) -> BTreeMap<PathBuf, Vec<DetectedConnectorCandidate>> {
+        match self {
+            Self::Cla => {
+                detect_cla_session_connectors_by_source_path(sessions, connector_metadata_roots)
+            }
+            Self::Cur => {
+                detect_cur_session_connectors_by_source_path(sessions, external_agent_home)
+            }
+        }
+    }
+
     pub(super) fn marketplace_import_sources(
         self,
         external_agent_home: &Path,
@@ -245,7 +230,7 @@ impl ExternalAgentSource {
     ) -> PathBuf {
         match self {
             Self::Cla => source_root,
-            Self::Cur => source_config_dir.join(CurSource::MCP_CONFIG_FILE),
+            Self::Cur => source_config_dir.join("mcp.json"),
         }
     }
 

@@ -79,7 +79,7 @@ impl RawConPty {
     }
 
     pub fn pseudoconsole_handle(&self) -> RawHandle {
-        self.con.raw_handle() as RawHandle
+        self.con.raw_handle()
     }
 
     pub fn into_handles(self) -> (PsuedoCon, FileDescriptor, FileDescriptor) {
@@ -185,7 +185,7 @@ impl MasterPty for ConPtyMasterPty {
 
 impl SlavePty for ConPtySlavePty {
     fn spawn_command(&self, cmd: CommandBuilder) -> anyhow::Result<Box<dyn Child + Send + Sync>> {
-        let inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap();
         let child = inner.con.spawn_command(cmd)?;
         Ok(Box::new(child))
     }

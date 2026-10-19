@@ -1,7 +1,8 @@
 {
-  "$defs": {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
     "AbsolutePathBuf": {
-      "description": "A path that is guaranteed to be absolute and normalized (though it is not\nguaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set\nusing [AbsolutePathBufGuard::new]. If no base path is set, the\ndeserialization will fail unless the path being deserialized is already\nabsolute.",
+      "description": "A path that is guaranteed to be absolute and normalized (though it is not guaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set using [AbsolutePathBufGuard::new]. If no base path is set, the deserialization will fail unless the path being deserialized is already absolute.",
       "type": "string"
     },
     "HookErrorInfo": {
@@ -14,8 +15,8 @@
         }
       },
       "required": [
-        "path",
-        "message"
+        "message",
+        "path"
       ],
       "type": "object"
     },
@@ -31,32 +32,95 @@
         "userPromptSubmit",
         "subagentStart",
         "subagentStop",
-        "stop"
-      ],
-      "type": "string"
-    },
-    "HookHandlerType": {
-      "enum": [
-        "command",
-        "prompt",
-        "agent"
+        "stop",
+        "interrupt"
       ],
       "type": "string"
     },
     "HookMetadata": {
+      "oneOf": [
+        {
+          "properties": {
+            "async": {
+              "default": false,
+              "type": "boolean"
+            },
+            "command": {
+              "type": "string"
+            },
+            "handlerType": {
+              "enum": [
+                "command"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "command",
+            "handlerType"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "handlerType": {
+              "enum": [
+                "mcpTool"
+              ],
+              "type": "string"
+            },
+            "server": {
+              "type": "string"
+            },
+            "tool": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "handlerType",
+            "server",
+            "tool"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "handlerType": {
+              "enum": [
+                "prompt"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "handlerType"
+          ],
+          "title": "PromptHookMetadata",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "handlerType": {
+              "enum": [
+                "agent"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "handlerType"
+          ],
+          "title": "AgentHookMetadata",
+          "type": "object"
+        }
+      ],
       "properties": {
         "additionalContextLimit": {
-          "description": "Configured `additionalContext` spill threshold.\n`null` uses 2,500 tokens; `0` disables spilling.",
+          "description": "Configured `additionalContext` spill threshold. `null` uses 2,500 tokens; `0` disables spilling.",
           "format": "uint",
-          "minimum": 0,
+          "minimum": 0.0,
           "type": [
             "integer",
-            "null"
-          ]
-        },
-        "command": {
-          "type": [
-            "string",
             "null"
           ]
         },
@@ -71,10 +135,7 @@
           "type": "boolean"
         },
         "eventName": {
-          "$ref": "#/$defs/HookEventName"
-        },
-        "handlerType": {
-          "$ref": "#/$defs/HookHandlerType"
+          "$ref": "#/definitions/HookEventName"
         },
         "isManaged": {
           "type": "boolean"
@@ -95,10 +156,10 @@
           ]
         },
         "source": {
-          "$ref": "#/$defs/HookSource"
+          "$ref": "#/definitions/HookSource"
         },
         "sourcePath": {
-          "$ref": "#/$defs/AbsolutePathBuf"
+          "$ref": "#/definitions/AbsolutePathBuf"
         },
         "statusMessage": {
           "type": [
@@ -108,24 +169,23 @@
         },
         "timeoutSec": {
           "format": "uint64",
-          "minimum": 0,
+          "minimum": 0.0,
           "type": "integer"
         },
         "trustStatus": {
-          "$ref": "#/$defs/HookTrustStatus"
+          "$ref": "#/definitions/HookTrustStatus"
         }
       },
       "required": [
-        "key",
-        "eventName",
-        "handlerType",
-        "timeoutSec",
-        "sourcePath",
-        "source",
+        "currentHash",
         "displayOrder",
         "enabled",
+        "eventName",
         "isManaged",
-        "currentHash",
+        "key",
+        "source",
+        "sourcePath",
+        "timeoutSec",
         "trustStatus"
       ],
       "type": "object"
@@ -162,13 +222,13 @@
         },
         "errors": {
           "items": {
-            "$ref": "#/$defs/HookErrorInfo"
+            "$ref": "#/definitions/HookErrorInfo"
           },
           "type": "array"
         },
         "hooks": {
           "items": {
-            "$ref": "#/$defs/HookMetadata"
+            "$ref": "#/definitions/HookMetadata"
           },
           "type": "array"
         },
@@ -181,18 +241,17 @@
       },
       "required": [
         "cwd",
+        "errors",
         "hooks",
-        "warnings",
-        "errors"
+        "warnings"
       ],
       "type": "object"
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "data": {
       "items": {
-        "$ref": "#/$defs/HooksListEntry"
+        "$ref": "#/definitions/HooksListEntry"
       },
       "type": "array"
     }

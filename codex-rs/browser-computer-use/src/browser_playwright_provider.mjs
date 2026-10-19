@@ -1,172 +1,65 @@
-import fs from "node:fs/promises";
 import { createHash } from "node:crypto";
+import fs from "node:fs/promises";
 import { createRequire } from "node:module";
-import { realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
-import {
-  actionSummary,
-  captureBundle,
-  pageResponseAfterFailure,
-  pageState,
-  responseForPage,
-  restoreScroll,
-  settleAfterAction,
-  settleAfterActions,
-} from "./browser_playwright_review.mjs";
-import {
-  installServiceHeaderRoute,
-  serviceHeaderPlan,
-} from "./browser_playwright_service_headers.mjs";
-import { installInspection } from "./browser_playwright_inspection.mjs";
 
 const TOOL_OBSERVE = "browser_observe";
 const TOOL_STEP = "browser_step";
 const DEFAULT_PROFILE_LOCK_TIMEOUT_MS = 120_000;
 const PROFILE_LOCK_STALE_MS = 10 * 60_000;
 const PROFILE_LOCK_POLL_MS = 250;
-const ISOLATION_SHARED = "shared";
-const ISOLATION_THREAD = "thread";
-const ISOLATION_ENVIRONMENT = "environment";
-const ISOLATION_CALL = "call";
-const SESSION_RESTORE_PATH_SEGMENTS = [
-  ["Current Session"],
-  ["Current Tabs"],
-  ["Last Session"],
-  ["Last Tabs"],
-  ["Sessions"],
-  ["Default", "Current Session"],
-  ["Default", "Current Tabs"],
-  ["Default", "Last Session"],
-  ["Default", "Last Tabs"],
-  ["Default", "Sessions"],
-];
 
-if (isDirectExecution()) {
-  main().catch((error) => {
-    writeResponse({
-      contentItems: [
-        {
-          type: "inputText",
-          text: `Browser Playwright provider failed: ${error?.stack || error}`,
-        },
-      ],
-      success: false,
-      error: String(error?.message || error),
-    });
-    process.exitCode = 0;
+main().catch((error) => {
+  writeResponse({
+    contentItems: [{
+      type: "inputText",
+      text: "Browser Playwright provider failed: " + errorMessage(error),
+    }],
+    success: false,
+    error: errorMessage(error),
   });
-}
-
-function isDirectExecution() {
-  if (!process.argv[1]) {
-    return false;
-  }
-  return import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
-}
+  process.exitCode = 0;
+});
 
 async function main() {
+  if (process.platform === "win32") {
+    throw new Error("Native Browser profile state is unsupported on Windows; no state was changed.");
+  }
   const request = JSON.parse(await readStdin());
+  validateVisualArguments(request.arguments || {});
   const { chromium } = loadPlaywright();
-  const profile = await browserProfile(request);
-  await withProfileLock(profile.stateDir, async () => {
+  const { stateDir } = await browserProfile(request);
+  await withProfileLock(stateDir, async () => {
     const headless = playwrightHeadless();
     const viewport = viewportFromRequest(request);
-    const serviceHeaders = serviceHeaderPlan(request);
-    await clearBrowserSessionRestore(profile.stateDir);
-    const context = await chromium.launchPersistentContext(profile.stateDir, {
-      ...launchOptions({ headless, viewport, profile }),
+    const context = await chromium.launchPersistentContext(stateDir, {
+      ...launchOptions({ headless, viewport }),
       headless,
       viewport,
     });
-
     try {
-      await installServiceHeaderRoute(context, serviceHeaders);
       const page = await activePage(context);
-      const inspectionRequested = request.arguments?.inspection != null;
-      const inspection = await installInspection(page, request).catch(() => ({
-        collector: null,
-        snapshot: async () => (inspectionRequested ? { status: "unavailable" } : null),
-        cleanup: async () => {},
-      }));
-      try {
-        await restoreOrNavigate(page, request, profile.stateDir);
-
+      await restoreOrNavigate(page, request, stateDir);
       const summaries = [];
-      const actionTrail = [];
       if (request.tool === TOOL_STEP) {
         const actions = canonicalActions(request.arguments);
         if (actions.length === 0) {
           throw new Error("browser_step requires an action or non-empty actions array.");
         }
-        for (const action of actions) {
-          const before = await pageState(page);
-          try {
-            const summary = await runAction(page, action);
-            const immediateAfter = await pageState(page);
-            await settleAfterAction(page, action, request);
-            const settledAfter = await pageState(page);
-            summaries.push(summary);
-            actionTrail.push({
-              action: actionSummary(action),
-              before,
-              after: immediateAfter,
-              settledAfter: isScrollAction(action) ? settledAfter : undefined,
-              summary,
-            });
-          } catch (error) {
-            actionTrail.push({
-              action: actionSummary(action),
-              before,
-              after: await pageState(page),
-              error: errorMessage(error),
-            });
-            await settleAfterActions(page, request);
-            const inspectionSnapshot = await inspection.snapshot().catch(() => (inspectionRequested ? { status: "unavailable" } : null));
-            const failureResponse = await pageResponseAfterFailure(
-              page,
-              summaries,
-              profile,
-              request,
-              action,
-              error,
-              actionTrail,
-              serviceHeaders,
-              inspectionSnapshot,
-            );
-            await saveState(profile.stateDir, page);
-            writeResponse(failureResponse);
-            return;
-          }
-        }
+        for (const action of actions) summaries.push(await runAction(page, action));
       } else if (request.tool !== TOOL_OBSERVE) {
-        throw new Error(`Unsupported browser tool ${request.tool}`);
+        throw new Error("Unsupported browser tool " + request.tool);
       }
-
       await page.waitForLoadState("domcontentloaded", { timeout: 10_000 }).catch(() => {});
-      await settleAfterActions(page, request);
-      const screenshots = await captureBundle(page, request);
-      const inspectionSnapshot = await inspection.snapshot().catch(() => (inspectionRequested ? { status: "unavailable" } : null));
-      await saveState(profile.stateDir, page);
-      writeResponse(
-        await responseForPage(page, screenshots, summaries, profile, {
-          request,
-          actionTrail,
-          serviceHeaders,
-          success: true,
-          inspection: inspectionSnapshot,
-        }),
-      );
-      } finally {
-        await inspection.cleanup().catch(() => {});
-      }
+      const screenshot = await captureScreenshot(page);
+      await saveState(stateDir, page);
+      writeResponse(await responseForPage(page, screenshot, summaries));
     } finally {
       await context.close().catch(() => {});
     }
   });
 }
-
 function loadPlaywright() {
   const require = createRequire(import.meta.url);
   return require("playwright");
@@ -181,97 +74,134 @@ async function readStdin() {
 }
 
 async function browserProfile(request) {
-  const configured = process.env.CODEX_BROWSER_PLAYWRIGHT_STATE_DIR;
-  const baseDir =
-    configured && configured.trim()
-      ? configured
-      : path.join(os.homedir(), ".codex", "browser-computer-use-playwright");
-  const isolation = browserIsolationMode();
-  if (isolation === ISOLATION_SHARED) {
-    await fs.mkdir(baseDir, { recursive: true });
-    return {
-      stateDir: baseDir,
-      isolation,
-      identity: ISOLATION_SHARED,
-      label: ISOLATION_SHARED,
-    };
+  const baseDir = await browserStateRoot(
+    process.env.CODEX_BROWSER_PLAYWRIGHT_STATE_DIR,
+  );
+  const threadId = request.threadId;
+  if (typeof threadId !== "string" || !threadId.trim()) {
+    throw new Error("Browser thread isolation requires a non-empty threadId.");
   }
 
-  const identity = browserProfileIdentity(request, isolation);
-  const label =
-    identity.source === isolation ? isolation : `${isolation}:${identity.source}`;
-  const stateDir = path.join(baseDir, "profiles", identity.component);
-  await fs.mkdir(stateDir, { recursive: true });
-  return { stateDir, isolation, identity: identity.component, label };
+  const profilesDir = path.join(baseDir, "profiles");
+  const profileDir = path.join(profilesDir, safePathComponent(threadId));
+  await ensurePrivateStateDirectory(baseDir);
+  await ensurePrivateStateDirectory(profilesDir);
+  await ensurePrivateStateDirectory(profileDir);
+  return { stateDir: profileDir };
 }
 
-function browserIsolationMode() {
-  const raw = (process.env.CODEX_BROWSER_PLAYWRIGHT_ISOLATION || ISOLATION_THREAD)
-    .trim()
-    .toLowerCase();
-  switch (raw) {
-    case ISOLATION_SHARED:
-      return ISOLATION_SHARED;
-    case "session":
-    case "agent":
-    case ISOLATION_THREAD:
-      return ISOLATION_THREAD;
-    case "env":
-    case ISOLATION_ENVIRONMENT:
-      return ISOLATION_ENVIRONMENT;
-    case "turn":
-    case ISOLATION_CALL:
-      return ISOLATION_CALL;
-    default:
-      return ISOLATION_THREAD;
+async function browserStateRoot(configured) {
+  if (typeof configured === "string" && configured.trim()) {
+    const root = path.isAbsolute(configured)
+      ? path.resolve(configured)
+      : path.resolve(process.cwd(), configured);
+    await validateStatePath(root, { allowMissing: true });
+    return root;
   }
+
+  const codexHome = await activeCodexHome();
+  const root = path.join(codexHome, "browser-computer-use-playwright");
+  await validateStatePath(root, { allowMissing: true });
+  return root;
 }
 
-function browserProfileIdentity(request, isolation) {
-  const source = browserProfileIdentitySource(request, isolation);
-  return {
-    source: source.name,
-    component: safePathComponent(source.value),
-  };
-}
-
-function browserProfileIdentitySource(request, isolation) {
-  if (isolation === ISOLATION_ENVIRONMENT) {
-    return firstIdentity([
-      ["environment", request.environmentId],
-      ["thread", request.threadId],
-      ["call", request.callId],
-    ]);
+async function activeCodexHome() {
+  const configured = process.env.CODEX_HOME;
+  if (typeof configured === "string" && configured.length > 0) {
+    const candidate = path.resolve(process.cwd(), configured);
+    const stat = await fs.stat(candidate).catch((error) => {
+      throw new Error(`Cannot resolve active CODEX_HOME: ${error.message}`);
+    });
+    if (!stat.isDirectory()) {
+      throw new Error("Active CODEX_HOME must be a directory.");
+    }
+    // Codex canonicalizes an explicitly configured CODEX_HOME before using it.
+    return fs.realpath(candidate);
   }
-  if (isolation === ISOLATION_CALL) {
-    return firstIdentity([
-      ["call", request.callId],
-      ["turn", request.turnId],
-      ["thread", request.threadId],
-    ]);
-  }
-  return firstIdentity([
-    ["thread", request.threadId],
-    ["environment", request.environmentId],
-    ["call", request.callId],
-  ]);
+
+  return path.join(await fs.realpath(os.homedir()), ".codex");
 }
 
-function firstIdentity(candidates) {
-  for (const [name, value] of candidates) {
-    if (typeof value === "string" && value.trim()) {
-      return { name, value };
+async function ensurePrivateStateDirectory(directory) {
+  await validateStatePath(directory, { allowMissing: true });
+  await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+  await validateStatePath(directory);
+}
+
+async function validateStatePath(directory, { allowMissing = false } = {}) {
+  if (!path.isAbsolute(directory) || path.resolve(directory) !== directory) {
+    throw new Error(
+      `Browser state path must be absolute and canonical: ${directory}`,
+    );
+  }
+
+  const { root } = path.parse(directory);
+  const components = directory.slice(root.length).split(path.sep).filter(Boolean);
+  let current = root;
+  let missing = false;
+  for (const component of components) {
+    current = path.join(current, component);
+    let stat;
+    try {
+      stat = await fs.lstat(current);
+    } catch (error) {
+      if (error?.code === "ENOENT" && allowMissing) {
+        missing = true;
+        continue;
+      }
+      throw error;
+    }
+    if (missing) {
+      throw new Error(
+        `Browser state path reappeared below a missing ancestor: ${current}`,
+      );
+    }
+    if (stat.isSymbolicLink()) {
+      throw new Error(`Browser state path component must not be a symlink: ${current}`);
+    }
+    if (!stat.isDirectory()) {
+      throw new Error(`Browser state path component must be a directory: ${current}`);
+    }
+    validatePathOwnershipAndMode(current, stat, current === directory);
+    if ((await fs.realpath(current)) !== current) {
+      throw new Error(`Browser state path component must be canonical: ${current}`);
     }
   }
-  return { name: "default", value: "default" };
+}
+
+function validatePathOwnershipAndMode(component, stat, isStateDirectory) {
+  if (typeof process.getuid !== "function") {
+    return;
+  }
+  const uid = process.getuid();
+  const mode = stat.mode & 0o7777;
+  if (stat.uid !== uid && stat.uid !== 0) {
+    throw new Error(
+      `Browser state path ancestor has an untrusted owner: ${component}`,
+    );
+  }
+  const writableByGroupOrOther = mode & 0o022;
+  const trustedStickyRootDirectory = stat.uid === 0 && Boolean(mode & 0o1000);
+  if (
+    writableByGroupOrOther &&
+    (!trustedStickyRootDirectory || isStateDirectory)
+  ) {
+    throw new Error(
+      `Browser state path ancestor is writable by untrusted users: ${component}`,
+    );
+  }
+  if (isStateDirectory && stat.uid !== uid) {
+    throw new Error(`Browser state directory must be owned by the current user: ${component}`);
+  }
 }
 
 function safePathComponent(value) {
   const text = String(value || "default");
-  const slug = text
-    .replace(/[^a-zA-Z0-9._-]+/g, "_")
-    .replace(/^_+|_+$/g, "")
-    .slice(0, 64) || "default";
+  const slug =
+    text
+      .replace(/[^a-zA-Z0-9._-]+/g, "_")
+      .replace(/^_+|_+$/g, "")
+      .slice(0, 64) || "default";
   const hash = createHash("sha256").update(text).digest("hex").slice(0, 12);
   return `${slug}-${hash}`;
 }
@@ -336,7 +266,7 @@ function playwrightHeadless() {
   return !["0", "false", "no", "off"].includes(raw);
 }
 
-function launchOptions({ headless, viewport, profile }) {
+function launchOptions({ headless, viewport }) {
   const options = {};
   const executablePath = trimmedEnv("CODEX_BROWSER_PLAYWRIGHT_EXECUTABLE_PATH");
   if (executablePath) {
@@ -347,90 +277,49 @@ function launchOptions({ headless, viewport, profile }) {
     options.channel = channel;
   }
   if (!headless && viewport) {
-    const position = windowPositionForProfile(profile);
     options.args = [
-      `--window-position=${position.x},${position.y}`,
+      "--window-position=0,0",
       `--window-size=${viewport.width},${viewport.height}`,
     ];
   }
   return options;
 }
 
-function windowPositionForProfile(profile) {
-  if (!profile || profile.isolation === ISOLATION_SHARED) {
-    return { x: 0, y: 0 };
-  }
-  const hash = createHash("sha256").update(profile.identity).digest();
-  const slot = hash[0] % 9;
-  return {
-    x: (slot % 3) * envNumber("CODEX_BROWSER_PLAYWRIGHT_WINDOW_OFFSET_X", 48),
-    y: Math.floor(slot / 3) * envNumber("CODEX_BROWSER_PLAYWRIGHT_WINDOW_OFFSET_Y", 36),
-  };
-}
-
 function viewportFromRequest(request) {
-  const view = request.arguments?.view || {};
   return {
-    width: numberOrDefault(
-      view.viewportWidth,
-      envNumber("CODEX_BROWSER_PLAYWRIGHT_VIEWPORT_WIDTH", 1280),
-    ),
-    height: numberOrDefault(
-      view.viewportHeight,
-      envNumber("CODEX_BROWSER_PLAYWRIGHT_VIEWPORT_HEIGHT", 720),
-    ),
+    width: envNumber("CODEX_BROWSER_PLAYWRIGHT_VIEWPORT_WIDTH", 1280),
+    height: envNumber("CODEX_BROWSER_PLAYWRIGHT_VIEWPORT_HEIGHT", 720),
   };
 }
 
+function validateVisualArguments(args) {
+  if (!args || typeof args !== "object" || Array.isArray(args)) {
+    throw new Error("Browser arguments must be an object.");
+  }
+  if (args.url !== undefined && typeof args.url !== "string") {
+    throw new Error("url must be a string.");
+  }
+  if (args.actions !== undefined && (!Array.isArray(args.actions) || args.actions.some((action) => !action || typeof action !== "object" || Array.isArray(action)))) {
+    throw new Error("actions must be an array of action objects.");
+  }
+}
 async function activePage(context) {
   const existing = context.pages().find((page) => !page.isClosed());
   return existing || context.newPage();
 }
 
 async function restoreOrNavigate(page, request, stateDir) {
-  const firstAction = canonicalActions(request.arguments)[0];
-  if ((firstAction?.type || firstAction?.action) === "navigate") {
-    return;
-  }
   const explicitUrl = request.arguments?.url;
   if (explicitUrl) {
     await page.goto(explicitUrl, { waitUntil: "domcontentloaded", timeout: timeoutMs(request) });
-    await restoreScroll(page, request);
     return;
   }
 
   const statePath = path.join(stateDir, "state.json");
   const state = await readJsonOrNull(statePath);
-  if (navigableUrl(state?.url) && pageUrl(page) === "about:blank") {
+  if (state?.url && page.url() === "about:blank") {
     await page.goto(state.url, { waitUntil: "domcontentloaded", timeout: timeoutMs(request) });
-    if (!request.arguments?.view && typeof state.scrollY === "number") {
-      await page.evaluate((scrollY) => window.scrollTo(window.scrollX, scrollY), state.scrollY);
-    }
   }
-  await restoreScroll(page, request);
-}
-
-async function clearBrowserSessionRestore(stateDir) {
-  const profileRoot = path.resolve(stateDir);
-  await Promise.all(
-    browserSessionRestorePaths(profileRoot).map((entry) =>
-      fs.rm(entry, { recursive: true, force: true }).catch(() => {}),
-    ),
-  );
-}
-
-function browserSessionRestorePaths(stateDir) {
-  const profileRoot = path.resolve(stateDir);
-  return SESSION_RESTORE_PATH_SEGMENTS.map((segments) => profilePath(profileRoot, segments));
-}
-
-function profilePath(profileRoot, segments) {
-  const entry = path.resolve(profileRoot, ...segments);
-  const relative = path.relative(profileRoot, entry);
-  if (relative.startsWith("..") || path.isAbsolute(relative)) {
-    throw new Error(`Refusing to remove browser session restore path outside profile: ${entry}`);
-  }
-  return entry;
 }
 
 function canonicalActions(argumentsValue) {
@@ -441,10 +330,6 @@ function canonicalActions(argumentsValue) {
     return [argumentsValue];
   }
   return [];
-}
-
-function isScrollAction(action) {
-  return ["scroll", "mouse_wheel"].includes(action.type || action.action);
 }
 
 async function runAction(page, action) {
@@ -459,12 +344,6 @@ async function runAction(page, action) {
     case "type":
       await typeText(page, action);
       return action.selector ? "typed into browser selector" : "typed into focused browser element";
-    case "focus":
-      await focusElement(page, action);
-      return action.selector ? "focused browser selector" : "focused current browser element";
-    case "clear":
-      await clearElement(page, action);
-      return action.selector ? "cleared browser selector" : "cleared focused browser element";
     case "keypress":
       await keypress(page, action);
       return "sent browser keypress";
@@ -546,29 +425,6 @@ async function typeText(page, action) {
     }
   }
   await page.keyboard.type(text, keyboardDelayOptions(action));
-}
-
-async function focusElement(page, action) {
-  const locator = locatorFromAction(page, action);
-  if (locator) {
-    await locator.focus({ timeout: timeoutMs({ arguments: action }) });
-    return;
-  }
-  if (typeof action.x === "number" && typeof action.y === "number") {
-    await mouseMove(page, action);
-  }
-}
-
-async function clearElement(page, action) {
-  const locator = locatorFromAction(page, action);
-  if (locator) {
-    if (textEntryMethod(action) === "fill") {
-      await locator.fill("", { timeout: timeoutMs({ arguments: action }) });
-      return;
-    }
-    await locator.click({ timeout: timeoutMs({ arguments: action }) });
-  }
-  await selectAllAndClear(page);
 }
 
 async function keypress(page, action) {
@@ -661,35 +517,36 @@ function locatorFromAction(page, action) {
   if (!selector) {
     return null;
   }
-  const maybeFirst = (locator) => selector.strict ? locator : locator.first();
   if (typeof selector === "string") {
     return page.locator(selector).first();
   }
   if (selector.css) {
-    return maybeFirst(page.locator(selector.css));
+    return page.locator(selector.css).first();
   }
   if (selector.text) {
-    return maybeFirst(page.getByText(selector.text, selectorOptions(selector)));
+    return page.getByText(selector.text, selectorOptions(selector)).first();
   }
   if (selector.label) {
-    return maybeFirst(page.getByLabel(selector.label, selectorOptions(selector)));
+    return page.getByLabel(selector.label, selectorOptions(selector)).first();
   }
   if (selector.placeholder) {
-    return maybeFirst(page.getByPlaceholder(selector.placeholder, selectorOptions(selector)));
+    return page
+      .getByPlaceholder(selector.placeholder, selectorOptions(selector))
+      .first();
   }
   if (selector.test_id || selector.testId) {
-    return maybeFirst(page.getByTestId(selector.test_id || selector.testId));
+    return page.getByTestId(selector.test_id || selector.testId).first();
   }
   if (selector.title) {
-    return maybeFirst(page.getByTitle(selector.title, selectorOptions(selector)));
+    return page.getByTitle(selector.title, selectorOptions(selector)).first();
   }
   if (selector.alt_text || selector.altText) {
-    return maybeFirst(
-      page.getByAltText(selector.alt_text || selector.altText, selectorOptions(selector)),
-    );
+    return page
+      .getByAltText(selector.alt_text || selector.altText, selectorOptions(selector))
+      .first();
   }
   if (selector.role) {
-    return maybeFirst(page.getByRole(selector.role, roleSelectorOptions(selector)));
+    return page.getByRole(selector.role, roleSelectorOptions(selector)).first();
   }
   return null;
 }
@@ -808,46 +665,66 @@ function compactOptions(options) {
   );
 }
 
-async function saveState(stateDir, page) {
-  const viewport = page.viewportSize?.() || null;
-  const url = pageUrl(page);
-  const scroll = await page
-    .evaluate(() => ({ x: window.scrollX, y: window.scrollY }))
-    .catch(() => ({ x: 0, y: 0 }));
-  if (!navigableUrl(url)) {
-    return;
+async function captureScreenshot(page) {
+  const errors = [];
+  try {
+    return { buffer: await page.screenshot({ type: "png" }), method: "page.screenshot" };
+  } catch (error) {
+    errors.push("page.screenshot: " + errorMessage(error));
   }
+  for (const fromSurface of [true, false]) {
+    let cdp = null;
+    try {
+      cdp = await page.context().newCDPSession(page);
+      await cdp.send("Page.enable").catch(() => {});
+      const result = await cdp.send("Page.captureScreenshot", { format: "png", fromSurface });
+      return { buffer: Buffer.from(result.data, "base64"), method: "cdp.Page.captureScreenshot", warning: errors.join(" | ").slice(0, 500) };
+    } catch (error) {
+      errors.push("cdp.Page.captureScreenshot: " + errorMessage(error));
+    } finally {
+      if (cdp) await cdp.detach().catch(() => {});
+    }
+  }
+  for (const selector of ["body", "html"]) {
+    try {
+      return { buffer: await page.locator(selector).screenshot({ type: "png" }), method: "locator(" + selector + ").screenshot", warning: errors.join(" | ").slice(0, 500) };
+    } catch (error) {
+      errors.push("locator(" + selector + ").screenshot: " + errorMessage(error));
+    }
+  }
+  throw new Error("Unable to capture browser screenshot. " + errors.map((error) => error.split("\n")[0]).join(" | ").slice(0, 500));
+}
+
+async function responseForPage(page, screenshot, summaries) {
+  const lines = ["Browser observation", "url: " + page.url()];
+  const title = await pageTitle(page);
+  if (title) lines.push("title: " + title);
+  const viewport = page.viewportSize();
+  if (viewport) lines.push("viewport: " + viewport.width + "x" + viewport.height);
+  if (summaries.length > 0) {
+    lines.push("actions:");
+    for (const summary of summaries) lines.push("- " + summary);
+  }
+  return {
+    contentItems: [
+      { type: "inputText", text: lines.join("\n") },
+      { type: "inputImage", imageUrl: "data:image/png;base64," + screenshot.buffer.toString("base64"), detail: "high" },
+    ],
+    success: true,
+  };
+}
+function pageTitle(page) {
+  return page
+    .title()
+    .then((title) => title)
+    .catch(() => "");
+}
+
+async function saveState(stateDir, page) {
   await fs.writeFile(
     path.join(stateDir, "state.json"),
-    JSON.stringify({
-      url,
-      scrollX: scroll.x,
-      scrollY: scroll.y,
-      viewportWidth: viewport?.width,
-      viewportHeight: viewport?.height,
-      updatedAt: new Date().toISOString(),
-    }),
+    JSON.stringify({ url: page.url(), updatedAt: new Date().toISOString() }),
   );
-}
-
-function pageUrl(page) {
-  try {
-    return page.url();
-  } catch {
-    return "unknown";
-  }
-}
-
-function navigableUrl(value) {
-  if (typeof value !== "string" || !value.trim() || value === "unknown") {
-    return false;
-  }
-  try {
-    const url = new URL(value);
-    return url.protocol === "http:" || url.protocol === "https:" || url.protocol === "file:";
-  } catch {
-    return false;
-  }
 }
 
 async function readJsonOrNull(file) {
@@ -871,14 +748,6 @@ function requiredNumber(value, field) {
 
 function numberOrDefault(value, fallback) {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
-}
-
-function positiveIntegerOrUndefined(value) {
-  return Number.isInteger(value) && value > 0 ? value : undefined;
-}
-
-function nonNegativeIntegerOrUndefined(value) {
-  return Number.isInteger(value) && value >= 0 ? value : undefined;
 }
 
 function errorMessage(error) {
@@ -906,9 +775,3 @@ function trimmedEnv(name) {
 function writeResponse(response) {
   process.stdout.write(JSON.stringify(response));
 }
-
-export const __test = {
-  browserSessionRestorePaths,
-  clearBrowserSessionRestore,
-  profilePath,
-};

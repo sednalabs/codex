@@ -1,30 +1,17 @@
 name: blocking-ci
 
 # This is the single entrypoint for checks that block a PR merge. It also runs
-# after pushes to main/upstream-main so the same check family stays grouped in
-# the Actions UI.
+# after pushes to main so the same check family stays grouped in the Actions UI.
 on:
   merge_group:
     types: [checks_requested]
   pull_request: {}
   push:
-    branches: [main, upstream-main]
+    branches: [main]
 
-# Merge-queue attempts share a generated branch name, so the immutable queue
-# SHA must be part of the concurrency key. A retry of one attempt must not
-# cancel a newer attempt that happens to use the same generated ref.
 concurrency:
-  group: >-
-    concurrency-group::${{ github.workflow }}::${{
-      github.event_name == 'merge_group' &&
-      format('merge-group-{0}', github.sha) ||
-      github.event_name == 'pull_request' &&
-      format('pr-{0}', github.event.pull_request.number) ||
-      github.event_name == 'push' &&
-      format('push-{0}', github.sha) ||
-      format('{0}-{1}', github.event_name, github.run_id)
-    }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
 
 jobs:
   # Classify pull-request and merge-queue paths once for reusable workflows
@@ -120,20 +107,14 @@ jobs:
   bazel:
     name: Bazel
     uses: ./.github/workflows/bazel.yml
-    secrets: inherit
 
   blob-size-policy:
     name: Blob size policy
     uses: ./.github/workflows/blob-size-policy.yml
-    secrets: inherit
 
   cargo-deny:
     name: cargo-deny
-    needs: scope
     uses: ./.github/workflows/cargo-deny.yml
-    with:
-      run_cargo_deny: ${{ needs.scope.outputs.cargo_deny == 'true' }}
-    secrets: inherit
 
   clippy-required:
     name: Linux full Clippy
@@ -181,7 +162,7 @@ jobs:
 
       - name: Install Rust toolchain
         if: ${{ needs.scope.outputs.clippy == 'true' }}
-        uses: dtolnay/rust-toolchain@ebb3d1676050bfd0971c36c1e215b5751473994d # 1.96.0
+        uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
         with:
           target: x86_64-unknown-linux-gnu
           components: clippy
@@ -207,32 +188,18 @@ jobs:
   codespell:
     name: Codespell
     uses: ./.github/workflows/codespell.yml
-    secrets: inherit
 
   repo-checks:
     name: repo-checks
-    needs: scope
     uses: ./.github/workflows/repo-checks.yml
-    with:
-      run_policy: ${{ needs.scope.outputs.repo_policy == 'true' }}
-      run_package: ${{ needs.scope.outputs.repo_package == 'true' }}
-      run_format: ${{ needs.scope.outputs.repo_format == 'true' }}
-      run_readme: ${{ needs.scope.outputs.repo_readme == 'true' }}
-    secrets: inherit
 
   rust-ci:
     name: rust-ci
     uses: ./.github/workflows/rust-ci.yml
-    secrets: inherit
 
   sdk:
     name: sdk
-    needs: scope
     uses: ./.github/workflows/sdk.yml
-    with:
-      run_python: ${{ needs.scope.outputs.sdk_python == 'true' }}
-      run_typescript: ${{ needs.scope.outputs.sdk_typescript == 'true' }}
-    secrets: inherit
 
   required:
     name: CI required
@@ -243,25 +210,18 @@ jobs:
       - bazel
       - blob-size-policy
       - cargo-deny
-      - clippy-required
       - codespell
+      - clippy-required
       - repo-checks
       - rust-ci
       - sdk
       - scope
     runs-on: ubuntu-24.04
     steps:
-      # Keep the helper on the same revision as the caller and child workflows.
-      # CI workflow uploads are restricted, so this repository does not need a
-      # separate trusted-base checkout for the terminal policy step. Using the
-      # PR head also lets the introducing PR exercise a newly added helper.
-      #
-      # During the initial rollout, PR branches created before
-      # check_ci_results.py exists must rebase onto main before this gate can
-      # run.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Keep the helper on the same combined revision as the child workflows so
+      # the merge gate evaluates the exact candidate they validated.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
       - name: Require successful dependencies

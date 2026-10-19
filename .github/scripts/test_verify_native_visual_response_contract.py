@@ -42,7 +42,7 @@ class VerifyNativeVisualResponseContractTests(unittest.TestCase):
             self.make_repo(root)
             self.assertEqual(verify(root), [])
 
-    def test_missing_provider_fails_closed(self) -> None:
+    def test_missing_browser_provider_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             self.make_repo(root)

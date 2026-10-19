@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use anyhow::Result;
 use anyhow::anyhow;
 use codex_protocol::protocol::McpStartupFailure;
@@ -8,12 +10,13 @@ use super::McpConnectionSet;
 use crate::rmcp_client::StartupOutcomeError;
 
 impl McpConnectionSet {
-    /// Waits for every required server and reports their startup failures together.
+    /// Waits for required servers unless their readiness policy accepts a cached catalog.
     ///
     /// The manager must already be reachable through [`crate::McpRuntime`] so
     /// startup-time elicitation can resolve while validation waits.
     pub(crate) async fn validate_required_servers(&self) -> Result<()> {
         let failures = async {
+            self.record_startup_readiness("required_startup", &[], &HashSet::new());
             let mut failures = Vec::new();
             for server_name in &self.required_servers {
                 let Some(view) = self.servers.get(server_name) else {
@@ -23,6 +26,11 @@ impl McpConnectionSet {
                     });
                     continue;
                 };
+                if view.allows_cached_startup()
+                    && view.cached_startup_tools(/*fallback*/ None).is_some()
+                {
+                    continue;
+                }
 
                 match view.connection.client().await {
                     Ok(_) => {}

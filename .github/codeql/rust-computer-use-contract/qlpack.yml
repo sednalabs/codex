@@ -6,5 +6,5 @@ groups:
 extractor: rust
 dependencies:
   codeql/rust-all: "*"
-defaultSuiteFile: suites/rust-computer-use-contract.qls
+defaultSuiteFile: suites/rust-computer-use-production.qls
 warnOnImplicitThis: true

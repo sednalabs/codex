@@ -1,5 +1,6 @@
 {
-  "$defs": {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
     "PluginShareDiscoverability": {
       "enum": [
         "LISTED",
@@ -17,17 +18,17 @@
           "type": "string"
         },
         "principalType": {
-          "$ref": "#/$defs/PluginSharePrincipalType"
+          "$ref": "#/definitions/PluginSharePrincipalType"
         },
         "role": {
-          "$ref": "#/$defs/PluginSharePrincipalRole"
+          "$ref": "#/definitions/PluginSharePrincipalRole"
         }
       },
       "required": [
-        "principalType",
+        "name",
         "principalId",
-        "role",
-        "name"
+        "principalType",
+        "role"
       ],
       "type": "object"
     },
@@ -48,21 +49,20 @@
       "type": "string"
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "discoverability": {
-      "$ref": "#/$defs/PluginShareDiscoverability"
+      "$ref": "#/definitions/PluginShareDiscoverability"
     },
     "principals": {
       "items": {
-        "$ref": "#/$defs/PluginSharePrincipal"
+        "$ref": "#/definitions/PluginSharePrincipal"
       },
       "type": "array"
     }
   },
   "required": [
-    "principals",
-    "discoverability"
+    "discoverability",
+    "principals"
   ],
   "title": "PluginShareUpdateTargetsResponse",
   "type": "object"

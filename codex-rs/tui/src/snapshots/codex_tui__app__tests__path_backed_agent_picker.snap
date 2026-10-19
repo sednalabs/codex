@@ -3,10 +3,9 @@ source: tui/src/app/tests.rs
 expression: "render_bottom_popup(&app.chat_widget, 80)"
 ---
   Subagents
-  Select an agent to watch. Type to filter; search 'closed' for stale sessions
+  Select an agent to watch. ⌥← previous, ⌥→ next.
 
-  Search agents or type 'closed'
-› • /root/worker  task: /root/worker • 00000000-0000-0000-0000-000000000123 •
-                  path: /root/worker • live active open
 
-  Press enter to confirm or esc to go back
+› 1. • /root/worker  00000000-0000-0000-0000-000000000123
+
+  enter select · esc back

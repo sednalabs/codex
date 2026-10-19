@@ -1,9 +1,10 @@
-//! Bounded, best-effort previews for the v2 `/agent` status output.
+//! Bounded, best-effort previews for the v2 `/subagents` status output.
 
 use super::ThreadBufferedEvent;
 use super::ThreadEventStore;
 use crate::history_cell::HistoryCell;
 use crate::history_cell::plain_lines;
+use crate::style::accent_color;
 use crate::text_formatting::truncate_text;
 use codex_app_server_protocol::CollabAgentTool;
 use codex_app_server_protocol::ServerNotification;
@@ -32,7 +33,7 @@ impl AgentStatusHistoryCell {
 impl HistoryCell for AgentStatusHistoryCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
         let mut lines: Vec<Line<'static>> = vec![
-            "/agent".magenta().into(),
+            "/subagents".magenta().into(),
             "Sub-agents running".bold().into(),
             "".into(),
         ];
@@ -85,14 +86,12 @@ impl AgentStatusThreadPreview {
         let mut activity = Vec::new();
         for event in events {
             let item = match event {
-                ThreadBufferedEvent::Notification(ServerNotification::ItemCompleted(event)) => {
-                    &event.item
-                }
-                ThreadBufferedEvent::Notification(ServerNotification::ItemStarted(event)) => {
-                    &event.item
-                }
-                ThreadBufferedEvent::Notification(_)
-                | ThreadBufferedEvent::Request(_)
+                ThreadBufferedEvent::Notification(notification) => match notification.as_ref() {
+                    ServerNotification::ItemCompleted(event) => &event.item,
+                    ServerNotification::ItemStarted(event) => &event.item,
+                    _ => continue,
+                },
+                ThreadBufferedEvent::Request(_)
                 | ThreadBufferedEvent::HistoryEntryResponse(_)
                 | ThreadBufferedEvent::FeedbackSubmission(_) => continue,
             };
@@ -114,7 +113,11 @@ impl AgentStatusThreadPreview {
     }
 
     fn title_line(&self) -> Line<'static> {
-        vec!["  • ".dim(), format!("`{}`", self.agent_path).cyan()].into()
+        vec![
+            "  • ".dim(),
+            format!("`{}`", self.agent_path).fg(accent_color()),
+        ]
+        .into()
     }
 
     fn preview_lines(&self, width: u16) -> Vec<Line<'static>> {
@@ -160,6 +163,10 @@ fn activity_summary(item: &ThreadItem) -> Option<String> {
         }
         ThreadItem::CollabAgentToolCall { tool, .. } => {
             let action = match tool {
+                CollabAgentTool::SendMessage
+                | CollabAgentTool::FollowupTask
+                | CollabAgentTool::InterruptAgent
+                | CollabAgentTool::ListAgents => return None,
                 CollabAgentTool::SpawnAgent => "Spawned an agent",
                 CollabAgentTool::SendInput => "Sent input to an agent",
                 CollabAgentTool::ResumeAgent => "Resumed an agent",
@@ -175,6 +182,7 @@ fn activity_summary(item: &ThreadItem) -> Option<String> {
                 SubAgentActivityKind::Started => "Started",
                 SubAgentActivityKind::Interacted => "Contacted",
                 SubAgentActivityKind::Interrupted => "Interrupted",
+                SubAgentActivityKind::Completed => "Completed",
             };
             return bounded_summary(&format!("{action} {agent_path}"));
         }
@@ -185,12 +193,14 @@ fn activity_summary(item: &ThreadItem) -> Option<String> {
             let path = path.render_for_ui();
             return bounded_summary(&format!("Viewed {path}"));
         }
-        ThreadItem::ComputerUseCall { .. } => return Some("Computer use".to_string()),
         ThreadItem::ImageGeneration(_) => return Some("Generated an image".to_string()),
         ThreadItem::EnteredReviewMode { .. } => return Some("Entered review mode".to_string()),
         ThreadItem::ExitedReviewMode { .. } => return Some("Exited review mode".to_string()),
         ThreadItem::ContextCompaction { .. } => return Some("Compacted context".to_string()),
-        ThreadItem::UserMessage { .. } | ThreadItem::HookPrompt { .. } | ThreadItem::Sleep(_) => {
+        ThreadItem::UserMessage { .. }
+        | ThreadItem::HookPrompt { .. }
+        | ThreadItem::FunctionCallOutput { .. }
+        | ThreadItem::Sleep(_) => {
             return None;
         }
     };

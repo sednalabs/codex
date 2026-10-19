@@ -1,13 +1,11 @@
 use crate::ExternalMemoryFile;
 use crate::discover_external_memory_files;
-use crate::utils::ensure_migration_path;
 use codex_rollout::StateDbHandle;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::fs;
 use std::io;
-use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -68,10 +66,6 @@ pub(super) async fn import(
             "memory import requires at least one selected memory",
         ));
     }
-    validate_memory_project_keys(&selected_memory)?;
-    ensure_memory_destination_paths(codex_home)?;
-    let memory_files = discover_external_memory_files(external_agent_home)?;
-    ensure_memory_copy_paths(codex_home, &memory_files, &selected_memory)?;
     let state_db = state_db.ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotConnected,
@@ -82,6 +76,7 @@ pub(super) async fn import(
     codex_memories_write::workspace::prepare_memory_workspace(&memory_root)
         .await
         .map_err(io::Error::other)?;
+    let memory_files = discover_external_memory_files(external_agent_home)?;
     let copy_outcome = copy_resources(codex_home, &memory_files, &selected_memory)?;
     if copy_outcome.workspace_changed
         && let Err(err) = state_db
@@ -98,7 +93,6 @@ pub(crate) fn projects_needing_import(
     codex_home: &Path,
     memory_files: &[ExternalMemoryFile],
 ) -> io::Result<BTreeSet<String>> {
-    ensure_memory_destination_paths(codex_home)?;
     let mut projects = BTreeSet::new();
     let files_by_project = group_memory_files(memory_files);
     let source_projects = files_by_project
@@ -116,11 +110,11 @@ pub(crate) fn projects_needing_import(
             projects.insert(project_key.to_string());
         }
     }
-    let owned_projects = owned_project_keys(codex_home)?;
-    for project_key in owned_projects.difference(&source_projects) {
-        ensure_project_destination_paths(codex_home, project_key, &[])?;
-        projects.insert(project_key.clone());
-    }
+    projects.extend(
+        owned_project_keys(codex_home)?
+            .difference(&source_projects)
+            .cloned(),
+    );
     Ok(projects)
 }
 
@@ -129,7 +123,6 @@ fn copy_resources(
     memory_files: &[ExternalMemoryFile],
     selected_memory: &BTreeSet<&str>,
 ) -> io::Result<MemoryImportOutcome> {
-    ensure_memory_copy_paths(codex_home, memory_files, selected_memory)?;
     let files_by_project = group_memory_files(memory_files);
     let mut workspace_changed = false;
     let mut synchronized_projects = Vec::new();
@@ -207,14 +200,10 @@ fn owned_project_keys(codex_home: &Path) -> io::Result<BTreeSet<String>> {
     let mut project_keys = BTreeSet::new();
     for entry in entries {
         let entry = entry?;
-        let entry_path = entry.path();
-        ensure_migration_path(codex_home, &entry_path)?;
         if !entry.file_type()?.is_dir() {
             continue;
         }
-        let scope_path = entry_path.join(PROJECT_SCOPE_FILE);
-        ensure_migration_path(codex_home, &scope_path)?;
-        match fs::symlink_metadata(&scope_path) {
+        match fs::symlink_metadata(entry.path().join(PROJECT_SCOPE_FILE)) {
             Ok(metadata) if metadata.file_type().is_file() => {}
             Ok(_) => continue,
             Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
@@ -230,7 +219,6 @@ fn owned_project_keys(codex_home: &Path) -> io::Result<BTreeSet<String>> {
 }
 
 fn project_has_unscoped_target(codex_home: &Path, project_key: &str) -> io::Result<bool> {
-    ensure_project_destination_paths(codex_home, project_key, &[])?;
     let target_root = resources_root(codex_home).join(project_key);
     let target_metadata = match fs::symlink_metadata(&target_root) {
         Ok(metadata) => metadata,
@@ -253,7 +241,6 @@ fn project_needs_import(
     project_cwd: &Path,
     memory_files: &[&ExternalMemoryFile],
 ) -> io::Result<bool> {
-    ensure_project_destination_paths(codex_home, project_key, memory_files)?;
     let target_root = resources_root(codex_home).join(project_key);
     let target_metadata = match fs::symlink_metadata(&target_root) {
         Ok(metadata) => metadata,
@@ -297,7 +284,6 @@ fn replace_project_resources(
     project_cwd: &Path,
     memory_files: &[&ExternalMemoryFile],
 ) -> io::Result<()> {
-    ensure_project_destination_paths(codex_home, project_key, memory_files)?;
     let source_files = memory_files
         .iter()
         .map(|memory_file| {
@@ -326,7 +312,6 @@ fn replace_project_resources(
 }
 
 fn remove_project_resources(codex_home: &Path, project_key: &str) -> io::Result<bool> {
-    ensure_project_destination_paths(codex_home, project_key, &[])?;
     let target_root = resources_root(codex_home).join(project_key);
     match fs::symlink_metadata(&target_root) {
         Ok(metadata) if metadata.file_type().is_dir() => fs::remove_dir_all(&target_root)?,
@@ -384,63 +369,6 @@ fn extension_root(codex_home: &Path) -> PathBuf {
 
 pub(super) fn resources_root(codex_home: &Path) -> PathBuf {
     extension_root(codex_home).join("resources")
-}
-
-fn validate_memory_project_keys(project_keys: &BTreeSet<&str>) -> io::Result<()> {
-    for project_key in project_keys {
-        let mut components = Path::new(project_key).components();
-        if !matches!(components.next(), Some(Component::Normal(_))) || components.next().is_some() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("memory project key is not a single path component: {project_key}"),
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn ensure_memory_destination_paths(codex_home: &Path) -> io::Result<()> {
-    let memory_root = codex_home.join("memories");
-    let extension_root = extension_root(codex_home);
-    let resources_root = resources_root(codex_home);
-    let instructions_path = extension_root.join("instructions.md");
-    ensure_migration_path(codex_home, &memory_root)?;
-    ensure_migration_path(codex_home, &extension_root)?;
-    ensure_migration_path(codex_home, &resources_root)?;
-    ensure_migration_path(codex_home, &instructions_path)
-}
-
-fn ensure_memory_copy_paths(
-    codex_home: &Path,
-    memory_files: &[ExternalMemoryFile],
-    selected_memory: &BTreeSet<&str>,
-) -> io::Result<()> {
-    validate_memory_project_keys(selected_memory)?;
-    ensure_memory_destination_paths(codex_home)?;
-    let files_by_project = group_memory_files(memory_files);
-    for &project_key in selected_memory {
-        match files_by_project.get(project_key) {
-            Some(project_files) => {
-                ensure_project_destination_paths(codex_home, project_key, project_files)?;
-            }
-            None => ensure_project_destination_paths(codex_home, project_key, &[])?,
-        }
-    }
-    Ok(())
-}
-
-fn ensure_project_destination_paths(
-    codex_home: &Path,
-    project_key: &str,
-    memory_files: &[&ExternalMemoryFile],
-) -> io::Result<()> {
-    let target_root = resources_root(codex_home).join(project_key);
-    ensure_migration_path(codex_home, &target_root)?;
-    ensure_migration_path(codex_home, &target_root.join(PROJECT_SCOPE_FILE))?;
-    for memory_file in memory_files {
-        ensure_migration_path(codex_home, &resource_path(codex_home, memory_file))?;
-    }
-    Ok(())
 }
 
 fn invalid_data_error(message: impl Into<String>) -> io::Error {

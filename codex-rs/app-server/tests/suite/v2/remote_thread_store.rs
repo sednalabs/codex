@@ -31,12 +31,19 @@ use codex_app_server_protocol::InitializeParams;
 use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerNotification;
+use codex_app_server_protocol::ThreadAttachmentAddParams;
+use codex_app_server_protocol::ThreadAttachmentListParams;
+use codex_app_server_protocol::ThreadAttachmentRemoveParams;
 use codex_app_server_protocol::ThreadDeleteParams;
 use codex_app_server_protocol::ThreadDeleteResponse;
 use codex_app_server_protocol::ThreadHistoryMode;
 use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadListResponse;
 use codex_app_server_protocol::ThreadResumeParams;
+use codex_app_server_protocol::ThreadSectionCreateParams;
+use codex_app_server_protocol::ThreadSectionDeleteParams;
+use codex_app_server_protocol::ThreadSectionListParams;
+use codex_app_server_protocol::ThreadSectionUpdateParams;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::TurnStartParams;
@@ -54,6 +61,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::ThreadMemoryMode;
+use codex_state::PINNED_THREAD_SECTION_ID;
 use codex_thread_store::CreateThreadParams as StoreCreateThreadParams;
 use codex_thread_store::InMemoryThreadStore;
 use codex_thread_store::ThreadPersistenceMetadata;
@@ -65,6 +73,274 @@ use tokio::time::timeout;
 use uuid::Uuid;
 
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+#[tokio::test]
+async fn thread_section_operations_without_sqlite_return_method_not_found() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let store_id = Uuid::new_v4().to_string();
+    create_config_toml_with_thread_store(codex_home.path(), "http://127.0.0.1:1", &store_id)?;
+    let _in_memory_store = InMemoryThreadStoreId { store_id };
+    let client = start_in_process_server(codex_home.path()).await?;
+
+    let section_id = Uuid::now_v7().to_string();
+
+    for request in [
+        ClientRequest::ThreadSectionList {
+            request_id: RequestId::Integer(1),
+            params: ThreadSectionListParams::default(),
+        },
+        ClientRequest::ThreadSectionCreate {
+            request_id: RequestId::Integer(2),
+            params: ThreadSectionCreateParams {
+                name: "Work".to_string(),
+                appearance: None,
+            },
+        },
+        ClientRequest::ThreadSectionUpdate {
+            request_id: RequestId::Integer(3),
+            params: ThreadSectionUpdateParams {
+                section_id: section_id.clone(),
+                name: "Projects".to_string(),
+                appearance: None,
+            },
+        },
+        ClientRequest::ThreadSectionDelete {
+            request_id: RequestId::Integer(4),
+            params: ThreadSectionDeleteParams { section_id },
+        },
+        ClientRequest::ThreadSectionCreate {
+            request_id: RequestId::Integer(5),
+            params: ThreadSectionCreateParams {
+                name: " ".to_string(),
+                appearance: None,
+            },
+        },
+        ClientRequest::ThreadSectionUpdate {
+            request_id: RequestId::Integer(6),
+            params: ThreadSectionUpdateParams {
+                section_id: " ".to_string(),
+                name: "Work".to_string(),
+                appearance: None,
+            },
+        },
+        ClientRequest::ThreadSectionUpdate {
+            request_id: RequestId::Integer(7),
+            params: ThreadSectionUpdateParams {
+                section_id: PINNED_THREAD_SECTION_ID.to_string(),
+                name: "Pinned again".to_string(),
+                appearance: None,
+            },
+        },
+        ClientRequest::ThreadSectionDelete {
+            request_id: RequestId::Integer(8),
+            params: ThreadSectionDeleteParams {
+                section_id: " ".to_string(),
+            },
+        },
+        ClientRequest::ThreadSectionDelete {
+            request_id: RequestId::Integer(9),
+            params: ThreadSectionDeleteParams {
+                section_id: PINNED_THREAD_SECTION_ID.to_string(),
+            },
+        },
+        ClientRequest::ThreadSectionUpdate {
+            request_id: RequestId::Integer(10),
+            params: ThreadSectionUpdateParams {
+                section_id: PINNED_THREAD_SECTION_ID.to_string(),
+                name: " ".to_string(),
+                appearance: None,
+            },
+        },
+    ] {
+        let method = request.method_name();
+        let error = client
+            .request(request)
+            .await?
+            .expect_err("section management requires sqlite state");
+
+        assert_eq!(error.code, -32601);
+        assert_eq!(
+            error.message,
+            format!("{method} is unavailable without sqlite state")
+        );
+    }
+
+    client.shutdown().await?;
+    assert_no_local_persistence_artifacts(codex_home.path())?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_start_defaults_to_legacy_without_history_list_support() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    let store_id = Uuid::new_v4().to_string();
+    create_config_toml_with_thread_store(codex_home.path(), &server.uri(), &store_id)?;
+
+    let _in_memory_store = InMemoryThreadStoreId { store_id };
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+
+    let ThreadStartResponse { thread, .. } = mcp.start_thread(ThreadStartParams::default()).await?;
+
+    assert_eq!(thread.history_mode, ThreadHistoryMode::Legacy);
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_list_repeated_cursor_returns_internal_error() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let store_id = Uuid::new_v4().to_string();
+    create_config_toml_with_thread_store(codex_home.path(), "http://127.0.0.1:1", &store_id)?;
+    let thread_store = InMemoryThreadStore::for_id(store_id.clone());
+    let _in_memory_store = InMemoryThreadStoreId { store_id };
+    thread_store
+        .repeat_list_threads_cursor_for_testing("repeated-cursor")
+        .await;
+    let client = start_in_process_server(codex_home.path()).await?;
+
+    let error = client
+        .request(ClientRequest::ThreadList {
+            request_id: RequestId::Integer(1),
+            params: ThreadListParams {
+                excluded_thread_ids: None,
+                originators: None,
+                cursor: None,
+                limit: Some(1),
+                sort_key: None,
+                sort_direction: None,
+                model_providers: Some(Vec::new()),
+                source_kinds: None,
+                archived: None,
+                section_id: None,
+                project_id: None,
+                cwd: None,
+                use_state_db_only: false,
+                search_term: None,
+                parent_thread_id: None,
+                ancestor_thread_id: None,
+            },
+        })
+        .await?
+        .expect_err("a repeated refill cursor must fail thread/list");
+    assert_eq!(error.code, -32603);
+    assert_eq!(error.message, "thread listing returned a repeated cursor");
+
+    let thread_id = ThreadId::new();
+    thread_store
+        .create_thread(StoreCreateThreadParams {
+            creator_user_id: None,
+            creator_account_id: None,
+            session_id: thread_id.into(),
+            thread_id,
+            extra_config: None,
+            forked_from_id: None,
+            parent_thread_id: None,
+            source: SessionSource::Cli,
+            thread_source: None,
+            originator: "test_originator".to_string(),
+            base_instructions: BaseInstructions::default(),
+            dynamic_tools: Vec::new(),
+            selected_capability_roots: Vec::new(),
+            multi_agent_version: None,
+            history_mode: Default::default(),
+            history_base: None,
+            subagent_history_start_ordinal: None,
+            initial_window_id: Uuid::now_v7().to_string(),
+            runtime_workspace_roots: None,
+            metadata: ThreadPersistenceMetadata {
+                cwd: Some(codex_home.path().to_path_buf()),
+                model_provider: "mock_provider".to_string(),
+                memory_mode: ThreadMemoryMode::Enabled,
+            },
+        })
+        .await?;
+
+    let error = client
+        .request(ClientRequest::ThreadList {
+            request_id: RequestId::Integer(2),
+            params: ThreadListParams {
+                excluded_thread_ids: None,
+                originators: None,
+                cursor: Some("repeated-cursor".to_string()),
+                limit: Some(1),
+                sort_key: None,
+                sort_direction: None,
+                model_providers: Some(Vec::new()),
+                source_kinds: None,
+                archived: None,
+                section_id: None,
+                project_id: None,
+                cwd: None,
+                use_state_db_only: false,
+                search_term: None,
+                parent_thread_id: None,
+                ancestor_thread_id: None,
+            },
+        })
+        .await?
+        .expect_err("a repeated full-page cursor must fail thread/list");
+    assert_eq!(error.code, -32603);
+    assert_eq!(error.message, "thread listing returned a repeated cursor");
+
+    client.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_attachment_operations_without_sqlite_return_method_not_found() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let store_id = Uuid::new_v4().to_string();
+    create_config_toml_with_thread_store(codex_home.path(), "http://127.0.0.1:1", &store_id)?;
+    let _in_memory_store = InMemoryThreadStoreId { store_id };
+    let client = start_in_process_server(codex_home.path()).await?;
+
+    for request in [
+        ClientRequest::ThreadAttachmentAdd {
+            request_id: RequestId::Integer(1),
+            params: ThreadAttachmentAddParams {
+                thread_id: "not-a-thread-id".to_string(),
+                attachment_type: " ".to_string(),
+                identity_key: " ".to_string(),
+                payload: serde_json::json!({}),
+            },
+        },
+        ClientRequest::ThreadAttachmentList {
+            request_id: RequestId::Integer(2),
+            params: ThreadAttachmentListParams {
+                thread_id: uuid::Uuid::now_v7().to_string(),
+                cursor: None,
+                limit: None,
+            },
+        },
+        ClientRequest::ThreadAttachmentRemove {
+            request_id: RequestId::Integer(3),
+            params: ThreadAttachmentRemoveParams {
+                thread_id: "not-a-thread-id".to_string(),
+                attachment_type: " ".to_string(),
+                identity_key: " ".to_string(),
+            },
+        },
+    ] {
+        let method = request.method_name();
+        let error = client
+            .request(request)
+            .await?
+            .expect_err("attachment management is unsupported by this store");
+        assert_eq!(error.code, -32601);
+        assert_eq!(
+            error.message,
+            format!("{method} is not supported by the configured thread store")
+        );
+    }
+
+    client.shutdown().await?;
+    assert_no_local_persistence_artifacts(codex_home.path())?;
+    Ok(())
+}
 
 #[tokio::test]
 async fn thread_start_rejects_paginated_history_without_list_support() -> Result<()> {
@@ -155,9 +431,8 @@ async fn thread_delete_with_non_local_thread_store_does_not_create_local_persist
             let Some(event) = client.next_event().await else {
                 anyhow::bail!("in-process app-server stopped before turn/completed");
             };
-            if let InProcessServerEvent::ServerNotification(ServerNotification::TurnCompleted(
-                completed,
-            )) = event
+            if let InProcessServerEvent::ServerNotification(notification) = event
+                && let ServerNotification::TurnCompleted(completed) = notification.as_ref()
                 && completed.thread_id == thread.id
             {
                 return Ok::<(), anyhow::Error>(());
@@ -170,15 +445,17 @@ async fn thread_delete_with_non_local_thread_store_does_not_create_local_persist
         .request(ClientRequest::ThreadList {
             request_id: RequestId::Integer(3),
             params: ThreadListParams {
+                excluded_thread_ids: None,
+                originators: None,
                 cursor: None,
                 limit: Some(10),
                 sort_key: None,
                 sort_direction: None,
                 model_providers: Some(Vec::new()),
                 source_kinds: None,
-                thread_sources: None,
                 archived: None,
-                is_pinned: None,
+                section_id: None,
+                project_id: None,
                 cwd: None,
                 use_state_db_only: false,
                 search_term: None,
@@ -198,6 +475,8 @@ async fn thread_delete_with_non_local_thread_store_does_not_create_local_persist
     let unloaded_thread_id = ThreadId::from_string(&Uuid::new_v4().to_string())?;
     thread_store
         .create_thread(StoreCreateThreadParams {
+            creator_user_id: None,
+            creator_account_id: None,
             session_id: unloaded_thread_id.into(),
             thread_id: unloaded_thread_id,
             extra_config: None,
@@ -207,7 +486,6 @@ async fn thread_delete_with_non_local_thread_store_does_not_create_local_persist
             thread_source: None,
             originator: "test_originator".to_string(),
             base_instructions: BaseInstructions::default(),
-            base_instructions_provenance: Default::default(),
             dynamic_tools: Vec::new(),
             selected_capability_roots: Vec::new(),
             multi_agent_version: None,
@@ -215,6 +493,7 @@ async fn thread_delete_with_non_local_thread_store_does_not_create_local_persist
             history_base: None,
             subagent_history_start_ordinal: None,
             initial_window_id: Uuid::now_v7().to_string(),
+            runtime_workspace_roots: None,
             metadata: ThreadPersistenceMetadata {
                 cwd: Some(codex_home.path().to_path_buf()),
                 model_provider: "mock_provider".to_string(),
@@ -250,7 +529,7 @@ async fn thread_delete_with_non_local_thread_store_does_not_create_local_persist
 }
 
 #[tokio::test]
-async fn cold_thread_resume_reuses_non_local_history_probe() -> Result<()> {
+async fn cold_thread_resume_rechecks_non_local_history_after_config_load() -> Result<()> {
     let server = create_mock_responses_server_repeating_assistant("Done").await;
     let codex_home = TempDir::new()?;
     let store_id = Uuid::new_v4().to_string();
@@ -298,9 +577,8 @@ async fn cold_thread_resume_reuses_non_local_history_probe() -> Result<()> {
             let Some(event) = client.next_event().await else {
                 anyhow::bail!("in-process app-server stopped before turn/completed");
             };
-            if let InProcessServerEvent::ServerNotification(ServerNotification::TurnCompleted(
-                completed,
-            )) = event
+            if let InProcessServerEvent::ServerNotification(notification) = event
+                && let ServerNotification::TurnCompleted(completed) = notification.as_ref()
                 && completed.thread_id == thread.id
             {
                 return Ok::<(), anyhow::Error>(());
@@ -313,7 +591,8 @@ async fn cold_thread_resume_reuses_non_local_history_probe() -> Result<()> {
     let client = start_in_process_client(config, loader_overrides).await?;
     let reads_before_resume = thread_store.calls().await.read_thread_with_history;
     // The in-memory store is pathless, so resume currently fails later while
-    // assembling the response. The history-bearing probe must still be reused.
+    // assembling the response. Reuse the probe within each attempt, but read it
+    // again after loading configuration without the metadata permit.
     let _resume_result = client
         .request(ClientRequest::ThreadResume {
             request_id: RequestId::Integer(3),
@@ -324,12 +603,9 @@ async fn cold_thread_resume_reuses_non_local_history_probe() -> Result<()> {
         })
         .await?;
 
-    assert_eq!(
-        thread_store.calls().await.read_thread_with_history,
-        reads_before_resume + 1
-    );
-
+    let reads_after_resume = thread_store.calls().await.read_thread_with_history;
     client.shutdown().await?;
+    assert_eq!(reads_after_resume, reads_before_resume + 2);
     Ok(())
 }
 
@@ -358,6 +634,7 @@ async fn start_in_process_client(
         loader_overrides,
         strict_config: false,
         cloud_config_bundle: CloudConfigBundleLoader::default(),
+        embedded_network_policy: Default::default(),
         thread_config_loader: Arc::new(NoopThreadConfigLoader),
         feedback: CodexFeedback::new(),
         log_db: None,
@@ -434,14 +711,16 @@ fn assert_no_local_persistence_artifacts(codex_home: &Path) -> Result<()> {
         "non-local thread persistence should not create sqlite artifacts: {sqlite_artifacts:?}"
     );
     let mut entries = codex_home_entries(codex_home)?;
-    // Bazel test runs may initialize shell snapshot storage under codex_home.
-    // That is not thread persistence; keep the assertion focused on rollout,
-    // session, sqlite, and other unexpected thread-store artifacts.
+    // Host startup may leave sandbox migration markers or Windows sandbox logs,
+    // and Bazel test runs may initialize shell snapshot storage. None is thread
+    // persistence.
+    entries.remove(".sandbox_migration");
+    #[cfg(windows)]
+    entries.remove(".sandbox");
     entries.remove("shell_snapshots");
     assert_eq!(
         entries,
         BTreeSet::from([
-            ".sandbox_migration".to_string(),
             "config.toml".to_string(),
             "installation_id".to_string(),
             "skills".to_string(),
