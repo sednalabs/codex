@@ -28,6 +28,7 @@ use futures::FutureExt;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
+use std::io::Write;
 use std::panic::AssertUnwindSafe;
 use std::panic::resume_unwind;
 use tokio::sync::oneshot;
@@ -726,7 +727,8 @@ async fn board_unsubscribe_survives_post_and_resume_until_resubscribed(
                     })
                 })
         });
-        eprintln!(
+        let _ = writeln!(
+            std::io::stderr().lock(),
             "diagnostic=board-expected-root-follow-up-request-present value={expected_root_follow_up_present}"
         );
         resume_unwind(payload);
