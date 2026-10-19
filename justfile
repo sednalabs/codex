@@ -176,6 +176,7 @@ core-carry-smoke:
 # Focused startup sync regression slice for bounded-wait and abort/re-arm behavior.
 core-startup-sync-targeted:
     cargo test -p codex-core --lib startup_remote_plugin_sync_ -- --test-threads=1
+    cargo test --locked -p codex-core-plugins --lib zipball_extraction_masks_special_mode_bits_and_preserves_executables -- --test-threads=1
 
 # Focused external-agent session import and content-hash compatibility slice.
 external-agent-session-migration-targeted:

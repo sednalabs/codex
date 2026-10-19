@@ -1,6 +1,8 @@
 //! Host-held, per-execution MCP proof for the protected claim cohort.
 
 #[cfg(target_os = "linux")]
+mod api_bearer_provisioner;
+#[cfg(target_os = "linux")]
 mod api_claim;
 mod auth;
 #[cfg(target_os = "linux")]

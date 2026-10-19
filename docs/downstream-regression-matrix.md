@@ -143,6 +143,14 @@ Focused targeted lanes for iterative work on the current carry seams:
   - Explicit full-history registry/code audit against the checked-out head and
     current upstream mirror.
 
+## Curated plugin archive permissions
+
+`codex.core-startup-sync-targeted` covers both the existing startup synchronization
+regressions and `zipball_extraction_masks_special_mode_bits_and_preserves_executables`.
+The archive test feeds special Unix mode bits through curated plugin extraction
+and confirms executable permissions remain available while setuid, setgid, and
+sticky bits cannot reach the filesystem.
+
 ## Sedna release update routing
 
 The installer and update surfaces share one boundary: automatic discovery is
@@ -1186,6 +1194,23 @@ retries, redirects, and request logging disabled, and preserves an uncertain
 outcome without replay. The API server authenticates the bearer and verifies
 the proof; local JWT comparisons only check policy consistency. Source and
 hosted package proof do not appoint the bearer or establish HTTP first use.
+
+The bounded `provision-api-bearer` mode reuses the existing Codex OAuth callback
+and PKCE path with the fixed API issuer, resource, client, loopback redirect, and
+`ops:write` scope. Its regressions check the exact client/resource/scope and
+S256 request, reject unsafe callback or issuer metadata and unsupported
+token-type/lifetime responses, discard the refresh response without persistence,
+and verify atomic replacement of only one root-owned credential basename. It
+supports the installed root-owned launcher under interactive `sudo`; `SUDO_UID`
+selects only the unprivileged browser process and does not attest the OAuth
+subject. Provisioning checks issuer/audience/scope/UUID-subject-shape/expiry
+without requiring the claim policy. At actual use, the fixed HTTP launcher still
+requires the token subject to match the root policy before signing or sending.
+The volatile `/run/credstore` source is a versioned envelope with a unique
+generation; the launcher removes only the exact loaded envelope under the same
+lock as replacement, preserving a concurrent same-token replacement. The claim
+unit remains conditioned on the separate root policy. These source tests do not
+create the client, obtain a token, activate the policy, or claim a Work item.
 
 The protected CLI fixture additionally consumes the exact delegated process's
 non-timeout wait result before root finalization: the positive case requires

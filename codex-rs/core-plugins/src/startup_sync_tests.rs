@@ -4,6 +4,8 @@ use crate::test_support::recorded_http_client_urls;
 use pretty_assertions::assert_eq;
 use std::ffi::OsStr;
 use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
 #[cfg(unix)]
@@ -724,6 +726,81 @@ async fn sync_openai_plugins_repo_falls_back_to_http_when_git_is_unavailable() {
     assert_eq!(synced_sha, sha);
     assert_curated_gmail_repo(&repo_path);
     assert_eq!(read_curated_plugins_sha(tmp.path()).as_deref(), Some(sha));
+}
+
+#[cfg(unix)]
+#[test]
+fn zipball_extraction_masks_special_mode_bits_and_preserves_executables() {
+    let tmp = tempdir().expect("tempdir");
+    let cursor = std::io::Cursor::new(Vec::new());
+    let mut writer = ZipWriter::new(cursor);
+    let special_mode = 0o104755;
+    let ordinary_mode = 0o100755;
+
+    writer
+        .start_file(
+            "repo/plugins/gmail/bin/special",
+            SimpleFileOptions::default()
+                .system(zip::System::Unknown)
+                .external_attributes(special_mode << 16),
+        )
+        .expect("start special-mode file");
+    writer
+        .write_all(b"#!/bin/sh\nexit 0\n")
+        .expect("write special-mode file");
+    writer
+        .start_file(
+            "repo/plugins/gmail/bin/normal",
+            SimpleFileOptions::default()
+                .system(zip::System::Unknown)
+                .external_attributes(ordinary_mode << 16),
+        )
+        .expect("start executable file");
+    writer
+        .write_all(b"#!/bin/sh\nexit 0\n")
+        .expect("write executable file");
+    let bytes = writer.finish().expect("finish zip writer").into_inner();
+
+    let mut archive = ZipArchive::new(std::io::Cursor::new(&bytes)).expect("open test archive");
+    let entry = archive
+        .by_name("repo/plugins/gmail/bin/special")
+        .expect("read special-mode entry");
+    assert_eq!(entry.external_attributes() >> 16, special_mode);
+    drop(entry);
+
+    extract_zipball_to_dir(&bytes, tmp.path()).expect("extract zipball");
+
+    let special_path = tmp.path().join("plugins/gmail/bin/special");
+    let normal_path = tmp.path().join("plugins/gmail/bin/normal");
+    assert_eq!(
+        std::fs::metadata(&special_path)
+            .expect("special-mode file metadata")
+            .permissions()
+            .mode()
+            & 0o7777,
+        0o755
+    );
+    assert_eq!(
+        std::fs::metadata(&normal_path)
+            .expect("executable file metadata")
+            .permissions()
+            .mode()
+            & 0o7777,
+        0o755
+    );
+
+    let direct_path = tmp.path().join("direct-mode-check");
+    std::fs::write(&direct_path, b"contents").expect("create mode-check file");
+    apply_zip_permissions(Some(special_mode), &direct_path)
+        .expect("apply sanitized special-mode metadata");
+    assert_eq!(
+        std::fs::metadata(&direct_path)
+            .expect("direct mode-check metadata")
+            .permissions()
+            .mode()
+            & 0o7777,
+        0o755
+    );
 }
 
 #[test]

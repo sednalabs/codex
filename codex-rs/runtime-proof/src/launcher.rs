@@ -53,6 +53,7 @@ use zeroize::Zeroize as _;
 use zeroize::Zeroizing;
 
 const POLICY_PATH: &str = "/etc/codex/runtime-proof/claim-launch.json";
+const LAUNCHER_PATH: &str = "/usr/libexec/codex/codex-runtime-proof-launcher";
 const CREDENTIALS_DIRECTORY_ENV: &str = "CREDENTIALS_DIRECTORY";
 const ISSUER_SEED_CREDENTIAL: &str = "runtime-proof-issuer-seed";
 const PROVIDER_AUTH_CREDENTIAL: &str = "provider-auth.json";
@@ -153,8 +154,53 @@ pub fn run() -> Result<i32> {
     let credential_directory = credential_directory()?;
     match &policy.target {
         LauncherTarget::Mcp(target) => run_mcp(&policy, target, &credential_directory),
-        LauncherTarget::Http(target) => run_http_claim(&policy, target, &credential_directory),
+        LauncherTarget::Http(target) => {
+            crate::api_bearer_provisioner::cleanup_loaded_bearer_source(&credential_directory)?;
+            run_http_claim(&policy, target, &credential_directory)
+        }
     }
+}
+
+/// Provisions the fixed API bearer before a claim policy is activated.
+pub fn provision_api_bearer() -> Result<i32> {
+    let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
+    if arguments.len() != 1
+        || arguments[0].as_os_str() != std::ffi::OsStr::new("provision-api-bearer")
+    {
+        bail!("fixed API bearer provisioning does not accept caller-selected arguments");
+    }
+    require_root_launcher()?;
+    require_installed_launcher_image()?;
+    crate::api_bearer_provisioner::run()
+}
+
+fn require_installed_launcher_image() -> Result<()> {
+    let expected_path = Path::new(LAUNCHER_PATH);
+    let current_path =
+        std::env::current_exe().context("resolve fixed runtime-proof launcher image")?;
+    if current_path != expected_path || current_path.canonicalize()? != expected_path {
+        bail!("API bearer provisioning must use the installed fixed launcher");
+    }
+    for path in expected_path.ancestors() {
+        let metadata = fs::symlink_metadata(path)?;
+        if !metadata.is_dir() || metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
+            bail!("installed fixed launcher path is not root controlled");
+        }
+    }
+    let path_metadata = fs::symlink_metadata(expected_path)?;
+    let executable = File::open("/proc/self/exe")?;
+    let image_metadata = executable.metadata()?;
+    if !path_metadata.is_file()
+        || path_metadata.uid() != 0
+        || path_metadata.mode() & 0o022 != 0
+        || path_metadata.mode() & 0o111 == 0
+        || path_metadata.mode() & 0o6000 != 0
+        || image_metadata.dev() != path_metadata.dev()
+        || image_metadata.ino() != path_metadata.ino()
+    {
+        bail!("running API bearer provisioner is not the installed fixed launcher");
+    }
+    Ok(())
 }
 
 fn run_mcp(
@@ -215,15 +261,14 @@ fn run_http_claim(
     credential_directory: &Path,
 ) -> Result<i32> {
     let executable = open_verified_self_executable(&target.launcher_sha256)?;
-    let mut bearer_bytes = read_credential(
+    let bearer_bytes = Zeroizing::new(read_credential(
         credential_directory,
         api_claim::API_BEARER_CREDENTIAL,
-        api_claim::API_BEARER_MAX_BYTES,
-    )?;
-    let bearer_text = std::str::from_utf8(&bearer_bytes)
-        .map_err(|_| anyhow::anyhow!("fixed Ops API bearer is not UTF-8"))?
-        .to_owned();
-    bearer_bytes.zeroize();
+        api_claim::API_BEARER_CREDENTIAL_MAX_BYTES,
+    )?);
+    let mut bearer_secret = api_claim::decode_bearer_credential(&bearer_bytes)?;
+    let bearer_text = std::mem::take(&mut bearer_secret.0);
+    drop(bearer_secret);
 
     let now = api_claim::unix_seconds()?;
     let bearer = api_claim::validate_bearer(bearer_text, policy.principal, now)?;
@@ -1033,7 +1078,7 @@ fn open_nofollow(path: &Path) -> Result<File> {
         .with_context(|| format!("open fixed protected file {}", path.display()))
 }
 
-fn read_bounded(file: File, max_bytes: usize) -> Result<Zeroizing<Vec<u8>>> {
+pub(crate) fn read_bounded(file: File, max_bytes: usize) -> Result<Zeroizing<Vec<u8>>> {
     let mut bytes = Zeroizing::new(Vec::with_capacity(max_bytes.min(4096)));
     file.take(max_bytes as u64 + 1).read_to_end(&mut bytes)?;
     if bytes.len() > max_bytes {

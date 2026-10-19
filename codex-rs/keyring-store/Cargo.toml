@@ -12,7 +12,7 @@ keyring = { workspace = true, features = ["crypto-rust"] }
 tracing = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-keyring = { workspace = true, features = ["linux-native-async-persistent"] }
+keyring = { workspace = true, features = ["linux-native-sync-persistent", "vendored"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { workspace = true, features = ["apple-native"] }

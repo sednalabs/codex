@@ -35,7 +35,9 @@ zeroize = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 codex-http-client = { workspace = true }
+codex-rmcp-client = { workspace = true }
 tokio = { workspace = true, features = ["net", "rt", "time"] }
+tracing = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }

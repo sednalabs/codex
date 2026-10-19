@@ -10,13 +10,17 @@ use anyhow::anyhow;
 use anyhow::bail;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use codex_exec_server::HttpClient;
+use codex_exec_server::HttpClient as ExecServerHttpClient;
 use codex_exec_server::RouteAwareHttpClient;
+use codex_http_client::HttpClientBuilder;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::OutboundProxyPolicy;
+use oauth2::TokenResponse;
 use reqwest::Url;
+use reqwest::header::HeaderMap;
 use rmcp::transport::AuthorizationManager;
 use rmcp::transport::AuthorizationSession;
+use rmcp::transport::auth::AuthorizationMetadata;
 use rmcp::transport::auth::AuthorizationRequest;
 use rmcp::transport::auth::OAuthClientConfig;
 use rmcp::transport::auth::OAuthHttpClient;
@@ -38,10 +42,18 @@ use crate::utils::build_default_headers;
 use codex_config::types::AuthKeyringBackendKind;
 use codex_config::types::OAuthCredentialsStoreMode;
 
+const FIXED_API_CLAIM_SCOPE: &str = "ops:write";
+const FIXED_API_CLAIM_ISSUER: &str = "https://auth.grantmatler.com/realms/agent-ops";
+const FIXED_API_CLAIM_RESOURCE: &str = "https://ops-api.grantmatler.com";
+const FIXED_API_CLAIM_CLIENT_ID: &str = "codex-runtime-proof-api-claim";
+const FIXED_API_CLAIM_CALLBACK_PORT: u16 = 8765;
+const FIXED_API_CLAIM_CALLBACK_URL: &str = "http://127.0.0.1:8765/callback";
+const FIXED_API_CLAIM_TIMEOUT_SECS: u64 = 300;
+
 struct OAuthHttpContext {
     http_headers: Option<HashMap<String, String>>,
     env_http_headers: Option<HashMap<String, String>>,
-    http_client: Arc<dyn HttpClient>,
+    http_client: Arc<dyn ExecServerHttpClient>,
 }
 
 struct CallbackServerGuard {
@@ -83,6 +95,345 @@ impl std::fmt::Display for OAuthProviderError {
 }
 
 impl std::error::Error for OAuthProviderError {}
+
+/// A single access token returned by a fixed authorization-code flow.
+///
+/// The callback state and token response stay in memory. This path never writes
+/// Codex's persistent MCP credential store and returns only the access token.
+pub struct OAuthAccessToken {
+    access_token: zeroize::Zeroizing<String>,
+    expires_at: i64,
+}
+
+impl OAuthAccessToken {
+    pub fn access_token(&self) -> &str {
+        self.access_token.as_str()
+    }
+
+    pub fn expires_at(&self) -> i64 {
+        self.expires_at
+    }
+}
+
+/// Runs the fixed Ops API loopback authorization-code flow without storing
+/// returned credentials in Codex's persistent MCP OAuth store.
+///
+/// The issuer, API resource, client ID, redirect, and `ops:write` scope are
+/// fixed in source. The flow requires the exact Keycloak realm endpoints,
+/// authorization-code plus PKCE S256, a loopback callback, and a bounded
+/// Bearer token lifetime. Any refresh response stays in memory only and is
+/// discarded when the flow returns.
+pub async fn perform_fixed_ops_api_access_token_login(
+    open_authorization_url: impl FnOnce(&str) -> Result<()>,
+) -> Result<OAuthAccessToken> {
+    perform_oauth_access_token_login(
+        FIXED_API_CLAIM_ISSUER,
+        FIXED_API_CLAIM_RESOURCE,
+        FIXED_API_CLAIM_CLIENT_ID,
+        &[FIXED_API_CLAIM_SCOPE.to_string()],
+        FIXED_API_CLAIM_CALLBACK_PORT,
+        FIXED_API_CLAIM_CALLBACK_URL,
+        FIXED_API_CLAIM_TIMEOUT_SECS,
+        open_authorization_url,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn perform_oauth_access_token_login(
+    issuer_url: &str,
+    resource_url: &str,
+    client_id: &str,
+    requested_scopes: &[String],
+    callback_port: u16,
+    callback_url: &str,
+    timeout_secs: u64,
+    open_authorization_url: impl FnOnce(&str) -> Result<()>,
+) -> Result<OAuthAccessToken> {
+    validate_fixed_oauth_inputs(
+        issuer_url,
+        resource_url,
+        client_id,
+        requested_scopes,
+        callback_port,
+        callback_url,
+        timeout_secs,
+    )?;
+
+    let bind_addr = format!("127.0.0.1:{callback_port}");
+    let server = Arc::new(
+        Server::http(&bind_addr).map_err(|_| anyhow!("bind fixed OAuth callback listener"))?,
+    );
+    let guard = CallbackServerGuard {
+        server: Arc::clone(&server),
+    };
+    let redirect_uri = resolve_redirect_uri(&server, Some(callback_url))?;
+    let callback_id = callback_id_from_server_url(issuer_url)?;
+    let redirect_uri = append_callback_id_to_redirect_uri(&redirect_uri, &callback_id)?;
+    let callback_path = callback_path_from_redirect_uri(&redirect_uri)?;
+
+    let (tx, rx) = oneshot::channel();
+    spawn_callback_server(server, tx, callback_path);
+
+    let http_client = HttpClientBuilder::new()
+        .without_redirects()
+        .without_retries()
+        .without_request_logging()
+        .connect_timeout(Duration::from_secs(3))
+        .build_direct()
+        .map_err(|_| anyhow!("build fixed OAuth HTTP client"))?;
+    let oauth_http_client: Arc<dyn OAuthHttpClient> =
+        Arc::new(OAuthHttpClientAdapter::new_direct_with_max_timeout(
+            http_client,
+            HeaderMap::new(),
+            Duration::from_secs(10),
+        ));
+
+    let (mut oauth_state, authorization_url) = start_fixed_oauth_authorization(
+        issuer_url,
+        resource_url,
+        client_id,
+        requested_scopes,
+        &redirect_uri,
+        oauth_http_client,
+    )
+    .await?;
+
+    open_authorization_url(&authorization_url)
+        .map_err(|_| anyhow!("open fixed OAuth authorization in the browser"))?;
+
+    let result = async {
+        let callback = timeout(Duration::from_secs(timeout_secs), rx)
+            .await
+            .map_err(|_| anyhow!("fixed OAuth callback timed out"))?
+            .map_err(|_| anyhow!("fixed OAuth callback was cancelled"))?;
+        let OauthCallbackResult {
+            code,
+            state: csrf_state,
+            issuer,
+        } = match callback {
+            CallbackResult::Success(callback) => callback,
+            CallbackResult::Error(_) => bail!("fixed OAuth authorization was rejected"),
+        };
+
+        oauth_state
+            .handle_callback_with_issuer(&code, &csrf_state, issuer.as_deref())
+            .await
+            .map_err(|_| anyhow!("complete fixed OAuth authorization"))?;
+        let (_, credentials) = oauth_state
+            .get_credentials()
+            .await
+            .map_err(|_| anyhow!("read in-memory OAuth response"))?;
+        let credentials =
+            credentials.ok_or_else(|| anyhow!("OAuth response omitted credentials"))?;
+        access_token_from_response(credentials, requested_scopes)
+    }
+    .await;
+
+    drop(guard);
+    result
+}
+
+async fn start_fixed_oauth_authorization(
+    issuer_url: &str,
+    resource_url: &str,
+    client_id: &str,
+    requested_scopes: &[String],
+    redirect_uri: &str,
+    oauth_http_client: Arc<dyn OAuthHttpClient>,
+) -> Result<(OAuthState, String)> {
+    let discovery_manager = AuthorizationManager::new_with_oauth_http_client(
+        issuer_url,
+        Arc::clone(&oauth_http_client),
+    )
+    .await
+    .map_err(|_| anyhow!("initialize fixed OAuth issuer discovery"))?;
+    let metadata = discover_metadata(&discovery_manager)
+        .await
+        .map_err(|_| anyhow!("discover fixed OAuth issuer metadata"))?;
+    validate_fixed_oauth_metadata(&metadata, issuer_url)?;
+
+    let mut resource_manager =
+        AuthorizationManager::new_with_oauth_http_client(resource_url, oauth_http_client)
+            .await
+            .map_err(|_| anyhow!("initialize fixed OAuth resource"))?;
+    resource_manager.set_metadata(metadata);
+    let authorization_url = fixed_authorization_url(
+        &mut resource_manager,
+        client_id,
+        redirect_uri,
+        requested_scopes,
+    )
+    .await?;
+    let session = AuthorizationSession::for_scope_upgrade(
+        resource_manager,
+        authorization_url.clone(),
+        redirect_uri,
+    );
+    Ok((OAuthState::Session(session), authorization_url))
+}
+
+async fn fixed_authorization_url(
+    resource_manager: &mut AuthorizationManager,
+    client_id: &str,
+    redirect_uri: &str,
+    requested_scopes: &[String],
+) -> Result<String> {
+    resource_manager
+        .configure_client(
+            OAuthClientConfig::new(client_id, redirect_uri).with_scopes(requested_scopes.to_vec()),
+        )
+        .map_err(|_| anyhow!("configure fixed OAuth client"))?;
+    let scopes = requested_scopes
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    resource_manager
+        .get_authorization_url(&scopes)
+        .await
+        .map_err(|_| anyhow!("build fixed OAuth authorization request"))
+}
+
+fn validate_fixed_oauth_inputs(
+    issuer_url: &str,
+    resource_url: &str,
+    client_id: &str,
+    requested_scopes: &[String],
+    callback_port: u16,
+    callback_url: &str,
+    timeout_secs: u64,
+) -> Result<()> {
+    validate_canonical_https_url(issuer_url)?;
+    validate_canonical_https_origin(resource_url)?;
+    let callback =
+        Url::parse(callback_url).map_err(|_| anyhow!("fixed OAuth callback URL is invalid"))?;
+    if client_id.is_empty()
+        || client_id.len() > 512
+        || !client_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._~-".contains(&byte))
+        || requested_scopes.len() != 1
+        || requested_scopes.first().map(String::as_str) != Some(FIXED_API_CLAIM_SCOPE)
+        || callback_port == 0
+        || callback.scheme() != "http"
+        || callback.host_str() != Some("127.0.0.1")
+        || callback.port() != Some(callback_port)
+        || callback.path() != "/callback"
+        || !callback.username().is_empty()
+        || callback.password().is_some()
+        || callback.query().is_some()
+        || callback.fragment().is_some()
+        || callback.as_str() != callback_url
+        || !(1..=600).contains(&timeout_secs)
+    {
+        bail!("fixed OAuth request is outside the admitted loopback contract");
+    }
+    Ok(())
+}
+
+fn validate_canonical_https_url(value: &str) -> Result<Url> {
+    let url = Url::parse(value).map_err(|_| anyhow!("fixed OAuth URL is invalid"))?;
+    let matches_canonical_origin =
+        url.path() == "/" && url.as_str().strip_suffix('/') == Some(value);
+    if url.scheme() != "https"
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || (url.as_str() != value && !matches_canonical_origin)
+    {
+        bail!("fixed OAuth URL must be canonical HTTPS");
+    }
+    Ok(url)
+}
+
+fn validate_canonical_https_origin(value: &str) -> Result<Url> {
+    let url = validate_canonical_https_url(value)?;
+    if url.path() != "/" {
+        bail!("fixed OAuth resource must be an HTTPS origin");
+    }
+    Ok(url)
+}
+
+fn validate_fixed_oauth_metadata(metadata: &AuthorizationMetadata, issuer_url: &str) -> Result<()> {
+    let issuer = validate_canonical_https_url(issuer_url)?;
+    if metadata.issuer.as_deref() != Some(issuer_url)
+        || !metadata
+            .response_types_supported
+            .as_ref()
+            .is_some_and(|values| values.iter().any(|value| value == "code"))
+        || !metadata
+            .code_challenge_methods_supported
+            .as_ref()
+            .is_some_and(|values| values.iter().any(|value| value == "S256"))
+    {
+        bail!("fixed OAuth metadata does not match the issuer and PKCE contract");
+    }
+    let expected_authorization_endpoint = format!(
+        "{}/protocol/openid-connect/auth",
+        issuer.as_str().trim_end_matches('/')
+    );
+    let expected_token_endpoint = format!(
+        "{}/protocol/openid-connect/token",
+        issuer.as_str().trim_end_matches('/')
+    );
+    if metadata.authorization_endpoint != expected_authorization_endpoint
+        || metadata.token_endpoint != expected_token_endpoint
+    {
+        bail!("fixed OAuth endpoints do not match the selected Keycloak realm");
+    }
+    Ok(())
+}
+
+fn access_token_from_response(
+    response: rmcp::transport::auth::OAuthTokenResponse,
+    requested_scopes: &[String],
+) -> Result<OAuthAccessToken> {
+    if !response
+        .token_type()
+        .as_ref()
+        .eq_ignore_ascii_case("bearer")
+    {
+        bail!("fixed OAuth response is not a bearer token");
+    }
+    let expires_in = response
+        .expires_in()
+        .filter(|duration| !duration.is_zero() && *duration <= Duration::from_secs(86_400))
+        .ok_or_else(|| anyhow!("fixed OAuth response has no bounded expiry"))?;
+    if let Some(scopes) = response.scopes() {
+        let granted = scopes
+            .iter()
+            .map(std::convert::AsRef::as_ref)
+            .collect::<Vec<_>>();
+        if granted.len() != requested_scopes.len()
+            || requested_scopes
+                .iter()
+                .any(|scope| !granted.contains(&scope.as_str()))
+        {
+            bail!("fixed OAuth response scope does not match the request");
+        }
+    }
+    let access_token = response.access_token().secret();
+    if access_token.is_empty()
+        || access_token.len() > 12 * 1024
+        || access_token.chars().any(char::is_control)
+    {
+        bail!("fixed OAuth access token is outside its bounded format");
+    }
+    let received_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| anyhow!("system clock is before the Unix epoch"))?;
+    let expires_at = received_at
+        .as_secs()
+        .checked_add(expires_in.as_secs())
+        .and_then(|value| i64::try_from(value).ok())
+        .ok_or_else(|| anyhow!("fixed OAuth expiry is outside the supported range"))?;
+    Ok(OAuthAccessToken {
+        access_token: zeroize::Zeroizing::new(access_token.to_string()),
+        expires_at,
+    })
+}
 
 #[allow(clippy::too_many_arguments)]
 pub async fn perform_oauth_login(
@@ -236,7 +587,7 @@ pub async fn perform_oauth_login_return_url_with_http_client(
     timeout_secs: Option<i64>,
     callback_port: Option<u16>,
     callback_url: Option<&str>,
-    http_client: Arc<dyn HttpClient>,
+    http_client: Arc<dyn ExecServerHttpClient>,
 ) -> Result<OauthLoginHandle> {
     let http_context = OAuthHttpContext {
         http_headers,
@@ -274,17 +625,15 @@ fn spawn_callback_server(
         while let Ok(request) = server.recv() {
             let path = request.url().to_string();
             match parse_oauth_callback(&path, &expected_callback_path) {
-                CallbackOutcome::Success(OauthCallbackResult { code, state }) => {
+                CallbackOutcome::Success(callback) => {
                     let response = Response::from_string(
                         "Authentication complete. You may close this window.",
                     );
                     if let Err(err) = request.respond(response) {
                         eprintln!("Failed to respond to OAuth callback: {err}");
                     }
-                    if let Err(err) =
-                        tx.send(CallbackResult::Success(OauthCallbackResult { code, state }))
-                    {
-                        eprintln!("Failed to send OAuth callback: {err:?}");
+                    if tx.send(CallbackResult::Success(callback)).is_err() {
+                        eprintln!("OAuth callback receiver is no longer available");
                     }
                     break;
                 }
@@ -293,8 +642,8 @@ fn spawn_callback_server(
                     if let Err(err) = request.respond(response) {
                         eprintln!("Failed to respond to OAuth callback: {err}");
                     }
-                    if let Err(err) = tx.send(CallbackResult::Error(error)) {
-                        eprintln!("Failed to send OAuth callback error: {err:?}");
+                    if tx.send(CallbackResult::Error(error)).is_err() {
+                        eprintln!("OAuth callback receiver is no longer available");
                     }
                     break;
                 }
@@ -314,6 +663,7 @@ fn spawn_callback_server(
 struct OauthCallbackResult {
     code: String,
     state: String,
+    issuer: Option<String>,
 }
 
 #[derive(Debug)]
@@ -339,6 +689,7 @@ fn parse_oauth_callback(path: &str, expected_callback_path: &str) -> CallbackOut
 
     let mut code = None;
     let mut state = None;
+    let mut issuer = None;
     let mut error = None;
     let mut error_description = None;
 
@@ -353,6 +704,7 @@ fn parse_oauth_callback(path: &str, expected_callback_path: &str) -> CallbackOut
         match key {
             "code" => code = Some(decoded),
             "state" => state = Some(decoded),
+            "iss" => issuer = Some(decoded),
             "error" => error = Some(decoded),
             "error_description" => error_description = Some(decoded),
             _ => {}
@@ -360,7 +712,11 @@ fn parse_oauth_callback(path: &str, expected_callback_path: &str) -> CallbackOut
     }
 
     if let (Some(code), Some(state)) = (code, state) {
-        return CallbackOutcome::Success(OauthCallbackResult { code, state });
+        return CallbackOutcome::Success(OauthCallbackResult {
+            code,
+            state,
+            issuer,
+        });
     }
 
     if error.is_some() || error_description.is_some() {
@@ -605,6 +961,7 @@ impl OauthLoginFlow {
             let OauthCallbackResult {
                 code,
                 state: csrf_state,
+                ..
             } = match callback {
                 CallbackResult::Success(callback) => callback,
                 CallbackResult::Error(error) => return Err(anyhow!(error)),
@@ -721,6 +1078,7 @@ fn append_query_param(url: &str, key: &str, value: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::time::Duration;
 
     use axum::Json;
     use axum::Router;
@@ -735,14 +1093,26 @@ mod tests {
     use tokio::net::TcpListener;
 
     use super::CallbackOutcome;
+    use super::FIXED_API_CLAIM_CALLBACK_URL;
+    use super::FIXED_API_CLAIM_CLIENT_ID;
+    use super::FIXED_API_CLAIM_ISSUER;
+    use super::FIXED_API_CLAIM_RESOURCE;
+    use super::FIXED_API_CLAIM_SCOPE;
+    use super::HttpClientBuilder;
     use super::OAuthHttpClientAdapter;
     use super::OAuthProviderError;
+    use super::OauthCallbackResult;
+    use super::access_token_from_response;
     use super::append_callback_id_to_redirect_uri;
     use super::append_query_param;
     use super::callback_id_from_server_url;
     use super::callback_path_from_redirect_uri;
+    use super::fixed_authorization_url;
     use super::parse_oauth_callback;
     use super::start_authorization;
+    use super::validate_canonical_https_origin;
+    use super::validate_fixed_oauth_inputs;
+    use super::validate_fixed_oauth_metadata;
 
     async fn spawn_oauth_metadata_server() -> String {
         let listener = TcpListener::bind("127.0.0.1:0")
@@ -865,6 +1235,216 @@ mod tests {
         assert_eq!(client_id.as_deref(), Some("eci-prd-pub-codex-123"));
     }
 
+    #[tokio::test]
+    async fn fixed_access_token_request_binds_client_resource_and_pkce_scope() {
+        let resource = FIXED_API_CLAIM_RESOURCE;
+        let expected_resource = Url::parse(resource).expect("parse fixed OAuth resource");
+        let redirect = append_callback_id_to_redirect_uri(
+            FIXED_API_CLAIM_CALLBACK_URL,
+            &callback_id_from_server_url(FIXED_API_CLAIM_ISSUER)
+                .expect("derive the fixed callback path"),
+        )
+        .expect("append the fixed callback identifier");
+        assert_eq!(redirect, "http://127.0.0.1:8765/callback/gGLT7yyzxEu8");
+        let http_client = HttpClientBuilder::new()
+            .without_redirects()
+            .without_retries()
+            .without_request_logging()
+            .connect_timeout(Duration::from_secs(3))
+            .build_direct()
+            .expect("build fixed OAuth HTTP client");
+        let mut manager = rmcp::transport::AuthorizationManager::new_with_oauth_http_client(
+            resource,
+            Arc::new(OAuthHttpClientAdapter::new_direct_with_max_timeout(
+                http_client,
+                HeaderMap::new(),
+                Duration::from_secs(10),
+            )),
+        )
+        .await
+        .expect("create fixed resource authorization manager");
+        let metadata: rmcp::transport::auth::AuthorizationMetadata =
+            serde_json::from_value(json!({
+                "issuer": FIXED_API_CLAIM_ISSUER,
+                "authorization_endpoint": "https://auth.grantmatler.com/realms/agent-ops/protocol/openid-connect/auth",
+                "token_endpoint": "https://auth.grantmatler.com/realms/agent-ops/protocol/openid-connect/token",
+                "response_types_supported": ["code"],
+                "code_challenge_methods_supported": ["S256"]
+            }))
+            .expect("parse fixed OAuth metadata");
+        validate_fixed_oauth_metadata(&metadata, FIXED_API_CLAIM_ISSUER)
+            .expect("metadata matches the fixed issuer");
+        manager.set_metadata(metadata);
+        let authorization_url = fixed_authorization_url(
+            &mut manager,
+            FIXED_API_CLAIM_CLIENT_ID,
+            &redirect,
+            &[FIXED_API_CLAIM_SCOPE.to_string()],
+        )
+        .await
+        .expect("build fixed authorization URL");
+
+        let authorization_url = Url::parse(&authorization_url).expect("parse authorization URL");
+        let query = authorization_url.query_pairs().collect::<Vec<_>>();
+        let value = |key: &str| {
+            query
+                .iter()
+                .find(|(candidate, _)| candidate == key)
+                .map(|(_, value)| value.as_ref())
+        };
+        assert_eq!(value("client_id"), Some(FIXED_API_CLAIM_CLIENT_ID));
+        assert_eq!(value("redirect_uri"), Some(redirect.as_str()));
+        assert_eq!(value("response_type"), Some("code"));
+        assert_eq!(value("resource"), Some(expected_resource.as_str()));
+        assert_eq!(value("scope"), Some(FIXED_API_CLAIM_SCOPE));
+        assert_eq!(value("code_challenge_method"), Some("S256"));
+        assert_eq!(value("state").map(str::len), Some(22));
+        assert_eq!(value("code_challenge").map(str::len), Some(43));
+        assert!(!query.iter().any(|(key, value)| {
+            key == "scope"
+                && value
+                    .split_whitespace()
+                    .any(|scope| scope == "offline_access")
+        }));
+    }
+
+    #[test]
+    fn fixed_access_token_flow_rejects_unbounded_or_non_loopback_inputs() {
+        let scope = vec![FIXED_API_CLAIM_SCOPE.to_string()];
+        assert!(
+            validate_fixed_oauth_inputs(
+                FIXED_API_CLAIM_ISSUER,
+                FIXED_API_CLAIM_RESOURCE,
+                FIXED_API_CLAIM_CLIENT_ID,
+                &scope,
+                /*callback_port*/ 8765,
+                "http://127.0.0.1:8765/callback",
+                /*timeout_secs*/ 300,
+            )
+            .is_ok()
+        );
+        for callback in [
+            "http://localhost:8765/callback",
+            "http://127.0.0.1:8765/callback?next=https://example.com",
+            "https://127.0.0.1:8765/callback",
+        ] {
+            assert!(
+                validate_fixed_oauth_inputs(
+                    FIXED_API_CLAIM_ISSUER,
+                    FIXED_API_CLAIM_RESOURCE,
+                    FIXED_API_CLAIM_CLIENT_ID,
+                    &scope,
+                    /*callback_port*/ 8765,
+                    callback,
+                    /*timeout_secs*/ 300,
+                )
+                .is_err()
+            );
+        }
+        assert!(
+            validate_fixed_oauth_inputs(
+                FIXED_API_CLAIM_ISSUER,
+                FIXED_API_CLAIM_RESOURCE,
+                FIXED_API_CLAIM_CLIENT_ID,
+                &["ops:write offline_access".to_string()],
+                /*callback_port*/ 8765,
+                "http://127.0.0.1:8765/callback",
+                /*timeout_secs*/ 300,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn canonical_https_accepts_the_fixed_bare_api_origin_only() {
+        assert!(validate_canonical_https_origin(FIXED_API_CLAIM_RESOURCE).is_ok());
+        assert!(validate_canonical_https_origin("https://ops-api.grantmatler.com/").is_ok());
+        for value in [
+            "https://ops-api.grantmatler.com:443",
+            "https://OPS-API.grantmatler.com",
+            "https://ops-api.grantmatler.com/path",
+            "https://ops-api.grantmatler.com?query=value",
+        ] {
+            assert!(validate_canonical_https_origin(value).is_err());
+        }
+    }
+
+    #[test]
+    fn fixed_access_token_flow_rejects_wrong_issuer_endpoint_or_missing_pkce() {
+        let valid = json!({
+            "issuer": "https://auth.grantmatler.com/realms/agent-ops",
+            "authorization_endpoint": "https://auth.grantmatler.com/realms/agent-ops/protocol/openid-connect/auth",
+            "token_endpoint": "https://auth.grantmatler.com/realms/agent-ops/protocol/openid-connect/token",
+            "response_types_supported": ["code"],
+            "code_challenge_methods_supported": ["S256"]
+        });
+        for (key, value) in [
+            ("issuer", json!("https://auth.grantmatler.com/other")),
+            ("token_endpoint", json!("https://other.example/token")),
+            (
+                "authorization_endpoint",
+                json!("https://auth.grantmatler.com/other/authorize"),
+            ),
+            ("code_challenge_methods_supported", json!(["plain"])),
+        ] {
+            let mut metadata = valid.clone();
+            metadata[key] = value;
+            let metadata: rmcp::transport::auth::AuthorizationMetadata =
+                serde_json::from_value(metadata).expect("parse adversarial metadata");
+            assert!(
+                validate_fixed_oauth_metadata(
+                    &metadata,
+                    "https://auth.grantmatler.com/realms/agent-ops"
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn fixed_access_token_extracts_only_bounded_bearer_and_drops_refresh_response() {
+        let response: rmcp::transport::auth::OAuthTokenResponse = serde_json::from_value(json!({
+            "access_token": "bounded-test-token",
+            "token_type": "Bearer",
+            "expires_in": 300,
+            "scope": "ops:write",
+            "refresh_token": "must-not-be-returned-or-persisted"
+        }))
+        .expect("parse OAuth token response");
+        let token = access_token_from_response(response, &[FIXED_API_CLAIM_SCOPE.to_string()])
+            .expect("extract the access token only");
+        assert_eq!(token.access_token(), "bounded-test-token");
+        assert!(token.expires_at() > 0);
+
+        let response = serde_json::from_value(json!({
+            "access_token": "bounded-test-token",
+            "token_type": "Bearer",
+            "expires_in": 300,
+            "scope": "ops:write offline_access",
+            "refresh_token": "ignored"
+        }))
+        .expect("parse extra-scope OAuth response");
+        assert!(
+            access_token_from_response(response, &[FIXED_API_CLAIM_SCOPE.to_string()]).is_err()
+        );
+    }
+
+    #[test]
+    fn fixed_access_token_rejects_wrong_type_and_unbounded_lifetime() {
+        for (token_type, expires_in) in [("MAC", 300), ("Bearer", 0), ("Bearer", 86_401)] {
+            let response = serde_json::from_value(json!({
+                "access_token": "bounded-test-token",
+                "token_type": token_type,
+                "expires_in": expires_in,
+                "scope": "ops:write"
+            }))
+            .expect("parse OAuth token response");
+            assert!(
+                access_token_from_response(response, &[FIXED_API_CLAIM_SCOPE.to_string()]).is_err()
+            );
+        }
+    }
+
     #[test]
     fn parse_oauth_callback_accepts_default_path() {
         let parsed = parse_oauth_callback("/callback?code=abc&state=xyz", "/callback");
@@ -882,6 +1462,21 @@ mod tests {
         let parsed =
             parse_oauth_callback("/callback/abc123?code=abc&state=xyz", "/callback/abc123");
         assert!(matches!(parsed, CallbackOutcome::Success(_)));
+    }
+
+    #[test]
+    fn parse_oauth_callback_preserves_authorization_response_issuer() {
+        let parsed = parse_oauth_callback(
+            "/callback?code=abc&state=xyz&iss=https%3A%2F%2Fissuer.example",
+            "/callback",
+        );
+        assert!(matches!(
+            parsed,
+            CallbackOutcome::Success(OauthCallbackResult {
+                issuer: Some(issuer),
+                ..
+            }) if issuer == "https://issuer.example"
+        ));
     }
 
     #[test]

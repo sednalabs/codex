@@ -1,3 +1,4 @@
+use std::io::ErrorKind;
 use std::io::Read;
 use std::io::Write;
 use std::net::TcpListener;
@@ -32,6 +33,26 @@ fn codex_command(codex_home: &Path) -> Result<assert_cmd::Command> {
     Ok(cmd)
 }
 
+fn bind_proxy_listener() -> Result<TcpListener> {
+    let mut last_would_block = None;
+    for delay_ms in [0, 25, 50, 100, 200] {
+        if delay_ms > 0 {
+            std::thread::sleep(Duration::from_millis(delay_ms));
+        }
+        match TcpListener::bind("127.0.0.1:0") {
+            Ok(listener) => return Ok(listener),
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                last_would_block = Some(error);
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    match last_would_block {
+        Some(error) => Err(error.into()),
+        None => Err(anyhow::anyhow!("proxy listener bind did not run")),
+    }
+}
+
 async fn configure_http_oauth_server(codex_home: &Path, url: &str) -> Result<()> {
     let mut servers = load_global_mcp_servers(codex_home).await?;
     servers.insert(
@@ -62,7 +83,7 @@ async fn list_discovers_local_oauth_server_through_environment_proxy() -> Result
     let codex_home = TempDir::new()?;
     configure_http_oauth_server(codex_home.path(), "http://mcp-proxy.invalid/mcp").await?;
 
-    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let listener = bind_proxy_listener()?;
     listener.set_nonblocking(true)?;
     let proxy_url = format!("http://{}", listener.local_addr()?);
     let proxy = std::thread::spawn(move || -> Result<Vec<String>> {
