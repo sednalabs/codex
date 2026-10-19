@@ -35,6 +35,10 @@ jobs:
           # Linux
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
+            gnu_shard: 1
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            gnu_shard: 2
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-musl
           # 2026-02-27 Bazel tests have been flaky on arm in CI.
@@ -47,7 +51,7 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     # Configure a human readable name for each job
-    name: Bazel test on ${{ matrix.os }} for ${{ matrix.target }}
+    name: Bazel test on ${{ matrix.os }} for ${{ matrix.target }}${{ matrix.target == 'x86_64-unknown-linux-gnu' && format(' shard {0}/2', matrix.gnu_shard) || '' }}
     environment:
       name: bazel
       deployment: false
@@ -181,7 +185,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: gnu-runner-resource-baseline-${{ github.run_id }}-${{ github.run_attempt }}-test
+          name: gnu-runner-resource-baseline-${{ github.run_id }}-${{ github.run_attempt }}-test-shard-${{ matrix.gnu_shard }}
           path: ${{ runner.temp }}/gnu-runner-resource-baseline/baseline.txt
           if-no-files-found: error
           retention-days: 3
@@ -189,6 +193,7 @@ jobs:
       - name: bazel test //...
         env:
           TARGET: ${{ matrix.target }}
+          GNU_SHARD: ${{ matrix.gnu_shard }}
         shell: bash
         run: |
           set -euo pipefail
@@ -236,6 +241,38 @@ jobs:
             } | tee -a "${GITHUB_STEP_SUMMARY}"
           fi
 
+          if [[ "${TARGET}" == "x86_64-unknown-linux-gnu" ]]; then
+            gnu_target_query="$(python3 .github/scripts/select_gnu_bazel_targets.py --query)"
+            gnu_targets_file="$(mktemp)"
+            gnu_suites_file="$(mktemp)"
+            gnu_selected_targets_file="$(mktemp)"
+            trap 'rm -f "${gnu_targets_file}" "${gnu_suites_file}" "${gnu_selected_targets_file}"' EXIT
+
+            ./.github/scripts/run-bazel-query-ci.sh \
+              --repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1 \
+              --output=label -- "${gnu_target_query}" \
+              | LC_ALL=C sort -u > "${gnu_targets_file}"
+            gnu_suite_query="$(python3 .github/scripts/select_gnu_bazel_targets.py --suite-query)"
+            ./.github/scripts/run-bazel-query-ci.sh \
+              --repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1 \
+              --output=label -- "${gnu_suite_query}" \
+              | LC_ALL=C sort -u > "${gnu_suites_file}"
+            if [[ -s "${gnu_suites_file}" ]]; then
+              echo "GNU target sharding does not support nonmanual test_suite targets; refusing a changed coverage contract." >&2
+              exit 1
+            fi
+            python3 .github/scripts/select_gnu_bazel_targets.py \
+              --shard "${GNU_SHARD}" --shard-count 2 \
+              < "${gnu_targets_file}" > "${gnu_selected_targets_file}"
+            mapfile -t bazel_targets < "${gnu_selected_targets_file}"
+            if [[ ${#bazel_targets[@]} -eq 0 ]]; then
+              echo "GNU target shard is empty; refusing an empty proof." >&2
+              exit 1
+            fi
+            rm -f "${gnu_targets_file}" "${gnu_suites_file}" "${gnu_selected_targets_file}"
+            trap - EXIT
+          fi
+
           bazel_wrapper_args=(
             --print-failed-action-summary
             --print-failed-test-logs
@@ -252,6 +289,9 @@ jobs:
           fi
           if [[ "${TARGET}" == "x86_64-unknown-linux-musl" ]]; then
             # Explicit query labels retain the wildcard's platform filtering.
+            bazel_test_args+=(--skip_incompatible_explicit_targets)
+          fi
+          if [[ "${TARGET}" == "x86_64-unknown-linux-gnu" ]]; then
             bazel_test_args+=(--skip_incompatible_explicit_targets)
           fi
           if [[ "${TARGET}" == "x86_64-unknown-linux-gnu" ]]; then
@@ -325,7 +365,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: bazel-execution-logs-test-${{ matrix.target }}
+          name: bazel-execution-logs-test-${{ matrix.target }}${{ matrix.target == 'x86_64-unknown-linux-gnu' && format('-shard-{0}', matrix.gnu_shard) || '' }}
           path: ${{ runner.temp }}/bazel-execution-logs
           if-no-files-found: ignore
 
