@@ -1434,6 +1434,11 @@ async fn explicit_progress_to_deeper_nonroot_is_restored_without_another_send() 
         intent: InterAgentCommunicationIntent::Progress,
         supersedes: Vec::new(),
     };
+    let mailbox_watermark = reviewer_thread
+        .session
+        .input_queue
+        .mailbox_enqueue_watermark()
+        .await;
 
     let update_id = tree
         .control
@@ -1524,6 +1529,15 @@ async fn explicit_progress_to_deeper_nonroot_is_restored_without_another_send() 
             .and_then(|metadata| metadata.agent_path),
         Some(recipient_path.clone()),
         "resume must restore the recipient's canonical nested path"
+    );
+    assert_eq!(
+        resumed_thread
+            .session
+            .input_queue
+            .pending_mailbox_communication_count_since(mailbox_watermark)
+            .await,
+        Some(1),
+        "the retained quiet update must be queued before the same-key retry"
     );
     assert!(
         resumed_thread

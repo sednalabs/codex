@@ -846,6 +846,7 @@ impl LocalAgentControl {
         session: &Arc<Session>,
         update_ids: &[ResponseItemId],
     ) -> bool {
+        let recipient_thread_id = ThreadId::from(self.session_id);
         let Ok(state) = self.runtime.upgrade() else {
             return false;
         };
@@ -856,27 +857,27 @@ impl LocalAgentControl {
         let Some(recipient_metadata) = self
             .runtime
             .registry
-            .agent_metadata_for_thread(self.session_id)
+            .agent_metadata_for_thread(recipient_thread_id)
         else {
             return false;
         };
         let Some(recipient_path) = recipient_metadata.agent_path else {
             return false;
         };
-        if recipient_metadata.agent_id != Some(self.session_id)
+        if recipient_metadata.agent_id != Some(recipient_thread_id)
             || self.runtime.registry.agent_id_for_path(&root_path) != Some(root_thread_id)
-            || self.runtime.registry.agent_id_for_path(&recipient_path) != Some(self.session_id)
+            || self.runtime.registry.agent_id_for_path(&recipient_path) != Some(recipient_thread_id)
             || !Arc::ptr_eq(
                 &session.services.local_agent_runtime.registry,
                 &self.runtime.registry,
             )
-            || session.thread_id != self.session_id
+            || session.thread_id != recipient_thread_id
             || session.multi_agent_version()
                 != Some(codex_protocol::protocol::MultiAgentVersion::V2)
         {
             return false;
         }
-        let Ok(current_recipient) = state.get_thread(self.session_id).await else {
+        let Ok(current_recipient) = state.get_thread(recipient_thread_id).await else {
             return false;
         };
         if !Arc::ptr_eq(&current_recipient.session, session)
@@ -900,7 +901,7 @@ impl LocalAgentControl {
             return false;
         }
         if is_final(&status) {
-            if self.session_id != root_thread_id
+            if recipient_thread_id != root_thread_id
                 || !recipient_path.is_root()
                 || !matches!(status, AgentStatus::Completed(_))
             {
@@ -918,7 +919,7 @@ impl LocalAgentControl {
         }
         let path_matched_update_ids = session
             .input_queue
-            .pending_actionable_explicit_update_ids(self.session_id, Some(&recipient_path))
+            .pending_actionable_explicit_update_ids(recipient_thread_id, Some(&recipient_path))
             .await;
         update_ids
             .iter()

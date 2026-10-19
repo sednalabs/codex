@@ -1551,6 +1551,11 @@ impl LocalAgentControl {
         let mut agent_metadata = agent_metadata;
         agent_metadata.agent_id = Some(resumed_thread.thread_id);
         reservation.commit(agent_metadata.clone());
+        resumed_thread
+            .thread
+            .session
+            .input_queue
+            .notify_explicit_admission_rescan();
         // Resumed threads are re-registered in-memory and need the same listener
         // attachment path as freshly spawned threads.
         state.notify_thread_created(resumed_thread.thread_id);

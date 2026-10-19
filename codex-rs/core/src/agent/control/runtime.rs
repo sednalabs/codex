@@ -20,6 +20,7 @@ use crate::thread_manager::ThreadIdGenerator;
 use crate::thread_manager::ThreadManagerState;
 use arc_swap::ArcSwapOption;
 use codex_extension_api::ThreadInstructionsProvider;
+use codex_protocol::AgentPath;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
 use codex_protocol::error::AgentErrorContext;
@@ -276,6 +277,10 @@ impl LocalAgentRuntime {
 
     pub(crate) fn agent_metadata(&self, thread_id: ThreadId) -> Option<AgentMetadata> {
         self.registry.agent_metadata_for_thread(thread_id)
+    }
+
+    pub(crate) fn agent_id_for_path(&self, agent_path: &AgentPath) -> Option<ThreadId> {
+        self.registry.agent_id_for_path(agent_path)
     }
 
     pub(crate) async fn raw_agent_status(&self, thread_id: ThreadId) -> Option<AgentStatus> {

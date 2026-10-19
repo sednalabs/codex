@@ -4120,7 +4120,6 @@ impl Session {
         let explicit_root_thread_id = self
             .services
             .local_agent_runtime
-            .registry
             .agent_id_for_path(&codex_protocol::AgentPath::root());
         let explicit_recipient_path = self.registered_agent_path();
         let explicit_admission = if update_id.is_some()
