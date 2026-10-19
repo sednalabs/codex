@@ -1410,6 +1410,179 @@ async fn explicit_sibling_action_is_persisted_and_represented_for_its_direct_rec
 }
 
 #[tokio::test]
+async fn explicit_progress_to_deeper_nonroot_is_restored_without_another_send() {
+    let tree = explicit_update_test_tree().await;
+    let reviewer = spawn_v2_reload_test_child(
+        &tree.control,
+        tree.harness.config.clone(),
+        &tree.worker,
+        "reviewer",
+    )
+    .await;
+    let reviewer_thread = tree
+        .harness
+        .manager
+        .get_thread(reviewer.thread_id)
+        .await
+        .expect("nested reviewer should remain loaded");
+    set_control_test_thread_running(&reviewer_thread).await;
+    let recipient_path = AgentPath::try_from("/root/worker/reviewer")
+        .expect("nested reviewer path");
+    let message = AgentMessage::Plaintext("deep progress remains quiet".to_string());
+    let update = ExplicitInterAgentUpdate {
+        idempotency_key: "deep-recipient-progress-before-reload".to_string(),
+        intent: InterAgentCommunicationIntent::Progress,
+        supersedes: Vec::new(),
+    };
+
+    let update_id = tree
+        .control
+        .send_explicit_inter_agent_update(
+            tree.root_id,
+            reviewer.thread_id,
+            tree.harness.config.clone(),
+            message.clone(),
+            update.clone(),
+            AgentCommunicationContext::new(AgentCommunicationKind::Message, tree.root_id),
+        )
+        .await
+        .expect("root may address a deeper same-tree recipient directly");
+    let update_id = ResponseItemId::from_server(update_id);
+    let initial_items = explicit_update_rollout_items(&reviewer_thread).await;
+    let admissions = initial_items
+        .iter()
+        .filter_map(|item| match item {
+            RolloutItem::InterAgentCommunicationMetadata {
+                admission: Some(admission),
+                ..
+            } if admission.update_id == update_id => Some(admission),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(admissions.len(), 1);
+    assert_eq!(admissions[0].sender_thread_id, tree.root_id);
+    assert_eq!(admissions[0].recipient_thread_id, reviewer.thread_id);
+    assert_eq!(admissions[0].sender_path, AgentPath::root());
+    assert_eq!(admissions[0].recipient_path, recipient_path);
+    assert!(
+        reviewer_thread
+            .session
+            .active_turn
+            .lock()
+            .await
+            .is_none(),
+        "quiet progress must not start the deeper recipient"
+    );
+    assert!(!initial_items.iter().any(|item| matches!(
+        item,
+        RolloutItem::ResponseItem(response)
+            if response.metadata.as_ref().and_then(|metadata|
+                metadata.inter_agent_update_id.as_ref()) == Some(&update_id)
+    )));
+
+    tree.control
+        .shutdown_live_agent(reviewer.thread_id)
+        .await
+        .expect("nested recipient should shut down before cold resume");
+    assert!(
+        tree.harness
+            .manager
+            .get_thread(reviewer.thread_id)
+            .await
+            .is_err(),
+        "shutdown must remove the old recipient session"
+    );
+    let resumed_id = tree
+        .control
+        .resume_agent_from_rollout(
+            tree.harness.config.clone(),
+            reviewer.thread_id,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: tree.worker_id,
+                depth: 2,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            }),
+        )
+        .await
+        .expect("nested V2 recipient should cold-resume from its retained rollout");
+    assert_eq!(resumed_id, reviewer.thread_id);
+    let resumed_thread = tree
+        .harness
+        .manager
+        .get_thread(resumed_id)
+        .await
+        .expect("resumed nested recipient should be registered");
+    assert_eq!(
+        resumed_thread.multi_agent_version(),
+        Some(codex_protocol::protocol::MultiAgentVersion::V2)
+    );
+    assert_eq!(
+        tree.control
+            .get_agent_metadata(resumed_id)
+            .and_then(|metadata| metadata.agent_path),
+        Some(recipient_path.clone()),
+        "resume must restore the recipient's canonical nested path"
+    );
+    assert!(
+        resumed_thread
+            .session
+            .active_turn
+            .lock()
+            .await
+            .is_none(),
+        "restoring quiet progress must not create a turn"
+    );
+
+    let replayed_id = tree
+        .control
+        .send_explicit_inter_agent_update(
+            tree.root_id,
+            resumed_id,
+            tree.harness.config.clone(),
+            message,
+            update,
+            AgentCommunicationContext::new(AgentCommunicationKind::Message, tree.root_id),
+        )
+        .await
+        .expect("same request should read its durable receipt after recipient resume");
+    assert_eq!(ResponseItemId::from_server(replayed_id), update_id);
+    let queued = resumed_thread.session.input_queue.drain_mailbox().await;
+    assert_eq!(queued.len(), 1, "resume and replay must not duplicate queued mail");
+    assert_eq!(queued[0].communication.id.as_ref(), Some(&update_id));
+    let resumed_items = explicit_update_rollout_items(&resumed_thread).await;
+    assert_eq!(
+        resumed_items
+            .iter()
+            .filter(|item| matches!(
+                item,
+                RolloutItem::InterAgentCommunicationMetadata {
+                    admission: Some(admission),
+                    ..
+                } if admission.update_id == update_id
+            ))
+            .count(),
+        1,
+        "cold restore and retry must preserve one durable admission"
+    );
+    assert!(!resumed_items.iter().any(|item| matches!(
+        item,
+        RolloutItem::ResponseItem(response)
+            if response.metadata.as_ref().and_then(|metadata|
+                metadata.inter_agent_update_id.as_ref()) == Some(&update_id)
+    )));
+
+    let report = tree
+        .harness
+        .manager
+        .shutdown_all_threads_bounded(Duration::from_secs(5))
+        .await;
+    assert_eq!(report.submit_failed, Vec::<ThreadId>::new());
+    assert_eq!(report.timed_out, Vec::<ThreadId>::new());
+}
+
+#[tokio::test]
 async fn explicit_action_starts_an_idle_recipient_and_is_represented_once() {
     let tree = explicit_update_test_tree().await;
     let initial_turn_start_count = explicit_update_rollout_items(&tree.root)
