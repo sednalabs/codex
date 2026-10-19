@@ -135,7 +135,7 @@ jobs:
 
   named_tests:
     if: >-
-      ${{ inputs.windows_validation_mode == 'none' && inputs.prepare_codex_cli_for_exact_usage_test != true && inputs.run_ae94_android_helper_tests != true && inputs.run_ae94_tui_provider_tests != true && inputs.run_d0_active_wait_test != true && inputs.run_ac392_android_protocol_test != true && inputs.run_a89_android_png_fixture_preflight != true && inputs.run_native_browser_source_validation != true && !(github.ref == 'refs/heads/validation/host-830-generated-files-6872befd' && inputs.expected_workflow_host_sha == github.sha && inputs.target_sha == '6872befddc7f47865ec9c664a4d0c89d455b3de2' && inputs.base_ref == '83086188ae0614bd882818ff1aa23f3194962012' && inputs.profile == 'rust_minimal' && inputs.request_json == '{"schema_version":"rust-tests-v1","profile":"rust_minimal","package":"codex-keyring-store","target_kind":"lib","target":"","tests":["error_kind::tests::preserves_typed_causes_without_guessing_from_messages","error_kind::tests::classifies_native_backend_errors","error_kind::tests::unavailable_secret_service_is_not_connected","error_kind::tests::secret_service_dbus_io_error_preserves_its_kind","error_display_tests::payload_bearing_errors_redact_credentials_and_end_the_source_chain"],"execution_mode":"exact"}') }}
+      ${{ inputs.windows_validation_mode == 'none' && inputs.prepare_codex_cli_for_exact_usage_test != true && inputs.run_ae94_android_helper_tests != true && inputs.run_ae94_tui_provider_tests != true && inputs.run_d0_active_wait_test != true && inputs.run_ac392_android_protocol_test != true && inputs.run_a89_android_png_fixture_preflight != true && inputs.run_native_browser_source_validation != true && !(github.ref == 'refs/heads/validation/host-830-generated-files-5eb9f5bc' && inputs.expected_workflow_host_sha == github.sha && inputs.target_sha == '5eb9f5bc24701ea45c69f90282c627d598b73482' && inputs.base_ref == '83086188ae0614bd882818ff1aa23f3194962012' && inputs.profile == 'rust_minimal' && inputs.request_json == '{"schema_version":"rust-tests-v1","profile":"rust_minimal","package":"codex-keyring-store","target_kind":"lib","target":"","tests":["error_kind::tests::preserves_typed_causes_without_guessing_from_messages","error_kind::tests::classifies_native_backend_errors","error_kind::tests::unavailable_secret_service_is_not_connected","error_kind::tests::secret_service_dbus_io_error_preserves_its_kind","error_display_tests::payload_bearing_errors_redact_credentials_and_end_the_source_chain"],"execution_mode":"exact"}') }}
     permissions:
       contents: read
     uses: ./.github/workflows/_validation-named-tests.yml
@@ -564,7 +564,7 @@ jobs:
 
   keyring_module_lock:
     if: >-
-      ${{ github.ref == 'refs/heads/validation/host-830-generated-files-6872befd' && inputs.expected_workflow_host_sha == github.sha && inputs.target_sha == '6872befddc7f47865ec9c664a4d0c89d455b3de2' && inputs.base_ref == '83086188ae0614bd882818ff1aa23f3194962012' && inputs.profile == 'rust_minimal' && inputs.request_json == '{"schema_version":"rust-tests-v1","profile":"rust_minimal","package":"codex-keyring-store","target_kind":"lib","target":"","tests":["error_kind::tests::preserves_typed_causes_without_guessing_from_messages","error_kind::tests::classifies_native_backend_errors","error_kind::tests::unavailable_secret_service_is_not_connected","error_kind::tests::secret_service_dbus_io_error_preserves_its_kind","error_display_tests::payload_bearing_errors_redact_credentials_and_end_the_source_chain"],"execution_mode":"exact"}' &&
+      ${{ github.ref == 'refs/heads/validation/host-830-generated-files-5eb9f5bc' && inputs.expected_workflow_host_sha == github.sha && inputs.target_sha == '5eb9f5bc24701ea45c69f90282c627d598b73482' && inputs.base_ref == '83086188ae0614bd882818ff1aa23f3194962012' && inputs.profile == 'rust_minimal' && inputs.request_json == '{"schema_version":"rust-tests-v1","profile":"rust_minimal","package":"codex-keyring-store","target_kind":"lib","target":"","tests":["error_kind::tests::preserves_typed_causes_without_guessing_from_messages","error_kind::tests::classifies_native_backend_errors","error_kind::tests::unavailable_secret_service_is_not_connected","error_kind::tests::secret_service_dbus_io_error_preserves_its_kind","error_display_tests::payload_bearing_errors_redact_credentials_and_end_the_source_chain"],"execution_mode":"exact"}' &&
           inputs.windows_validation_mode == 'none' &&
           inputs.prepare_codex_cli_for_exact_usage_test != true &&
           inputs.run_ae94_android_helper_tests != true &&
@@ -622,7 +622,7 @@ jobs:
             echo "workflow host does not match the exact dispatched H identity." >&2
             exit 1
           fi
-          if [[ "${target_sha}" != "${TARGET_SHA}" || "${target_sha}" != "6872befddc7f47865ec9c664a4d0c89d455b3de2" || "${target_tree}" != "0c5f7772be9aa75b07738ec467d34bda8f98455e" || "${target_parent}" != "42fbd0113bfabd4d11522691d6568807581113f0" ]]; then
+          if [[ "${target_sha}" != "${TARGET_SHA}" || "${target_sha}" != "5eb9f5bc24701ea45c69f90282c627d598b73482" || "${target_tree}" != "33ddfa627c319dabdd04a9296525b50ca29d9fdb" || "${target_parent}" != "58084cd37aa82419e5a3c85bfa7961e66e5ed1ab" ]]; then
             echo "candidate commit, tree, or direct parent differs from the fixed generation source." >&2
             exit 1
           fi
