@@ -497,6 +497,58 @@ async fn streamable_http_404_tool_call_is_uncertain_and_next_call_recovers() -> 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn streamable_http_404_custom_operations_are_uncertain_and_next_call_recovers()
+-> anyhow::Result<()> {
+    let (_server, base_url) = spawn_streamable_http_server().await?;
+    let client = create_client(&base_url).await?;
+
+    let warmup = call_echo_tool(&client, "warmup").await?;
+    assert_eq!(warmup, expected_echo_result("warmup"));
+
+    arm_session_post_failure_after_dispatch(&base_url, /*status*/ 404, /*remaining*/ 1).await?;
+
+    let uncertain_request = client
+        .send_custom_request_with_timeout("test/counter-write", None, Some(Duration::from_secs(5)))
+        .await
+        .unwrap_err();
+    assert!(
+        uncertain_request
+            .to_string()
+            .contains("MCP session expired during requests/custom")
+    );
+    assert_eq!(read_side_effect_count(&base_url).await?, 1);
+
+    let recovered = call_echo_tool(&client, "distinct-request-follow-up").await?;
+    assert_eq!(
+        recovered,
+        expected_echo_result("distinct-request-follow-up")
+    );
+    assert_eq!(read_side_effect_count(&base_url).await?, 1);
+
+    arm_session_post_failure_after_dispatch(&base_url, /*status*/ 404, /*remaining*/ 1).await?;
+
+    let uncertain_notification = client
+        .send_custom_notification("notifications/test-counter-write", None)
+        .await
+        .unwrap_err();
+    assert!(
+        uncertain_notification
+            .to_string()
+            .contains("MCP session expired during notifications/custom")
+    );
+    assert_eq!(read_side_effect_count(&base_url).await?, 2);
+
+    let recovered = call_echo_tool(&client, "distinct-notification-follow-up").await?;
+    assert_eq!(
+        recovered,
+        expected_echo_result("distinct-notification-follow-up")
+    );
+    assert_eq!(read_side_effect_count(&base_url).await?, 2);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn streamable_http_non_session_failure_does_not_trigger_recovery() -> anyhow::Result<()> {
     let (_server, base_url) = spawn_streamable_http_server().await?;
     let client = create_client(&base_url).await?;

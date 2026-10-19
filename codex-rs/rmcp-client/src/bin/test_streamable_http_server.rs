@@ -31,6 +31,8 @@ use rmcp::ErrorData as McpError;
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::CallToolRequestParams;
 use rmcp::model::CallToolResult;
+use rmcp::model::CustomRequest;
+use rmcp::model::CustomResult;
 use rmcp::model::JsonObject;
 use rmcp::model::ListResourceTemplatesResult;
 use rmcp::model::ListResourcesResult;
@@ -363,6 +365,23 @@ impl ServerHandler for TestToolServer {
                 None,
             )),
         }
+    }
+
+    async fn on_custom_request(
+        &self,
+        _request: CustomRequest,
+        _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
+    ) -> Result<CustomResult, McpError> {
+        let count = self.side_effect_count.fetch_add(1, Ordering::SeqCst) + 1;
+        Ok(CustomResult::new(json!({ "side_effect_count": count })))
+    }
+
+    async fn on_custom_notification(
+        &self,
+        _notification: rmcp::model::CustomNotification,
+        _context: rmcp::service::NotificationContext<rmcp::service::RoleServer>,
+    ) {
+        self.side_effect_count.fetch_add(1, Ordering::SeqCst);
     }
 }
 

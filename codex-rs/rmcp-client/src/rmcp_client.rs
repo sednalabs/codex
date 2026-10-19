@@ -295,9 +295,10 @@ pub(crate) enum ClientOperationError {
         source: rmcp::service::ServiceError,
     },
     #[error(
-        "MCP session expired during tools/call; this invocation was not retried and its result is unknown. The expired session was retired if it was still current. Make a separate independent call to continue; it will initialize a fresh session if needed. Do not repeat this call unless its operation is independently known to be read-only."
+        "MCP session expired during {label}; this invocation was not retried and its result is unknown. The expired session was retired if it was still current. Make a separate independent call to continue; it will initialize a fresh session if needed. Do not repeat this call unless its operation is independently known to be safe."
     )]
     ExpiredSessionUncertain {
+        label: String,
         #[source]
         source: rmcp::service::ServiceError,
     },
@@ -1459,11 +1460,17 @@ impl RmcpClient {
                 }
             }
 
-            if label == "tools/call" {
+            if !Self::is_safe_to_replay_after_session_expiry(label) {
                 return result
                     .map_err(|error| match error {
-                        ClientOperationError::UncertainService { source } => {
-                            ClientOperationError::ExpiredSessionUncertain { source }
+                        ClientOperationError::Service(
+                            source @ rmcp::service::ServiceError::TransportSend(_),
+                        )
+                        | ClientOperationError::UncertainService { source } => {
+                            ClientOperationError::ExpiredSessionUncertain {
+                                label: label.to_string(),
+                                source,
+                            }
                         }
                         error => error,
                     })
@@ -1572,12 +1579,20 @@ impl RmcpClient {
         label: &str,
         error: rmcp::service::ServiceError,
     ) -> ClientOperationError {
-        if label == "tools/call" && matches!(&error, rmcp::service::ServiceError::TransportSend(_))
+        if !Self::is_safe_to_replay_after_session_expiry(label)
+            && matches!(&error, rmcp::service::ServiceError::TransportSend(_))
         {
             ClientOperationError::UncertainService { source: error }
         } else {
             ClientOperationError::Service(error)
         }
+    }
+
+    fn is_safe_to_replay_after_session_expiry(label: &str) -> bool {
+        matches!(
+            label,
+            "tools/list" | "resources/list" | "resources/templates/list" | "resources/read"
+        )
     }
 
     fn is_retryable_tools_list_error(label: &str, error: &ClientOperationError) -> bool {
@@ -1600,7 +1615,7 @@ impl RmcpClient {
         let service_error = match error {
             ClientOperationError::Service(source)
             | ClientOperationError::UncertainService { source }
-            | ClientOperationError::ExpiredSessionUncertain { source } => source,
+            | ClientOperationError::ExpiredSessionUncertain { source, .. } => source,
             ClientOperationError::Timeout { .. } => return false,
         };
         let rmcp::service::ServiceError::TransportSend(error) = service_error else {
