@@ -316,13 +316,6 @@ fn validate_fixed_oauth_inputs(
             .all(|byte| byte.is_ascii_alphanumeric() || b"._~-".contains(&byte))
         || requested_scopes.len() != 1
         || requested_scopes.first().map(String::as_str) != Some(FIXED_API_CLAIM_SCOPE)
-        || requested_scopes.iter().any(|scope| {
-            scope.is_empty()
-                || scope.chars().any(char::is_control)
-                || scope == "offline_access"
-        })
-        || requested_scopes.iter().collect::<std::collections::HashSet<_>>().len()
-            != requested_scopes.len()
         || callback_port == 0
         || callback.scheme() != "http"
         || callback.host_str() != Some("127.0.0.1")
@@ -342,13 +335,15 @@ fn validate_fixed_oauth_inputs(
 
 fn validate_canonical_https_url(value: &str) -> Result<Url> {
     let url = Url::parse(value).map_err(|_| anyhow!("fixed OAuth URL is invalid"))?;
+    let matches_canonical_origin = url.path() == "/"
+        && url.as_str().strip_suffix('/') == Some(value);
     if url.scheme() != "https"
         || url.host_str().is_none()
         || !url.username().is_empty()
         || url.password().is_some()
         || url.query().is_some()
         || url.fragment().is_some()
-        || url.as_str() != value
+        || (url.as_str() != value && !matches_canonical_origin)
     {
         bail!("fixed OAuth URL must be canonical HTTPS");
     }
@@ -1324,6 +1319,20 @@ mod tests {
             300,
         )
         .is_err());
+    }
+
+    #[test]
+    fn canonical_https_accepts_the_fixed_bare_api_origin_only() {
+        assert!(validate_canonical_https_url(FIXED_API_CLAIM_RESOURCE).is_ok());
+        assert!(validate_canonical_https_url("https://ops-api.grantmatler.com/").is_ok());
+        for value in [
+            "https://ops-api.grantmatler.com:443",
+            "https://OPS-API.grantmatler.com",
+            "https://ops-api.grantmatler.com/path",
+            "https://ops-api.grantmatler.com?query=value",
+        ] {
+            assert!(validate_canonical_https_url(value).is_err());
+        }
     }
 
     #[test]

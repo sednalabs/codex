@@ -162,11 +162,11 @@ fn open_authorization_url_as_invoking_user(authorization_url: &str) -> Result<()
         "XDG_SESSION_TYPE",
         "DBUS_SESSION_BUS_ADDRESS",
     ] {
-        if let Some(value) = std::env::var_os(name)
-            && value.len() <= 4096
-            && !value.as_os_str().as_bytes().iter().any(u8::is_ascii_control)
-        {
-            command.env(name, value);
+        if let Some(value) = std::env::var_os(name) {
+            let value_bytes = value.as_os_str().as_bytes();
+            if value_bytes.len() <= 4096 && !value_bytes.iter().any(u8::is_ascii_control) {
+                command.env(name, value);
+            }
         }
     }
     unsafe {
