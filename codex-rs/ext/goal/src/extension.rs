@@ -201,7 +201,9 @@ where
                 }
                 accounting.finish_turn(&turn_id);
             }
-            let attempt = runtime.continue_if_idle().await;
+            let attempt = runtime
+                .continue_if_idle(expected_continuation.as_deref())
+                .await;
             let Some((turn_store, expected)) = input
                 .completing_turn_store
                 .zip(expected_continuation.as_deref())

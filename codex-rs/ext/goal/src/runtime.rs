@@ -9,6 +9,7 @@ use codex_core::TurnInput;
 use codex_core::TurnInputRequest;
 use codex_core::TurnStartOptions;
 use codex_extension_api::GoalContinuationDisposition;
+use codex_extension_api::GoalTurnContinuation;
 use codex_protocol::ThreadId;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::ThreadGoal;
@@ -63,6 +64,15 @@ pub(crate) enum GoalStartAttempt {
         goal_id: Option<String>,
         disposition: GoalContinuationDisposition,
     },
+}
+
+fn origin_turn_id_for_goal(
+    completing_turn: Option<&GoalTurnContinuation>,
+    goal_id: &str,
+) -> Option<String> {
+    completing_turn
+        .filter(|continuation| continuation.goal_id == goal_id)
+        .map(|continuation| continuation.turn_id.clone())
 }
 
 struct GoalRuntimeInner {
@@ -259,7 +269,7 @@ impl GoalRuntimeHandle {
                     let item = objective_updated_steering_item(&protocol_goal_from_state(goal));
                     self.inject_active_turn_steering(item).await;
                 }
-                self.continue_if_idle().await?;
+                self.continue_if_idle(None).await?;
             }
             codex_state::ThreadGoalStatus::BudgetLimited => {
                 if self.inner.accounting_state.current_turn_id().is_none() {
@@ -454,7 +464,10 @@ impl GoalRuntimeHandle {
         Ok(())
     }
 
-    pub(crate) async fn continue_if_idle(&self) -> Result<GoalStartAttempt, String> {
+    pub(crate) async fn continue_if_idle(
+        &self,
+        completing_turn: Option<&GoalTurnContinuation>,
+    ) -> Result<GoalStartAttempt, String> {
         if !self.tools_available() {
             self.inner.accounting_state.clear_active_goal();
             return Ok(GoalStartAttempt::Skipped {
@@ -519,12 +532,12 @@ impl GoalRuntimeHandle {
             });
         }
         let goal_id = goal.goal_id.clone();
+        let origin_turn_id = origin_turn_id_for_goal(completing_turn, &goal_id);
         let start_options = thread
             .thread_extension_data()
             .get::<TurnStartOptions>()
             .map(|options| options.as_ref().clone())
             .unwrap_or_default();
-        let origin_turn_id = start_options.parent_turn_id.clone();
         let item = continuation_steering_item(
             &protocol_goal_from_state(goal),
             thread.config().await.update_plan_enabled,
@@ -542,7 +555,9 @@ impl GoalRuntimeHandle {
             Ok(StartIfIdleSubmission::Started { turn_id, .. }) => {
                 // Turn-stop evaluation takes the same permit, so even a fast response
                 // cannot finish before this host-admitted continuation is identified.
-                self.inner.accounting_state.mark_goal_continuation(turn_id);
+                self.inner
+                    .accounting_state
+                    .mark_goal_continuation(turn_id.clone());
                 GoalStartAttempt::Started {
                     goal_id,
                     origin_turn_id,
@@ -757,5 +772,50 @@ fn protocol_goal_status_from_state(status: codex_state::ThreadGoalStatus) -> Thr
         codex_state::ThreadGoalStatus::UsageLimited => ThreadGoalStatus::UsageLimited,
         codex_state::ThreadGoalStatus::BudgetLimited => ThreadGoalStatus::BudgetLimited,
         codex_state::ThreadGoalStatus::Complete => ThreadGoalStatus::Complete,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GoalStartAttempt;
+    use super::origin_turn_id_for_goal;
+    use codex_extension_api::GoalContinuationAttempt;
+    use codex_extension_api::GoalContinuationAttemptResult;
+    use codex_extension_api::GoalTurnContinuation;
+
+    #[test]
+    fn resumed_goal_started_receipt_uses_completing_turn_without_parent_options() {
+        let completing_turn = GoalTurnContinuation {
+            goal_id: "resumed-goal".to_string(),
+            turn_id: "resumed-turn".to_string(),
+        };
+        let native_attempt = GoalStartAttempt::Started {
+            goal_id: completing_turn.goal_id.clone(),
+            origin_turn_id: origin_turn_id_for_goal(
+                Some(&completing_turn),
+                &completing_turn.goal_id,
+            ),
+            continuation_turn_id: "native-next-turn".to_string(),
+        };
+        let receipt = match native_attempt {
+            GoalStartAttempt::Started {
+                goal_id,
+                origin_turn_id,
+                continuation_turn_id,
+            } => GoalContinuationAttempt {
+                goal_id,
+                origin_turn_id: origin_turn_id.unwrap_or_default(),
+                result: GoalContinuationAttemptResult::Started {
+                    continuation_turn_id,
+                },
+            },
+            _ => unreachable!("test constructs a native Started result"),
+        };
+
+        assert!(receipt.started_for(&completing_turn));
+        assert_eq!(
+            None,
+            origin_turn_id_for_goal(Some(&completing_turn), "different-goal")
+        );
     }
 }

@@ -9,11 +9,15 @@ use std::sync::Weak;
 use std::time::Duration;
 
 use codex_analytics::AnalyticsEventsClient;
+use codex_core::TurnStartOptions;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionEventSink;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_extension_api::ExtensionWarning;
 use codex_extension_api::FunctionCallError;
+use codex_extension_api::GoalContinuationAttempt;
+use codex_extension_api::GoalContinuationAttemptResult;
+use codex_extension_api::GoalTurnContinuation;
 use codex_extension_api::NoopTurnItemEmitter;
 use codex_extension_api::ThreadResumeInput;
 use codex_extension_api::ThreadStartInput;
@@ -1475,6 +1479,65 @@ async fn thread_resume_rehydrates_active_goal_idle_accounting() -> anyhow::Resul
         }],
         harness.sink.goal_events()
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn resumed_active_goal_marker_binds_started_receipt_without_parent_turn_options()
+-> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    runtime
+        .thread_goals()
+        .replace_thread_goal(
+            thread_id,
+            "resumed goal",
+            codex_state::ThreadGoalStatus::Active,
+            /*token_budget*/ None,
+        )
+        .await?;
+    let harness = GoalExtensionHarness::new(runtime, thread_id).await?;
+    harness.resume_thread().await;
+
+    let turn_store = ExtensionData::new("resumed-turn");
+    let usage = TokenUsage::default();
+    let collaboration_mode = default_collaboration_mode();
+    for contributor in harness.registry.turn_lifecycle_contributors() {
+        contributor
+            .on_turn_start(TurnStartInput {
+                turn_id: "resumed-turn",
+                collaboration_mode: &collaboration_mode,
+                token_usage_at_turn_start: Some(&usage),
+                session_store: &harness.session_store,
+                thread_store: &harness.thread_store,
+                turn_store: &turn_store,
+            })
+            .await;
+    }
+    for contributor in harness.registry.turn_lifecycle_contributors() {
+        contributor
+            .on_turn_stop(TurnStopInput {
+                session_store: &harness.session_store,
+                thread_store: &harness.thread_store,
+                turn_store: &turn_store,
+            })
+            .await;
+    }
+
+    assert!(harness.thread_store.get::<TurnStartOptions>().is_none());
+    let continuation = turn_store
+        .get::<GoalTurnContinuation>()
+        .expect("resumed active goal produces a turn-scoped continuation marker");
+    assert_eq!("resumed-turn", continuation.turn_id);
+    let started = GoalContinuationAttempt {
+        goal_id: continuation.goal_id.clone(),
+        origin_turn_id: continuation.turn_id.clone(),
+        result: GoalContinuationAttemptResult::Started {
+            continuation_turn_id: "native-next-turn".to_string(),
+        },
+    };
+    assert!(started.started_for(&continuation));
     Ok(())
 }
 

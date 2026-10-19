@@ -13678,7 +13678,7 @@ fn goal_completion_handback_suppresses_only_matching_started_continuation() {
     };
     let response = parent_response_for_goal_handoff(&continuation, Some(&other_goal_attempt));
     assert!(response.contains("did not match this goal turn"));
-    assert!(!response.contains("remains active"));
+    assert!(!response.contains("is still active"));
 }
 
 #[test]
@@ -13697,8 +13697,8 @@ fn goal_completion_handback_reports_rejection_and_preserves_nonactive_dispositio
     };
     let response = parent_response_for_goal_handoff(&continuation, Some(&rejected));
     assert!(response.starts_with("turn response"));
-    assert!(response.contains("remains active"));
-    assert!(response.contains("does not complete that goal"));
+    assert!(response.contains("is still active"));
+    assert!(response.contains("not a goal-completion result"));
 
     // The native unavailable-tools/shutdown path also maps to Skipped + Unknown.
     let skipped = GoalContinuationAttempt {
@@ -13731,7 +13731,7 @@ fn goal_completion_handback_reports_rejection_and_preserves_nonactive_dispositio
     };
     let response = parent_response_for_goal_handoff(&continuation, Some(&paused));
     assert!(response.contains("is paused"));
-    assert!(!response.contains("remains active"));
+    assert!(!response.contains("is still active"));
 
     for (status, expected_state) in [
         (ThreadGoalStatus::Blocked, "is blocked"),
@@ -13746,7 +13746,7 @@ fn goal_completion_handback_reports_rejection_and_preserves_nonactive_dispositio
         };
         let response = parent_response_for_goal_handoff(&continuation, Some(&current_status));
         assert!(response.contains(expected_state));
-        assert!(!response.contains("remains active"));
+        assert!(!response.contains("is still active"));
     }
 
     for disposition in [
@@ -13763,4 +13763,78 @@ fn goal_completion_handback_reports_rejection_and_preserves_nonactive_dispositio
             "completed and cleared goals must not be relabeled as active"
         );
     }
+}
+
+#[tokio::test]
+async fn terminal_goal_handback_joins_the_completing_turn_idle_result() {
+    struct StartedContinuationOnIdle;
+
+    impl codex_extension_api::ThreadLifecycleContributor<crate::config::Config>
+        for StartedContinuationOnIdle
+    {
+        fn on_thread_idle<'a>(
+            &'a self,
+            input: codex_extension_api::ThreadIdleInput<'a>,
+        ) -> codex_extension_api::ExtensionFuture<'a, ()> {
+            Box::pin(async move {
+                let turn_store = input
+                    .completing_turn_store
+                    .expect("completed turn store is passed to idle lifecycle");
+                let continuation = turn_store
+                    .get::<GoalTurnContinuation>()
+                    .expect("successful goal turn marker is retained");
+                turn_store.insert(GoalContinuationAttempt {
+                    goal_id: continuation.goal_id.clone(),
+                    origin_turn_id: continuation.turn_id.clone(),
+                    result: GoalContinuationAttemptResult::Started {
+                        continuation_turn_id: "native-next-turn".to_string(),
+                    },
+                });
+            })
+        }
+    }
+
+    let (mut session, turn_context) = make_session_and_context().await;
+    let continuation = GoalTurnContinuation {
+        goal_id: "resumed-goal".to_string(),
+        turn_id: turn_context.sub_id.clone(),
+    };
+    turn_context.extension_data.insert(continuation.clone());
+    let event = EventMsg::TurnComplete(TurnCompleteEvent {
+        root_turn_id: Some(turn_context.root_turn_id()),
+        turn_id: turn_context.sub_id.clone(),
+        last_agent_message: Some("turn response".to_string()),
+        error: None,
+        started_at: None,
+        completed_at: None,
+        duration_ms: None,
+        time_to_first_token_ms: None,
+    });
+    session
+        .maybe_notify_parent_of_terminal_turn(&turn_context, &event)
+        .await;
+    let deferred = turn_context
+        .extension_data
+        .get::<DeferredAgentTurnOutcome>()
+        .expect("matching successful goal turn is deferred");
+
+    let mut extensions =
+        codex_extension_api::ExtensionRegistryBuilder::<crate::config::Config>::new();
+    extensions.thread_lifecycle_contributor(Arc::new(StartedContinuationOnIdle));
+    session.services.extensions = Arc::new(extensions.build());
+    session
+        .emit_thread_idle_lifecycle_if_idle(
+            codex_extension_api::ThreadIdleCause::Completed,
+            Some(turn_context.extension_data.as_ref()),
+        )
+        .await;
+    session.resolve_deferred_parent_outcome(&turn_context).await;
+
+    let attempt = turn_context
+        .extension_data
+        .get::<GoalContinuationAttempt>()
+        .expect("idle lifecycle returned its actual started receipt");
+    assert!(attempt.started_for(&continuation));
+    assert!(deferred.outcome.lock().await.is_none());
+    session.resolve_deferred_parent_outcome(&turn_context).await;
 }
