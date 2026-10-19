@@ -673,6 +673,39 @@ pub(crate) struct ProviderResponseUsageContext {
     pub(crate) actual_service_tier: Option<String>,
 }
 
+fn normalized_completed_response_token_usage(
+    usage: Option<&TokenUsage>,
+) -> (
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
+    &'static str,
+) {
+    let missing = (None, None, None, None, None, "provider_usage_missing");
+    let Some(usage) = usage else {
+        return missing;
+    };
+
+    let invalid_dimensions = (None, None, None, None, None, "ok");
+    let input_tokens = usage.input_tokens;
+    let cached_input_tokens = usage.cached_input_tokens;
+    if input_tokens < 0 || cached_input_tokens < 0 || cached_input_tokens > input_tokens {
+        return invalid_dimensions;
+    }
+
+    let token_count = |value: i64| (value >= 0).then_some(value);
+    (
+        Some(input_tokens - cached_input_tokens),
+        Some(cached_input_tokens),
+        token_count(usage.cache_write_input_tokens),
+        token_count(usage.output_tokens),
+        token_count(usage.total_tokens),
+        "ok",
+    )
+}
+
 impl Session {
     /// Spawn and initialize a new session.
     /// Hide the concrete startup future from callers while keeping initialization lazy.
@@ -5170,12 +5203,14 @@ impl Session {
         let Some(state_db) = self.state_db() else {
             return;
         };
-        let token_count = |value: Option<i64>| value.filter(|value| *value >= 0);
-        let input_tokens = usage.map(|usage| usage.input_tokens);
-        let cached_tokens = usage.map(|usage| usage.cached_input_tokens);
-        let cache_write_tokens = usage.map(|usage| usage.cache_write_input_tokens);
-        let output_tokens = usage.map(|usage| usage.output_tokens);
-        let total_tokens = usage.map(|usage| usage.total_tokens);
+        let (
+            input_tokens_uncached,
+            input_tokens_cached,
+            input_tokens_cache_write,
+            output_tokens,
+            total_tokens,
+            status,
+        ) = normalized_completed_response_token_usage(usage);
         let actual_service_tier_source = usage_context
             .actual_service_tier
             .as_ref()
@@ -5198,20 +5233,12 @@ impl Session {
             account_plan: None,
             started_at: usage_context.started_at,
             completed_at,
-            input_tokens_uncached: token_count(
-                input_tokens
-                    .zip(cached_tokens)
-                    .map(|(input, cached)| input.saturating_sub(cached)),
-            ),
-            input_tokens_cached: token_count(cached_tokens),
-            input_tokens_cache_write: token_count(cache_write_tokens),
-            output_tokens: token_count(output_tokens),
-            total_tokens: token_count(total_tokens),
-            status: if usage.is_some() {
-                "ok"
-            } else {
-                "provider_usage_missing"
-            },
+            input_tokens_uncached,
+            input_tokens_cached,
+            input_tokens_cache_write,
+            output_tokens,
+            total_tokens,
+            status,
         };
         if let Err(error) = state_db.record_provider_call_usage(&record).await {
             warn!(

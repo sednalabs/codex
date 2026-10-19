@@ -3324,6 +3324,32 @@ async fn resumed_history_injects_initial_context_on_first_context_update_only() 
     );
 }
 
+#[test]
+fn normalized_completed_response_token_usage_rejects_invalid_input_dimensions() {
+    let usage = |input_tokens, cached_input_tokens| TokenUsage {
+        input_tokens,
+        cached_input_tokens,
+        ..TokenUsage::default()
+    };
+
+    assert_eq!(
+        super::normalized_completed_response_token_usage(Some(&usage(0, 0))),
+        (Some(0), Some(0), Some(0), Some(0), Some(0), "ok")
+    );
+
+    for invalid in [usage(-1, 0), usage(1, -1), usage(1, 2)] {
+        assert_eq!(
+            super::normalized_completed_response_token_usage(Some(&invalid)),
+            (None, None, None, None, None, "ok")
+        );
+    }
+
+    assert_eq!(
+        super::normalized_completed_response_token_usage(None),
+        (None, None, None, None, None, "provider_usage_missing")
+    );
+}
+
 #[tokio::test]
 async fn record_initial_history_seeds_token_info_from_rollout() {
     let (session, turn_context) = make_session_and_context().await;
