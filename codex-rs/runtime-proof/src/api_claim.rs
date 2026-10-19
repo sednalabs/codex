@@ -80,12 +80,7 @@ impl Audience {
     fn contains(&self, expected: &str) -> bool {
         match self {
             Self::One(audience) => audience == expected,
-            Self::Many(audiences) => {
-                audiences.len() == 1
-                    && audiences
-                        .first()
-                        .is_some_and(|audience| audience == expected)
-            }
+            Self::Many(audiences) => audiences.iter().any(|audience| audience == expected),
         }
     }
 }

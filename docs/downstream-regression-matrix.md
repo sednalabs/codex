@@ -1192,7 +1192,10 @@ API bearer from the fixed `ops-api-bearer` system credential; it never reuses
 the MCP token or secret. The client sends one bounded direct request with
 retries, redirects, and request logging disabled, and preserves an uncertain
 outcome without replay. The API server authenticates the bearer and verifies
-the proof; local JWT comparisons only check policy consistency. Source and
+the proof; local JWT comparisons require `ops-api` membership and only check
+policy consistency. The client-specific mapper adds `ops-api` while the
+existing optional `ops:write` scope contributes its established MCP audiences.
+Source and
 hosted package proof do not appoint the bearer or establish HTTP first use.
 
 The bounded `provision-api-bearer` mode reuses the existing Codex OAuth callback

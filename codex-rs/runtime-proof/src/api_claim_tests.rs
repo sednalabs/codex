@@ -81,10 +81,27 @@ fn api_bearer_consistency_is_bound_to_issuer_audience_subject_scope_and_expiry()
         .expect("the fixed profile consistency fields match");
     assert_eq!(valid.expires_at, now + 60);
 
+    let shared_ops_audiences = serde_json::json!({
+        "iss": API_ISSUER,
+        "aud": [
+            API_AUDIENCE,
+            "ops-mcp-service",
+            "ops-mcp",
+            "https://ops-mcp.grantmatler.com/mcp",
+        ],
+        "sub": principal.to_string(),
+        "scope": API_SCOPE,
+        "exp": now + 60,
+    });
+    assert!(
+        validate_bearer(jwt(shared_ops_audiences), principal, now).is_ok(),
+        "the fixed API audience may be a member of the existing Ops audience set"
+    );
+
     for (field, value) in [
         ("iss", serde_json::json!("https://wrong.example/")),
         ("aud", serde_json::json!("ops-mcp")),
-        ("aud", serde_json::json!([API_AUDIENCE, "account"])),
+        ("aud", serde_json::json!(["ops-mcp", "account"])),
         ("sub", serde_json::json!(Uuid::from_u128(2).to_string())),
         (
             "sub",

@@ -3886,8 +3886,11 @@ opener as the unprivileged desktop user, never as the OAuth principal. The
 existing Codex callback and PKCE implementation uses a fixed loopback redirect,
 the API resource, and only `ops:write`; it does not write the persistent MCP
 credential store or persist a refresh token. Before storage, the returned token
-must match the fixed issuer, API audience, exact scope, UUID-shaped subject, and
-bounded expiry. Provisioning does not require or activate the root claim policy:
+must match the fixed issuer, an audience claim containing `ops-api`, the exact
+scope, UUID-shaped subject, and bounded expiry. The configured client-specific
+`ops-api` mapper works with the existing `ops:write` scope, whose audience
+mappers also supply the existing MCP audiences; no shared mapper or scope is
+changed. Provisioning does not require or activate the root claim policy:
 the HTTP launcher later checks the token subject against that policy before
 signing or sending a claim. The short-lived credential is atomically written
 only to `/run/credstore/ops-api-bearer` in a versioned envelope with a fresh
