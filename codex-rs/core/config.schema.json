@@ -5062,6 +5062,15 @@
           "default": false,
           "description": "Start the composer in Vim mode (`Normal`) by default. Defaults to `false`.",
           "type": "boolean"
+        },
+        "weekly_limit_pacing_style": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/WeeklyLimitPacingStyle"
+            }
+          ],
+          "default": "qualitative",
+          "description": "How the weekly rate-limit status-line item describes pacing. Defaults to `qualitative`; `ratio` is an explicit opt-in."
         }
       },
       "type": "object"
@@ -6851,6 +6860,25 @@
         }
       },
       "type": "object"
+    },
+    "WeeklyLimitPacingStyle": {
+      "description": "Presentation used for weekly rate-limit pacing in the status line.",
+      "oneOf": [
+        {
+          "description": "Describe usage as on, over, or under pace.",
+          "enum": [
+            "qualitative"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Show remaining usage as a percentage of remaining time.",
+          "enum": [
+            "ratio"
+          ],
+          "type": "string"
+        }
+      ]
     },
     "WindowsSandboxModeToml": {
       "enum": [
