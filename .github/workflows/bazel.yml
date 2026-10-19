@@ -168,6 +168,23 @@ jobs:
           # the PR-blocking critical path after the useful test work is done.
           cache-scope: bazel-test
 
+      - name: Validate Windows SystemRoot for Bazel
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $systemRoot = $env:SystemRoot
+          if ([string]::IsNullOrWhiteSpace($systemRoot) -or
+              -not [System.IO.Path]::IsPathRooted($systemRoot) -or
+              -not (Test-Path -LiteralPath $systemRoot -PathType Container)) {
+            throw "Windows SystemRoot must be a valid runner directory."
+          }
+
+          $resolvedSystemRoot = (Resolve-Path -LiteralPath $systemRoot).Path
+          if ([string]::IsNullOrWhiteSpace($resolvedSystemRoot)) {
+            throw "Windows SystemRoot could not be resolved to a directory."
+          }
+          "CODEX_BAZEL_SYSTEM_ROOT=$resolvedSystemRoot" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: bazel test shard
         env:
           BAZEL_TEST_SHARD: ${{ matrix.shard }}
@@ -204,6 +221,11 @@ jobs:
             --build_metadata=TAG_windows_test_shard=${BAZEL_TEST_SHARD}
             --repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1
           )
+          if [[ -z "${CODEX_BAZEL_SYSTEM_ROOT:-}" ]]; then
+            echo "CODEX_BAZEL_SYSTEM_ROOT must be set for Windows Bazel tests." >&2
+            exit 1
+          fi
+          bazel_test_args+=(--action_env="SystemRoot=${CODEX_BAZEL_SYSTEM_ROOT}")
 
           ./.github/scripts/run-bazel-ci.sh \
             --print-failed-action-summary \
@@ -357,6 +379,23 @@ jobs:
           target: ${{ matrix.target }}
           cache-scope: bazel-${{ github.job }}
 
+      - name: Validate Windows SystemRoot for Bazel
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $systemRoot = $env:SystemRoot
+          if ([string]::IsNullOrWhiteSpace($systemRoot) -or
+              -not [System.IO.Path]::IsPathRooted($systemRoot) -or
+              -not (Test-Path -LiteralPath $systemRoot -PathType Container)) {
+            throw "Windows SystemRoot must be a valid runner directory."
+          }
+
+          $resolvedSystemRoot = (Resolve-Path -LiteralPath $systemRoot).Path
+          if ([string]::IsNullOrWhiteSpace($resolvedSystemRoot)) {
+            throw "Windows SystemRoot could not be resolved to a directory."
+          }
+          "CODEX_BAZEL_SYSTEM_ROOT=$resolvedSystemRoot" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: bazel build --config=clippy lint targets
         shell: bash
         run: |
@@ -371,7 +410,12 @@ jobs:
             # Standard hosted Windows runners execute this target locally.
             bazel_wrapper_args+=(--windows-cross-compile)
             bazel_target_list_args+=(--windows-cross-compile)
+            if [[ -z "${CODEX_BAZEL_SYSTEM_ROOT:-}" ]]; then
+              echo "CODEX_BAZEL_SYSTEM_ROOT must be set for Windows Bazel Clippy." >&2
+              exit 1
+            fi
             bazel_clippy_args+=(
+              --action_env="SystemRoot=${CODEX_BAZEL_SYSTEM_ROOT}"
               --skip_incompatible_explicit_targets
               --repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1
             )
@@ -445,6 +489,23 @@ jobs:
           target: ${{ matrix.target }}
           cache-scope: bazel-${{ github.job }}
 
+      - name: Validate Windows SystemRoot for Bazel
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $systemRoot = $env:SystemRoot
+          if ([string]::IsNullOrWhiteSpace($systemRoot) -or
+              -not [System.IO.Path]::IsPathRooted($systemRoot) -or
+              -not (Test-Path -LiteralPath $systemRoot -PathType Container)) {
+            throw "Windows SystemRoot must be a valid runner directory."
+          }
+
+          $resolvedSystemRoot = (Resolve-Path -LiteralPath $systemRoot).Path
+          if ([string]::IsNullOrWhiteSpace($resolvedSystemRoot)) {
+            throw "Windows SystemRoot could not be resolved to a directory."
+          }
+          "CODEX_BAZEL_SYSTEM_ROOT=$resolvedSystemRoot" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: bazel build verify-release-build targets
         shell: bash
         run: |
@@ -469,6 +530,11 @@ jobs:
             --build_metadata=TAG_rust_debug_assertions=off
           )
           if [[ "${RUNNER_OS}" == "Windows" ]]; then
+            if [[ -z "${CODEX_BAZEL_SYSTEM_ROOT:-}" ]]; then
+              echo "CODEX_BAZEL_SYSTEM_ROOT must be set for Windows Bazel release builds." >&2
+              exit 1
+            fi
+            bazel_build_args+=(--action_env="SystemRoot=${CODEX_BAZEL_SYSTEM_ROOT}")
             bazel_build_args+=(--repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1)
           fi
 
