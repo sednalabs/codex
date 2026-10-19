@@ -1,5 +1,6 @@
 //! Ensures MCP cancellation releases pending elicitation routes and tool timeout pauses.
 
+use super::ClientState;
 use super::ElicitationClientService;
 use super::ElicitationPauseState;
 use super::ElicitationResponse;
@@ -131,7 +132,16 @@ async fn recovered_connections_accept_elicitations_with_previously_cancelled_ids
         .await?;
 
         let previous = client.service().await?;
-        client.reinitialize_after_session_expiry(&previous).await?;
+        {
+            let mut state = client.state.lock().await;
+            assert!(matches!(
+                &*state,
+                ClientState::Ready { service, .. } if Arc::ptr_eq(service, &previous)
+            ));
+            *state = ClientState::Expired { oauth: None };
+        }
+        let recovered = client.service().await?;
+        assert!(!Arc::ptr_eq(&previous, &recovered));
         let recovered_server = timeout(Duration::from_secs(/*secs*/ 5), server_rx.recv())
             .await?
             .unwrap()?;

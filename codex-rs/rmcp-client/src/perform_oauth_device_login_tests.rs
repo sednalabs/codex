@@ -1,5 +1,4 @@
 use super::*;
-use axum::Form;
 use axum::Json;
 use axum::Router;
 use axum::extract::State;
@@ -114,8 +113,11 @@ struct PkceState {
 
 async fn pkce_device(
     State(state): State<PkceState>,
-    Form(form): Form<HashMap<String, String>>,
+    body: axum::body::Bytes,
 ) -> (AxumStatusCode, Json<serde_json::Value>) {
+    let form = url::form_urlencoded::parse(&body)
+        .into_owned()
+        .collect::<HashMap<_, _>>();
     let index = {
         let mut forms = state.device_forms.lock().expect("device form lock");
         forms.push(form);
@@ -138,8 +140,11 @@ async fn pkce_device(
 
 async fn pkce_token(
     State(state): State<PkceState>,
-    Form(form): Form<HashMap<String, String>>,
+    body: axum::body::Bytes,
 ) -> (AxumStatusCode, Json<serde_json::Value>) {
+    let form = url::form_urlencoded::parse(&body)
+        .into_owned()
+        .collect::<HashMap<_, _>>();
     let index = {
         let mut forms = state.token_forms.lock().expect("token form lock");
         forms.push(form);
