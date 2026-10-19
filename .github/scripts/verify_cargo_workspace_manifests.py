@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import sys
 import tomllib
+from functools import cache
 from pathlib import Path
 
 
@@ -313,7 +314,11 @@ def is_internal_dependency(
         resolved_dependency_path.relative_to(CARGO_RS_ROOT)
     except ValueError:
         return False
-    return True
+    return not any(
+        resolved_dependency_path == excluded
+        or excluded in resolved_dependency_path.parents
+        for excluded in workspace_excluded_paths()
+    )
 
 
 def add_unused_exception_errors(
@@ -380,11 +385,28 @@ def load_manifest(path: Path) -> dict:
 
 
 def cargo_manifests() -> list[Path]:
+    excluded_paths = workspace_excluded_paths()
     return sorted(
         path
         for path in CARGO_RS_ROOT.rglob("Cargo.toml")
         if path != CARGO_RS_ROOT / "Cargo.toml"
+        and not any(
+            path == excluded / "Cargo.toml" or excluded in path.parents
+            for excluded in excluded_paths
+        )
     )
+
+
+@cache
+def workspace_excluded_paths() -> set[Path]:
+    workspace = load_manifest(CARGO_RS_ROOT / "Cargo.toml").get("workspace", {})
+    if not isinstance(workspace, dict):
+        return set()
+    return {
+        (CARGO_RS_ROOT / entry).resolve()
+        for entry in workspace.get("exclude", [])
+        if isinstance(entry, str)
+    }
 
 
 def manifests_to_verify() -> list[Path]:

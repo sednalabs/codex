@@ -34,7 +34,8 @@ fn unicode_math_inline_narrow_snapshot() {
 #[test]
 fn unicode_math_accents_and_symbols_snapshot() {
     insta::assert_snapshot!(plain(
-        r"Operators: $\hat H^2 + \hbar^2$, $\ell$, $A\dagger$, $B\ddagger$.
+        concat!(
+            r"Operators: $\hat H^2 + \hbar^2$, $\ell$, $A\dagger$, $B\ddagger$.
 Accents: $\bar{x}_1$, $\tilde{x}^2$, $\vec{v}_i$, $\dot{x}$, $\ddot{x}$.
 Greek accents: $\hat{\Psi}^2$, $\bar{\varrho}$, $\tilde{\varsigma}$.
 Other symbols: $\varkappa+\varpi$, $\Re z+\Im z$, $\aleph_0$, $\hat{\imath}$.
@@ -44,9 +45,12 @@ Bounds: $a\lesssim b\gtrsim c$; operators: $a\oplus b\otimes c\odot d$.
 Sets: $A\supseteq B\supset C\ni x$, $A\setminus B=\varnothing$.
 Logic: $\neg P\land Q\lor R\implies S\iff T\impliedby U$, $\nexists x$.
 Arrows: $a\leftrightarrow b\mapsto c\Leftarrow d$, $\uparrow\downarrow\updownarrow$.
-Integrals: $\iint f$, $\iiint g$, $\oint h$.
-Collections: $\coprod A$, $\bigcup B$, $\bigcap C$.
+",
+            r"Integrals: $\iint f$, $\iiint g$, $\oint h$.", // codespell:ignore oint
+            "\n",
+            r"Collections: $\coprod A$, $\bigcup B$, $\bigcap C$.
 Punctuation: $x\prime$, $a\circ b\bullet c$, $\vdots\ddots$.",
+        ),
         /*width*/ 80
     ));
 }
