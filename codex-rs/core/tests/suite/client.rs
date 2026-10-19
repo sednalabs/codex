@@ -679,18 +679,37 @@ async fn response_item_ids_persist_across_resume_and_preserve_server_ids() -> an
         response_message_item_id(&requests[1], "assistant", "first reply"),
         "msg_server"
     );
-    for request in &requests {
-        let mailbox_message = request
+    // Quiet mail is retained when the fresh user turn finishes, after its first
+    // sampling request. It first reaches the provider through resumed history.
+    assert!(
+        requests[0]
             .inputs_of_type("agent_message")
-            .into_iter()
-            .find(|item| item["content"][0]["text"] == "legacy quiet mailbox update")
-            .expect("mailbox communication should appear in resumed request history");
-        assert_eq!(mailbox_message.get("id"), None);
-        assert_eq!(mailbox_message["author"].as_str(), Some("/root/worker"));
-        assert_eq!(mailbox_message["recipient"].as_str(), Some("/root"));
-    }
+            .iter()
+            .all(|item| item["content"][0]["text"] != "legacy quiet mailbox update")
+    );
+    let mailbox_messages = requests[1]
+        .inputs_of_type("agent_message")
+        .into_iter()
+        .filter(|item| item["content"][0]["text"] == "legacy quiet mailbox update")
+        .collect::<Vec<_>>();
+    assert_eq!(mailbox_messages.len(), 1);
+    let mailbox_message = &mailbox_messages[0];
+    assert_eq!(mailbox_message.get("id"), None);
+    assert_eq!(mailbox_message["author"].as_str(), Some("/root/worker"));
+    assert_eq!(mailbox_message["recipient"].as_str(), Some("/root"));
     let persisted_rollout = std::fs::read_to_string(&rollout_path)?;
-    assert!(persisted_rollout.contains("inter_agent_update_legacy-resume"));
+    let persisted_history = persisted_rollout
+        .lines()
+        .map(serde_json::from_str::<RolloutLine>)
+        .collect::<Result<Vec<_>, _>>()?;
+    assert!(persisted_history.iter().any(|line| matches!(
+        &line.item,
+        RolloutItem::ResponseItem(response) if matches!(
+            &response.item,
+            ResponseItem::AgentMessage { id: Some(id), .. }
+                if id.as_str() == "inter_agent_update_legacy-resume"
+        )
+    )));
 
     Ok(())
 }

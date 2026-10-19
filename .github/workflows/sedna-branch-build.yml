@@ -241,7 +241,7 @@ jobs:
         PY
 
   build-linux-aarch64:
-    needs: metadata
+    needs: [metadata, request-id-regression]
     if: ${{ inputs.platform == 'linux-aarch64' }}
     uses: ./.github/workflows/_sedna-linux-rust.yml
     with:
