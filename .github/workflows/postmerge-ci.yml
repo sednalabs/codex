@@ -12,12 +12,10 @@ jobs:
   rust-ci-full:
     name: rust-ci-full
     uses: ./.github/workflows/rust-ci-full.yml
-    secrets: inherit
 
   v8-canary:
     name: v8-canary
     uses: ./.github/workflows/v8-canary.yml
-    secrets: inherit
 
   results:
     name: Postmerge CI results
