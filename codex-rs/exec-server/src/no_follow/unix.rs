@@ -121,7 +121,7 @@ pub(super) async fn write_file(path: PathBuf, contents: Vec<u8>) -> io::Result<(
         let file = openat(
             &parent,
             leaf,
-            OFlags::WRONLY | OFlags::CREATE | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC, // codespell:ignore WRONLY
+            OFlags::WRONLY | OFlags::CREATE | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC, // codespell:ignore wronly
             Mode::from_raw_mode(0o666),
         )
         .map_err(io::Error::from)?;
