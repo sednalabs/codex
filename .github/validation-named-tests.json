@@ -120,6 +120,14 @@
       "profiles": ["rust_minimal"],
       "inventory_argv": ["cargo","test","--locked","-p","codex-tui","--lib","--","--list"],
       "execution_argv": ["cargo","test","--locked","-p","codex-tui","--lib","--","--test-threads=1"]
+    },
+    {
+      "package": "core_test_support",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal"],
+      "inventory_argv": ["cargo","test","--locked","-p","core_test_support","--lib","--","--list"],
+      "execution_argv": ["cargo","test","--locked","-p","core_test_support","--lib","--","--test-threads=1"]
     }
   ]
 }
