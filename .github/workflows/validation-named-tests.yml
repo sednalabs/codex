@@ -561,3 +561,129 @@ jobs:
             //codex-rs/voice-host:codex-voice-host-bin-unit-tests \
             //codex-rs/voice-host:voice-host-installed_client-test \
             //codex-rs/voice-host:voice-host-lifecycle-test
+
+  keyring_module_lock:
+    if: >-
+      ${{ inputs.target_sha == '846ea480537028afd502d1930247e2291d370570' &&
+          inputs.request_json == '{"schema_version":"rust-tests-v1","profile":"rust_minimal","package":"codex-keyring-store","target_kind":"lib","target":"","tests":["error_kind_tests::preserves_typed_causes_without_guessing_from_messages","error_kind_tests::classifies_native_backend_errors","error_kind_tests::unavailable_secret_service_is_not_connected","error_kind_tests::secret_service_dbus_io_error_preserves_its_kind","error_display_tests::payload_bearing_errors_redact_credentials_and_end_the_source_chain"],"execution_mode":"exact"}' &&
+          inputs.base_ref == '6bdf5e8a98b8c29ad7c63cfbc86afd24d4914287' &&
+          inputs.profile == 'rust_minimal' &&
+          inputs.windows_validation_mode == 'none' &&
+          inputs.prepare_codex_cli_for_exact_usage_test != true &&
+          inputs.run_ae94_android_helper_tests != true &&
+          inputs.run_ae94_tui_provider_tests != true &&
+          inputs.run_d0_active_wait_test != true &&
+          inputs.run_ac392_android_protocol_test != true &&
+          inputs.run_a89_android_png_fixture_preflight != true &&
+          inputs.run_native_browser_source_validation != true }}
+    name: Generate exact candidate MODULE.bazel.lock
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Check out workflow host
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out exact candidate and comparison base
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.target_sha }}
+          path: validation-target
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.base_ref }}
+          path: validation-base
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify exact H/B/T identity
+        id: identity
+        shell: bash
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+          BASE_SHA: ${{ inputs.base_ref }}
+        run: |
+          set -euo pipefail
+          host_sha="$(git rev-parse HEAD)"
+          target_sha="$(git -C validation-target rev-parse HEAD)"
+          base_sha="$(git -C validation-base rev-parse HEAD)"
+          if [[ ! "${GITHUB_SHA}" =~ ^[0-9a-f]{40}$ || "${host_sha}" != "${GITHUB_SHA}" ]]; then
+            echo "workflow host checkout does not match the dispatched H identity." >&2
+            exit 1
+          fi
+          if [[ "${target_sha}" != "${TARGET_SHA}" || "${base_sha}" != "${BASE_SHA}" ]]; then
+            echo "candidate or comparison-base checkout does not match the dispatched T/B identity." >&2
+            exit 1
+          fi
+          {
+            echo "VALIDATION_H_SHA=${host_sha}"
+            echo "VALIDATION_T_SHA=${target_sha}"
+            echo "VALIDATION_B_SHA=${base_sha}"
+          } >> "${GITHUB_ENV}"
+
+      - name: Prepare standard hosted Bazel environment
+        uses: ./.github/actions/prepare-bazel-ci
+        with:
+          target: x86_64-unknown-linux-gnu
+          cache-scope: validation-keyring-module-lock
+
+      - name: Generate MODULE.bazel.lock from exact candidate
+        id: module_lock_update
+        continue-on-error: true
+        working-directory: validation-target
+        shell: bash
+        run: just bazel-lock-update
+
+      - name: Record truthful lock-generation identity and status
+        if: ${{ always() }}
+        shell: bash
+        env:
+          UPDATE_OUTCOME: ${{ steps.module_lock_update.outcome }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          lock = Path("validation-target/MODULE.bazel.lock")
+          exists = lock.is_file()
+          outcome = os.environ.get("UPDATE_OUTCOME", "unknown")
+          receipt = {
+              "schema_version": "candidate-module-lock-v1",
+              "status": "success" if outcome == "success" and exists else "failure",
+              "workflow_host_sha": os.environ.get("VALIDATION_H_SHA", ""),
+              "target_sha": os.environ.get("VALIDATION_T_SHA", ""),
+              "base_sha": os.environ.get("VALIDATION_B_SHA", ""),
+              "run_id": os.environ.get("GITHUB_RUN_ID", ""),
+              "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", ""),
+              "lock_present": exists,
+              "lock_sha256": hashlib.sha256(lock.read_bytes()).hexdigest() if exists else "",
+          }
+          Path("validation-target/module-lock-result.json").write_text(
+              json.dumps(receipt, indent=2) + "\n", encoding="utf-8"
+          )
+          PY
+
+      - name: Upload exact MODULE.bazel.lock and identity receipt
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: keyring-module-lock-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            validation-target/MODULE.bazel.lock
+            validation-target/module-lock-result.json
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Preserve failed lock-generation status
+        if: ${{ steps.module_lock_update.outcome != 'success' }}
+        shell: bash
+        run: exit 1
