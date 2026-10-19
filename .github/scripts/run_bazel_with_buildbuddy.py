@@ -201,11 +201,13 @@ def local_execution_args(args: Sequence[str], env: Mapping[str, str]) -> list[st
             "Windows": "local",
             "macOS": "darwin-sandbox,local",
         }.get(env.get("RUNNER_OS"), "sandboxed,local")
+        # Preserve an explicit sequential cap without raising the host-CPU ceiling.
+        job_cap = "--jobs=1" if "--jobs=1" in bazel_args else "--jobs=HOST_CPUS"
         guard_args = [
             *LOCAL_ENDPOINT_ARGS,
             f"--spawn_strategy={local_strategy}",
             f"--strategy_regexp=.*={local_strategy}",
-            "--jobs=HOST_CPUS",
+            job_cap,
         ]
     return [*bazel_args, *guard_args, *args[separator_idx:]]
 

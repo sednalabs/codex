@@ -654,7 +654,7 @@ jobs:
           if [[ "${RUNNER_OS}" == "Windows" ]]; then
             bazel_wrapper_args+=(--windows-msvc-host-platform)
             # Keep native Clippy compilation within hosted-runner memory.
-            bazel_clippy_args+=(--jobs=2)
+            bazel_clippy_args+=(--jobs=1)
             bazel_clippy_args+=(--platforms=//:windows_x86_64_msvc --skip_incompatible_explicit_targets)
             bazel_clippy_args+=(--workspace_status_command=./scripts/workspace-status.cmd)
           else

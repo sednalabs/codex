@@ -48,6 +48,34 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
             ],
         )
 
+    def test_local_only_preserves_sequential_cap_without_raising_ceiling(self) -> None:
+        env = {"CODEX_BAZEL_LOCAL_ONLY": "1", "RUNNER_OS": "Windows"}
+        for requested, expected in (("1", "--jobs=1"), ("999", "--jobs=HOST_CPUS")):
+            with self.subTest(requested=requested):
+                result = run_bazel_with_buildbuddy.bazel_args_with_remote_config(
+                    [
+                        "build",
+                        "--config=clippy",
+                        f"--jobs={requested}",
+                        "--",
+                        "//codex-rs/...",
+                    ],
+                    env,
+                )
+                self.assertEqual(result[result.index("--") - 1], expected)
+                self.assertIn("--remote_executor=", result)
+                self.assertIn("--strategy_regexp=.*=local", result)
+
+    def test_local_only_keeps_program_jobs_argument_outside_guard(self) -> None:
+        args = ["run", "//codex-rs/cli:codex", "--", "--jobs=1"]
+        result = run_bazel_with_buildbuddy.bazel_args_with_remote_config(
+            args,
+            {"CODEX_BAZEL_LOCAL_ONLY": "1", "RUNNER_OS": "Windows"},
+        )
+        separator = result.index("--")
+        self.assertEqual(result[separator - 1], "--jobs=HOST_CPUS")
+        self.assertEqual(result[separator + 1 :], ["--jobs=1"])
+
     def test_local_only_uses_concrete_gnu_and_preserves_genuine_musl(self) -> None:
         env = {"CODEX_BAZEL_LOCAL_ONLY": "1", "RUNNER_OS": "Linux"}
         for triple, platform in (
