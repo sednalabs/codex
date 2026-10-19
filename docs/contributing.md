@@ -1,5 +1,7 @@
 ## Contributing
 
+This file describes the contribution policy of [openai/codex](https://github.com/openai/codex). This downstream fork does not establish a separate external contribution policy here; check the fork's current repository guidance and settings before contributing.
+
 We welcome community contributions through the [openai/codex issue tracker](https://github.com/openai/codex/issues). Bug reports, root-cause analyses, and feature requests help us understand what matters most and improve Codex.
 
 **We do not accept external code contributions or pull requests.**
