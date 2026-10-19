@@ -464,6 +464,9 @@ impl ChatWidget {
     ) -> Option<String> {
         let base = self.status_line_limit_display(window, label)?;
         let window = window?;
+        if snapshot.captured_at > now {
+            return Some(base);
+        }
         if snapshot.is_stale_at(now) {
             return Some(format!("{base} (stale)"));
         }

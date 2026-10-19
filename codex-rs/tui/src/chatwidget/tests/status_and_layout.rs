@@ -851,6 +851,31 @@ async fn weekly_limit_pacing_uses_valid_reset_and_marks_stale_or_invalid_data() 
         Some("weekly 40%/50%".to_string())
     );
 
+    let future_capture = captured_at + chrono::Duration::days(1);
+    let mut future_snapshot = snapshot.clone();
+    future_snapshot.captured_at = future_capture;
+    future_snapshot
+        .secondary
+        .as_mut()
+        .expect("weekly window")
+        .resets_at_unix_seconds =
+        Some(future_capture.timestamp() + (7 * 24 * 60 * 60 / 2));
+    for style in [
+        codex_config::types::WeeklyLimitPacingStyle::Qualitative,
+        codex_config::types::WeeklyLimitPacingStyle::Ratio,
+    ] {
+        chat.local_settings.tui.weekly_limit_pacing_style = style;
+        assert_eq!(
+            chat.status_line_weekly_limit_display(
+                &future_snapshot,
+                future_snapshot.secondary.as_ref(),
+                captured_at,
+                "weekly"
+            ),
+            Some("weekly 40% left".to_string())
+        );
+    }
+
     assert_eq!(
         chat.status_line_weekly_limit_display(
             &snapshot,
