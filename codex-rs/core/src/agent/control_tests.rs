@@ -1441,7 +1441,7 @@ async fn explicit_progress_to_deeper_nonroot_is_restored_without_another_send() 
             tree.root_id,
             reviewer.thread_id,
             tree.harness.config.clone(),
-            message.clone(),
+            message,
             update.clone(),
             AgentCommunicationContext::new(AgentCommunicationKind::Message, tree.root_id),
         )
@@ -1622,7 +1622,7 @@ async fn explicit_action_starts_an_idle_recipient_and_is_represented_once() {
         .iter()
         .filter(|item| matches!(item, RolloutItem::EventMsg(EventMsg::TurnStarted(_))))
         .count();
-    let message = AgentMessage::Plaintext("review the completed result".to_string());
+    let message = "review the completed result";
     let update = ExplicitInterAgentUpdate {
         idempotency_key: "worker-action-for-idle-root".to_string(),
         intent: InterAgentCommunicationIntent::ActionRequired,
@@ -1634,7 +1634,7 @@ async fn explicit_action_starts_an_idle_recipient_and_is_represented_once() {
             tree.worker_id,
             tree.root_id,
             tree.harness.config.clone(),
-            message.clone(),
+            AgentMessage::Plaintext(message.to_string()),
             update.clone(),
             AgentCommunicationContext::new(AgentCommunicationKind::Message, tree.worker_id),
         )
@@ -1672,7 +1672,7 @@ async fn explicit_action_starts_an_idle_recipient_and_is_represented_once() {
             tree.worker_id,
             tree.root_id,
             tree.harness.config.clone(),
-            message,
+            AgentMessage::Plaintext(message.to_string()),
             update,
             AgentCommunicationContext::new(AgentCommunicationKind::Message, tree.worker_id),
         )

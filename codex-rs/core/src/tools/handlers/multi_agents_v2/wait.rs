@@ -925,7 +925,7 @@ mod tests {
                 explicit_wait_mail(unrelated_id.clone(), unrelated_path.clone(), "other body"),
                 Default::default(),
                 explicit_wait_activity(
-                    unrelated_id,
+                    unrelated_id.clone(),
                     InterAgentCommunicationIntent::ActionRequired,
                     unrelated,
                     recipient,
