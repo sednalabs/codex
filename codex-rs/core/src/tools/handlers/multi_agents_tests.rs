@@ -1644,6 +1644,7 @@ async fn multi_agent_v2_explicit_root_updates_are_durable_and_idempotent() {
             &root_rollout_path,
             root.thread_id,
             root.thread_id,
+            &AgentPath::root(),
             &unrelated_id_bearing_communication,
         )
         .await

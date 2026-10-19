@@ -307,7 +307,11 @@ impl InputQueue {
     pub(crate) async fn pending_actionable_explicit_update_ids(
         &self,
         recipient_thread_id: ThreadId,
+        recipient_path: Option<&AgentPath>,
     ) -> Vec<ResponseItemId> {
+        let Some(recipient_path) = recipient_path else {
+            return Vec::new();
+        };
         let mut state = self.mailbox_state.lock().await;
         self.read_mailbox(&mut state.pending);
         state
@@ -316,6 +320,7 @@ impl InputQueue {
             .filter_map(|mail| {
                 let activity = mail.explicit_activity.as_ref()?;
                 (activity.recipient_thread_id == recipient_thread_id
+                    && &activity.recipient_path == recipient_path
                     && matches!(
                         activity.intent,
                         InterAgentCommunicationIntent::ActionRequired
@@ -329,12 +334,15 @@ impl InputQueue {
     pub(crate) async fn pending_explicit_activity_for_recipient(
         &self,
         recipient_thread_id: ThreadId,
+        recipient_path: Option<&AgentPath>,
     ) -> Option<ExplicitMailboxActivity> {
+        let recipient_path = recipient_path?;
         let mut state = self.mailbox_state.lock().await;
         self.read_mailbox(&mut state.pending);
         state.pending.iter().find_map(|mail| {
             let activity = mail.explicit_activity.as_ref()?;
             if activity.recipient_thread_id != recipient_thread_id
+                || &activity.recipient_path != recipient_path
                 || !matches!(
                     activity.intent,
                     InterAgentCommunicationIntent::ActionRequired
@@ -448,7 +456,7 @@ impl InputQueue {
                 InterAgentCommunicationIntent::ActionRequired
                     | InterAgentCommunicationIntent::ResultReady
             )
-        }) && let Some(generation) = activity.generation
+        }) && activity.generation.is_some()
         {
             self.explicit_activity_tx.send_modify(|signal| {
                 signal.revision = signal.revision.wrapping_add(1);
@@ -1313,7 +1321,7 @@ mod tests {
         let (legacy_activity_rx, _) = queue.subscribe_activity(/*turn_state*/ None).await;
         let mut explicit_activity_rx = queue.subscribe_explicit_activity();
         let pending = queue
-            .pending_explicit_activity_for_recipient(recipient)
+            .pending_explicit_activity_for_recipient(recipient, Some(&AgentPath::root()))
             .await;
         assert_eq!(pending, None);
 
@@ -1344,7 +1352,7 @@ mod tests {
             "queue-only explicit actions do not wake shared mailbox or Sleep waiters"
         );
         let pending = queue
-            .pending_explicit_activity_for_recipient(recipient)
+            .pending_explicit_activity_for_recipient(recipient, Some(&AgentPath::root()))
             .await
             .expect("matching pending explicit action");
         assert_eq!(pending.update_id, update_id);
@@ -1358,13 +1366,16 @@ mod tests {
         assert_eq!(pending.generation, Some(0));
         assert!(
             queue
-                .pending_explicit_activity_for_recipient(unrelated)
+                .pending_explicit_activity_for_recipient(unrelated, Some(&AgentPath::root()))
                 .await
                 .is_none()
         );
         assert!(
             queue
-                .pending_explicit_activity_for_recipient(ThreadId::new())
+                .pending_explicit_activity_for_recipient(
+                    ThreadId::new(),
+                    Some(&AgentPath::root()),
+                )
                 .await
                 .is_none()
         );
@@ -1396,7 +1407,10 @@ mod tests {
         assert_eq!(late_signal.revision, 4);
         assert!(
             queue
-                .pending_explicit_activity_for_recipient(ThreadId::new())
+                .pending_explicit_activity_for_recipient(
+                    ThreadId::new(),
+                    Some(&AgentPath::root()),
+                )
                 .await
                 .is_none(),
             "a rescan hint without an addressed actionable item is not a wake"
@@ -1438,9 +1452,45 @@ mod tests {
 
         let _explicit_activity_rx = queue.subscribe_explicit_activity();
         let pending = queue
-            .pending_explicit_activity_for_recipient(recipient)
+            .pending_explicit_activity_for_recipient(recipient, Some(&AgentPath::root()))
             .await;
         assert_eq!(pending.map(|activity| activity.update_id), Some(action_id));
+    }
+
+    #[tokio::test]
+    async fn explicit_snapshot_rejects_a_stale_registered_recipient_path() {
+        let queue = InputQueue::new();
+        let sender = ThreadId::new();
+        let recipient = ThreadId::new();
+        let update_id = ResponseItemId::new("recipient-path-mismatch");
+        queue
+            .enqueue_explicit_mailbox_communication(
+                explicit_test_mail(update_id.clone()),
+                Default::default(),
+                explicit_test_activity(
+                    update_id.clone(),
+                    InterAgentCommunicationIntent::ActionRequired,
+                    sender,
+                    recipient,
+                ),
+            )
+            .await;
+
+        let replacement_path = AgentPath::try_from("/root/replacement").expect("valid path");
+        assert!(
+            queue
+                .pending_explicit_activity_for_recipient(recipient, Some(&replacement_path))
+                .await
+                .is_none(),
+            "a queued identity must not wake a different current registry path"
+        );
+        assert_eq!(
+            queue
+                .pending_explicit_activity_for_recipient(recipient, Some(&AgentPath::root()))
+                .await
+                .map(|activity| activity.update_id),
+            Some(update_id)
+        );
     }
 
     #[tokio::test]

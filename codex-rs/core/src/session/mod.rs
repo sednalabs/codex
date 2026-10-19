@@ -4122,6 +4122,7 @@ impl Session {
             .local_agent_runtime
             .registry
             .agent_id_for_path(&codex_protocol::AgentPath::root());
+        let explicit_recipient_path = self.registered_agent_path();
         let explicit_admission = if update_id.is_some()
             && self.multi_agent_version() == Some(MultiAgentVersion::V2)
         {
@@ -4137,12 +4138,17 @@ impl Session {
                 }
                 Err(_) => None,
             };
-            match (rollout_path, explicit_root_thread_id) {
-                (Some(path), Some(root_thread_id)) => {
+            match (
+                rollout_path,
+                explicit_root_thread_id,
+                explicit_recipient_path.as_ref(),
+            ) {
+                (Some(path), Some(root_thread_id), Some(recipient_path)) => {
                     match explicit_admission_for_communication(
                         &path,
                         root_thread_id,
                         self.thread_id,
+                        recipient_path,
                         &communication,
                     )
                     .await
@@ -4161,16 +4167,16 @@ impl Session {
                         Err(err) => return Err(err),
                     }
                 }
-                (Some(_), None) if admitted_queue_provenance => {
+                (Some(_), None, _) | (Some(_), Some(_), None) if admitted_queue_provenance => {
                     self.input_queue
                         .enqueue_mailbox_communication(communication.clone(), Default::default())
                         .await;
                     return Err(CodexErr::Fatal(
-                        "explicit inter-agent admission has no registered root".into(),
+                        "explicit inter-agent admission has no current registered scope".into(),
                     ));
                 }
-                (Some(_), None) => None,
-                (None, _) if admitted_queue_provenance => {
+                (Some(_), None, _) | (Some(_), Some(_), None) => None,
+                (None, _, _) if admitted_queue_provenance => {
                     self.input_queue
                         .enqueue_mailbox_communication(communication.clone(), Default::default())
                         .await;
@@ -4178,7 +4184,7 @@ impl Session {
                         "explicit inter-agent admission has no retained rollout".into(),
                     ));
                 }
-                (None, _) => None,
+                (None, _, _) => None,
             }
         } else {
             None
@@ -4192,18 +4198,22 @@ impl Session {
                     .await
                     .unwrap_or_else(|_| unreachable!("communication boundary remains open"));
                 let refreshed_snapshot = match self.current_rollout_path().await {
-                    Ok(Some(path)) => match explicit_root_thread_id {
-                        Some(root_thread_id) => {
+                    Ok(Some(path)) => match (
+                        explicit_root_thread_id,
+                        self.registered_agent_path(),
+                    ) {
+                        (Some(root_thread_id), Some(recipient_path)) => {
                             explicit_admission_for_communication(
                                 &path,
                                 root_thread_id,
                                 self.thread_id,
+                                &recipient_path,
                                 &communication,
                             )
                             .await
                         }
-                        None => Err(CodexErr::Fatal(
-                            "explicit inter-agent admission has no registered root".into(),
+                        _ => Err(CodexErr::Fatal(
+                            "explicit inter-agent admission has no current registered scope".into(),
                         )),
                     },
                     _ => Err(CodexErr::Fatal(
@@ -4357,18 +4367,22 @@ impl Session {
             };
             if let Some(failure) = failure {
                 let readback = match self.current_rollout_path().await {
-                    Ok(Some(path)) => match explicit_root_thread_id {
-                        Some(root_thread_id) => {
+                    Ok(Some(path)) => match (
+                        explicit_root_thread_id,
+                        self.registered_agent_path(),
+                    ) {
+                        (Some(root_thread_id), Some(recipient_path)) => {
                             explicit_admission_for_communication(
                                 &path,
                                 root_thread_id,
                                 self.thread_id,
+                                &recipient_path,
                                 &communication,
                             )
                             .await
                         }
-                        None => Err(CodexErr::Fatal(
-                            "explicit inter-agent admission has no registered root".into(),
+                        _ => Err(CodexErr::Fatal(
+                            "explicit inter-agent admission has no current registered scope".into(),
                         )),
                     },
                     _ => Err(CodexErr::Fatal(
@@ -4741,6 +4755,17 @@ impl Session {
 
     pub(crate) fn multi_agent_version(&self) -> Option<MultiAgentVersion> {
         self.multi_agent_version.get().copied()
+    }
+
+    /// Return the canonical path currently registered for this session, if any.
+    pub(crate) fn registered_agent_path(&self) -> Option<codex_protocol::AgentPath> {
+        let metadata = self
+            .services
+            .local_agent_runtime
+            .agent_metadata(self.thread_id)?;
+        (metadata.agent_id == Some(self.thread_id))
+            .then_some(metadata.agent_path)
+            .flatten()
     }
 
     pub(crate) fn set_multi_agent_version_if_unset(

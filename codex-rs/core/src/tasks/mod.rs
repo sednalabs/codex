@@ -280,10 +280,6 @@ impl Session {
         self.start_task(turn_context, input, task).await;
     }
 
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "record the started turn atomically with its active reservation"
-    )]
     pub(crate) async fn start_task<T: SessionTask>(
         self: &Arc<Self>,
         turn_context: Arc<TurnContext>,
@@ -306,6 +302,10 @@ impl Session {
             .await
     }
 
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "record the started turn atomically with its active reservation"
+    )]
     async fn start_task_inner<T: SessionTask>(
         self: &Arc<Self>,
         turn_context: Arc<TurnContext>,
@@ -363,9 +363,9 @@ impl Session {
                 (task_kind == TaskKind::Regular).then(|| turn_context.attribution()),
             )
             .await;
-            let turn = active
-                .as_mut()
-                .expect("reserved active turn must remain present while its mutex is held");
+            let Some(turn) = active.as_mut() else {
+                return false;
+            };
             debug_assert!(turn.task.is_none());
             Arc::clone(&turn.turn_state)
         } else {
@@ -393,9 +393,9 @@ impl Session {
         if reserved_active.is_none() {
             reserved_active = Some(self.active_turn.lock().await);
         }
-        let active = reserved_active
-            .as_mut()
-            .expect("active turn guard must be present before task registration");
+        let Some(active) = reserved_active.as_mut() else {
+            return false;
+        };
         let turn = if let Some(expected_turn_state) = expected_turn_state.as_ref() {
             let Some(turn) = active.as_mut() else {
                 return false;
@@ -533,9 +533,10 @@ impl Session {
             return;
         }
 
+        let registered_agent_path = self.registered_agent_path();
         let actionable_update_ids = self
             .input_queue
-            .pending_actionable_explicit_update_ids(self.thread_id)
+            .pending_actionable_explicit_update_ids(self.thread_id, registered_agent_path.as_ref())
             .await;
         let startup_admission = if actionable_update_ids.is_empty() {
             None
@@ -585,6 +586,14 @@ impl Session {
                 return;
             }
 
+            // Tree shutdown admits starts through its existing membership fence. Hold this
+            // membership through task registration so shutdown either rejects this idle action
+            // or waits for the already-admitted start to finish registering.
+            let Ok(_runtime_membership) = self.services.local_agent_runtime.admit_start() else {
+                self.clear_pending_work_turn_reservation(&turn_state).await;
+                return;
+            };
+
             let turn_context = match self.new_automatic_pending_work_turn_context(sub_id).await {
                 Ok(Some(turn_context)) => turn_context,
                 Ok(None) => {
@@ -600,9 +609,13 @@ impl Session {
 
             // Preparation can await settings and model discovery. Recheck both the recipient
             // and the reserved turn before the task-start path takes ownership of the queue.
+            let current_recipient_path = self.registered_agent_path();
             let current_actionable_update_ids = self
                 .input_queue
-                .pending_actionable_explicit_update_ids(self.thread_id)
+                .pending_actionable_explicit_update_ids(
+                    self.thread_id,
+                    current_recipient_path.as_ref(),
+                )
                 .await;
             if current_actionable_update_ids.is_empty()
                 || self.is_interrupted()

@@ -91,6 +91,7 @@ impl ExplicitAdmissionIndex {
         items: &[RolloutItem],
         root_thread_id: ThreadId,
         recipient_thread_id: ThreadId,
+        recipient_path: &AgentPath,
     ) -> CodexResult<Self> {
         let mut index = Self::default();
         let mut represented_response_ids = HashMap::<ResponseItemId, ResponseItemId>::new();
@@ -115,6 +116,7 @@ impl ExplicitAdmissionIndex {
                             != admission.recipient_path.is_root()
                         || admission.root_thread_id != root_thread_id
                         || admission.recipient_thread_id != recipient_thread_id
+                        || &admission.recipient_path != recipient_path
                         || admission.idempotency_key.trim().is_empty()
                         || admission.idempotency_key.trim() != admission.idempotency_key.as_str()
                     {
@@ -252,6 +254,7 @@ async fn load_explicit_admission_index(
     rollout_path: &Path,
     root_thread_id: ThreadId,
     recipient_thread_id: ThreadId,
+    recipient_path: &AgentPath,
 ) -> CodexResult<(ExplicitAdmissionIndex, Vec<RolloutItem>)> {
     let (items, stored_thread_id, parse_errors) = RolloutRecorder::load_rollout_items(rollout_path)
         .await
@@ -261,8 +264,12 @@ async fn load_explicit_admission_index(
             "explicit inter-agent rollout identity or contents could not be verified".into(),
         ));
     }
-    let index =
-        ExplicitAdmissionIndex::from_rollout_items(&items, root_thread_id, recipient_thread_id)?;
+    let index = ExplicitAdmissionIndex::from_rollout_items(
+        &items,
+        root_thread_id,
+        recipient_thread_id,
+        recipient_path,
+    )?;
     Ok((index, items))
 }
 
@@ -270,6 +277,7 @@ pub(crate) async fn explicit_admission_for_communication(
     rollout_path: &Path,
     root_thread_id: ThreadId,
     recipient_thread_id: ThreadId,
+    recipient_path: &AgentPath,
     communication: &InterAgentCommunication,
 ) -> CodexResult<
     Option<(
@@ -282,13 +290,19 @@ pub(crate) async fn explicit_admission_for_communication(
     let Some(update_id) = communication.id.as_ref() else {
         return Ok(None);
     };
-    let (index, rollout_items) =
-        load_explicit_admission_index(rollout_path, root_thread_id, recipient_thread_id).await?;
+    let (index, rollout_items) = load_explicit_admission_index(
+        rollout_path,
+        root_thread_id,
+        recipient_thread_id,
+        recipient_path,
+    )
+    .await?;
     let Some(admission) = index.by_update_id.get(update_id) else {
         return Ok(None);
     };
     if admission.root_thread_id != root_thread_id
         || admission.recipient_thread_id != recipient_thread_id
+        || &admission.recipient_path != recipient_path
         || admission.original_communication != *communication
     {
         return Ok(None);
@@ -603,8 +617,20 @@ impl LocalAgentControl {
                     )
                 })?;
         }
-        let (mut index, _retained_rollout_items) =
-            load_explicit_admission_index(&rollout_path, root_thread_id, recipient).await?;
+        recipient_thread
+            .session
+            .flush_rollout()
+            .await
+            .map_err(|_| {
+                CodexErr::Fatal("failed to flush recipient before admission readback".to_string())
+            })?;
+        let (mut index, _retained_rollout_items) = load_explicit_admission_index(
+            &rollout_path,
+            root_thread_id,
+            recipient,
+            &recipient_path,
+        )
+        .await?;
         let scope_key = explicit_scope_key(
             &root_thread_id,
             &caller,
@@ -724,8 +750,13 @@ impl LocalAgentControl {
         session.flush_rollout().await.map_err(|_| {
             CodexErr::Fatal("failed to flush recipient before restoring explicit admissions".into())
         })?;
-        let (index, _retained_rollout_items) =
-            load_explicit_admission_index(&rollout_path, root_thread_id, session.thread_id).await?;
+        let (index, _retained_rollout_items) = load_explicit_admission_index(
+            &rollout_path,
+            root_thread_id,
+            session.thread_id,
+            &recipient_path,
+        )
+        .await?;
         enqueue_pending_explicit_admissions(session, &index).await;
         Ok(())
     }
@@ -799,8 +830,13 @@ impl LocalAgentControl {
         else {
             return Ok(());
         };
-        let (index, _retained_rollout_items) =
-            load_explicit_admission_index(&rollout_path, root_thread_id, session.thread_id).await?;
+        let (index, _retained_rollout_items) = load_explicit_admission_index(
+            &rollout_path,
+            root_thread_id,
+            session.thread_id,
+            &recipient_path,
+        )
+        .await?;
         enqueue_pending_explicit_admissions(session, &index).await;
         Ok(())
     }
@@ -880,7 +916,13 @@ impl LocalAgentControl {
                 }
             }
         }
-        true
+        let path_matched_update_ids = session
+            .input_queue
+            .pending_actionable_explicit_update_ids(self.session_id, Some(&recipient_path))
+            .await;
+        update_ids
+            .iter()
+            .all(|update_id| path_matched_update_ids.contains(update_id))
     }
 }
 
@@ -1136,7 +1178,63 @@ mod tests {
         }];
 
         assert!(matches!(
-            ExplicitAdmissionIndex::from_rollout_items(&items, root_thread_id, root_thread_id),
+            ExplicitAdmissionIndex::from_rollout_items(
+                &items,
+                root_thread_id,
+                root_thread_id,
+                &AgentPath::root(),
+            ),
+            Err(err)
+                if matches!(
+                    err.details(),
+                    codex_protocol::error::CodexErrorDetails::InvalidRequest(_)
+                )
+        ));
+    }
+
+    #[test]
+    fn explicit_admission_replay_rejects_a_stale_recipient_path() {
+        let root_thread_id = ThreadId::new();
+        let sender_thread_id = root_thread_id;
+        let recipient_thread_id = ThreadId::new();
+        let update_id = ResponseItemId::new("recipient-path-mismatch");
+        let root_path = AgentPath::root();
+        let stored_recipient_path = AgentPath::try_from("/root/worker").expect("worker path");
+        let current_recipient_path = AgentPath::try_from("/root/replacement")
+            .expect("replacement path");
+        let mut original_communication = InterAgentCommunication::new(
+            root_path.clone(),
+            stored_recipient_path.clone(),
+            Vec::new(),
+            "scoped explicit message".to_string(),
+            /*trigger_turn*/ false,
+        );
+        original_communication.id = Some(update_id.clone());
+        let admission = InterAgentCommunicationAdmission {
+            update_id,
+            idempotency_key: "recipient-path-mismatch-key".to_string(),
+            intent: InterAgentCommunicationIntent::Progress,
+            original_communication,
+            root_thread_id,
+            sender_thread_id,
+            recipient_thread_id,
+            sender_path: root_path,
+            recipient_path: stored_recipient_path,
+            supersedes: Vec::new(),
+            represented_response_id: None,
+        };
+        let items = [RolloutItem::InterAgentCommunicationMetadata {
+            trigger_turn: false,
+            admission: Some(admission),
+        }];
+
+        assert!(matches!(
+            ExplicitAdmissionIndex::from_rollout_items(
+                &items,
+                root_thread_id,
+                recipient_thread_id,
+                &current_recipient_path,
+            ),
             Err(err)
                 if matches!(
                     err.details(),

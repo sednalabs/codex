@@ -124,6 +124,7 @@ impl Handler {
             .subscribe_activity(turn_state.as_deref())
             .await;
         let explicit_activity_rx = session.input_queue.subscribe_explicit_activity();
+        let recipient_path = session.registered_agent_path();
         let return_when = match args.return_when {
             ReturnWhen::Any => AgentWaitReturnWhen::Any,
             ReturnWhen::All => AgentWaitReturnWhen::All,
@@ -184,6 +185,7 @@ impl Handler {
                     activity_rx: explicit_activity_rx,
                     input_queue: &session.input_queue,
                     recipient_thread_id: session.thread_id,
+                    recipient_path: recipient_path.as_ref(),
                     target_agents: &explicit_target_paths,
                     turn_state: turn_state.as_deref(),
                 }),
@@ -398,6 +400,7 @@ struct ExplicitActivityWait<'a> {
     activity_rx: watch::Receiver<ExplicitActivitySignal>,
     input_queue: &'a InputQueue,
     recipient_thread_id: ThreadId,
+    recipient_path: Option<&'a codex_protocol::AgentPath>,
     target_agents: &'a [(ThreadId, codex_protocol::AgentPath)],
     turn_state: Option<&'a tokio::sync::Mutex<crate::state::TurnState>>,
 }
@@ -405,6 +408,7 @@ struct ExplicitActivityWait<'a> {
 struct ExplicitActivityMatcher<'a> {
     input_queue: &'a InputQueue,
     recipient_thread_id: ThreadId,
+    recipient_path: Option<&'a codex_protocol::AgentPath>,
     target_agents: &'a [(ThreadId, codex_protocol::AgentPath)],
     turn_state: Option<&'a tokio::sync::Mutex<crate::state::TurnState>>,
 }
@@ -428,6 +432,7 @@ async fn wait_for_activity_with_explicit(
             Some(ExplicitActivityMatcher {
                 input_queue: wait.input_queue,
                 recipient_thread_id: wait.recipient_thread_id,
+                recipient_path: wait.recipient_path,
                 target_agents: wait.target_agents,
                 turn_state: wait.turn_state,
             }),
@@ -445,7 +450,10 @@ async fn wait_for_activity_with_explicit(
     if let Some(matcher) = explicit_matcher.as_ref()
         && matcher
             .input_queue
-            .pending_explicit_activity_for_recipient(matcher.recipient_thread_id)
+            .pending_explicit_activity_for_recipient(
+                matcher.recipient_thread_id,
+                matcher.recipient_path,
+            )
             .await
             .is_some()
     {
@@ -474,7 +482,10 @@ async fn wait_for_activity_with_explicit(
                     if let Some(matcher) = explicit_matcher.as_ref()
                         && matcher
                             .input_queue
-                            .pending_explicit_activity_for_recipient(matcher.recipient_thread_id)
+                            .pending_explicit_activity_for_recipient(
+                                matcher.recipient_thread_id,
+                                matcher.recipient_path,
+                            )
                             .await
                             .is_some()
                     {
@@ -500,7 +511,10 @@ async fn wait_for_activity_with_explicit(
                     if let Some(matcher) = explicit_matcher.as_ref()
                         && matcher
                             .input_queue
-                            .pending_explicit_activity_for_recipient(matcher.recipient_thread_id)
+                            .pending_explicit_activity_for_recipient(
+                                matcher.recipient_thread_id,
+                                matcher.recipient_path,
+                            )
                             .await
                             .is_some()
                     {
@@ -850,6 +864,7 @@ mod tests {
         let target = ThreadId::new();
         let unrelated = ThreadId::new();
         let recipient = ThreadId::new();
+        let recipient_path = codex_protocol::AgentPath::root();
         let worker_path = AgentPath::try_from("/root/worker").expect("worker path");
         let unrelated_path = AgentPath::try_from("/root/unrelated").expect("other path");
         let explicit_targets = vec![(target, worker_path.clone())];
@@ -858,7 +873,7 @@ mod tests {
         let explicit_activity_rx = input_queue.subscribe_explicit_activity();
         assert_eq!(
             input_queue
-                .pending_explicit_activity_for_recipient(recipient)
+                .pending_explicit_activity_for_recipient(recipient, Some(&recipient_path))
                 .await,
             None
         );
@@ -872,6 +887,7 @@ mod tests {
                 activity_rx: explicit_activity_rx,
                 input_queue: &input_queue,
                 recipient_thread_id: recipient,
+                recipient_path: Some(&recipient_path),
                 target_agents: &explicit_targets,
                 turn_state: None,
             }),
@@ -921,7 +937,7 @@ mod tests {
             panic!("an addressed action from any authorized sender should wake the target wait");
         };
         let activity = input_queue
-            .pending_explicit_activity_for_recipient(recipient)
+            .pending_explicit_activity_for_recipient(recipient, Some(&recipient_path))
             .await
             .expect("the actionable message remains pending after the wait wake");
         assert_eq!(activity.update_id, unrelated_id);
@@ -946,6 +962,7 @@ mod tests {
         let input_queue = InputQueue::new();
         let sender = ThreadId::new();
         let recipient = ThreadId::new();
+        let recipient_path = codex_protocol::AgentPath::root();
         let sender_path = AgentPath::try_from("/root/worker").expect("worker path");
         let (mut activity_rx, pending_activity) =
             input_queue.subscribe_activity(/*turn_state*/ None).await;
@@ -960,6 +977,7 @@ mod tests {
                 activity_rx: explicit_activity_rx,
                 input_queue: &input_queue,
                 recipient_thread_id: recipient,
+                recipient_path: Some(&recipient_path),
                 target_agents: &[],
                 turn_state: None,
             }),
@@ -991,7 +1009,7 @@ mod tests {
         );
         assert_eq!(
             input_queue
-                .pending_explicit_activity_for_recipient(recipient)
+                .pending_explicit_activity_for_recipient(recipient, Some(&recipient_path))
                 .await
                 .map(|activity| activity.update_id),
             Some(update_id)
@@ -1003,6 +1021,7 @@ mod tests {
         let input_queue = InputQueue::new();
         let target = ThreadId::new();
         let recipient = ThreadId::new();
+        let recipient_path = codex_protocol::AgentPath::root();
         let target_path = AgentPath::try_from("/root/worker").expect("worker path");
         let target_agents = vec![(target, target_path.clone())];
         let turn_state = tokio::sync::Mutex::new(crate::state::TurnState::default());
@@ -1029,7 +1048,7 @@ mod tests {
         let explicit_activity_rx = input_queue.subscribe_explicit_activity();
         assert!(
             input_queue
-                .pending_explicit_activity_for_recipient(recipient)
+                .pending_explicit_activity_for_recipient(recipient, Some(&recipient_path))
                 .await
                 .is_some()
         );
@@ -1043,6 +1062,7 @@ mod tests {
                 activity_rx: explicit_activity_rx,
                 input_queue: &input_queue,
                 recipient_thread_id: recipient,
+                recipient_path: Some(&recipient_path),
                 target_agents: &target_agents,
                 turn_state: Some(&turn_state),
             }),
@@ -1056,6 +1076,7 @@ mod tests {
         let input_queue = InputQueue::new();
         let target = ThreadId::new();
         let recipient = ThreadId::new();
+        let recipient_path = codex_protocol::AgentPath::root();
         let target_path = AgentPath::try_from("/root/worker").expect("worker path");
         let target_agents = vec![(target, target_path.clone())];
         let turn_state = tokio::sync::Mutex::new(crate::state::TurnState::default());
@@ -1064,7 +1085,7 @@ mod tests {
         let explicit_activity_rx = input_queue.subscribe_explicit_activity();
         assert_eq!(
             input_queue
-                .pending_explicit_activity_for_recipient(recipient)
+                .pending_explicit_activity_for_recipient(recipient, Some(&recipient_path))
                 .await,
             None
         );
@@ -1078,6 +1099,7 @@ mod tests {
                 activity_rx: explicit_activity_rx,
                 input_queue: &input_queue,
                 recipient_thread_id: recipient,
+                recipient_path: Some(&recipient_path),
                 target_agents: &target_agents,
                 turn_state: Some(&turn_state),
             }),
@@ -1111,6 +1133,7 @@ mod tests {
         let registry = Arc::new(Mutex::new(AgentWaitRegistry::default()));
         let target = ThreadId::new();
         let recipient = ThreadId::new();
+        let recipient_path = codex_protocol::AgentPath::root();
         let target_path = AgentPath::try_from("/root/worker").expect("worker path");
         let target_agents = vec![(target, target_path.clone())];
         let publisher = AgentOutcomePublisher::new(target, registry.clone());
@@ -1129,7 +1152,7 @@ mod tests {
         let explicit_activity_rx = input_queue.subscribe_explicit_activity();
         assert_eq!(
             input_queue
-                .pending_explicit_activity_for_recipient(recipient)
+                .pending_explicit_activity_for_recipient(recipient, Some(&recipient_path))
                 .await,
             None
         );
@@ -1142,6 +1165,7 @@ mod tests {
                 activity_rx: explicit_activity_rx,
                 input_queue: &input_queue,
                 recipient_thread_id: recipient,
+                recipient_path: Some(&recipient_path),
                 target_agents: &target_agents,
                 turn_state: None,
             }),
@@ -1179,6 +1203,7 @@ mod tests {
         let input_queue = InputQueue::new();
         let target = ThreadId::new();
         let recipient = ThreadId::new();
+        let recipient_path = codex_protocol::AgentPath::root();
         let update_id = ResponseItemId::new("result-ready-before-wait");
         let sender_path = AgentPath::try_from("/root/worker").expect("worker path");
         input_queue
@@ -1197,7 +1222,7 @@ mod tests {
 
         let _explicit_activity_rx = input_queue.subscribe_explicit_activity();
         let pending = input_queue
-            .pending_explicit_activity_for_recipient(recipient)
+            .pending_explicit_activity_for_recipient(recipient, Some(&recipient_path))
             .await;
         assert_eq!(pending.map(|activity| activity.update_id), Some(update_id));
     }

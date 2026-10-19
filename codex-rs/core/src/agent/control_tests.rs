@@ -1145,6 +1145,92 @@ async fn explicit_progress_is_admitted_to_a_completed_loaded_root_without_starti
 }
 
 #[tokio::test]
+async fn explicit_retry_flushes_an_unflushed_admission_before_idempotency_lookup() {
+    use codex_history::InterAgentCommunicationAdmission;
+
+    let tree = explicit_update_test_tree().await;
+    let sender_path = AgentPath::try_from("/root/worker").expect("worker path");
+    let recipient_path = AgentPath::root();
+    let update_id = ResponseItemId::new("queued-before-retry-flush");
+    let update = ExplicitInterAgentUpdate {
+        idempotency_key: "queued-before-retry-flush".to_string(),
+        intent: InterAgentCommunicationIntent::Progress,
+        supersedes: Vec::new(),
+    };
+    let mut communication = AgentMessage::Plaintext("persist this quiet progress".to_string())
+        .into_communication(
+            sender_path.clone(),
+            recipient_path.clone(),
+            MessageDeliveryMode::QueueOnly,
+        );
+    communication.id = Some(update_id.clone());
+
+    // This is the recorder state left when an admitted sender is cancelled after its
+    // AddItems command is queued but before it receives the Flush acknowledgement.
+    tree.root
+        .append_rollout_items(&[RolloutItem::InterAgentCommunicationMetadata {
+            trigger_turn: false,
+            admission: Some(InterAgentCommunicationAdmission {
+                update_id: update_id.clone(),
+                idempotency_key: update.idempotency_key.clone(),
+                intent: update.intent,
+                original_communication: communication,
+                root_thread_id: tree.root_id,
+                sender_thread_id: tree.worker_id,
+                recipient_thread_id: tree.root_id,
+                sender_path,
+                recipient_path,
+                supersedes: Vec::new(),
+                represented_response_id: None,
+            }),
+        }])
+        .await
+        .expect("simulated sender append should be accepted by the recorder");
+
+    let replayed_id = tree
+        .control
+        .send_explicit_inter_agent_update(
+            tree.worker_id,
+            tree.root_id,
+            tree.harness.config.clone(),
+            AgentMessage::Plaintext("persist this quiet progress".to_string()),
+            update,
+            AgentCommunicationContext::new(AgentCommunicationKind::Message, tree.worker_id),
+        )
+        .await
+        .expect("retry should flush and recover the already-queued durable receipt");
+    assert_eq!(ResponseItemId::from_server(replayed_id), update_id);
+
+    let items = explicit_update_rollout_items(&tree.root).await;
+    assert_eq!(
+        items
+            .iter()
+            .filter(|item| matches!(
+                item,
+                RolloutItem::InterAgentCommunicationMetadata {
+                    admission: Some(admission),
+                    ..
+                } if admission.update_id == update_id
+            ))
+            .count(),
+        1,
+        "retry must reuse the pending writer record, not append a duplicate"
+    );
+    let queued = tree.root.session.input_queue.drain_mailbox().await;
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].communication.id.as_ref(), Some(&update_id));
+    assert!(tree.root.session.active_turn.lock().await.is_none());
+
+    let report = tree
+        .harness
+        .manager
+        .shutdown_all_threads_bounded(Duration::from_secs(/*secs*/ 5))
+        .await;
+    assert_eq!(report.submit_failed, Vec::<ThreadId>::new());
+    assert_eq!(report.timed_out, Vec::<ThreadId>::new());
+}
+
+#[tokio::test]
 async fn explicit_root_sender_can_send_quiet_progress_to_a_direct_child() {
     let tree = explicit_update_test_tree().await;
     let update_id = tree
@@ -1200,6 +1286,119 @@ async fn explicit_root_sender_can_send_quiet_progress_to_a_direct_child() {
         .harness
         .manager
         .shutdown_all_threads_bounded(Duration::from_secs(5))
+        .await;
+    assert_eq!(report.submit_failed, Vec::<ThreadId>::new());
+    assert_eq!(report.timed_out, Vec::<ThreadId>::new());
+}
+
+#[tokio::test]
+async fn explicit_sibling_action_is_persisted_and_represented_for_its_direct_recipient() {
+    let tree = explicit_update_test_tree().await;
+    let sibling = spawn_v2_reload_test_child(
+        &tree.control,
+        tree.harness.config.clone(),
+        &tree.root,
+        /*name*/ "sibling",
+    )
+    .await;
+    let sibling_thread = tree
+        .harness
+        .manager
+        .get_thread(sibling.thread_id)
+        .await
+        .expect("sibling should remain loaded");
+    set_control_test_thread_running(&sibling_thread).await;
+
+    let update = ExplicitInterAgentUpdate {
+        idempotency_key: "sibling-result-ready".to_string(),
+        intent: InterAgentCommunicationIntent::ActionRequired,
+        supersedes: Vec::new(),
+    };
+    let message = "result for my sibling";
+    let update_id = tree
+        .control
+        .send_explicit_inter_agent_update(
+            tree.worker_id,
+            sibling.thread_id,
+            tree.harness.config.clone(),
+            AgentMessage::Plaintext(message.to_string()),
+            update.clone(),
+            AgentCommunicationContext::new(AgentCommunicationKind::Message, tree.worker_id),
+        )
+        .await
+        .expect("an authorized child may send to a different direct child");
+    let update_id = ResponseItemId::from_server(update_id);
+
+    timeout(Duration::from_secs(/*secs*/ 5), async {
+        loop {
+            let items = explicit_update_rollout_items(&sibling_thread).await;
+            if items.iter().any(|item| matches!(
+                item,
+                RolloutItem::ResponseItem(response)
+                    if response.metadata.as_ref().and_then(|metadata|
+                        metadata.inter_agent_update_id.as_ref()) == Some(&update_id)
+            )) {
+                break;
+            }
+            sleep(Duration::from_millis(/*millis*/ 10)).await;
+        }
+    })
+    .await
+    .expect("the addressed sibling should represent its durable action");
+
+    let replayed_id = tree
+        .control
+        .send_explicit_inter_agent_update(
+            tree.worker_id,
+            sibling.thread_id,
+            tree.harness.config.clone(),
+            AgentMessage::Plaintext(message.to_string()),
+            update,
+            AgentCommunicationContext::new(AgentCommunicationKind::Message, tree.worker_id),
+        )
+        .await
+        .expect("the same sibling request should replay its original receipt");
+    assert_eq!(ResponseItemId::from_server(replayed_id), update_id);
+
+    let items = explicit_update_rollout_items(&sibling_thread).await;
+    let admissions = items
+        .iter()
+        .filter_map(|item| match item {
+            RolloutItem::InterAgentCommunicationMetadata {
+                admission: Some(admission),
+                ..
+            } if admission.update_id == update_id => Some(admission),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(admissions.len(), 1);
+    assert_eq!(admissions[0].sender_thread_id, tree.worker_id);
+    assert_eq!(admissions[0].recipient_thread_id, sibling.thread_id);
+    assert_eq!(
+        admissions[0].sender_path,
+        AgentPath::try_from("/root/worker").expect("worker path")
+    );
+    assert_eq!(
+        admissions[0].recipient_path,
+        AgentPath::try_from("/root/sibling").expect("sibling path")
+    );
+    assert_eq!(
+        items
+            .iter()
+            .filter(|item| matches!(
+                item,
+                RolloutItem::ResponseItem(response)
+                    if response.metadata.as_ref().and_then(|metadata|
+                        metadata.inter_agent_update_id.as_ref()) == Some(&update_id)
+            ))
+            .count(),
+        1
+    );
+
+    let report = tree
+        .harness
+        .manager
+        .shutdown_all_threads_bounded(Duration::from_secs(/*secs*/ 5))
         .await;
     assert_eq!(report.submit_failed, Vec::<ThreadId>::new());
     assert_eq!(report.timed_out, Vec::<ThreadId>::new());
@@ -1350,7 +1549,10 @@ async fn explicit_update_rejects_completed_sender_without_persisting_an_admissio
         tree.root
             .session
             .input_queue
-            .pending_explicit_activity_for_recipient(tree.root_id)
+            .pending_explicit_activity_for_recipient(
+                tree.root_id,
+                Some(&AgentPath::root()),
+            )
             .await
             .is_none(),
         "rejected sender must not enqueue a typed root-directed update"

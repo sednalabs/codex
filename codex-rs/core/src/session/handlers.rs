@@ -803,9 +803,10 @@ pub(super) async fn submission_loop(
 }
 
 async fn maybe_start_turn_for_explicit_activity(sess: &Arc<Session>) {
+    let recipient_path = sess.registered_agent_path();
     if sess
         .input_queue
-        .pending_actionable_explicit_update_ids(sess.thread_id())
+        .pending_actionable_explicit_update_ids(sess.thread_id(), recipient_path.as_ref())
         .await
         .is_empty()
     {

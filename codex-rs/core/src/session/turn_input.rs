@@ -762,10 +762,14 @@ impl Session {
         }
         let needs_new_turn = self.input_queue.has_trigger_turn_mailbox_items().await;
         let has_durable_sleep = self.has_outstanding_durable_sleep();
+        let registered_agent_path = self.registered_agent_path();
         let has_explicit_actionable_mail = include_explicit_actionable_mail
             && !self
                 .input_queue
-                .pending_actionable_explicit_update_ids(self.thread_id)
+                .pending_actionable_explicit_update_ids(
+                    self.thread_id,
+                    registered_agent_path.as_ref(),
+                )
                 .await
                 .is_empty();
         if !needs_new_turn && !has_durable_sleep && !has_explicit_actionable_mail {
