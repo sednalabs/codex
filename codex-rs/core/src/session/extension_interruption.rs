@@ -102,9 +102,9 @@ impl Session {
         error: Option<ErrorEvent>,
     ) {
         let turn = self.turn_context_for_sub_id(turn_id).await;
-        tracing::info!(
-            diagnostic = "guardian_warning_turn_context_present",
-            present = turn.is_some()
+        eprintln!(
+            "diagnostic=guardian_warning_turn_context_present present={}",
+            turn.is_some()
         );
         let Some(turn) = turn else {
             return;

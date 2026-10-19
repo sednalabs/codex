@@ -99,9 +99,9 @@ impl ReviewHost for super::super::runtime::ReviewRuntime {
             .as_ref()
             .and_then(|active| active.task.as_ref())
             .map(|task| &task.turn_context);
-        tracing::info!(
-            diagnostic = "guardian_servicing_turn_present",
-            present = turn.is_some()
+        eprintln!(
+            "diagnostic=guardian_servicing_turn_present present={}",
+            turn.is_some()
         );
         let turn = turn?;
         Some((turn.sub_id.clone(), Arc::clone(turn.model_info())))
