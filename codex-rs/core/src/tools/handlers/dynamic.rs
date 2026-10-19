@@ -225,7 +225,7 @@ impl CoreToolRuntime for DynamicToolHandler {
 }
 
 #[cfg(test)]
-mod tests {
+mod browser_tests {
     use super::*;
 
     #[test]
