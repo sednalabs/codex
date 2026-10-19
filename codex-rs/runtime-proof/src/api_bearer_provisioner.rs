@@ -208,7 +208,7 @@ fn replace_bearer_source(path: &Path, credential: &[u8]) -> Result<()> {
     validate_fixed_parent(Path::new(FIXED_PARENT))?;
 
     let parent = open_fixed_directory(Path::new(FIXED_PARENT))?;
-    validate_credential_store_directory(&parent, 0)?;
+    validate_credential_store_directory(&parent, /*expected_owner*/ 0)?;
 
     let _lock = lock_credential_store(&parent, /*expected_owner*/ 0)?;
     let destination = std::ffi::CString::new(FIXED_NAME)?;
