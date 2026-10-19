@@ -108,9 +108,11 @@ impl ExplicitAdmissionIndex {
                             != Some(&admission.update_id)
                         || admission.original_communication.author != admission.sender_path
                         || admission.original_communication.recipient != admission.recipient_path
-                        || !admission.recipient_path.is_root()
-                        || admission.sender_thread_id == root_thread_id
-                        || admission.sender_path.is_root()
+                        || admission.sender_thread_id == admission.recipient_thread_id
+                        || (admission.sender_thread_id == root_thread_id)
+                            != admission.sender_path.is_root()
+                        || (admission.recipient_thread_id == root_thread_id)
+                            != admission.recipient_path.is_root()
                         || admission.root_thread_id != root_thread_id
                         || admission.recipient_thread_id != recipient_thread_id
                         || admission.idempotency_key.trim().is_empty()
@@ -267,6 +269,7 @@ async fn load_explicit_admission_index(
 pub(crate) async fn explicit_admission_for_communication(
     rollout_path: &Path,
     root_thread_id: ThreadId,
+    recipient_thread_id: ThreadId,
     communication: &InterAgentCommunication,
 ) -> CodexResult<
     Option<(
@@ -280,12 +283,12 @@ pub(crate) async fn explicit_admission_for_communication(
         return Ok(None);
     };
     let (index, rollout_items) =
-        load_explicit_admission_index(rollout_path, root_thread_id, root_thread_id).await?;
+        load_explicit_admission_index(rollout_path, root_thread_id, recipient_thread_id).await?;
     let Some(admission) = index.by_update_id.get(update_id) else {
         return Ok(None);
     };
     if admission.root_thread_id != root_thread_id
-        || admission.recipient_thread_id != root_thread_id
+        || admission.recipient_thread_id != recipient_thread_id
         || admission.original_communication != *communication
     {
         return Ok(None);
@@ -441,7 +444,7 @@ fn same_explicit_request(
 }
 
 impl LocalAgentControl {
-    /// Durably admits a root-directed update before making it visible on the quiet mailbox path.
+    /// Durably admits a directly addressed update before making it visible on the quiet mailbox path.
     #[expect(
         clippy::await_holding_invalid_type,
         reason = "The recipient admission mutex serializes membership, durable ledger, and quiet enqueue operations."
@@ -469,10 +472,9 @@ impl LocalAgentControl {
             .registry
             .agent_id_for_path(&root_path)
             .ok_or_else(|| CodexErr::ThreadNotFound(recipient))?;
-        if caller == root_thread_id || caller == recipient || recipient != root_thread_id {
+        if caller == recipient {
             return Err(CodexErr::InvalidRequest(
-                "explicit inter-agent updates require a non-root sender and the registered root recipient"
-                    .to_string(),
+                "explicit inter-agent updates cannot be sent to the sender itself".to_string(),
             ));
         }
 
@@ -486,9 +488,14 @@ impl LocalAgentControl {
             ));
         }
         let recipient_metadata = self.runtime.ensure_agent_known(recipient)?;
-        if recipient_metadata.agent_path.as_ref() != Some(&root_path) {
+        let recipient_path = recipient_metadata.agent_path.ok_or_else(|| {
+            CodexErr::InvalidRequest(
+                "explicit update recipient has no registered agent path".into(),
+            )
+        })?;
+        if self.runtime.registry.agent_id_for_path(&recipient_path) != Some(recipient) {
             return Err(CodexErr::InvalidRequest(
-                "explicit update recipient is not the registered root agent".to_string(),
+                "explicit update recipient identity does not match its registered path".to_string(),
             ));
         }
 
@@ -508,14 +515,19 @@ impl LocalAgentControl {
             ));
         }
 
-        // Remember only a root that was already loaded and whose input channel
-        // was open before the loader ran. This witness is used solely for the
-        // Completed-root exception; ordinary non-final restored roots retain
-        // the existing load behavior below.
-        let preloaded_root = match state.get_thread(recipient).await {
-            Ok(root) => Some((Arc::clone(&root), root.is_running())),
-            Err(error) if matches!(error.details(), CodexErrorDetails::ThreadNotFound(_)) => None,
-            Err(error) => return Err(error),
+        // Only a root recipient may use the narrow Completed-root exception. Its Arc and
+        // open-channel state are captured before loading, then carried ephemerally to the
+        // recipient loop for cancellation recovery; restored admissions never gain this witness.
+        let preloaded_root = if recipient == root_thread_id {
+            match state.get_thread(recipient).await {
+                Ok(root) => Some((Arc::clone(&root), root.is_running())),
+                Err(error) if matches!(error.details(), CodexErrorDetails::ThreadNotFound(_)) => {
+                    None
+                }
+                Err(error) => return Err(error),
+            }
+        } else {
+            None
         };
 
         let _residency_pin = self
@@ -533,7 +545,7 @@ impl LocalAgentControl {
             sender_thread_id: &caller,
             recipient_thread_id: &recipient,
             sender_path: &sender_path,
-            recipient_path: &root_path,
+            recipient_path: &recipient_path,
         };
         validate_current_explicit_membership(
             state.as_ref(),
@@ -547,7 +559,7 @@ impl LocalAgentControl {
 
         let mut communication = message.into_communication(
             sender_path.clone(),
-            root_path.clone(),
+            recipient_path.clone(),
             MessageDeliveryMode::QueueOnly,
         );
         if communication.trigger_turn || !communication.other_recipients.is_empty() {
@@ -625,7 +637,7 @@ impl LocalAgentControl {
                 sender_thread_id: caller,
                 recipient_thread_id: recipient,
                 sender_path: sender_path.clone(),
-                recipient_path: root_path.clone(),
+                recipient_path: recipient_path.clone(),
                 supersedes: update.supersedes.clone(),
                 represented_response_id: None,
             };
@@ -642,6 +654,11 @@ impl LocalAgentControl {
                 &scope,
             )
             .await?;
+            recipient_thread
+                .session
+                .input_queue
+                .begin_explicit_admission_hint(update_id.clone(), completed_root_witness)
+                .await;
             recipient_thread
                 .append_rollout_items(&[rollout_item])
                 .await
@@ -680,9 +697,21 @@ impl LocalAgentControl {
         session: &Session,
     ) -> CodexResult<()> {
         let root_path = AgentPath::root();
-        if session.multi_agent_version() != Some(codex_protocol::protocol::MultiAgentVersion::V2)
-            || self.runtime.registry.agent_id_for_path(&root_path) != Some(session.thread_id)
-        {
+        if session.multi_agent_version() != Some(codex_protocol::protocol::MultiAgentVersion::V2) {
+            return Ok(());
+        }
+        let Some(root_thread_id) = self.runtime.registry.agent_id_for_path(&root_path) else {
+            return Ok(());
+        };
+        let Some(recipient_path) = self
+            .runtime
+            .registry
+            .agent_metadata_for_thread(session.thread_id)
+            .and_then(|metadata| metadata.agent_path)
+        else {
+            return Ok(());
+        };
+        if self.runtime.registry.agent_id_for_path(&recipient_path) != Some(session.thread_id) {
             return Ok(());
         }
         let Some(rollout_path) = session
@@ -692,11 +721,166 @@ impl LocalAgentControl {
         else {
             return Ok(());
         };
+        session.flush_rollout().await.map_err(|_| {
+            CodexErr::Fatal("failed to flush recipient before restoring explicit admissions".into())
+        })?;
         let (index, _retained_rollout_items) =
-            load_explicit_admission_index(&rollout_path, session.thread_id, session.thread_id)
-                .await?;
+            load_explicit_admission_index(&rollout_path, root_thread_id, session.thread_id).await?;
         enqueue_pending_explicit_admissions(session, &index).await;
         Ok(())
+    }
+
+    /// Reconciles a live registered recipient after an explicit activity hint. The sender may
+    /// have been cancelled while a recorder append was in flight, so the recipient first waits
+    /// for the writer's FIFO flush acknowledgement before deciding whether the hint committed.
+    pub(crate) async fn reconcile_explicit_inter_agent_admissions(
+        &self,
+        session: &Arc<Session>,
+    ) -> CodexResult<()> {
+        if session.multi_agent_version() != Some(codex_protocol::protocol::MultiAgentVersion::V2) {
+            return Ok(());
+        }
+        let root_path = AgentPath::root();
+        let Some(root_thread_id) = self.runtime.registry.agent_id_for_path(&root_path) else {
+            return Ok(());
+        };
+        let Some(recipient_path) = self
+            .runtime
+            .registry
+            .agent_metadata_for_thread(session.thread_id)
+            .and_then(|metadata| metadata.agent_path)
+        else {
+            return Ok(());
+        };
+        if self.runtime.registry.agent_id_for_path(&recipient_path) != Some(session.thread_id) {
+            return Ok(());
+        }
+        let state = self.runtime.upgrade()?;
+        let current_recipient = match state.get_thread(session.thread_id).await {
+            Ok(thread) => thread,
+            Err(_) => return Ok(()),
+        };
+        if !Arc::ptr_eq(&current_recipient.session, session)
+            || !current_recipient.is_running()
+            || current_recipient.multi_agent_version()
+                != Some(codex_protocol::protocol::MultiAgentVersion::V2)
+            || !Arc::ptr_eq(
+                &current_recipient
+                    .session
+                    .services
+                    .local_agent_runtime
+                    .registry,
+                &self.runtime.registry,
+            )
+        {
+            return Ok(());
+        }
+
+        let _admission_guard = session.explicit_inter_agent_admission.lock().await;
+        let still_current = state.get_thread(session.thread_id).await.ok();
+        if !still_current.is_some_and(|thread| {
+            Arc::ptr_eq(&thread, &current_recipient)
+                && Arc::ptr_eq(&thread.session, session)
+                && thread.is_running()
+                && thread.multi_agent_version()
+                    == Some(codex_protocol::protocol::MultiAgentVersion::V2)
+        }) {
+            return Ok(());
+        }
+        session.flush_rollout().await.map_err(|_| {
+            CodexErr::Fatal(
+                "failed to flush recipient before reconciling explicit admissions".into(),
+            )
+        })?;
+        let Some(rollout_path) = session
+            .current_rollout_path()
+            .await
+            .map_err(|_| CodexErr::Fatal("failed to locate recipient rollout".into()))?
+        else {
+            return Ok(());
+        };
+        let (index, _retained_rollout_items) =
+            load_explicit_admission_index(&rollout_path, root_thread_id, session.thread_id).await?;
+        enqueue_pending_explicit_admissions(session, &index).await;
+        Ok(())
+    }
+
+    pub(crate) async fn explicit_action_recipient_is_current(
+        &self,
+        session: &Arc<Session>,
+        update_ids: &[ResponseItemId],
+    ) -> bool {
+        let Ok(state) = self.runtime.upgrade() else {
+            return false;
+        };
+        let root_path = AgentPath::root();
+        let Some(root_thread_id) = self.runtime.registry.agent_id_for_path(&root_path) else {
+            return false;
+        };
+        let Some(recipient_metadata) = self
+            .runtime
+            .registry
+            .agent_metadata_for_thread(self.session_id)
+        else {
+            return false;
+        };
+        let Some(recipient_path) = recipient_metadata.agent_path else {
+            return false;
+        };
+        if recipient_metadata.agent_id != Some(self.session_id)
+            || self.runtime.registry.agent_id_for_path(&root_path) != Some(root_thread_id)
+            || self.runtime.registry.agent_id_for_path(&recipient_path) != Some(self.session_id)
+            || !Arc::ptr_eq(
+                &session.services.local_agent_runtime.registry,
+                &self.runtime.registry,
+            )
+            || session.thread_id != self.session_id
+            || session.multi_agent_version()
+                != Some(codex_protocol::protocol::MultiAgentVersion::V2)
+        {
+            return false;
+        }
+        let Ok(current_recipient) = state.get_thread(self.session_id).await else {
+            return false;
+        };
+        if !Arc::ptr_eq(&current_recipient.session, session)
+            || !current_recipient.is_running()
+            || current_recipient.multi_agent_version()
+                != Some(codex_protocol::protocol::MultiAgentVersion::V2)
+            || !Arc::ptr_eq(
+                &current_recipient
+                    .session
+                    .services
+                    .local_agent_runtime
+                    .registry,
+                &self.runtime.registry,
+            )
+        {
+            return false;
+        }
+
+        let status = current_recipient.agent_status().await;
+        if matches!(status, AgentStatus::Interrupted) {
+            return false;
+        }
+        if is_final(&status) {
+            if self.session_id != root_thread_id
+                || !recipient_path.is_root()
+                || !matches!(status, AgentStatus::Completed(_))
+            {
+                return false;
+            }
+            for update_id in update_ids {
+                let Some(witness) = session.input_queue.completed_root_witness(update_id).await
+                else {
+                    return false;
+                };
+                if !Arc::ptr_eq(&current_recipient, &witness) {
+                    return false;
+                }
+            }
+        }
+        true
     }
 }
 
@@ -722,32 +906,35 @@ async fn valid_explicit_member(
         && !is_final(&thread.agent_status().await)
 }
 
-async fn valid_explicit_root_recipient(
+async fn valid_explicit_recipient(
     thread: &Arc<CodexThread>,
     registry: &Arc<crate::agent::registry::AgentRegistry>,
     completed_root_witness: Option<&Arc<CodexThread>>,
     root_thread_id: &ThreadId,
     recipient_thread_id: &ThreadId,
-    root_path: &AgentPath,
+    recipient_path: &AgentPath,
 ) -> bool {
     let status = thread.agent_status().await;
-    let completed_root_is_original_live_session = matches!(&status, AgentStatus::Completed(_))
+    let root_path = AgentPath::root();
+    let completed_root_is_original_live_session = *root_thread_id == *recipient_thread_id
+        && recipient_path.is_root()
+        && matches!(&status, AgentStatus::Completed(_))
         && completed_root_witness.is_some_and(|captured_root| Arc::ptr_eq(thread, captured_root));
 
-    thread.session.thread_id == *root_thread_id
-        && thread.session.thread_id == *recipient_thread_id
+    thread.session.thread_id == *recipient_thread_id
         && thread.is_running()
         && thread.multi_agent_version() == Some(codex_protocol::protocol::MultiAgentVersion::V2)
         && Arc::ptr_eq(
             &thread.session.services.local_agent_runtime.registry,
             registry,
         )
-        && registry.agent_id_for_path(root_path) == Some(*root_thread_id)
+        && registry.agent_id_for_path(&root_path) == Some(*root_thread_id)
+        && registry.agent_id_for_path(recipient_path) == Some(*recipient_thread_id)
         && registry
             .agent_metadata_for_thread(*recipient_thread_id)
             .and_then(|metadata| metadata.agent_path)
             .as_ref()
-            == Some(root_path)
+            == Some(recipient_path)
         && (!is_final(&status) || completed_root_is_original_live_session)
 }
 
@@ -759,9 +946,10 @@ pub(super) async fn validate_current_explicit_membership(
     completed_root_witness: Option<&Arc<CodexThread>>,
     scope: &ExplicitUpdateScope<'_>,
 ) -> CodexResult<()> {
+    let root_path = AgentPath::root();
     let current_root_id = registry
-        .agent_id_for_path(scope.recipient_path)
-        .ok_or_else(|| CodexErr::ThreadNotFound(*scope.recipient_thread_id))?;
+        .agent_id_for_path(&root_path)
+        .ok_or_else(|| CodexErr::ThreadNotFound(*scope.root_thread_id))?;
     let sender_metadata = registry
         .agent_metadata_for_thread(*scope.sender_thread_id)
         .ok_or_else(|| {
@@ -770,13 +958,14 @@ pub(super) async fn validate_current_explicit_membership(
     let recipient_metadata = registry
         .agent_metadata_for_thread(*scope.recipient_thread_id)
         .ok_or_else(|| {
-            CodexErr::InvalidRequest("explicit update root is no longer registered".into())
+            CodexErr::InvalidRequest("explicit update recipient is no longer registered".into())
         })?;
     let current_sender = state.get_thread(*scope.sender_thread_id).await?;
     let current_recipient = state.get_thread(*scope.recipient_thread_id).await?;
     if &current_root_id != scope.root_thread_id
         || sender_metadata.agent_path.as_ref() != Some(scope.sender_path)
         || recipient_metadata.agent_path.as_ref() != Some(scope.recipient_path)
+        || registry.agent_id_for_path(scope.recipient_path) != Some(*scope.recipient_thread_id)
         || registry.agent_id_for_path(scope.sender_path) != Some(*scope.sender_thread_id)
         || !Arc::ptr_eq(original_sender, &current_sender)
         || !Arc::ptr_eq(original_recipient, &current_recipient)
@@ -787,7 +976,7 @@ pub(super) async fn validate_current_explicit_membership(
             scope.sender_path,
         )
         .await
-        || !valid_explicit_root_recipient(
+        || !valid_explicit_recipient(
             &current_recipient,
             registry,
             completed_root_witness,
@@ -854,6 +1043,11 @@ async fn enqueue_pending_explicit_admissions(
         .union(&represented_update_ids)
         .cloned()
         .collect::<HashSet<_>>();
+    let committed_update_ids = index.by_update_id.keys().cloned().collect::<HashSet<_>>();
+    recipient_session
+        .input_queue
+        .finish_explicit_admission_reconciliation(&committed_update_ids, &unavailable_update_ids)
+        .await;
     let removed_pending_update_ids = recipient_session
         .input_queue
         .remove_pending_explicit_updates(&unavailable_update_ids)
@@ -911,7 +1105,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn explicit_admission_replay_rejects_root_as_sender() {
+    fn explicit_admission_replay_rejects_root_self_send() {
         let root_thread_id = ThreadId::new();
         let update_id = ResponseItemId::new("invalid-root-sender");
         let root_path = AgentPath::root();

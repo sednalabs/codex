@@ -597,28 +597,41 @@ synthetic tests do not claim installed or live acceptance. The instruction
 inspection command reports that it does not evaluate these overlays and is not
 proof of a transformed provider request.
 
-## V2 root-directed agent updates
+## V2 same-tree direct-recipient agent updates
 
 The V2 `send_message` surface preserves quiet FIFO delivery for ordinary
 messages and explicit `progress`. Every explicit intent, including `progress`,
 requires an `idempotency_key` and keeps the original communication and scope in
 durable admission metadata. Only `action_required` and `result_ready` are
-actionable root-directed intents; they permit superseding same-scope progress
-updates only. Identical retries return the original receipt; a changed request
-cannot reuse its key.
+actionable same-tree direct-recipient intents; they permit superseding
+same-scope progress updates only. An authorized same-tree sender may address
+any directly registered same-tree V2 recipient except itself, including the
+root, parent, child, or peer. Identical retries return the original receipt; a
+changed request cannot reuse its key. A `Completed` root is accepted only as
+the same already-loaded live root with an open channel captured before the
+recipient load; a restored or replacement session does not inherit that
+exception, and a closed root channel or completed sender remains rejected.
 
-Only a matching explicit action/result can wake an active V2 wait, and only
-when that wait names the sender. The body-free activity carries the update and
-sender/recipient identity plus pending generation; the receiver subscribes
-before checking already-pending mail. This does not make plain messages or
-progress wakeable, start a new turn, or change follow-up/interrupt authority.
-Goal-aware terminal handback remains a separate producer/consumer contract.
+An actionable update wakes its recipient's active V2 wait regardless of
+whether the sender is among the wait's selected completion targets. With a
+nonempty target list the wait returns the existing exact-target outcome; with
+no targets it returns the existing targetless outcome. A body-free activity is
+matched to the direct recipient, sender, update identity, and pending queue
+generation; the recipient subscribes before its canonical readback/snapshot.
+For an eligible idle V2 recipient, the recipient-owned loop may start work
+after durable admission is read back and existing startup, shutdown, session,
+and interruption checks pass. Ordinary queue-only messages and explicit
+progress remain quiet; this does not change follow-up/interrupt authority or
+introduce broadcast/completion aggregation. Goal-aware terminal handback
+remains a separate producer/consumer contract.
 
 Primary sources and guardrails: `codex-rs/core/src/tools/handlers/multi_agents_spec.rs`,
 `codex-rs/core/src/agent/control/delivery.rs`,
 `codex-rs/history/src/lib.rs`,
 `codex-rs/core/src/session/input_queue.rs`,
 `codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs`, and
-`codex-rs/core/src/tools/handlers/multi_agents_tests.rs`. See the
+`codex-rs/core/src/tasks/mod.rs`, `codex-rs/core/src/session/handlers.rs`,
+`codex-rs/core/src/thread_manager.rs`, and
+`codex-rs/core/src/agent/control_tests.rs`. See the
 [focused regression contract](downstream-regression-matrix.md#core-default-path)
 for the behavior selectors.

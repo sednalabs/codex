@@ -2,9 +2,9 @@
 
 This focused matrix records the restored namespaced computer-use surfaces. It
 does not claim that provider implementations or their external environments
-are available on every installation. For the separate V2 `send_message`
-intent/idempotency/supersession contract, see the
-[V2 root-directed agent update guardrail](downstream-regression-matrix.md#core-default-path).
+are available on every installation. For the V2 `send_message` direct-recipient
+intent, idempotency, supersession, and recipient-local wake contract, see the
+[V2 same-tree direct-recipient update guardrail](downstream-regression-matrix.md#core-default-path).
 
 | Adapter | Dynamic-tool namespace | Tools                                                               | Registration and result contract                                                                                                                          |
 | ------- | ---------------------- | ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |

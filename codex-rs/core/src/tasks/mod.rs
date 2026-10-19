@@ -290,6 +290,50 @@ impl Session {
         input: Vec<TurnInput>,
         task: T,
     ) {
+        let _ = self
+            .start_task_inner(turn_context, input, task, /*expected_turn_state*/ None)
+            .await;
+    }
+
+    pub(crate) async fn start_task_for_reserved_turn<T: SessionTask>(
+        self: &Arc<Self>,
+        turn_context: Arc<TurnContext>,
+        input: Vec<TurnInput>,
+        task: T,
+        expected_turn_state: Arc<Mutex<TurnState>>,
+    ) -> bool {
+        self.start_task_inner(turn_context, input, task, Some(expected_turn_state))
+            .await
+    }
+
+    async fn start_task_inner<T: SessionTask>(
+        self: &Arc<Self>,
+        turn_context: Arc<TurnContext>,
+        input: Vec<TurnInput>,
+        task: T,
+        expected_turn_state: Option<Arc<Mutex<TurnState>>>,
+    ) -> bool {
+        let mut reserved_active = if let Some(expected_turn_state) = expected_turn_state.as_ref() {
+            let mut active = self.active_turn.lock().await;
+            let still_reserved = active.as_ref().is_some_and(|turn| {
+                turn.task.is_none() && Arc::ptr_eq(&turn.turn_state, expected_turn_state)
+            });
+            let startup_open = self.pending_work_turn_session_source().await.is_some();
+            if !still_reserved || !startup_open || self.is_interrupted() {
+                if still_reserved {
+                    *active = None;
+                }
+                return false;
+            }
+            Some(active)
+        } else {
+            None
+        };
+
+        if expected_turn_state.is_some() {
+            self.maybe_emit_model_warnings_for_turn(turn_context.as_ref())
+                .await;
+        }
         self.activate_plugin_selection(&turn_context).await;
         // Inherited or recovered roots are applied before task start. Otherwise this
         // task owns its turn, including background work. Later mail cannot change it.
@@ -313,7 +357,18 @@ impl Session {
         let done = Arc::new(Notify::new());
 
         let (pending_items, _) = self.input_queue.drain_mailbox_input_items().await;
-        let turn_state = {
+        let turn_state = if let Some(active) = reserved_active.as_mut() {
+            self.record_started_turn(
+                &turn_context.sub_id,
+                (task_kind == TaskKind::Regular).then(|| turn_context.attribution()),
+            )
+            .await;
+            let turn = active
+                .as_mut()
+                .expect("reserved active turn must remain present while its mutex is held");
+            debug_assert!(turn.task.is_none());
+            Arc::clone(&turn.turn_state)
+        } else {
             let mut active = self.active_turn.lock().await;
             self.record_started_turn(
                 &turn_context.sub_id,
@@ -335,8 +390,23 @@ impl Session {
         )
         .await;
 
-        let mut active = self.active_turn.lock().await;
-        let turn = active.get_or_insert_with(ActiveTurn::default);
+        if reserved_active.is_none() {
+            reserved_active = Some(self.active_turn.lock().await);
+        }
+        let active = reserved_active
+            .as_mut()
+            .expect("active turn guard must be present before task registration");
+        let turn = if let Some(expected_turn_state) = expected_turn_state.as_ref() {
+            let Some(turn) = active.as_mut() else {
+                return false;
+            };
+            if turn.task.is_some() || !Arc::ptr_eq(&turn.turn_state, expected_turn_state) {
+                return false;
+            }
+            turn
+        } else {
+            active.get_or_insert_with(ActiveTurn::default)
+        };
         debug_assert!(turn.task.is_none());
         let agent_execution_guard = self.services.agent_control.admit_turn(
             turn_context.multi_agent_version,
@@ -422,6 +492,7 @@ impl Session {
             _timer: timer,
         };
         turn.task = Some(running_task);
+        true
     }
 
     /// Returns whether an extension has marked this thread as durably asleep.
@@ -434,8 +505,9 @@ impl Session {
 
     /// Starts a regular turn when the session is idle and pending work is waiting.
     ///
-    /// Pending work includes mailbox mail marked with `trigger_turn`, or any mailbox mail while
-    /// an outstanding durable sleep is attached to the thread.
+    /// Pending work includes mailbox mail marked with `trigger_turn`, any mailbox mail while an
+    /// outstanding durable sleep is attached, and committed explicit action/result updates for
+    /// this registered V2 recipient.
     ///
     /// This helper generates a fresh sub-id for the synthetic turn before delegating to the
     /// explicit-sub-id variant.
@@ -461,9 +533,100 @@ impl Session {
             return;
         }
 
-        let Some((turn_state, previous_options)) = self.reserve_pending_work_turn().await else {
+        let actionable_update_ids = self
+            .input_queue
+            .pending_actionable_explicit_update_ids(self.thread_id)
+            .await;
+        let startup_admission = if actionable_update_ids.is_empty() {
+            None
+        } else {
+            self.services.extensions.admit_turn_start()
+        };
+        let Some((turn_state, previous_options, explicit_action_only)) = self
+            .reserve_pending_work_turn(!actionable_update_ids.is_empty())
+            .await
+        else {
             return;
         };
+
+        if explicit_action_only {
+            let Some(_startup_admission) = startup_admission else {
+                self.clear_pending_work_turn_reservation(&turn_state).await;
+                return;
+            };
+            let Some(version) = self.multi_agent_version() else {
+                self.clear_pending_work_turn_reservation(&turn_state).await;
+                return;
+            };
+            if version != MultiAgentVersion::V2 || self.is_interrupted() {
+                self.clear_pending_work_turn_reservation(&turn_state).await;
+                return;
+            }
+            let Some(source) = self.pending_work_turn_session_source().await else {
+                self.clear_pending_work_turn_reservation(&turn_state).await;
+                return;
+            };
+            if self
+                .services
+                .agent_control
+                .check_turn_admission(version, &source)
+                .is_err()
+            {
+                self.clear_pending_work_turn_reservation(&turn_state).await;
+                return;
+            }
+
+            let control = self.services.local_agent_runtime.control(self.session_id());
+            if !control
+                .explicit_action_recipient_is_current(self, &actionable_update_ids)
+                .await
+            {
+                self.clear_pending_work_turn_reservation(&turn_state).await;
+                return;
+            }
+
+            let turn_context = match self.new_automatic_pending_work_turn_context(sub_id).await {
+                Ok(Some(turn_context)) => turn_context,
+                Ok(None) => {
+                    self.clear_pending_work_turn_reservation(&turn_state).await;
+                    return;
+                }
+                Err(_error) => {
+                    self.clear_pending_work_turn_reservation(&turn_state).await;
+                    warn!(thread_id = %self.thread_id, "failed to prepare automatic explicit-action turn");
+                    return;
+                }
+            };
+
+            // Preparation can await settings and model discovery. Recheck both the recipient
+            // and the reserved turn before the task-start path takes ownership of the queue.
+            let current_actionable_update_ids = self
+                .input_queue
+                .pending_actionable_explicit_update_ids(self.thread_id)
+                .await;
+            if current_actionable_update_ids.is_empty()
+                || self.is_interrupted()
+                || self.pending_work_turn_session_source().await.is_none()
+                || !control
+                    .explicit_action_recipient_is_current(self, &current_actionable_update_ids)
+                    .await
+            {
+                self.clear_pending_work_turn_reservation(&turn_state).await;
+                return;
+            }
+            self.start_task_for_reserved_turn(
+                turn_context,
+                Vec::new(),
+                RegularTask::new(),
+                Arc::clone(&turn_state),
+            )
+            .await;
+            return;
+        }
+
+        // Queue-only explicit actions use their own admission path above. Preserve the existing
+        // trigger-turn and durable-sleep behavior and its start options unchanged.
+        drop(startup_admission);
 
         self.services
             .models_manager
@@ -544,6 +707,18 @@ impl Session {
         }
         self.start_task(turn_context, Vec::new(), RegularTask::new())
             .await;
+    }
+
+    async fn clear_pending_work_turn_reservation(
+        &self,
+        expected_turn_state: &Arc<Mutex<TurnState>>,
+    ) {
+        let mut active_turn = self.active_turn.lock().await;
+        if active_turn.as_ref().is_some_and(|turn| {
+            turn.task.is_none() && Arc::ptr_eq(&turn.turn_state, expected_turn_state)
+        }) {
+            *active_turn = None;
+        }
     }
 
     pub async fn abort_all_tasks(self: &Arc<Self>, reason: TurnAbortReason) {

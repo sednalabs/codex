@@ -289,6 +289,8 @@ pub async fn set_thread_memory_mode(sess: &Arc<Session>, sub_id: String, mode: T
 
 pub(super) async fn shutdown_session_runtime(sess: &Arc<Session>) {
     let startup_prewarm = {
+        // Serialize shutdown's admission fence with task-less pending-work reservations.
+        let _active_turn = sess.active_turn.lock().await;
         let mut state = sess.state.lock().await;
         // Stop admission and take the current warmup together so resume cannot replace it.
         state.shutting_down = true;
@@ -444,9 +446,20 @@ pub(super) async fn submission_loop(
     // Session shutdown and tree shutdown both use the existing teardown handler.
     let mut shutdown_received = false;
     let mut mailbox = sess.input_queue.mailbox_updates();
+    let mut explicit_activity = sess.input_queue.subscribe_explicit_activity();
     if let Some(updates) = &mut mailbox {
         updates.mark_changed();
     }
+    if let Err(_error) = sess
+        .services
+        .local_agent_runtime
+        .control(sess.session_id())
+        .reconcile_explicit_inter_agent_admissions(&sess)
+        .await
+    {
+        warn!(thread_id = %sess.thread_id(), "failed to reconcile explicit inter-agent admissions");
+    }
+    maybe_start_turn_for_explicit_activity(&sess).await;
     loop {
         let sub = tokio::select! {
             biased;
@@ -473,6 +486,25 @@ pub(super) async fn submission_loop(
                     }
                     Ok(false) => {}
                     Err(_) => mailbox = None,
+                }
+                continue;
+            }
+            activity = explicit_activity.changed() => {
+                match activity {
+                    Ok(()) => {
+                        explicit_activity.borrow_and_update();
+                        if let Err(_error) = sess
+                            .services
+                            .local_agent_runtime
+                            .control(sess.session_id())
+                            .reconcile_explicit_inter_agent_admissions(&sess)
+                            .await
+                        {
+                            warn!(thread_id = %sess.thread_id(), "failed to reconcile explicit inter-agent admissions");
+                        }
+                        maybe_start_turn_for_explicit_activity(&sess).await;
+                    }
+                    Err(_) => {}
                 }
                 continue;
             }
@@ -758,6 +790,18 @@ pub(super) async fn submission_loop(
         }
     }
     debug!("Agent loop exited");
+}
+
+async fn maybe_start_turn_for_explicit_activity(sess: &Arc<Session>) {
+    if sess
+        .input_queue
+        .pending_actionable_explicit_update_ids(sess.thread_id())
+        .await
+        .is_empty()
+    {
+        return;
+    }
+    sess.maybe_start_turn_for_pending_work().await;
 }
 
 async fn approve_guardian_denied_action(sess: &Arc<Session>, event: GuardianAssessmentEvent) {

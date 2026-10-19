@@ -68,8 +68,9 @@ pub trait AgentControl: Send + Sync {
     ) -> BoxFuture<'_, Result<(LiveAgent, ThreadConfigSnapshot)>>;
 
     /// Resolve, reload if needed and accept input. Agent messages retain their attribution
-    /// and wake mode: queue-only messages do not start work and follow-ups cannot target
-    /// the root. Legacy user input can address loaded threads outside the agent registry.
+    /// and wake mode: ordinary queue-only messages do not start work, while admitted explicit
+    /// action/result updates may wake only their directly addressed recipient. Follow-ups cannot
+    /// target the root. Legacy user input can address loaded threads outside the agent registry.
     fn send(&self, request: SendRequest) -> BoxFuture<'_, Result<DeliveryReceipt>>;
 
     /// Take queued, non-turn-starting mail in order, without loading the recipient.
@@ -228,7 +229,7 @@ pub struct SendRequest {
     /// Captured caller settings used if the recipient must be restored.
     pub resume_config: Config,
     pub input: AgentInput,
-    /// Explicit, durable root-directed update semantics for queue-only V2 messages.
+    /// Explicit, durable same-tree direct-recipient update semantics for queue-only V2 messages.
     /// `None` preserves the existing ordinary-message behavior.
     pub explicit_update: Option<ExplicitInterAgentUpdate>,
     pub start_options: TurnStartOptions,

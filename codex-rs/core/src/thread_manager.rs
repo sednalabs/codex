@@ -2497,6 +2497,11 @@ impl ThreadManagerState {
         if let Some(startup_guard) = startup_guard {
             startup_guard.disarm();
         }
+        new_thread
+            .thread
+            .session
+            .input_queue
+            .notify_explicit_admission_rescan();
         Ok(new_thread)
     }
 

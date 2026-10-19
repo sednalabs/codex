@@ -225,7 +225,7 @@ pub fn create_send_message_tool() -> ToolSpec {
                     json!("result_ready"),
                 ],
                 Some(
-                    "Optional explicit root-directed update intent. Omitting it preserves an ordinary quiet message; progress remains quiet, while action_required or result_ready can wake an active wait_agent that explicitly targets this sender.".to_string(),
+                    "Optional explicit same-tree direct-recipient update intent. Omitting it preserves an ordinary quiet message; progress remains quiet, while action_required or result_ready can wake the addressed recipient's active wait_agent regardless of which same-tree sender is selected by that wait.".to_string(),
                 ),
             ),
         ),
@@ -240,7 +240,7 @@ pub fn create_send_message_tool() -> ToolSpec {
             JsonSchema::array(
                 JsonSchema::string(Some("Explicit progress update ID.".to_string())),
                 Some(
-                    "Optional explicit progress update IDs from the same sender and target.".to_string(),
+                    "Optional explicit progress update IDs from the same root, sender, and recipient scope.".to_string(),
                 ),
             ),
         ),
@@ -248,7 +248,7 @@ pub fn create_send_message_tool() -> ToolSpec {
 
     ToolSpec::Function(ResponsesApiTool {
         name: "send_message".to_string(),
-        description: "Send a quiet message to an existing agent. Optional intent and idempotency_key mark a durable explicit update; only progress updates may be superseded, and only within the same sender and target scope. Does not start a new turn."
+        description: "Send a message to an existing same-tree agent. Ordinary queue-only messages and explicit progress remain quiet; action_required or result_ready may wake only the directly addressed recipient's active wait or start that eligible idle V2 recipient. Optional intent and idempotency_key mark a durable explicit update; only progress updates may be superseded within the same root, sender, and recipient scope."
             .to_string(),
         strict: false,
         defer_loading: None,
@@ -331,7 +331,7 @@ pub fn create_wait_agent_tool_v1(options: WaitAgentTimeoutOptions) -> ToolSpec {
 pub fn create_wait_agent_tool_v2(options: WaitAgentTimeoutOptions) -> ToolSpec {
     ToolSpec::Function(ResponsesApiTool {
         name: "wait_agent".to_string(),
-        description: "Wait for mailbox activity, or pass exact agent targets to wait for actionable agent completion. A direct action_required or result_ready update from one of those exact targets also ends the wait; progress and ordinary queue-only messages remain quiet. With targets, return_when selects whether any target or all targets must become actionable. The wait also ends early when new user input is steered into the active turn. Does not return agent content; returns a concise outcome summary."
+        description: "Wait for mailbox activity, or pass exact agent targets to wait for actionable agent completion. An action_required or result_ready update directly addressed to this recipient also ends the wait, whether or not its authorized same-tree sender is among those targets; progress and ordinary queue-only messages remain quiet. The result distinguishes waits with targets from targetless waits. With targets, return_when selects whether any target or all targets must become actionable. The wait also ends early when new user input is steered into the active turn. Does not return agent content; returns a concise outcome summary."
             .to_string(),
         strict: false,
         defer_loading: None,
@@ -589,7 +589,7 @@ fn wait_output_schema_v2() -> Value {
                     "timeout",
                     "subscription_loss"
                 ],
-                "description": "The observed reason the wait returned, when available. An exact-target actionable message is identified without including its body."
+                "description": "The observed reason the wait returned, when available. Actionable direct-recipient messages are identified without including their body; the outcome distinguishes a wait with exact agent targets from a targetless wait."
             }
         },
         "required": ["message", "timed_out"],

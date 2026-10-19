@@ -61,22 +61,36 @@ quiet and FIFO; explicit `progress` is quiet as well. Every explicit intent,
 including `progress`, requires an `idempotency_key` and retains the original
 message and scope in durable admission metadata. An identical retry returns
 its original receipt, changed requests cannot reuse the key, and `supersedes`
-may name only same-scope progress updates. Only `action_required` and
-`result_ready` are actionable and can wake an active
-V2 `wait_agent` only when the root wait explicitly targets the matching sender.
-The signal is body-free and matched against the sender/recipient identity and
-pending generation; subscription precedes the pending-message snapshot.
-Unmatched activity, progress, and legacy ID-bearing messages do not produce an
-actionable wake. Trigger-turn mailbox activity, operator steer, and target
-terminal status remain separate wait outcomes; this does not start a new turn or
-change follow-up/interrupt rules. A targetless wait is not a substitute for an
-explicit sender-targeted wait.
+may name only same-scope progress updates. An authorized same-tree sender may
+address any directly registered same-tree V2 recipient except itself, including
+root, parent, child, and peer recipients. Only `action_required` and
+`result_ready` are actionable. They wake the addressed recipient's active
+`wait_agent` regardless of whether that sender appears in the wait's selected
+completion targets. A nonempty target list retains the existing exact-target
+outcome; a targetless wait retains the distinct targetless outcome. The signal
+is body-free and matched against current sender/recipient identity and pending
+generation; subscription precedes the recipient's canonical readback and
+pending-mail snapshot. For an eligible idle V2 recipient, the recipient-owned
+loop may start work after durable readback and existing startup, shutdown,
+session, and interruption checks. Unmatched activity, progress, and legacy
+ID-bearing messages do not produce an actionable wake. Trigger-turn mailbox
+activity, operator steer, and target terminal status remain separate wait
+outcomes; this does not change follow-up/interrupt rules or introduce broadcast
+or completion aggregation.
 
 The focused guardrail is `codex.core-multi-agent-orchestration-targeted`,
 covering `queue_only_mail_waits_for_followup_and_is_delivered_once`,
 `already_pending_queue_only_mail_does_not_complete_wait`,
 `multi_agent_v2_explicit_root_updates_are_durable_and_idempotent`,
-`active_wait_wakes_for_targeted_action_but_not_progress_unmatched_or_legacy_id`,
+`explicit_root_sender_can_send_quiet_progress_to_a_direct_child`,
+`explicit_action_starts_an_idle_recipient_and_is_represented_once`,
+`explicit_progress_is_admitted_to_a_completed_loaded_root_without_starting_a_turn`,
+`explicit_update_rejects_completed_sender_without_persisting_an_admission`,
+`explicit_update_rejects_completed_root_without_preload_witness`,
+`explicit_update_rejects_root_replaced_before_membership_recheck`,
+`explicit_update_rejects_a_closed_root_channel_without_persisting_an_admission`,
+`active_target_wait_wakes_for_unselected_sender_action_but_not_progress_or_legacy_id`,
+`targetless_wait_wakes_for_recipient_local_result_ready`,
 `explicit_action_snapshot_is_targeted_and_subscribe_before_snapshot_is_wake_safe`,
 and `explicit_snapshot_catches_preexisting_matching_action_but_not_progress`.
 The retained rollout metadata contract is covered by

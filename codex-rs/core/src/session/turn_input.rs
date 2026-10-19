@@ -754,17 +754,27 @@ impl Session {
     )]
     pub(crate) async fn reserve_pending_work_turn(
         &self,
-    ) -> Option<(Arc<tokio::sync::Mutex<TurnState>>, TurnStartOptions)> {
+        include_explicit_actionable_mail: bool,
+    ) -> Option<(Arc<tokio::sync::Mutex<TurnState>>, TurnStartOptions, bool)> {
         let mut active_turn = self.active_turn.lock().await;
         if active_turn.is_some() {
             return None;
         }
         let needs_new_turn = self.input_queue.has_trigger_turn_mailbox_items().await;
-        if !needs_new_turn && !self.has_outstanding_durable_sleep() {
+        let has_durable_sleep = self.has_outstanding_durable_sleep();
+        let has_explicit_actionable_mail = include_explicit_actionable_mail
+            && !self
+                .input_queue
+                .pending_actionable_explicit_update_ids(self.thread_id)
+                .await
+                .is_empty();
+        if !needs_new_turn && !has_durable_sleep && !has_explicit_actionable_mail {
             return None;
         }
+        let explicit_action_only =
+            !needs_new_turn && !has_durable_sleep && has_explicit_actionable_mail;
         let active_turn = active_turn.get_or_insert_with(ActiveTurn::default);
-        let previous_options = if needs_new_turn {
+        let previous_options = if needs_new_turn || explicit_action_only {
             Default::default()
         } else {
             self.state
@@ -775,7 +785,25 @@ impl Session {
                 .map(codex_history::TurnAttribution::start_options)
                 .unwrap_or_default()
         };
-        Some((Arc::clone(&active_turn.turn_state), previous_options))
+        Some((
+            Arc::clone(&active_turn.turn_state),
+            previous_options,
+            explicit_action_only,
+        ))
+    }
+
+    pub(crate) async fn new_automatic_pending_work_turn_context(
+        self: &Arc<Self>,
+        sub_id: String,
+    ) -> CodexResult<Option<Arc<TurnContext>>> {
+        PreparedTurnInputSettings::prepare(
+            self,
+            ThreadSettingsOverrides::default(),
+            TurnStartOptions::default(),
+        )
+        .await?
+        .apply_started(self, sub_id, TurnStartKind::Automatic)
+        .await
     }
 
     pub(crate) async fn route_realtime_text_input(

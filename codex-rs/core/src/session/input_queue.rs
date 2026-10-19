@@ -1,5 +1,6 @@
 use crate::agent::api::AgentControl;
 use crate::agent_communication::PENDING_MAILBOX_MESSAGES;
+use crate::codex_thread::CodexThread;
 use crate::state::ActiveTurn;
 use crate::state::MailboxDeliveryPhase;
 use crate::state::TurnState;
@@ -15,8 +16,11 @@ use codex_protocol::turn_input::TurnStartOptions;
 use codex_protocol::user_input::UserInput;
 use serde::Deserialize;
 use serde::Serialize;
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::sync::Weak;
 use tokio::sync::Mutex;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
@@ -119,6 +123,8 @@ pub(crate) struct InputQueue {
 struct MailboxQueueState {
     pending: VecDeque<PendingMailboxCommunication>,
     next_local_enqueue_ordinal: Option<u64>,
+    pending_explicit_admission_hints: HashSet<ResponseItemId>,
+    completed_root_witnesses: HashMap<ResponseItemId, Weak<CodexThread>>,
 }
 
 pub(crate) struct PendingMailboxCommunication {
@@ -140,6 +146,8 @@ impl InputQueue {
             mailbox_state: Mutex::new(MailboxQueueState {
                 pending: VecDeque::new(),
                 next_local_enqueue_ordinal: Some(0),
+                pending_explicit_admission_hints: HashSet::new(),
+                completed_root_witnesses: HashMap::new(),
             }),
         }
     }
@@ -210,23 +218,103 @@ impl InputQueue {
         self.explicit_activity_tx.subscribe()
     }
 
-    pub(crate) async fn pending_explicit_activity_for_targets(
+    /// Notify the recipient loop to rescan durable explicit admissions. The notification carries
+    /// no action identity; the retained rollout and current registration checks remain authority.
+    pub(crate) fn notify_explicit_admission_rescan(&self) {
+        self.explicit_activity_tx.send_replace(None);
+    }
+
+    /// Record an in-flight durable admission before its cancellable append/flush awaits. This is
+    /// only a rescan hint; a later canonical ledger read decides whether anything was admitted.
+    pub(crate) async fn begin_explicit_admission_hint(
+        &self,
+        update_id: ResponseItemId,
+        completed_root_witness: Option<&Arc<CodexThread>>,
+    ) {
+        let mut state = self.mailbox_state.lock().await;
+        state
+            .pending_explicit_admission_hints
+            .insert(update_id.clone());
+        if let Some(witness) = completed_root_witness {
+            state
+                .completed_root_witnesses
+                .insert(update_id, Arc::downgrade(witness));
+        }
+        drop(state);
+        self.notify_explicit_admission_rescan();
+    }
+
+    /// Resolve only hints whose status is established by a checked flush and canonical readback.
+    /// Uncommitted hints lose any ephemeral Completed-root witness; committed witnesses remain
+    /// available only until representation or supersession consumes the queued update.
+    pub(crate) async fn finish_explicit_admission_reconciliation(
+        &self,
+        committed_update_ids: &HashSet<ResponseItemId>,
+        unavailable_update_ids: &HashSet<ResponseItemId>,
+    ) {
+        let mut state = self.mailbox_state.lock().await;
+        let hints = std::mem::take(&mut state.pending_explicit_admission_hints);
+        for update_id in hints {
+            if !committed_update_ids.contains(&update_id) {
+                state.completed_root_witnesses.remove(&update_id);
+            }
+        }
+        for update_id in unavailable_update_ids {
+            state.completed_root_witnesses.remove(update_id);
+        }
+    }
+
+    pub(crate) async fn forget_completed_root_witness(&self, update_id: &ResponseItemId) {
+        self.mailbox_state
+            .lock()
+            .await
+            .completed_root_witnesses
+            .remove(update_id);
+    }
+
+    pub(crate) async fn completed_root_witness(
+        &self,
+        update_id: &ResponseItemId,
+    ) -> Option<Arc<CodexThread>> {
+        self.mailbox_state
+            .lock()
+            .await
+            .completed_root_witnesses
+            .get(update_id)
+            .and_then(Weak::upgrade)
+    }
+
+    pub(crate) async fn pending_actionable_explicit_update_ids(
         &self,
         recipient_thread_id: ThreadId,
-        target_agents: &[(ThreadId, AgentPath)],
+    ) -> Vec<ResponseItemId> {
+        let mut state = self.mailbox_state.lock().await;
+        self.read_mailbox(&mut state.pending);
+        state
+            .pending
+            .iter()
+            .filter_map(|mail| {
+                let activity = mail.explicit_activity.as_ref()?;
+                (activity.recipient_thread_id == recipient_thread_id
+                    && matches!(
+                        activity.intent,
+                        InterAgentCommunicationIntent::ActionRequired
+                            | InterAgentCommunicationIntent::ResultReady
+                    ))
+                .then(|| activity.update_id.clone())
+            })
+            .collect()
+    }
+
+    pub(crate) async fn pending_explicit_activity_for_recipient(
+        &self,
+        recipient_thread_id: ThreadId,
     ) -> Option<ExplicitMailboxActivity> {
-        if target_agents.is_empty() {
-            return None;
-        }
         let mut state = self.mailbox_state.lock().await;
         self.read_mailbox(&mut state.pending);
         state.pending.iter().find_map(|mail| {
             let activity = mail.explicit_activity.as_ref()?;
             if activity.recipient_thread_id != recipient_thread_id
-                || !activity.recipient_path.is_root()
-                || !target_agents.iter().any(|(thread_id, path)| {
-                    *thread_id == activity.sender_thread_id && *path == activity.sender_path
-                })
                 || !matches!(
                     activity.intent,
                     InterAgentCommunicationIntent::ActionRequired
@@ -1199,12 +1287,11 @@ mod tests {
         let recipient = ThreadId::new();
         let unrelated = ThreadId::new();
         let sender_path = AgentPath::try_from("/root/worker").expect("sender path");
-        let unrelated_path = AgentPath::try_from("/root/unrelated").expect("other path");
         let update_id = ResponseItemId::new("explicit-action-1");
         let (legacy_activity_rx, _) = queue.subscribe_activity(/*turn_state*/ None).await;
         let mut explicit_activity_rx = queue.subscribe_explicit_activity();
         let pending = queue
-            .pending_explicit_activity_for_targets(recipient, &[(sender, sender_path.clone())])
+            .pending_explicit_activity_for_recipient(recipient)
             .await;
         assert_eq!(pending, None);
 
@@ -1233,7 +1320,7 @@ mod tests {
             "queue-only explicit actions do not wake shared mailbox or Sleep waiters"
         );
         let pending = queue
-            .pending_explicit_activity_for_targets(recipient, &[(sender, sender_path.clone())])
+            .pending_explicit_activity_for_recipient(recipient)
             .await
             .expect("matching pending explicit action");
         assert_eq!(pending.update_id, update_id);
@@ -1247,13 +1334,13 @@ mod tests {
         assert_eq!(pending.generation, Some(0));
         assert!(
             queue
-                .pending_explicit_activity_for_targets(recipient, &[(unrelated, unrelated_path)])
+                .pending_explicit_activity_for_recipient(unrelated)
                 .await
                 .is_none()
         );
         assert!(
             queue
-                .pending_explicit_activity_for_targets(ThreadId::new(), &[(sender, sender_path)],)
+                .pending_explicit_activity_for_recipient(ThreadId::new())
                 .await
                 .is_none()
         );
@@ -1294,7 +1381,7 @@ mod tests {
 
         let _explicit_activity_rx = queue.subscribe_explicit_activity();
         let pending = queue
-            .pending_explicit_activity_for_targets(recipient, &[(sender, sender_path)])
+            .pending_explicit_activity_for_recipient(recipient)
             .await;
         assert_eq!(pending.map(|activity| activity.update_id), Some(action_id));
     }

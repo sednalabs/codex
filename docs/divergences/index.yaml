@@ -143,7 +143,7 @@
     },
     {
       "id": "exact-target-wait-mailbox-filter",
-      "title": "V2 root-directed agent updates distinguish quiet delivery from actionable wait activity",
+      "title": "V2 same-tree direct-recipient updates distinguish quiet delivery from actionable wait activity",
       "status": "live",
       "category": "agent-runtime",
       "surface_type": "wait-agent",
@@ -153,29 +153,43 @@
         "codex-rs/core/src/agent/control/delivery.rs",
         "codex-rs/history/src/lib.rs",
         "codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs",
-        "codex-rs/core/src/session/input_queue.rs"
+        "codex-rs/core/src/session/input_queue.rs",
+        "codex-rs/core/src/session/handlers.rs",
+        "codex-rs/core/src/session/turn_input.rs",
+        "codex-rs/core/src/tasks/mod.rs",
+        "codex-rs/core/src/thread_manager.rs"
       ],
-      "behavior": "Ordinary queue-only messages and explicit progress remain quiet and FIFO. Every explicit intent, including progress, requires an idempotency_key and retains the original communication and scope in durable admission metadata. Only root-directed action_required or result_ready are actionable; they may wake an active wait only when it explicitly targets the matching sender. The wake signal is body-free and matched by sender/recipient identity and queue generation. Identical retries return the original receipt; changed requests cannot reuse a key, and supersedes may name same-scope progress updates only. Legacy IDs and unmatched activity do not create an actionable wake.",
+      "behavior": "Ordinary queue-only messages and explicit progress remain quiet and FIFO. Every explicit intent, including progress, requires an idempotency_key and retains the original communication and scope in durable admission metadata. Same-tree senders may address any directly registered same-tree V2 recipient except themselves; only action_required or result_ready are actionable. Those recipient-local updates wake an active wait regardless of whether the sender is among the wait targets, and may start an eligible idle recipient turn after current registration, startup-admission, and liveness checks. Wait outcomes distinguish a nonempty target list from a targetless wait; they do not identify or expose message bodies. The wake signal is body-free and matched by current sender/recipient identity and queue generation. Identical retries return the original receipt; changed requests cannot reuse a key, and supersedes may name same-scope progress updates only. Legacy IDs and unmatched activity do not create an actionable wake.",
       "upstream_equivalent": false,
       "introduced_in": {"carry_commit": null, "upstream_commit": null},
       "guardrail_lane": "codex.core-multi-agent-orchestration-targeted",
       "tests": [
         "multi_agent_v2_explicit_root_updates_are_durable_and_idempotent",
-        "active_wait_wakes_for_targeted_action_but_not_progress_unmatched_or_legacy_id",
+        "explicit_root_sender_can_send_quiet_progress_to_a_direct_child",
+        "explicit_action_starts_an_idle_recipient_and_is_represented_once",
+        "explicit_progress_is_admitted_to_a_completed_loaded_root_without_starting_a_turn",
+        "explicit_update_rejects_completed_sender_without_persisting_an_admission",
+        "explicit_update_rejects_completed_root_without_preload_witness",
+        "explicit_update_rejects_root_replaced_before_membership_recheck",
+        "explicit_update_rejects_a_closed_root_channel_without_persisting_an_admission",
+        "active_target_wait_wakes_for_unselected_sender_action_but_not_progress_or_legacy_id",
+        "targetless_wait_wakes_for_recipient_local_result_ready",
         "explicit_action_snapshot_is_targeted_and_subscribe_before_snapshot_is_wake_safe",
         "explicit_snapshot_catches_preexisting_matching_action_but_not_progress"
       ],
       "owner": "downstream",
-      "notes": "Preserve quiet ordinary/progress delivery and existing trigger-turn, steer, and terminal outcomes. History and migration selectors are in their respective package test targets. Goal-aware terminal handback is a separate producer/consumer contract.",
+      "notes": "Preserve quiet ordinary/progress delivery and existing trigger-turn, steer, and terminal outcomes. An actionable wake is local to the authenticated direct recipient; it is not target-sender filtering, broadcast, or completion aggregation. History and migration selectors are in their respective package test targets. Goal-aware terminal handback is a separate producer/consumer contract.",
       "upstreamability_tier": "upstream-pr",
       "boundary_type": "runtime-regression-repair",
       "hotspot_files": [
         "codex-rs/core/src/tools/handlers/multi_agents_spec.rs",
         "codex-rs/core/src/agent/control/delivery.rs",
         "codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs",
-        "codex-rs/core/src/session/input_queue.rs"
+        "codex-rs/core/src/session/input_queue.rs",
+        "codex-rs/core/src/session/handlers.rs",
+        "codex-rs/core/src/tasks/mod.rs"
       ],
-      "extraction_target": "upstream explicit actionable-message intent for exact-target V2 waits"
+      "extraction_target": "upstream explicit actionable-message intent for recipient-local V2 waits"
     },
     {
       "id": "rmcp-streamable-http-cancellation",

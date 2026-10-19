@@ -1643,6 +1643,7 @@ async fn multi_agent_v2_explicit_root_updates_are_durable_and_idempotent() {
         crate::agent::control::explicit_admission_for_communication(
             &root_rollout_path,
             root.thread_id,
+            root.thread_id,
             &unrelated_id_bearing_communication,
         )
         .await

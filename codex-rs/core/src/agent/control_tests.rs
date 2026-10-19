@@ -1145,6 +1145,164 @@ async fn explicit_progress_is_admitted_to_a_completed_loaded_root_without_starti
 }
 
 #[tokio::test]
+async fn explicit_root_sender_can_send_quiet_progress_to_a_direct_child() {
+    let tree = explicit_update_test_tree().await;
+    let update_id = tree
+        .control
+        .send_explicit_inter_agent_update(
+            tree.root_id,
+            tree.worker_id,
+            tree.harness.config.clone(),
+            AgentMessage::Plaintext("root progress for worker".to_string()),
+            ExplicitInterAgentUpdate {
+                idempotency_key: "root-progress-to-worker".to_string(),
+                intent: InterAgentCommunicationIntent::Progress,
+                supersedes: Vec::new(),
+            },
+            AgentCommunicationContext::new(AgentCommunicationKind::Message, tree.root_id),
+        )
+        .await
+        .expect("the registered root may send a direct quiet update to its child");
+    let update_id = ResponseItemId::from_server(update_id);
+
+    let admissions = explicit_update_rollout_items(&tree.worker)
+        .await
+        .into_iter()
+        .filter_map(|item| match item {
+            RolloutItem::InterAgentCommunicationMetadata {
+                admission: Some(admission),
+                ..
+            } if admission.update_id == update_id => Some(admission),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(admissions.len(), 1);
+    assert_eq!(admissions[0].sender_thread_id, tree.root_id);
+    assert_eq!(admissions[0].recipient_thread_id, tree.worker_id);
+    assert_eq!(admissions[0].sender_path, AgentPath::root());
+    assert_eq!(
+        admissions[0].recipient_path,
+        AgentPath::try_from("/root/worker").expect("worker path")
+    );
+    assert!(
+        tree.worker.session.active_turn.lock().await.is_none(),
+        "explicit progress must remain quiet for a non-root recipient"
+    );
+    assert!(
+        tree.worker
+            .session
+            .input_queue
+            .has_pending_mailbox_items()
+            .await,
+        "quiet progress should remain queued for its direct recipient"
+    );
+    let report = tree
+        .harness
+        .manager
+        .shutdown_all_threads_bounded(Duration::from_secs(5))
+        .await;
+    assert_eq!(report.submit_failed, Vec::<ThreadId>::new());
+    assert_eq!(report.timed_out, Vec::<ThreadId>::new());
+}
+
+#[tokio::test]
+async fn explicit_action_starts_an_idle_recipient_and_is_represented_once() {
+    let tree = explicit_update_test_tree().await;
+    let initial_turn_start_count = explicit_update_rollout_items(&tree.root)
+        .await
+        .iter()
+        .filter(|item| matches!(item, RolloutItem::EventMsg(EventMsg::TurnStarted(_))))
+        .count();
+    let message = AgentMessage::Plaintext("review the completed result".to_string());
+    let update = ExplicitInterAgentUpdate {
+        idempotency_key: "worker-action-for-idle-root".to_string(),
+        intent: InterAgentCommunicationIntent::ActionRequired,
+        supersedes: Vec::new(),
+    };
+    let update_id = tree
+        .control
+        .send_explicit_inter_agent_update(
+            tree.worker_id,
+            tree.root_id,
+            tree.harness.config.clone(),
+            message.clone(),
+            update.clone(),
+            AgentCommunicationContext::new(AgentCommunicationKind::Message, tree.worker_id),
+        )
+        .await
+        .expect("the idle root should accept an authorized action");
+    let update_id = ResponseItemId::from_server(update_id);
+
+    let represented = timeout(Duration::from_secs(5), async {
+        loop {
+            let items = explicit_update_rollout_items(&tree.root).await;
+            let represented = items
+                .iter()
+                .filter(|item| {
+                    matches!(
+                        item,
+                        RolloutItem::ResponseItem(response)
+                            if response.metadata.as_ref().and_then(|metadata|
+                                metadata.inter_agent_update_id.as_ref()) == Some(&update_id)
+                    )
+                })
+                .count();
+            if represented > 0 {
+                break represented;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the recipient-owned loop should start the idle root and represent its action");
+    assert_eq!(represented, 1);
+
+    let replayed_id = tree
+        .control
+        .send_explicit_inter_agent_update(
+            tree.worker_id,
+            tree.root_id,
+            tree.harness.config.clone(),
+            message,
+            update,
+            AgentCommunicationContext::new(AgentCommunicationKind::Message, tree.worker_id),
+        )
+        .await
+        .expect("identical retry should preserve the original durable receipt");
+    assert_eq!(ResponseItemId::from_server(replayed_id), update_id);
+    let after_retry_items = explicit_update_rollout_items(&tree.root).await;
+    assert_eq!(
+        after_retry_items
+            .iter()
+            .filter(|item| matches!(
+                item,
+                RolloutItem::ResponseItem(response)
+                    if response.metadata.as_ref().and_then(|metadata|
+                        metadata.inter_agent_update_id.as_ref()) == Some(&update_id)
+            ))
+            .count(),
+        1,
+        "idempotent retry must not enqueue or represent the action a second time"
+    );
+    assert_eq!(
+        after_retry_items
+            .iter()
+            .filter(|item| matches!(item, RolloutItem::EventMsg(EventMsg::TurnStarted(_))))
+            .count(),
+        initial_turn_start_count + 1,
+        "idempotent retry must not start another recipient turn"
+    );
+
+    let report = tree
+        .harness
+        .manager
+        .shutdown_all_threads_bounded(Duration::from_secs(5))
+        .await;
+    assert_eq!(report.submit_failed, Vec::<ThreadId>::new());
+    assert_eq!(report.timed_out, Vec::<ThreadId>::new());
+}
+
+#[tokio::test]
 async fn explicit_update_rejects_completed_sender_without_persisting_an_admission() {
     let tree = explicit_update_test_tree().await;
     complete_control_test_thread(&tree.worker, "worker turn complete").await;
@@ -1192,13 +1350,7 @@ async fn explicit_update_rejects_completed_sender_without_persisting_an_admissio
         tree.root
             .session
             .input_queue
-            .pending_explicit_activity_for_targets(
-                tree.root_id,
-                &[(
-                    tree.worker_id,
-                    AgentPath::root().join("worker").expect("worker path"),
-                )],
-            )
+            .pending_explicit_activity_for_recipient(tree.root_id)
             .await
             .is_none(),
         "rejected sender must not enqueue a typed root-directed update"

@@ -1490,6 +1490,11 @@ impl Session {
         matches!(*self.agent_status.borrow(), AgentStatus::Interrupted)
     }
 
+    pub(crate) async fn pending_work_turn_session_source(&self) -> Option<SessionSource> {
+        let state = self.state.lock().await;
+        (!state.shutting_down).then(|| state.session_configuration.session_source.clone())
+    }
+
     pub(crate) fn get_tx_event(&self) -> Sender<Event> {
         self.tx_event.clone()
     }
@@ -4111,6 +4116,11 @@ impl Session {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .contains(update_id)
         });
+        let explicit_root_thread_id = self
+            .services
+            .local_agent_runtime
+            .registry
+            .agent_id_for_path(&codex_protocol::AgentPath::root());
         let explicit_admission = if update_id.is_some()
             && self.multi_agent_version() == Some(MultiAgentVersion::V2)
         {
@@ -4126,10 +4136,11 @@ impl Session {
                 }
                 Err(_) => None,
             };
-            match rollout_path {
-                Some(path) => {
+            match (rollout_path, explicit_root_thread_id) {
+                (Some(path), Some(root_thread_id)) => {
                     match explicit_admission_for_communication(
                         &path,
+                        root_thread_id,
                         self.thread_id,
                         &communication,
                     )
@@ -4149,7 +4160,16 @@ impl Session {
                         Err(err) => return Err(err),
                     }
                 }
-                None if admitted_queue_provenance => {
+                (Some(_), None) if admitted_queue_provenance => {
+                    self.input_queue
+                        .enqueue_mailbox_communication(communication.clone(), Default::default())
+                        .await;
+                    return Err(CodexErr::Fatal(
+                        "explicit inter-agent admission has no registered root".into(),
+                    ));
+                }
+                (Some(_), None) => None,
+                (None, _) if admitted_queue_provenance => {
                     self.input_queue
                         .enqueue_mailbox_communication(communication.clone(), Default::default())
                         .await;
@@ -4157,7 +4177,7 @@ impl Session {
                         "explicit inter-agent admission has no retained rollout".into(),
                     ));
                 }
-                None => None,
+                (None, _) => None,
             }
         } else {
             None
@@ -4171,10 +4191,20 @@ impl Session {
                     .await
                     .unwrap_or_else(|_| unreachable!("communication boundary remains open"));
                 let refreshed_snapshot = match self.current_rollout_path().await {
-                    Ok(Some(path)) => {
-                        explicit_admission_for_communication(&path, self.thread_id, &communication)
+                    Ok(Some(path)) => match explicit_root_thread_id {
+                        Some(root_thread_id) => {
+                            explicit_admission_for_communication(
+                                &path,
+                                root_thread_id,
+                                self.thread_id,
+                                &communication,
+                            )
                             .await
-                    }
+                        }
+                        None => Err(CodexErr::Fatal(
+                            "explicit inter-agent admission has no registered root".into(),
+                        )),
+                    },
                     _ => Err(CodexErr::Fatal(
                         "failed to locate explicit inter-agent rollout".into(),
                     )),
@@ -4231,6 +4261,9 @@ impl Session {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .remove(&refreshed_admission.update_id);
+                self.input_queue
+                    .forget_completed_root_witness(&refreshed_admission.update_id)
+                    .await;
                 drop(admission_guard);
                 drop(boundary);
                 if !items.is_empty() {
@@ -4243,6 +4276,9 @@ impl Session {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .remove(&admission.update_id);
+                self.input_queue
+                    .forget_completed_root_witness(&admission.update_id)
+                    .await;
                 drop(admission_guard);
                 return Ok(());
             }
@@ -4320,10 +4356,20 @@ impl Session {
             };
             if let Some(failure) = failure {
                 let readback = match self.current_rollout_path().await {
-                    Ok(Some(path)) => {
-                        explicit_admission_for_communication(&path, self.thread_id, &communication)
+                    Ok(Some(path)) => match explicit_root_thread_id {
+                        Some(root_thread_id) => {
+                            explicit_admission_for_communication(
+                                &path,
+                                root_thread_id,
+                                self.thread_id,
+                                &communication,
+                            )
                             .await
-                    }
+                        }
+                        None => Err(CodexErr::Fatal(
+                            "explicit inter-agent admission has no registered root".into(),
+                        )),
+                    },
                     _ => Err(CodexErr::Fatal(
                         "failed to read back explicit inter-agent representation".into(),
                     )),
@@ -4377,6 +4423,9 @@ impl Session {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .remove(&admission.update_id);
+                self.input_queue
+                    .forget_completed_root_witness(&admission.update_id)
+                    .await;
                 drop(admission_guard);
                 drop(boundary);
                 if !items.is_empty() {
@@ -4410,6 +4459,9 @@ impl Session {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .remove(&admission.update_id);
+            self.input_queue
+                .forget_completed_root_witness(&admission.update_id)
+                .await;
         }
         drop(admission_guard);
         drop(boundary);

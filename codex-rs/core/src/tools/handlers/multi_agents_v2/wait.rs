@@ -205,7 +205,12 @@ impl Handler {
                 "outcome",
                 match &outcome {
                     WaitOutcome::MailboxActivity => "mailbox",
-                    WaitOutcome::ExplicitActionableMessage => "explicit_actionable_message",
+                    WaitOutcome::ExplicitActionableMessage { targetless: false } => {
+                        "explicit_actionable_message"
+                    }
+                    WaitOutcome::ExplicitActionableMessage { targetless: true } => {
+                        "targetless_actionable_message"
+                    }
                     WaitOutcome::Steered => "steered",
                     WaitOutcome::TargetTerminal(_) => "target_terminal",
                     WaitOutcome::TimedOut => "timed_out",
@@ -272,8 +277,11 @@ impl WaitAgentResult {
     ) -> Self {
         let message = match outcome {
             WaitOutcome::MailboxActivity => "Wait completed.",
-            WaitOutcome::ExplicitActionableMessage => {
-                "Wait completed for a targeted actionable update."
+            WaitOutcome::ExplicitActionableMessage { targetless: false } => {
+                "Wait completed for an actionable update addressed to this agent while targets were selected."
+            }
+            WaitOutcome::ExplicitActionableMessage { targetless: true } => {
+                "Wait completed for an actionable update addressed to this agent."
             }
             WaitOutcome::Steered => "Wait interrupted by new input.",
             WaitOutcome::TargetTerminal(_) => "Target agent completion is actionable.",
@@ -315,7 +323,7 @@ impl ToolOutput for WaitAgentResult {
 #[derive(Clone, Debug)]
 enum WaitOutcome {
     MailboxActivity,
-    ExplicitActionableMessage,
+    ExplicitActionableMessage { targetless: bool },
     Steered,
     TargetTerminal(AgentWaitResult),
     TimedOut,
@@ -326,7 +334,12 @@ impl WaitOutcome {
     fn protocol_outcome(&self) -> WaitAgentOutcome {
         match self {
             Self::MailboxActivity => WaitAgentOutcome::UnattributedMailboxActivity,
-            Self::ExplicitActionableMessage => WaitAgentOutcome::ExactTargetActionableMessage,
+            Self::ExplicitActionableMessage { targetless: false } => {
+                WaitAgentOutcome::ExactTargetActionableMessage
+            }
+            Self::ExplicitActionableMessage { targetless: true } => {
+                WaitAgentOutcome::TargetlessActionableMessage
+            }
             Self::Steered => WaitAgentOutcome::OperatorSteer,
             Self::TargetTerminal(result) if result.all_targets => {
                 WaitAgentOutcome::TargetTerminalAll
@@ -395,6 +408,12 @@ struct ExplicitActivityMatcher<'a> {
     turn_state: Option<&'a tokio::sync::Mutex<crate::state::TurnState>>,
 }
 
+fn explicit_actionable_outcome(matcher: &ExplicitActivityMatcher<'_>) -> WaitOutcome {
+    WaitOutcome::ExplicitActionableMessage {
+        targetless: matcher.target_agents.is_empty(),
+    }
+}
+
 async fn wait_for_activity_with_explicit(
     activity_rx: &mut watch::Receiver<InputQueueActivity>,
     pending_activity: Option<InputQueueActivity>,
@@ -425,14 +444,11 @@ async fn wait_for_activity_with_explicit(
     if let Some(matcher) = explicit_matcher.as_ref()
         && matcher
             .input_queue
-            .pending_explicit_activity_for_targets(
-                matcher.recipient_thread_id,
-                matcher.target_agents,
-            )
+            .pending_explicit_activity_for_recipient(matcher.recipient_thread_id)
             .await
             .is_some()
     {
-        return WaitOutcome::ExplicitActionableMessage;
+        return explicit_actionable_outcome(matcher);
     }
     if let Some(activity) = pending_activity {
         return activity_wake_outcome(activity, agent_wait);
@@ -457,14 +473,11 @@ async fn wait_for_activity_with_explicit(
                     if let Some(matcher) = explicit_matcher.as_ref()
                         && matcher
                             .input_queue
-                            .pending_explicit_activity_for_targets(
-                                matcher.recipient_thread_id,
-                                matcher.target_agents,
-                            )
+                            .pending_explicit_activity_for_recipient(matcher.recipient_thread_id)
                             .await
                             .is_some()
                     {
-                        return WaitOutcome::ExplicitActionableMessage;
+                        return explicit_actionable_outcome(matcher);
                     }
                     return activity_wake_outcome(observed_activity, agent_wait);
                 }
@@ -486,14 +499,11 @@ async fn wait_for_activity_with_explicit(
                     if let Some(matcher) = explicit_matcher.as_ref()
                         && matcher
                             .input_queue
-                            .pending_explicit_activity_for_targets(
-                                matcher.recipient_thread_id,
-                                matcher.target_agents,
-                            )
+                            .pending_explicit_activity_for_recipient(matcher.recipient_thread_id)
                             .await
                             .is_some()
                     {
-                        return WaitOutcome::ExplicitActionableMessage;
+                        return explicit_actionable_outcome(matcher);
                     }
                 }
                 Err(_) => return WaitOutcome::SubscriptionLoss,
@@ -834,7 +844,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn active_wait_wakes_for_targeted_action_but_not_progress_unmatched_or_legacy_id() {
+    async fn active_target_wait_wakes_for_unselected_sender_action_but_not_progress_or_legacy_id() {
         let input_queue = InputQueue::new();
         let target = ThreadId::new();
         let unrelated = ThreadId::new();
@@ -847,7 +857,7 @@ mod tests {
         let explicit_activity_rx = input_queue.subscribe_explicit_activity();
         assert_eq!(
             input_queue
-                .pending_explicit_activity_for_targets(recipient, &explicit_targets)
+                .pending_explicit_activity_for_recipient(recipient)
                 .await,
             None
         );
@@ -906,32 +916,15 @@ mod tests {
                 ),
             )
             .await;
-        assert!(futures::poll!(wait.as_mut()).is_pending());
-
-        let action_id = ResponseItemId::new("matched-action");
-        input_queue
-            .enqueue_explicit_mailbox_communication(
-                explicit_wait_mail(action_id.clone(), worker_path.clone(), "action body"),
-                Default::default(),
-                explicit_wait_activity(
-                    action_id.clone(),
-                    InterAgentCommunicationIntent::ActionRequired,
-                    target,
-                    recipient,
-                    worker_path.clone(),
-                ),
-            )
-            .await;
-
-        let WaitOutcome::ExplicitActionableMessage = wait.await else {
-            panic!("the addressed action should wake the exact-target wait");
+        let WaitOutcome::ExplicitActionableMessage { targetless: false } = wait.await else {
+            panic!("an addressed action from any authorized sender should wake the target wait");
         };
         let activity = input_queue
-            .pending_explicit_activity_for_targets(recipient, &explicit_targets)
+            .pending_explicit_activity_for_recipient(recipient)
             .await
             .expect("the actionable message remains pending after the wait wake");
-        assert_eq!(activity.update_id, action_id);
-        assert_eq!(activity.sender_thread_id, target);
+        assert_eq!(activity.update_id, unrelated_id);
+        assert_eq!(activity.sender_thread_id, unrelated);
         assert_eq!(activity.recipient_thread_id, recipient);
         assert_eq!(activity.sender_path, worker_path);
         assert_eq!(activity.recipient_path, AgentPath::root());
@@ -939,12 +932,69 @@ mod tests {
             activity.intent,
             InterAgentCommunicationIntent::ActionRequired
         );
-        assert_eq!(activity.generation, Some(3));
+        assert_eq!(activity.generation, Some(2));
         assert_eq!(
-            WaitOutcome::ExplicitActionableMessage.protocol_outcome(),
+            WaitOutcome::ExplicitActionableMessage { targetless: false }.protocol_outcome(),
             WaitAgentOutcome::ExactTargetActionableMessage
         );
         assert!(input_queue.has_pending_mailbox_items().await);
+    }
+
+    #[tokio::test]
+    async fn targetless_wait_wakes_for_recipient_local_result_ready() {
+        let input_queue = InputQueue::new();
+        let sender = ThreadId::new();
+        let recipient = ThreadId::new();
+        let sender_path = AgentPath::try_from("/root/worker").expect("worker path");
+        let (mut activity_rx, pending_activity) =
+            input_queue.subscribe_activity(/*turn_state*/ None).await;
+        let explicit_activity_rx = input_queue.subscribe_explicit_activity();
+        let mut agent_wait = None;
+        let mut wait = Box::pin(wait_for_activity_with_explicit(
+            &mut activity_rx,
+            pending_activity,
+            Instant::now() + Duration::from_secs(60),
+            &mut agent_wait,
+            Some(ExplicitActivityWait {
+                activity_rx: explicit_activity_rx,
+                input_queue: &input_queue,
+                recipient_thread_id: recipient,
+                target_agents: &[],
+                turn_state: None,
+            }),
+        ));
+        assert!(futures::poll!(wait.as_mut()).is_pending());
+
+        let update_id = ResponseItemId::new("targetless-result-ready");
+        input_queue
+            .enqueue_explicit_mailbox_communication(
+                explicit_wait_mail(update_id.clone(), sender_path.clone(), "result body"),
+                Default::default(),
+                explicit_wait_activity(
+                    update_id.clone(),
+                    InterAgentCommunicationIntent::ResultReady,
+                    sender,
+                    recipient,
+                    sender_path,
+                ),
+            )
+            .await;
+
+        assert!(matches!(
+            wait.await,
+            WaitOutcome::ExplicitActionableMessage { targetless: true }
+        ));
+        assert_eq!(
+            WaitOutcome::ExplicitActionableMessage { targetless: true }.protocol_outcome(),
+            WaitAgentOutcome::TargetlessActionableMessage
+        );
+        assert_eq!(
+            input_queue
+                .pending_explicit_activity_for_recipient(recipient)
+                .await
+                .map(|activity| activity.update_id),
+            Some(update_id)
+        );
     }
 
     #[tokio::test]
@@ -978,7 +1028,7 @@ mod tests {
         let explicit_activity_rx = input_queue.subscribe_explicit_activity();
         assert!(
             input_queue
-                .pending_explicit_activity_for_targets(recipient, &target_agents)
+                .pending_explicit_activity_for_recipient(recipient)
                 .await
                 .is_some()
         );
@@ -1013,7 +1063,7 @@ mod tests {
         let explicit_activity_rx = input_queue.subscribe_explicit_activity();
         assert_eq!(
             input_queue
-                .pending_explicit_activity_for_targets(recipient, &target_agents)
+                .pending_explicit_activity_for_recipient(recipient)
                 .await,
             None
         );
@@ -1078,7 +1128,7 @@ mod tests {
         let explicit_activity_rx = input_queue.subscribe_explicit_activity();
         assert_eq!(
             input_queue
-                .pending_explicit_activity_for_targets(recipient, &target_agents)
+                .pending_explicit_activity_for_recipient(recipient)
                 .await,
             None
         );
@@ -1146,7 +1196,7 @@ mod tests {
 
         let _explicit_activity_rx = input_queue.subscribe_explicit_activity();
         let pending = input_queue
-            .pending_explicit_activity_for_targets(recipient, &[(target, sender_path)])
+            .pending_explicit_activity_for_recipient(recipient)
             .await;
         assert_eq!(pending.map(|activity| activity.update_id), Some(update_id));
     }
