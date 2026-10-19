@@ -234,7 +234,7 @@ async fn auto_store_remains_pinned_across_session_recovery() -> anyhow::Result<(
     let (_server, base_url) = spawn_streamable_http_server().await?;
     let codex_home = TempDir::new()?;
 
-    let status = Command::new(std::env::current_exe()?)
+    let output = Command::new(std::env::current_exe()?)
         .args([
             "auto_store_remains_pinned_across_session_recovery_child",
             "--exact",
@@ -243,12 +243,13 @@ async fn auto_store_remains_pinned_across_session_recovery() -> anyhow::Result<(
         ])
         .env("CODEX_HOME", codex_home.path())
         .env(CHILD_SERVER_URL_ENV, &base_url)
-        .status()
+        .output()
         .await?;
 
     assert!(
-        status.success(),
-        "OAuth store-pinning child failed: {status}"
+        output.status.success(),
+        "OAuth store-pinning child failed: {}",
+        output.status
     );
     Ok(())
 }

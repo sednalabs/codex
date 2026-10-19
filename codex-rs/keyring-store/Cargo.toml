@@ -12,7 +12,7 @@ keyring = { workspace = true, features = ["crypto-rust"] }
 tracing = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-secret-service = "4"
+secret-service = { git = "https://github.com/open-source-cooperative/secret-service-rs", rev = "3bea9a6539af43d94ea1cbadfd43a5c8655894ef" }
 keyring = { workspace = true, features = ["linux-native-async-persistent"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
