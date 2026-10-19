@@ -27,11 +27,13 @@ use streamable_http_test_support::arm_initialize_post_failure;
 use streamable_http_test_support::arm_initialize_post_json_rpc_failure;
 use streamable_http_test_support::arm_initialized_notification_post_json_rpc_failure;
 use streamable_http_test_support::arm_session_post_failure;
+use streamable_http_test_support::arm_session_post_failure_after_dispatch;
 use streamable_http_test_support::arm_session_post_json_rpc_failure;
 use streamable_http_test_support::call_echo_tool;
 use streamable_http_test_support::create_client;
 use streamable_http_test_support::create_client_with_http_client;
 use streamable_http_test_support::expected_echo_result;
+use streamable_http_test_support::read_side_effect_count;
 use streamable_http_test_support::spawn_streamable_http_server;
 
 const JSON_RPC_INTERNAL_ERROR_CODE: i64 = -32603;
@@ -232,12 +234,16 @@ async fn streamable_http_tools_list_retries_json_rpc_transient_status() -> anyho
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn streamable_http_404_session_expiry_recovers_and_retries_once() -> anyhow::Result<()> {
+async fn streamable_http_404_tools_list_recovers_and_retries_once() -> anyhow::Result<()> {
     let (_server, base_url) = spawn_streamable_http_server().await?;
     let client = create_client(&base_url).await?;
 
-    let warmup = call_echo_tool(&client, "warmup").await?;
-    assert_eq!(warmup, expected_echo_result("warmup"));
+    let expected = client
+        .list_tools(
+            /*params*/ None,
+            /*timeout*/ Some(Duration::from_secs(5)),
+        )
+        .await?;
 
     arm_session_post_failure(
         &base_url,
@@ -247,8 +253,13 @@ async fn streamable_http_404_session_expiry_recovers_and_retries_once() -> anyho
     )
     .await?;
 
-    let recovered = call_echo_tool(&client, "recovered").await?;
-    assert_eq!(recovered, expected_echo_result("recovered"));
+    let recovered = client
+        .list_tools(
+            /*params*/ None,
+            /*timeout*/ Some(Duration::from_secs(5)),
+        )
+        .await?;
+    assert_eq!(recovered, expected);
 
     Ok(())
 }
@@ -262,8 +273,12 @@ async fn streamable_http_session_recovery_retries_initialize_failure() -> anyhow
     );
     let client = create_client_with_http_client(&base_url, Arc::new(http_client.clone())).await?;
 
-    let warmup = call_echo_tool(&client, "warmup").await?;
-    assert_eq!(warmup, expected_echo_result("warmup"));
+    let expected = client
+        .list_tools(
+            /*params*/ None,
+            /*timeout*/ Some(Duration::from_secs(5)),
+        )
+        .await?;
 
     arm_session_post_failure(
         &base_url,
@@ -274,9 +289,14 @@ async fn streamable_http_session_recovery_retries_initialize_failure() -> anyhow
     .await?;
     http_client.fail_next_initialize();
 
-    let recovered = call_echo_tool(&client, "recovered-after-retry").await?;
+    let recovered = client
+        .list_tools(
+            /*params*/ None,
+            /*timeout*/ Some(Duration::from_secs(5)),
+        )
+        .await?;
     assert_eq!(http_client.initialize_attempts(), 3);
-    assert_eq!(recovered, expected_echo_result("recovered-after-retry"));
+    assert_eq!(recovered, expected);
 
     Ok(())
 }
@@ -400,12 +420,16 @@ async fn streamable_http_403_finds_bearer_challenge_in_later_header_value() -> a
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn streamable_http_404_recovery_only_retries_once() -> anyhow::Result<()> {
+async fn streamable_http_404_tools_list_recovery_only_retries_once() -> anyhow::Result<()> {
     let (_server, base_url) = spawn_streamable_http_server().await?;
     let client = create_client(&base_url).await?;
 
-    let warmup = call_echo_tool(&client, "warmup").await?;
-    assert_eq!(warmup, expected_echo_result("warmup"));
+    let expected = client
+        .list_tools(
+            /*params*/ None,
+            /*timeout*/ Some(Duration::from_secs(5)),
+        )
+        .await?;
 
     arm_session_post_failure(
         &base_url,
@@ -415,15 +439,59 @@ async fn streamable_http_404_recovery_only_retries_once() -> anyhow::Result<()> 
     )
     .await?;
 
-    let error = call_echo_tool(&client, "double-404").await.unwrap_err();
+    let error = client
+        .list_tools(
+            /*params*/ None,
+            /*timeout*/ Some(Duration::from_secs(5)),
+        )
+        .await
+        .unwrap_err();
     let error_message = error.to_string();
     assert!(
         error_message.contains("404") || error_message.contains("session expired"),
         "expected session-expiry error, got: {error:#}"
     );
 
-    let recovered = call_echo_tool(&client, "after-double-404").await?;
-    assert_eq!(recovered, expected_echo_result("after-double-404"));
+    let recovered = client
+        .list_tools(
+            /*params*/ None,
+            /*timeout*/ Some(Duration::from_secs(5)),
+        )
+        .await?;
+    assert_eq!(recovered, expected);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn streamable_http_404_tool_call_is_uncertain_and_next_call_recovers() -> anyhow::Result<()> {
+    let (_server, base_url) = spawn_streamable_http_server().await?;
+    let client = create_client(&base_url).await?;
+
+    let warmup = call_echo_tool(&client, "warmup").await?;
+    assert_eq!(warmup, expected_echo_result("warmup"));
+
+    arm_session_post_failure_after_dispatch(&base_url, /*status*/ 404, /*remaining*/ 1).await?;
+
+    let uncertain = client
+        .call_tool(
+            "counter_write".to_string(),
+            Some(json!({})),
+            /*meta*/ None,
+            /*timeout*/ Some(Duration::from_secs(5)),
+        )
+        .await
+        .unwrap_err();
+    let uncertain_message = uncertain.to_string();
+    assert!(uncertain_message.contains("MCP session expired during tools/call"));
+    assert!(uncertain_message.contains("this invocation was not retried"));
+    assert!(uncertain_message.contains("result is unknown"));
+    assert!(uncertain_message.contains("separate independent call"));
+    assert_eq!(read_side_effect_count(&base_url).await?, 1);
+
+    let recovered = call_echo_tool(&client, "distinct-follow-up").await?;
+    assert_eq!(recovered, expected_echo_result("distinct-follow-up"));
+    assert_eq!(read_side_effect_count(&base_url).await?, 1);
 
     Ok(())
 }

@@ -52,6 +52,7 @@ const SESSION_POST_FAILURE_CONTROL_PATH: &str = "/test/control/session-post-fail
 const INITIALIZE_POST_FAILURE_CONTROL_PATH: &str = "/test/control/initialize-post-failure";
 const INITIALIZED_NOTIFICATION_POST_FAILURE_CONTROL_PATH: &str =
     "/test/control/initialized-notification-post-failure";
+const SIDE_EFFECT_COUNT_CONTROL_PATH: &str = "/test/control/side-effect-count";
 
 fn streamable_http_server_bin() -> Result<PathBuf, CargoBinError> {
     codex_utils_cargo_bin::cargo_bin("test_streamable_http_server")
@@ -207,6 +208,39 @@ pub(crate) async fn arm_session_post_failure(
 
     assert_eq!(response.status(), http::StatusCode::NO_CONTENT);
     Ok(())
+}
+
+pub(crate) async fn arm_session_post_failure_after_dispatch(
+    base_url: &str,
+    status: u16,
+    remaining: usize,
+) -> anyhow::Result<()> {
+    let response = control_client()?
+        .post(format!("{base_url}{SESSION_POST_FAILURE_CONTROL_PATH}"))
+        .json(&json!({
+            "status": status,
+            "remaining": remaining,
+            "dispatch_before_response": true,
+        }))
+        .send()
+        .await?;
+
+    assert_eq!(response.status(), http::StatusCode::NO_CONTENT);
+    Ok(())
+}
+
+pub(crate) async fn read_side_effect_count(base_url: &str) -> anyhow::Result<usize> {
+    let response = control_client()?
+        .get(format!("{base_url}{SIDE_EFFECT_COUNT_CONTROL_PATH}"))
+        .send()
+        .await?
+        .error_for_status()?;
+    let response: serde_json::Value = response.json().await?;
+    response
+        .get("count")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|count| usize::try_from(count).ok())
+        .ok_or_else(|| anyhow::anyhow!("side-effect counter response did not contain a count"))
 }
 
 pub(crate) async fn arm_session_post_json_rpc_failure(

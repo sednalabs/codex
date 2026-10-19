@@ -138,6 +138,9 @@ enum ClientState {
         service: Arc<RunningService<RoleClient, ElicitationClientService>>,
         oauth: Option<OAuthRuntime>,
     },
+    Expired {
+        oauth: Option<OAuthRuntime>,
+    },
     Closed,
 }
 
@@ -286,6 +289,18 @@ where
 pub(crate) enum ClientOperationError {
     #[error(transparent)]
     Service(#[from] rmcp::service::ServiceError),
+    #[error("MCP request outcome is uncertain: {source}")]
+    UncertainService {
+        #[source]
+        source: rmcp::service::ServiceError,
+    },
+    #[error(
+        "MCP session expired during tools/call; this invocation was not retried and its result is unknown. The expired session was retired if it was still current. Make a separate independent call to continue; it will initialize a fresh session if needed. Do not repeat this call unless its operation is independently known to be read-only."
+    )]
+    ExpiredSessionUncertain {
+        #[source]
+        source: rmcp::service::ServiceError,
+    },
     #[error("timed out awaiting {label} after {duration:.0?}")]
     Timeout { label: String, duration: Duration },
 }
@@ -653,7 +668,9 @@ impl RmcpClient {
                     Some(transport) => transport,
                     None => return Err(anyhow!("client already initializing")),
                 },
-                ClientState::Ready { .. } => return Err(anyhow!("client already initialized")),
+                ClientState::Ready { .. } | ClientState::Expired { .. } => {
+                    return Err(anyhow!("client already initialized"));
+                }
                 ClientState::Closed => return Err(anyhow!("MCP client is shut down")),
             }
         };
@@ -907,9 +924,18 @@ impl RmcpClient {
                 Ok(result)
             }
             Err(error) => {
-                let Some(ClientOperationError::Service(ServiceError::TransportSend(transport))) =
-                    error.downcast_ref()
-                else {
+                let Some(operation_error) = error.downcast_ref::<ClientOperationError>() else {
+                    return authentication_required_result(error);
+                };
+                let service_error = match operation_error {
+                    ClientOperationError::Service(error)
+                    | ClientOperationError::UncertainService { source: error } => error,
+                    ClientOperationError::ExpiredSessionUncertain { .. } => return Err(error),
+                    ClientOperationError::Timeout { .. } => {
+                        return authentication_required_result(error);
+                    }
+                };
+                let ServiceError::TransportSend(transport) = service_error else {
                     return authentication_required_result(error);
                 };
                 let Some(StreamableHttpError::AuthRequired(challenge)) =
@@ -1018,11 +1044,21 @@ impl RmcpClient {
     }
 
     async fn service(&self) -> Result<Arc<RunningService<RoleClient, ElicitationClientService>>> {
-        let guard = self.state.lock().await;
-        match &*guard {
-            ClientState::Ready { service, .. } => Ok(Arc::clone(service)),
-            ClientState::Connecting { .. } => Err(anyhow!("MCP client not initialized")),
-            ClientState::Closed => Err(anyhow!("MCP client is shut down")),
+        loop {
+            let expired = {
+                let guard = self.state.lock().await;
+                match &*guard {
+                    ClientState::Ready { service, .. } => return Ok(Arc::clone(service)),
+                    ClientState::Expired { .. } => true,
+                    ClientState::Connecting { .. } => {
+                        return Err(anyhow!("MCP client not initialized"));
+                    }
+                    ClientState::Closed => return Err(anyhow!("MCP client is shut down")),
+                }
+            };
+            if expired {
+                self.reinitialize_expired_service().await?;
+            }
         }
     }
 
@@ -1032,6 +1068,9 @@ impl RmcpClient {
             ClientState::Ready {
                 oauth: Some(runtime),
                 ..
+            }
+            | ClientState::Expired {
+                oauth: Some(runtime),
             } => Some(runtime.clone()),
             _ => None,
         }
@@ -1053,7 +1092,7 @@ impl RmcpClient {
             ClientState::Ready { service, .. } => {
                 service.is_closed() || service.peer().is_transport_closed()
             }
-            ClientState::Connecting { .. } => false,
+            ClientState::Connecting { .. } | ClientState::Expired { .. } => false,
             ClientState::Closed => true,
         }
     }
@@ -1396,31 +1435,54 @@ impl RmcpClient {
         Fut: std::future::Future<Output = std::result::Result<T, rmcp::service::ServiceError>>,
     {
         let service = self.service().await?;
-        match Self::run_service_operation_with_transient_retries(
+        let result = Self::run_service_operation_with_transient_retries(
             Arc::clone(&service),
             label,
             timeout,
             self.elicitation_pause_state.clone(),
             &operation,
         )
-        .await
-        {
-            Ok(result) => Ok(result),
-            Err(error) if Self::is_session_expired_404(&error) => {
-                self.reinitialize_after_session_expiry(&service).await?;
-                let recovered_service = self.service().await?;
-                Self::run_service_operation_with_transient_retries(
-                    recovered_service,
-                    label,
-                    timeout,
-                    self.elicitation_pause_state.clone(),
-                    &operation,
-                )
-                .await
-                .map_err(Into::into)
+        .await;
+
+        if result.as_ref().is_err_and(Self::is_session_expired_404) {
+            {
+                let mut guard = self.state.lock().await;
+                let expired_oauth = match &*guard {
+                    ClientState::Ready {
+                        service: current,
+                        oauth,
+                    } if Arc::ptr_eq(current, &service) => Some(oauth.clone()),
+                    _ => None,
+                };
+                if let Some(oauth) = expired_oauth {
+                    *guard = ClientState::Expired { oauth };
+                }
             }
-            Err(error) => Err(error.into()),
+
+            if label == "tools/call" {
+                return result
+                    .map_err(|error| match error {
+                        ClientOperationError::UncertainService { source } => {
+                            ClientOperationError::ExpiredSessionUncertain { source }
+                        }
+                        error => error,
+                    })
+                    .map_err(Into::into);
+            }
+
+            let recovered_service = self.service().await?;
+            return Self::run_service_operation_with_transient_retries(
+                recovered_service,
+                label,
+                timeout,
+                self.elicitation_pause_state.clone(),
+                &operation,
+            )
+            .await
+            .map_err(Into::into);
         }
+
+        result.map_err(Into::into)
     }
 
     async fn run_service_operation_with_transient_retries<T, F, Fut>(
@@ -1498,9 +1560,23 @@ impl RmcpClient {
                         label: label.to_string(),
                         duration,
                     })?
-                    .map_err(ClientOperationError::from)
+                    .map_err(|error| Self::classify_operation_error(label, error))
             }
-            None => operation(service).await.map_err(ClientOperationError::from),
+            None => operation(service)
+                .await
+                .map_err(|error| Self::classify_operation_error(label, error)),
+        }
+    }
+
+    fn classify_operation_error(
+        label: &str,
+        error: rmcp::service::ServiceError,
+    ) -> ClientOperationError {
+        if label == "tools/call" && matches!(&error, rmcp::service::ServiceError::TransportSend(_))
+        {
+            ClientOperationError::UncertainService { source: error }
+        } else {
+            ClientOperationError::Service(error)
         }
     }
 
@@ -1521,9 +1597,13 @@ impl RmcpClient {
     }
 
     fn is_session_expired_404(error: &ClientOperationError) -> bool {
-        let ClientOperationError::Service(rmcp::service::ServiceError::TransportSend(error)) =
-            error
-        else {
+        let service_error = match error {
+            ClientOperationError::Service(source)
+            | ClientOperationError::UncertainService { source }
+            | ClientOperationError::ExpiredSessionUncertain { source } => source,
+            ClientOperationError::Timeout { .. } => return false,
+        };
+        let rmcp::service::ServiceError::TransportSend(error) = service_error else {
             return false;
         };
 
@@ -1540,10 +1620,7 @@ impl RmcpClient {
             })
     }
 
-    async fn reinitialize_after_session_expiry(
-        &self,
-        failed_service: &Arc<RunningService<RoleClient, ElicitationClientService>>,
-    ) -> Result<()> {
+    async fn reinitialize_expired_service(&self) -> Result<()> {
         let _recovery_guard = self
             .session_recovery_lock
             .acquire()
@@ -1553,10 +1630,8 @@ impl RmcpClient {
         {
             let guard = self.state.lock().await;
             match &*guard {
-                ClientState::Ready { service, .. } if !Arc::ptr_eq(service, failed_service) => {
-                    return Ok(());
-                }
-                ClientState::Ready { .. } => {}
+                ClientState::Ready { .. } => return Ok(()),
+                ClientState::Expired { .. } => {}
                 ClientState::Connecting { .. } => {
                     return Err(anyhow!("MCP client not initialized"));
                 }
@@ -1586,8 +1661,13 @@ impl RmcpClient {
 
         {
             let mut guard = self.state.lock().await;
-            if matches!(*guard, ClientState::Closed) {
-                return Err(anyhow!("MCP client is shut down"));
+            match &*guard {
+                ClientState::Closed => return Err(anyhow!("MCP client is shut down")),
+                ClientState::Connecting { .. } => {
+                    return Err(anyhow!("MCP client not initialized"));
+                }
+                ClientState::Ready { .. } => return Ok(()),
+                ClientState::Expired { .. } => {}
             }
             *guard = ClientState::Ready {
                 service,
