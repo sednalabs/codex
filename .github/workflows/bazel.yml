@@ -271,7 +271,9 @@ jobs:
           fi
           bazel_test_args+=(
             --action_env="SystemRoot=${CODEX_BAZEL_SYSTEM_ROOT}"
+            --host_action_env="SystemRoot=${CODEX_BAZEL_SYSTEM_ROOT}"
             --action_env="PROCESSOR_ARCHITECTURE=${CODEX_BAZEL_PROCESSOR_ARCHITECTURE}"
+            --host_action_env="PROCESSOR_ARCHITECTURE=${CODEX_BAZEL_PROCESSOR_ARCHITECTURE}"
             --inject_repository="voice_windows_tools=${VOICE_WINDOWS_BAZEL_REPOSITORY}"
             --//third_party/voice:windows_installed_tools=@voice_windows_tools//:tools
           )
@@ -509,7 +511,9 @@ jobs:
             fi
             bazel_clippy_args+=(
               --action_env="SystemRoot=${CODEX_BAZEL_SYSTEM_ROOT}"
+              --host_action_env="SystemRoot=${CODEX_BAZEL_SYSTEM_ROOT}"
               --action_env="PROCESSOR_ARCHITECTURE=${CODEX_BAZEL_PROCESSOR_ARCHITECTURE}"
+              --host_action_env="PROCESSOR_ARCHITECTURE=${CODEX_BAZEL_PROCESSOR_ARCHITECTURE}"
               --skip_incompatible_explicit_targets
               --repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1
               --inject_repository="voice_windows_tools=${VOICE_WINDOWS_BAZEL_REPOSITORY}"
@@ -676,7 +680,9 @@ jobs:
             fi
             bazel_build_args+=(
               --action_env="SystemRoot=${CODEX_BAZEL_SYSTEM_ROOT}"
+              --host_action_env="SystemRoot=${CODEX_BAZEL_SYSTEM_ROOT}"
               --action_env="PROCESSOR_ARCHITECTURE=${CODEX_BAZEL_PROCESSOR_ARCHITECTURE}"
+              --host_action_env="PROCESSOR_ARCHITECTURE=${CODEX_BAZEL_PROCESSOR_ARCHITECTURE}"
               --inject_repository="voice_windows_tools=${VOICE_WINDOWS_BAZEL_REPOSITORY}"
               --//third_party/voice:windows_installed_tools=@voice_windows_tools//:tools
             )
