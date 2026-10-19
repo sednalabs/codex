@@ -633,6 +633,24 @@ async fn response_item_ids_persist_across_resume_and_preserve_server_ids() -> an
         .clone()
         .expect("rollout path");
 
+    let mut legacy_communication = codex_protocol::protocol::InterAgentCommunication::new(
+        codex_protocol::AgentPath::try_from("/root/worker").expect("valid author path"),
+        codex_protocol::AgentPath::root(),
+        Vec::new(),
+        "legacy quiet mailbox update".to_string(),
+        /*trigger_turn*/ false,
+    );
+    legacy_communication.id = Some(ResponseItemId::from_server(
+        "inter_agent_update_legacy-resume".to_string(),
+    ));
+    initial
+        .codex
+        .submit(Op::InterAgentCommunication {
+            communication: legacy_communication,
+            start_options: Default::default(),
+        })
+        .await?;
+
     initial.submit_turn("before resume").await?;
     initial.codex.submit(Op::Shutdown).await?;
     wait_for_event(&initial.codex, |event| {
@@ -661,6 +679,18 @@ async fn response_item_ids_persist_across_resume_and_preserve_server_ids() -> an
         response_message_item_id(&requests[1], "assistant", "first reply"),
         "msg_server"
     );
+    for request in &requests {
+        let mailbox_message = request
+            .inputs_of_type("agent_message")
+            .into_iter()
+            .find(|item| item["content"][0]["text"] == "legacy quiet mailbox update")
+            .expect("mailbox communication should appear in resumed request history");
+        assert_eq!(mailbox_message.get("id"), None);
+        assert_eq!(mailbox_message["author"].as_str(), Some("/root/worker"));
+        assert_eq!(mailbox_message["recipient"].as_str(), Some("/root"));
+    }
+    let persisted_rollout = std::fs::read_to_string(&rollout_path)?;
+    assert!(persisted_rollout.contains("inter_agent_update_legacy-resume"));
 
     Ok(())
 }
@@ -3349,6 +3379,60 @@ async fn azure_responses_request_does_not_store_and_preserves_prefixed_item_ids(
         }))
         .expect("response item with an empty id should deserialize"),
     );
+    let fresh_communication: codex_protocol::protocol::InterAgentCommunication =
+        serde_json::from_value(json!({
+            "id": ResponseItemId::new("inter_agent_update"),
+            "author": "/root/worker",
+            "recipient": "/root",
+            "other_recipients": [],
+            "content": "fresh mailbox update",
+            "trigger_turn": false,
+        }))
+        .expect("fresh mailbox communication should deserialize");
+    let fresh_communication_id = fresh_communication.id.clone();
+    prompt.input.push(fresh_communication.to_model_input_item());
+    let retained_communication: codex_protocol::protocol::InterAgentCommunication =
+        serde_json::from_value(json!({
+            "id": "inter_agent_update_legacy-retained",
+            "author": "/root/worker",
+            "recipient": "/root",
+            "other_recipients": [],
+            "content": "retained mailbox update",
+            "trigger_turn": false,
+        }))
+        .expect("persisted mailbox communication should deserialize");
+    let retained_communication_id = retained_communication.id.clone();
+    let queued_op = Op::InterAgentCommunication {
+        communication: retained_communication,
+    };
+    let round_tripped_op: Op = serde_json::from_value(
+        serde_json::to_value(queued_op).expect("queued communication should serialize"),
+    )
+    .expect("queued communication should deserialize");
+    let Op::InterAgentCommunication { communication } = round_tripped_op else {
+        panic!("round-tripped operation should remain an inter-agent communication");
+    };
+    prompt.input.push(communication.to_model_input_item());
+    prompt.input.push(
+        serde_json::from_value(json!({
+            "type": "agent_message",
+            "id": "amsg_provider-authored",
+            "author": "/provider",
+            "recipient": "/root",
+            "content": [{"type": "input_text", "text": "provider-authored message"}],
+        }))
+        .expect("provider-authored agent message should deserialize"),
+    );
+    prompt.input.push(
+        serde_json::from_value(json!({
+            "type": "agent_message",
+            "id": "vendor_provider-authored",
+            "author": "/provider",
+            "recipient": "/root",
+            "content": [{"type": "input_text", "text": "prefixed provider-authored message"}],
+        }))
+        .expect("prefixed provider-authored agent message should deserialize"),
+    );
 
     let mut stream = client_session
         .stream(
@@ -3379,7 +3463,7 @@ async fn azure_responses_request_does_not_store_and_preserves_prefixed_item_ids(
     let input = body["input"].as_array().expect("request input");
     assert_eq!(input[0]["role"], "developer");
     let input = &input[1..];
-    assert_eq!(input.len(), 10);
+    assert_eq!(input.len(), 14);
     assert_eq!(input[0]["id"].as_str(), Some("rs_reasoning-id"));
     assert_eq!(input[1]["id"].as_str(), Some("msg_message-id"));
     assert_eq!(input[2]["id"].as_str(), Some("ws_web-search-id"));
@@ -3390,6 +3474,44 @@ async fn azure_responses_request_does_not_store_and_preserves_prefixed_item_ids(
     assert_eq!(input[7]["call_id"].as_str(), Some("custom-tool-call-id"));
     assert_eq!(input[8].get("id"), None);
     assert_eq!(input[9].get("id"), None);
+    assert_eq!(
+        input[10].get("type").and_then(|value| value.as_str()),
+        Some("agent_message")
+    );
+    assert_eq!(input[10].get("id"), None);
+    assert_eq!(input[10]["author"].as_str(), Some("/root/worker"));
+    assert_eq!(input[10]["recipient"].as_str(), Some("/root"));
+    assert_eq!(
+        input[10]["content"][0]["text"].as_str(),
+        Some("fresh mailbox update")
+    );
+    assert_eq!(input[11].get("id"), None);
+    assert_eq!(
+        input[11]["content"][0]["text"].as_str(),
+        Some("retained mailbox update")
+    );
+    assert_eq!(input[12]["id"].as_str(), Some("amsg_provider-authored"));
+    assert_eq!(input[13]["id"].as_str(), Some("vendor_provider-authored"));
+    assert!(
+        fresh_communication_id
+            .as_ref()
+            .is_some_and(|id| id.as_str().starts_with("inter_agent_update_"))
+    );
+    assert_eq!(
+        retained_communication_id
+            .as_ref()
+            .map(ResponseItemId::as_str),
+        Some("inter_agent_update_legacy-retained")
+    );
+    let original_input = serde_json::to_value(&prompt.input).expect("prompt should serialize");
+    assert_eq!(
+        original_input[10]["id"].as_str(),
+        fresh_communication_id.as_ref().map(ResponseItemId::as_str)
+    );
+    assert_eq!(
+        original_input[11]["id"].as_str(),
+        Some("inter_agent_update_legacy-retained")
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
