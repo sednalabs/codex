@@ -176,8 +176,8 @@ pub fn provision_api_bearer() -> Result<i32> {
 
 fn require_installed_launcher_image() -> Result<()> {
     let expected_path = Path::new(LAUNCHER_PATH);
-    let current_path = std::env::current_exe()
-        .context("resolve fixed runtime-proof launcher image")?;
+    let current_path =
+        std::env::current_exe().context("resolve fixed runtime-proof launcher image")?;
     if current_path != expected_path || current_path.canonicalize()? != expected_path {
         bail!("API bearer provisioning must use the installed fixed launcher");
     }

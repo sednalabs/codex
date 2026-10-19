@@ -49,10 +49,8 @@ pub(crate) fn run() -> Result<i32> {
     })?;
 
     let now = api_claim::unix_seconds()?;
-    let bearer = api_claim::validate_bearer_for_provisioning(
-        access_token.access_token().to_string(),
-        now,
-    )?;
+    let bearer =
+        api_claim::validate_bearer_for_provisioning(access_token.access_token().to_string(), now)?;
     if bearer.expires_at <= now || bearer.expires_at > access_token.expires_at() {
         bail!("fixed Ops API access token expiry does not match its OAuth lifetime");
     }
@@ -73,8 +71,8 @@ fn require_interactive_root_invocation() -> Result<()> {
 }
 
 fn invoking_uid_from_sudo_env() -> Result<libc::uid_t> {
-    let value = std::env::var("SUDO_UID")
-        .map_err(|_| anyhow::anyhow!("resolve the invoking sudo user"))?;
+    let value =
+        std::env::var("SUDO_UID").map_err(|_| anyhow::anyhow!("resolve the invoking sudo user"))?;
     parse_invoking_uid(&value)
 }
 
@@ -372,10 +370,7 @@ fn lock_credential_store(directory: &File, expected_owner: libc::uid_t) -> Resul
     }
     let lock = unsafe { File::from_raw_fd(fd) };
     let metadata = lock.metadata()?;
-    if !metadata.is_file()
-        || metadata.uid() != expected_owner
-        || metadata.mode() & 0o777 != 0o600
-    {
+    if !metadata.is_file() || metadata.uid() != expected_owner || metadata.mode() & 0o777 != 0o600 {
         bail!("fixed Ops API credential lock is outside its file contract");
     }
     if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } != 0 {
@@ -441,10 +436,7 @@ fn write_and_commit_temporary(
         return Err(std::io::Error::last_os_error().into());
     }
     let metadata = file.metadata()?;
-    if !metadata.is_file()
-        || metadata.uid() != expected_owner
-        || metadata.mode() & 0o777 != 0o600
-    {
+    if !metadata.is_file() || metadata.uid() != expected_owner || metadata.mode() & 0o777 != 0o600 {
         bail!("temporary Ops API credential is outside its fixed file contract");
     }
     let mut writer = file;
@@ -469,7 +461,10 @@ fn write_and_commit_temporary(
 
 fn open_fixed_directory(path: &Path) -> std::io::Result<File> {
     let path = std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_| {
-        std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid fixed directory path")
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid fixed directory path",
+        )
     })?;
     let fd = unsafe {
         libc::open(
@@ -490,11 +485,9 @@ mod tests {
 
     #[test]
     fn bearer_source_requires_exact_fixed_path() {
-    assert!(replace_bearer_source(
-            Path::new("/tmp/ops-api-bearer"),
-            b"synthetic-token"
-        )
-        .is_err());
+        assert!(
+            replace_bearer_source(Path::new("/tmp/ops-api-bearer"), b"synthetic-token").is_err()
+        );
     }
 
     #[test]
@@ -507,7 +500,8 @@ mod tests {
 
     #[test]
     fn credential_replacement_is_atomic_root_mode_and_fixed_to_one_basename() {
-        let directory = std::env::temp_dir().join(format!("codex-runtime-proof-{}", Uuid::new_v4()));
+        let directory =
+            std::env::temp_dir().join(format!("codex-runtime-proof-{}", Uuid::new_v4()));
         fs::create_dir(&directory).expect("create isolated credential directory");
         fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
             .expect("restrict isolated credential directory");
@@ -518,14 +512,12 @@ mod tests {
 
         let parent = open_fixed_directory(&directory).expect("open credential directory");
         let name = std::ffi::CString::new("ops-api-bearer").expect("credential basename");
-        atomic_replace_credential_at(
-            &parent,
-            &name,
-            b"new-token",
-            unsafe { libc::geteuid() },
-        )
-        .expect("atomically replace credential");
-        assert_eq!(fs::read(&credential_path).expect("read replacement"), b"new-token");
+        atomic_replace_credential_at(&parent, &name, b"new-token", unsafe { libc::geteuid() })
+            .expect("atomically replace credential");
+        assert_eq!(
+            fs::read(&credential_path).expect("read replacement"),
+            b"new-token"
+        );
         assert_eq!(
             fs::metadata(&credential_path)
                 .expect("read replacement metadata")
@@ -540,44 +532,41 @@ mod tests {
             1
         );
         let traversal = std::ffi::CString::new("../other").expect("invalid basename fixture");
-        assert!(atomic_replace_credential_at(
-            &parent,
-            &traversal,
-            b"must-not-write",
-            unsafe { libc::geteuid() },
-        )
-        .is_err());
+        assert!(
+            atomic_replace_credential_at(&parent, &traversal, b"must-not-write", unsafe {
+                libc::geteuid()
+            },)
+            .is_err()
+        );
         fs::remove_dir_all(directory).expect("remove isolated credential directory");
     }
 
     #[test]
     fn cleanup_removes_only_the_exact_loaded_credential_generation() {
-        let directory = std::env::temp_dir().join(format!("codex-runtime-proof-{}", Uuid::new_v4()));
+        let directory =
+            std::env::temp_dir().join(format!("codex-runtime-proof-{}", Uuid::new_v4()));
         fs::create_dir(&directory).expect("create isolated credential directory");
         fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
             .expect("restrict isolated credential directory");
         let credential_path = directory.join("ops-api-bearer");
         let token = crate::provider_auth::SecretString("same-token".to_string());
-        let loaded = crate::api_claim::encode_bearer_credential(&token)
-            .expect("encode loaded credential");
+        let loaded =
+            crate::api_claim::encode_bearer_credential(&token).expect("encode loaded credential");
         fs::write(&credential_path, &loaded).expect("write source credential");
         fs::set_permissions(&credential_path, fs::Permissions::from_mode(0o600))
             .expect("restrict source credential");
 
         let parent = open_fixed_directory(&directory).expect("open credential directory");
-        cleanup_bearer_source_at(
-            &parent,
-            &loaded,
-            unsafe { libc::geteuid() },
-        )
-        .expect("remove the credential systemd loaded");
+        cleanup_bearer_source_at(&parent, &loaded, unsafe { libc::geteuid() })
+            .expect("remove the credential systemd loaded");
         assert!(!credential_path.exists());
         fs::remove_dir_all(directory).expect("remove isolated credential directory");
     }
 
     #[test]
     fn cleanup_preserves_a_replacement_even_when_it_reuses_the_same_access_token() {
-        let directory = std::env::temp_dir().join(format!("codex-runtime-proof-{}", Uuid::new_v4()));
+        let directory =
+            std::env::temp_dir().join(format!("codex-runtime-proof-{}", Uuid::new_v4()));
         fs::create_dir(&directory).expect("create isolated credential directory");
         fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
             .expect("restrict isolated credential directory");
@@ -593,12 +582,7 @@ mod tests {
             .expect("restrict replacement credential");
 
         let parent = open_fixed_directory(&directory).expect("open credential directory");
-        assert!(cleanup_bearer_source_at(
-            &parent,
-            &loaded,
-            unsafe { libc::geteuid() },
-        )
-        .is_err());
+        assert!(cleanup_bearer_source_at(&parent, &loaded, unsafe { libc::geteuid() },).is_err());
         assert_eq!(
             fs::read(&credential_path).expect("read preserved replacement"),
             replacement.as_slice()

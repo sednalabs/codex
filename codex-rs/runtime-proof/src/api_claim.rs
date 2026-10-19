@@ -81,7 +81,10 @@ impl Audience {
         match self {
             Self::One(audience) => audience == expected,
             Self::Many(audiences) => {
-                audiences.len() == 1 && audiences.first().is_some_and(|audience| audience == expected)
+                audiences.len() == 1
+                    && audiences
+                        .first()
+                        .is_some_and(|audience| audience == expected)
             }
         }
     }
@@ -98,7 +101,9 @@ impl ScopeClaim {
     fn contains(&self, expected: &str) -> bool {
         match self {
             Self::One(scopes) => scopes == expected,
-            Self::Many(scopes) => scopes.len() == 1 && scopes.first().is_some_and(|scope| scope == expected),
+            Self::Many(scopes) => {
+                scopes.len() == 1 && scopes.first().is_some_and(|scope| scope == expected)
+            }
         }
     }
 }
@@ -168,10 +173,22 @@ fn validate_bearer_profile(
     let token_principal = Uuid::parse_str(&claims.sub).ok();
     let subject_matches = token_principal.is_some()
         && expected_principal.is_none_or(|principal| token_principal == Some(principal));
-    let has_scope = claims.scope.as_deref().is_some_and(|scope| scope == API_SCOPE)
-        || claims.scp.as_ref().is_some_and(|scopes| scopes.contains(API_SCOPE));
-    let scope_claims_are_consistent = claims.scope.as_deref().is_none_or(|scope| scope == API_SCOPE)
-        && claims.scp.as_ref().is_none_or(|scopes| scopes.contains(API_SCOPE));
+    let has_scope = claims
+        .scope
+        .as_deref()
+        .is_some_and(|scope| scope == API_SCOPE)
+        || claims
+            .scp
+            .as_ref()
+            .is_some_and(|scopes| scopes.contains(API_SCOPE));
+    let scope_claims_are_consistent = claims
+        .scope
+        .as_deref()
+        .is_none_or(|scope| scope == API_SCOPE)
+        && claims
+            .scp
+            .as_ref()
+            .is_none_or(|scopes| scopes.contains(API_SCOPE));
     if claims.iss != API_ISSUER
         || !claims.aud.contains(API_AUDIENCE)
         || !subject_matches

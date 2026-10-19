@@ -138,8 +138,9 @@ fn api_bearer_credential_envelope_has_a_fresh_cleanup_identity() {
     );
     let mut invalid: Value = serde_json::from_slice(&first).expect("parse envelope");
     invalid["generation"] = serde_json::json!(Uuid::nil().to_string());
-    assert!(decode_bearer_credential(&serde_json::to_vec(&invalid).expect("encode invalid"))
-        .is_err());
+    assert!(
+        decode_bearer_credential(&serde_json::to_vec(&invalid).expect("encode invalid")).is_err()
+    );
 }
 
 #[test]
