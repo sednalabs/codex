@@ -1571,7 +1571,7 @@ async fn explicit_progress_to_deeper_nonroot_is_restored_without_another_send() 
             tree.root_id,
             resumed_id,
             tree.harness.config.clone(),
-            message,
+            AgentMessage::Plaintext("deep progress remains quiet".to_string()),
             update,
             AgentCommunicationContext::new(AgentCommunicationKind::Message, tree.root_id),
         )
