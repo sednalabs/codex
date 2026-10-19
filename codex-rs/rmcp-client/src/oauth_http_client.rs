@@ -111,9 +111,7 @@ impl OAuthHttpClientAdapter {
                             name: name.as_str().to_string(),
                             value: value
                                 .to_str()
-                                .map_err(|error| {
-                                    OAuthHttpClientError::from(error.to_string())
-                                })?
+                                .map_err(|error| OAuthHttpClientError::from(error.to_string()))?
                                 .to_string(),
                         })
                     })
@@ -166,9 +164,7 @@ impl OAuthHttpClientAdapter {
                             name: name.as_str().to_string(),
                             value: value
                                 .to_str()
-                                .map_err(|error| {
-                                    OAuthHttpClientError::from(error.to_string())
-                                })?
+                                .map_err(|error| OAuthHttpClientError::from(error.to_string()))?
                                 .to_string(),
                         })
                     })
@@ -176,8 +172,8 @@ impl OAuthHttpClientAdapter {
                 let mut body_stream = response.bytes_stream();
                 let mut response_body = Vec::new();
                 while let Some(chunk) = body_stream.next().await {
-                    let chunk = chunk
-                        .map_err(|error| OAuthHttpClientError::from(error.to_string()))?;
+                    let chunk =
+                        chunk.map_err(|error| OAuthHttpClientError::from(error.to_string()))?;
                     append_bounded_body(&mut response_body, &chunk)?;
                 }
                 (status, response_headers, response_body)
@@ -193,10 +189,7 @@ impl OAuthHttpClientAdapter {
     }
 }
 
-fn append_bounded_body(
-    body: &mut Vec<u8>,
-    chunk: &[u8],
-) -> Result<(), OAuthHttpClientError> {
+fn append_bounded_body(body: &mut Vec<u8>, chunk: &[u8]) -> Result<(), OAuthHttpClientError> {
     if chunk.len() > MAX_OAUTH_HTTP_RESPONSE_BODY_BYTES - body.len() {
         return Err(OAuthHttpClientError::from(format!(
             "OAuth HTTP response body exceeds {MAX_OAUTH_HTTP_RESPONSE_BODY_BYTES} bytes"

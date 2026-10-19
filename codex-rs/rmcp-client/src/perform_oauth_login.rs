@@ -182,13 +182,12 @@ async fn perform_oauth_access_token_login(
         .connect_timeout(Duration::from_secs(3))
         .build_direct()
         .map_err(|_| anyhow!("build fixed OAuth HTTP client"))?;
-    let oauth_http_client: Arc<dyn OAuthHttpClient> = Arc::new(
-        OAuthHttpClientAdapter::new_direct_with_max_timeout(
+    let oauth_http_client: Arc<dyn OAuthHttpClient> =
+        Arc::new(OAuthHttpClientAdapter::new_direct_with_max_timeout(
             http_client,
             HeaderMap::new(),
             Duration::from_secs(10),
-        ),
-    );
+        ));
 
     let (mut oauth_state, authorization_url) = start_fixed_oauth_authorization(
         issuer_url,
@@ -1092,9 +1091,9 @@ mod tests {
     use super::FIXED_API_CLAIM_RESOURCE;
     use super::FIXED_API_CLAIM_SCOPE;
     use super::HttpClientBuilder;
-    use super::OauthCallbackResult;
     use super::OAuthHttpClientAdapter;
     use super::OAuthProviderError;
+    use super::OauthCallbackResult;
     use super::access_token_from_response;
     use super::append_callback_id_to_redirect_uri;
     use super::append_query_param;
