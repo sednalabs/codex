@@ -66,6 +66,7 @@ on:
           - none
           - delete_diagnostic
           - voice_runtime
+          - rollout_identity
         default: none
       expected_workflow_host_sha:
         description: Exact workflow-host commit SHA required by fixed validation modes
@@ -438,6 +439,14 @@ jobs:
               expected_parent="6bdf5e8a98b8c29ad7c63cfbc86afd24d4914287"
               expected_base_depth=1
               ;;
+            rollout_identity)
+              expected_base="6bdf5e8a98b8c29ad7c63cfbc86afd24d4914287"
+              expected_host_ref="refs/heads/validation/host-windows-rollout-80560f45"
+              expected_target="80560f458e220ca59830e739c7df5d1ef2c83ccf"
+              expected_tree="7fa4a32dacac3918b65657d21f398fae1066b618"
+              expected_parent="de4d8f19af203b2129142bdec359a66f4c7c5b0e"
+              expected_base_depth=3
+              ;;
             voice_runtime)
               expected_target="1f769231c112a57a67800431aa472256a7e11697"
               expected_tree="94ba4af639460c414bc0d93f5b17dccabef3fd29"
@@ -480,7 +489,7 @@ jobs:
           echo "mode=${WINDOWS_VALIDATION_MODE}"
 
       - name: Set up native MSVC Rust toolchain
-        if: ${{ inputs.windows_validation_mode == 'delete_diagnostic' }}
+        if: ${{ inputs.windows_validation_mode == 'delete_diagnostic' || inputs.windows_validation_mode == 'rollout_identity' }}
         uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
         with:
           targets: x86_64-pc-windows-msvc
@@ -535,6 +544,48 @@ jobs:
           cargo test --locked -p codex-windows-sandbox --lib
           unified_exec::tests::legacy_workspace_write_delete_is_limited_to_writable_roots
           -- --exact --test-threads=1
+
+      - name: Inventory and run the fixed rollout-writer identity selectors
+        if: ${{ inputs.windows_validation_mode == 'rollout_identity' }}
+        shell: bash
+        working-directory: codex-rs
+        run: |
+          set -euo pipefail
+          selectors=(
+            "append_state::tests::owned_append_retries_only_suffix_after_repeated_partial_progress"
+            "append_state::tests::owned_append_acknowledges_full_line_after_flush_error_without_duplication"
+            "append_state::tests::owned_append_conflicts_are_sticky_and_never_modify_foreign_bytes"
+            "recorder::tests::append_repair_terminates_nonempty_rollout_tail"
+            "recorder::tests::opening_existing_rollout_preserves_modified_time"
+            "recorder::tests::writer_state_retries_write_error_before_reporting_flush_success"
+            "recorder::tests::writer_state_retains_serialized_meta_and_ordinals_across_real_io_failures"
+            "recorder::tests::writer_state_worker_panic_retains_checkpoint_and_fails_closed"
+            "recorder::tests::append_open_preserves_unterminated_tail_on_rejection"
+            "recorder::tests::resumed_paginated_rollout_terminates_complete_valid_tail"
+            "recorder::tests::resumed_paginated_rollout_rejects_unknown_malformed_tail"
+            "compression::tests::physical_fence_blocks_materialization_and_bound_helper_does_not_relock"
+            "compression::tests::worker_skips_physical_writer_until_its_fence_is_released"
+            "writer_lock::tests::writer_locks_reject_competing_owners_and_release_their_files"
+            "writer_lock::tests::first_acquisition_removes_stale_locks_without_removing_active_locks"
+            "writer_lock::tests::publication_skips_live_writers_and_keeps_coordination_locked"
+            "file_identity::tests::file_identity_matches_cloned_and_reopened_handles"
+            "file_identity::tests::file_identity_distinguishes_same_content_files"
+            "file_identity::tests::file_identity_detects_same_content_replacement_with_original_handle_retained"
+            "file_identity::tests::windows_file_identity_compares_all_128_bits"
+            "file_identity::tests::windows_file_identity_rejects_unusable_id_sentinels"
+          )
+          inventory="${RUNNER_TEMP}/windows-rollout-identity-inventory.txt"
+          cargo test --locked -p codex-rollout --lib -- --list | tee "${inventory}"
+          for selector in "${selectors[@]}"; do
+            matches="$(grep -Fxc "${selector}: test" "${inventory}" || true)"
+            if [[ "${matches}" != "1" ]]; then
+              echo "Expected exactly one matching fixed rollout test; observed ${matches}." >&2
+              exit 1
+            fi
+          done
+          for selector in "${selectors[@]}"; do
+            cargo test --locked -p codex-rollout --lib "${selector}" -- --exact --test-threads=1
+          done
 
       - name: Prepare native Windows Bazel environment
         if: ${{ inputs.windows_validation_mode == 'voice_runtime' }}
