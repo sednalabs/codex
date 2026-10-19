@@ -658,7 +658,7 @@ async fn response_item_ids_persist_across_resume_and_preserve_server_ids() -> an
     })
     .await;
 
-    let resumed = builder.resume(&server, home, rollout_path).await?;
+    let resumed = builder.resume(&server, home, rollout_path.clone()).await?;
     resumed.submit_turn("after resume").await?;
 
     let requests = response_mock.requests();
@@ -3404,12 +3404,13 @@ async fn azure_responses_request_does_not_store_and_preserves_prefixed_item_ids(
     let retained_communication_id = retained_communication.id.clone();
     let queued_op = Op::InterAgentCommunication {
         communication: retained_communication,
+        start_options: Default::default(),
     };
     let round_tripped_op: Op = serde_json::from_value(
         serde_json::to_value(queued_op).expect("queued communication should serialize"),
     )
     .expect("queued communication should deserialize");
-    let Op::InterAgentCommunication { communication } = round_tripped_op else {
+    let Op::InterAgentCommunication { communication, .. } = round_tripped_op else {
         panic!("round-tripped operation should remain an inter-agent communication");
     };
     prompt.input.push(communication.to_model_input_item());
