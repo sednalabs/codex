@@ -456,11 +456,11 @@ jobs:
               ;;
             mailbox_events)
               expected_base="6ef37e21c5b5db2050e0aa5d9543b27d3de8f23d"
-              expected_host_ref="refs/heads/validation/host-windows-events-ce1ef30a"
-              expected_target="ce1ef30a0028983a34f359b46ce135f1fd4b9091"
-              expected_tree="9c23434f64251d039d802ab5ef0667416b4b4147"
-              expected_parent="79b1e55df7d263d79bea0f4a3d1a30c894037634"
-              expected_base_depth=3
+              expected_host_ref="refs/heads/validation/host-windows-events-bfc299e3"
+              expected_target="bfc299e35f846152c15c73cea871ae47db4e6b89"
+              expected_tree="ed96c6c77c923fb3a8349fb9236396800c6295b3"
+              expected_parent="ce1ef30a0028983a34f359b46ce135f1fd4b9091"
+              expected_base_depth=4
               ;;
             *)
               echo "Windows receiver validation mode is unsupported." >&2
