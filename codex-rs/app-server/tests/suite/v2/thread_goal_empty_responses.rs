@@ -226,7 +226,7 @@ async fn thread_spawn_goal_continuation_precedes_parent_handback() -> Result<()>
 
     let (continuation_release_tx, continuation_release_rx) = oneshot::channel();
     let mut continuation_release_tx = Some(continuation_release_tx);
-    let (parent_followup_matched_tx, mut parent_followup_matched_rx) = oneshot::channel();
+    let (parent_followup_matched_tx, parent_followup_matched_rx) = oneshot::channel();
     let (continuation_matched_tx, continuation_matched_rx) = oneshot::channel();
     let continuation_route = StreamingSseRequestRoute::new(
         |request| {
