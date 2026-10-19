@@ -1,4 +1,3 @@
-import json
 import re
 import subprocess
 import sys
@@ -25,11 +24,9 @@ class SelectGnuBazelTargetsTest(unittest.TestCase):
             GNU_SUITE_QUERY,
             f'kind("test_suite rule", ({GNU_TARGET_QUERY}))',
         )
-        pattern_match = re.search(
-            r'attr\("tags",\s*("(?:\\.|[^"\\])*")', GNU_TARGET_QUERY
-        )
+        pattern_match = re.search(r'attr\("tags",\s*"([^"]*)"', GNU_TARGET_QUERY)
         self.assertIsNotNone(pattern_match)
-        serialized_tags_pattern = re.compile(json.loads(pattern_match.group(1)))
+        serialized_tags_pattern = re.compile(pattern_match.group(1))
         self.assertTrue(serialized_tags_pattern.search("[manual]"))
         self.assertTrue(serialized_tags_pattern.search("[linux, manual, rust]"))
         for tags in (

@@ -7,7 +7,7 @@ import sys
 
 
 GNU_TARGET_QUERY = (
-    '//... except attr("tags", "[\\\\[ ]manual[,\\\\]]", //...) '
+    '//... except attr("tags", "[\\[ ]manual[,\\]]", //...) '
     "except //third_party/v8:all "
     "except //codex-rs/v8-poc:v8-poc-unit-tests"
 )
