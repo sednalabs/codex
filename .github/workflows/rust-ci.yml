@@ -1,259 +1,109 @@
-name: rust-ci
+name: Native rollout writer Clippy validation
+
 on:
-  workflow_call:
   workflow_dispatch:
+    inputs:
+      expected_workflow_host_sha:
+        description: Exact host SHA for this temporary Clippy validation
+        required: true
+        type: string
+
+permissions:
+  contents: read
 
 jobs:
-  # --- Detect changed paths so the fast PR workflow only runs relevant jobs ---
-  changed:
-    name: Detect changed areas
+  rollout-clippy:
+    name: Clippy for the exact native rollout writer
     runs-on: ubuntu-24.04
-    outputs:
-      argument_comment_lint: ${{ steps.detect.outputs.argument_comment_lint }}
-      argument_comment_lint_package: ${{ steps.detect.outputs.argument_comment_lint_package }}
-      codex: ${{ steps.detect.outputs.codex }}
-      workflows: ${{ steps.detect.outputs.workflows }}
+    timeout-minutes: 30
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      CARGO_TARGET_DIR: ${{ runner.temp }}/rollout-clippy-target
+      CODEX_REPO_ROOT: ${{ github.workspace }}/source
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Verify workflow-host identity and dispatch binding
+        shell: bash
+        env:
+          EXPECTED_HOST_SHA: ${{ inputs.expected_workflow_host_sha }}
+        run: |
+          set -euo pipefail
+          [[ "${#EXPECTED_HOST_SHA}" -eq 40 ]]
+          [[ "$EXPECTED_HOST_SHA" != *[^0-9a-f]* ]]
+          [[ "$GITHUB_SHA" == "$EXPECTED_HOST_SHA" ]]
+          [[ "$GITHUB_REPOSITORY" == "sednalabs/codex" ]]
+          [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]
+          [[ "$GITHUB_REF" == "refs/heads/validation/pr965-rollout-clippy-f382816a" ]]
+
+      - name: Checkout exact source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          fetch-depth: 0
+          repository: sednalabs/codex
+          ref: f382816a2071467b5a79108b46fd8d0b44a8b0a7
+          path: source
+          fetch-depth: 2
           persist-credentials: false
-      - name: Detect changed paths (no external action)
-        id: detect
+
+      - name: Verify source identity and initialize bounded evidence
         shell: bash
         run: |
           set -euo pipefail
+          [[ "$(git -C source rev-parse HEAD)" == "f382816a2071467b5a79108b46fd8d0b44a8b0a7" ]]
+          [[ "$(git -C source rev-parse 'HEAD^{tree}')" == "eeee27d8a5039d22213a71049e3c5d58cd8d9e9e" ]]
+          [[ "$(git -C source rev-parse HEAD^)" == "2bc2447f9f40036dd65c28b5777728fb593f458a" ]]
+          output="$RUNNER_TEMP/rollout-clippy-evidence"
+          mkdir -p "$output"
+          {
+            printf 'repository=%s\n' "$GITHUB_REPOSITORY"
+            printf 'source_sha=%s\n' "$(git -C source rev-parse HEAD)"
+            printf 'source_tree=%s\n' "$(git -C source rev-parse 'HEAD^{tree}')"
+            printf 'source_parent=%s\n' "$(git -C source rev-parse HEAD^)"
+            printf 'workflow_host_sha=%s\n' "$GITHUB_SHA"
+            printf 'workflow_host_ref=%s\n' "$GITHUB_REF"
+            printf 'run_id=%s\n' "$GITHUB_RUN_ID"
+            printf 'run_attempt=%s\n' "$GITHUB_RUN_ATTEMPT"
+            printf 'run_url=%s/actions/runs/%s\n' "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+          } > "$output/identity.txt"
+          printf 'clippy_status=not_run\n' > "$output/status.txt"
 
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            BASE_SHA='${{ github.event.pull_request.base.sha }}'
-            HEAD_SHA='${{ github.event.pull_request.head.sha }}'
-            echo "Base SHA: $BASE_SHA"
-            echo "Head SHA: $HEAD_SHA"
-            mapfile -t files < <(git diff --name-only --no-renames "$BASE_SHA" "$HEAD_SHA")
-          else
-            # On manual runs, default to the full fast-PR bundle.
-            files=("codex-rs/force" "tools/argument-comment-lint/force" ".github/force")
-          fi
-
-          codex=false
-          argument_comment_lint=false
-          argument_comment_lint_package=false
-          workflows=false
-          for f in "${files[@]}"; do
-            [[ $f == codex-rs/* ]] && codex=true
-            [[ $f == codex-rs/* || $f == tools/argument-comment-lint/* || $f == justfile ]] && argument_comment_lint=true
-            [[ $f == defs.bzl || $f == workspace_root_test_launcher.sh.tpl || $f == workspace_root_test_launcher.bat.tpl ]] && argument_comment_lint=true
-            [[ $f == tools/argument-comment-lint/* || $f == .github/workflows/rust-ci.yml || $f == .github/workflows/rust-ci-full.yml ]] && argument_comment_lint_package=true
-            [[ $f == .github/* ]] && workflows=true
-          done
-
-          echo "argument_comment_lint=$argument_comment_lint" >> "$GITHUB_OUTPUT"
-          echo "argument_comment_lint_package=$argument_comment_lint_package" >> "$GITHUB_OUTPUT"
-          echo "codex=$codex" >> "$GITHUB_OUTPUT"
-          echo "workflows=$workflows" >> "$GITHUB_OUTPUT"
-
-      - name: Check for a clean worktree
-        if: always() && !cancelled()
-        uses: ./.github/actions/check-clean-worktree
-
-  # --- Fast Cargo-native PR checks -------------------------------------------
-  general:
-    name: Format / etc
-    runs-on: ubuntu-24.04
-    needs: changed
-    if: ${{ needs.changed.outputs.codex == 'true' || needs.changed.outputs.workflows == 'true' }}
-    defaults:
-      run:
-        working-directory: codex-rs
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Set up pinned Rust and Clippy
+        uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
         with:
-          persist-credentials: false
-      - uses: ./.github/actions/setup-ci
-      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
-        with:
-          components: rustfmt
-      - name: cargo fmt
-        run: cargo fmt -- --config imports_granularity=Item --check
-      - name: Rust benchmark smoke test
-        run: just bench-smoke
+          toolchain: "1.95.0"
+          components: clippy
 
-      - name: Check for a clean worktree
-        if: always() && !cancelled()
-        uses: ./.github/actions/check-clean-worktree
-
-  cargo_shear:
-    name: cargo shear
-    runs-on: ubuntu-24.04
-    needs: changed
-    if: ${{ needs.changed.outputs.codex == 'true' || needs.changed.outputs.workflows == 'true' }}
-    defaults:
-      run:
-        working-directory: codex-rs
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/setup-ci
-      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
-      - uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
-        with:
-          tool: cargo-shear@1.11.2
-      - name: cargo shear
-        run: cargo shear --deny-warnings
-
-      - name: Check for a clean worktree
-        if: always() && !cancelled()
-        uses: ./.github/actions/check-clean-worktree
-
-  argument_comment_lint_package:
-    name: Argument comment lint package
-    runs-on: ubuntu-24.04
-    needs: changed
-    if: ${{ needs.changed.outputs.argument_comment_lint_package == 'true' }}
-    env:
-      CARGO_DYLINT_VERSION: 6.1.0
-      DYLINT_LINK_VERSION: 6.1.0
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/setup-ci
-      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
-      - name: Install nightly argument-comment-lint toolchain
+      - name: Run the fixed affected Clippy command
+        working-directory: source/codex-rs
         shell: bash
         run: |
-          rustup toolchain install nightly-2026-08-20 \
-            --profile minimal \
-            --component llvm-tools-preview \
-            --component rustc-dev \
-            --component rust-src \
-            --no-self-update
-          rustup default nightly-2026-08-20
-      - name: Cache cargo-dylint tooling
-        id: cargo_dylint_cache
-        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+          set -euo pipefail
+          output="$RUNNER_TEMP/rollout-clippy-evidence"
+          {
+            printf 'rustc=%s\n' "$(rustc --version)"
+            printf 'cargo=%s\n' "$(cargo --version)"
+            printf 'clippy=%s\n' "$(cargo clippy --version)"
+          } > "$output/tool-versions.txt"
+          printf '%s\n' 'cargo clippy --locked -p codex-rollout --lib --tests --all-features --target x86_64-unknown-linux-gnu --profile dev -- -D warnings' > "$output/command.txt"
+          printf 'clippy_status=in_progress\n' > "$output/status.txt"
+          set +e
+          cargo clippy --locked -p codex-rollout --lib --tests --all-features --target x86_64-unknown-linux-gnu --profile dev -- -D warnings
+          result=$?
+          set -e
+          {
+            printf 'clippy_exit_code=%s\n' "$result"
+            if [[ "$result" -eq 0 ]]; then
+              printf 'clippy_status=success\n'
+            else
+              printf 'clippy_status=failure\n'
+            fi
+          } > "$output/status.txt"
+          exit "$result"
+
+      - name: Upload bounded Clippy evidence
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          path: |
-            ~/.cargo/bin/cargo-dylint
-            ~/.cargo/bin/dylint-link
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-          key: argument-comment-lint-${{ runner.os }}-${{ env.CARGO_DYLINT_VERSION }}-${{ env.DYLINT_LINK_VERSION }}-${{ hashFiles('tools/argument-comment-lint/Cargo.lock', 'tools/argument-comment-lint/rust-toolchain', '.github/workflows/rust-ci.yml', '.github/workflows/rust-ci-full.yml') }}
-      - name: Install cargo-dylint tooling
-        if: ${{ steps.cargo_dylint_cache.outputs.cache-hit != 'true' }}
-        shell: bash
-        run: |
-          cargo install --locked cargo-dylint --version "$CARGO_DYLINT_VERSION"
-          cargo install --locked dylint-link --version "$DYLINT_LINK_VERSION"
-      - name: Check Python wrapper syntax
-        run: python3 -m py_compile tools/argument-comment-lint/wrapper_common.py tools/argument-comment-lint/run.py tools/argument-comment-lint/run-prebuilt-linter.py tools/argument-comment-lint/test_wrapper_common.py
-      - name: Test Python wrapper helpers
-        run: python3 -m unittest discover -s tools/argument-comment-lint -p 'test_*.py'
-      - name: Test argument comment lint package
-        working-directory: tools/argument-comment-lint
-        run: cargo test
-        env:
-          RUST_MIN_STACK: "8388608" # 8 MiB
-
-      - name: Check for a clean worktree
-        if: always() && !cancelled()
-        uses: ./.github/actions/check-clean-worktree
-
-  argument_comment_lint_prebuilt:
-    name: Argument comment lint - ${{ matrix.name }}
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: ${{ matrix.timeout_minutes }}
-    needs: changed
-    environment:
-      name: bazel
-      deployment: false
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Linux
-            runner: ubuntu-24.04
-            timeout_minutes: 30
-          - name: macOS
-            runner: macos-15
-            timeout_minutes: 30
-          - name: Windows
-            runner: windows-2025
-            timeout_minutes: 30
-    steps:
-      - name: Check whether argument comment lint should run
-        id: argument_comment_lint_gate
-        shell: bash
-        env:
-          ARGUMENT_COMMENT_LINT: ${{ needs.changed.outputs.argument_comment_lint }}
-          WORKFLOWS: ${{ needs.changed.outputs.workflows }}
-        run: |
-          if [[ "$ARGUMENT_COMMENT_LINT" == "true" || "$WORKFLOWS" == "true" ]]; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          echo "No argument-comment-lint relevant changes."
-          echo "run=false" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        if: ${{ steps.argument_comment_lint_gate.outputs.run == 'true' }}
-        with:
-          persist-credentials: false
-      - name: Run argument comment lint on codex-rs via Bazel
-        if: ${{ steps.argument_comment_lint_gate.outputs.run == 'true' }}
-        uses: ./.github/actions/run-argument-comment-lint
-        with:
-          target: ${{ runner.os }}
-
-      - name: Check for a clean worktree
-        if: always() && !cancelled() && steps.argument_comment_lint_gate.outputs.run == 'true'
-        uses: ./.github/actions/check-clean-worktree
-
-  # --- Gatherer job that you mark as the ONLY required status -----------------
-  results:
-    name: CI results (required)
-    needs:
-      [
-        changed,
-        general,
-        cargo_shear,
-        argument_comment_lint_package,
-        argument_comment_lint_prebuilt,
-      ]
-    if: always()
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Summarize
-        shell: bash
-        run: |
-          echo "argpkg : ${{ needs.argument_comment_lint_package.result }}"
-          echo "arglint: ${{ needs.argument_comment_lint_prebuilt.result }}"
-          echo "general: ${{ needs.general.result }}"
-          echo "shear  : ${{ needs.cargo_shear.result }}"
-
-          # If nothing relevant changed (PR touching only root README, etc.),
-          # declare success regardless of other jobs.
-          if [[ "${NEEDS_CHANGED_OUTPUTS_ARGUMENT_COMMENT_LINT}" != 'true' && "${NEEDS_CHANGED_OUTPUTS_CODEX}" != 'true' && "${NEEDS_CHANGED_OUTPUTS_WORKFLOWS}" != 'true' ]]; then
-            echo 'No relevant changes -> CI not required.'
-            exit 0
-          fi
-
-          if [[ "${NEEDS_CHANGED_OUTPUTS_ARGUMENT_COMMENT_LINT_PACKAGE}" == 'true' ]]; then
-            [[ '${{ needs.argument_comment_lint_package.result }}' == 'success' ]] || { echo 'argument_comment_lint_package failed'; exit 1; }
-          fi
-
-          if [[ "${NEEDS_CHANGED_OUTPUTS_ARGUMENT_COMMENT_LINT}" == 'true' || "${NEEDS_CHANGED_OUTPUTS_WORKFLOWS}" == 'true' ]]; then
-            [[ '${{ needs.argument_comment_lint_prebuilt.result }}' == 'success' ]] || { echo 'argument_comment_lint_prebuilt failed'; exit 1; }
-          fi
-
-          if [[ "${NEEDS_CHANGED_OUTPUTS_CODEX}" == 'true' || "${NEEDS_CHANGED_OUTPUTS_WORKFLOWS}" == 'true' ]]; then
-            [[ '${{ needs.general.result }}' == 'success' ]] || { echo 'general failed'; exit 1; }
-            [[ '${{ needs.cargo_shear.result }}' == 'success' ]] || { echo 'cargo_shear failed'; exit 1; }
-          fi
-        env:
-          NEEDS_CHANGED_OUTPUTS_ARGUMENT_COMMENT_LINT: ${{ needs.changed.outputs.argument_comment_lint }}
-          NEEDS_CHANGED_OUTPUTS_CODEX: ${{ needs.changed.outputs.codex }}
-          NEEDS_CHANGED_OUTPUTS_WORKFLOWS: ${{ needs.changed.outputs.workflows }}
-          NEEDS_CHANGED_OUTPUTS_ARGUMENT_COMMENT_LINT_PACKAGE: ${{ needs.changed.outputs.argument_comment_lint_package }}
+          name: rollout-clippy-evidence-${{ github.run_id }}
+          path: ${{ runner.temp }}/rollout-clippy-evidence/
+          if-no-files-found: error
+          retention-days: 1
