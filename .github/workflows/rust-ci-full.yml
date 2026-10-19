@@ -105,7 +105,7 @@ jobs:
           - name: macOS
             runner: macos-15
           - name: Windows
-            runner: windows-2022
+            runner: windows-2025
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -178,7 +178,7 @@ jobs:
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             profile: dev
-          - runner: windows-2022
+          - runner: windows-2025
             target: x86_64-pc-windows-msvc
             profile: dev
           - runner: windows-11-arm
@@ -198,7 +198,7 @@ jobs:
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
             profile: release
-          - runner: windows-2022
+          - runner: windows-2025
             target: x86_64-pc-windows-msvc
             profile: release
           - runner: windows-11-arm
@@ -450,10 +450,10 @@ jobs:
       use_sccache: true
 
   tests_windows_x64:
-    name: Tests — windows-2022 - x86_64-pc-windows-msvc
+    name: Tests — windows-2025 - x86_64-pc-windows-msvc
     uses: ./.github/workflows/rust-ci-full-nextest-platform.yml
     with:
-      runner: windows-2022
+      runner: windows-2025
       target: x86_64-pc-windows-msvc
       profile: ci-test
       artifact_id: windows-x64
@@ -464,7 +464,7 @@ jobs:
     uses: ./.github/workflows/rust-ci-full-nextest-platform.yml
     with:
       runner: windows-11-arm
-      archive_runner: windows-2022
+      archive_runner: windows-2025
       target: aarch64-pc-windows-msvc
       profile: ci-test
       artifact_id: windows-arm64
