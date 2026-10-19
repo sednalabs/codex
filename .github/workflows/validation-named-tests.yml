@@ -135,7 +135,7 @@ jobs:
 
   named_tests:
     if: >-
-      ${{ inputs.windows_validation_mode == 'none' && inputs.prepare_codex_cli_for_exact_usage_test != true && inputs.run_ae94_android_helper_tests != true && inputs.run_ae94_tui_provider_tests != true && inputs.run_d0_active_wait_test != true && inputs.run_ac392_android_protocol_test != true && inputs.run_a89_android_png_fixture_preflight != true && inputs.run_native_browser_source_validation != true }}
+      ${{ inputs.windows_validation_mode == 'none' && inputs.prepare_codex_cli_for_exact_usage_test != true && inputs.run_ae94_android_helper_tests != true && inputs.run_ae94_tui_provider_tests != true && inputs.run_d0_active_wait_test != true && inputs.run_ac392_android_protocol_test != true && inputs.run_a89_android_png_fixture_preflight != true && inputs.run_native_browser_source_validation != true && !(github.ref == 'refs/heads/validation/host-830-generated-files-6872befd' && inputs.expected_workflow_host_sha == github.sha && inputs.target_sha == '6872befddc7f47865ec9c664a4d0c89d455b3de2' && inputs.base_ref == '83086188ae0614bd882818ff1aa23f3194962012' && inputs.profile == 'rust_minimal' && inputs.request_json == '{"schema_version":"rust-tests-v1","profile":"rust_minimal","package":"codex-keyring-store","target_kind":"lib","target":"","tests":["error_kind::tests::preserves_typed_causes_without_guessing_from_messages","error_kind::tests::classifies_native_backend_errors","error_kind::tests::unavailable_secret_service_is_not_connected","error_kind::tests::secret_service_dbus_io_error_preserves_its_kind","error_display_tests::payload_bearing_errors_redact_credentials_and_end_the_source_chain"],"execution_mode":"exact"}') }}
     permissions:
       contents: read
     uses: ./.github/workflows/_validation-named-tests.yml
@@ -564,10 +564,7 @@ jobs:
 
   keyring_module_lock:
     if: >-
-      ${{ inputs.target_sha == 'faa4caf026c1ef25e35cb2d6c300ba3858befb28' &&
-          inputs.request_json == '{"schema_version":"rust-tests-v1","profile":"rust_minimal","package":"codex-keyring-store","target_kind":"lib","target":"","tests":["error_kind::tests::preserves_typed_causes_without_guessing_from_messages","error_kind::tests::classifies_native_backend_errors","error_kind::tests::unavailable_secret_service_is_not_connected","error_kind::tests::secret_service_dbus_io_error_preserves_its_kind","error_display_tests::payload_bearing_errors_redact_credentials_and_end_the_source_chain"],"execution_mode":"exact"}' &&
-          inputs.base_ref == '6ef37e21c5b5db2050e0aa5d9543b27d3de8f23d' &&
-          inputs.profile == 'rust_minimal' &&
+      ${{ github.ref == 'refs/heads/validation/host-830-generated-files-6872befd' && inputs.expected_workflow_host_sha == github.sha && inputs.target_sha == '6872befddc7f47865ec9c664a4d0c89d455b3de2' && inputs.base_ref == '83086188ae0614bd882818ff1aa23f3194962012' && inputs.profile == 'rust_minimal' && inputs.request_json == '{"schema_version":"rust-tests-v1","profile":"rust_minimal","package":"codex-keyring-store","target_kind":"lib","target":"","tests":["error_kind::tests::preserves_typed_causes_without_guessing_from_messages","error_kind::tests::classifies_native_backend_errors","error_kind::tests::unavailable_secret_service_is_not_connected","error_kind::tests::secret_service_dbus_io_error_preserves_its_kind","error_display_tests::payload_bearing_errors_redact_credentials_and_end_the_source_chain"],"execution_mode":"exact"}' &&
           inputs.windows_validation_mode == 'none' &&
           inputs.prepare_codex_cli_for_exact_usage_test != true &&
           inputs.run_ae94_android_helper_tests != true &&
@@ -576,11 +573,15 @@ jobs:
           inputs.run_ac392_android_protocol_test != true &&
           inputs.run_a89_android_png_fixture_preflight != true &&
           inputs.run_native_browser_source_validation != true }}
-    name: Generate exact candidate MODULE.bazel.lock
+    name: Generate exact candidate locks and config schema
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
       contents: read
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
     steps:
       - name: Check out workflow host
         uses: actions/checkout@v7
@@ -602,39 +603,86 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Verify exact H/B/T identity
+      - name: Verify exact H/B/T and native toolchain identity
         id: identity
         shell: bash
         env:
+          EXPECTED_H_SHA: ${{ inputs.expected_workflow_host_sha }}
           TARGET_SHA: ${{ inputs.target_sha }}
           BASE_SHA: ${{ inputs.base_ref }}
         run: |
           set -euo pipefail
           host_sha="$(git rev-parse HEAD)"
           target_sha="$(git -C validation-target rev-parse HEAD)"
+          target_tree="$(git -C validation-target rev-parse 'HEAD^{tree}')"
+          target_parent="$(git -C validation-target cat-file -p HEAD | sed -n 's/^parent //p')"
           base_sha="$(git -C validation-base rev-parse HEAD)"
-          if [[ ! "${GITHUB_SHA}" =~ ^[0-9a-f]{40}$ || "${host_sha}" != "${GITHUB_SHA}" ]]; then
-            echo "workflow host checkout does not match the dispatched H identity." >&2
+          base_tree="$(git -C validation-base rev-parse 'HEAD^{tree}')"
+          if [[ ! "${GITHUB_SHA}" =~ ^[0-9a-f]{40}$ || "${host_sha}" != "${GITHUB_SHA}" || "${host_sha}" != "${EXPECTED_H_SHA}" ]]; then
+            echo "workflow host does not match the exact dispatched H identity." >&2
             exit 1
           fi
-          if [[ "${target_sha}" != "${TARGET_SHA}" || "${base_sha}" != "${BASE_SHA}" ]]; then
-            echo "candidate or comparison-base checkout does not match the dispatched T/B identity." >&2
+          if [[ "${target_sha}" != "${TARGET_SHA}" || "${target_sha}" != "6872befddc7f47865ec9c664a4d0c89d455b3de2" || "${target_tree}" != "0c5f7772be9aa75b07738ec467d34bda8f98455e" || "${target_parent}" != "42fbd0113bfabd4d11522691d6568807581113f0" ]]; then
+            echo "candidate commit, tree, or direct parent differs from the fixed generation source." >&2
+            exit 1
+          fi
+          if [[ "${base_sha}" != "${BASE_SHA}" || "${base_sha}" != "83086188ae0614bd882818ff1aa23f3194962012" || "${base_tree}" != "e91f335e7a03e1d14fa1e5fc7fc7620cdfc60842" ]]; then
+            echo "comparison base differs from the selected exact release." >&2
+            exit 1
+          fi
+          if [[ "$(sed -n 's/^channel = "\(.*\)"/\1/p' validation-target/codex-rs/rust-toolchain.toml)" != "1.95.0" ]]; then
+            echo "candidate native Rust toolchain differs from the bounded generation environment." >&2
             exit 1
           fi
           {
             echo "VALIDATION_H_SHA=${host_sha}"
             echo "VALIDATION_T_SHA=${target_sha}"
+            echo "VALIDATION_T_TREE=${target_tree}"
+            echo "VALIDATION_T_PARENT=${target_parent}"
             echo "VALIDATION_B_SHA=${base_sha}"
+            echo "VALIDATION_B_TREE=${base_tree}"
           } >> "${GITHUB_ENV}"
 
-      - name: Prepare standard hosted Bazel environment
+      - name: Prepare existing standard hosted Bazel environment
         uses: ./.github/actions/prepare-bazel-ci
         with:
           target: x86_64-unknown-linux-gnu
-          cache-scope: validation-keyring-module-lock
+          cache-scope: validation-830-generated-files
+
+      - name: Install candidate native Rust toolchain
+        uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+
+      - name: Reconcile only the candidate's necessary locked dependencies
+        id: cargo_lock_update
+        continue-on-error: true
+        working-directory: validation-target
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fetch --manifest-path codex-rs/Cargo.toml
+          echo "VALIDATION_RESOLVED_CARGO_LOCK_SHA256=$(sha256sum codex-rs/Cargo.lock | cut -d ' ' -f 1)" >> "${GITHUB_ENV}"
+
+      - name: Check exact resolved dependencies without exceptions
+        id: cargo_deny
+        if: ${{ steps.cargo_lock_update.outcome == 'success' }}
+        continue-on-error: true
+        uses: EmbarkStudios/cargo-deny-action@82eb9f621fbc699dd0918f3ea06864c14cc84246 # v2
+        with:
+          rust-version: 1.95.0
+          manifest-path: ./validation-target/codex-rs/Cargo.toml
+          arguments: --locked --all-features
+
+      - name: Generate native config schema from exact candidate
+        id: config_schema
+        if: ${{ steps.cargo_deny.outcome == 'success' }}
+        continue-on-error: true
+        working-directory: validation-target
+        shell: bash
+        run: just write-config-schema
 
       - name: Generate MODULE.bazel.lock from exact candidate
         id: module_lock_update
+        if: ${{ steps.config_schema.outcome == 'success' }}
         continue-on-error: true
         working-directory: validation-target
         shell: bash
@@ -648,12 +696,16 @@ jobs:
         shell: bash
         run: just bazel-lock-check
 
-      - name: Record truthful lock update and check identity and status
+      - name: Record truthful generation identity, status, and final lock hashes
         if: ${{ always() }}
         shell: bash
         env:
-          UPDATE_OUTCOME: ${{ steps.module_lock_update.outcome }}
-          CHECK_OUTCOME: ${{ steps.module_lock_check.outcome }}
+          IDENTITY_OUTCOME: ${{ steps.identity.outcome }}
+          CARGO_LOCK_OUTCOME: ${{ steps.cargo_lock_update.outcome }}
+          DENY_OUTCOME: ${{ steps.cargo_deny.outcome }}
+          SCHEMA_OUTCOME: ${{ steps.config_schema.outcome }}
+          MODULE_UPDATE_OUTCOME: ${{ steps.module_lock_update.outcome }}
+          MODULE_CHECK_OUTCOME: ${{ steps.module_lock_check.outcome }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -662,40 +714,75 @@ jobs:
           import os
           from pathlib import Path
 
-          lock = Path("validation-target/MODULE.bazel.lock")
-          exists = lock.is_file()
-          update_outcome = os.environ.get("UPDATE_OUTCOME", "unknown")
-          check_outcome = os.environ.get("CHECK_OUTCOME", "unknown")
+          root = Path("validation-target")
+          files = {}
+          for name in ("codex-rs/Cargo.lock", "MODULE.bazel.lock", "codex-rs/core/config.schema.json"):
+              path = root / name
+              present = path.is_file() and not path.is_symlink()
+              files[name] = {
+                  "present": present,
+                  "sha256": hashlib.sha256(path.read_bytes()).hexdigest() if present else "",
+              }
+          outcomes = {
+              "identity": os.environ.get("IDENTITY_OUTCOME", "unknown"),
+              "cargo_lock_update": os.environ.get("CARGO_LOCK_OUTCOME", "unknown"),
+              "cargo_deny": os.environ.get("DENY_OUTCOME", "unknown"),
+              "config_schema": os.environ.get("SCHEMA_OUTCOME", "unknown"),
+              "module_lock_update": os.environ.get("MODULE_UPDATE_OUTCOME", "unknown"),
+              "module_lock_check": os.environ.get("MODULE_CHECK_OUTCOME", "unknown"),
+          }
+          checked_lock = os.environ.get("VALIDATION_RESOLVED_CARGO_LOCK_SHA256", "")
+          lock_unchanged = bool(checked_lock) and files["codex-rs/Cargo.lock"]["sha256"] == checked_lock
+          success = (
+              all(value == "success" for value in outcomes.values())
+              and all(value["present"] for value in files.values())
+              and lock_unchanged
+          )
           receipt = {
-              "schema_version": "candidate-module-lock-v1",
-              "status": "success" if update_outcome == "success" and check_outcome == "success" and exists else "failure",
-              "lock_update_outcome": update_outcome,
-              "lock_check_outcome": check_outcome,
+              "schema_version": "candidate-generated-files-v1",
+              "status": "success" if success else "failure",
+              "outcomes": outcomes,
               "workflow_host_sha": os.environ.get("VALIDATION_H_SHA", ""),
               "target_sha": os.environ.get("VALIDATION_T_SHA", ""),
+              "target_tree": os.environ.get("VALIDATION_T_TREE", ""),
+              "target_parent": os.environ.get("VALIDATION_T_PARENT", ""),
               "base_sha": os.environ.get("VALIDATION_B_SHA", ""),
+              "base_tree": os.environ.get("VALIDATION_B_TREE", ""),
               "run_id": os.environ.get("GITHUB_RUN_ID", ""),
               "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", ""),
-              "lock_present": exists,
-              "lock_sha256": hashlib.sha256(lock.read_bytes()).hexdigest() if exists else "",
+              "rust_toolchain": "1.95.0",
+              "resolved_cargo_lock_sha256": checked_lock,
+              "cargo_lock_unchanged_after_policy_and_generation": lock_unchanged,
+              "files": files,
           }
-          Path("validation-target/module-lock-result.json").write_text(
+          root.mkdir(exist_ok=True)
+          (root / "generated-files-result.json").write_text(
               json.dumps(receipt, indent=2) + "\n", encoding="utf-8"
           )
+          print(json.dumps({"status": receipt["status"], "outcomes": outcomes, "cargo_lock_unchanged": lock_unchanged}))
           PY
 
-      - name: Upload exact MODULE.bazel.lock and identity receipt
+      - name: Upload only generated files and identity receipt
         if: ${{ always() }}
         uses: actions/upload-artifact@v7
         with:
-          name: keyring-module-lock-${{ github.run_id }}-${{ github.run_attempt }}
+          name: candidate-generated-files-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
+            validation-target/codex-rs/Cargo.lock
             validation-target/MODULE.bazel.lock
-            validation-target/module-lock-result.json
+            validation-target/codex-rs/core/config.schema.json
+            validation-target/generated-files-result.json
           if-no-files-found: error
           retention-days: 3
 
-      - name: Preserve failed lock generation or check status
-        if: ${{ steps.module_lock_update.outcome != 'success' || steps.module_lock_check.outcome != 'success' }}
+      - name: Preserve any failed or changed-lock result
+        if: ${{ always() }}
         shell: bash
-        run: exit 1
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          receipt = json.loads(Path("validation-target/generated-files-result.json").read_text(encoding="utf-8"))
+          if receipt.get("status") != "success":
+              raise SystemExit(1)
+          PY
