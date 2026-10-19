@@ -51,7 +51,7 @@ use rmcp::model::ListToolsResult;
 use rmcp::model::MetaObject;
 use rmcp::model::PrimitiveSchemaDefinition;
 use rmcp::model::ServerCapabilities;
-use rmcp::model::ServerInfo;
+use rmcp::model::ServerConfig;
 use rmcp::model::Tool;
 use rmcp::model::ToolAnnotations;
 use rmcp::service::RequestContext;
@@ -583,8 +583,8 @@ async fn mcp_tool_call_completion_notification_contains_truncated_large_result()
 struct ToolAppsMcpServer;
 
 impl ServerHandler for ToolAppsMcpServer {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
     }
 
     async fn list_tools(

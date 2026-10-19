@@ -29,7 +29,7 @@ use rmcp::model::ListResourcesResult;
 use rmcp::model::ListToolsResult;
 use rmcp::model::PaginatedRequestParams;
 use rmcp::model::ServerCapabilities;
-use rmcp::model::ServerInfo;
+use rmcp::model::ServerConfig;
 use rmcp::model::Tool;
 use rmcp::model::ToolAnnotations;
 use rmcp::service::RequestContext;
@@ -282,8 +282,8 @@ struct McpStatusServer {
 }
 
 impl ServerHandler for McpStatusServer {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_server_info(
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build()).with_server_info(
             Implementation::new("lookup-server", "1.0.0").with_title("Lookup Server"),
         )
     }
@@ -323,8 +323,8 @@ struct SlowInventoryServer {
 }
 
 impl ServerHandler for SlowInventoryServer {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(
             ServerCapabilities::builder()
                 .enable_tools()
                 .enable_resources()

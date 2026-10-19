@@ -36,6 +36,18 @@ handshakes for supported, newer, and unknown revisions;
 integration tests preserve complete legacy JSON responses.
 Installed-host first use is a separate acceptance step after protected delivery.
 
+## MCP per-server protocol selection
+
+`codex.rmcp-client-transport` covers the real Streamable HTTP lifecycle: a
+server configured for `2026-07-28` sends `server/discover`, selects the current
+protocol header on `tools/list`, and sends no legacy session ID. Config tests
+cover the global `features.mcp_2026_07_28` fallback, explicit per-server
+current/legacy overrides, serialization, and rejection of the HTTP-only field
+on stdio. The current mode may fall back to legacy when discovery identifies a
+legacy peer; installed configuration therefore does not prove the negotiated
+wire lifecycle. Source and hosted checks must pass before configuring a live
+server, and natural first use must verify the actual request path.
+
 ## Core default path
 
 Exact-target V2 `wait_agent` ignores queue-only (`trigger_turn=false`) mailbox

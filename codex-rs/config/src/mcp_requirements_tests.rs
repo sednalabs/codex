@@ -13,6 +13,7 @@ fn stdio_server(command: &str, args: &[&str]) -> McpServerConfig {
             env_vars: Vec::new(),
             cwd: None,
         },
+        protocol_mode: None,
         environment_id: crate::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
         enabled: true,
         required: false,

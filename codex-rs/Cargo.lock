@@ -11239,9 +11239,9 @@ dependencies = [
 
 [[package]]
 name = "process-wrap"
-version = "9.1.0"
+version = "10.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e842efad9119158434d193c6682e2ebee4b44d6ad801d7b349623b3f57cdf55"
+checksum = "1f21b97672d2dc848e7b25701ab4535618b92f4861c13cc3f7f7bed52ad3c8da"
 dependencies = [
  "futures",
  "indexmap 2.14.0",
@@ -12334,9 +12334,8 @@ dependencies = [
 
 [[package]]
 name = "rmcp"
-version = "3.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "42b6914fac0be956fe704a38239c3f44a9f841d1b06a5713d2f638065593f5b5"
+version = "3.5.1"
+source = "git+https://github.com/modelcontextprotocol/rust-sdk?rev=98a54789b80110ad210495c4ad845c89e1980471#98a54789b80110ad210495c4ad845c89e1980471"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -12347,6 +12346,7 @@ dependencies = [
  "http-body 1.1.0",
  "http-body-util",
  "indexmap 2.14.0",
+ "libc",
  "oauth2",
  "pastey",
  "pin-project-lite",
@@ -12370,9 +12370,8 @@ dependencies = [
 
 [[package]]
 name = "rmcp-macros"
-version = "3.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d2ee366004e5f87c103be91c6c09337811517ae8d2f919ece9da7c21444b85c5"
+version = "3.5.1"
+source = "git+https://github.com/modelcontextprotocol/rust-sdk?rev=98a54789b80110ad210495c4ad845c89e1980471#98a54789b80110ad210495c4ad845c89e1980471"
 dependencies = [
  "darling 0.24.1",
  "proc-macro2",

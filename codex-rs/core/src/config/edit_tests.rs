@@ -1,6 +1,7 @@
 use super::*;
 use codex_config::types::AppToolApproval;
 use codex_config::types::McpServerOAuthConfig;
+use codex_config::types::McpServerProtocolMode;
 use codex_config::types::McpServerToolConfig;
 use codex_config::types::McpServerTransportConfig;
 use codex_config::types::SessionPickerViewMode;
@@ -865,7 +866,7 @@ existing = "value"
 }
 
 #[test]
-fn blocking_replace_mcp_servers_round_trips() {
+fn blocking_replace_mcp_servers_round_trips_with_protocol_mode() {
     let tmp = tempdir().expect("tmpdir");
     let codex_home = tmp.path();
 
@@ -888,6 +889,7 @@ fn blocking_replace_mcp_servers_round_trips() {
                 env_vars: vec!["FOO".into()],
                 cwd: None,
             },
+            protocol_mode: None,
             environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
             enabled: true,
             required: false,
@@ -923,6 +925,7 @@ fn blocking_replace_mcp_servers_round_trips() {
                 ),
                 env_http_headers: None,
             },
+            protocol_mode: Some(McpServerProtocolMode::V20260728),
             environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
             enabled: false,
             required: false,
@@ -957,6 +960,7 @@ fn blocking_replace_mcp_servers_round_trips() {
 [mcp_servers.http]
 url = \"https://example.com\"
 bearer_token_env_var = \"TOKEN\"
+protocol_mode = \"2026-07-28\"
 enabled = false
 startup_timeout_sec = 5.0
 disabled_tools = [\"forbidden\"]
@@ -999,6 +1003,7 @@ fn blocking_replace_mcp_servers_serializes_tool_approval_overrides() {
                 env_vars: Vec::new(),
                 cwd: None,
             },
+            protocol_mode: None,
             environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
             enabled: true,
             required: false,
@@ -1064,6 +1069,7 @@ foo = { command = "cmd" }
                 env_vars: Vec::new(),
                 cwd: None,
             },
+            protocol_mode: None,
             environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
             enabled: true,
             required: false,
@@ -1119,6 +1125,7 @@ foo = { command = "cmd" } # keep me
                 env_vars: Vec::new(),
                 cwd: None,
             },
+            protocol_mode: None,
             environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
             enabled: false,
             required: false,
@@ -1173,6 +1180,7 @@ foo = { command = "cmd", args = ["--flag"] } # keep me
                 env_vars: Vec::new(),
                 cwd: None,
             },
+            protocol_mode: None,
             environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
             enabled: true,
             required: false,
@@ -1228,6 +1236,7 @@ foo = { command = "cmd" }
                 env_vars: Vec::new(),
                 cwd: None,
             },
+            protocol_mode: None,
             environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
             enabled: false,
             required: false,

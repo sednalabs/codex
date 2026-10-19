@@ -30,6 +30,41 @@ fn deserialize_stdio_command_server_config() {
 }
 
 #[test]
+fn deserialize_http_server_protocol_mode_and_round_trip() {
+    let config: McpServerConfig = toml::from_str(
+        r#"
+            url = "https://example.test/mcp"
+            protocol_mode = "2026-07-28"
+        "#,
+    )
+    .expect("should deserialize the per-server protocol mode");
+
+    assert_eq!(config.protocol_mode, Some(McpServerProtocolMode::V20260728));
+    let serialized = toml::to_string(&config).expect("should serialize MCP server config");
+    assert!(serialized.contains("protocol_mode = \"2026-07-28\""));
+    let round_tripped: McpServerConfig =
+        toml::from_str(&serialized).expect("should deserialize serialized MCP config");
+    assert_eq!(round_tripped, config);
+}
+
+#[test]
+fn stdio_server_rejects_protocol_mode() {
+    let error = toml::from_str::<McpServerConfig>(
+        r#"
+            command = "echo"
+            protocol_mode = "2026-07-28"
+        "#,
+    )
+    .expect_err("stdio servers do not support an HTTP protocol mode");
+
+    assert!(
+        error
+            .to_string()
+            .contains("protocol_mode is not supported for stdio")
+    );
+}
+
+#[test]
 fn deserialize_stdio_command_server_config_with_args() {
     let cfg: McpServerConfig = toml::from_str(
         r#"
@@ -434,6 +469,7 @@ fn deserialize_ignores_unknown_server_fields() {
                 env_vars: Vec::new(),
                 cwd: None,
             },
+            protocol_mode: None,
             environment_id: crate::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
             enabled: true,
             required: false,

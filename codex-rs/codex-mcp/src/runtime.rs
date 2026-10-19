@@ -452,6 +452,7 @@ mod tests {
                 env_vars: Vec::new(),
                 cwd: None,
             },
+            protocol_mode: None,
             environment_id: environment_id.to_string(),
             enabled: true,
             required: false,
@@ -497,6 +498,7 @@ mod tests {
                 http_headers: None,
                 env_http_headers: None,
             },
+            protocol_mode: None,
             environment_id: environment_id.to_string(),
             ..stdio_server(environment_id)
         }

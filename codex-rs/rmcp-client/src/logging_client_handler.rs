@@ -5,7 +5,7 @@ use std::sync::atomic::Ordering;
 use rmcp::ClientHandler;
 use rmcp::RoleClient;
 use rmcp::model::CancelledNotificationParam;
-use rmcp::model::ClientInfo;
+use rmcp::model::ClientConfig;
 use rmcp::model::ElicitRequestParams;
 use rmcp::model::ElicitResult;
 #[expect(
@@ -32,7 +32,7 @@ use crate::rmcp_client::SendElicitation;
 
 #[derive(Clone)]
 pub(crate) struct LoggingClientHandler {
-    client_info: ClientInfo,
+    client_info: ClientConfig,
     send_elicitation: Arc<SendElicitation>,
     tool_list_generation: Arc<AtomicUsize>,
     protected_output: bool,
@@ -40,7 +40,7 @@ pub(crate) struct LoggingClientHandler {
 
 impl LoggingClientHandler {
     pub(crate) fn new(
-        client_info: ClientInfo,
+        client_info: ClientConfig,
         send_elicitation: SendElicitation,
         tool_list_generation: Arc<AtomicUsize>,
         protected_output: bool,
@@ -128,7 +128,7 @@ impl ClientHandler for LoggingClientHandler {
         info!("MCP server prompt list changed");
     }
 
-    fn get_info(&self) -> ClientInfo {
+    fn get_info(&self) -> ClientConfig {
         self.client_info.clone()
     }
 

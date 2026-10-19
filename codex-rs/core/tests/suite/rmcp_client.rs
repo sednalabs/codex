@@ -331,6 +331,7 @@ fn insert_mcp_server(
         McpServerConfig {
             transport,
             auth: options.auth,
+            protocol_mode: None,
             environment_id: options.environment_id,
             enabled: true,
             required: false,

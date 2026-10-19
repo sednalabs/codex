@@ -44,9 +44,9 @@ use rmcp::model::RequestId;
 use rmcp::model::RequestParamsMeta;
 use rmcp::model::ServerResult;
 use rmcp::model::Tool;
+use rmcp::service::ClientServiceExt;
 use rmcp::service::RoleClient;
 use rmcp::service::RunningService;
-use rmcp::service::{self};
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::auth::AuthClient;
 use rmcp::transport::auth::AuthError;
@@ -74,6 +74,7 @@ use crate::oauth::StoredOAuthTokens;
 use crate::oauth::resolve_oauth_tokens_from_store_policy;
 use crate::oauth_http_client::OAuthHttpClientAdapter;
 use crate::oauth_metadata::discover_metadata;
+use crate::protocol_mode::McpProtocolMode;
 use crate::request_cancellation_guard::RequestCancellationGuard;
 use crate::stdio_server_launcher::StdioServerCommand;
 use crate::stdio_server_launcher::StdioServerLauncher;
@@ -438,6 +439,7 @@ pub struct RmcpClient {
     state: Mutex<ClientState>,
     stdio_process: Option<StdioServerProcessHandle>,
     transport_recipe: TransportRecipe,
+    protocol_mode: McpProtocolMode,
     initialize_context: Mutex<Option<InitializeContext>>,
     session_recovery_lock: Semaphore,
     elicitation_pause_state: ElicitationPauseState,
@@ -460,6 +462,7 @@ impl RmcpClient {
             }),
             stdio_process: None,
             transport_recipe,
+            protocol_mode: McpProtocolMode::Legacy,
             initialize_context: Mutex::new(None),
             session_recovery_lock: Semaphore::new(/*permits*/ 1),
             elicitation_pause_state: ElicitationPauseState::new(),
@@ -496,6 +499,7 @@ impl RmcpClient {
             }),
             stdio_process,
             transport_recipe,
+            protocol_mode: McpProtocolMode::Legacy,
             initialize_context: Mutex::new(None),
             session_recovery_lock: Semaphore::new(/*permits*/ 1),
             elicitation_pause_state: ElicitationPauseState::new(),
@@ -515,6 +519,34 @@ impl RmcpClient {
         keyring_backend_kind: AuthKeyringBackendKind,
         http_client: Arc<dyn HttpClient>,
         auth_provider: Option<SharedAuthProvider>,
+    ) -> Result<Self> {
+        Self::new_streamable_http_client_with_protocol_mode(
+            server_name,
+            url,
+            bearer_token,
+            http_headers,
+            env_http_headers,
+            store_mode,
+            keyring_backend_kind,
+            http_client,
+            auth_provider,
+            McpProtocolMode::Legacy,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn new_streamable_http_client_with_protocol_mode(
+        server_name: &str,
+        url: &str,
+        bearer_token: Option<String>,
+        http_headers: Option<HashMap<String, String>>,
+        env_http_headers: Option<HashMap<String, String>>,
+        store_mode: OAuthCredentialsStoreMode,
+        keyring_backend_kind: AuthKeyringBackendKind,
+        http_client: Arc<dyn HttpClient>,
+        auth_provider: Option<SharedAuthProvider>,
+        protocol_mode: McpProtocolMode,
     ) -> Result<Self> {
         let transport_recipe = TransportRecipe::StreamableHttp {
             server_name: server_name.to_string(),
@@ -536,6 +568,7 @@ impl RmcpClient {
             }),
             stdio_process: None,
             transport_recipe,
+            protocol_mode,
             initialize_context: Mutex::new(None),
             session_recovery_lock: Semaphore::new(/*permits*/ 1),
             elicitation_pause_state: ElicitationPauseState::new(),
@@ -550,6 +583,25 @@ impl RmcpClient {
         store_mode: OAuthCredentialsStoreMode,
         keyring_backend_kind: AuthKeyringBackendKind,
         http_client: Arc<dyn HttpClient>,
+    ) -> Result<Self> {
+        Self::new_protected_streamable_http_client_with_protocol_mode(
+            server_name,
+            url,
+            store_mode,
+            keyring_backend_kind,
+            http_client,
+            McpProtocolMode::Legacy,
+        )
+        .await
+    }
+
+    pub async fn new_protected_streamable_http_client_with_protocol_mode(
+        server_name: &str,
+        url: &str,
+        store_mode: OAuthCredentialsStoreMode,
+        keyring_backend_kind: AuthKeyringBackendKind,
+        http_client: Arc<dyn HttpClient>,
+        protocol_mode: McpProtocolMode,
     ) -> Result<Self> {
         let transport_recipe = TransportRecipe::StreamableHttp {
             server_name: server_name.to_string(),
@@ -571,6 +623,7 @@ impl RmcpClient {
             }),
             stdio_process: None,
             transport_recipe,
+            protocol_mode,
             initialize_context: Mutex::new(None),
             session_recovery_lock: Semaphore::new(/*permits*/ 1),
             elicitation_pause_state: ElicitationPauseState::new(),
@@ -614,6 +667,7 @@ impl RmcpClient {
                 pending_transport,
                 client_service.clone(),
                 timeout,
+                self.protocol_mode,
             )
             .await?;
 
@@ -1167,29 +1221,39 @@ impl RmcpClient {
         pending_transport: PendingTransport,
         client_service: ElicitationClientService,
         timeout: Option<Duration>,
+        protocol_mode: McpProtocolMode,
     ) -> Result<(
         Arc<RunningService<RoleClient, ElicitationClientService>>,
         Option<OAuthPersistor>,
     )> {
         let deadline = timeout.map(|duration| Instant::now() + duration);
+        let lifecycle = protocol_mode.client_lifecycle();
         let (transport, oauth_persistor) = match pending_transport {
             PendingTransport::InProcess { transport } => (
-                service::serve_client(client_service, transport).boxed(),
+                client_service
+                    .serve_with_lifecycle(transport, lifecycle.clone())
+                    .boxed(),
                 None,
             ),
             PendingTransport::Stdio { transport } => (
-                service::serve_client(client_service, *transport).boxed(),
+                client_service
+                    .serve_with_lifecycle(*transport, lifecycle.clone())
+                    .boxed(),
                 None,
             ),
             PendingTransport::StreamableHttp { transport } => (
-                service::serve_client(client_service, transport).boxed(),
+                client_service
+                    .serve_with_lifecycle(transport, lifecycle.clone())
+                    .boxed(),
                 None,
             ),
             PendingTransport::StreamableHttpWithOAuth {
                 transport,
                 oauth_persistor,
             } => (
-                service::serve_client(client_service, transport).boxed(),
+                client_service
+                    .serve_with_lifecycle(transport, lifecycle)
+                    .boxed(),
                 Some(oauth_persistor),
             ),
         };
@@ -1501,6 +1565,7 @@ impl RmcpClient {
                 pending_transport,
                 initialize_context.client_service,
                 initialize_context.timeout,
+                self.protocol_mode,
             )
             .await?;
 
