@@ -226,6 +226,7 @@ async fn thread_spawn_goal_continuation_precedes_parent_handback() -> Result<()>
 
     let (continuation_release_tx, continuation_release_rx) = oneshot::channel();
     let mut continuation_release_tx = Some(continuation_release_tx);
+    let (parent_followup_matched_tx, mut parent_followup_matched_rx) = oneshot::channel();
     let (continuation_matched_tx, continuation_matched_rx) = oneshot::channel();
     let continuation_route = StreamingSseRequestRoute::new(
         |request| {
@@ -283,22 +284,25 @@ async fn thread_spawn_goal_continuation_precedes_parent_handback() -> Result<()>
                 responses::ev_completed("parent-spawn"),
             ],
         ),
-        route(
+        StreamingSseRequestRoute::new(
             |request| {
-                request_contains(request, SPAWN_CALL_ID)
-                    && !request_contains(request, WAIT_CALL_ID)
+                request_contains(request, SPAWN_CALL_ID) && !request_contains(request, WAIT_CALL_ID)
             },
-            vec![
-                responses::ev_response_created("parent-wait"),
-                responses::ev_function_call_with_namespace(
-                    WAIT_CALL_ID,
-                    "collaboration",
-                    "wait_agent",
-                    r#"{"timeout_ms":60000}"#,
-                ),
-                responses::ev_completed("parent-wait"),
-            ],
-        ),
+            vec![StreamingSseChunk {
+                gate: None,
+                body: responses::sse(vec![
+                    responses::ev_response_created("parent-wait"),
+                    responses::ev_function_call_with_namespace(
+                        WAIT_CALL_ID,
+                        "collaboration",
+                        "wait_agent",
+                        r#"{"timeout_ms":60000}"#,
+                    ),
+                    responses::ev_completed("parent-wait"),
+                ]),
+            }],
+        )
+        .with_request_matched(parent_followup_matched_tx),
         route(
             |request| request_contains(request, WAIT_CALL_ID),
             vec![
@@ -402,11 +406,28 @@ async fn thread_spawn_goal_continuation_precedes_parent_handback() -> Result<()>
 
     let mut notifications = Vec::new();
     let mut spawn_child_thread_id = None;
+    let mut parent_followup_matched = false;
     let mut parent_wait_started = false;
+    let mut child_continuation_started = false;
     let mut started_turns = Vec::<TurnStartedNotification>::new();
-    timeout(READ_TIMEOUT, async {
+    let pre_observation = timeout(READ_TIMEOUT, async {
         loop {
-            let message = mcp.read_next_message().await?;
+            let message = tokio::select! {
+                message = mcp.read_next_message() => message?,
+                matched = &mut parent_followup_matched_rx, if !parent_followup_matched => {
+                    let request = matched
+                        .map_err(|_| anyhow::anyhow!("parent follow-up route match sender closed"))?;
+                    let request: serde_json::Value = serde_json::from_slice(&request)
+                        .map_err(|_| anyhow::anyhow!("parent follow-up request was not valid JSON"))?;
+                    assert!(
+                        request["client_metadata"]["thread_id"] == json!(thread.id)
+                            && request["client_metadata"]["turn_id"] == json!(parent_turn.turn.id),
+                        "parent follow-up request metadata did not match the parent turn"
+                    );
+                    parent_followup_matched = true;
+                    continue;
+                }
+            };
             let JSONRPCMessage::Notification(notification) = message else {
                 continue;
             };
@@ -463,17 +484,27 @@ async fn thread_spawn_goal_continuation_precedes_parent_handback() -> Result<()>
             notifications.push(notification);
 
             if let Some(child_thread_id) = spawn_child_thread_id.as_deref() {
-                let child_turn_count = started_turns
+                child_continuation_started = started_turns
                     .iter()
                     .filter(|started| started.thread_id == child_thread_id)
-                    .count();
-                if parent_wait_started && child_turn_count >= 2 {
+                    .count()
+                    >= 2;
+                if parent_followup_matched
+                    && parent_wait_started
+                    && child_continuation_started
+                {
                     return Ok::<(), anyhow::Error>(());
                 }
             }
         }
     })
-    .await??;
+    .await;
+    if pre_observation.is_err() {
+        return Err(anyhow::anyhow!(
+            "pre-observation timed out: parent_followup_matched={parent_followup_matched}, parent_wait_started={parent_wait_started}, child_continuation_started={child_continuation_started}"
+        ));
+    }
+    pre_observation.expect("pre-observation timeout was checked")?;
 
     let child_thread_id = spawn_child_thread_id.expect("spawned child thread id");
     let child_turns = started_turns
