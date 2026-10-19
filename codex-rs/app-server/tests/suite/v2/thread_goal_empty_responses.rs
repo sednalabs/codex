@@ -410,24 +410,9 @@ async fn thread_spawn_goal_continuation_precedes_parent_handback() -> Result<()>
     let mut parent_wait_started = false;
     let mut child_continuation_started = false;
     let mut started_turns = Vec::<TurnStartedNotification>::new();
-    let pre_observation = timeout(READ_TIMEOUT, async {
+    let event_observer = async {
         loop {
-            let message = tokio::select! {
-                message = mcp.read_next_message() => message?,
-                matched = &mut parent_followup_matched_rx, if !parent_followup_matched => {
-                    let request = matched
-                        .map_err(|_| anyhow::anyhow!("parent follow-up route match sender closed"))?;
-                    let request: serde_json::Value = serde_json::from_slice(&request)
-                        .map_err(|_| anyhow::anyhow!("parent follow-up request was not valid JSON"))?;
-                    assert!(
-                        request["client_metadata"]["thread_id"] == json!(thread.id)
-                            && request["client_metadata"]["turn_id"] == json!(parent_turn.turn.id),
-                        "parent follow-up request metadata did not match the parent turn"
-                    );
-                    parent_followup_matched = true;
-                    continue;
-                }
-            };
+            let message = mcp.read_next_message().await?;
             let JSONRPCMessage::Notification(notification) = message else {
                 continue;
             };
@@ -489,14 +474,28 @@ async fn thread_spawn_goal_continuation_precedes_parent_handback() -> Result<()>
                     .filter(|started| started.thread_id == child_thread_id)
                     .count()
                     >= 2;
-                if parent_followup_matched
-                    && parent_wait_started
-                    && child_continuation_started
-                {
+                if parent_wait_started && child_continuation_started {
                     return Ok::<(), anyhow::Error>(());
                 }
             }
         }
+    };
+    let parent_route_observer = async {
+        let request = parent_followup_matched_rx
+            .await
+            .map_err(|_| anyhow::anyhow!("parent follow-up route match sender closed"))?;
+        let request: serde_json::Value = serde_json::from_slice(&request)
+            .map_err(|_| anyhow::anyhow!("parent follow-up request was not valid JSON"))?;
+        assert!(
+            request["client_metadata"]["thread_id"] == json!(thread.id)
+                && request["client_metadata"]["turn_id"] == json!(parent_turn.turn.id),
+            "parent follow-up request metadata did not match the parent turn"
+        );
+        parent_followup_matched = true;
+        Ok::<(), anyhow::Error>(())
+    };
+    let pre_observation = timeout(READ_TIMEOUT, async {
+        tokio::try_join!(event_observer, parent_route_observer).map(|_| ())
     })
     .await;
     if pre_observation.is_err() {
