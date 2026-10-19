@@ -640,11 +640,20 @@ jobs:
         shell: bash
         run: just bazel-lock-update
 
-      - name: Record truthful lock-generation identity and status
+      - name: Verify generated MODULE.bazel.lock in check mode
+        id: module_lock_check
+        if: ${{ steps.module_lock_update.outcome == 'success' }}
+        continue-on-error: true
+        working-directory: validation-target
+        shell: bash
+        run: just bazel-lock-check
+
+      - name: Record truthful lock update and check identity and status
         if: ${{ always() }}
         shell: bash
         env:
           UPDATE_OUTCOME: ${{ steps.module_lock_update.outcome }}
+          CHECK_OUTCOME: ${{ steps.module_lock_check.outcome }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -655,10 +664,13 @@ jobs:
 
           lock = Path("validation-target/MODULE.bazel.lock")
           exists = lock.is_file()
-          outcome = os.environ.get("UPDATE_OUTCOME", "unknown")
+          update_outcome = os.environ.get("UPDATE_OUTCOME", "unknown")
+          check_outcome = os.environ.get("CHECK_OUTCOME", "unknown")
           receipt = {
               "schema_version": "candidate-module-lock-v1",
-              "status": "success" if outcome == "success" and exists else "failure",
+              "status": "success" if update_outcome == "success" and check_outcome == "success" and exists else "failure",
+              "lock_update_outcome": update_outcome,
+              "lock_check_outcome": check_outcome,
               "workflow_host_sha": os.environ.get("VALIDATION_H_SHA", ""),
               "target_sha": os.environ.get("VALIDATION_T_SHA", ""),
               "base_sha": os.environ.get("VALIDATION_B_SHA", ""),
@@ -683,7 +695,7 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
-      - name: Preserve failed lock-generation status
-        if: ${{ steps.module_lock_update.outcome != 'success' }}
+      - name: Preserve failed lock generation or check status
+        if: ${{ steps.module_lock_update.outcome != 'success' || steps.module_lock_check.outcome != 'success' }}
         shell: bash
         run: exit 1
