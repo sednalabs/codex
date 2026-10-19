@@ -423,11 +423,11 @@ jobs:
           printf 'CARGO_BIN_EXE_codex-code-mode-host=%s\n' "${code_mode_host_binary}" >> "${GITHUB_ENV}"
 
       - name: Install the existing pinned DotSlash runtime for the fixed GNU diagnostic
-        if: ${{ inputs.target_sha == '5ce366827134b414353c552e848da94ded35eda9' && inputs.profile == 'rust_integration' && fromJSON(inputs.request_json).package == 'codex-core' }}
+        if: ${{ inputs.target_sha == '56643035f9403aa59b140f394f2ac5bdbac3d4f1' && inputs.profile == 'rust_integration' && fromJSON(inputs.request_json).package == 'codex-core' }}
         uses: facebook/install-dotslash@1e4e7b3e07eaca387acb98f1d4720e0bee8dbb6a # v2
 
       - name: Prepare the fixed GNU zsh diagnostic without accepting a fixture skip
-        if: ${{ inputs.target_sha == '5ce366827134b414353c552e848da94ded35eda9' && inputs.profile == 'rust_integration' && fromJSON(inputs.request_json).package == 'codex-core' }}
+        if: ${{ inputs.target_sha == '56643035f9403aa59b140f394f2ac5bdbac3d4f1' && inputs.profile == 'rust_integration' && fromJSON(inputs.request_json).package == 'codex-core' }}
         working-directory: validation-target/codex-rs
         shell: bash
         env:
