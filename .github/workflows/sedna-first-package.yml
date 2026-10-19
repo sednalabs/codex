@@ -493,12 +493,12 @@ jobs:
     needs: identity
     runs-on: ubuntu-24.04
     steps:
-      - name: Report missing package inputs without claiming artifact proof
+      - name: Report package ineligibility without claiming artifact proof
         env:
           SOURCE_SHA: ${{ needs.identity.outputs.source_sha }}
         run: |
-          echo "Package preparation and package consumption are skipped for ${SOURCE_SHA}."
-          echo "The identity job listed the missing assembler/smoke-test inputs; this is not package or consumer acceptance."
+          echo "Package build and package consumption are skipped for ${SOURCE_SHA}."
+          echo "The identity job records why this source is not package-eligible; this is not package or consumer acceptance."
 
   build-package:
     name: Build exact Linux package pair (${{ matrix.target }})
