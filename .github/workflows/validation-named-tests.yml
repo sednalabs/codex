@@ -455,12 +455,12 @@ jobs:
               expected_base_depth=2
               ;;
             mailbox_events)
-              expected_base="6496a38e73c849bb9d882c1474b0b59b9f1f6e1a"
-              expected_host_ref="refs/heads/validation/host-windows-events-256e15f9"
-              expected_target="256e15f97a561628fff7f93fb099a3cb2a727827"
-              expected_tree="2db702b26e472502b5667a8c1f5e18d4b5c3a347"
-              expected_parent="6496a38e73c849bb9d882c1474b0b59b9f1f6e1a"
-              expected_base_depth=1
+              expected_base="6ef37e21c5b5db2050e0aa5d9543b27d3de8f23d"
+              expected_host_ref="refs/heads/validation/host-windows-events-79b1e55d"
+              expected_target="79b1e55df7d263d79bea0f4a3d1a30c894037634"
+              expected_tree="22abb3d5d1a427fd924f33d7a52bf444f2374a42"
+              expected_parent="74463dc3f407ab5a8a1c9fb821274ba2b57a9021"
+              expected_base_depth=2
               ;;
             *)
               echo "Windows receiver validation mode is unsupported." >&2
