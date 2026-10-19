@@ -3402,17 +3402,11 @@ async fn azure_responses_request_does_not_store_and_preserves_prefixed_item_ids(
         }))
         .expect("persisted mailbox communication should deserialize");
     let retained_communication_id = retained_communication.id.clone();
-    let queued_op = Op::InterAgentCommunication {
-        communication: retained_communication,
-        start_options: Default::default(),
-    };
-    let round_tripped_op: Op = serde_json::from_value(
-        serde_json::to_value(queued_op).expect("queued communication should serialize"),
+    let communication: codex_protocol::protocol::InterAgentCommunication = serde_json::from_value(
+        serde_json::to_value(retained_communication)
+            .expect("retained communication should serialize"),
     )
-    .expect("queued communication should deserialize");
-    let Op::InterAgentCommunication { communication, .. } = round_tripped_op else {
-        panic!("round-tripped operation should remain an inter-agent communication");
-    };
+    .expect("retained communication should deserialize");
     prompt.input.push(communication.to_model_input_item());
     prompt.input.push(
         serde_json::from_value(json!({
