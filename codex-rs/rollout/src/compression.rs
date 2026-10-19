@@ -131,7 +131,8 @@ pub(crate) fn materialize_rollout_for_append_blocking(path: &Path) -> io::Result
         metrics::materialize("missing");
         return Ok(plain_path);
     }
-    let guard = crate::writer_lock::PhysicalRolloutGuard::acquire(path, false)?;
+    let guard =
+        crate::writer_lock::PhysicalRolloutGuard::acquire(path, /*create_parent*/ false)?;
     materialize_rollout_with_guard(&guard)?;
     materialized_path_for_caller(&plain_path, &guard)
 }
@@ -977,7 +978,9 @@ mod worker {
         };
         // The logical home lock is intentionally preserved. This second, physical
         // path fence also excludes writers/materializers from other homes and aliases.
-        let _physical_guard = match crate::writer_lock::PhysicalRolloutGuard::acquire(path, false) {
+        let _physical_guard = match crate::writer_lock::PhysicalRolloutGuard::acquire(
+            path, /*create_parent*/ false,
+        ) {
             Ok(guard) => guard,
             Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
                 return Ok(CompressionMeasurement::new(

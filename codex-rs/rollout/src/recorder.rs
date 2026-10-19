@@ -1907,7 +1907,9 @@ impl RolloutWriterState {
             let _writer_lock = writer_lock;
             let physical_lock = match physical_lock {
                 Some(guard) => guard,
-                None => Arc::new(PhysicalRolloutGuard::acquire(&path, true)?),
+                None => Arc::new(PhysicalRolloutGuard::acquire(
+                    &path, /*create_parent*/ true,
+                )?),
             };
             let file = open_log_file(&physical_lock, initial_open)?;
             Ok::<_, IoError>((file, physical_lock))
@@ -2109,7 +2111,9 @@ async fn open_rollout_for_append(
     tokio::task::spawn_blocking(move || {
         let _writer_lock = writer_lock;
         let plain_path = compression::plain_rollout_path(&path);
-        let physical_lock = Arc::new(PhysicalRolloutGuard::acquire(&path, false)?);
+        let physical_lock = Arc::new(PhysicalRolloutGuard::acquire(
+            &path, /*create_parent*/ false,
+        )?);
         let refresh_modified_time = !physical_lock.path().try_exists()?;
         compression::materialize_rollout_with_guard(&physical_lock)?;
         // Resume must not create a missing rollout.

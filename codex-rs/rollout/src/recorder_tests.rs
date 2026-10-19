@@ -147,11 +147,12 @@ fn write_session_file(root: &Path, ts: &str, uuid: Uuid) -> std::io::Result<Path
 fn append_repair_terminates_nonempty_rollout_tail() -> std::io::Result<()> {
     let home = TempDir::new().expect("temp dir");
     let rollout_path = home.path().join("rollout.jsonl");
-    let bytes = serialize_rollout_item(&agent_message_item("complete tail"), None)?;
+    let bytes =
+        serialize_rollout_item(&agent_message_item("complete tail"), /*ordinal*/ None)?;
     fs::write(&rollout_path, &bytes[..bytes.len() - 1])?;
-    let guard = PhysicalRolloutGuard::acquire(&rollout_path, false)?;
-    drop(open_log_file(&guard, true)?);
-    drop(open_log_file(&guard, true)?);
+    let guard = PhysicalRolloutGuard::acquire(&rollout_path, /*create_parent*/ false)?;
+    drop(open_log_file(&guard, /*initial_open*/ true)?);
+    drop(open_log_file(&guard, /*initial_open*/ true)?);
 
     assert_eq!(fs::read(&rollout_path)?, bytes);
     Ok(())
@@ -168,8 +169,8 @@ async fn opening_existing_rollout_preserves_modified_time() -> std::io::Result<(
         .open(&rollout_path)?
         .set_times(std::fs::FileTimes::new().set_modified(modified))?;
 
-    let guard = PhysicalRolloutGuard::acquire(&rollout_path, false)?;
-    drop(open_log_file(&guard, true)?);
+    let guard = PhysicalRolloutGuard::acquire(&rollout_path, /*create_parent*/ false)?;
+    drop(open_log_file(&guard, /*initial_open*/ true)?);
     drop(guard);
     assert_eq!(fs::metadata(&rollout_path)?.modified()?, modified);
 
@@ -1004,7 +1005,7 @@ async fn writer_state_retries_write_error_before_reporting_flush_success() -> st
         }),
         physical_lock: Some(Arc::new(PhysicalRolloutGuard::acquire(
             &rollout_path,
-            false,
+            /*create_parent*/ false,
         )?)),
         writer_lock: None,
         pending_append: None,
@@ -1043,8 +1044,10 @@ async fn writer_state_retains_serialized_meta_and_ordinals_across_real_io_failur
     for flush_error in [false, true] {
         let home = TempDir::new()?;
         let path = home.path().join("rollout.jsonl");
-        let guard = Arc::new(PhysicalRolloutGuard::acquire(&path, true)?);
-        let file = open_log_file(&guard, true)?;
+        let guard = Arc::new(PhysicalRolloutGuard::acquire(
+            &path, /*create_parent*/ true,
+        )?);
+        let file = open_log_file(&guard, /*initial_open*/ true)?;
         let faulty = FaultFile::new(
             file,
             if flush_error { vec![] } else { vec![1025] },
@@ -1071,7 +1074,10 @@ async fn writer_state_retains_serialized_meta_and_ordinals_across_real_io_failur
             meta: Some(meta_line.meta),
             cwd: home.path().to_path_buf(),
             rollout_path: path.clone(),
-            ordinal_state: RolloutOrdinalState::for_new_rollout(ThreadHistoryMode::Paginated, None),
+            ordinal_state: RolloutOrdinalState::for_new_rollout(
+                ThreadHistoryMode::Paginated,
+                /*history_base*/ None,
+            ),
             last_logged_error: None,
         };
         state.flush().await?;
@@ -1106,8 +1112,14 @@ async fn writer_state_worker_panic_retains_checkpoint_and_fails_closed() -> std:
     use crate::append_state::tests::FaultFile;
     let home = TempDir::new()?;
     let path = home.path().join("rollout.jsonl");
-    let guard = Arc::new(PhysicalRolloutGuard::acquire(&path, true)?);
-    let mut faulty = FaultFile::new(open_log_file(&guard, true)?, vec![1025], false);
+    let guard = Arc::new(PhysicalRolloutGuard::acquire(
+        &path, /*create_parent*/ true,
+    )?);
+    let mut faulty = FaultFile::new(
+        open_log_file(&guard, /*initial_open*/ true)?,
+        vec![1025],
+        /*flush_error*/ false,
+    );
     faulty.panic_on_write_error = true;
     let first_bytes = faulty.first_write.clone();
     let mut state = RolloutWriterState {
@@ -1123,7 +1135,10 @@ async fn writer_state_worker_panic_retains_checkpoint_and_fails_closed() -> std:
         meta: None,
         cwd: home.path().to_path_buf(),
         rollout_path: path.clone(),
-        ordinal_state: RolloutOrdinalState::for_new_rollout(ThreadHistoryMode::Paginated, None),
+        ordinal_state: RolloutOrdinalState::for_new_rollout(
+            ThreadHistoryMode::Paginated,
+            /*history_base*/ None,
+        ),
         last_logged_error: None,
     };
     for _ in 0..2 {

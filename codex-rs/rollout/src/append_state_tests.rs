@@ -108,7 +108,11 @@ async fn owned_append_retries_only_suffix_after_repeated_partial_progress() -> i
     })?;
     bytes.push(b'\n');
     let mut pending = PendingAppend::new(bytes.clone());
-    let mut file = FaultFile::new(append_file(&path)?, vec![1025, 2049], false);
+    let mut file = FaultFile::new(
+        append_file(&path)?,
+        vec![1025, 2049],
+        /*flush_error*/ false,
+    );
     for length in [1025, 2049] {
         pending
             .finish(&mut file, &path)
@@ -131,7 +135,7 @@ fn owned_append_acknowledges_full_line_after_flush_error_without_duplication() -
     let path = home.path().join("rollout.jsonl");
     let bytes = b"{\"message\":\"complete\"}\n".to_vec();
     let mut pending = PendingAppend::new(bytes.clone());
-    let mut file = FaultFile::new(append_file(&path)?, vec![], true);
+    let mut file = FaultFile::new(append_file(&path)?, vec![], /*flush_error*/ true);
     pending
         .finish(&mut file, &path)
         .expect_err("flush fails after full write");
@@ -149,7 +153,7 @@ fn owned_append_conflicts_are_sticky_and_never_modify_foreign_bytes() -> io::Res
         fs::write(&path, b"prefix\n")?;
         let bytes = vec![b'x'; 4096];
         let mut pending = PendingAppend::new(bytes.clone());
-        let mut file = FaultFile::new(append_file(&path)?, vec![1025], false);
+        let mut file = FaultFile::new(append_file(&path)?, vec![1025], /*flush_error*/ false);
         pending
             .finish(&mut file, &path)
             .expect_err("partial progress");
