@@ -379,10 +379,36 @@ def load_manifest(path: Path) -> dict:
 
 
 def cargo_manifests() -> list[Path]:
+    excluded_paths = workspace_excluded_paths()
     return sorted(
         path
         for path in CARGO_RS_ROOT.rglob("Cargo.toml")
         if path != CARGO_RS_ROOT / "Cargo.toml"
+        and not is_within_excluded_path(path, excluded_paths)
+    )
+
+
+def workspace_excluded_paths() -> tuple[Path, ...]:
+    """Return paths Cargo excludes from this workspace's package discovery."""
+    workspace = load_manifest(CARGO_RS_ROOT / "Cargo.toml").get("workspace", {})
+    patterns = workspace.get("exclude", []) if isinstance(workspace, dict) else []
+    if not isinstance(patterns, list) or not all(
+        isinstance(pattern, str) for pattern in patterns
+    ):
+        return ()
+
+    return tuple(
+        matched_path.resolve()
+        for pattern in patterns
+        for matched_path in CARGO_RS_ROOT.glob(pattern)
+    )
+
+
+def is_within_excluded_path(path: Path, excluded_paths: tuple[Path, ...]) -> bool:
+    resolved_path = path.resolve()
+    return any(
+        resolved_path == excluded_path or excluded_path in resolved_path.parents
+        for excluded_path in excluded_paths
     )
 
 
