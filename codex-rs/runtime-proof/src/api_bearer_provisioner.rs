@@ -253,7 +253,7 @@ fn cleanup_bearer_source_at(
     let source_file = unsafe { File::from_raw_fd(source_fd) };
     let source_metadata = source_file.metadata()?;
     validate_bearer_file_metadata(&source_metadata, expected_owner, Some(0o600))?;
-    let source_bytes = zeroize::Zeroizing::new(read_bounded(
+    let source_bytes = zeroize::Zeroizing::new(crate::launcher::read_bounded(
         source_file,
         crate::api_claim::API_BEARER_CREDENTIAL_MAX_BYTES,
     )?);
@@ -320,7 +320,7 @@ fn read_loaded_bearer(directory: &Path) -> Result<Option<zeroize::Zeroizing<Vec<
     let file = unsafe { File::from_raw_fd(fd) };
     let metadata = file.metadata()?;
     validate_bearer_file_metadata(&metadata, 0, None)?;
-    Ok(Some(read_bounded(
+    Ok(Some(crate::launcher::read_bounded(
         file,
         crate::api_claim::API_BEARER_CREDENTIAL_MAX_BYTES,
     )?))

@@ -396,7 +396,7 @@ fn access_token_from_response(
     if let Some(scopes) = response.scopes() {
         let granted = scopes
             .iter()
-            .map(|scope| scope.as_ref())
+            .map(std::convert::AsRef::as_ref)
             .collect::<Vec<_>>();
         if granted.len() != requested_scopes.len()
             || requested_scopes

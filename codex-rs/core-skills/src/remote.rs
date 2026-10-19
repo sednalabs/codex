@@ -221,7 +221,10 @@ fn extract_zip_to_dir(
         if file.is_dir() {
             continue;
         }
-        let raw_name = file.name().to_string();
+        let raw_name = file
+            .name()
+            .context("Failed to read zip entry name")?
+            .into_owned();
         let normalized = normalize_zip_name(&raw_name, prefix_candidates);
         let Some(normalized) = normalized else {
             continue;

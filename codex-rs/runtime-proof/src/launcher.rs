@@ -1078,7 +1078,7 @@ fn open_nofollow(path: &Path) -> Result<File> {
         .with_context(|| format!("open fixed protected file {}", path.display()))
 }
 
-fn read_bounded(file: File, max_bytes: usize) -> Result<Zeroizing<Vec<u8>>> {
+pub(crate) fn read_bounded(file: File, max_bytes: usize) -> Result<Zeroizing<Vec<u8>>> {
     let mut bytes = Zeroizing::new(Vec::with_capacity(max_bytes.min(4096)));
     file.take(max_bytes as u64 + 1).read_to_end(&mut bytes)?;
     if bytes.len() > max_bytes {

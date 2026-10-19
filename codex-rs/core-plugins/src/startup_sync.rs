@@ -1077,10 +1077,14 @@ fn extract_zipball_to_dir(bytes: &[u8], destination: &Path) -> Result<(), String
         let mut entry = archive
             .by_index(index)
             .map_err(|err| format!("failed to read curated plugins zip entry: {err}"))?;
+        let entry_name = entry
+            .name()
+            .map_err(|err| format!("failed to read curated plugins zip entry name: {err}"))?
+            .into_owned();
         let Some(relative_path) = entry.enclosed_name() else {
             return Err(format!(
                 "curated plugins zip entry `{}` escapes extraction root",
-                entry.name()
+                entry_name
             ));
         };
 
