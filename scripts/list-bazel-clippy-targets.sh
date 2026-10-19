@@ -23,7 +23,7 @@ done
 # continue with a partial list if `bazel query` fails. Target discovery is
 # local on all platforms.
 query_args=(--output=label)
-if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
+if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 ]]; then
   # Some Windows cross-test dependencies materialize the pinned MSVC runtime
   # even though the requested top-level target uses the GNU ABI.
   query_args+=(--repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1)
