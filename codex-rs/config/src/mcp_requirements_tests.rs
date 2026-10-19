@@ -6,6 +6,7 @@ use std::collections::HashMap;
 
 fn stdio_server(command: &str, args: &[&str]) -> McpServerConfig {
     McpServerConfig {
+        protocol_mode: None,
         auth: Default::default(),
         transport: McpServerTransportConfig::Stdio {
             command: command.to_string(),

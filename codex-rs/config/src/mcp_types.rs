@@ -215,6 +215,22 @@ pub enum McpStartupReadiness {
     Catalog,
 }
 
+/// Per-server MCP lifecycle selection for Streamable HTTP servers.
+///
+/// `V20260728` requests discovery and the current stateless request lifecycle,
+/// with the SDK's documented fallback to legacy initialization when the peer
+/// does not support discovery. It does not prove which lifecycle was negotiated.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum McpServerProtocolMode {
+    /// Use legacy MCP initialization and stateful request semantics.
+    #[serde(rename = "legacy")]
+    Legacy,
+    /// Prefer MCP protocol version 2026-07-28, falling back to legacy when needed.
+    #[serde(rename = "2026-07-28")]
+    V20260728,
+}
+
 fn is_default<T: Default + PartialEq>(value: &T) -> bool {
     value == &T::default()
 }
@@ -223,6 +239,12 @@ fn is_default<T: Default + PartialEq>(value: &T) -> bool {
 pub struct McpServerConfig {
     #[serde(flatten)]
     pub transport: McpServerTransportConfig,
+
+    /// Per-server HTTP lifecycle preference. An explicit extension registration
+    /// retains precedence; when omitted, the applicable host/global preference applies.
+    /// A modern preference may fall back to legacy when discovery is unsupported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_mode: Option<McpServerProtocolMode>,
 
     /// Authentication flow, including an explicit no-fallback EMA mode.
     #[serde(default, skip_serializing_if = "is_default")]
@@ -386,6 +408,11 @@ pub struct RawMcpServerConfig {
     pub bearer_token_env_var: Option<String>,
     pub http_headers_helper: Option<String>,
 
+    /// Per-server Streamable HTTP protocol preference.
+    /// The selected mode does not prove which lifecycle was negotiated.
+    #[serde(default)]
+    pub protocol_mode: Option<McpServerProtocolMode>,
+
     // shared
     #[serde(default)]
     pub environment_id: Option<String>,
@@ -450,6 +477,7 @@ impl TryFrom<RawMcpServerConfig> for McpServerConfig {
             bearer_token,
             bearer_token_env_var,
             http_headers_helper,
+            protocol_mode,
             environment_id,
             auth,
             startup_timeout_sec,
@@ -487,6 +515,7 @@ impl TryFrom<RawMcpServerConfig> for McpServerConfig {
         }
 
         let transport = if let Some(command) = command {
+            throw_if_set("stdio", "protocol_mode", protocol_mode.as_ref())?;
             throw_if_set("stdio", "url", url.as_ref())?;
             throw_if_set(
                 "stdio",
@@ -572,6 +601,7 @@ impl TryFrom<RawMcpServerConfig> for McpServerConfig {
 
         Ok(Self {
             transport,
+            protocol_mode,
             auth,
             environment_id,
             startup_timeout_sec,

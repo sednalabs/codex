@@ -2160,6 +2160,106 @@ async fn hosted_apps_protocol_mode_is_independent_of_generic_mode() -> anyhow::R
 }
 
 #[tokio::test]
+async fn per_server_protocol_mode_overrides_global_and_extension_registration_wins() {
+    let codex_home = tempdir().expect("tempdir");
+
+    for (global_mode, configured_mode, registration_mode, expected_configured_mode) in [
+        (
+            crate::McpProtocolMode::Legacy,
+            codex_config::McpServerProtocolMode::V20260728,
+            crate::McpProtocolMode::Legacy,
+            crate::McpProtocolMode::V20260728,
+        ),
+        (
+            crate::McpProtocolMode::V20260728,
+            codex_config::McpServerProtocolMode::Legacy,
+            crate::McpProtocolMode::V20260728,
+            crate::McpProtocolMode::Legacy,
+        ),
+    ] {
+        let server_config: McpServerConfig = serde_json::from_value(serde_json::json!({
+            "url": "http://127.0.0.1:1/mcp",
+            "protocol_mode": match configured_mode {
+                codex_config::McpServerProtocolMode::Legacy => "legacy",
+                codex_config::McpServerProtocolMode::V20260728 => "2026-07-28",
+            },
+        }))
+        .expect("valid per-server MCP configuration");
+
+        let mut config = crate::mcp::tests::test_mcp_config(codex_home.path().to_path_buf());
+        config.protocol_mode = global_mode;
+        config.host_owned_apps_protocol_mode = global_mode;
+        let mut catalog = crate::ResolvedMcpCatalog::builder();
+        catalog.register(crate::McpServerRegistration::from_config(
+            "configured".to_string(),
+            server_config.clone(),
+        ));
+        catalog.register(
+            crate::McpServerRegistration::from_extension(
+                "extension".to_string(),
+                "test-extension",
+                /*contribution_order*/ 0,
+                server_config.clone(),
+            )
+            .with_protocol_mode(registration_mode),
+        );
+        config.mcp_server_catalog = catalog.build();
+
+        let startup_cancellation_token = CancellationToken::new();
+        startup_cancellation_token.cancel();
+        let manager = McpConnectionSet::new(
+            /*previous*/ None,
+            McpPublicationGate::already_published(),
+            McpRuntimeInput {
+                startup_policy: McpStartupPolicy::Eager,
+                config: Arc::new(config),
+                plugins_available: false,
+                ready_selected_capability_roots: Vec::new(),
+                mcp_servers: HashMap::from([
+                    (
+                        "configured".to_string(),
+                        EffectiveMcpServer::from_host_config(server_config.clone()),
+                    ),
+                    (
+                        "extension".to_string(),
+                        EffectiveMcpServer::from_host_config(server_config),
+                    ),
+                ]),
+                submit_id: "per-server-protocol-mode".to_string(),
+                tx_event: None,
+                startup_cancellation_token,
+                runtime_context: McpRuntimeContext::new(
+                    Arc::new(environment_manager_without_environments()),
+                    codex_home.path().to_path_buf(),
+                ),
+                codex_apps_tools_cache: ConnectorRuntimeManager::default(),
+                tool_catalog_cache: McpToolCatalogCache::default(),
+                codex_apps_tools_cache_key: ConnectorRuntimeContextKey::personal(
+                    /*account_id*/ None, /*chatgpt_user_id*/ None,
+                ),
+                client_mcp_extensions: ClientMcpExtensions::default(),
+                auth: None,
+                auth_manager: None,
+                elicitation_reviewer: None,
+                elicitation_lifecycle: None,
+            },
+            ElicitationRequestRouter::default(),
+        )
+        .await;
+
+        assert_eq!(
+            manager.servers["configured"].protocol_mode,
+            expected_configured_mode
+        );
+        assert_eq!(
+            manager.servers["extension"].protocol_mode,
+            registration_mode,
+            "an explicit extension registration retains precedence over its config field"
+        );
+    }
+}
+
+#[tokio::test]
 async fn codex_apps_extension_does_not_share_host_owned_tools_cache() -> anyhow::Result<()> {
     let codex_home = tempdir()?;
     let cache_key = ConnectorRuntimeContextKey::personal(
@@ -4696,6 +4796,7 @@ async fn no_local_runtime_fails_local_stdio_but_keeps_local_http_server() {
         (
             "stdio".to_string(),
             EffectiveMcpServer::from_host_config(McpServerConfig {
+                protocol_mode: None,
                 auth: Default::default(),
                 transport: McpServerTransportConfig::Stdio {
                     command: "echo".to_string(),
@@ -4726,6 +4827,7 @@ async fn no_local_runtime_fails_local_stdio_but_keeps_local_http_server() {
         (
             "http".to_string(),
             EffectiveMcpServer::from_host_config(McpServerConfig {
+                protocol_mode: None,
                 auth: Default::default(),
                 transport: McpServerTransportConfig::StreamableHttp {
                     url: "http://127.0.0.1:1".to_string(),
@@ -4839,6 +4941,7 @@ fn elicitation_capability_advertises_url_support_when_enabled() {
 fn mcp_init_error_display_prompts_for_github_pat() {
     let server_name = "github";
     let config = McpServerConfig {
+        protocol_mode: None,
         auth: Default::default(),
         transport: McpServerTransportConfig::StreamableHttp {
             url: "https://api.githubcopilot.com/mcp/".to_string(),
@@ -5001,6 +5104,7 @@ fn mcp_startup_failure_reason_requires_existing_oauth_and_auth_failure() {
 fn mcp_init_error_display_reports_generic_errors() {
     let server_name = "custom";
     let config = McpServerConfig {
+        protocol_mode: None,
         auth: Default::default(),
         transport: McpServerTransportConfig::StreamableHttp {
             url: "https://example.com".to_string(),
@@ -5082,6 +5186,7 @@ fn mcp_init_error_display_includes_startup_timeout_hint() {
 
 fn reusable_server_config(url: &str) -> McpServerConfig {
     McpServerConfig {
+        protocol_mode: None,
         auth: Default::default(),
         transport: McpServerTransportConfig::StreamableHttp {
             url: url.to_string(),
@@ -6032,7 +6137,8 @@ async fn reconciliation_replaces_connection_when_protocol_mode_changes() {
     .await;
     let codex_home = tempdir().expect("tempdir");
     let mut mcp_config = crate::mcp::tests::test_mcp_config(codex_home.path().to_path_buf());
-    mcp_config.protocol_mode = codex_rmcp_client::McpProtocolMode::V20260728;
+    let mut configured_server = config.clone();
+    configured_server.protocol_mode = Some(codex_config::McpServerProtocolMode::V20260728);
 
     let reconciled = McpConnectionSet::new(
         Some(&previous),
@@ -6044,7 +6150,7 @@ async fn reconciliation_replaces_connection_when_protocol_mode_changes() {
             ready_selected_capability_roots: Vec::new(),
             mcp_servers: HashMap::from([(
                 "docs".to_string(),
-                EffectiveMcpServer::from_host_config(config),
+                EffectiveMcpServer::from_host_config(configured_server),
             )]),
             submit_id: "refresh".to_string(),
             tx_event: None,

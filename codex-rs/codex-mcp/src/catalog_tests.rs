@@ -29,6 +29,7 @@ use super::ResolvedMcpServer;
 
 fn server(url: &str) -> McpServerConfig {
     McpServerConfig {
+        protocol_mode: None,
         auth: Default::default(),
         transport: McpServerTransportConfig::StreamableHttp {
             url: url.to_string(),

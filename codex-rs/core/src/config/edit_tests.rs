@@ -1062,6 +1062,7 @@ fn blocking_replace_mcp_servers_round_trips() {
     servers.insert(
         "stdio".to_string(),
         McpServerConfig {
+            protocol_mode: None,
             auth: Default::default(),
             transport: McpServerTransportConfig::Stdio {
                 command: "cmd".to_string(),
@@ -1100,6 +1101,7 @@ fn blocking_replace_mcp_servers_round_trips() {
     servers.insert(
         "http".to_string(),
         McpServerConfig {
+            protocol_mode: None,
             auth: Default::default(),
             transport: McpServerTransportConfig::StreamableHttp {
                 url: "https://example.com".to_string(),
@@ -1198,6 +1200,7 @@ fn blocking_replace_mcp_servers_serializes_tool_approval_overrides(output_token_
     servers.insert(
         "docs".to_string(),
         McpServerConfig {
+            protocol_mode: None,
             auth: Default::default(),
             transport: McpServerTransportConfig::Stdio {
                 command: "docs-server".to_string(),
@@ -1276,6 +1279,7 @@ foo = { command = "cmd" }
     servers.insert(
         "foo".to_string(),
         McpServerConfig {
+            protocol_mode: None,
             auth: Default::default(),
             transport: McpServerTransportConfig::Stdio {
                 command: "cmd".to_string(),
@@ -1330,6 +1334,7 @@ foo = { command = "cmd" } # keep me
     servers.insert(
         "foo".to_string(),
         McpServerConfig {
+            protocol_mode: None,
             auth: Default::default(),
             transport: McpServerTransportConfig::Stdio {
                 command: "cmd".to_string(),
@@ -1383,6 +1388,7 @@ foo = { command = "cmd", args = ["--flag"] } # keep me
     servers.insert(
         "foo".to_string(),
         McpServerConfig {
+            protocol_mode: None,
             auth: Default::default(),
             transport: McpServerTransportConfig::Stdio {
                 command: "cmd".to_string(),
@@ -1437,6 +1443,7 @@ foo = { command = "cmd" }
     servers.insert(
         "foo".to_string(),
         McpServerConfig {
+            protocol_mode: None,
             auth: Default::default(),
             transport: McpServerTransportConfig::Stdio {
                 command: "cmd".to_string(),

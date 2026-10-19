@@ -432,6 +432,29 @@ compiles all direct SDK consumers. Remove this guard when upstream provides
 both equivalent caller-drop cancellation and the existing concurrent control
 capacity; passing source tests alone does not prove an installed host adopted it.
 
+## MCP per-server protocol selection
+
+`mcp_servers.<name>.protocol_mode` selects `legacy` or prefers MCP 2026-07-28
+for that Streamable HTTP server. An explicit extension registration keeps its
+existing precedence; otherwise the per-server setting precedes the applicable
+host/global preference. The modern choice requests discovery and stateless
+requests, with legacy fallback when the peer does not support discovery. The
+configured value is a preference, not proof of the negotiated wire lifecycle.
+Changing the effective mode uses existing connection reconciliation to replace
+the server client; stdio remains on its existing marker-controlled behavior.
+
+This narrow configuration carry lets one HTTP integration move to the current
+protocol without changing other providers. Remove it when upstream supplies the
+same per-server selection, extension precedence, and connection-replacement
+behavior, or when the owning configuration can safely rely on the global mode.
+The config parser and connection-selection tests cover the option and fallback;
+the RMCP discovery fixture checks the negotiated protocol header and absence of
+a legacy session ID on current-protocol requests.
+
+Primary files: `codex-rs/config/src/mcp_types.rs`,
+`codex-rs/codex-mcp/src/connection_manager.rs`, and
+`codex-rs/rmcp-client/tests/mcp_2026_discovery.rs`.
+
 ## Linux x86_64 preview code-mode host artifact
 
 The `sedna-branch-build` workflow has an opt-in `host_only=true` dispatch for

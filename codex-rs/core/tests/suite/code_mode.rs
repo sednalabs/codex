@@ -719,6 +719,7 @@ async fn run_code_mode_turn_with_rmcp_config(
         servers.insert(
             "rmcp".to_string(),
             McpServerConfig {
+                protocol_mode: None,
                 auth: Default::default(),
                 transport: McpServerTransportConfig::Stdio {
                     command: rmcp_test_server_bin,

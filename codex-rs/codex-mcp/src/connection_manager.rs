@@ -421,6 +421,15 @@ impl McpConnectionSet {
             ) {
                 registration
                     .and_then(crate::ResolvedMcpServer::protocol_mode)
+                    .or_else(|| match configured_config.protocol_mode {
+                        Some(codex_config::McpServerProtocolMode::Legacy) => {
+                            Some(crate::McpProtocolMode::Legacy)
+                        }
+                        Some(codex_config::McpServerProtocolMode::V20260728) => {
+                            Some(crate::McpProtocolMode::V20260728)
+                        }
+                        None => None,
+                    })
                     .unwrap_or(if is_host_owned_codex_apps {
                         host_owned_apps_protocol_mode
                     } else {

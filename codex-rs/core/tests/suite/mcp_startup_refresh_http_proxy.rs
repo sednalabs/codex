@@ -121,6 +121,7 @@ async fn local_mcp_startup_and_refresh_use_configured_http_client() -> Result<()
             servers.insert(
                 SERVER_NAME.to_string(),
                 McpServerConfig {
+                    protocol_mode: None,
                     auth: Default::default(),
                     transport: McpServerTransportConfig::StreamableHttp {
                         url: SERVER_URL.to_string(),
