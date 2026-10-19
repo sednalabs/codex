@@ -422,6 +422,25 @@ jobs:
           printf 'CARGO_BIN_EXE_codex=%s\n' "${codex_binary}" >> "${GITHUB_ENV}"
           printf 'CARGO_BIN_EXE_codex-code-mode-host=%s\n' "${code_mode_host_binary}" >> "${GITHUB_ENV}"
 
+      - name: Install the existing pinned DotSlash runtime for the fixed GNU diagnostic
+        if: ${{ inputs.target_sha == '0a3a9d926c882cb56765fcee77d891584c7eb6a0' && inputs.profile == 'rust_integration' && fromJSON(inputs.request_json).package == 'codex-core' }}
+        uses: facebook/install-dotslash@1e4e7b3e07eaca387acb98f1d4720e0bee8dbb6a # v2
+
+      - name: Prepare the fixed GNU zsh diagnostic without accepting a fixture skip
+        if: ${{ inputs.target_sha == '0a3a9d926c882cb56765fcee77d891584c7eb6a0' && inputs.profile == 'rust_integration' && fromJSON(inputs.request_json).package == 'codex-core' }}
+        working-directory: validation-target/codex-rs
+        shell: bash
+        env:
+          CARGO_BUILD_JOBS: "2"
+        run: |
+          set -euo pipefail
+          cargo build --locked -p codex-shell-escalation --bin codex-execve-wrapper
+          ./app-server/tests/suite/zsh -fc 'builtin print -r -- zsh-dotslash-ready' >/dev/null
+          if EXEC_WRAPPER=/usr/bin/false ./app-server/tests/suite/zsh -fc /usr/bin/true >/dev/null 2>&1; then
+            echo "zsh EXEC_WRAPPER intercept preflight failed" >&2
+            exit 1
+          fi
+
       - name: Inventory and run exact named tests
         id: named_tests
         if: ${{ inputs.run_ae94_android_helper_tests != true && inputs.run_ae94_tui_provider_tests != true && inputs.run_d0_active_wait_test != true && inputs.run_ac392_android_protocol_test != true }}
