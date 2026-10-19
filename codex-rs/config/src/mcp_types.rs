@@ -170,12 +170,6 @@ pub enum McpServerProtocolMode {
     V20260728,
 }
 
-impl McpServerProtocolMode {
-    fn is_none(value: &Option<Self>) -> bool {
-        value.is_none()
-    }
-}
-
 #[derive(Serialize, Debug, Clone, PartialEq)]
 pub struct McpServerConfig {
     #[serde(flatten)]
@@ -183,7 +177,7 @@ pub struct McpServerConfig {
 
     /// Overrides the global MCP protocol preference for this server.
     /// Supported for Streamable HTTP servers only.
-    #[serde(default, skip_serializing_if = "McpServerProtocolMode::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocol_mode: Option<McpServerProtocolMode>,
 
     /// Authentication flow to use when no configured authorization resolves.
