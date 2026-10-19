@@ -183,7 +183,11 @@ jobs:
 
           # Keep query and selection in the foreground so failures cannot leave
           # different jobs assigning different partial target lists.
-          ./.github/scripts/run-bazel-query-ci.sh --output=label -- "${bazel_test_query}" \
+          bazel_query_args=(--output=label)
+          if [[ "${RUNNER_OS}" == "Windows" ]]; then
+            bazel_query_args+=(--repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1)
+          fi
+          ./.github/scripts/run-bazel-query-ci.sh "${bazel_query_args[@]}" -- "${bazel_test_query}" \
             | LC_ALL=C sort > "${bazel_targets_file}"
           python .github/scripts/select_windows_bazel_targets.py \
             --shard "${BAZEL_TEST_SHARD}" \
@@ -198,6 +202,7 @@ jobs:
             --test_verbose_timeout_warnings
             --build_metadata=COMMIT_SHA=${GITHUB_SHA}
             --build_metadata=TAG_windows_test_shard=${BAZEL_TEST_SHARD}
+            --repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1
           )
 
           ./.github/scripts/run-bazel-ci.sh \
@@ -366,7 +371,10 @@ jobs:
             # Standard hosted Windows runners execute this target locally.
             bazel_wrapper_args+=(--windows-cross-compile)
             bazel_target_list_args+=(--windows-cross-compile)
-            bazel_clippy_args+=(--skip_incompatible_explicit_targets)
+            bazel_clippy_args+=(
+              --skip_incompatible_explicit_targets
+              --repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1
+            )
           fi
 
           bazel_target_lines="$(./scripts/list-bazel-clippy-targets.sh "${bazel_target_list_args[@]}")"
@@ -460,6 +468,9 @@ jobs:
             --build_metadata=TAG_job=verify-release-build
             --build_metadata=TAG_rust_debug_assertions=off
           )
+          if [[ "${RUNNER_OS}" == "Windows" ]]; then
+            bazel_build_args+=(--repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1)
+          fi
 
           bazel_target_lines="$(bash ./scripts/list-bazel-release-targets.sh)"
           bazel_targets=()
