@@ -156,7 +156,7 @@ exceptions = [
     # Each entry is the crate and version constraint, and its specific allow
     # list
     # The reviewed Rust BZip2 backend retains the upstream license terms.
-    { name = "libbz2-rs-sys", version = "0.2.5", allow = ["bzip2-1.0.6"] },
+    { crate = "libbz2-rs-sys@0.2.5", allow = ["bzip2-1.0.6"] },
 ]
 
 # Some crates don't have (easily) machine readable licensing information,
