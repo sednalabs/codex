@@ -136,6 +136,7 @@ async fn refresh_keeps_superseded_mcp_server_alive_for_in_flight_calls() -> anyh
             servers.insert(
                 "refresh_cleanup".to_string(),
                 McpServerConfig {
+                    protocol_mode: None,
                     auth: Default::default(),
                     transport: McpServerTransportConfig::Stdio {
                         command,

@@ -10423,6 +10423,7 @@ async fn step_context_keeps_its_mcp_runtime_for_tools() -> anyhow::Result<()> {
     refresh_config.mcp_servers.set(HashMap::from([(
         "newer".to_string(),
         McpServerConfig {
+            protocol_mode: None,
             auth: Default::default(),
             transport: McpServerTransportConfig::Stdio {
                 command: "missing-test-mcp-server".to_string(),

@@ -280,6 +280,7 @@ fn insert_rmcp_test_server(
     servers.insert(
         RMCP_SERVER.to_string(),
         McpServerConfig {
+            protocol_mode: None,
             auth: Default::default(),
             transport: McpServerTransportConfig::Stdio {
                 command,

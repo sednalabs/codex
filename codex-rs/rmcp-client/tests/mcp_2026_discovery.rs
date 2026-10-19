@@ -725,6 +725,10 @@ async fn modern_sdk_emits_standard_headers_and_rejects_invalid_header_schemas() 
         .respond_with(move |request: &Request| {
             let body: Value = request.body_json().expect("valid JSON-RPC request");
             let method = body["method"].as_str().expect("JSON-RPC method");
+            assert!(
+                request.headers.get("mcp-session-id").is_none(),
+                "the current protocol must not attach a legacy session id"
+            );
             assert_eq!(
                 request
                     .headers
