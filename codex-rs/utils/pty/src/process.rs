@@ -33,6 +33,22 @@ pub(crate) fn unsupported_signal(signal: ProcessSignal) -> io::Error {
 }
 
 pub(crate) fn exit_code_from_status(status: ExitStatus) -> i32 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        eprintln!(
+            "temporary_gnu_zsh_exit_status code={:?} signal={:?} core_dumped={}",
+            status.code(),
+            status.signal(),
+            status.core_dumped()
+        );
+    }
+    #[cfg(not(unix))]
+    eprintln!(
+        "temporary_gnu_zsh_exit_status code={:?} signal=unavailable core_dumped=false",
+        status.code()
+    );
+
     if let Some(code) = status.code() {
         return code;
     }

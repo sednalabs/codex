@@ -1425,6 +1425,17 @@ impl UnifiedExecProcessManager {
         })
         .await;
         spawn_lifecycle.after_spawn();
+        if let Err(err) = &spawn_result {
+            let io_error = err.downcast_ref::<std::io::Error>();
+            let error_kind = io_error
+                .map(|error| format!("{:?}", error.kind()))
+                .unwrap_or_else(|| "not_io_error".to_string());
+            let raw_os_error = io_error.and_then(std::io::Error::raw_os_error);
+            eprintln!(
+                "temporary_gnu_zsh_spawn_failure kind={} raw_os_error={:?}",
+                error_kind, raw_os_error
+            );
+        }
         let spawned =
             spawn_result.map_err(|err| UnifiedExecError::create_process(err.to_string()))?;
         UnifiedExecProcess::from_spawned(spawned, request.sandbox, spawn_lifecycle).await
