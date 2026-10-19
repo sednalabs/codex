@@ -700,16 +700,13 @@ async fn response_item_ids_persist_across_resume_and_preserve_server_ids() -> an
     let persisted_rollout = std::fs::read_to_string(&rollout_path)?;
     let persisted_history = persisted_rollout
         .lines()
-        .map(serde_json::from_str::<RolloutLine>)
+        .map(serde_json::from_str::<serde_json::Value>)
         .collect::<Result<Vec<_>, _>>()?;
-    assert!(persisted_history.iter().any(|line| matches!(
-        &line.item,
-        RolloutItem::ResponseItem(response) if matches!(
-            &response.item,
-            ResponseItem::AgentMessage { id: Some(id), .. }
-                if id.as_str() == "inter_agent_update_legacy-resume"
-        )
-    )));
+    assert!(persisted_history.iter().any(|line| {
+        line["type"] == "response_item"
+            && line["payload"]["type"] == "agent_message"
+            && line["payload"]["id"] == "inter_agent_update_legacy-resume"
+    }));
 
     Ok(())
 }
