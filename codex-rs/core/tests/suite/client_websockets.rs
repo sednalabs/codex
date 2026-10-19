@@ -363,10 +363,10 @@ async fn responses_websocket_omits_routing_hint_for_provider_with_own_credential
 async fn responses_websocket_omits_unprefixed_item_ids_without_mutating_prompt() {
     skip_if_no_network!();
 
-    let server = start_websocket_server(vec![vec![vec![
-        ev_response_created("resp-1"),
-        ev_completed("resp-1"),
-    ]]])
+    let server = start_websocket_server(vec![vec![
+        vec![ev_response_created("resp-1"), ev_completed("resp-1")],
+        vec![ev_response_created("resp-2"), ev_completed("resp-2")],
+    ]])
     .await;
 
     let harness = websocket_harness_with_provider_options(
@@ -393,20 +393,81 @@ async fn responses_websocket_omits_unprefixed_item_ids_without_mutating_prompt()
         "content": [{"type": "input_text", "text": "empty-id message"}],
     }))
     .expect("response item with an empty id should deserialize");
-    let prompt = prompt_with_input(vec![prefixed, unprefixed, empty]);
+    let mailbox_update = serde_json::from_value(json!({
+        "type": "agent_message",
+        "id": "inter_agent_update_websocket",
+        "author": "/root/worker",
+        "recipient": "/root",
+        "content": [{"type": "input_text", "text": "websocket mailbox update"}],
+    }))
+    .expect("mailbox update should deserialize");
+    let provider_message = serde_json::from_value(json!({
+        "type": "agent_message",
+        "id": "amsg_provider-authored",
+        "author": "/provider",
+        "recipient": "/root",
+        "content": [{"type": "input_text", "text": "provider-authored message"}],
+    }))
+    .expect("provider-authored agent message should deserialize");
+    let mut prompt = prompt_with_input(vec![
+        prefixed,
+        unprefixed,
+        empty,
+        mailbox_update,
+        provider_message,
+    ]);
 
+    stream_until_complete(&mut client_session, &harness, &prompt).await;
+    let delta_mailbox_update_id = ResponseItemId::new("inter_agent_update");
+    let delta_mailbox_update = serde_json::from_value(json!({
+        "type": "agent_message",
+        "id": delta_mailbox_update_id,
+        "author": "/root/worker",
+        "recipient": "/root",
+        "content": [{"type": "input_text", "text": "incremental mailbox update"}],
+    }))
+    .expect("incremental mailbox update should deserialize");
+    prompt.input.push(delta_mailbox_update);
     stream_until_complete(&mut client_session, &harness, &prompt).await;
 
     let connection = server.single_connection();
     let body = connection.first().expect("missing request").body_json();
-    assert_eq!(body["input"].as_array().map(Vec::len), Some(3));
+    assert_eq!(connection.len(), 2);
+    assert_eq!(body["input"].as_array().map(Vec::len), Some(5));
     assert_eq!(body["input"][0]["id"].as_str(), Some("msg_existing"));
     assert_eq!(body["input"][1].get("id"), None);
     assert_eq!(body["input"][2].get("id"), None);
+    assert_eq!(body["input"][3].get("id"), None);
+    assert_eq!(body["input"][3]["author"].as_str(), Some("/root/worker"));
+    assert_eq!(body["input"][3]["recipient"].as_str(), Some("/root"));
+    assert_eq!(
+        body["input"][3]["content"][0]["text"].as_str(),
+        Some("websocket mailbox update")
+    );
+    assert_eq!(
+        body["input"][4]["id"].as_str(),
+        Some("amsg_provider-authored")
+    );
+    let delta_body = connection
+        .get(1)
+        .expect("missing incremental request")
+        .body_json();
+    assert_eq!(delta_body["previous_response_id"], "resp-1");
+    assert_eq!(delta_body["input"].as_array().map(Vec::len), Some(1));
+    assert_eq!(delta_body["input"][0].get("id"), None);
+    assert_eq!(
+        delta_body["input"][0]["content"][0]["text"].as_str(),
+        Some("incremental mailbox update")
+    );
     assert_eq!(
         serde_json::to_value(&prompt.input).expect("prompt input should serialize")[1]["id"]
             .as_str(),
         Some("018f9e15-7a6a-7000-8000-000000000001")
+    );
+    assert_eq!(
+        serde_json::to_value(&prompt.input).expect("prompt input should serialize")[5]["id"]
+            .as_str(),
+        Some(delta_mailbox_update_id.as_str())
     );
 
     server.shutdown().await;

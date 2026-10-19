@@ -1712,7 +1712,14 @@ impl ModelClient {
 
     fn prepare_response_items_for_request(&self, input: &mut [ResponseItem]) {
         for item in input {
-            if item.id().is_some_and(|id| !id.is_prefixed()) {
+            // Explicit mailbox updates use a durable client-owned admission ID, not
+            // a provider-issued `amsg` ID. Keep that identity in history and only
+            // omit it from the request copy, including replayed and queued updates.
+            let client_owned_update_id = matches!(item, ResponseItem::AgentMessage { .. })
+                && item
+                    .id()
+                    .is_some_and(|id| id.starts_with("inter_agent_update_"));
+            if client_owned_update_id || item.id().is_some_and(|id| !id.is_prefixed()) {
                 item.set_id(/*new_id*/ None);
             }
             if !self.state.content_item_kinds_enabled {
