@@ -1434,11 +1434,6 @@ async fn explicit_progress_to_deeper_nonroot_is_restored_without_another_send() 
         intent: InterAgentCommunicationIntent::Progress,
         supersedes: Vec::new(),
     };
-    let mailbox_watermark = reviewer_thread
-        .session
-        .input_queue
-        .mailbox_enqueue_watermark()
-        .await;
 
     let update_id = tree
         .control
@@ -1453,6 +1448,15 @@ async fn explicit_progress_to_deeper_nonroot_is_restored_without_another_send() 
         .await
         .expect("root may address a deeper same-tree recipient directly");
     let update_id = ResponseItemId::from_server(update_id);
+    let mut expected_communication = AgentMessage::Plaintext(
+        "deep progress remains quiet".to_string(),
+    )
+    .into_communication(
+        AgentPath::root(),
+        recipient_path.clone(),
+        MessageDeliveryMode::QueueOnly,
+    );
+    expected_communication.id = Some(update_id.clone());
     let initial_items = explicit_update_rollout_items(&reviewer_thread).await;
     let admissions = initial_items
         .iter()
@@ -1530,15 +1534,27 @@ async fn explicit_progress_to_deeper_nonroot_is_restored_without_another_send() 
         Some(recipient_path.clone()),
         "resume must restore the recipient's canonical nested path"
     );
-    assert_eq!(
-        resumed_thread
-            .session
-            .input_queue
-            .pending_mailbox_communication_count_since(mailbox_watermark)
-            .await,
-        Some(1),
-        "the retained quiet update must be queued before the same-key retry"
-    );
+    let restored_mail = timeout(Duration::from_secs(5), async {
+        loop {
+            if resumed_thread
+                .session
+                .input_queue
+                .has_pending_mailbox_items()
+                .await
+            {
+                break resumed_thread
+                    .session
+                    .input_queue
+                    .drain_mailbox()
+                    .await;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("resume should restore the recipient's quiet mailbox update");
+    assert_eq!(restored_mail.len(), 1, "restore should enqueue one update");
+    assert_eq!(restored_mail[0].communication, expected_communication);
     assert!(
         resumed_thread
             .session
@@ -1564,7 +1580,7 @@ async fn explicit_progress_to_deeper_nonroot_is_restored_without_another_send() 
     assert_eq!(ResponseItemId::from_server(replayed_id), update_id);
     let queued = resumed_thread.session.input_queue.drain_mailbox().await;
     assert_eq!(queued.len(), 1, "resume and replay must not duplicate queued mail");
-    assert_eq!(queued[0].communication.id.as_ref(), Some(&update_id));
+    assert_eq!(queued[0].communication, expected_communication);
     let resumed_items = explicit_update_rollout_items(&resumed_thread).await;
     assert_eq!(
         resumed_items
