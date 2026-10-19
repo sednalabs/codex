@@ -16,6 +16,8 @@ use codex_protocol::config_types::CollaborationMode;
 #[cfg(unix)]
 use codex_protocol::config_types::EnvironmentVariablePattern;
 use codex_protocol::config_types::ModeKind;
+#[cfg(unix)]
+use codex_protocol::config_types::ShellEnvironmentPolicyInherit;
 use codex_protocol::config_types::Settings;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
 use codex_protocol::models::PermissionProfile;
@@ -3679,19 +3681,23 @@ async fn matched_prefix_rule_runs_unsandboxed_under_zsh_fork() -> Result<()> {
 
     let server = start_mock_server().await;
     let outside_path_for_hook = outside_path.clone();
-    let test = build_zsh_fork_test(
-        &server,
-        runtime,
-        approval_policy,
-        permission_profile.clone(),
-        move |home| {
+    let test = zsh_fork_test_builder(runtime, approval_policy)
+        .with_pre_build_hook(move |home| {
             let _ = fs::remove_file(&outside_path_for_hook);
             let rules_dir = home.join("rules");
             fs::create_dir_all(&rules_dir).unwrap();
             fs::write(rules_dir.join("default.rules"), &rules).unwrap();
-        },
-    )
-    .await?;
+        })
+        .with_config(move |config| {
+            config
+                .permissions
+                .set_permission_profile(permission_profile)
+                .expect("set permission profile");
+            config.permissions.shell_environment_policy.inherit =
+                ShellEnvironmentPolicyInherit::Core;
+        })
+        .build(&server)
+        .await?;
 
     let call_id = "zsh-fork-prefix-rule-unsandboxed";
     let event = shell_event(

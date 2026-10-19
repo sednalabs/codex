@@ -1,5 +1,7 @@
 use core::fmt;
+use std::ffi::OsStr;
 use std::io;
+use std::path::Path;
 #[cfg(unix)]
 use std::os::fd::RawFd;
 use std::process::ExitStatus;
@@ -32,12 +34,38 @@ pub(crate) fn unsupported_signal(signal: ProcessSignal) -> io::Error {
     }
 }
 
-pub(crate) fn exit_code_from_status(status: ExitStatus) -> i32 {
+#[derive(Clone, Copy)]
+pub(crate) enum RequestedTargetRole {
+    Zsh,
+    ExecveWrapper,
+    Other,
+}
+
+impl RequestedTargetRole {
+    pub(crate) fn from_program(program: &OsStr) -> Self {
+        match Path::new(program).file_name().and_then(OsStr::to_str) {
+            Some("zsh") => Self::Zsh,
+            Some("codex-execve-wrapper") => Self::ExecveWrapper,
+            _ => Self::Other,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Zsh => "requested_target_zsh",
+            Self::ExecveWrapper => "requested_target_execve_wrapper",
+            Self::Other => "requested_target_other",
+        }
+    }
+}
+
+pub(crate) fn exit_code_from_status(status: ExitStatus, role: RequestedTargetRole) -> i32 {
     #[cfg(unix)]
     {
         use std::os::unix::process::ExitStatusExt;
         eprintln!(
-            "temporary_gnu_zsh_exit_status code={:?} signal={:?} core_dumped={}",
+            "temporary_gnu_zsh_exit_status role={} code={:?} signal={:?} core_dumped={}",
+            role.label(),
             status.code(),
             status.signal(),
             status.core_dumped()
@@ -45,7 +73,8 @@ pub(crate) fn exit_code_from_status(status: ExitStatus) -> i32 {
     }
     #[cfg(not(unix))]
     eprintln!(
-        "temporary_gnu_zsh_exit_status code={:?} signal=unavailable core_dumped=false",
+        "temporary_gnu_zsh_exit_status role={} code={:?} signal=unavailable core_dumped=false",
+        role.label(),
         status.code()
     );
 

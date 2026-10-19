@@ -36,9 +36,10 @@ use crate::process::ProcessHandle;
 use crate::process::ProcessSignal;
 use crate::process::PtyHandles;
 use crate::process::PtyMasterHandle;
+#[cfg(unix)]
+use crate::process::RequestedTargetRole;
 use crate::process::SpawnedProcess;
 use crate::process::TerminalSize;
-#[cfg(unix)]
 use crate::process::exit_code_from_status;
 
 /// Extra descriptors accompanying a process launch.
@@ -328,6 +329,7 @@ async fn spawn_process_preserving_fds(
     size: TerminalSize,
     descriptors: ChildFds<'_>,
 ) -> Result<SpawnedProcess> {
+    let requested_target_role = RequestedTargetRole::from_program(std::ffi::OsStr::new(program));
     let (master, slave) = open_unix_pty(size)?;
     let io = crate::unix_io::PtyIo::new(master.as_raw_fd())?;
     let uses_portable_status = match descriptors {
@@ -434,7 +436,7 @@ async fn spawn_process_preserving_fds(
             Ok(status) if uses_portable_status => {
                 portable_pty::ExitStatus::from(status).exit_code() as i32
             }
-            Ok(status) => exit_code_from_status(status),
+            Ok(status) => exit_code_from_status(status, requested_target_role),
             Err(_) => -1,
         };
         wait_exit_status.store(true, std::sync::atomic::Ordering::SeqCst);

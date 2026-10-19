@@ -28,6 +28,7 @@ use tokio::task::JoinHandle;
 use crate::process::ChildTerminator;
 use crate::process::ProcessHandle;
 use crate::process::ProcessSignal;
+use crate::process::RequestedTargetRole;
 use crate::process::SpawnedProcess;
 use crate::process::exit_code_from_status;
 
@@ -142,6 +143,7 @@ async fn spawn_process_with_stdin_mode(
     if program.is_empty() {
         anyhow::bail!("missing program for pipe spawn");
     }
+    let requested_target_role = RequestedTargetRole::from_program(program);
 
     #[cfg(not(unix))]
     let _ = inherited_fds;
@@ -279,7 +281,7 @@ async fn spawn_process_with_stdin_mode(
                         "Windows pipe failed to preserve descendants after root exit: {err}"
                     );
                 }
-                exit_code_from_status(status)
+                exit_code_from_status(status, requested_target_role)
             }
             Err(_) => -1,
         };
