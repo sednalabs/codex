@@ -955,6 +955,7 @@ mod tests {
 
     fn stdio_server(environment_id: &str) -> McpServerConfig {
         McpServerConfig {
+            protocol_mode: None,
             auth: Default::default(),
             transport: McpServerTransportConfig::Stdio {
                 command: "echo".to_string(),
@@ -1141,6 +1142,7 @@ mod tests {
 
     fn http_server(environment_id: &str) -> McpServerConfig {
         McpServerConfig {
+            protocol_mode: None,
             auth: Default::default(),
             transport: McpServerTransportConfig::StreamableHttp {
                 url: "http://127.0.0.1:1".to_string(),

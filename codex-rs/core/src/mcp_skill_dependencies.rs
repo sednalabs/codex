@@ -405,6 +405,7 @@ fn mcp_dependency_to_server_config(
             .as_ref()
             .ok_or_else(|| "missing url for streamable_http dependency".to_string())?;
         return Ok(McpServerConfig {
+            protocol_mode: None,
             auth: Default::default(),
             transport: McpServerTransportConfig::StreamableHttp {
                 url: url.clone(),
@@ -446,6 +447,7 @@ fn mcp_dependency_to_server_config(
             .as_ref()
             .ok_or_else(|| "missing command for stdio dependency".to_string())?;
         return Ok(McpServerConfig {
+            protocol_mode: None,
             auth: Default::default(),
             transport: McpServerTransportConfig::Stdio {
                 command: command.clone(),

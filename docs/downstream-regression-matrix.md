@@ -54,6 +54,16 @@ handshakes for supported, newer, and unknown revisions;
 integration tests preserve complete legacy JSON responses.
 Installed-host first use is a separate acceptance step after protected delivery.
 
+## MCP per-server protocol selection
+
+`codex-config` tests cover the Streamable HTTP option, serialization, and
+rejection for stdio. The connection-manager test proves that explicit
+per-server legacy/current choices override the global preference, while an
+explicit extension registration retains precedence. The existing
+`mcp_2026_discovery` fixture observes the 2026-07-28 protocol header and verifies
+that discovery and follow-up requests carry no legacy session ID. Installed
+configuration and natural first use remain separate from these source tests.
+
 ## Core default path
 
 V2 `send_message` without an explicit intent keeps ordinary queue-only delivery
