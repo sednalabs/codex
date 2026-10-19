@@ -168,7 +168,7 @@ jobs:
           # the PR-blocking critical path after the useful test work is done.
           cache-scope: bazel-test
 
-      - name: Provision pinned Windows voice Bazel inputs
+      - name: Download pinned Windows voice inputs
         if: runner.os == 'Windows'
         shell: pwsh
         env:
@@ -186,7 +186,13 @@ jobs:
               (Get-FileHash $sourceFile -Algorithm SHA256).Hash.ToLowerInvariant() -ne $source.sha256) {
             throw "Public Cygwin source archive mismatch"
           }
-          & ./.github/scripts/setup-voice-windows.ps1 -Target "x86_64-pc-windows-msvc" -SnapshotArchive (Join-Path $directory $pin.name)
+          "VOICE_CYGWIN_ARCHIVE=$(Join-Path $directory $pin.name)" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Verify and install pinned Windows voice build tools
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & ./.github/scripts/setup-voice-windows.ps1 -Target "x86_64-pc-windows-msvc" -SnapshotArchive $env:VOICE_CYGWIN_ARCHIVE
           if ($LASTEXITCODE -ne 0) { throw "Pinned Windows voice Bazel inputs could not be provisioned" }
 
       - name: Validate Windows SystemRoot for Bazel
@@ -422,7 +428,7 @@ jobs:
           target: ${{ matrix.target }}
           cache-scope: bazel-${{ github.job }}
 
-      - name: Provision pinned Windows voice Bazel inputs
+      - name: Download pinned Windows voice inputs
         if: runner.os == 'Windows'
         shell: pwsh
         env:
@@ -440,7 +446,13 @@ jobs:
               (Get-FileHash $sourceFile -Algorithm SHA256).Hash.ToLowerInvariant() -ne $source.sha256) {
             throw "Public Cygwin source archive mismatch"
           }
-          & ./.github/scripts/setup-voice-windows.ps1 -Target "x86_64-pc-windows-msvc" -SnapshotArchive (Join-Path $directory $pin.name)
+          "VOICE_CYGWIN_ARCHIVE=$(Join-Path $directory $pin.name)" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Verify and install pinned Windows voice build tools
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & ./.github/scripts/setup-voice-windows.ps1 -Target "x86_64-pc-windows-msvc" -SnapshotArchive $env:VOICE_CYGWIN_ARCHIVE
           if ($LASTEXITCODE -ne 0) { throw "Pinned Windows voice Bazel inputs could not be provisioned" }
 
       - name: Validate Windows SystemRoot for Bazel
@@ -573,7 +585,7 @@ jobs:
           target: ${{ matrix.target }}
           cache-scope: bazel-${{ github.job }}
 
-      - name: Provision pinned Windows voice Bazel inputs
+      - name: Download pinned Windows voice inputs
         if: runner.os == 'Windows'
         shell: pwsh
         env:
@@ -591,7 +603,13 @@ jobs:
               (Get-FileHash $sourceFile -Algorithm SHA256).Hash.ToLowerInvariant() -ne $source.sha256) {
             throw "Public Cygwin source archive mismatch"
           }
-          & ./.github/scripts/setup-voice-windows.ps1 -Target "x86_64-pc-windows-msvc" -SnapshotArchive (Join-Path $directory $pin.name)
+          "VOICE_CYGWIN_ARCHIVE=$(Join-Path $directory $pin.name)" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Verify and install pinned Windows voice build tools
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & ./.github/scripts/setup-voice-windows.ps1 -Target "x86_64-pc-windows-msvc" -SnapshotArchive $env:VOICE_CYGWIN_ARCHIVE
           if ($LASTEXITCODE -ne 0) { throw "Pinned Windows voice Bazel inputs could not be provisioned" }
 
       - name: Validate Windows SystemRoot for Bazel
