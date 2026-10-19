@@ -67,6 +67,7 @@ on:
           - delete_diagnostic
           - voice_runtime
           - rollout_identity
+          - mailbox_events
         default: none
       expected_workflow_host_sha:
         description: Exact workflow-host commit SHA required by fixed validation modes
@@ -403,7 +404,7 @@ jobs:
           inputs.run_ac392_android_protocol_test != true &&
           inputs.run_a89_android_png_fixture_preflight != true &&
           inputs.run_native_browser_source_validation != true }}
-    runs-on: windows-latest
+    runs-on: ${{ inputs.windows_validation_mode == 'mailbox_events' && 'windows-2025' || 'windows-latest' }}
     timeout-minutes: 120
     permissions:
       contents: read
@@ -453,6 +454,14 @@ jobs:
               expected_parent="1d85af37b85157729f6fd9d7e5f0bc3301012f9f"
               expected_base_depth=2
               ;;
+            mailbox_events)
+              expected_base="6496a38e73c849bb9d882c1474b0b59b9f1f6e1a"
+              expected_host_ref="refs/heads/validation/host-windows-events-256e15f9"
+              expected_target="256e15f97a561628fff7f93fb099a3cb2a727827"
+              expected_tree="2db702b26e472502b5667a8c1f5e18d4b5c3a347"
+              expected_parent="6496a38e73c849bb9d882c1474b0b59b9f1f6e1a"
+              expected_base_depth=1
+              ;;
             *)
               echo "Windows receiver validation mode is unsupported." >&2
               exit 1
@@ -495,7 +504,7 @@ jobs:
           targets: x86_64-pc-windows-msvc
 
       - name: Resolve actual Windows SystemRoot for Bazel actions
-        if: ${{ inputs.windows_validation_mode == 'voice_runtime' }}
+        if: ${{ inputs.windows_validation_mode == 'voice_runtime' || inputs.windows_validation_mode == 'mailbox_events' }}
         shell: pwsh
         run: |
           if ([string]::IsNullOrWhiteSpace($env:SystemRoot) -or -not (Test-Path -LiteralPath $env:SystemRoot -PathType Container)) {
@@ -588,12 +597,12 @@ jobs:
           done
 
       - name: Prepare native Windows Bazel environment
-        if: ${{ inputs.windows_validation_mode == 'voice_runtime' }}
+        if: ${{ inputs.windows_validation_mode == 'voice_runtime' || inputs.windows_validation_mode == 'mailbox_events' }}
         id: prepare_voice_bazel
         uses: ./.github/actions/prepare-bazel-ci
         with:
           target: x86_64-pc-windows-msvc
-          cache-scope: validation-windows-voice-runtime
+          cache-scope: ${{ inputs.windows_validation_mode == 'mailbox_events' && 'validation-windows-mailbox-events' || 'validation-windows-voice-runtime' }}
 
       - name: Run fixed voice-host Windows DLL runtime selectors
         if: ${{ inputs.windows_validation_mode == 'voice_runtime' }}
@@ -629,3 +638,89 @@ jobs:
             //codex-rs/voice-host:codex-voice-host-bin-unit-tests \
             //codex-rs/voice-host:voice-host-installed_client-test \
             //codex-rs/voice-host:voice-host-lifecycle-test
+
+      - name: Inventory fixed Windows mailbox event selectors
+        if: ${{ inputs.windows_validation_mode == 'mailbox_events' }}
+        shell: bash
+        working-directory: codex-rs
+        env:
+          VALIDATION_TARGET_SHA: ${{ inputs.target_sha }}
+        run: |
+          set -euo pipefail
+          inventory="${RUNNER_TEMP}/windows-mailbox-events-inventory.txt"
+          ../.github/scripts/run-bazel-ci.sh \
+            --print-failed-action-summary \
+            --print-failed-test-logs \
+            --windows-msvc-host-platform \
+            --remote-download-toplevel \
+            -- \
+            test \
+            --repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1 \
+            --workspace_status_command=./scripts/workspace-status.cmd \
+            --skip_incompatible_explicit_targets \
+            --test_tag_filters=-argument-comment-lint \
+            --test_verbose_timeout_warnings \
+            --test_sharding_strategy=disabled \
+            --local_test_jobs=1 \
+            --test_env=CODEX_BAZEL_LOCAL_ONLY=1 \
+            "--action_env=SystemRoot=${WINDOWS_SYSTEM_ROOT}" \
+            "--host_action_env=SystemRoot=${WINDOWS_SYSTEM_ROOT}" \
+            "--action_env=PROCESSOR_ARCHITECTURE=${WINDOWS_PROCESSOR_ARCHITECTURE}" \
+            "--host_action_env=PROCESSOR_ARCHITECTURE=${WINDOWS_PROCESSOR_ARCHITECTURE}" \
+            "--build_metadata=COMMIT_SHA=${VALIDATION_TARGET_SHA}" \
+            --test_arg=--list \
+            -- \
+            //codex-rs/core:core-all-test > "${inventory}"
+          selectors=(
+            "suite::subagent_notifications::guardian_subagent_notification_tests::guardian_circuit_breaker_notifies_parent::strict_notifies_parent"
+            "suite::scenarios::agent_message_board::board_unsubscribe_survives_post_and_resume_until_resubscribed::channels_only"
+          )
+          for selector in "${selectors[@]}"; do
+            matches="$(grep -Fxc "${selector}: test" "${inventory}" || true)"
+            if [[ "${matches}" != "1" ]]; then
+              echo "Expected exactly one matching fixed mailbox event test; observed ${matches}." >&2
+              exit 1
+            fi
+            echo "Verified fixed selector: ${selector}"
+          done
+
+      - name: Run fixed Windows mailbox event selectors sequentially
+        if: ${{ inputs.windows_validation_mode == 'mailbox_events' }}
+        shell: bash
+        working-directory: codex-rs
+        env:
+          VALIDATION_TARGET_SHA: ${{ inputs.target_sha }}
+        run: |
+          set -euo pipefail
+          selectors=(
+            "suite::subagent_notifications::guardian_subagent_notification_tests::guardian_circuit_breaker_notifies_parent::strict_notifies_parent"
+            "suite::scenarios::agent_message_board::board_unsubscribe_survives_post_and_resume_until_resubscribed::channels_only"
+          )
+          for selector in "${selectors[@]}"; do
+            ../.github/scripts/run-bazel-ci.sh \
+              --print-failed-action-summary \
+              --print-failed-test-logs \
+              --windows-msvc-host-platform \
+              --remote-download-toplevel \
+              -- \
+              test \
+              --repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1 \
+              --workspace_status_command=./scripts/workspace-status.cmd \
+              --skip_incompatible_explicit_targets \
+              --test_tag_filters=-argument-comment-lint \
+              --test_verbose_timeout_warnings \
+              --test_sharding_strategy=disabled \
+              --local_test_jobs=1 \
+              --test_env=CODEX_BAZEL_LOCAL_ONLY=1 \
+              "--action_env=SystemRoot=${WINDOWS_SYSTEM_ROOT}" \
+              "--host_action_env=SystemRoot=${WINDOWS_SYSTEM_ROOT}" \
+              "--action_env=PROCESSOR_ARCHITECTURE=${WINDOWS_PROCESSOR_ARCHITECTURE}" \
+              "--host_action_env=PROCESSOR_ARCHITECTURE=${WINDOWS_PROCESSOR_ARCHITECTURE}" \
+              "--build_metadata=COMMIT_SHA=${VALIDATION_TARGET_SHA}" \
+              "--test_arg=${selector}" \
+              --test_arg=--exact \
+              --test_arg=--nocapture \
+              --test_arg=--test-threads=1 \
+              -- \
+              //codex-rs/core:core-all-test
+          done
