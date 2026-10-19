@@ -29,6 +29,7 @@ codex-utils-path = { workspace = true }
 codex-utils-string = { workspace = true }
 memchr = { workspace = true }
 regex = { workspace = true }
+same-file = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
@@ -50,6 +51,9 @@ tokio = { workspace = true, features = [
 tracing = { workspace = true }
 uuid = { workspace = true }
 zstd = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
 codex-utils-absolute-path = { workspace = true }

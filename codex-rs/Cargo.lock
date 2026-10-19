@@ -4569,6 +4569,7 @@ dependencies = [
  "memchr",
  "pretty_assertions",
  "regex",
+ "same-file",
  "serde",
  "serde_json",
  "tempfile",
@@ -4576,6 +4577,7 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "windows-sys 0.61.2",
  "zstd 0.13.3",
 ]
 

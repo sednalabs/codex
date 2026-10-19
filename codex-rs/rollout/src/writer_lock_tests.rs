@@ -124,3 +124,45 @@ fn publication_skips_live_writers_and_keeps_coordination_locked() {
     );
     assert!(writer.acquire(thread_id).is_ok());
 }
+
+#[cfg(unix)]
+#[test]
+fn physical_fence_is_shared_by_distinct_homes_and_directory_and_file_aliases() -> std::io::Result<()>
+{
+    use super::PhysicalRolloutGuard;
+    use std::os::unix::fs::symlink;
+    let history = TempDir::new()?;
+    let first_home = TempDir::new()?;
+    let second_home = TempDir::new()?;
+    let path = history.path().join("rollout.jsonl");
+    fs::write(&path, b"{}\n")?;
+    symlink(history.path(), first_home.path().join("sessions"))?;
+    symlink(history.path(), second_home.path().join("sessions"))?;
+    let first_alias = first_home.path().join("sessions/rollout.jsonl");
+    let second_alias = second_home.path().join("sessions/rollout.jsonl");
+    let file_alias = second_home.path().join("alias.jsonl");
+    symlink(&path, &file_alias)?;
+    let thread_id = ThreadId::new();
+    // Logical profile ownership remains independent, but physical ownership does not.
+    let _first_logical =
+        Arc::new(WriterLockCoordinator::new(first_home.path())).acquire(thread_id)?;
+    let _second_logical =
+        Arc::new(WriterLockCoordinator::new(second_home.path())).acquire(thread_id)?;
+    let owner = PhysicalRolloutGuard::acquire(&first_alias, false)?;
+    for alias in [
+        &second_alias,
+        &file_alias,
+        &path.with_extension("jsonl.zst"),
+    ] {
+        let err = match PhysicalRolloutGuard::acquire(alias, false) {
+            Ok(_) => panic!("aliases must contend on the same physical lock"),
+            Err(err) => err,
+        };
+        assert_eq!(err.kind(), ErrorKind::WouldBlock);
+    }
+    assert_eq!(owner.path(), fs::canonicalize(&path)?.as_path());
+    drop(owner);
+    drop(PhysicalRolloutGuard::acquire(&second_alias, false)?);
+    assert!(path.exists());
+    Ok(())
+}
