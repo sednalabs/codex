@@ -96,6 +96,7 @@ jobs:
       run_command: |
         export CARGO_BUILD_JOBS=2
         export CARGO_PROFILE_CI_TEST_DEBUG=0
+        export RUST_MIN_STACK=16777216
         cargo test --locked --profile ci-test -p codex-core --test all azure_responses_request_does_not_store_and_preserves_prefixed_item_ids -- --test-threads=2
         cargo test --locked --profile ci-test -p codex-core --test all responses_websocket_omits_unprefixed_item_ids_without_mutating_prompt -- --test-threads=2
         cargo test --locked --profile ci-test -p codex-core --test all response_item_ids_persist_across_resume_and_preserve_server_ids -- --test-threads=2
