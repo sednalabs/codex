@@ -7,6 +7,7 @@ on:
   pull_request:
     branches:
       - main
+      - integration/be2e-e926-20261009
     paths:
       - ".bazelrc"
       - ".bazelversion"
@@ -71,9 +72,11 @@ jobs:
           WORKFLOW_HOST_SHA: ${{ github.sha }}
           EVENT_REF: ${{ github.ref }}
           PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
           REPOSITORY: ${{ github.repository }}
           OPERATION_INPUT: ${{ inputs.operation }}
+          SELECTED_BASE_REF: integration/be2e-e926-20261009
           SELECTED_BASE_SHA: be2e129ecd67d900c016eda12d5d193e33d9c3da
         run: |
           set -euo pipefail
@@ -102,15 +105,34 @@ jobs:
 
           source_tree="$(git rev-parse "${SOURCE_SHA}^{tree}")"
           workflow_host_tree="$(git rev-parse "${WORKFLOW_HOST_SHA}^{tree}")"
+          package_lineage_eligible=true
           if [[ "${EVENT_NAME}" == "pull_request" ]]; then
-            if [[ "${PR_BASE_REF}" != "main" || "${PR_HEAD_REPOSITORY}" != "${REPOSITORY}" ]]; then
-              echo "Only same-repository pull requests targeting main use this package route." >&2
+            if [[ "${PR_HEAD_REPOSITORY}" != "${REPOSITORY}" ]]; then
+              echo "Only same-repository pull requests use this package route." >&2
               exit 1
             fi
-            if ! git merge-base --is-ancestor "${SELECTED_BASE_SHA}" "${SOURCE_SHA}"; then
-              echo "The pull-request candidate is not descended from the selected be2e base." >&2
-              exit 1
-            fi
+            case "${PR_BASE_REF}" in
+              main)
+                # Main-based changes may use hosted generation, but package
+                # artifacts are produced from the explicitly selected
+                # experimental PR base below.
+                package_lineage_eligible=false
+                ;;
+              "${SELECTED_BASE_REF}")
+                if [[ ! "${PR_BASE_SHA}" =~ ^[0-9a-f]{40}$ ]] || ! git cat-file -e "${PR_BASE_SHA}^{commit}"; then
+                  echo "The selected experimental PR base is not one exact commit in the workflow checkout." >&2
+                  exit 1
+                fi
+                if ! git merge-base --is-ancestor "${SELECTED_BASE_SHA}" "${PR_BASE_SHA}" || ! git merge-base --is-ancestor "${PR_BASE_SHA}" "${SOURCE_SHA}"; then
+                  echo "The candidate must descend from the exact selected experimental PR base." >&2
+                  exit 1
+                fi
+                ;;
+              *)
+                echo "Only main or the explicitly selected experimental integration base is allowed." >&2
+                exit 1
+                ;;
+            esac
           elif [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
             if [[ "${EVENT_REF}" != "refs/heads/main" || "${SOURCE_SHA}" != "${WORKFLOW_HOST_SHA}" ]]; then
               echo "Manual runs must use this protected main workflow-host commit as their source." >&2
@@ -119,6 +141,9 @@ jobs:
             if [[ "${OPERATION_INPUT}" != "prepare" && "${OPERATION_INPUT}" != "package" ]]; then
               echo "Manual operation must be prepare or package." >&2
               exit 1
+            fi
+            if ! git merge-base --is-ancestor "${SELECTED_BASE_SHA}" "${SOURCE_SHA}"; then
+              package_lineage_eligible=false
             fi
           else
             echo "Unsupported event for the package route." >&2
@@ -141,9 +166,7 @@ jobs:
             "scripts/codex_package/smoke_tests/pyproject.toml"
             "scripts/codex_package/smoke_tests/uv.lock"
             "scripts/codex_package/smoke_tests/test_codex_package.py"
-            "scripts/codex_package/smoke_tests/first_binary/artifact.py"
-            "scripts/codex_package/smoke_tests/first_binary/conftest.py"
-            "scripts/codex_package/smoke_tests/first_binary/package_acceptance.py"
+            "scripts/codex_package/smoke_tests/conftest.py"
             "scripts/codex_package/smoke_tests/first_binary/test_tui_package_version.py"
             "scripts/codex_package/smoke_tests/first_binary/test_tui_agents_acceptance.py"
             "scripts/codex_package/smoke_tests/first_binary/tui_pty.py"
@@ -157,7 +180,11 @@ jobs:
           if ! justfile_contents="$(git show "${SOURCE_SHA}:justfile" 2>/dev/null)" || ! grep -Fq "assemble-codex-package" <<< "${justfile_contents}"; then
             missing_package_paths+=("justfile:assemble-codex-package")
           fi
-          if [[ "${#missing_package_paths[@]}" -eq 0 ]]; then
+          if [[ "${package_lineage_eligible}" != "true" ]]; then
+            package_available=false
+            echo "Package artifacts are unavailable for this exact main-based source because it is outside the selected experimental lineage." >&2
+            echo "::notice title=Package route not applicable::Hosted source generation remains available; package and consumer proof require the selected experimental lineage."
+          elif [[ "${#missing_package_paths[@]}" -eq 0 ]]; then
             package_available=true
           else
             package_available=false
@@ -178,7 +205,7 @@ jobs:
 
   prepare-source:
     name: Generate exact-source locks and schemas
-    if: ${{ needs.identity.outputs.package_available == 'true' }}
+    if: ${{ needs.identity.result == 'success' }}
     needs: identity
     runs-on: ubuntu-24.04
     timeout-minutes: 210
@@ -319,17 +346,17 @@ jobs:
           retention-days: 3
 
   package-unavailable:
-    name: Package route unavailable for this exact source
+    name: Package artifacts unavailable for this exact source
     if: ${{ needs.identity.outputs.package_available != 'true' }}
     needs: identity
     runs-on: ubuntu-24.04
     steps:
-      - name: Report missing package inputs without claiming artifact proof
+      - name: Report package unavailability without claiming artifact proof
         env:
           SOURCE_SHA: ${{ needs.identity.outputs.source_sha }}
         run: |
-          echo "Package preparation and package consumption are skipped for ${SOURCE_SHA}."
-          echo "The identity job listed the missing assembler/smoke-test inputs; this is not package or consumer acceptance."
+          echo "Package build and consumer checks are skipped for ${SOURCE_SHA}."
+          echo "The identity job records why this exact source is not package-eligible; this is not package or consumer acceptance."
 
   build-package:
     name: Build exact Linux package pair (${{ matrix.target }})
