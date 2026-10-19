@@ -576,7 +576,6 @@ jobs:
             "compression::tests::materialization_and_resume_preserve_caller_path_alias"
             "compression::tests::resume_materializes_compressed_rollout_path"
             "compression::tests::append_rollout_item_materializes_compressed_rollout"
-            "compression::tests::append_materialization_preserves_compressed_rollout_permissions"
             "recorder::tests::append_rollout_item_to_path_assigns_next_paginated_ordinal"
           )
           inventory="${RUNNER_TEMP}/windows-rollout-identity-inventory.txt"
