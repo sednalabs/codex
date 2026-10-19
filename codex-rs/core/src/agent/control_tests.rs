@@ -1579,8 +1579,10 @@ async fn explicit_progress_to_deeper_nonroot_is_restored_without_another_send() 
         .expect("same request should read its durable receipt after recipient resume");
     assert_eq!(ResponseItemId::from_server(replayed_id), update_id);
     let queued = resumed_thread.session.input_queue.drain_mailbox().await;
-    assert_eq!(queued.len(), 1, "resume and replay must not duplicate queued mail");
-    assert_eq!(queued[0].communication, expected_communication);
+    assert!(
+        queued.is_empty(),
+        "same-key replay must not requeue an already-drained in-flight update"
+    );
     let resumed_items = explicit_update_rollout_items(&resumed_thread).await;
     assert_eq!(
         resumed_items
