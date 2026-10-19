@@ -17,6 +17,7 @@ use codex_app_server_protocol::ItemCompletedNotification;
 use codex_app_server_protocol::ItemStartedNotification;
 use codex_app_server_protocol::JSONRPCMessage;
 use codex_app_server_protocol::MergeStrategy;
+use codex_app_server_protocol::SubAgentActivityKind;
 use codex_app_server_protocol::ThreadGoalSetResponse;
 use codex_app_server_protocol::ThreadGoalStatus;
 use codex_app_server_protocol::ThreadGoalUpdatedNotification;
@@ -461,22 +462,19 @@ async fn thread_spawn_goal_continuation_precedes_parent_handback() -> Result<()>
                     let completed: ItemCompletedNotification = serde_json::from_value(
                         notification.params.clone().expect("notification params"),
                     )?;
-                    if let ThreadItem::CollabAgentToolCall {
+                    if let ThreadItem::SubAgentActivity {
                         id,
-                        tool,
-                        status,
-                        receiver_thread_ids,
+                        kind,
+                        agent_thread_id: spawned_thread_id,
                         ..
                     } = completed.item
                         && id == SPAWN_CALL_ID
                     {
-                        assert_eq!(tool, CollabAgentTool::SpawnAgent);
-                        assert_eq!(status, CollabAgentToolCallStatus::Completed);
-                        let spawned_thread_id = receiver_thread_ids
-                            .first()
-                            .expect("spawn result has a child thread");
-                        assert_eq!(spawned_thread_id, &child_thread_id);
-                        spawn_child_thread_id = Some(spawned_thread_id.clone());
+                        assert_eq!(completed.thread_id, thread.id);
+                        assert_eq!(completed.turn_id, parent_turn.turn.id);
+                        assert_eq!(kind, SubAgentActivityKind::Started);
+                        assert_eq!(spawned_thread_id, child_thread_id);
+                        spawn_child_thread_id = Some(spawned_thread_id);
                     }
                 }
                 "item/started" => {
