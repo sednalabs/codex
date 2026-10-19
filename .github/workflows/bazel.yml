@@ -168,6 +168,27 @@ jobs:
           # the PR-blocking critical path after the useful test work is done.
           cache-scope: bazel-test
 
+      - name: Provision pinned Windows voice Bazel inputs
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $manifest = Get-Content -Raw .github/scripts/voice-cygwin-snapshot.json | ConvertFrom-Json
+          $pin = $manifest.archive
+          $source = $manifest.sourceArchive
+          $directory = Join-Path $env:RUNNER_TEMP "voice-cygwin-snapshot"
+          New-Item -ItemType Directory -Path $directory | Out-Null
+          gh release download $pin.tag --repo "${{ github.repository }}" --pattern $pin.name --pattern $source.name --dir $directory
+          if ($LASTEXITCODE -ne 0) { throw "Cannot obtain the public Cygwin inputs and source" }
+          $sourceFile = Join-Path $directory $source.name
+          if ((Get-Item $sourceFile).Length -ne $source.bytes -or
+              (Get-FileHash $sourceFile -Algorithm SHA256).Hash.ToLowerInvariant() -ne $source.sha256) {
+            throw "Public Cygwin source archive mismatch"
+          }
+          & ./.github/scripts/setup-voice-windows.ps1 -Target "x86_64-pc-windows-msvc" -SnapshotArchive (Join-Path $directory $pin.name)
+          if ($LASTEXITCODE -ne 0) { throw "Pinned Windows voice Bazel inputs could not be provisioned" }
+
       - name: Validate Windows SystemRoot for Bazel
         if: runner.os == 'Windows'
         shell: pwsh
@@ -238,9 +259,15 @@ jobs:
             echo "CODEX_BAZEL_PROCESSOR_ARCHITECTURE must be set for Windows Bazel tests." >&2
             exit 1
           fi
+          if [[ -z "${VOICE_WINDOWS_BAZEL_REPOSITORY:-}" ]]; then
+            echo "VOICE_WINDOWS_BAZEL_REPOSITORY must be set for Windows Bazel tests." >&2
+            exit 1
+          fi
           bazel_test_args+=(
             --action_env="SystemRoot=${CODEX_BAZEL_SYSTEM_ROOT}"
             --action_env="PROCESSOR_ARCHITECTURE=${CODEX_BAZEL_PROCESSOR_ARCHITECTURE}"
+            --inject_repository="voice_windows_tools=${VOICE_WINDOWS_BAZEL_REPOSITORY}"
+            --//third_party/voice:windows_installed_tools=@voice_windows_tools//:tools
           )
 
           ./.github/scripts/run-bazel-ci.sh \
@@ -395,6 +422,27 @@ jobs:
           target: ${{ matrix.target }}
           cache-scope: bazel-${{ github.job }}
 
+      - name: Provision pinned Windows voice Bazel inputs
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $manifest = Get-Content -Raw .github/scripts/voice-cygwin-snapshot.json | ConvertFrom-Json
+          $pin = $manifest.archive
+          $source = $manifest.sourceArchive
+          $directory = Join-Path $env:RUNNER_TEMP "voice-cygwin-snapshot"
+          New-Item -ItemType Directory -Path $directory | Out-Null
+          gh release download $pin.tag --repo "${{ github.repository }}" --pattern $pin.name --pattern $source.name --dir $directory
+          if ($LASTEXITCODE -ne 0) { throw "Cannot obtain the public Cygwin inputs and source" }
+          $sourceFile = Join-Path $directory $source.name
+          if ((Get-Item $sourceFile).Length -ne $source.bytes -or
+              (Get-FileHash $sourceFile -Algorithm SHA256).Hash.ToLowerInvariant() -ne $source.sha256) {
+            throw "Public Cygwin source archive mismatch"
+          }
+          & ./.github/scripts/setup-voice-windows.ps1 -Target "x86_64-pc-windows-msvc" -SnapshotArchive (Join-Path $directory $pin.name)
+          if ($LASTEXITCODE -ne 0) { throw "Pinned Windows voice Bazel inputs could not be provisioned" }
+
       - name: Validate Windows SystemRoot for Bazel
         if: runner.os == 'Windows'
         shell: pwsh
@@ -443,11 +491,17 @@ jobs:
               echo "CODEX_BAZEL_PROCESSOR_ARCHITECTURE must be set for Windows Bazel Clippy." >&2
               exit 1
             fi
+            if [[ -z "${VOICE_WINDOWS_BAZEL_REPOSITORY:-}" ]]; then
+              echo "VOICE_WINDOWS_BAZEL_REPOSITORY must be set for Windows Bazel Clippy." >&2
+              exit 1
+            fi
             bazel_clippy_args+=(
               --action_env="SystemRoot=${CODEX_BAZEL_SYSTEM_ROOT}"
               --action_env="PROCESSOR_ARCHITECTURE=${CODEX_BAZEL_PROCESSOR_ARCHITECTURE}"
               --skip_incompatible_explicit_targets
               --repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1
+              --inject_repository="voice_windows_tools=${VOICE_WINDOWS_BAZEL_REPOSITORY}"
+              --//third_party/voice:windows_installed_tools=@voice_windows_tools//:tools
             )
           fi
 
@@ -519,6 +573,27 @@ jobs:
           target: ${{ matrix.target }}
           cache-scope: bazel-${{ github.job }}
 
+      - name: Provision pinned Windows voice Bazel inputs
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $manifest = Get-Content -Raw .github/scripts/voice-cygwin-snapshot.json | ConvertFrom-Json
+          $pin = $manifest.archive
+          $source = $manifest.sourceArchive
+          $directory = Join-Path $env:RUNNER_TEMP "voice-cygwin-snapshot"
+          New-Item -ItemType Directory -Path $directory | Out-Null
+          gh release download $pin.tag --repo "${{ github.repository }}" --pattern $pin.name --pattern $source.name --dir $directory
+          if ($LASTEXITCODE -ne 0) { throw "Cannot obtain the public Cygwin inputs and source" }
+          $sourceFile = Join-Path $directory $source.name
+          if ((Get-Item $sourceFile).Length -ne $source.bytes -or
+              (Get-FileHash $sourceFile -Algorithm SHA256).Hash.ToLowerInvariant() -ne $source.sha256) {
+            throw "Public Cygwin source archive mismatch"
+          }
+          & ./.github/scripts/setup-voice-windows.ps1 -Target "x86_64-pc-windows-msvc" -SnapshotArchive (Join-Path $directory $pin.name)
+          if ($LASTEXITCODE -ne 0) { throw "Pinned Windows voice Bazel inputs could not be provisioned" }
+
       - name: Validate Windows SystemRoot for Bazel
         if: runner.os == 'Windows'
         shell: pwsh
@@ -577,9 +652,15 @@ jobs:
               echo "CODEX_BAZEL_PROCESSOR_ARCHITECTURE must be set for Windows Bazel release builds." >&2
               exit 1
             fi
+            if [[ -z "${VOICE_WINDOWS_BAZEL_REPOSITORY:-}" ]]; then
+              echo "VOICE_WINDOWS_BAZEL_REPOSITORY must be set for Windows Bazel release builds." >&2
+              exit 1
+            fi
             bazel_build_args+=(
               --action_env="SystemRoot=${CODEX_BAZEL_SYSTEM_ROOT}"
               --action_env="PROCESSOR_ARCHITECTURE=${CODEX_BAZEL_PROCESSOR_ARCHITECTURE}"
+              --inject_repository="voice_windows_tools=${VOICE_WINDOWS_BAZEL_REPOSITORY}"
+              --//third_party/voice:windows_installed_tools=@voice_windows_tools//:tools
             )
             bazel_build_args+=(--repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1)
           fi
