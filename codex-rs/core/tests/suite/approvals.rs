@@ -3678,6 +3678,7 @@ async fn matched_prefix_rule_runs_unsandboxed_under_zsh_fork() -> Result<()> {
         "builtin print -r -- CODEX_ZSH_FORK_PHASE_SCRIPT_STARTED; touch {outside_path:?}; __codex_zsh_fork_phase_status=$?; builtin print -r -- CODEX_ZSH_FORK_PHASE_TOUCH_RETURNED:$__codex_zsh_fork_phase_status; exit $__codex_zsh_fork_phase_status"
     );
     let rules = r#"prefix_rule(pattern=["touch"], decision="allow")"#.to_string();
+    let permission_profile_for_config = permission_profile.clone();
 
     let server = start_mock_server().await;
     let outside_path_for_hook = outside_path.clone();
@@ -3691,7 +3692,7 @@ async fn matched_prefix_rule_runs_unsandboxed_under_zsh_fork() -> Result<()> {
         .with_config(move |config| {
             config
                 .permissions
-                .set_permission_profile(permission_profile)
+                .set_permission_profile(permission_profile_for_config)
                 .expect("set permission profile");
             config.permissions.shell_environment_policy.inherit =
                 ShellEnvironmentPolicyInherit::Core;
