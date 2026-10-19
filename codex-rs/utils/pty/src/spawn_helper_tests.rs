@@ -162,7 +162,9 @@ async fn helper_target_dies_when_parent_is_killed() -> anyhow::Result<()> {
         .expect("child reports its PID after verifying PDEATHSIG")
         .parse::<libc::pid_t>()?;
     // The fixture child waits on the cleanup pipe while its parent is alive.
-    let child = tokio::io::unix::AsyncFd::new(open_pidfd(pid)?)?;
+    // SAFETY: `OwnedFd` owns the pidfd and remains its unique, unchanged owner
+    // for the lifetime of `AsyncFd`.
+    let child = unsafe { tokio::io::unix::AsyncFd::register(open_pidfd(pid)?)? };
     parent.kill().await?;
     let stopped = tokio::time::timeout(Duration::from_secs(5), child.readable()).await;
     drop(cleanup);
