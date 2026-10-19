@@ -6135,7 +6135,7 @@ async fn reconciliation_replaces_connection_when_protocol_mode_changes() {
     )
     .await;
     let codex_home = tempdir().expect("tempdir");
-    let mut mcp_config = crate::mcp::tests::test_mcp_config(codex_home.path().to_path_buf());
+    let mcp_config = crate::mcp::tests::test_mcp_config(codex_home.path().to_path_buf());
     let mut configured_server = config.clone();
     configured_server.protocol_mode = Some(codex_config::McpServerProtocolMode::V20260728);
 
