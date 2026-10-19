@@ -116,6 +116,7 @@ mod app_info;
 mod app_server_approval_conversions;
 mod app_server_connection;
 mod app_server_session;
+mod browser_dynamic_tools;
 mod approval_events;
 mod async_question_reply;
 mod backend_banners;

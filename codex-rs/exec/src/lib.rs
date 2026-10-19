@@ -25,6 +25,10 @@ use codex_app_server_client::InProcessServerEvent;
 use codex_app_server_client::TypedRequestError;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ConfigWarningNotification;
+use codex_app_server_protocol::DynamicToolCallOutputContentItem;
+use codex_app_server_protocol::DynamicToolCallParams;
+use codex_app_server_protocol::DynamicToolCallResponse;
+use codex_app_server_protocol::DynamicToolSpec;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::McpServerElicitationAction;
 use codex_app_server_protocol::McpServerElicitationRequestResponse;
@@ -1335,7 +1339,29 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
 
         match server_event {
             InProcessServerEvent::ServerRequest(request) => {
-                handle_server_request(&client, *request, &mut error_seen).await;
+                let request = *request;
+                if is_exec_browser_server_request(&request) {
+                    if complete_server_request_or_interrupt(
+                        handle_server_request(&client, request, &config, &mut error_seen),
+                        &mut interrupt_rx,
+                        &mut interrupt_channel_open,
+                    )
+                    .await
+                    {
+                        // Dropping an interrupted Browser call can stop a pending
+                        // provider process, but cannot undo an action already sent
+                        // to the page. The interrupted turn is never replayed here.
+                        interrupt_exec_turn(
+                            &client,
+                            &mut request_ids,
+                            &primary_thread_id_for_requests,
+                            &task_id,
+                        )
+                        .await;
+                    }
+                } else {
+                    handle_server_request(&client, request, &config, &mut error_seen).await;
+                }
             }
             InProcessServerEvent::ServerNotification(notification) => {
                 let mut notification = *notification;
@@ -1414,6 +1440,11 @@ async fn start_thread(
     thread_source: &ThreadSource,
 ) -> Result<ThreadStartResponse, String> {
     let mut params = thread_start_params_from_config(config, thread_source);
+    if params.dynamic_tools.is_some() && config.mcp_servers.get().contains_key("codex_browser") {
+        return Err(
+            "thread/start: MCP server key `codex_browser` conflicts with the native Browser namespace; rename that server before starting this thread".to_string(),
+        );
+    }
     loop {
         match client
             .request_typed(ClientRequest::ThreadStart {
@@ -1461,6 +1492,7 @@ fn thread_start_params_from_config(
         daybreak_enabled: (config.daybreak_enabled && !config.ephemeral).then_some(true),
         history_mode: (!config.ephemeral).then_some(ThreadHistoryMode::Paginated),
         thread_source: Some(thread_source.clone()),
+        dynamic_tools: configured_browser_dynamic_tools(config),
         ..ThreadStartParams::default()
     }
 }
@@ -1491,6 +1523,13 @@ fn thread_resume_params_from_config(
         exclude_turns: true,
         ..ThreadResumeParams::default()
     }
+}
+
+fn configured_browser_dynamic_tools(config: &Config) -> Option<Vec<DynamicToolSpec>> {
+    let tools = codex_browser_computer_use::configured_browser_dynamic_tools_for_codex_home(
+        config.codex_home.as_path(),
+    );
+    (!tools.is_empty()).then_some(tools)
 }
 
 fn thread_config_overrides_from_config(config: &Config) -> Option<HashMap<String, Value>> {
@@ -2070,9 +2109,76 @@ fn server_request_method_name(request: &ServerRequest) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
+async fn interrupt_exec_turn(
+    client: &InProcessAppServerClient,
+    request_ids: &mut RequestIdSequencer,
+    thread_id: &str,
+    turn_id: &str,
+) {
+    if let Err(err) = send_request_with_response::<TurnInterruptResponse>(
+        client,
+        ClientRequest::TurnInterrupt {
+            request_id: request_ids.next(),
+            params: TurnInterruptParams {
+                thread_id: thread_id.to_string(),
+                turn_id: turn_id.to_string(),
+            },
+        },
+        "turn/interrupt",
+    )
+    .await
+    {
+        warn!("turn/interrupt failed: {err}");
+    }
+}
+
+fn is_exec_browser_server_request(request: &ServerRequest) -> bool {
+    matches!(
+        request,
+        ServerRequest::DynamicToolCall { params, .. }
+            if params.namespace.as_deref() == Some("codex_browser")
+    )
+}
+
+async fn complete_server_request_or_interrupt(
+    request: impl Future<Output = ()>,
+    interrupt_rx: &mut mpsc::UnboundedReceiver<()>,
+    interrupt_channel_open: &mut bool,
+) -> bool {
+    tokio::pin!(request);
+    loop {
+        tokio::select! {
+            biased;
+            interrupt = interrupt_rx.recv(), if *interrupt_channel_open => {
+                if interrupt.is_some() {
+                    return true;
+                }
+                *interrupt_channel_open = false;
+            }
+            () = &mut request => return false,
+        }
+    }
+}
+
+async fn handle_exec_native_dynamic_tool(
+    params: &DynamicToolCallParams,
+    codex_home: &Path,
+) -> Option<DynamicToolCallResponse> {
+    if params.namespace.as_deref() != Some("codex_browser") {
+        return None;
+    }
+    match codex_browser_computer_use::handle_browser_computer_use_for_codex_home(params, codex_home)
+        .await
+    {
+        codex_browser_computer_use::BrowserComputerUseOutcome::Handled(response) => Some(response),
+        codex_browser_computer_use::BrowserComputerUseOutcome::Unavailable => None,
+    }
+}
+
 async fn handle_server_request(
     client: &InProcessAppServerClient,
     request: ServerRequest,
+    config: &Config,
     error_seen: &mut bool,
 ) {
     let method = server_request_method_name(&request);
@@ -2131,16 +2237,41 @@ async fn handle_server_request(
             .await
         }
         ServerRequest::DynamicToolCall { request_id, params } => {
-            reject_server_request(
-                client,
-                request_id,
-                &method,
-                format!(
-                    "dynamic tool calls are not supported in exec mode for thread `{}`",
-                    params.thread_id
-                ),
-            )
-            .await
+            if params.namespace.as_deref() == Some("codex_browser")
+                && config.mcp_servers.get().contains_key("codex_browser")
+            {
+                reject_server_request(
+                    client,
+                    request_id,
+                    &method,
+                    "Browser namespace conflicts with configured MCP server `codex_browser`"
+                        .to_string(),
+                )
+                .await
+            } else {
+                match handle_exec_native_dynamic_tool(&params, config.codex_home.as_path()).await {
+                    Some(response) => match serde_json::to_value(response) {
+                        Ok(value) => {
+                            resolve_server_request(client, request_id, value, &method).await
+                        }
+                        Err(err) => Err(format!(
+                            "failed to serialize native Browser response: {err}"
+                        )),
+                    },
+                    None => {
+                        reject_server_request(
+                            client,
+                            request_id,
+                            &method,
+                            format!(
+                                "dynamic tool calls are not supported in exec mode for thread `{}`",
+                                params.thread_id
+                            ),
+                        )
+                        .await
+                    }
+                }
+            }
         }
         ServerRequest::ChatgptAuthTokensRefresh { request_id, .. } => {
             reject_server_request(

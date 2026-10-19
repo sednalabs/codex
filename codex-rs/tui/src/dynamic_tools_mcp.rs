@@ -43,6 +43,7 @@ use serde_json::Value;
 use serde_json::json;
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::PoisonError;
 use std::sync::RwLock;
@@ -71,20 +72,40 @@ impl ThreadToolTransport {
                 "A configured MCP server owns the TUI tools namespace; keep the current task and rename that server before changing projects",
             ));
         }
+        if !crate::browser_dynamic_tools::specs_for_codex_home(config.codex_home.as_path())
+            .is_empty()
+            && config
+                .mcp_servers
+                .get()
+                .contains_key(crate::browser_dynamic_tools::NAMESPACE)
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "A configured MCP server owns the native Browser namespace; rename that server before starting a Browser-enabled thread",
+            ));
+        }
         Ok(())
     }
 
-    pub(crate) fn configure(&self, params: &mut ThreadStartParams) {
-        match self {
-            Self::Disabled => params.dynamic_tools = None,
-            Self::Dynamic => {
-                params.dynamic_tools = Some(dynamic_tools::non_delegation_tool_specs());
-            }
+    pub(crate) fn configure(
+        &self,
+        params: &mut ThreadStartParams,
+        codex_home: &Path,
+    ) -> Result<(), String> {
+        crate::browser_dynamic_tools::validate_no_reserved_name_conflict(params)?;
+        let mut specs = match self {
+            Self::Disabled => Vec::new(),
+            Self::Dynamic => dynamic_tools::non_delegation_tool_specs(),
             Self::Mcp(_) => {
-                params.dynamic_tools = None;
                 self.configure_mcp(&mut params.config);
+                Vec::new()
             }
-        }
+        };
+        specs.extend(crate::browser_dynamic_tools::specs_for_codex_home(
+            codex_home,
+        ));
+        params.dynamic_tools = (!specs.is_empty()).then_some(specs);
+        Ok(())
     }
 
     pub(crate) fn configure_mcp(&self, config: &mut Option<HashMap<String, Value>>) {

@@ -900,3 +900,134 @@ fn sample_thread_start_response() -> ThreadStartResponse {
         multi_agent_mode: Default::default(),
     }
 }
+
+#[tokio::test]
+async fn browser_tools_are_registered_for_exec_start() {
+    let codex_home = tempdir().expect("create temp codex home");
+    let cwd = tempdir().expect("create temp cwd");
+    std::fs::write(
+        codex_home.path().join("browser-computer-use.json"),
+        r#"{"provider":"playwright"}"#,
+    )
+    .expect("configure Browser provider");
+    let config = ConfigBuilder::default()
+        .loader_overrides(LoaderOverrides::without_managed_config_for_tests())
+        .codex_home(codex_home.path().to_path_buf())
+        .fallback_cwd(Some(cwd.path().to_path_buf()))
+        .build()
+        .await
+        .expect("build exec config");
+
+    let start = thread_start_params_from_config(&config, &ThreadSource::User);
+    let specs = start.dynamic_tools.expect("Browser tools on exec start");
+    assert!(matches!(
+        specs.as_slice(),
+        [DynamicToolSpec::Namespace(namespace)]
+            if namespace.name == "codex_browser" && namespace.tools.len() == 2
+    ));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn exec_dispatches_browser_provider_and_preserves_typed_images() {
+    let codex_home = tempdir().expect("create temp codex home");
+    let provider = r#"
+import json, sys
+request = json.load(sys.stdin)
+assert request["namespace"] == "codex_browser"
+assert request["threadId"] == "native-thread"
+assert request["turnId"] == "native-turn"
+assert request["callId"] == "native-call"
+assert request["tool"] == "browser_observe"
+assert request["arguments"] == {"url": "https://example.test"}
+json.dump({"contentItems": [{"type": "inputText", "text": "observed"},
+    {"type": "inputImage", "imageUrl": "data:image/png;base64,AAAA"}],
+    "success": True}, sys.stdout)
+"#;
+    std::fs::write(
+        codex_home.path().join("browser-computer-use.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "command": ["python3", "-c", provider],
+        }))
+        .expect("serialize Browser config"),
+    )
+    .expect("write Browser provider config");
+    let params = DynamicToolCallParams {
+        thread_id: "native-thread".to_string(),
+        turn_id: "native-turn".to_string(),
+        call_id: "native-call".to_string(),
+        namespace: Some("codex_browser".to_string()),
+        tool: "browser_observe".to_string(),
+        arguments: serde_json::json!({"url": "https://example.test"}),
+    };
+
+    let response = handle_exec_native_dynamic_tool(&params, codex_home.path())
+        .await
+        .expect("native Browser request is dispatched");
+    assert!(response.success, "{response:?}");
+    assert!(matches!(
+        response.content_items.as_slice(),
+        [DynamicToolCallOutputContentItem::InputText { text },
+            DynamicToolCallOutputContentItem::InputImage { image_url }]
+            if text == "observed" && image_url == "data:image/png;base64,AAAA"
+    ));
+
+    let mut unrelated = params;
+    unrelated.namespace = Some("codex_android".to_string());
+    assert!(
+        handle_exec_native_dynamic_tool(&unrelated, codex_home.path())
+            .await
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn pending_browser_request_is_dropped_on_interrupt_without_replay() {
+    struct PendingBrowserProvider(Option<tokio::sync::oneshot::Sender<()>>);
+
+    impl Drop for PendingBrowserProvider {
+        fn drop(&mut self) {
+            if let Some(sender) = self.0.take() {
+                let _ = sender.send(());
+            }
+        }
+    }
+
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (dropped_tx, dropped_rx) = tokio::sync::oneshot::channel();
+    let (interrupt_tx, mut interrupt_rx) = mpsc::unbounded_channel();
+    let request = async move {
+        let _provider = PendingBrowserProvider(Some(dropped_tx));
+        let _ = started_tx.send(());
+        std::future::pending::<()>().await;
+    };
+    let task = tokio::spawn(async move {
+        let mut channel_open = true;
+        complete_server_request_or_interrupt(request, &mut interrupt_rx, &mut channel_open).await
+    });
+    started_rx.await.expect("Browser provider dispatched");
+    interrupt_tx
+        .send(())
+        .expect("interrupt pending Browser request");
+
+    assert!(task.await.expect("Browser request task completed"));
+    dropped_rx.await.expect("provider future was dropped");
+}
+
+#[tokio::test]
+async fn closed_exec_interrupt_channel_does_not_cancel_browser_request() {
+    let (interrupt_tx, mut interrupt_rx) = mpsc::unbounded_channel::<()>();
+    drop(interrupt_tx);
+    let mut channel_open = true;
+    let mut completed = false;
+    assert!(
+        !complete_server_request_or_interrupt(
+            async { completed = true },
+            &mut interrupt_rx,
+            &mut channel_open,
+        )
+        .await
+    );
+    assert!(completed);
+    assert!(!channel_open);
+}

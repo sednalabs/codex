@@ -21,6 +21,8 @@ use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadResumeParams;
+use codex_app_server_protocol::ThreadResumeResponse;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::TurnStartParams;
@@ -171,6 +173,116 @@ async fn thread_start_normalizes_legacy_dynamic_tools_into_model_request() -> Re
         })
     );
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_resume_restores_persisted_browser_dynamic_tools() -> Result<()> {
+    let responses = vec![create_final_assistant_message_sse_response("Done")?];
+    let server = create_mock_responses_server_sequence_unchecked(responses).await;
+
+    let codex_home = TempDir::new()?;
+    MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
+    let browser_namespace = DynamicToolSpec::Namespace(DynamicToolNamespaceSpec {
+        name: "codex_browser".to_string(),
+        description: "Native Browser tools".to_string(),
+        tools: vec![
+            DynamicToolNamespaceTool::Function(DynamicToolFunctionSpec {
+                name: "browser_observe".to_string(),
+                description: "Capture the current browser viewport as a model-visible screenshot."
+                    .to_string(),
+                input_schema: json!({"type": "object", "properties": {}}),
+                defer_loading: false,
+            }),
+            DynamicToolNamespaceTool::Function(DynamicToolFunctionSpec {
+                name: "browser_step".to_string(),
+                description: "Perform one or more bounded browser actions, then return one fresh viewport screenshot."
+                    .to_string(),
+                input_schema: json!({"type": "object", "properties": {}}),
+                defer_loading: false,
+            }),
+        ],
+    });
+
+    let mut initial = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .build()
+        .await?;
+    timeout(DEFAULT_READ_TIMEOUT, initial.initialize()).await??;
+    let start_request = initial
+        .send_thread_start_request(ThreadStartParams {
+            dynamic_tools: Some(vec![browser_namespace]),
+            ..Default::default()
+        })
+        .await?;
+    let start_response: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        initial.read_stream_until_response_message(RequestId::Integer(start_request)),
+    )
+    .await??;
+    let thread = to_response::<ThreadStartResponse>(start_response)?.thread;
+    let thread_id = thread.id;
+    let exit = initial.shutdown_gracefully().await?;
+    anyhow::ensure!(exit.success(), "initial app-server exited unsuccessfully");
+    drop(initial);
+
+    let mut resumed = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .build()
+        .await?;
+    timeout(DEFAULT_READ_TIMEOUT, resumed.initialize()).await??;
+    let resume_request = resumed
+        .send_thread_resume_request(ThreadResumeParams {
+            thread_id: thread_id.clone(),
+            ..Default::default()
+        })
+        .await?;
+    let resume_response: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        resumed.read_stream_until_response_message(RequestId::Integer(resume_request)),
+    )
+    .await??;
+    to_response::<ThreadResumeResponse>(resume_response)?;
+
+    let turn_request = resumed
+        .send_turn_start_request(TurnStartParams {
+            thread_id,
+            client_user_message_id: None,
+            input: vec![V2UserInput::Text {
+                text: "Continue the existing Browser session".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    let turn_response: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        resumed.read_stream_until_response_message(RequestId::Integer(turn_request)),
+    )
+    .await??;
+    to_response::<TurnStartResponse>(turn_response)?;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        resumed.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
+    let bodies = responses_bodies(&server).await?;
+    let namespace = find_tool(&bodies[0], "codex_browser")
+        .context("persisted Browser namespace must reach the resumed model request")?;
+    let tools = namespace
+        .get("tools")
+        .and_then(Value::as_array)
+        .context("resumed Browser namespace must contain tools")?;
+    assert_eq!(
+        tools
+            .iter()
+            .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+            .collect::<Vec<_>>(),
+        ["browser_observe", "browser_step"]
+    );
     Ok(())
 }
 

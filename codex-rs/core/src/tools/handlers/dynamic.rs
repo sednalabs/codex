@@ -3,6 +3,7 @@ use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
+use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
 use crate::tools::context::boxed_tool_output;
 use crate::tools::handlers::parse_arguments;
@@ -17,6 +18,7 @@ use codex_protocol::items::DynamicToolCallItem;
 use codex_protocol::items::DynamicToolCallStatus;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::FunctionCallOutputContentItem;
+use codex_protocol::models::ResponseInputItem;
 use codex_tools::ResponsesApiNamespace;
 use codex_tools::ResponsesApiNamespaceTool;
 use codex_tools::ToolName;
@@ -162,10 +164,53 @@ impl DynamicToolHandler {
             .into_iter()
             .map(FunctionCallOutputContentItem::from)
             .collect::<Vec<_>>();
-        Ok(boxed_tool_output(FunctionToolOutput::from_content(
-            body,
-            Some(success),
-        )))
+        Ok(dynamic_tool_output(&self.tool_name, body, success))
+    }
+}
+
+fn dynamic_tool_output(
+    tool_name: &ToolName,
+    body: Vec<FunctionCallOutputContentItem>,
+    success: bool,
+) -> Box<dyn ToolOutput> {
+    let output = FunctionToolOutput::from_content(body, Some(success));
+    if matches!(
+        (tool_name.namespace.as_deref(), tool_name.name.as_str()),
+        (Some("codex_browser"), "browser_observe" | "browser_step")
+    ) {
+        boxed_tool_output(NativeBrowserToolOutput { output })
+    } else {
+        boxed_tool_output(output)
+    }
+}
+
+/// Preserve native image content through both direct and code-mode tool results.
+struct NativeBrowserToolOutput {
+    output: FunctionToolOutput,
+}
+
+impl ToolOutput for NativeBrowserToolOutput {
+    fn log_output(&self) -> String {
+        self.output.log_output()
+    }
+
+    fn success_for_logging(&self) -> bool {
+        self.output.success_for_logging()
+    }
+
+    fn to_response_item(&self, call_id: &str, payload: &ToolPayload) -> ResponseInputItem {
+        self.output.to_response_item(call_id, payload)
+    }
+
+    fn post_tool_use_response(&self, call_id: &str, payload: &ToolPayload) -> Option<Value> {
+        self.output.post_tool_use_response(call_id, payload)
+    }
+
+    fn code_mode_result(&self, _payload: &ToolPayload) -> Value {
+        serde_json::json!({
+            "content": self.output.body,
+            "success": self.output.success.unwrap_or(true),
+        })
     }
 }
 
@@ -176,6 +221,42 @@ impl CoreToolRuntime for DynamicToolHandler {
 
     fn is_third_party_tool(&self) -> bool {
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn browser_dynamic_tool_code_mode_result_preserves_typed_images() {
+        let image_url = "data:image/png;base64,AAAA";
+        let tool_name = ToolName::new(
+            Some("codex_browser".to_string()),
+            "browser_observe".to_string(),
+        );
+        let output = dynamic_tool_output(
+            &tool_name,
+            vec![
+                FunctionCallOutputContentItem::InputText {
+                    text: "Browser observation".to_string(),
+                },
+                FunctionCallOutputContentItem::InputImage {
+                    image: codex_protocol::models::ImageReference::Inline {
+                        image_url: image_url.to_string(),
+                    },
+                    detail: Some(codex_protocol::models::DEFAULT_IMAGE_DETAIL),
+                },
+            ],
+            true,
+        );
+        let result = output.code_mode_result(&ToolPayload::Function {
+            arguments: "{}".to_string(),
+        });
+
+        assert!(result["success"].as_bool().unwrap_or(false));
+        assert_eq!(result["content"][1]["type"], "input_image");
+        assert_eq!(result["content"][1]["image_url"], image_url);
     }
 }
 

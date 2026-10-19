@@ -896,7 +896,9 @@ impl AppServerSession {
             params.history_mode = None;
         }
         self.thread_tool_transport().validate_config(config)?;
-        self.thread_tool_transport().configure(&mut params);
+        self.thread_tool_transport()
+            .configure(&mut params, config.codex_home.as_path())
+            .map_err(color_eyre::eyre::Report::msg)?;
         let request_handle = self.request_handle();
         let (response, history_support, task_tools_available) =
             request_thread_start_with_history_fallback(&request_handle, request_id, params)
@@ -1833,7 +1835,9 @@ pub(crate) async fn start_thread_with_request_handle(
     thread_tool_transport.validate_config(&config)?;
     launch_choices.configure(&mut params);
     params.daybreak_enabled = (config.daybreak_enabled && !config.ephemeral).then_some(true);
-    thread_tool_transport.configure(&mut params);
+    thread_tool_transport
+        .configure(&mut params, config.codex_home.as_path())
+        .map_err(color_eyre::eyre::Report::msg)?;
     let (response, _history_support, task_tools_available) =
         request_thread_start_with_history_fallback(&request_handle, request_id, params)
             .await
