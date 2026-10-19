@@ -134,7 +134,7 @@ pub(crate) fn validate_bearer(value: String, principal: Uuid, now: i64) -> Resul
 }
 
 pub(crate) fn validate_bearer_for_provisioning(value: String, now: i64) -> Result<ApiBearer> {
-    validate_bearer_profile(value, None, now)
+    validate_bearer_profile(value, /*expected_principal*/ None, now)
 }
 
 fn validate_bearer_profile(
@@ -170,7 +170,9 @@ fn validate_bearer_profile(
     }
     let claims: TokenClaims = serde_json::from_slice(&claims_bytes)
         .map_err(|_| anyhow::anyhow!("fixed Ops API bearer claims are invalid"))?;
-    let token_principal = Uuid::parse_str(&claims.sub).ok();
+    let token_principal = Uuid::parse_str(&claims.sub)
+        .ok()
+        .filter(|principal| principal.to_string() == claims.sub);
     let subject_matches = token_principal.is_some()
         && expected_principal.is_none_or(|principal| token_principal == Some(principal));
     let has_scope = claims

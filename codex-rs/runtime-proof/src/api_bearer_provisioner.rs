@@ -210,9 +210,9 @@ fn replace_bearer_source(path: &Path, credential: &[u8]) -> Result<()> {
     let parent = open_fixed_directory(Path::new(FIXED_PARENT))?;
     validate_credential_store_directory(&parent, 0)?;
 
-    let _lock = lock_credential_store(&parent, 0)?;
+    let _lock = lock_credential_store(&parent, /*expected_owner*/ 0)?;
     let destination = std::ffi::CString::new(FIXED_NAME)?;
-    atomic_replace_credential_at(&parent, &destination, credential, 0)
+    atomic_replace_credential_at(&parent, &destination, credential, /*expected_owner*/ 0)
 }
 
 /// Removes the volatile source only when it still contains the exact bearer
@@ -224,8 +224,8 @@ pub(crate) fn cleanup_loaded_bearer_source(credentials_directory: &Path) -> Resu
     let parent_path = Path::new("/run/credstore");
     validate_fixed_parent(parent_path)?;
     let parent = open_fixed_directory(parent_path)?;
-    validate_credential_store_directory(&parent, 0)?;
-    cleanup_bearer_source_at(&parent, &loaded_bearer, 0)
+    validate_credential_store_directory(&parent, /*expected_owner*/ 0)?;
+    cleanup_bearer_source_at(&parent, &loaded_bearer, /*expected_owner*/ 0)
 }
 
 fn cleanup_bearer_source_at(
@@ -318,7 +318,9 @@ fn read_loaded_bearer(directory: &Path) -> Result<Option<zeroize::Zeroizing<Vec<
     }
     let file = unsafe { File::from_raw_fd(fd) };
     let metadata = file.metadata()?;
-    validate_bearer_file_metadata(&metadata, 0, None)?;
+    validate_bearer_file_metadata(
+        &metadata, /*expected_owner*/ 0, /*expected_mode*/ None,
+    )?;
     Ok(Some(crate::launcher::read_bounded(
         file,
         crate::api_claim::API_BEARER_CREDENTIAL_MAX_BYTES,
