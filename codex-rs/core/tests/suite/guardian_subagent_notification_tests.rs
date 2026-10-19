@@ -148,6 +148,7 @@ async fn guardian_circuit_breaker_notifies_parent(action: CircuitBreakAction) ->
         .thread_manager
         .get_thread(created.recv().await?)
         .await?;
+    eprintln!("test-phase=guardian-warning-wait");
     let warning = wait_for_event_match(&worker, |event| match event {
         EventMsg::GuardianWarning(warning) if warning.message.contains("3 consecutive") => {
             Some(warning.message.clone())
@@ -155,6 +156,7 @@ async fn guardian_circuit_breaker_notifies_parent(action: CircuitBreakAction) ->
         _ => None,
     })
     .await;
+    eprintln!("test-phase=guardian-turn-aborted-wait");
     let aborted = wait_for_event_match(&worker, |event| match event {
         EventMsg::TurnAborted(aborted) => Some(aborted.clone()),
         _ => None,
