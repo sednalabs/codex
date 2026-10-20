@@ -826,11 +826,7 @@ fn parse_pasted_oauth_callback(
         .map_err(|_| anyhow!("invalid fixed OAuth redirect URI"))?;
     let has_userinfo = input
         .split_once("://")
-        .and_then(|(_, remainder)| {
-            remainder
-                .split(['/', '?', '#'])
-                .next()
-        })
+        .and_then(|(_, remainder)| remainder.split(['/', '?', '#']).next())
         .is_some_and(|authority| authority.contains('@'));
     if callback.scheme() != expected.scheme()
         || callback.host_str() != expected.host_str()
