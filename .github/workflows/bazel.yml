@@ -610,45 +610,6 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Reclaim unused Android SDK on Linux release runner
-        if: runner.environment == 'github-hosted' && matrix.os == 'ubuntu-24.04' && matrix.target == 'x86_64-unknown-linux-gnu'
-        shell: bash
-        run: |
-          set -euo pipefail
-          sdk_root=/usr/local/lib/android/sdk
-          if [[ "${RUNNER_OS:-}" != "Linux" ||
-                "${ANDROID_HOME:-}" != "${sdk_root}" ||
-                "${ANDROID_SDK_ROOT:-}" != "${sdk_root}" ||
-                ! -d "${sdk_root}" || -L "${sdk_root}" ||
-                "$(realpath -e -- "${sdk_root}")" != "${sdk_root}" ]]; then
-            echo "Skipping SDK cleanup: the hosted runner does not have the expected canonical Android SDK."
-            exit 0
-          fi
-          sdk_device=$(stat -c '%d' -- "${sdk_root}")
-          if [[ "${sdk_device}" != "$(stat -c '%d' -- "${GITHUB_WORKSPACE}")" ||
-                "${sdk_device}" != "$(stat -c '%d' -- "${HOME}")" ]]; then
-            echo "Skipping SDK cleanup: the SDK does not share the build filesystem."
-            exit 0
-          fi
-          mount_targets=$(findmnt --raw --noheadings --output TARGET)
-          while IFS= read -r mount_target; do
-            case "${mount_target}" in
-              "${sdk_root}"|"${sdk_root}"/*)
-                echo "Skipping SDK cleanup: the SDK contains a mount."
-                exit 0
-                ;;
-            esac
-          done <<< "${mount_targets}"
-          du -sx --block-size=1 -- "${sdk_root}"
-          df --block-size=1 --output=avail "${GITHUB_WORKSPACE}"
-          find "${sdk_root}" -mindepth 1 -maxdepth 1 -exec rm -rf --one-file-system -- {} +
-          remaining=$(find "${sdk_root}" -mindepth 1 -print -quit)
-          if [[ -n "${remaining}" ]]; then
-            echo "SDK cleanup left entries under the verified root." >&2
-            exit 1
-          fi
-          df --block-size=1 --output=avail "${GITHUB_WORKSPACE}"
-
       - name: Prepare Bazel CI
         id: prepare_bazel
         uses: ./.github/actions/prepare-bazel-ci
