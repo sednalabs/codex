@@ -485,7 +485,8 @@ async fn switching_threads_keeps_the_source_voice_partial_only_on_reattach() {
                 render_bottom_popup(&app.chat_widget, /*width*/ 80)
             ),
             &app.config.cwd,
-        ).replace(crate::version::CODEX_CLI_VERSION, "<VERSION>")
+        )
+        .replace(crate::version::CODEX_CLI_VERSION, "<VERSION>")
     );
     while let Ok(event) = side_events.try_recv() {
         if let AppEvent::InsertHistoryCell(cell) = event {
@@ -890,7 +891,8 @@ async fn buffered_voice_items_reconcile_captions_after_thread_switch() {
     assert_eq!(rendered.matches("buffered answer").count(), 1);
     insta::assert_snapshot!(
         "voice_buffered_replay_reconciles_captions",
-        normalize_voice_snapshot_directory(&rendered, &app.config.cwd).replace(crate::version::CODEX_CLI_VERSION, "<VERSION>")
+        normalize_voice_snapshot_directory(&rendered, &app.config.cwd)
+            .replace(crate::version::CODEX_CLI_VERSION, "<VERSION>")
     );
 }
 
@@ -1095,7 +1097,8 @@ async fn completed_voice_caption_survives_repeated_thread_replacement() {
         if cycle == 0 {
             insta::assert_snapshot!(
                 "voice_completed_after_thread_switch",
-                normalize_voice_snapshot_directory(&rendered, &app.config.cwd).replace(crate::version::CODEX_CLI_VERSION, "<VERSION>")
+                normalize_voice_snapshot_directory(&rendered, &app.config.cwd)
+                    .replace(crate::version::CODEX_CLI_VERSION, "<VERSION>")
             );
         }
     }

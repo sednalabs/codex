@@ -48,6 +48,15 @@ protect this adapter alongside native transport tests. Installed first use is
 separate acceptance. Remove the config adapter when upstream provides an
 equivalent per-server preference without losing these boundaries.
 
+## Callback-input authentication boundaries
+
+Native MCP callback input retains the configured server's issuer, resource,
+scope and credential store. Fixed-policy service bearer provisioning is a
+separate companion consumer, not an interchangeable MCP login path. Its
+callback validation, privileged credential envelope and current artifact
+qualification remain independent of a native source-ancestry merge. The
+native package does not acquire that provisioner by importing its history.
+
 ## Upgrading and retiring carries
 
 Pin the upstream revision being considered, then compare it against current

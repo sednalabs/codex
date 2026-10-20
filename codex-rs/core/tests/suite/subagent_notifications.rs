@@ -887,10 +887,7 @@ async fn subagent_stop_replaces_stop_and_skips_internal_subagents() -> Result<()
                 EventMsg::HookStarted(event)
                     if event.run.event_name == HookEventName::SubagentStop =>
                 {
-                    assert!(
-                        stop_starts < 2,
-                        "unexpected extra subagent stop hook start"
-                    );
+                    assert!(stop_starts < 2, "unexpected extra subagent stop hook start");
                     stop_starts += 1;
                 }
                 EventMsg::HookCompleted(event)

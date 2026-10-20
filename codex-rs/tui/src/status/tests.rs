@@ -796,7 +796,10 @@ async fn status_uses_server_provider_id_and_auth_requirement() {
     );
     let rendered =
         sanitize_directory(render_lines(&composite.display_lines(/*width*/ 120))).join("\n");
-    assert_snapshot!("status_server_auth_not_required", rendered.replace(crate::version::CODEX_CLI_VERSION, "<VERSION>"));
+    assert_snapshot!(
+        "status_server_auth_not_required",
+        rendered.replace(crate::version::CODEX_CLI_VERSION, "<VERSION>")
+    );
 
     config.model_provider_id = "openai-proxy".to_string();
     config.model_provider = ModelProviderInfo {
@@ -1606,7 +1609,10 @@ async fn status_snapshot_wraps_in_narrow_terminal() {
     }
     let sanitized = sanitize_directory(rendered_lines).join("\n");
 
-    assert_snapshot!("status_snapshot_truncates_in_narrow_terminal", sanitized.replace(crate::version::CODEX_CLI_VERSION, "<VERSION>"));
+    assert_snapshot!(
+        "status_snapshot_truncates_in_narrow_terminal",
+        sanitized.replace(crate::version::CODEX_CLI_VERSION, "<VERSION>")
+    );
 }
 
 #[tokio::test]
@@ -1761,7 +1767,10 @@ async fn status_snapshot_uses_default_reasoning_when_config_empty() {
             }
         }
         let sanitized = sanitize_directory(rendered_lines).join("\n");
-        assert_snapshot!(snapshot, sanitized.replace(crate::version::CODEX_CLI_VERSION, "<VERSION>"));
+        assert_snapshot!(
+            snapshot,
+            sanitized.replace(crate::version::CODEX_CLI_VERSION, "<VERSION>")
+        );
     }
 }
 

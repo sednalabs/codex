@@ -97,9 +97,7 @@ async fn runtime_opens_recover_or_report_corruption_by_database_policy() -> anyh
                 let pool = sqlite
                     .open_runtime_db(spec, &migrator, Some(&telemetry))
                     .await?;
-                let rows = sqlx::query_scalar::<_, i64>(query)
-                    .fetch_one(&pool)
-                    .await?;
+                let rows = sqlx::query_scalar::<_, i64>(query).fetch_one(&pool).await?;
                 assert_eq!(rows, 0);
                 assert_eq!(
                     quick_check(&pool, Instant::now() + Duration::from_secs(/*secs*/ 5)).await?,
