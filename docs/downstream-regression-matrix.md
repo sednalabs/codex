@@ -1234,6 +1234,9 @@ unit remains conditioned on the separate root policy. These source tests do not
 create the client, obtain a token, activate the policy, or claim a Work item.
 The provisioner reports only a fixed stage label on failure and suppresses
 internal OAuth, token, callback, and credential-write error details.
+Its installed-image guard validates parent directories separately from the
+executable file and running inode, with coverage for valid files in trusted
+parents and rejection of writable parents.
 
 The protected CLI fixture additionally consumes the exact delegated process's
 non-timeout wait result before root finalization: the positive case requires

@@ -2,6 +2,7 @@ use super::*;
 use ed25519_dalek::Signature;
 use ed25519_dalek::Verifier as _;
 use pretty_assertions::assert_eq;
+use std::os::unix::fs::MetadataExt as _;
 use std::os::unix::fs::PermissionsExt as _;
 use std::process::Command;
 use std::time::Duration;
@@ -92,6 +93,66 @@ fn fixed_oauth_login_stages_map_to_provisioning_stages() {
             Some(expected_stage)
         );
     }
+}
+
+#[test]
+fn installed_launcher_parent_validation_accepts_a_file_in_trusted_directories() {
+    let (trust_boundary, launcher_path) = launcher_path_fixture();
+    let expected_uid = fs::metadata(&trust_boundary)
+        .expect("read trusted fixture directory metadata")
+        .uid();
+
+    assert!(
+        fs::metadata(&launcher_path)
+            .expect("read launcher fixture metadata")
+            .is_file()
+    );
+    require_controlled_parent_directories(&launcher_path, &trust_boundary, expected_uid)
+        .expect("validate trusted launcher parent directories");
+
+    fs::remove_dir_all(trust_boundary).expect("remove trusted launcher fixture");
+}
+
+#[test]
+fn installed_launcher_parent_validation_rejects_a_group_writable_parent() {
+    let (trust_boundary, launcher_path) = launcher_path_fixture();
+    let expected_uid = fs::metadata(&trust_boundary)
+        .expect("read trusted fixture directory metadata")
+        .uid();
+    let launcher_parent = launcher_path
+        .parent()
+        .expect("launcher fixture has a parent directory");
+    fs::set_permissions(launcher_parent, fs::Permissions::from_mode(0o770))
+        .expect("make launcher fixture parent group writable");
+
+    assert!(
+        require_controlled_parent_directories(&launcher_path, &trust_boundary, expected_uid)
+            .is_err()
+    );
+
+    fs::remove_dir_all(trust_boundary).expect("remove unsafe launcher fixture");
+}
+
+fn launcher_path_fixture() -> (PathBuf, PathBuf) {
+    let trust_boundary = std::env::temp_dir().join(format!(
+        "codex-runtime-proof-launcher-path-{}",
+        Uuid::new_v4()
+    ));
+    fs::create_dir(&trust_boundary).expect("create trusted launcher fixture directory");
+    fs::set_permissions(&trust_boundary, fs::Permissions::from_mode(0o700))
+        .expect("restrict trusted launcher fixture directory");
+
+    let launcher_parent = trust_boundary.join("libexec");
+    fs::create_dir(&launcher_parent).expect("create launcher parent fixture");
+    fs::set_permissions(&launcher_parent, fs::Permissions::from_mode(0o700))
+        .expect("restrict launcher parent fixture");
+
+    let launcher_path = launcher_parent.join("codex-runtime-proof-launcher");
+    fs::write(&launcher_path, b"fixture").expect("create regular launcher file fixture");
+    fs::set_permissions(&launcher_path, fs::Permissions::from_mode(0o755))
+        .expect("make launcher fixture executable");
+
+    (trust_boundary, launcher_path)
 }
 
 fn fixed_policy(seed: &[u8; RUNTIME_SEED_BYTES]) -> LauncherPolicy {

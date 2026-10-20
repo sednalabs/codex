@@ -288,12 +288,7 @@ fn require_installed_launcher_image() -> Result<()> {
     if current_path != expected_path || current_path.canonicalize()? != expected_path {
         bail!("API bearer provisioning must use the installed fixed launcher");
     }
-    for path in expected_path.ancestors() {
-        let metadata = fs::symlink_metadata(path)?;
-        if !metadata.is_dir() || metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
-            bail!("installed fixed launcher path is not root controlled");
-        }
-    }
+    require_controlled_parent_directories(expected_path, Path::new("/"), 0)?;
     let path_metadata = fs::symlink_metadata(expected_path)?;
     let executable = File::open("/proc/self/exe")?;
     let image_metadata = executable.metadata()?;
@@ -308,6 +303,31 @@ fn require_installed_launcher_image() -> Result<()> {
         bail!("running API bearer provisioner is not the installed fixed launcher");
     }
     Ok(())
+}
+
+fn require_controlled_parent_directories(
+    expected_path: &Path,
+    trust_boundary: &Path,
+    expected_uid: u32,
+) -> Result<()> {
+    let mut path = expected_path
+        .parent()
+        .context("installed fixed launcher has no parent directory")?;
+    loop {
+        let metadata = fs::symlink_metadata(path)?;
+        if !metadata.is_dir()
+            || metadata.uid() != expected_uid
+            || metadata.mode() & 0o022 != 0
+        {
+            bail!("installed fixed launcher path is not root controlled");
+        }
+        if path == trust_boundary {
+            return Ok(());
+        }
+        path = path
+            .parent()
+            .context("installed fixed launcher path does not reach its trust boundary")?;
+    }
 }
 
 fn run_mcp(

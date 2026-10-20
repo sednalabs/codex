@@ -3784,6 +3784,8 @@
         "api_bearer_consistency_is_bound_to_issuer_audience_subject_scope_and_expiry",
         "api_bearer_provisioning_validates_profile_without_activating_a_claim_policy",
         "api_bearer_provisioning_failure_exposes_only_a_fixed_stage",
+        "installed_launcher_parent_validation_accepts_a_file_in_trusted_directories",
+        "installed_launcher_parent_validation_rejects_a_group_writable_parent",
         "api_bearer_credential_envelope_has_a_fresh_cleanup_identity",
         "sudo_invoker_uid_must_be_non_root_decimal",
         "cleanup_removes_only_the_exact_loaded_credential_generation",
