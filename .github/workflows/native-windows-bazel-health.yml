@@ -181,6 +181,7 @@ jobs:
               --windows-cross-compile \
               -- \
               test \
+              --nocache_test_results \
               --test_output=all \
               --test_sharding_strategy=disabled \
               --test_arg="${selector}" \
@@ -215,12 +216,12 @@ jobs:
                   | tail -n 8 \
                   | cut -c1-256 \
                   | sed 's/^/fixture=/' || true
-                if grep -Fqi 'PA fatal guard' "${log}"; then
+                if grep -Fq '!IsConfigurablePoolInitialized()' "${log}"; then
                   printf 'pa_fatal_guard=detected\n'
                 fi
                 grep -oE 'error\[E[0-9]{4}\]' "${log}" \
                   | sort -u \
-                  | sed -n '1,4s/error\[E([0-9]{4})\]/rustc_error_code=E\1/p' || true
+                  | sed -E -n '1,4s/error\[E([0-9]{4})\]/rustc_error_code=E\1/p' || true
                 if grep -Eq 'error: linking with .* failed|link\.exe.*failed' "${log}"; then
                   printf 'compiler_error_category=linker_failure\n'
                 fi
@@ -232,7 +233,8 @@ jobs:
                 fi
                 grep -F 'panicked at' "${log}" \
                   | tr '\\' '/' \
-                  | grep -oE 'codex-rs/[^[:space:]:]+\.rs:[0-9]+:[0-9]+' \
+                  | grep -oE '(codex-rs/)?(core|ext/queue|voice-host|code-mode-host|code-mode-runtime|codex-mcp)/[^[:space:]:]+\.rs:[0-9]+:[0-9]+' \
+                  | sed -E 's#^(codex-rs/)?#codex-rs/#' \
                   | sort -u \
                   | sed -n '1,3s/^/panic_source=/' || true
                 grep -oE 'ExitStatus\([0-9]+\)' "${log}" \
