@@ -1,15 +1,19 @@
 fn main() {
     #[cfg(target_os = "linux")]
     let result = {
-        let mut arguments = std::env::args_os().skip(1);
-        let first = arguments.next();
-        let second = arguments.next();
-        match (first, second) {
-            (None, None) => codex_runtime_proof::launcher::run(),
-            (Some(argument), None)
+        let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
+        match arguments.as_slice() {
+            [] => codex_runtime_proof::launcher::run(),
+            [argument]
                 if argument.as_os_str() == std::ffi::OsStr::new("provision-api-bearer") =>
             {
                 codex_runtime_proof::launcher::provision_api_bearer()
+            }
+            [argument, mode]
+                if argument.as_os_str() == std::ffi::OsStr::new("provision-api-bearer")
+                    && mode.as_os_str() == std::ffi::OsStr::new("--no-browser") =>
+            {
+                codex_runtime_proof::launcher::provision_api_bearer_with_manual_callback_input()
             }
             _ => Err(anyhow::anyhow!("unsupported fixed launcher mode")),
         }

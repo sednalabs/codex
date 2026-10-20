@@ -163,15 +163,52 @@ pub fn run() -> Result<i32> {
 
 /// Provisions the fixed API bearer before a claim policy is activated.
 pub fn provision_api_bearer() -> Result<i32> {
+    provision_api_bearer_with_mode(ApiBearerProvisioningMode::Browser)
+}
+
+/// Provisions the fixed API bearer through the existing PKCE flow with a pasted callback URL.
+pub fn provision_api_bearer_with_manual_callback_input() -> Result<i32> {
+    provision_api_bearer_with_mode(ApiBearerProvisioningMode::ManualCallbackInput)
+}
+
+#[derive(Clone, Copy)]
+enum ApiBearerProvisioningMode {
+    Browser,
+    ManualCallbackInput,
+}
+
+fn provision_api_bearer_with_mode(mode: ApiBearerProvisioningMode) -> Result<i32> {
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
-    if arguments.len() != 1
-        || arguments[0].as_os_str() != std::ffi::OsStr::new("provision-api-bearer")
-    {
+    if !matches_api_bearer_invocation(&arguments, mode) {
         bail!("fixed API bearer provisioning does not accept caller-selected arguments");
     }
     require_root_launcher()?;
     require_installed_launcher_image()?;
-    crate::api_bearer_provisioner::run()
+    match mode {
+        ApiBearerProvisioningMode::Browser => crate::api_bearer_provisioner::run(),
+        ApiBearerProvisioningMode::ManualCallbackInput => {
+            crate::api_bearer_provisioner::run_with_manual_callback_input()
+        }
+    }
+}
+
+fn matches_api_bearer_invocation(
+    arguments: &[std::ffi::OsString],
+    mode: ApiBearerProvisioningMode,
+) -> bool {
+    let command_matches = arguments
+        .first()
+        .is_some_and(|argument| {
+            argument.as_os_str() == std::ffi::OsStr::new("provision-api-bearer")
+        });
+    match mode {
+        ApiBearerProvisioningMode::Browser => command_matches && arguments.len() == 1,
+        ApiBearerProvisioningMode::ManualCallbackInput => {
+            command_matches
+                && arguments.len() == 2
+                && arguments[1].as_os_str() == std::ffi::OsStr::new("--no-browser")
+        }
+    }
 }
 
 fn require_installed_launcher_image() -> Result<()> {

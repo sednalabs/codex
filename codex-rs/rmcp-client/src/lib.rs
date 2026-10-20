@@ -42,6 +42,8 @@ pub use perform_oauth_login::OAuthAccessToken;
 pub use perform_oauth_login::OAuthProviderError;
 pub use perform_oauth_login::OauthLoginHandle;
 pub use perform_oauth_login::perform_fixed_ops_api_access_token_login;
+pub use perform_oauth_login::perform_fixed_ops_api_access_token_login_with_callback_input;
+pub use perform_oauth_login::FIXED_API_CLAIM_TIMEOUT_SECS;
 pub use perform_oauth_login::perform_oauth_login;
 pub use perform_oauth_login::perform_oauth_login_return_url;
 pub use perform_oauth_login::perform_oauth_login_return_url_with_http_client;

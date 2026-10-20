@@ -1212,15 +1212,19 @@ hosted package proof do not appoint the bearer or establish HTTP first use.
 
 The bounded `provision-api-bearer` mode reuses the existing Codex OAuth callback
 and PKCE path with the fixed API issuer, resource, client, loopback redirect, and
-`ops:write` scope. Its regressions check the exact client/resource/scope and
-S256 request, reject unsafe callback or issuer metadata and unsupported
-token-type/lifetime responses, discard the refresh response without persistence,
-and verify atomic replacement of only one root-owned credential basename. It
-supports the installed root-owned launcher under interactive `sudo`; `SUDO_UID`
-selects only the unprivileged browser process and does not attest the OAuth
-subject. Provisioning checks issuer/audience/scope/UUID-subject-shape/expiry
-without requiring the claim policy. At actual use, the fixed HTTP launcher still
-requires the token subject to match the root policy before signing or sending.
+`ops:write` scope. The fixed `--no-browser` form accepts a complete callback URL
+on the invoking TTY without opening a browser or binding a local callback
+listener; it validates the exact redirect and single-use state before the same
+PKCE exchange. Its regressions check the exact client/resource/scope and S256
+request, reject unsafe or ambiguous callback input and issuer metadata and
+unsupported token-type/lifetime responses, discard the refresh response without
+persistence, and verify atomic replacement of only one root-owned credential
+basename. It supports the installed root-owned launcher under interactive
+`sudo`; `SUDO_UID` selects only the unprivileged browser process and does not
+attest the OAuth subject. Provisioning checks issuer/audience/scope/UUID-subject-
+shape/expiry without requiring the claim policy. At actual use, the fixed HTTP
+launcher still requires the token subject to match the root policy before
+signing or sending.
 The volatile `/run/credstore` source is a versioned envelope with a unique
 generation; the launcher removes only the exact loaded envelope under the same
 lock as replacement, preserving a concurrent same-token replacement. The claim
