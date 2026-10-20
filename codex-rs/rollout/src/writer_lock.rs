@@ -116,6 +116,16 @@ impl WriterLockCoordinator {
     /// Acquires exclusive writer ownership, returning `WouldBlock` for an active writer.
     pub fn acquire(self: &Arc<Self>, thread_id: ThreadId) -> io::Result<WriterLockGuard> {
         self.acquire_named(OsStr::new(&thread_id.to_string()))
+            .map_err(|err| {
+                if err.kind() == io::ErrorKind::WouldBlock {
+                    io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        format!("thread {thread_id} already has an active writer"),
+                    )
+                } else {
+                    err
+                }
+            })
     }
 
     fn acquire_named(self: &Arc<Self>, name: &OsStr) -> io::Result<WriterLockGuard> {

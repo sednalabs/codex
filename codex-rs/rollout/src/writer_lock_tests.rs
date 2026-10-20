@@ -30,6 +30,10 @@ fn writer_locks_reject_competing_owners_and_release_their_files() {
         Err(err) => err,
     };
     assert_eq!(err.kind(), ErrorKind::WouldBlock);
+    assert_eq!(
+        err.to_string(),
+        format!("thread {thread_id} already has an active writer")
+    );
     let other_owner = secondary
         .acquire(other_thread_id)
         .expect("other thread should acquire its own lock");
