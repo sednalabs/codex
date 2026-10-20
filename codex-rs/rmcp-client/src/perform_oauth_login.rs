@@ -828,7 +828,7 @@ fn parse_pasted_oauth_callback(
         .split_once("://")
         .and_then(|(_, remainder)| {
             remainder
-                .split(|character| matches!(character, '/' | '?' | '#'))
+                .split(['/', '?', '#'])
                 .next()
         })
         .is_some_and(|authority| authority.contains('@'));
