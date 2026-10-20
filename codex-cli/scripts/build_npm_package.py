@@ -49,20 +49,6 @@ CODEX_PLATFORM_PACKAGES: dict[str, dict[str, str]] = {
         "os": "darwin",
         "cpu": "arm64",
     },
-    "codex-win32-x64": {
-        "npm_name": "@openai/codex-win32-x64",
-        "npm_tag": "win32-x64",
-        "target_triple": "x86_64-pc-windows-msvc",
-        "os": "win32",
-        "cpu": "x64",
-    },
-    "codex-win32-arm64": {
-        "npm_name": "@openai/codex-win32-arm64",
-        "npm_tag": "win32-arm64",
-        "target_triple": "aarch64-pc-windows-msvc",
-        "os": "win32",
-        "cpu": "arm64",
-    },
 }
 
 PACKAGE_EXPANSIONS: dict[str, list[str]] = {
@@ -75,8 +61,6 @@ PACKAGE_NATIVE_COMPONENTS: dict[str, list[str]] = {
     "codex-linux-arm64": [CODEX_PACKAGE_COMPONENT],
     "codex-darwin-x64": [CODEX_PACKAGE_COMPONENT],
     "codex-darwin-arm64": [CODEX_PACKAGE_COMPONENT],
-    "codex-win32-x64": [CODEX_PACKAGE_COMPONENT],
-    "codex-win32-arm64": [CODEX_PACKAGE_COMPONENT],
     "codex-responses-api-proxy": ["codex-responses-api-proxy"],
     "codex-sdk": [],
 }

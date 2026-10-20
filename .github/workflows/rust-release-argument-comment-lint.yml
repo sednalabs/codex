@@ -50,15 +50,6 @@ jobs:
             lib_name: libargument_comment_lint@nightly-2026-08-20-aarch64-unknown-linux-gnu.so
             runner_binary: argument-comment-lint
             cargo_dylint_binary: cargo-dylint
-          - runner: windows-x64
-            target: x86_64-pc-windows-msvc
-            archive_name: argument-comment-lint-x86_64-pc-windows-msvc.zip
-            lib_name: argument_comment_lint@nightly-2026-08-20-x86_64-pc-windows-msvc.dll
-            runner_binary: argument-comment-lint.exe
-            cargo_dylint_binary: cargo-dylint.exe
-            runs_on:
-              group: ${{ github.event.repository.name }}-runners
-              labels: ${{ github.event.repository.name }}-windows-x64
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -101,11 +92,7 @@ jobs:
             "$package_root/lib/${{ matrix.lib_name }}"
 
           archive_path="$dest/${{ matrix.archive_name }}"
-          if [[ "${{ runner.os }}" == "Windows" ]]; then
-            (cd "${RUNNER_TEMP}" && 7z a "$GITHUB_WORKSPACE/$archive_path" argument-comment-lint >/dev/null)
-          else
-            (cd "${RUNNER_TEMP}" && tar -czf "$GITHUB_WORKSPACE/$archive_path" argument-comment-lint)
-          fi
+          (cd "${RUNNER_TEMP}" && tar -czf "$GITHUB_WORKSPACE/$archive_path" argument-comment-lint)
 
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:

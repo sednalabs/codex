@@ -25,8 +25,6 @@ BINARY_TARGETS = (
     "aarch64-unknown-linux-musl",
     "x86_64-apple-darwin",
     "aarch64-apple-darwin",
-    "x86_64-pc-windows-msvc",
-    "aarch64-pc-windows-msvc",
 )
 
 _SPEC = importlib.util.spec_from_file_location("codex_build_npm_package", BUILD_SCRIPT)
@@ -418,16 +416,11 @@ def install_single_binary(
     dest_dir = vendor_dir / target / component.dest_dir
     dest_dir.mkdir(parents=True, exist_ok=True)
 
-    binary_name = (
-        f"{component.binary_basename}.exe"
-        if "windows" in target
-        else component.binary_basename
-    )
+    binary_name = component.binary_basename
     dest = dest_dir / binary_name
     dest.unlink(missing_ok=True)
     extract_zstd_archive(archive_path, dest)
-    if "windows" not in target:
-        dest.chmod(0o755)
+    dest.chmod(0o755)
     return dest
 
 
@@ -449,8 +442,6 @@ def binary_archive_path(artifact_dir: Path, artifact_prefix: str, target: str) -
 
 
 def archive_name_for_target(artifact_prefix: str, target: str) -> str:
-    if "windows" in target:
-        return f"{artifact_prefix}-{target}.exe.zst"
     return f"{artifact_prefix}-{target}.zst"
 
 
