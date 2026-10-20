@@ -380,7 +380,7 @@ jobs:
             'build_only' + "`t" + 'true',
             'target' + "`t" + '//codex-rs/voice-host:codex-voice-host',
             'target' + "`t" + '//codex-rs/voice-host:codex-voice-host-bin-unit-tests',
-            'component' + "`t" + 'dll' + "`t" + 'system' + "`t" + 'helper_source_adjacent' + "`t" + 'unit_test_adjacent' + "`t" + 'test_ci_path' + "`t" + 'unit_test_runfiles' + "`t" + 'workspace_root' + "`t" + 'copied_helper_dependency_available'
+            'component' + "`t" + 'dll' + "`t" + 'x64_system32_file_or_api_set_name_observed' + "`t" + 'component_pe_dir_presence_observed' + "`t" + 'required_test_ci_path_presence_observed' + "`t" + 'unit_test_runfiles_manifest_name_entry_observed' + "`t" + 'workspace_root_presence_observed' + "`t" + 'copied_helper_system32_or_api_set_name_or_test_ci_path_observed'
           )
           Set-Content -LiteralPath $report -Value $lines -Encoding utf8
           "VOICE_DLL_REPORT=$report" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
@@ -457,6 +457,7 @@ jobs:
           bazel_log="${RUNNER_TEMP}/voice-loader-bazel-build.log"
           bazel_args=(
             --platforms=//:windows_x86_64_gnullvm
+            --host_platform=//:local_windows_msvc
             --workspace_status_command=./scripts/workspace-status.cmd
             --build_metadata=COMMIT_SHA=${SOURCE_SHA}
             --build_metadata=TAG_validation_host_sha=${EXPECTED_HOST_SHA}
@@ -508,6 +509,10 @@ jobs:
             --platforms=//:windows_x86_64_gnullvm
             --host_platform=//:local_windows_msvc
             --repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1
+            --action_env="SystemRoot=${CODEX_BAZEL_SYSTEM_ROOT}"
+            --host_action_env="SystemRoot=${CODEX_BAZEL_SYSTEM_ROOT}"
+            --action_env="PROCESSOR_ARCHITECTURE=${CODEX_BAZEL_PROCESSOR_ARCHITECTURE}"
+            --host_action_env="PROCESSOR_ARCHITECTURE=${CODEX_BAZEL_PROCESSOR_ARCHITECTURE}"
             --inject_repository="voice_windows_tools=${VOICE_WINDOWS_BAZEL_REPOSITORY}"
             --//third_party/voice:windows_installed_tools=@voice_windows_tools//:tools
           )
@@ -554,10 +559,7 @@ jobs:
           $helperPe = (Resolve-Path -LiteralPath $env:VOICE_HELPER_PE).Path
           $testPe = (Resolve-Path -LiteralPath $env:VOICE_TEST_PE).Path
           $testLauncher = (Resolve-Path -LiteralPath $env:VOICE_TEST_LAUNCHER).Path
-          $systemDirectories = @(
-            (Join-Path $env:SystemRoot 'System32'),
-            (Join-Path $env:SystemRoot 'SysWOW64')
-          )
+          $x64SystemDirectory = Join-Path $env:SystemRoot 'System32'
           $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
           if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) { throw 'The standard Visual Studio locator is unavailable.' }
           $installations = @(& $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | Where-Object { $_ })
@@ -583,13 +585,13 @@ jobs:
           $manifests = @($manifestCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf })
           if ($manifests.Count -ne 1) { throw 'The exact unit-test runfiles manifest was not uniquely located.' }
 
-          $runfilesNames = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+          $runfilesManifestNames = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
           foreach ($line in Get-Content -LiteralPath $manifests[0]) {
             if ([string]::IsNullOrWhiteSpace($line)) { continue }
             $parts = $line -split ' ', 2
             foreach ($value in $parts) {
               $name = [System.IO.Path]::GetFileName($value.Trim('"'))
-              if (-not [string]::IsNullOrWhiteSpace($name)) { [void]$runfilesNames.Add($name) }
+              if (-not [string]::IsNullOrWhiteSpace($name)) { [void]$runfilesManifestNames.Add($name) }
             }
           }
 
@@ -609,10 +611,7 @@ jobs:
           }
           function Test-SystemImport([string]$Name) {
             if ($Name -match '^(api-ms-win-|ext-ms-win-)') { return $true }
-            foreach ($directory in $systemDirectories) {
-              if (Test-Path -LiteralPath (Join-Path $directory $Name) -PathType Leaf) { return $true }
-            }
-            return $false
+            return Test-Path -LiteralPath (Join-Path $x64SystemDirectory $Name) -PathType Leaf
           }
           function Test-PathImport([string]$Name) {
             foreach ($directory in $testPathEntries) {
@@ -627,13 +626,13 @@ jobs:
           )) {
             $exeDirectory = Split-Path -Parent $component.Path
             foreach ($dll in (Get-PeImports $component.Path)) {
-              $isSystem = Test-SystemImport $dll
-              $adjacent = Test-Path -LiteralPath (Join-Path $exeDirectory $dll) -PathType Leaf
-              $onPath = Test-PathImport $dll
-              $inRunfiles = $runfilesNames.Contains($dll)
-              $inWorkspace = Test-Path -LiteralPath (Join-Path $workspace $dll) -PathType Leaf
-              $copyAvailable = if ($component.Name -eq 'voice-helper') { [string]($isSystem -or $onPath) } else { 'n/a' }
-              $rows.Add(($component.Name, $dll, [string]$isSystem, [string]$adjacent, [string]$onPath, [string]$inRunfiles, [string]$inWorkspace, $copyAvailable) -join "`t")
+              $x64SystemImportObserved = Test-SystemImport $dll
+              $componentPeDirectoryPresenceObserved = Test-Path -LiteralPath (Join-Path $exeDirectory $dll) -PathType Leaf
+              $requiredTestCiPathPresenceObserved = Test-PathImport $dll
+              $runfilesManifestNameEntryObserved = $runfilesManifestNames.Contains($dll)
+              $workspaceRootPresenceObserved = Test-Path -LiteralPath (Join-Path $workspace $dll) -PathType Leaf
+              $copiedHelperSystemOrTestCiPathObserved = if ($component.Name -eq 'voice-helper') { [string]($x64SystemImportObserved -or $requiredTestCiPathPresenceObserved) } else { 'n/a' }
+              $rows.Add(($component.Name, $dll, [string]$x64SystemImportObserved, [string]$componentPeDirectoryPresenceObserved, [string]$requiredTestCiPathPresenceObserved, [string]$runfilesManifestNameEntryObserved, [string]$workspaceRootPresenceObserved, $copiedHelperSystemOrTestCiPathObserved) -join "`t")
             }
           }
           Add-Content -LiteralPath $env:VOICE_DLL_REPORT -Value $rows.ToArray() -Encoding utf8
