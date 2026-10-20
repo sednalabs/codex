@@ -801,6 +801,7 @@ fn failed_response(error: String) -> DynamicToolCallResponse {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use super::*;
 
     #[cfg(unix)]
