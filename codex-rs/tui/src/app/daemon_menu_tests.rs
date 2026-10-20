@@ -127,6 +127,14 @@ async fn daemon_menu_is_read_only_and_confirmation_can_cancel_or_handoff() {
             snapshot,
             render_bottom_popup(&app.chat_widget, width)
                 .replace(r"C:\cli-build\bin\codex", "/x/cli-build/bin/codex")
+                .replace(
+                    crate::version::CODEX_CLI_VERSION,
+                    if snapshot == "daemon_cli_confirmation" {
+                        "<VERSION>"
+                    } else {
+                        crate::version::CODEX_CLI_VERSION
+                    },
+                )
         );
         // The default choice cancels without emitting an update or exiting.
         app.chat_widget.handle_key_event(KeyCode::Enter.into());

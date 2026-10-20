@@ -1,10 +1,10 @@
 ---
 source: tui/src/status/tests.rs
-expression: sanitized
+expression: "sanitized.replace(crate::version::CODEX_CLI_VERSION, \"<VERSION>\")"
 ---
 /status
 
-  >_ OpenAI Codex (v0.0.0)
+  >_ OpenAI Codex (v<VERSION>)
 
   Visit https://chatgpt.com/settings/usage for up-to-date
   information on rate limits and credits

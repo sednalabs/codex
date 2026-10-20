@@ -211,7 +211,7 @@ async fn empty_state_animation_preserves_header_cursor_and_footer() -> Result<()
             "enabled:\n{}\n---\ndisabled:\n{}",
             text(after),
             text(&before)
-        )
+        ).replace(crate::version::CODEX_CLI_VERSION, "<VERSION>")
     );
     let short = Size::new(/*width*/ 120, /*height*/ 12);
     draw(&mut app, &mut tui, short)?;

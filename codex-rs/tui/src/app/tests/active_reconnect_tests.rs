@@ -723,7 +723,7 @@ async fn reconnect_allows_slow_hydration_but_bounds_a_stalled_server() -> Result
                 &mut session,
                 &mut events,
                 result?,
-                CODEX_CLI_VERSION,
+                /*client_version*/ "2.0.0",
             )
             .await?;
             assert!(app.thread_unavailable(id));

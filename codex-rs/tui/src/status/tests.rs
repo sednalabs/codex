@@ -346,7 +346,7 @@ async fn status_snapshot_includes_reasoning_details() {
         }
     }
     let sanitized = sanitize_directory(rendered_lines).join("\n");
-    assert_snapshot!(sanitized);
+    assert_snapshot!(sanitized.replace(crate::version::CODEX_CLI_VERSION, "<VERSION>"));
 }
 
 #[tokio::test]
@@ -432,7 +432,7 @@ async fn status_snapshot_shows_chatgpt_plan_without_email() {
     );
     let sanitized =
         sanitize_directory(render_lines(&composite.display_lines(/*width*/ 80))).join("\n");
-    assert_snapshot!(sanitized);
+    assert_snapshot!(sanitized.replace(crate::version::CODEX_CLI_VERSION, "<VERSION>"));
 }
 
 #[tokio::test]
@@ -747,7 +747,7 @@ async fn status_snapshot_shows_active_user_defined_profile() {
         }
     }
     let sanitized = sanitize_directory(rendered_lines).join("\n");
-    assert_snapshot!(sanitized);
+    assert_snapshot!(sanitized.replace(crate::version::CODEX_CLI_VERSION, "<VERSION>"));
 }
 
 #[tokio::test]
@@ -796,7 +796,7 @@ async fn status_uses_server_provider_id_and_auth_requirement() {
     );
     let rendered =
         sanitize_directory(render_lines(&composite.display_lines(/*width*/ 120))).join("\n");
-    assert_snapshot!("status_server_auth_not_required", rendered);
+    assert_snapshot!("status_server_auth_not_required", rendered.replace(crate::version::CODEX_CLI_VERSION, "<VERSION>"));
 
     config.model_provider_id = "openai-proxy".to_string();
     config.model_provider = ModelProviderInfo {
@@ -903,7 +903,7 @@ async fn status_snapshot_shows_auto_review_permissions() {
         }
     }
     let sanitized = sanitize_directory(rendered_lines).join("\n");
-    assert_snapshot!(sanitized);
+    assert_snapshot!(sanitized.replace(crate::version::CODEX_CLI_VERSION, "<VERSION>"));
 }
 
 #[tokio::test]
@@ -1003,7 +1003,7 @@ async fn status_snapshot_includes_forked_from() {
         }
     }
     let sanitized = sanitize_directory(rendered_lines).join("\n");
-    assert_snapshot!(sanitized);
+    assert_snapshot!(sanitized.replace(crate::version::CODEX_CLI_VERSION, "<VERSION>"));
 }
 
 #[tokio::test]
@@ -1069,7 +1069,7 @@ async fn status_snapshot_includes_monthly_limit() {
         }
     }
     let sanitized = sanitize_directory(rendered_lines).join("\n");
-    assert_snapshot!(sanitized);
+    assert_snapshot!(sanitized.replace(crate::version::CODEX_CLI_VERSION, "<VERSION>"));
 }
 
 #[tokio::test]
@@ -1135,7 +1135,7 @@ async fn status_snapshot_includes_enterprise_monthly_credit_limit() {
         }
     }
     let sanitized = sanitize_directory(rendered_lines).join("\n");
-    assert_snapshot!(sanitized);
+    assert_snapshot!(sanitized.replace(crate::version::CODEX_CLI_VERSION, "<VERSION>"));
 
     let mut rendered_lines = render_lines(&composite.display_lines(/*width*/ 46));
     if cfg!(windows) {
@@ -1217,7 +1217,7 @@ async fn status_snapshot_uses_generic_limit_labels_for_unsupported_windows() {
         }
     }
     let sanitized = sanitize_directory(rendered_lines).join("\n");
-    assert_snapshot!(sanitized);
+    assert_snapshot!(sanitized.replace(crate::version::CODEX_CLI_VERSION, "<VERSION>"));
 }
 
 #[tokio::test]
@@ -1606,7 +1606,7 @@ async fn status_snapshot_wraps_in_narrow_terminal() {
     }
     let sanitized = sanitize_directory(rendered_lines).join("\n");
 
-    assert_snapshot!("status_snapshot_truncates_in_narrow_terminal", sanitized);
+    assert_snapshot!("status_snapshot_truncates_in_narrow_terminal", sanitized.replace(crate::version::CODEX_CLI_VERSION, "<VERSION>"));
 }
 
 #[tokio::test]
@@ -1644,7 +1644,7 @@ async fn status_snapshot_wraps_halfwidth_kana_in_narrow_terminal() {
 
     assert_snapshot!(
         "status_snapshot_truncates_halfwidth_kana_in_narrow_terminal",
-        sanitized
+        sanitized.replace(crate::version::CODEX_CLI_VERSION, "<VERSION>")
     );
 }
 
@@ -1693,7 +1693,7 @@ async fn status_snapshot_shows_missing_limits_message() {
         }
     }
     let sanitized = sanitize_directory(rendered_lines).join("\n");
-    assert_snapshot!(sanitized);
+    assert_snapshot!(sanitized.replace(crate::version::CODEX_CLI_VERSION, "<VERSION>"));
 }
 
 #[tokio::test]
@@ -1761,7 +1761,7 @@ async fn status_snapshot_uses_default_reasoning_when_config_empty() {
             }
         }
         let sanitized = sanitize_directory(rendered_lines).join("\n");
-        assert_snapshot!(snapshot, sanitized);
+        assert_snapshot!(snapshot, sanitized.replace(crate::version::CODEX_CLI_VERSION, "<VERSION>"));
     }
 }
 
@@ -1830,7 +1830,7 @@ async fn status_snapshot_shows_refreshing_limits_notice() {
         }
     }
     let sanitized = sanitize_directory(rendered_lines).join("\n");
-    assert_snapshot!(sanitized);
+    assert_snapshot!(sanitized.replace(crate::version::CODEX_CLI_VERSION, "<VERSION>"));
 }
 
 #[tokio::test]
@@ -1917,6 +1917,7 @@ async fn transcript_overlay_remeasures_status_after_rate_limit_refresh() {
     insta::assert_snapshot!(
         "transcript_overlay_status_rate_limit_refresh",
         format!("before:\n{before}\n\nafter:\n{after}")
+            .replace(crate::version::CODEX_CLI_VERSION, "<VERSION>")
     );
 }
 
@@ -1993,7 +1994,7 @@ async fn status_snapshot_includes_credits_and_limits() {
         }
     }
     let sanitized = sanitize_directory(rendered_lines).join("\n");
-    assert_snapshot!(sanitized);
+    assert_snapshot!(sanitized.replace(crate::version::CODEX_CLI_VERSION, "<VERSION>"));
 }
 
 #[tokio::test]
@@ -2054,7 +2055,7 @@ async fn status_snapshot_shows_unavailable_limits_message() {
         }
     }
     let sanitized = sanitize_directory(rendered_lines).join("\n");
-    assert_snapshot!(sanitized);
+    assert_snapshot!(sanitized.replace(crate::version::CODEX_CLI_VERSION, "<VERSION>"));
 }
 
 #[tokio::test]
@@ -2185,7 +2186,7 @@ async fn status_snapshot_shows_stale_limits_message() {
         }
     }
     let sanitized = sanitize_directory(rendered_lines).join("\n");
-    assert_snapshot!(sanitized);
+    assert_snapshot!(sanitized.replace(crate::version::CODEX_CLI_VERSION, "<VERSION>"));
 }
 
 #[tokio::test]
@@ -2259,7 +2260,7 @@ async fn status_snapshot_cached_limits_hide_credits_without_flag() {
         }
     }
     let sanitized = sanitize_directory(rendered_lines).join("\n");
-    assert_snapshot!(sanitized);
+    assert_snapshot!(sanitized.replace(crate::version::CODEX_CLI_VERSION, "<VERSION>"));
 }
 
 #[tokio::test]

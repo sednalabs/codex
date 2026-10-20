@@ -1,10 +1,10 @@
 ---
 source: tui/src/app/empty_state_animation_tests.rs
-expression: "format!(\"enabled:\\n{}\\n---\\ndisabled:\\n{}\", text(after), text(&before))"
+expression: "format!(\"enabled:\\n{}\\n---\\ndisabled:\\n{}\", text(after), text(&before)).replace(crate::version::CODEX_CLI_VERSION, \"<VERSION>\")"
 ---
 enabled:
 
-  >_ OpenAI Codex (v0.0.0)
+  >_ OpenAI Codex (v<VERSION>)
      /tmp/project
 
 
@@ -50,7 +50,7 @@ enabled:
 ---
 disabled:
 
-  >_ OpenAI Codex (v0.0.0)
+  >_ OpenAI Codex (v<VERSION>)
      /tmp/project
 
 

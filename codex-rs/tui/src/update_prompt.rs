@@ -298,7 +298,13 @@ mod tests {
         terminal
             .draw(|frame| frame.render_widget_ref(&screen, frame.area()))
             .expect("render update prompt");
-        insta::assert_snapshot!("update_prompt_modal", terminal.backend());
+        insta::assert_snapshot!(
+            "update_prompt_modal",
+            terminal
+                .backend()
+                .to_string()
+                .replace(crate::version::CODEX_CLI_VERSION, "<VERSION>")
+        );
     }
 
     #[test]
@@ -348,6 +354,8 @@ mod tests {
     #[test]
     fn long_update_command_keeps_selected_skip_visible_in_a_short_viewport() {
         let mut screen = new_prompt();
+        // Keep this fixed-viewport layout oracle independent of the crate version.
+        screen.current_version = "0.0.0".to_string();
         screen.update_action = UpdateAction::StandaloneWindows;
         screen.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
         let (width, height) = (28, 12);

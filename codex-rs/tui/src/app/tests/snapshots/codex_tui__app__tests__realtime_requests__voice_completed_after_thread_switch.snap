@@ -1,10 +1,10 @@
 ---
 source: tui/src/app/tests/realtime_requests.rs
 assertion_line: 1093
-expression: "normalize_voice_snapshot_directory(&rendered, &app.config.cwd)"
+expression: "normalize_voice_snapshot_directory(&rendered, &app.config.cwd).replace(crate::version::CODEX_CLI_VERSION, \"<VERSION>\")"
 ---
 
-  >_ OpenAI Codex (v0.0.0)
+  >_ OpenAI Codex (v<VERSION>)
      /tmp/project
 
   To get started, describe a task or try one of these commands:
