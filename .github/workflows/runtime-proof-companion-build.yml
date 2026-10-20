@@ -149,8 +149,10 @@ jobs:
           ARCHIVE_PATH="${archive_path}" \
           OUTPUT_DIR="${output_dir}" \
           python3 - <<'PY'
+          import hashlib
           import json
           import os
+          import tarfile
           from pathlib import Path
 
           stage = Path(os.environ["RUNNER_TEMP"]) / "runtime-proof-companion-payload"
@@ -162,6 +164,23 @@ jobs:
                   "sha256": digest,
                   "bytes": (stage / relative_path).stat().st_size,
               }
+
+          with tarfile.open(os.environ["ARCHIVE_PATH"], "r:gz") as archive:
+              members = [
+                  member
+                  for member in archive.getmembers()
+                  if member.name in {"./codex-runtime-proof-launcher", "codex-runtime-proof-launcher"}
+              ]
+              if len(members) != 1 or not members[0].isfile():
+                  raise SystemExit("companion archive is missing the runtime-proof launcher")
+              packaged_launcher = archive.extractfile(members[0])
+              if packaged_launcher is None:
+                  raise SystemExit("companion archive runtime-proof launcher is unreadable")
+              archive_digest = hashlib.sha256()
+              for block in iter(lambda: packaged_launcher.read(1024 * 1024), b""):
+                  archive_digest.update(block)
+              if archive_digest.hexdigest() != checksums["codex-runtime-proof-launcher"]["sha256"]:
+                  raise SystemExit("companion archive runtime-proof launcher does not match its manifest")
 
           manifest = {
               "schemaVersion": 1,
