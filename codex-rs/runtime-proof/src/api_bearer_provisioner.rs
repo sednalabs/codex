@@ -6,6 +6,8 @@
 //! volatile systemd credential source consumed by the fixed claim service.
 
 use crate::api_claim;
+use crate::launcher::ProvisioningStage;
+use crate::launcher::provisioning_failure;
 use anyhow::Result;
 use anyhow::bail;
 use codex_rmcp_client::FIXED_API_CLAIM_TIMEOUT_SECS;
@@ -149,16 +151,18 @@ enum ProvisioningInteraction {
 }
 
 fn run_with_interaction(interaction: ProvisioningInteraction) -> Result<i32> {
-    require_interactive_root_invocation()?;
+    require_interactive_root_invocation()
+        .map_err(|_| provisioning_failure(ProvisioningStage::Precondition))?;
     let bearer_parent = Path::new(BEARER_SOURCE_PATH)
         .parent()
-        .ok_or_else(|| anyhow::anyhow!("fixed Ops API credential path has no parent"))?;
-    validate_fixed_parent(bearer_parent)?;
+        .ok_or_else(|| provisioning_failure(ProvisioningStage::Precondition))?;
+    validate_fixed_parent(bearer_parent)
+        .map_err(|_| provisioning_failure(ProvisioningStage::Precondition))?;
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .map_err(|_| anyhow::anyhow!("build fixed OAuth provisioning runtime"))?;
+        .map_err(|_| provisioning_failure(ProvisioningStage::Runtime))?;
     let oauth_dispatch = tracing::Dispatch::none();
     let access_token = tracing::dispatcher::with_default(&oauth_dispatch, || {
         if matches!(interaction, ProvisioningInteraction::ManualCallbackInput) {
@@ -172,17 +176,42 @@ fn run_with_interaction(interaction: ProvisioningInteraction) -> Result<i32> {
                 open_authorization_url_as_invoking_user,
             ))
         }
+    })
+    .map_err(|error| {
+        let stage = match error.stage() {
+            codex_rmcp_client::FixedOAuthLoginStage::Precondition => {
+                ProvisioningStage::Precondition
+            }
+            codex_rmcp_client::FixedOAuthLoginStage::Discovery => {
+                ProvisioningStage::OAuthDiscovery
+            }
+            codex_rmcp_client::FixedOAuthLoginStage::Callback => {
+                ProvisioningStage::OAuthCallback
+            }
+            codex_rmcp_client::FixedOAuthLoginStage::Exchange => {
+                ProvisioningStage::OAuthExchange
+            }
+            codex_rmcp_client::FixedOAuthLoginStage::TokenValidation => {
+                ProvisioningStage::TokenValidation
+            }
+        };
+        provisioning_failure(stage)
     })?;
 
-    let now = api_claim::unix_seconds()?;
-    let bearer =
-        api_claim::validate_bearer_for_provisioning(access_token.access_token().to_string(), now)?;
+    let now = api_claim::unix_seconds()
+        .map_err(|_| provisioning_failure(ProvisioningStage::TokenValidation))?;
+    let bearer = api_claim::validate_bearer_for_provisioning(
+        access_token.access_token().to_string(),
+        now,
+    )
+    .map_err(|_| provisioning_failure(ProvisioningStage::TokenValidation))?;
     if bearer.expires_at <= now || bearer.expires_at > access_token.expires_at() {
-        bail!("fixed Ops API access token expiry does not match its OAuth lifetime");
+        return Err(provisioning_failure(ProvisioningStage::TokenValidation));
     }
-    let credential = api_claim::encode_bearer_credential(&bearer.value)?;
+    let credential = api_claim::encode_bearer_credential(&bearer.value)
+        .map_err(|_| provisioning_failure(ProvisioningStage::TokenValidation))?;
     replace_bearer_source(Path::new(BEARER_SOURCE_PATH), &credential)
-        .map_err(|_| anyhow::anyhow!("write fixed Ops API system credential"))?;
+        .map_err(|_| provisioning_failure(ProvisioningStage::CredentialWrite))?;
     Ok(0)
 }
 

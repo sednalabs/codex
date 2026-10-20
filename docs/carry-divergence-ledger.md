@@ -3933,6 +3933,8 @@ credential, including one with the same token but a different generation, is
 preserved. The unit remains inactive while the root claim policy is absent.
 The mode accepts no caller-selected path, URL, client, scope, or command option
 beyond the fixed `--no-browser` switch and sends no claim.
+Provisioning failures expose only a fixed phase label; internal error text,
+OAuth response details, and callback input remain suppressed.
 
 The unit template and binary are packaged for Linux x86_64 and Arm64; packaging
 does not create the host policy, credentials, service account, issuer

@@ -177,13 +177,69 @@ enum ApiBearerProvisioningMode {
     ManualCallbackInput,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ProvisioningStage {
+    Precondition,
+    Runtime,
+    OAuthDiscovery,
+    OAuthCallback,
+    OAuthExchange,
+    TokenValidation,
+    CredentialWrite,
+}
+
+impl ProvisioningStage {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Precondition => "precondition",
+            Self::Runtime => "runtime",
+            Self::OAuthDiscovery => "oauth_discovery",
+            Self::OAuthCallback => "oauth_callback",
+            Self::OAuthExchange => "oauth_exchange",
+            Self::TokenValidation => "token_validation",
+            Self::CredentialWrite => "credential_write",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct ProvisioningFailure {
+    stage: ProvisioningStage,
+}
+
+impl ProvisioningFailure {
+    pub(crate) fn new(stage: ProvisioningStage) -> Self {
+        Self { stage }
+    }
+}
+
+impl std::fmt::Display for ProvisioningFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "API bearer provisioning failed at {}", self.stage.as_str())
+    }
+}
+
+impl std::error::Error for ProvisioningFailure {}
+
+pub(crate) fn provisioning_failure(stage: ProvisioningStage) -> anyhow::Error {
+    anyhow::Error::new(ProvisioningFailure::new(stage))
+}
+
+/// Returns only a closed, non-sensitive phase label for an API bearer error.
+pub fn safe_provisioning_failure_stage(error: &anyhow::Error) -> Option<&'static str> {
+    error
+        .downcast_ref::<ProvisioningFailure>()
+        .map(|failure| failure.stage.as_str())
+}
+
 fn provision_api_bearer_with_mode(mode: ApiBearerProvisioningMode) -> Result<i32> {
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
     if !matches_api_bearer_invocation(&arguments, mode) {
-        bail!("fixed API bearer provisioning does not accept caller-selected arguments");
+        return Err(provisioning_failure(ProvisioningStage::Precondition));
     }
-    require_root_launcher()?;
-    require_installed_launcher_image()?;
+    require_root_launcher().map_err(|_| provisioning_failure(ProvisioningStage::Precondition))?;
+    require_installed_launcher_image()
+        .map_err(|_| provisioning_failure(ProvisioningStage::Precondition))?;
     match mode {
         ApiBearerProvisioningMode::Browser => crate::api_bearer_provisioner::run(),
         ApiBearerProvisioningMode::ManualCallbackInput => {

@@ -42,6 +42,24 @@ fn api_bearer_provisioning_accepts_only_the_fixed_browser_modes() {
     ));
 }
 
+#[test]
+fn api_bearer_provisioning_failure_exposes_only_a_fixed_stage() {
+    let error = provisioning_failure(ProvisioningStage::OAuthDiscovery);
+
+    assert_eq!(
+        safe_provisioning_failure_stage(&error),
+        Some("oauth_discovery")
+    );
+    assert_eq!(
+        format!("{error:#}"),
+        "API bearer provisioning failed at oauth_discovery"
+    );
+    assert_eq!(
+        safe_provisioning_failure_stage(&anyhow::anyhow!("sensitive internal detail")),
+        None
+    );
+}
+
 fn fixed_policy(seed: &[u8; RUNTIME_SEED_BYTES]) -> LauncherPolicy {
     let issuer = SigningKey::from_bytes(seed);
     LauncherPolicy {
