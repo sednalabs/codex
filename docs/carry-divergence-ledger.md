@@ -3914,7 +3914,8 @@ fixed client on the invoking terminal and accepts the complete callback URL
 there. The callback parser binds scheme, loopback host, port, exact registered
 path, unique state, and unambiguous response parameters before the same PKCE
 exchange and token checks. Manual input disables terminal echo and restores the
-original terminal settings on success or failure. Both forms use the API resource and only
+original terminal settings on success, error, or a handled cancellation signal.
+Both forms use the API resource and only
 `ops:write`; neither writes the persistent MCP credential store or persists a
 refresh token. Before storage, the returned token must match the fixed issuer, an audience claim
 containing `ops-api`, the exact scope, UUID-shaped subject, and bounded expiry.

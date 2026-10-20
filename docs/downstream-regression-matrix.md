@@ -1215,9 +1215,10 @@ and PKCE path with the fixed API issuer, resource, client, loopback redirect, an
 `ops:write` scope. The fixed `--no-browser` form accepts a complete callback URL
 on the invoking TTY without opening a browser or binding a local callback
 listener; it validates the exact redirect and single-use state before the same
-PKCE exchange while suppressing and restoring TTY input echo. Its regressions
-check the exact client/resource/scope and S256
-request, reject unsafe or ambiguous callback input and issuer metadata and
+PKCE exchange while suppressing and restoring TTY input echo, including when a
+handled cancellation signal interrupts input. Its regressions check the exact
+client/resource/scope and S256 request, reject unsafe or ambiguous callback
+input and issuer metadata and
 unsupported token-type/lifetime responses, discard the refresh response without
 persistence, and verify atomic replacement of only one root-owned credential
 basename. It supports the installed root-owned launcher under interactive

@@ -24,6 +24,8 @@ use std::os::unix::process::CommandExt as _;
 use std::path::Path;
 use std::process::Command;
 use std::process::Stdio;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 use uuid::Uuid;
@@ -33,6 +35,62 @@ const BEARER_LOCK_NAME: &str = ".codex-runtime-proof-api-bearer.lock";
 const XDG_OPEN_PATH: &str = "/usr/bin/xdg-open";
 const MAX_PASSWD_BUFFER: usize = 64 * 1024;
 const MAX_CALLBACK_URL_BYTES: usize = 64 * 1024;
+static CALLBACK_INPUT_INTERRUPTED: AtomicBool = AtomicBool::new(false);
+
+const CALLBACK_INPUT_SIGNALS: [libc::c_int; 5] = [
+    libc::SIGINT,
+    libc::SIGTERM,
+    libc::SIGHUP,
+    libc::SIGQUIT,
+    libc::SIGTSTP,
+];
+
+struct CallbackSignalGuard {
+    previous: Vec<(libc::c_int, libc::sigaction)>,
+}
+
+impl CallbackSignalGuard {
+    fn install() -> Result<Self> {
+        CALLBACK_INPUT_INTERRUPTED.store(false, Ordering::Relaxed);
+        let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
+        action.sa_sigaction = record_callback_input_signal as *const () as libc::sighandler_t;
+        unsafe { libc::sigemptyset(&mut action.sa_mask) };
+
+        let mut guard = Self {
+            previous: Vec::with_capacity(CALLBACK_INPUT_SIGNALS.len()),
+        };
+        for signal in CALLBACK_INPUT_SIGNALS {
+            let mut previous = MaybeUninit::<libc::sigaction>::uninit();
+            if unsafe { libc::sigaction(signal, &action, previous.as_mut_ptr()) } != 0 {
+                return Err(std::io::Error::last_os_error().into());
+            }
+            guard
+                .previous
+                .push((signal, unsafe { previous.assume_init() }));
+        }
+        Ok(guard)
+    }
+
+    fn restore(&mut self) -> std::io::Result<()> {
+        while let Some((signal, previous)) = self.previous.last() {
+            if unsafe { libc::sigaction(*signal, previous, std::ptr::null_mut()) } != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            self.previous.pop();
+        }
+        Ok(())
+    }
+}
+
+impl Drop for CallbackSignalGuard {
+    fn drop(&mut self) {
+        let _ = self.restore();
+    }
+}
+
+extern "C" fn record_callback_input_signal(_: libc::c_int) {
+    CALLBACK_INPUT_INTERRUPTED.store(true, Ordering::Relaxed);
+}
 
 struct TerminalEchoGuard {
     fd: libc::c_int,
@@ -252,12 +310,18 @@ fn read_callback_url_from_invoking_terminal(authorization_url: &str) -> Result<S
         bail!("manual OAuth callback input requires terminal output");
     }
 
+    let mut signal_guard = CallbackSignalGuard::install()?;
     let mut echo_guard = TerminalEchoGuard::disable(libc::STDIN_FILENO)?;
     let result = read_callback_url_with_echo_disabled(authorization_url);
     echo_guard
         .restore()
         .map_err(|_| anyhow::anyhow!("restore invoking terminal settings"))?;
+    signal_guard
+        .restore()
+        .map_err(|_| anyhow::anyhow!("restore invoking signal handlers"))?;
+    let interruption = ensure_callback_input_not_interrupted();
     writeln!(std::io::stdout().lock())?;
+    interruption?;
     result
 }
 
@@ -273,6 +337,7 @@ fn read_callback_url_with_echo_disabled(authorization_url: &str) -> Result<Strin
     let deadline = Instant::now() + Duration::from_secs(FIXED_API_CLAIM_TIMEOUT_SECS);
     let mut input = Vec::with_capacity(2048);
     loop {
+        ensure_callback_input_not_interrupted()?;
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             bail!("fixed OAuth callback timed out");
@@ -318,6 +383,13 @@ fn read_callback_url_with_echo_disabled(authorization_url: &str) -> Result<Strin
         input.push(byte[0]);
     }
     callback_url_from_terminal_input(input)
+}
+
+fn ensure_callback_input_not_interrupted() -> Result<()> {
+    if CALLBACK_INPUT_INTERRUPTED.swap(false, Ordering::Relaxed) {
+        bail!("manual OAuth callback input was interrupted");
+    }
+    Ok(())
 }
 
 fn callback_url_from_terminal_input(mut input: Vec<u8>) -> Result<String> {
@@ -727,6 +799,58 @@ mod tests {
         );
         let restored = unsafe { restored.assume_init() };
         assert_eq!(restored.c_lflag, original.c_lflag);
+    }
+
+    #[test]
+    fn manual_callback_interrupt_restores_terminal_echo() {
+        let mut master = -1;
+        let mut slave = -1;
+        assert_eq!(
+            unsafe {
+                libc::openpty(
+                    &mut master,
+                    &mut slave,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                )
+            },
+            0
+        );
+        let _master = unsafe { File::from_raw_fd(master) };
+        let slave = unsafe { File::from_raw_fd(slave) };
+        let mut original = MaybeUninit::<libc::termios>::uninit();
+        assert_eq!(
+            unsafe { libc::tcgetattr(slave.as_raw_fd(), original.as_mut_ptr()) },
+            0
+        );
+        let mut original = unsafe { original.assume_init() };
+        original.c_lflag |= libc::ECHO;
+        assert_eq!(
+            unsafe { libc::tcsetattr(slave.as_raw_fd(), libc::TCSANOW, &original) },
+            0
+        );
+
+        let mut signal_guard = CallbackSignalGuard::install().expect("install cancel handlers");
+        let mut echo_guard =
+            TerminalEchoGuard::disable(slave.as_raw_fd()).expect("disable terminal echo");
+        assert_eq!(
+            unsafe { libc::raise(libc::SIGINT) },
+            0,
+            "deliver a controlled interrupt"
+        );
+        assert!(ensure_callback_input_not_interrupted().is_err());
+        echo_guard.restore().expect("restore terminal echo after interrupt");
+        signal_guard
+            .restore()
+            .expect("restore prior signal handlers");
+
+        let mut restored = MaybeUninit::<libc::termios>::uninit();
+        assert_eq!(
+            unsafe { libc::tcgetattr(slave.as_raw_fd(), restored.as_mut_ptr()) },
+            0
+        );
+        assert_ne!(unsafe { restored.assume_init() }.c_lflag & libc::ECHO, 0);
     }
 
     #[test]
