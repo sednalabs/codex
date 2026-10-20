@@ -42,7 +42,11 @@ async fn build_commit() -> Result<String> {
             .output(),
     )
     .await??;
-    assert!(output.status.success());
+    assert!(
+        output.status.success(),
+        "voice host --build-commit failed: {}",
+        output.status
+    );
     Ok(String::from_utf8(output.stdout)?.trim().to_owned())
 }
 
