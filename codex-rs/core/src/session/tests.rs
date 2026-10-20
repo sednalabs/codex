@@ -13709,7 +13709,7 @@ fn goal_completion_handback_suppresses_only_matching_started_continuation() {
     assert!(!accepted_goal_continuation(&continuation, Some(&rejected)));
     let other_goal_attempt = GoalContinuationAttempt {
         goal_id: "other-goal".to_string(),
-        ..rejected.clone()
+        ..rejected
     };
     let response = parent_response_for_goal_handoff(&continuation, Some(&other_goal_attempt));
     assert!(response.contains("did not match this goal turn"));
