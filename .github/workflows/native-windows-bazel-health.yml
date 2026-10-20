@@ -474,29 +474,39 @@ jobs:
             //codex-rs/voice-host:codex-voice-host
             //codex-rs/voice-host:codex-voice-host-bin-unit-tests
           )
-          if ./.github/scripts/run-bazel-ci.sh \
+          set +e
+          ./.github/scripts/run-bazel-ci.sh \
             --print-failed-action-summary \
             --windows-cross-compile \
             -- \
             build \
             "${bazel_args[@]}" \
             -- \
-            "${targets[@]}" >"${bazel_log}" 2>&1; then
-            bazel_status=0
-          else
-            bazel_status=$?
+            "${targets[@]}" 2>&1 | tee "${bazel_log}"
+          pipeline_status=("${PIPESTATUS[@]}")
+          set -e
+          bazel_status="${pipeline_status[0]}"
+          tee_status="${pipeline_status[1]}"
+          build_step_status="${bazel_status}"
+          if [[ "${tee_status}" -ne 0 ]]; then
+            echo "Failed to retain the focused Voice Bazel output." >&2
+            if [[ "${build_step_status}" -eq 0 ]]; then
+              build_step_status="${tee_status}"
+            fi
           fi
           local_config_count="$(grep -Fxc 'BuildBuddy API key is not available; using local Bazel configuration.' "${bazel_log}" || true)"
           printf 'build_exit_code=%s\n' "${bazel_status}" >> "${VOICE_DLL_REPORT}"
           printf 'local_bazel_configuration_marker_count=%s\n' "${local_config_count}" >> "${VOICE_DLL_REPORT}"
-          printf 'exit_code=%s\n' "${bazel_status}" >> "${GITHUB_OUTPUT}"
+          printf 'exit_code=%s\n' "${build_step_status}" >> "${GITHUB_OUTPUT}"
           if [[ "${local_config_count}" != 1 ]]; then
             echo "The diagnostic build did not prove the no-key local Bazel path." >&2
             exit 1
           fi
-          if [[ "${bazel_status}" -ne 0 ]]; then
-            echo "The focused Voice PE build failed; no PE inspection was performed." >&2
-            exit "${bazel_status}"
+          if [[ "${build_step_status}" -ne 0 ]]; then
+            if [[ "${bazel_status}" -ne 0 ]]; then
+              echo "The focused Voice PE build failed; no PE inspection was performed." >&2
+            fi
+            exit "${build_step_status}"
           fi
 
       - name: Resolve the two PE outputs without executing them
