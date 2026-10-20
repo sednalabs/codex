@@ -366,7 +366,7 @@ jobs:
           $report = Join-Path $env:RUNNER_TEMP "voice-loader-dependencies-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT).tsv"
           "VOICE_DLL_REPORT=$report" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           $lines = @(
-            ('schema' + "`t" + 'focused-voice-loader-dependencies-v1'),
+            ('schema' + "`t" + 'focused-voice-loader-dependencies-v2'),
             ('repository' + "`t" + $env:GITHUB_REPOSITORY),
             ('workflow_host_sha' + "`t" + $env:EXPECTED_HOST_SHA),
             ('workflow_run_id' + "`t" + $env:GITHUB_RUN_ID),
@@ -378,9 +378,10 @@ jobs:
             ('target_platform' + "`t" + 'windows_x86_64_gnullvm'),
             ('execution_host' + "`t" + 'local_windows_msvc_no_rbe'),
             ('build_only' + "`t" + 'true'),
+            ('diagnostic_scope' + "`t" + 'production_helper_pe_only'),
+            ('test_pe_not_inspected' + "`t" + 'true'),
             ('target' + "`t" + '//codex-rs/voice-host:codex-voice-host'),
-            ('target' + "`t" + '//codex-rs/voice-host:codex-voice-host-bin-unit-tests'),
-            ('component' + "`t" + 'dll' + "`t" + 'x64_system32_file_or_api_set_name_observed' + "`t" + 'component_pe_dir_presence_observed' + "`t" + 'required_test_ci_path_presence_observed' + "`t" + 'unit_test_runfiles_manifest_name_entry_observed' + "`t" + 'workspace_root_presence_observed' + "`t" + 'copied_helper_system32_or_api_set_name_or_test_ci_path_observed')
+            ('component' + "`t" + 'dll' + "`t" + 'x64_system32_file_or_api_set_name_observed' + "`t" + 'component_pe_dir_presence_observed' + "`t" + 'required_test_ci_path_presence_observed' + "`t" + 'workspace_root_presence_observed' + "`t" + 'copied_helper_system32_or_api_set_name_or_test_ci_path_observed')
           )
           Set-Content -LiteralPath $report -Value $lines -Encoding utf8
           "VOICE_DLL_REPORT=$report" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
@@ -447,7 +448,7 @@ jobs:
             throw "Windows workspace status must identify the exact checked-out source once."
           }
 
-      - name: Build only the failing Voice PE targets with required-CI gnullvm settings
+      - name: Build only the production Voice helper PE with required-CI gnullvm settings
         id: build_voice_outputs
         shell: bash
         run: |
@@ -472,7 +473,6 @@ jobs:
           )
           targets=(
             //codex-rs/voice-host:codex-voice-host
-            //codex-rs/voice-host:codex-voice-host-bin-unit-tests
           )
           set +e
           ./.github/scripts/run-bazel-ci.sh \
@@ -509,7 +509,7 @@ jobs:
             exit "${build_step_status}"
           fi
 
-      - name: Resolve the two PE outputs without executing them
+      - name: Resolve the production Voice helper PE without executing it
         id: resolve_voice_outputs
         if: steps.build_voice_outputs.outputs.exit_code == '0'
         shell: bash
@@ -551,15 +551,11 @@ jobs:
             printf '%s' "${outputs[0]}"
           }
           helper_pe="$(query_output '//codex-rs/voice-host:codex-voice-host' exe helper)"
-          test_pe="$(query_output '//codex-rs/voice-host:codex-voice-host-bin-unit-tests-bin' exe unit-test)"
-          test_launcher="$(query_output '//codex-rs/voice-host:codex-voice-host-bin-unit-tests' bat launcher)"
           {
             printf 'VOICE_HELPER_PE=%s\n' "${helper_pe}"
-            printf 'VOICE_TEST_PE=%s\n' "${test_pe}"
-            printf 'VOICE_TEST_LAUNCHER=%s\n' "${test_launcher}"
           } >> "${GITHUB_ENV}"
 
-      - name: Inspect imported DLL names and exact test resolution locations
+      - name: Inspect production helper imports and exact CI resolution locations
         id: inspect_voice_pes
         if: steps.resolve_voice_outputs.outcome == 'success'
         shell: pwsh
@@ -567,8 +563,6 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $workspace = (Resolve-Path -LiteralPath '.').Path
           $helperPe = (Resolve-Path -LiteralPath $env:VOICE_HELPER_PE).Path
-          $testPe = (Resolve-Path -LiteralPath $env:VOICE_TEST_PE).Path
-          $testLauncher = (Resolve-Path -LiteralPath $env:VOICE_TEST_LAUNCHER).Path
           $x64SystemDirectory = Join-Path $env:SystemRoot 'System32'
           $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
           if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) { throw 'The standard Visual Studio locator is unavailable.' }
@@ -586,24 +580,6 @@ jobs:
             }
           }
           if ([string]::IsNullOrWhiteSpace($dumpbin)) { throw 'The standard x64 dumpbin executable was not found.' }
-
-          $manifestCandidates = @(
-            "$testLauncher.runfiles_manifest",
-            "$([System.IO.Path]::ChangeExtension($testLauncher, $null)).runfiles_manifest",
-            "$testLauncher.exe.runfiles_manifest"
-          ) | Select-Object -Unique
-          $manifests = @($manifestCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf })
-          if ($manifests.Count -ne 1) { throw 'The exact unit-test runfiles manifest was not uniquely located.' }
-
-          $runfilesManifestNames = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-          foreach ($line in Get-Content -LiteralPath $manifests[0]) {
-            if ([string]::IsNullOrWhiteSpace($line)) { continue }
-            $parts = $line -split ' ', 2
-            foreach ($value in $parts) {
-              $name = [System.IO.Path]::GetFileName($value.Trim('"'))
-              if (-not [string]::IsNullOrWhiteSpace($name)) { [void]$runfilesManifestNames.Add($name) }
-            }
-          }
 
           $testPathEntries = @($env:CODEX_BAZEL_WINDOWS_PATH -split ';' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
           if ($testPathEntries.Count -eq 0) { throw 'The exact required-CI Windows test PATH is empty.' }
@@ -631,18 +607,16 @@ jobs:
           }
           $rows = [System.Collections.Generic.List[string]]::new()
           foreach ($component in @(
-            @{ Name = 'voice-helper'; Path = $helperPe },
-            @{ Name = 'voice-bin-unit-tests'; Path = $testPe }
+            @{ Name = 'voice-helper'; Path = $helperPe }
           )) {
             $exeDirectory = Split-Path -Parent $component.Path
             foreach ($dll in (Get-PeImports $component.Path)) {
               $x64SystemImportObserved = Test-SystemImport $dll
               $componentPeDirectoryPresenceObserved = Test-Path -LiteralPath (Join-Path $exeDirectory $dll) -PathType Leaf
               $requiredTestCiPathPresenceObserved = Test-PathImport $dll
-              $runfilesManifestNameEntryObserved = $runfilesManifestNames.Contains($dll)
               $workspaceRootPresenceObserved = Test-Path -LiteralPath (Join-Path $workspace $dll) -PathType Leaf
               $copiedHelperSystemOrTestCiPathObserved = if ($component.Name -eq 'voice-helper') { [string]($x64SystemImportObserved -or $requiredTestCiPathPresenceObserved) } else { 'n/a' }
-              $rows.Add(($component.Name, $dll, [string]$x64SystemImportObserved, [string]$componentPeDirectoryPresenceObserved, [string]$requiredTestCiPathPresenceObserved, [string]$runfilesManifestNameEntryObserved, [string]$workspaceRootPresenceObserved, $copiedHelperSystemOrTestCiPathObserved) -join "`t")
+              $rows.Add(($component.Name, $dll, [string]$x64SystemImportObserved, [string]$componentPeDirectoryPresenceObserved, [string]$requiredTestCiPathPresenceObserved, [string]$workspaceRootPresenceObserved, $copiedHelperSystemOrTestCiPathObserved) -join "`t")
             }
           }
           Add-Content -LiteralPath $env:VOICE_DLL_REPORT -Value $rows.ToArray() -Encoding utf8
