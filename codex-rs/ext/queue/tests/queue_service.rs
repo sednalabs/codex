@@ -33,6 +33,9 @@ use codex_protocol::models::ImageReference;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::HookEventName;
+use codex_protocol::protocol::HookOutputEntryKind;
+use codex_protocol::protocol::HookRunStatus;
 use codex_protocol::user_input::MAX_USER_INPUT_TEXT_CHARS;
 use codex_protocol::user_input::UserInput;
 use codex_queue_extension::QueueServiceError;
@@ -755,17 +758,50 @@ async fn rejected_queue_messages_are_consumed_without_retrying_or_blocking_follo
     }
     let queue = install_registered_queue(&test, installed.as_ref())?;
 
-    tokio::time::timeout(Duration::from_secs(10), async {
-        test.submit_text_turn("A").await?;
-        for _ in 0..2 {
-            wait_for_event_match(test.codex.as_ref(), |event| {
-                matches!(event, EventMsg::TurnComplete(_)).then_some(())
-            })
-            .await;
+    let mut hook_runs = Vec::new();
+    let mut completed_turns = 0;
+    let outcome = tokio::time::timeout(Duration::from_secs(10), async {
+        // submit_text_turn would consume the first hook completion before we could inspect it.
+        test.codex
+            .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+                text: "A".into(),
+                text_elements: Vec::new(),
+            }]))
+            .await?;
+        while completed_turns < 3 || hook_runs.len() < 3 {
+            let event = test
+                .codex
+                .next_event()
+                .await
+                .map_err(|_| anyhow::anyhow!("queue event stream failed"))?;
+            match event.msg {
+                EventMsg::HookCompleted(event)
+                    if event.run.event_name == HookEventName::UserPromptSubmit =>
+                {
+                    let expected_reason = event.run.entries.iter().any(|entry| {
+                        entry.kind == HookOutputEntryKind::Feedback
+                            && entry.text == "blocked by queue hook"
+                    });
+                    hook_runs.push((event.run.status, expected_reason));
+                    assert!(hook_runs.len() <= 3, "unexpected extra prompt hook completion");
+                }
+                EventMsg::TurnComplete(_) => completed_turns += 1,
+                _ => {}
+            }
         }
+        assert_eq!(
+            vec![
+                (HookRunStatus::Completed, false),
+                (HookRunStatus::Blocked, true),
+                (HookRunStatus::Completed, false),
+            ],
+            hook_runs
+        );
         anyhow::Ok(())
     })
-    .await??;
+    .await;
+    eprintln!("queue progress: turns={completed_turns}, hooks={hook_runs:?}");
+    outcome.context("queue rejection did not complete within 10 seconds")??;
 
     let prompts = responses
         .requests()
@@ -814,10 +850,36 @@ async fn explicitly_started_rejected_queue_messages_are_consumed() -> anyhow::Re
     .await?
     .expect("explicitly started input should be submitted");
     assert!(matches!(submission, StartIfIdleSubmission::Started { .. }));
-    wait_for_event_match(test.codex.as_ref(), |event| {
-        matches!(event, EventMsg::TurnComplete(_)).then_some(())
+    let mut hook_runs = Vec::new();
+    let mut completed_turn = false;
+    let outcome = tokio::time::timeout(Duration::from_secs(10), async {
+        while !completed_turn || hook_runs.is_empty() {
+            let event = test
+                .codex
+                .next_event()
+                .await
+                .map_err(|_| anyhow::anyhow!("queue event stream failed"))?;
+            match event.msg {
+                EventMsg::HookCompleted(event)
+                    if event.run.event_name == HookEventName::UserPromptSubmit =>
+                {
+                    let expected_reason = event.run.entries.iter().any(|entry| {
+                        entry.kind == HookOutputEntryKind::Feedback
+                            && entry.text == "blocked by queue hook"
+                    });
+                    hook_runs.push((event.run.status, expected_reason));
+                    assert_eq!(1, hook_runs.len(), "unexpected extra prompt hook completion");
+                }
+                EventMsg::TurnComplete(_) => completed_turn = true,
+                _ => {}
+            }
+        }
+        assert_eq!(vec![(HookRunStatus::Blocked, true)], hook_runs);
+        anyhow::Ok(())
     })
     .await;
+    eprintln!("explicit progress: complete={completed_turn}, hooks={hook_runs:?}");
+    outcome.context("explicit rejection did not complete within 10 seconds")??;
     assert!(queue.list(thread_id).await?.is_empty());
     let hook_log = std::fs::read_to_string(test.codex_home_path().join("queue_prompt_hook.log"))?;
     assert_eq!(vec!["blocked"], hook_log.lines().collect::<Vec<_>>());
