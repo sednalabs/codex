@@ -1,259 +1,239 @@
-name: rust-ci
+name: PR965 native config schema and format output
+
 on:
-  workflow_call:
   workflow_dispatch:
+    inputs:
+      expected_workflow_host_sha:
+        description: Must match this dispatch ref's workflow-host commit SHA.
+        required: true
+        type: string
+
+permissions:
+  contents: read
 
 jobs:
-  # --- Detect changed paths so the fast PR workflow only runs relevant jobs ---
-  changed:
-    name: Detect changed areas
+  format_schema_output:
+    name: Capture exact native config output
     runs-on: ubuntu-24.04
-    outputs:
-      argument_comment_lint: ${{ steps.detect.outputs.argument_comment_lint }}
-      argument_comment_lint_package: ${{ steps.detect.outputs.argument_comment_lint_package }}
-      codex: ${{ steps.detect.outputs.codex }}
-      workflows: ${{ steps.detect.outputs.workflows }}
+    timeout-minutes: 45
+    env:
+      SOURCE_SHA: af3346e2e376d5968f19229714b9489bd0474388
+      SOURCE_TREE: 1e94547a014c38dc5de99dd7c62bcce2797e021e
+      SOURCE_BASE_SHA: 2c93c5c2a9efe8973e3bcb10d49160722f5da779
+      VALIDATION_REF: refs/heads/validation/pr965-native-config-output-af3346e2
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Validate workflow host and initialize output envelope
+        id: host_binding
+        shell: bash
+        env:
+          EXPECTED_WORKFLOW_HOST_SHA: ${{ inputs.expected_workflow_host_sha }}
+        run: |
+          set -uo pipefail
+          output="$RUNNER_TEMP/native-config-output"
+          mkdir -p "$output"
+          trap 'status=$?; printf "host_binding_exit=%s\n" "$status" >> "$output/identity.txt"' EXIT
+          {
+            printf 'repository=%s\n' "$GITHUB_REPOSITORY"
+            printf 'event=%s\n' "$GITHUB_EVENT_NAME"
+            printf 'workflow_host_sha=%s\n' "$GITHUB_SHA"
+            printf 'workflow_host_ref=%s\n' "$GITHUB_REF"
+            printf 'source_sha=%s\n' "$SOURCE_SHA"
+            printf 'source_tree=%s\n' "$SOURCE_TREE"
+            printf 'format_path_base_sha=%s\n' "$SOURCE_BASE_SHA"
+            printf 'run_id=%s\n' "$GITHUB_RUN_ID"
+            printf 'run_attempt=%s\n' "$GITHUB_RUN_ATTEMPT"
+            printf 'run_url=%s/%s/actions/runs/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+          } > "$output/identity.txt"
+          set -e
+          test "$GITHUB_REPOSITORY" = "sednalabs/codex"
+          test "$GITHUB_EVENT_NAME" = "workflow_dispatch"
+          test "$GITHUB_REF" = "$VALIDATION_REF"
+          [[ "$EXPECTED_WORKFLOW_HOST_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$EXPECTED_WORKFLOW_HOST_SHA" = "$GITHUB_SHA"
+
+      - name: Checkout exact native source
+        id: checkout
+        if: ${{ steps.host_binding.outcome == 'success' }}
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          fetch-depth: 0
+          repository: sednalabs/codex
+          ref: af3346e2e376d5968f19229714b9489bd0474388
+          fetch-depth: 1
           persist-credentials: false
-      - name: Detect changed paths (no external action)
-        id: detect
+
+      - name: Verify exact source identity
+        id: source_identity
+        if: ${{ steps.checkout.outcome == 'success' }}
         shell: bash
         run: |
           set -euo pipefail
+          output="$RUNNER_TEMP/native-config-output"
+          trap 'status=$?; printf "source_identity_exit=%s\n" "$status" >> "$output/identity.txt"' EXIT
+          actual_sha="$(git rev-parse HEAD)"
+          actual_tree="$(git rev-parse 'HEAD^{tree}')"
+          test "$actual_sha" = "$SOURCE_SHA"
+          test "$actual_tree" = "$SOURCE_TREE"
+          printf 'source_identity_match=true\n' >> "$output/identity.txt"
 
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            BASE_SHA='${{ github.event.pull_request.base.sha }}'
-            HEAD_SHA='${{ github.event.pull_request.head.sha }}'
-            echo "Base SHA: $BASE_SHA"
-            echo "Head SHA: $HEAD_SHA"
-            mapfile -t files < <(git diff --name-only --no-renames "$BASE_SHA" "$HEAD_SHA")
-          else
-            # On manual runs, default to the full fast-PR bundle.
-            files=("codex-rs/force" "tools/argument-comment-lint/force" ".github/force")
-          fi
-
-          codex=false
-          argument_comment_lint=false
-          argument_comment_lint_package=false
-          workflows=false
-          for f in "${files[@]}"; do
-            [[ $f == codex-rs/* ]] && codex=true
-            [[ $f == codex-rs/* || $f == tools/argument-comment-lint/* || $f == justfile ]] && argument_comment_lint=true
-            [[ $f == defs.bzl || $f == workspace_root_test_launcher.sh.tpl || $f == workspace_root_test_launcher.bat.tpl ]] && argument_comment_lint=true
-            [[ $f == tools/argument-comment-lint/* || $f == .github/workflows/rust-ci.yml || $f == .github/workflows/rust-ci-full.yml ]] && argument_comment_lint_package=true
-            [[ $f == .github/* ]] && workflows=true
-          done
-
-          echo "argument_comment_lint=$argument_comment_lint" >> "$GITHUB_OUTPUT"
-          echo "argument_comment_lint_package=$argument_comment_lint_package" >> "$GITHUB_OUTPUT"
-          echo "codex=$codex" >> "$GITHUB_OUTPUT"
-          echo "workflows=$workflows" >> "$GITHUB_OUTPUT"
-
-      - name: Check for a clean worktree
-        if: always() && !cancelled()
-        uses: ./.github/actions/check-clean-worktree
-
-  # --- Fast Cargo-native PR checks -------------------------------------------
-  general:
-    name: Format / etc
-    runs-on: ubuntu-24.04
-    needs: changed
-    if: ${{ needs.changed.outputs.codex == 'true' || needs.changed.outputs.workflows == 'true' }}
-    defaults:
-      run:
-        working-directory: codex-rs
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Set up pinned Rust formatter and generator toolchain
+        id: rust_toolchain
+        if: ${{ steps.source_identity.outcome == 'success' }}
+        uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
         with:
-          persist-credentials: false
-      - uses: ./.github/actions/setup-ci
-      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
-        with:
+          toolchain: "1.95.0"
           components: rustfmt
-      - name: cargo fmt
-        run: cargo fmt -- --config imports_granularity=Item --check
-      - name: Rust benchmark smoke test
-        run: just bench-smoke
 
-      - name: Check for a clean worktree
-        if: always() && !cancelled()
-        uses: ./.github/actions/check-clean-worktree
-
-  cargo_shear:
-    name: cargo shear
-    runs-on: ubuntu-24.04
-    needs: changed
-    if: ${{ needs.changed.outputs.codex == 'true' || needs.changed.outputs.workflows == 'true' }}
-    defaults:
-      run:
-        working-directory: codex-rs
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/setup-ci
-      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
-      - uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
-        with:
-          tool: cargo-shear@1.11.2
-      - name: cargo shear
-        run: cargo shear --deny-warnings
-
-      - name: Check for a clean worktree
-        if: always() && !cancelled()
-        uses: ./.github/actions/check-clean-worktree
-
-  argument_comment_lint_package:
-    name: Argument comment lint package
-    runs-on: ubuntu-24.04
-    needs: changed
-    if: ${{ needs.changed.outputs.argument_comment_lint_package == 'true' }}
-    env:
-      CARGO_DYLINT_VERSION: 6.1.0
-      DYLINT_LINK_VERSION: 6.1.0
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/setup-ci
-      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
-      - name: Install nightly argument-comment-lint toolchain
+      - name: Set isolated Cargo target directory
+        id: cargo_target
+        if: ${{ steps.source_identity.outcome == 'success' && steps.rust_toolchain.outcome == 'success' }}
         shell: bash
         run: |
-          rustup toolchain install nightly-2026-08-20 \
-            --profile minimal \
-            --component llvm-tools-preview \
-            --component rustc-dev \
-            --component rust-src \
-            --no-self-update
-          rustup default nightly-2026-08-20
-      - name: Cache cargo-dylint tooling
-        id: cargo_dylint_cache
-        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-        with:
-          path: |
-            ~/.cargo/bin/cargo-dylint
-            ~/.cargo/bin/dylint-link
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-          key: argument-comment-lint-${{ runner.os }}-${{ env.CARGO_DYLINT_VERSION }}-${{ env.DYLINT_LINK_VERSION }}-${{ hashFiles('tools/argument-comment-lint/Cargo.lock', 'tools/argument-comment-lint/rust-toolchain', '.github/workflows/rust-ci.yml', '.github/workflows/rust-ci-full.yml') }}
-      - name: Install cargo-dylint tooling
-        if: ${{ steps.cargo_dylint_cache.outputs.cache-hit != 'true' }}
-        shell: bash
-        run: |
-          cargo install --locked cargo-dylint --version "$CARGO_DYLINT_VERSION"
-          cargo install --locked dylint-link --version "$DYLINT_LINK_VERSION"
-      - name: Check Python wrapper syntax
-        run: python3 -m py_compile tools/argument-comment-lint/wrapper_common.py tools/argument-comment-lint/run.py tools/argument-comment-lint/run-prebuilt-linter.py tools/argument-comment-lint/test_wrapper_common.py
-      - name: Test Python wrapper helpers
-        run: python3 -m unittest discover -s tools/argument-comment-lint -p 'test_*.py'
-      - name: Test argument comment lint package
-        working-directory: tools/argument-comment-lint
-        run: cargo test
-        env:
-          RUST_MIN_STACK: "8388608" # 8 MiB
+          set -euo pipefail
+          test -n "${RUNNER_TEMP:-}"
+          case "$RUNNER_TEMP" in
+            /*) ;;
+            *) exit 1 ;;
+          esac
+          printf 'CARGO_TARGET_DIR=%s/native-config-schema-target\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'cargo_target_dir_configured=true\n' >> "$RUNNER_TEMP/native-config-output/identity.txt"
 
-      - name: Check for a clean worktree
-        if: always() && !cancelled()
-        uses: ./.github/actions/check-clean-worktree
-
-  argument_comment_lint_prebuilt:
-    name: Argument comment lint - ${{ matrix.name }}
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: ${{ matrix.timeout_minutes }}
-    needs: changed
-    environment:
-      name: bazel
-      deployment: false
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Linux
-            runner: ubuntu-24.04
-            timeout_minutes: 30
-          - name: macOS
-            runner: macos-15
-            timeout_minutes: 30
-          - name: Windows
-            runner: windows-2025
-            timeout_minutes: 30
-    steps:
-      - name: Check whether argument comment lint should run
-        id: argument_comment_lint_gate
+      - name: Format changed Rust paths and regenerate config schema
+        id: transform
+        if: ${{ steps.cargo_target.outcome == 'success' }}
         shell: bash
         env:
-          ARGUMENT_COMMENT_LINT: ${{ needs.changed.outputs.argument_comment_lint }}
-          WORKFLOWS: ${{ needs.changed.outputs.workflows }}
+          CODEX_REPO_ROOT: ${{ github.workspace }}
         run: |
-          if [[ "$ARGUMENT_COMMENT_LINT" == "true" || "$WORKFLOWS" == "true" ]]; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+          set -euo pipefail
+          output="$RUNNER_TEMP/native-config-output"
+          trap 'status=$?; printf "format_schema_step_exit=%s\n" "$status" >> "$output/identity.txt"' EXIT
+          printf 'rustc_version=%s\n' "$(rustc --version)" >> "$output/identity.txt"
+          printf 'rustfmt_version=%s\n' "$(rustfmt --version)" >> "$output/identity.txt"
+          printf 'cargo_version=%s\n' "$(cargo --version)" >> "$output/identity.txt"
 
-          echo "No argument-comment-lint relevant changes."
-          echo "run=false" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        if: ${{ steps.argument_comment_lint_gate.outputs.run == 'true' }}
-        with:
-          persist-credentials: false
-      - name: Run argument comment lint on codex-rs via Bazel
-        if: ${{ steps.argument_comment_lint_gate.outputs.run == 'true' }}
-        uses: ./.github/actions/run-argument-comment-lint
-        with:
-          target: ${{ runner.os }}
+          rust_paths=(
+            cli/src/mcp_cmd.rs
+            codex-mcp/src/catalog_tests.rs
+            codex-mcp/src/connection_manager.rs
+            codex-mcp/src/connection_manager_tests.rs
+            codex-mcp/src/mcp/mod.rs
+            codex-mcp/src/mcp/mod_tests.rs
+            codex-mcp/src/plugin_config_tests.rs
+            codex-mcp/src/runtime.rs
+            config/src/lib.rs
+            config/src/mcp_requirements_tests.rs
+            config/src/mcp_types.rs
+            config/src/mcp_types_tests.rs
+            config/src/types.rs
+            core-plugins/src/manager_tests.rs
+            core/src/config/config_tests.rs
+            core/src/config/edit/document_helpers.rs
+            core/src/config/edit_tests.rs
+            core/src/mcp_skill_dependencies.rs
+            core/src/session/tests.rs
+            core/tests/suite/code_mode.rs
+            core/tests/suite/hooks_mcp.rs
+            core/tests/suite/mcp_refresh_cleanup.rs
+            core/tests/suite/mcp_startup_refresh_http_proxy.rs
+            core/tests/suite/rmcp_client.rs
+            core/tests/suite/search_tool.rs
+            core/tests/suite/sqlite_state.rs
+            core/tests/suite/token_budget.rs
+            core/tests/suite/truncation.rs
+            exec/src/lib_tests.rs
+            ext/mcp/src/plugin/provider_tests.rs
+            tui/src/app/thread_event_buffer.rs
+            tui/src/app/thread_event_buffer_tests.rs
+          )
 
-      - name: Check for a clean worktree
-        if: always() && !cancelled() && steps.argument_comment_lint_gate.outputs.run == 'true'
-        uses: ./.github/actions/check-clean-worktree
+          {
+            printf 'rustfmt_command=rustfmt --edition 2024 --config-path rustfmt.toml --config skip_children=true'
+            printf ' %s' "${rust_paths[@]}"
+            printf '\n'
+            printf 'schema_command=CODEX_REPO_ROOT=$GITHUB_WORKSPACE cargo run --locked -p codex-config-schema --bin codex-write-config-schema\n'
+          } >> "$output/identity.txt"
 
-  # --- Gatherer job that you mark as the ONLY required status -----------------
-  results:
-    name: CI results (required)
-    needs:
-      [
-        changed,
-        general,
-        cargo_shear,
-        argument_comment_lint_package,
-        argument_comment_lint_prebuilt,
-      ]
-    if: always()
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Summarize
+          run_checked() {
+            local label="$1"
+            shift
+            set +e
+            "$@"
+            local status=$?
+            set -e
+            printf '%s_exit=%s\n' "$label" "$status" >> "$output/identity.txt"
+            return "$status"
+          }
+
+          cd "$GITHUB_WORKSPACE/codex-rs"
+          run_checked rustfmt rustfmt --edition 2024 --config-path rustfmt.toml --config skip_children=true "${rust_paths[@]}"
+          run_checked config_schema env CODEX_REPO_ROOT="$GITHUB_WORKSPACE" cargo run --locked -p codex-config-schema --bin codex-write-config-schema
+
+          declare -A allowed_paths=()
+          for path in "${rust_paths[@]}"; do
+            allowed_paths["codex-rs/$path"]=1
+          done
+          allowed_paths["codex-rs/core/config.schema.json"]=1
+          check_output_scope() {
+            local path
+            local changed_paths
+            changed_paths="$(git -C "$GITHUB_WORKSPACE" diff --name-only)"
+            printf '%s\n' "$changed_paths" > "$output/changed-paths.txt"
+            if [[ -z "$changed_paths" ]]; then
+              printf 'output_scope_error=no-output\n' >> "$output/identity.txt"
+              return 1
+            fi
+            while IFS= read -r path; do
+              [[ -n "$path" ]] || continue
+              if [[ -z "${allowed_paths[$path]+present}" ]]; then
+                printf 'output_scope_error=unexpected-path\n' >> "$output/identity.txt"
+                return 1
+              fi
+            done <<< "$changed_paths"
+            if ! grep -Fxq 'codex-rs/core/config.schema.json' <<< "$changed_paths"; then
+              printf 'output_scope_error=config-schema-not-updated\n' >> "$output/identity.txt"
+              return 1
+            fi
+            return 0
+          }
+
+          run_checked output_scope check_output_scope
+          printf 'output_scope_check_exit=0\n' >> "$output/identity.txt"
+          git -C "$GITHUB_WORKSPACE" diff --binary > "$output/native-config.patch"
+          test -s "$output/native-config.patch"
+          run_checked diff_check git -C "$GITHUB_WORKSPACE" diff --check
+
+      - name: Finalize exact output envelope
+        if: ${{ always() }}
         shell: bash
-        run: |
-          echo "argpkg : ${{ needs.argument_comment_lint_package.result }}"
-          echo "arglint: ${{ needs.argument_comment_lint_prebuilt.result }}"
-          echo "general: ${{ needs.general.result }}"
-          echo "shear  : ${{ needs.cargo_shear.result }}"
-
-          # If nothing relevant changed (PR touching only root README, etc.),
-          # declare success regardless of other jobs.
-          if [[ "${NEEDS_CHANGED_OUTPUTS_ARGUMENT_COMMENT_LINT}" != 'true' && "${NEEDS_CHANGED_OUTPUTS_CODEX}" != 'true' && "${NEEDS_CHANGED_OUTPUTS_WORKFLOWS}" != 'true' ]]; then
-            echo 'No relevant changes -> CI not required.'
-            exit 0
-          fi
-
-          if [[ "${NEEDS_CHANGED_OUTPUTS_ARGUMENT_COMMENT_LINT_PACKAGE}" == 'true' ]]; then
-            [[ '${{ needs.argument_comment_lint_package.result }}' == 'success' ]] || { echo 'argument_comment_lint_package failed'; exit 1; }
-          fi
-
-          if [[ "${NEEDS_CHANGED_OUTPUTS_ARGUMENT_COMMENT_LINT}" == 'true' || "${NEEDS_CHANGED_OUTPUTS_WORKFLOWS}" == 'true' ]]; then
-            [[ '${{ needs.argument_comment_lint_prebuilt.result }}' == 'success' ]] || { echo 'argument_comment_lint_prebuilt failed'; exit 1; }
-          fi
-
-          if [[ "${NEEDS_CHANGED_OUTPUTS_CODEX}" == 'true' || "${NEEDS_CHANGED_OUTPUTS_WORKFLOWS}" == 'true' ]]; then
-            [[ '${{ needs.general.result }}' == 'success' ]] || { echo 'general failed'; exit 1; }
-            [[ '${{ needs.cargo_shear.result }}' == 'success' ]] || { echo 'cargo_shear failed'; exit 1; }
-          fi
         env:
-          NEEDS_CHANGED_OUTPUTS_ARGUMENT_COMMENT_LINT: ${{ needs.changed.outputs.argument_comment_lint }}
-          NEEDS_CHANGED_OUTPUTS_CODEX: ${{ needs.changed.outputs.codex }}
-          NEEDS_CHANGED_OUTPUTS_WORKFLOWS: ${{ needs.changed.outputs.workflows }}
-          NEEDS_CHANGED_OUTPUTS_ARGUMENT_COMMENT_LINT_PACKAGE: ${{ needs.changed.outputs.argument_comment_lint_package }}
+          HOST_BINDING_OUTCOME: ${{ steps.host_binding.outcome }}
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          SOURCE_IDENTITY_OUTCOME: ${{ steps.source_identity.outcome }}
+          RUST_TOOLCHAIN_OUTCOME: ${{ steps.rust_toolchain.outcome }}
+          CARGO_TARGET_OUTCOME: ${{ steps.cargo_target.outcome }}
+          TRANSFORM_OUTCOME: ${{ steps.transform.outcome }}
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/native-config-output"
+          {
+            printf 'host_binding_outcome=%s\n' "$HOST_BINDING_OUTCOME"
+            printf 'checkout_outcome=%s\n' "$CHECKOUT_OUTCOME"
+            printf 'source_identity_outcome=%s\n' "$SOURCE_IDENTITY_OUTCOME"
+            printf 'rust_toolchain_outcome=%s\n' "$RUST_TOOLCHAIN_OUTCOME"
+            printf 'cargo_target_outcome=%s\n' "$CARGO_TARGET_OUTCOME"
+            printf 'transform_outcome=%s\n' "$TRANSFORM_OUTCOME"
+          } >> "$output/identity.txt"
+          if git -C "$GITHUB_WORKSPACE" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            git -C "$GITHUB_WORKSPACE" diff --name-only > "$output/changed-paths.txt"
+            git -C "$GITHUB_WORKSPACE" diff --binary > "$output/native-config.patch"
+          fi
+
+      - name: Upload exact native config output
+        if: ${{ always() }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: pr965-native-config-output-${{ github.run_id }}
+          path: ${{ runner.temp }}/native-config-output/
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
