@@ -2,6 +2,7 @@ use codex_utils_absolute_path::test_support::PathExt;
 use pretty_assertions::assert_eq;
 use sqlx::Connection;
 use sqlx::Row;
+use sqlx::SqlitePool;
 use sqlx::migrate::Migration;
 use sqlx::migrate::Migrator;
 use std::borrow::Cow;
@@ -13,6 +14,203 @@ use crate::PINNED_THREAD_SECTION_ID;
 use crate::PINNED_THREAD_SECTION_NAME;
 
 const CUSTOM_THREAD_SECTION_ID: &str = "01984de2-8f74-7c91-a3b2-5c5e937cf317";
+
+type ThreadHistoryLedgerRow = (i64, String, String, bool, Vec<u8>, i64);
+
+async fn thread_history_ledger(pool: &SqlitePool) -> Vec<ThreadHistoryLedgerRow> {
+    sqlx::query_as(
+        "SELECT version, description, CAST(installed_on AS TEXT), success, checksum, execution_time
+         FROM _sqlx_migrations ORDER BY version",
+    )
+    .fetch_all(pool)
+    .await
+    .expect("thread history ledger should be readable")
+}
+
+async fn thread_history_fixture(version: i64) -> (crate::SqliteConfig, SqlitePool) {
+    let sqlite_home = crate::runtime::test_support::unique_temp_dir();
+    tokio::fs::create_dir_all(&sqlite_home)
+        .await
+        .expect("sqlite home should be created");
+    let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
+    let pool = if version == 0 {
+        crate::open_thread_history_db(&sqlite)
+            .await
+            .expect("native opener should initialize fresh thread history")
+    } else {
+        let migrator = Migrator {
+            migrations: Cow::Owned(
+                THREAD_HISTORY_MIGRATOR
+                    .migrations
+                    .iter()
+                    .filter(|migration| migration.version <= version)
+                    .cloned()
+                    .collect(),
+            ),
+            ignore_missing: true,
+            locking: THREAD_HISTORY_MIGRATOR.locking,
+            table_name: THREAD_HISTORY_MIGRATOR.table_name.clone(),
+            create_schemas: THREAD_HISTORY_MIGRATOR.create_schemas.clone(),
+            no_tx: THREAD_HISTORY_MIGRATOR.no_tx,
+        };
+        sqlite
+            .open_thread_history_db(&migrator, /*telemetry_override*/ None)
+            .await
+            .expect("released thread history generation should initialize")
+    };
+    sqlx::raw_sql(
+        "INSERT INTO thread_turns
+             (thread_id, turn_id, rollout_ordinal, status, error_json, started_at,
+              completed_at, duration_ms, first_user_item_id, final_agent_item_id,
+              rollout_byte_offset, rollout_end_ordinal, rollout_end_byte_offset)
+         VALUES ('fixture-thread', 'fixture-turn', 1, 'completed', '{}', 10, 20, 10,
+                 'fixture-item', 'fixture-item', 30, 3, 40);
+         INSERT INTO thread_items
+             (thread_id, turn_id, item_id, rollout_ordinal, created_at_ms, item_json,
+              item_type, updated_at_ordinal)
+         VALUES ('fixture-thread', 'fixture-turn', 'fixture-item', 2, 100, '{}',
+                 'userMessage', 2);
+         INSERT INTO thread_history_projection_state
+             (thread_id, next_rollout_byte_offset, next_rollout_ordinal)
+         VALUES ('fixture-thread', 40, 4);",
+    )
+    .execute(&pool)
+    .await
+    .expect("released writer should store sentinel data without the new columns");
+    (sqlite, pool)
+}
+
+async fn thread_history_sentinel(pool: &SqlitePool) -> String {
+    sqlx::query_scalar(
+        "SELECT json_object(
+             'turn', (SELECT json_array(
+                 thread_id, turn_id, rollout_ordinal, status, error_json, started_at,
+                 completed_at, duration_ms, first_user_item_id, final_agent_item_id,
+                 rollout_byte_offset, rollout_end_ordinal, rollout_end_byte_offset)
+                 FROM thread_turns WHERE thread_id = 'fixture-thread'),
+             'item', (SELECT json_array(
+                 thread_id, turn_id, item_id, rollout_ordinal, created_at_ms,
+                 item_json, item_type, updated_at_ordinal)
+                 FROM thread_items WHERE thread_id = 'fixture-thread'),
+             'checkpoint', (SELECT json_array(
+                 thread_id, next_rollout_byte_offset, next_rollout_ordinal)
+                 FROM thread_history_projection_state WHERE thread_id = 'fixture-thread'))",
+    )
+    .fetch_one(pool)
+    .await
+    .expect("all original sentinel fields should be readable")
+}
+
+#[tokio::test]
+async fn native_thread_history_opener_preserves_fresh_six_and_eight_generation_data() {
+    for version in [0_i64, 6, 8] {
+        let (sqlite, pool) = thread_history_fixture(version).await;
+        let _cleanup = scopeguard::guard(sqlite.home().to_path_buf(), |sqlite_home| {
+            let _ = std::fs::remove_dir_all(sqlite_home);
+        });
+        let before = thread_history_ledger(&pool).await;
+        let sentinel = thread_history_sentinel(&pool).await;
+        assert_eq!(before.len(), if version == 6 { 6 } else { 8 });
+        pool.close().await;
+        let mut upgraded_ledger = None;
+        for iteration in 0..2 {
+            let pool = crate::open_thread_history_db(&sqlite)
+                .await
+                .expect("native opener should preserve the released generation");
+            let ledger = thread_history_ledger(&pool).await;
+            assert_eq!(ledger.len(), 8);
+            assert_eq!(
+                ledger.iter().map(|row| row.0).collect::<Vec<_>>(),
+                (1_i64..=8).collect::<Vec<_>>()
+            );
+            assert_eq!(&ledger[..before.len()], before.as_slice());
+            if let Some(expected) = &upgraded_ledger {
+                assert_eq!(&ledger, expected);
+            } else {
+                upgraded_ledger = Some(ledger);
+            }
+            assert_eq!(thread_history_sentinel(&pool).await, sentinel);
+            let values = sqlx::query_as::<_, (Option<i64>, Option<i64>, Option<String>)>(
+                "SELECT items.started_at_ms, items.completed_at_ms, turns.root_turn_id
+                 FROM thread_items AS items JOIN thread_turns AS turns
+                 ON items.thread_id = turns.thread_id AND items.turn_id = turns.turn_id
+                 WHERE items.thread_id = 'fixture-thread'",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("current history reader columns should exist");
+            if iteration == 0 {
+                assert_eq!(values, (None, None, None));
+                sqlx::raw_sql(
+                    "UPDATE thread_items SET started_at_ms = 100, completed_at_ms = 200
+                     WHERE thread_id = 'fixture-thread';
+                     UPDATE thread_turns SET root_turn_id = 'fixture-root'
+                     WHERE thread_id = 'fixture-thread';",
+                )
+                .execute(&pool)
+                .await
+                .expect("current history writer columns should accept values");
+            } else {
+                assert_eq!(
+                    values,
+                    (Some(100), Some(200), Some("fixture-root".to_owned()))
+                );
+            }
+            assert_eq!(thread_history_sentinel(&pool).await, sentinel);
+            pool.close().await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn native_thread_history_opener_rejects_checksum_mismatch_without_mutation() {
+    for version in 1_i64..=8 {
+        let generation = if version <= 6 { 6 } else { 8 };
+        let (sqlite, pool) = thread_history_fixture(generation).await;
+        let _cleanup = scopeguard::guard(sqlite.home().to_path_buf(), |sqlite_home| {
+            let _ = std::fs::remove_dir_all(sqlite_home);
+        });
+        sqlx::query("UPDATE _sqlx_migrations SET checksum = ? WHERE version = ?")
+            .bind(vec![0x5a; 48])
+            .bind(version)
+            .execute(&pool)
+            .await
+            .expect("unknown checksum fixture should be stored");
+        let before = thread_history_ledger(&pool).await;
+        let sentinel = thread_history_sentinel(&pool).await;
+        let schema = sqlx::query_as::<_, (String, String)>(
+            "SELECT name, sql FROM sqlite_master WHERE type = 'table' ORDER BY name",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("original schema should be readable");
+        pool.close().await;
+        let error = crate::open_thread_history_db(&sqlite)
+            .await
+            .expect_err("known migration checksum mismatches must fail closed");
+        let migration_error = error
+            .chain()
+            .find_map(|source| source.downcast_ref::<sqlx::migrate::MigrateError>());
+        assert!(matches!(
+            migration_error,
+            Some(sqlx::migrate::MigrateError::VersionMismatch(rejected)) if *rejected == version
+        ));
+        let preserved = sqlite
+            .open_read_only_pool(&sqlite.thread_history_db_path(), /*busy_timeout*/ None)
+            .await
+            .expect("rejected history should remain readable");
+        assert_eq!(thread_history_ledger(&preserved).await, before);
+        assert_eq!(thread_history_sentinel(&preserved).await, sentinel);
+        let preserved_schema = sqlx::query_as::<_, (String, String)>(
+            "SELECT name, sql FROM sqlite_master WHERE type = 'table' ORDER BY name",
+        )
+        .fetch_all(&preserved)
+        .await
+        .expect("rejected schema should remain readable");
+        assert_eq!(preserved_schema, schema);
+        preserved.close().await;
+    }
+}
 
 fn migrator_through(version: i64) -> Migrator {
     Migrator {
