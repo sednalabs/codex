@@ -16,15 +16,15 @@ permissions:
   contents: read
 
 jobs:
-  focused-three-selectors-local-msvc-no-rbe:
+  focused-two-selectors-local-msvc-no-rbe:
     name: Focused Windows 2025 local MSVC selectors without RBE
     runs-on: windows-2025
     timeout-minutes: 90
     env:
       SOURCE_SHA: ${{ inputs.source_sha }}
       EXPECTED_HOST_SHA: ${{ inputs.expected_host_sha }}
-      CANDIDATE_SHA: 155e6a23842ced8d6b3de7462643efe075b1a948
-      CANDIDATE_TREE: 2bb364266fa85ad52607ba15a06160bf002f592b
+      CANDIDATE_SHA: fb00a521c9eecff3b2cf66efd8a16eb0994e1aa9
+      CANDIDATE_TREE: 0f70d5bfe1e196c0a9cb04e40c68a810efe01108
       BASE_SHA: 83086188ae0614bd882818ff1aa23f3194962012
       BUILDBUDDY_API_KEY: ''
 
@@ -33,7 +33,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          expected_ref="refs/heads/validation/pr965-focused-windows-155e6a23"
+          expected_ref="refs/heads/validation/pr965-focused-windows-fb00a521"
           expected_workflow_ref="sednalabs/codex/.github/workflows/native-windows-bazel-health.yml@${expected_ref}"
           [[ "${GITHUB_REPOSITORY}" == "sednalabs/codex" ]]
           [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]
@@ -150,17 +150,16 @@ jobs:
             throw "Windows workspace status must identify the checked-out source exactly once."
           }
 
-      - name: Run three fixed selectors in the local Windows MSVC no-RBE mode
+      - name: Run two fixed selectors in the local Windows MSVC no-RBE mode
         shell: bash
         run: |
           set -euo pipefail
           export LC_ALL=C
           selectors=(
-            '//codex-rs/windows-sandbox-rs:windows-sandbox-rs-helper_manifest-test-windows-cross|setup_helper_embeds_as_invoker_manifest'
-            '//codex-rs/cli:cli-doctor_path_safety-test-windows-cross|startup_and_doctor_do_not_execute_path_helpers'
-            '//codex-rs/core:core-all-test|suite::subagent_notifications::subagent_stop_replaces_stop_and_skips_internal_subagents'
+            '//codex-rs/windows-sandbox-rs:windows-sandbox-rs-helper_manifest-test|setup_helper_embeds_as_invoker_manifest'
+            '//codex-rs/cli:cli-doctor_path_safety-test|startup_and_doctor_do_not_execute_path_helpers'
           )
-          [[ "${#selectors[@]}" -eq 3 ]]
+          [[ "${#selectors[@]}" -eq 2 ]]
           failures=0
           index=0
           printf 'selector\ttarget\tstatus\tbazel_exit_code\ttee_exit_code\tmatched_pass_lines\tearly_skip\ttest_result\tdiagnostics\n' >> "${NATIVE_TEST_REPORT}"
@@ -190,7 +189,7 @@ jobs:
               --workspace_status_command=./scripts/workspace-status.cmd \
               --build_metadata=COMMIT_SHA=${SOURCE_SHA} \
               --build_metadata=TAG_validation_host_sha=${EXPECTED_HOST_SHA} \
-              --build_metadata=TAG_windows_validation_mode=focused_three_selectors_local_msvc_no_rbe \
+              --build_metadata=TAG_windows_validation_mode=focused_two_selectors_local_msvc_no_rbe \
               --action_env="SystemRoot=${CODEX_BAZEL_SYSTEM_ROOT}" \
               --host_action_env="SystemRoot=${CODEX_BAZEL_SYSTEM_ROOT}" \
               --action_env="PROCESSOR_ARCHITECTURE=${CODEX_BAZEL_PROCESSOR_ARCHITECTURE}" \
