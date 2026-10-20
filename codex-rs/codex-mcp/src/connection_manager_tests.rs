@@ -2184,7 +2184,7 @@ async fn configured_http_mode_overrides_existing_precedence() -> anyhow::Result<
     ));
     catalog.register(
         crate::McpServerRegistration::from_extension(
-            "extension",
+            "extension".to_string(),
             "test-extension",
             /*contribution_order*/ 0,
             extension_config.clone(),
