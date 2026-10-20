@@ -189,7 +189,7 @@ where
 
             let expected_continuation = input
                 .completing_turn_store
-                .and_then(|turn_store| turn_store.get::<GoalTurnContinuation>());
+                .and_then(ExtensionData::get::<GoalTurnContinuation>);
 
             let accounting = runtime.accounting_state();
             if let Some(turn_id) = accounting.interrupted_turn_id() {
