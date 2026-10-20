@@ -21,7 +21,6 @@ use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::HookEventName;
 use codex_protocol::protocol::MULTI_AGENT_MODE_OPEN_TAG;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SessionSource;
@@ -789,7 +788,7 @@ async fn subagent_stop_replaces_stop_and_skips_internal_subagents() -> Result<()
     )
     .await;
 
-    let first_child_request = mount_sse_once_match(
+    let _first_child_request = mount_sse_once_match(
         &server,
         |req: &wiremock::Request| {
             body_contains(req, CHILD_PROMPT) && !body_contains(req, SPAWN_CALL_ID)
@@ -801,7 +800,7 @@ async fn subagent_stop_replaces_stop_and_skips_internal_subagents() -> Result<()
         ]),
     )
     .await;
-    let second_child_request = mount_sse_once_match(
+    let _second_child_request = mount_sse_once_match(
         &server,
         |req: &wiremock::Request| {
             body_contains(req, SUBAGENT_STOP_CONTINUATION) && !body_contains(req, SPAWN_CALL_ID)
@@ -855,60 +854,13 @@ async fn subagent_stop_replaces_stop_and_skips_internal_subagents() -> Result<()
         .await?;
 
     test.submit_turn(TURN_1_PROMPT).await?;
-    let _ = wait_for_requests(&first_child_request).await?;
-    let second_child_requests = wait_for_requests(&second_child_request).await?;
 
-    let deadline = Instant::now() + Duration::from_secs(2);
-    let mut stop_starts = 0;
-    let mut stop_runs = Vec::new();
-    let mut child_complete = false;
-    let stop_outcome = tokio::time::timeout_at(deadline, async {
-        let child_body = second_child_requests
-            .first()
-            .context("second child request missing")?
-            .body_json();
-        let child_thread_id = ThreadId::from_string(
-            child_body["client_metadata"]["thread_id"]
-                .as_str()
-                .context("second child request has no thread id")?,
-        )
-        .map_err(|_| anyhow::anyhow!("second child request has invalid thread id"))?;
-        let child_thread = test
-            .thread_manager
-            .get_thread(child_thread_id)
-            .await
-            .map_err(|_| anyhow::anyhow!("spawned child is unavailable"))?;
-        while stop_runs.len() < 2 || !child_complete {
-            let event = child_thread
-                .next_event()
-                .await
-                .map_err(|_| anyhow::anyhow!("child event stream failed"))?;
-            match event.msg {
-                EventMsg::HookStarted(event)
-                    if event.run.event_name == HookEventName::SubagentStop =>
-                {
-                    assert!(stop_starts < 2, "unexpected extra subagent stop hook start");
-                    stop_starts += 1;
-                }
-                EventMsg::HookCompleted(event)
-                    if event.run.event_name == HookEventName::SubagentStop =>
-                {
-                    assert!(
-                        stop_runs.len() < 2,
-                        "unexpected extra subagent stop completion"
-                    );
-                    stop_runs.push(event.run.status);
-                }
-                EventMsg::TurnComplete(_) => child_complete = true,
-                _ => {}
-            }
-        }
-        read_hook_log(test.codex_home_path(), "subagent_stop_hook_log.jsonl")
-    })
-    .await;
-    eprintln!("child stop: starts={stop_starts}, hooks={stop_runs:?}, complete={child_complete}");
-    let subagent_stop_inputs =
-        stop_outcome.context("child stop did not complete within 2 seconds")??;
+    let subagent_stop_inputs = wait_for_hook_log(
+        test.codex_home_path(),
+        "subagent_stop_hook_log.jsonl",
+        /*expected_len*/ 2,
+    )
+    .await?;
     assert_eq!(subagent_stop_inputs.len(), 2);
     assert_eq!(
         subagent_stop_inputs
