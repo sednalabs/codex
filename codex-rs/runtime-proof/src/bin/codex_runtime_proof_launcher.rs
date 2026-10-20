@@ -4,9 +4,7 @@ fn main() {
         let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
         match arguments.as_slice() {
             [] => codex_runtime_proof::launcher::run(),
-            [argument]
-                if argument.as_os_str() == std::ffi::OsStr::new("provision-api-bearer") =>
-            {
+            [argument] if argument.as_os_str() == std::ffi::OsStr::new("provision-api-bearer") => {
                 codex_runtime_proof::launcher::provision_api_bearer()
             }
             [argument, mode]

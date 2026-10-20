@@ -8,9 +8,9 @@
 use crate::api_claim;
 use anyhow::Result;
 use anyhow::bail;
+use codex_rmcp_client::FIXED_API_CLAIM_TIMEOUT_SECS;
 use codex_rmcp_client::perform_fixed_ops_api_access_token_login;
 use codex_rmcp_client::perform_fixed_ops_api_access_token_login_with_callback_input;
-use codex_rmcp_client::FIXED_API_CLAIM_TIMEOUT_SECS;
 use std::ffi::CStr;
 use std::fs;
 use std::fs::File;
@@ -33,6 +33,49 @@ const BEARER_LOCK_NAME: &str = ".codex-runtime-proof-api-bearer.lock";
 const XDG_OPEN_PATH: &str = "/usr/bin/xdg-open";
 const MAX_PASSWD_BUFFER: usize = 64 * 1024;
 const MAX_CALLBACK_URL_BYTES: usize = 64 * 1024;
+
+struct TerminalEchoGuard {
+    fd: libc::c_int,
+    original: libc::termios,
+    active: bool,
+}
+
+impl TerminalEchoGuard {
+    fn disable(fd: libc::c_int) -> Result<Self> {
+        let mut original = MaybeUninit::<libc::termios>::uninit();
+        if unsafe { libc::tcgetattr(fd, original.as_mut_ptr()) } != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        let original = unsafe { original.assume_init() };
+        let mut no_echo = original;
+        no_echo.c_lflag &= !libc::ECHO;
+        if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &no_echo) } != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(Self {
+            fd,
+            original,
+            active: true,
+        })
+    }
+
+    fn restore(&mut self) -> std::io::Result<()> {
+        if !self.active {
+            return Ok(());
+        }
+        if unsafe { libc::tcsetattr(self.fd, libc::TCSANOW, &self.original) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        self.active = false;
+        Ok(())
+    }
+}
+
+impl Drop for TerminalEchoGuard {
+    fn drop(&mut self) {
+        let _ = self.restore();
+    }
+}
 
 pub(crate) fn run() -> Result<i32> {
     run_with_interaction(ProvisioningInteraction::Browser)
@@ -61,9 +104,11 @@ fn run_with_interaction(interaction: ProvisioningInteraction) -> Result<i32> {
     let oauth_dispatch = tracing::Dispatch::none();
     let access_token = tracing::dispatcher::with_default(&oauth_dispatch, || {
         if matches!(interaction, ProvisioningInteraction::ManualCallbackInput) {
-            runtime.block_on(perform_fixed_ops_api_access_token_login_with_callback_input(
-                read_callback_url_from_invoking_terminal,
-            ))
+            runtime.block_on(
+                perform_fixed_ops_api_access_token_login_with_callback_input(
+                    read_callback_url_from_invoking_terminal,
+                ),
+            )
         } else {
             runtime.block_on(perform_fixed_ops_api_access_token_login(
                 open_authorization_url_as_invoking_user,
@@ -207,6 +252,16 @@ fn read_callback_url_from_invoking_terminal(authorization_url: &str) -> Result<S
         bail!("manual OAuth callback input requires terminal output");
     }
 
+    let mut echo_guard = TerminalEchoGuard::disable(libc::STDIN_FILENO)?;
+    let result = read_callback_url_with_echo_disabled(authorization_url);
+    echo_guard
+        .restore()
+        .map_err(|_| anyhow::anyhow!("restore invoking terminal settings"))?;
+    writeln!(std::io::stdout().lock())?;
+    result
+}
+
+fn read_callback_url_with_echo_disabled(authorization_url: &str) -> Result<String> {
     let mut stdout = std::io::stdout().lock();
     writeln!(
         stdout,
@@ -240,13 +295,7 @@ fn read_callback_url_from_invoking_terminal(authorization_url: &str) -> Result<S
             return Err(error.into());
         }
         let mut byte = [0_u8; 1];
-        let read = unsafe {
-            libc::read(
-                libc::STDIN_FILENO,
-                byte.as_mut_ptr().cast(),
-                byte.len(),
-            )
-        };
+        let read = unsafe { libc::read(libc::STDIN_FILENO, byte.as_mut_ptr().cast(), byte.len()) };
         if read < 0 {
             let error = std::io::Error::last_os_error();
             if error.kind() == std::io::ErrorKind::Interrupted {
@@ -617,14 +666,67 @@ mod tests {
     fn manual_callback_line_accepts_terminal_newline_and_rejects_control_input() {
         assert_eq!(
             callback_url_from_terminal_input(
-                b"http://127.0.0.1:8765/callback/gGLT7yyzxEu8?code=fake&state=fake\r"
-                    .to_vec()
+                b"http://127.0.0.1:8765/callback/gGLT7yyzxEu8?code=fake&state=fake\r".to_vec()
             )
             .expect("decode CRLF terminal input"),
             "http://127.0.0.1:8765/callback/gGLT7yyzxEu8?code=fake&state=fake"
         );
         assert!(callback_url_from_terminal_input(b"url\nextra".to_vec()).is_err());
         assert!(callback_url_from_terminal_input(Vec::new()).is_err());
+    }
+
+    #[test]
+    fn manual_callback_input_temporarily_disables_and_restores_terminal_echo() {
+        let mut master = -1;
+        let mut slave = -1;
+        assert_eq!(
+            unsafe {
+                libc::openpty(
+                    &mut master,
+                    &mut slave,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                )
+            },
+            0
+        );
+        let _master = unsafe { File::from_raw_fd(master) };
+        let slave = unsafe { File::from_raw_fd(slave) };
+
+        let mut original = MaybeUninit::<libc::termios>::uninit();
+        assert_eq!(
+            unsafe { libc::tcgetattr(slave.as_raw_fd(), original.as_mut_ptr()) },
+            0
+        );
+        let mut original = unsafe { original.assume_init() };
+        original.c_lflag |= libc::ECHO;
+        assert_eq!(
+            unsafe { libc::tcsetattr(slave.as_raw_fd(), libc::TCSANOW, &original) },
+            0
+        );
+
+        {
+            let mut echo_guard =
+                TerminalEchoGuard::disable(slave.as_raw_fd()).expect("disable terminal echo");
+            let mut disabled = MaybeUninit::<libc::termios>::uninit();
+            assert_eq!(
+                unsafe { libc::tcgetattr(slave.as_raw_fd(), disabled.as_mut_ptr()) },
+                0
+            );
+            let disabled = unsafe { disabled.assume_init() };
+            assert_eq!(disabled.c_lflag & libc::ECHO, 0);
+            assert_eq!(disabled.c_lflag & !libc::ECHO, original.c_lflag & !libc::ECHO);
+            echo_guard.restore().expect("restore terminal echo");
+        }
+
+        let mut restored = MaybeUninit::<libc::termios>::uninit();
+        assert_eq!(
+            unsafe { libc::tcgetattr(slave.as_raw_fd(), restored.as_mut_ptr()) },
+            0
+        );
+        let restored = unsafe { restored.assume_init() };
+        assert_eq!(restored.c_lflag, original.c_lflag);
     }
 
     #[test]

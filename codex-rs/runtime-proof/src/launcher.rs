@@ -196,11 +196,9 @@ fn matches_api_bearer_invocation(
     arguments: &[std::ffi::OsString],
     mode: ApiBearerProvisioningMode,
 ) -> bool {
-    let command_matches = arguments
-        .first()
-        .is_some_and(|argument| {
-            argument.as_os_str() == std::ffi::OsStr::new("provision-api-bearer")
-        });
+    let command_matches = arguments.first().is_some_and(|argument| {
+        argument.as_os_str() == std::ffi::OsStr::new("provision-api-bearer")
+    });
     match mode {
         ApiBearerProvisioningMode::Browser => command_matches && arguments.len() == 1,
         ApiBearerProvisioningMode::ManualCallbackInput => {

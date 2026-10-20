@@ -887,8 +887,7 @@ fn parse_pasted_oauth_callback(
     match parse_oauth_callback(&callback_path_and_query, expected.path()) {
         CallbackOutcome::Success(callback) => Ok(CallbackResult::Success(callback)),
         CallbackOutcome::Error(_) => Ok(CallbackResult::Error(OAuthProviderError::new(
-            /*error*/ None,
-            /*error_description*/ None,
+            /*error*/ None, /*error_description*/ None,
         ))),
         CallbackOutcome::Invalid => bail!("OAuth callback URL is invalid"),
     }
@@ -1706,12 +1705,10 @@ mod tests {
                 .expect_err("reject callback not bound to this login");
             assert!(!format!("{error:#}").contains("secret-callback-code"));
         }
-        assert!(parse_pasted_oauth_callback(
-            &"x".repeat(/*n*/ 65_537),
-            redirect,
-            authorization,
-        )
-        .is_err());
+        assert!(
+            parse_pasted_oauth_callback(&"x".repeat(/*n*/ 65_537), redirect, authorization,)
+                .is_err()
+        );
     }
 
     #[test]
@@ -1729,12 +1726,14 @@ mod tests {
             panic!("expected provider error");
         };
         assert_eq!(error.to_string(), "OAuth provider returned an error");
-        assert!(parse_pasted_oauth_callback(
-            "http://127.0.0.1:8765/callback/gGLT7yyzxEu8?error=access_denied&state=wrong-state",
-            redirect,
-            authorization,
-        )
-        .is_err());
+        assert!(
+            parse_pasted_oauth_callback(
+                "http://127.0.0.1:8765/callback/gGLT7yyzxEu8?error=access_denied&state=wrong-state",
+                redirect,
+                authorization,
+            )
+            .is_err()
+        );
     }
 
     #[test]
