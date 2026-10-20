@@ -78,6 +78,17 @@ each updated companion source before consumer adoption. Building or retaining
 this source does not authorize bearer provisioning, credential installation or
 live use.
 
+## Historical usage-ledger checksums
+
+Usage databases may retain either of two exact historical checksums for
+migrations 1 and 5. The usage opener selects those expected checksums in memory
+only when that recorded identity matches, then runs the existing migrations.
+It does not rewrite migration history or accept unknown checksum mismatches.
+Focused tests preserve canonical and historical ledgers across reopen, upgrade
+the historical credit views, and reject unknown checksums without ledger rewrites.
+Remove this adapter when an equivalent native upgrade path is demonstrated, or
+when support for these historical databases is explicitly retired.
+
 ## Upgrading and retiring carries
 
 Pin the upstream revision being considered, then compare it against current

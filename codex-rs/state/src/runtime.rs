@@ -63,6 +63,7 @@ mod thread_section_order;
 mod thread_sections;
 mod threads;
 mod usage;
+pub(crate) mod usage_migration_compat;
 
 pub use external_agent_config_imports::ExternalAgentConfigImportDetailsRecord;
 pub use external_agent_config_imports::ExternalAgentConfigImportFailureRecord;

@@ -345,6 +345,14 @@ impl SqliteConfig {
             if matches!(spec.kind, DbKind::State) {
                 repair_legacy_recency_migration_version(&pool, migrator).await?;
             }
+            if matches!(spec.kind, DbKind::Usage) {
+                let usage_migrator =
+                    crate::runtime::usage_migration_compat::migrator_for_usage_database(
+                        &pool, migrator,
+                    )
+                    .await?;
+                return usage_migrator.run(&pool).await.map_err(anyhow::Error::from);
+            }
             migrator.run(&pool).await.map_err(anyhow::Error::from)
         }
         .await;
