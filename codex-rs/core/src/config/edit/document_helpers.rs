@@ -2,6 +2,7 @@ use codex_config::types::AppToolApproval;
 use codex_config::types::McpServerAuth;
 use codex_config::types::McpServerConfig;
 use codex_config::types::McpServerEnvVar;
+use codex_config::types::McpServerProtocolMode;
 use codex_config::types::McpServerToolConfig;
 use codex_config::types::McpServerTransportConfig;
 use codex_config::types::ToolSuggestDisabledTool;
@@ -94,6 +95,13 @@ fn serialize_mcp_server_table(config: &McpServerConfig) -> TomlTable {
                 entry["env_http_headers"] = table_from_pairs(headers.iter());
             }
         }
+    }
+
+    if let Some(protocol_mode) = config.protocol_mode {
+        entry["protocol_mode"] = value(match protocol_mode {
+            McpServerProtocolMode::Legacy => "legacy",
+            McpServerProtocolMode::V20260728 => "2026-07-28",
+        });
     }
 
     if matches!(&config.auth, McpServerAuth::ChatGpt) {

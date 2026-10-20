@@ -113,6 +113,7 @@ use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::BaseInstructionsProvenance;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SandboxPolicy;
+use codex_rmcp_client::McpProtocolMode;
 pub use codex_thread_store::ExtraConfig;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_absolute_path::AbsolutePathBufGuard;
@@ -1706,6 +1707,11 @@ impl Config {
                     .unwrap_or_default()
             } else {
                 Vec::new()
+            },
+            protocol_mode: if self.features.enabled(Feature::Mcp20260728) {
+                McpProtocolMode::V20260728
+            } else {
+                McpProtocolMode::Legacy
             },
             client_elicitation_capability: if self.features.enabled(Feature::AuthElicitation) {
                 ElicitationCapability::new()

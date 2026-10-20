@@ -3838,6 +3838,61 @@
         "codex-rs/core/src/mcp_tool_call.rs"
       ],
       "extraction_target": "native host capability for narrowly scoped MCP and HTTP request proofs"
+    },
+    {
+      "id": "mcp-per-server-protocol-selection",
+      "title": "Per-server MCP current-protocol selection",
+      "status": "live",
+      "category": "mcp",
+      "surface_type": "protocol-client",
+      "surface": [
+        "global current-protocol feature default",
+        "per-server Streamable HTTP protocol override",
+        "connection lifecycle selection"
+      ],
+      "files": [
+        "codex-rs/Cargo.toml",
+        "codex-rs/Cargo.lock",
+        "codex-rs/config/src/mcp_types.rs",
+        "codex-rs/config/src/lib.rs",
+        "codex-rs/config/src/types.rs",
+        "codex-rs/core/config.schema.json",
+        "codex-rs/core/src/config/mod.rs",
+        "codex-rs/core/src/config/edit/document_helpers.rs",
+        "codex-rs/codex-mcp/src/mcp/mod.rs",
+        "codex-rs/codex-mcp/src/connection_manager.rs",
+        "codex-rs/codex-mcp/src/connection_manager_tests.rs",
+        "codex-rs/codex-mcp/src/server.rs",
+        "codex-rs/codex-mcp/src/rmcp_client.rs",
+        "codex-rs/rmcp-client/src/protocol_mode.rs",
+        "codex-rs/rmcp-client/src/rmcp_client.rs",
+        "codex-rs/rmcp-client/tests/streamable_http_protocol_mode.rs"
+      ],
+      "behavior": "The disabled-by-default global mcp_2026_07_28 feature selects the preferred MCP lifecycle for Streamable HTTP servers. A per-server protocol_mode value overrides that default and follows the winning catalog registration; changing the effective mode forces connection replacement. Current mode requests server/discover and may fall back to legacy initialization when the peer does not support discovery.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": "be2e4afcd7392339d6adbaf0d31b26316bcaa2ab"
+      },
+      "guardrail_lane": "codex.rmcp-client-transport; codex.rmcp-consumers-check; codex.config-schema",
+      "tests": [
+        "current_protocol_mode_discovers_and_sends_stateless_http_requests",
+        "server_protocol_mode_overrides_global_feature_default",
+        "deserialize_http_server_protocol_mode_and_round_trip",
+        "stdio_server_rejects_protocol_mode",
+        "connection_identity_distinguishes_protocol_mode",
+        "blocking_replace_mcp_servers_round_trips_with_protocol_mode"
+      ],
+      "owner": "downstream",
+      "notes": "The lifecycle implementation is adopted from the exact Rust SDK revision pinned by upstream Codex; the per-server TOML override is downstream config. A selected current mode can fall back to legacy, so config is not wire proof. Preserve the no-replay guard for uncertain tools/call requests. Installed-host acceptance must observe a natural request using the current protocol header without a legacy session ID.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "protocol-selection-adapter",
+      "hotspot_files": [
+        "codex-rs/codex-mcp/src/connection_manager.rs",
+        "codex-rs/rmcp-client/src/rmcp_client.rs",
+        "codex-rs/config/src/mcp_types.rs"
+      ],
+      "extraction_target": "upstream per-server MCP protocol configuration"
     }
   ],
   "superseded_hunks": [

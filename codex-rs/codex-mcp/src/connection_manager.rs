@@ -246,6 +246,7 @@ impl McpConnectionSet {
         {
             let metadata = McpServerMetadata::from(&server);
             let configured_config = server.config().clone();
+            let protocol_mode = config.protocol_mode_for_server(&configured_config);
             let configured_tool_filter = ToolFilter::from_config(&configured_config);
             let configured_tool_timeout = Some(
                 configured_config
@@ -302,6 +303,7 @@ impl McpConnectionSet {
                     .then(|| (codex_home.clone(), codex_apps_tools_cache_key.clone())),
                 client_elicitation_capability.clone(),
                 supports_openai_form_elicitation,
+                protocol_mode,
             );
             if let Some(previous_view) =
                 reusable_previous.and_then(|previous| previous.servers.get(&server_name))
@@ -357,6 +359,7 @@ impl McpConnectionSet {
                 runtime_auth_provider,
                 client_elicitation_capability.clone(),
                 supports_openai_form_elicitation,
+                protocol_mode,
             );
             servers.insert(
                 server_name.clone(),

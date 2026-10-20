@@ -24,6 +24,7 @@ use codex_config::ConfigLayerStack;
 use codex_config::Constrained;
 use codex_config::McpServerAuth;
 use codex_config::McpServerConfig;
+use codex_config::McpServerProtocolMode;
 use codex_config::McpServerTransportConfig;
 use codex_config::types::AppToolApproval;
 use codex_config::types::ApprovalsReviewer;
@@ -41,6 +42,7 @@ use codex_protocol::mcp::Tool;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::McpAuthStatus;
+use codex_rmcp_client::McpProtocolMode;
 use codex_utils_path_uri::PathUri;
 use rmcp::model::ElicitationCapability;
 use rmcp::model::ReadResourceRequestParams;
@@ -177,6 +179,8 @@ pub struct McpConfig {
     pub prefix_mcp_tool_names: bool,
     /// MCP servers whose model-visible tool namespaces omit the `mcp__` prefix.
     pub non_prefixed_mcp_tool_servers: Vec<String>,
+    /// Default MCP lifecycle preference for Streamable HTTP servers that do not override it.
+    pub protocol_mode: McpProtocolMode,
     /// Client-side elicitation capabilities advertised during MCP initialization.
     pub client_elicitation_capability: ElicitationCapability,
     /// Resolved MCP registrations keyed by logical server name.
@@ -184,6 +188,25 @@ pub struct McpConfig {
     /// Plugin declarations used to attribute connector tools to plugin display names.
     /// MCP registrations retain their own package attribution in the catalog.
     pub connector_snapshot: ConnectorSnapshot,
+}
+
+impl McpConfig {
+    /// Resolves the effective lifecycle for a server. An explicit server
+    /// setting wins; otherwise the global feature preference applies to HTTP
+    /// only, while stdio remains on the legacy lifecycle.
+    pub fn protocol_mode_for_server(&self, server: &McpServerConfig) -> McpProtocolMode {
+        if !matches!(
+            &server.transport,
+            McpServerTransportConfig::StreamableHttp { .. }
+        ) {
+            return McpProtocolMode::Legacy;
+        }
+        match server.protocol_mode {
+            Some(McpServerProtocolMode::Legacy) => McpProtocolMode::Legacy,
+            Some(McpServerProtocolMode::V20260728) => McpProtocolMode::V20260728,
+            None => self.protocol_mode,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -534,6 +557,7 @@ fn mcp_server_config_for_url(
             env_http_headers: None,
         },
         auth: auth_mode,
+        protocol_mode: None,
         environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
         enabled: true,
         required: false,

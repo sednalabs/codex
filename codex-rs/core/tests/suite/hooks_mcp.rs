@@ -192,6 +192,7 @@ fn insert_rmcp_test_server(config: &mut Config, command: String, approval_mode: 
                 env_vars: Vec::new(),
                 cwd: None,
             },
+            protocol_mode: None,
             environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
             enabled: true,
             required: false,

@@ -16,6 +16,7 @@ use tracing::warn;
 use crate::elicitation_client_service::ElicitationClientService;
 use crate::http_client_adapter::StreamableHttpClientAdapterError;
 use crate::oauth::OAuthPersistor;
+use crate::protocol_mode::McpProtocolMode;
 
 use super::ClientOperationError;
 use super::PendingTransport;
@@ -36,6 +37,7 @@ impl RmcpClient {
         initial_transport: PendingTransport,
         client_service: ElicitationClientService,
         timeout: Option<Duration>,
+        protocol_mode: McpProtocolMode,
     ) -> Result<(
         Arc<RunningService<RoleClient, ElicitationClientService>>,
         Option<OAuthPersistor>,
@@ -48,6 +50,7 @@ impl RmcpClient {
                 initial_transport,
                 client_service.clone(),
                 timeout,
+                protocol_mode,
                 &mut attempt_context,
                 &mut excluded_oauth_time,
             )
@@ -88,6 +91,7 @@ impl RmcpClient {
                     transport,
                     client_service,
                     remaining,
+                    protocol_mode,
                     &mut retry_context,
                     &mut retry_excluded_oauth_time,
                 )
@@ -102,6 +106,7 @@ impl RmcpClient {
         initial_transport: PendingTransport,
         client_service: ElicitationClientService,
         timeout: Option<Duration>,
+        protocol_mode: McpProtocolMode,
         attempt_context: &mut InitializeAttemptContext,
         excluded_oauth_time: &mut Duration,
     ) -> Result<(
@@ -171,6 +176,7 @@ impl RmcpClient {
                 transport,
                 client_service.clone(),
                 attempt_timeout,
+                protocol_mode,
             )
             .await
             {

@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 
 use rmcp::RoleClient;
-use rmcp::model::ClientInfo;
+use rmcp::model::ClientConfig;
 use rmcp::model::ClientResult;
 use rmcp::model::CustomRequest;
 use rmcp::model::CustomResult;
@@ -48,7 +48,7 @@ pub(crate) struct ElicitationClientService {
 
 impl ElicitationClientService {
     pub(crate) fn new(
-        client_info: ClientInfo,
+        client_info: ClientConfig,
         send_elicitation: SendElicitation,
         pause_state: ElicitationPauseState,
         tool_list_generation: Arc<AtomicUsize>,
@@ -147,7 +147,7 @@ impl Service<RoleClient> for ElicitationClientService {
         .await
     }
 
-    fn get_info(&self) -> ClientInfo {
+    fn get_info(&self) -> ClientConfig {
         <LoggingClientHandler as Service<RoleClient>>::get_info(&self.handler)
     }
 }

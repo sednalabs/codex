@@ -4,6 +4,7 @@ use std::time::Duration;
 use codex_config::AppToolApproval;
 use codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID;
 use codex_config::McpServerConfig;
+use codex_config::McpServerProtocolMode;
 use codex_config::McpServerToolConfig;
 use codex_config::McpServerTransportConfig;
 use pretty_assertions::assert_eq;
@@ -24,6 +25,7 @@ fn server(url: &str) -> McpServerConfig {
             http_headers: None,
             env_http_headers: None,
         },
+        protocol_mode: None,
         environment_id: DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
         enabled: true,
         required: true,
@@ -80,7 +82,8 @@ fn remove(source: McpServerSource) -> McpServerConflictAction {
 
 #[test]
 fn source_precedence_preserves_the_winning_registration() {
-    let extension = server("https://extension.example/mcp");
+    let mut extension = server("https://extension.example/mcp");
+    extension.protocol_mode = Some(McpServerProtocolMode::V20260728);
     let mut plugin_server = server("https://plugin.example/mcp");
     plugin_server.enabled = false;
     let mut builder = ResolvedMcpCatalog::builder();

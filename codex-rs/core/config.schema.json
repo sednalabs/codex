@@ -1789,6 +1789,21 @@
       },
       "type": "object"
     },
+    "McpServerProtocolMode": {
+      "description": "Per-server MCP lifecycle selection for Streamable HTTP servers. `V20260728` requests discovery and the current stateless request lifecycle, with the SDK's documented fallback to legacy initialization when the peer does not support discovery. It does not by itself prove which lifecycle a server negotiated.",
+      "oneOf": [
+        {
+          "const": "legacy",
+          "description": "Use legacy MCP initialization and stateful request semantics.",
+          "type": "string"
+        },
+        {
+          "const": "2026-07-28",
+          "description": "Prefer MCP protocol version 2026-07-28, falling back to legacy when needed.",
+          "type": "string"
+        }
+      ]
+    },
     "McpServerToolConfig": {
       "additionalProperties": false,
       "description": "Per-tool approval settings for a single MCP server tool.",
@@ -3380,6 +3395,18 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "protocol_mode": {
+          "default": null,
+          "description": "Per-server Streamable HTTP protocol preference. `2026-07-28` requests discovery and can fall back to legacy initialization when the peer does not support it; the configured value does not prove which lifecycle was negotiated.",
+          "oneOf": [
+            {
+              "$ref": "#/definitions/McpServerProtocolMode"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "read_only": {

@@ -51,7 +51,7 @@ use rmcp::model::ReadResourceResult;
 use rmcp::model::Resource;
 use rmcp::model::ResourceContents;
 use rmcp::model::ServerCapabilities;
-use rmcp::model::ServerInfo;
+use rmcp::model::ServerConfig;
 use rmcp::service::RequestContext;
 use rmcp::service::RoleServer;
 use rmcp::transport::StreamableHttpServerConfig;
@@ -778,8 +778,8 @@ struct ResourceAppsMcpServer {
 }
 
 impl ServerHandler for ResourceAppsMcpServer {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_resources().build())
             .with_protocol_version(ProtocolVersion::V_2025_06_18)
     }
 

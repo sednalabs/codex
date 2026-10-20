@@ -451,6 +451,7 @@ async fn run_code_mode_turn_with_rmcp_config(
                     env_vars: Vec::new(),
                     cwd: None,
                 },
+                protocol_mode: None,
                 environment_id: "local".to_string(),
                 enabled: true,
                 required: false,

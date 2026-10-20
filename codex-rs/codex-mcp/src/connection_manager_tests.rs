@@ -47,6 +47,7 @@ use codex_rmcp_client::ElicitationResponse;
 use codex_rmcp_client::InProcessTransportFactory;
 use codex_rmcp_client::McpAuthState;
 use codex_rmcp_client::McpLoginRequirement;
+use codex_rmcp_client::McpProtocolMode;
 use codex_rmcp_client::RmcpClient;
 use futures::FutureExt;
 use futures::future::BoxFuture;
@@ -71,7 +72,7 @@ use rmcp::model::ProtocolVersion;
 use rmcp::model::Resource;
 use rmcp::model::ResourceTemplate;
 use rmcp::model::ServerCapabilities;
-use rmcp::model::ServerInfo;
+use rmcp::model::ServerConfig;
 use rmcp::model::Tool;
 use rmcp::service::RequestContext;
 use std::collections::HashMap;
@@ -243,8 +244,8 @@ enum ResourceCatalogueListingBehavior {
 }
 
 impl ServerHandler for ResourceCatalogueTransportFactory {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(
             ServerCapabilities::builder()
                 .enable_tools()
                 .enable_resources()
@@ -346,8 +347,8 @@ struct RefreshTestTransportFactory {
 }
 
 impl ServerHandler for RefreshTestTransportFactory {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
     }
 
     async fn list_tools(
@@ -397,8 +398,8 @@ struct MutableToolsServer {
 }
 
 impl ServerHandler for MutableToolsServer {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
     }
 
     async fn list_tools(
@@ -2859,6 +2860,7 @@ async fn no_local_runtime_fails_local_stdio_but_keeps_local_http_server() {
                     env_vars: Vec::new(),
                     cwd: None,
                 },
+                protocol_mode: None,
                 environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
                 enabled: true,
                 required: false,
@@ -2889,6 +2891,7 @@ async fn no_local_runtime_fails_local_stdio_but_keeps_local_http_server() {
                     http_headers: None,
                     env_http_headers: None,
                 },
+                protocol_mode: None,
                 environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
                 enabled: true,
                 required: false,
@@ -3007,6 +3010,7 @@ fn mcp_init_error_display_prompts_for_github_pat() {
             http_headers: None,
             env_http_headers: None,
         },
+        protocol_mode: None,
         environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
         enabled: true,
         required: false,
@@ -3102,6 +3106,7 @@ fn mcp_init_error_display_reports_generic_errors() {
             http_headers: None,
             env_http_headers: None,
         },
+        protocol_mode: None,
         environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
         enabled: true,
         required: false,
@@ -3157,6 +3162,7 @@ fn reusable_server_config(url: &str) -> McpServerConfig {
             http_headers: None,
             env_http_headers: None,
         },
+        protocol_mode: None,
         environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
         enabled: true,
         required: false,
@@ -3189,6 +3195,14 @@ fn reusable_server_identity(
     config: &McpServerConfig,
     runtime_context: &McpRuntimeContext,
 ) -> McpServerConnectionIdentity {
+    reusable_server_identity_with_mode(config, runtime_context, McpProtocolMode::Legacy)
+}
+
+fn reusable_server_identity_with_mode(
+    config: &McpServerConfig,
+    runtime_context: &McpRuntimeContext,
+    protocol_mode: McpProtocolMode,
+) -> McpServerConnectionIdentity {
     let server = EffectiveMcpServer::configured(config.clone());
     McpServerConnectionIdentity::new(
         "docs",
@@ -3202,6 +3216,7 @@ fn reusable_server_identity(
         /*codex_apps_cache_identity*/ None,
         ElicitationCapability::default(),
         /*supports_openai_form_elicitation*/ false,
+        protocol_mode,
     )
 }
 
@@ -3632,6 +3647,7 @@ async fn connection_identity_distinguishes_accounts_with_the_same_token() -> any
             /*codex_apps_cache_identity*/ None,
             ElicitationCapability::default(),
             /*supports_openai_form_elicitation*/ false,
+            McpProtocolMode::Legacy,
         )
     };
 
@@ -3642,6 +3658,18 @@ async fn connection_identity_distinguishes_accounts_with_the_same_token() -> any
             .has_same_connection_config(&connection_identity(&changed_auth))
     );
     Ok(())
+}
+
+#[test]
+fn connection_identity_distinguishes_protocol_mode() {
+    let runtime_context = reusable_server_runtime_context();
+    let config = reusable_server_config("http://127.0.0.1:1");
+    let legacy =
+        reusable_server_identity_with_mode(&config, &runtime_context, McpProtocolMode::Legacy);
+    let current =
+        reusable_server_identity_with_mode(&config, &runtime_context, McpProtocolMode::V20260728);
+
+    assert!(!legacy.has_same_connection_config(&current));
 }
 
 #[tokio::test]
@@ -3683,6 +3711,7 @@ async fn connection_identity_distinguishes_agent_account_runtime_and_task() -> a
             /*codex_apps_cache_identity*/ None,
             ElicitationCapability::default(),
             /*supports_openai_form_elicitation*/ false,
+            McpProtocolMode::Legacy,
         )
     };
     let previous_identity = connection_identity(&previous_auth);

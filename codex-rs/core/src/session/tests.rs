@@ -8605,6 +8605,7 @@ async fn step_context_keeps_its_mcp_runtime_for_tools() -> anyhow::Result<()> {
                 env_vars: Vec::new(),
                 cwd: None,
             },
+            protocol_mode: None,
             environment_id: DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
             enabled: true,
             required: false,

@@ -2,6 +2,7 @@ use super::*;
 use crate::McpPluginAttribution;
 use crate::McpServerRegistration;
 use codex_config::Constrained;
+use codex_config::McpServerProtocolMode;
 use codex_config::types::AppToolApproval;
 use codex_config::types::AuthKeyringBackendKind;
 use codex_login::CodexAuth;
@@ -37,10 +38,62 @@ pub(crate) fn test_mcp_config(codex_home: PathBuf) -> McpConfig {
         apps_enabled: false,
         prefix_mcp_tool_names: true,
         non_prefixed_mcp_tool_servers: Vec::new(),
+        protocol_mode: codex_rmcp_client::McpProtocolMode::Legacy,
         client_elicitation_capability: ElicitationCapability::default(),
         mcp_server_catalog: ResolvedMcpCatalog::default(),
         connector_snapshot: codex_connectors::ConnectorSnapshot::default(),
     }
+}
+
+#[test]
+fn server_protocol_mode_overrides_global_feature_default() {
+    let mut config = test_mcp_config(PathBuf::new());
+    config.protocol_mode = codex_rmcp_client::McpProtocolMode::V20260728;
+    let http_with_inherited_mode: McpServerConfig = serde_json::from_value(serde_json::json!({
+        "url": "https://example.test/mcp"
+    }))
+    .expect("valid HTTP server config");
+    let http_forced_legacy: McpServerConfig = serde_json::from_value(serde_json::json!({
+        "url": "https://example.test/mcp",
+        "protocol_mode": "legacy"
+    }))
+    .expect("valid HTTP server config");
+    let http_forced_current: McpServerConfig = serde_json::from_value(serde_json::json!({
+        "url": "https://example.test/mcp",
+        "protocol_mode": "2026-07-28"
+    }))
+    .expect("valid HTTP server config");
+    let stdio: McpServerConfig = serde_json::from_value(serde_json::json!({
+        "command": "echo"
+    }))
+    .expect("valid stdio server config");
+
+    assert_eq!(
+        config.protocol_mode_for_server(&http_with_inherited_mode),
+        codex_rmcp_client::McpProtocolMode::V20260728
+    );
+    assert_eq!(
+        config.protocol_mode_for_server(&http_forced_legacy),
+        codex_rmcp_client::McpProtocolMode::Legacy
+    );
+    assert_eq!(
+        config.protocol_mode_for_server(&http_forced_current),
+        codex_rmcp_client::McpProtocolMode::V20260728
+    );
+    assert_eq!(
+        config.protocol_mode_for_server(&stdio),
+        codex_rmcp_client::McpProtocolMode::Legacy
+    );
+
+    config.protocol_mode = codex_rmcp_client::McpProtocolMode::Legacy;
+    assert_eq!(
+        config.protocol_mode_for_server(&http_forced_current),
+        codex_rmcp_client::McpProtocolMode::V20260728
+    );
+    assert_eq!(
+        http_forced_legacy.protocol_mode,
+        Some(McpServerProtocolMode::Legacy)
+    );
 }
 
 #[test]
@@ -379,6 +432,7 @@ async fn effective_mcp_servers_preserve_runtime_servers() {
                 http_headers: None,
                 env_http_headers: None,
             },
+            protocol_mode: None,
             environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
             enabled: true,
             required: false,
@@ -409,6 +463,7 @@ async fn effective_mcp_servers_preserve_runtime_servers() {
                 http_headers: None,
                 env_http_headers: None,
             },
+            protocol_mode: None,
             environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
             enabled: true,
             required: false,

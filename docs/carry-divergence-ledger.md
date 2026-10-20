@@ -2896,6 +2896,30 @@ bundles during upstream sync merely because they once shared this carry entry.
   - `codex-rs/core/tests/suite/rmcp_client.rs`
   - `codex-rs/rmcp-client/src/bin/test_streamable_http_server.rs`
 
+### MCP Per-Server Protocol Selection
+
+- The upstream 2026-07-28 MCP lifecycle is adopted from the exact
+  `modelcontextprotocol/rust-sdk` revision used by upstream Codex. The global
+  `features.mcp_2026_07_28` preference remains disabled by default; a server's
+  `protocol_mode = "2026-07-28"` or `protocol_mode = "legacy"` overrides it.
+- Per-server selection is downstream config surface. It applies only to
+  Streamable HTTP, survives catalog precedence through the winning server
+  config, and participates in connection identity so a changed preference
+  cannot reuse a connection created under the previous lifecycle.
+- Current selection requests discovery and may fall back to legacy when the
+  peer does not support it. The configuration value alone is not evidence of
+  wire negotiation; first-use acceptance must observe the current protocol
+  header and absence of a legacy session identifier on the intended server.
+- The focused transport regression drives the real RMCP client through
+  `server/discover` and `tools/list`; config tests cover serialization, global
+  fallback, explicit overrides, and stdio rejection. This does not alter the
+  uncertain `tools/call` no-replay behavior.
+- Primary files include `codex-rs/rmcp-client/src/protocol_mode.rs`,
+  `codex-rs/rmcp-client/src/rmcp_client.rs`,
+  `codex-rs/codex-mcp/src/connection_manager.rs`,
+  `codex-rs/config/src/mcp_types.rs`, and
+  `codex-rs/core/src/config/edit/document_helpers.rs`.
+
 ### 2026-07-23 Upstream Integration Boundaries
 
 - Upstream `4462b9deef` adds default-on

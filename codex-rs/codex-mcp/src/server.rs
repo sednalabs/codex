@@ -13,6 +13,7 @@ use codex_config::types::OAuthCredentialsStoreMode;
 use codex_connectors::ConnectorRuntimeContextKey;
 use codex_exec_server::Environment;
 use codex_login::CodexAuth;
+use codex_rmcp_client::McpProtocolMode;
 use codex_rmcp_client::StoredOAuthTokens;
 use codex_rmcp_client::stored_oauth_credentials;
 use rmcp::model::ElicitationCapability;
@@ -60,6 +61,7 @@ pub(crate) struct McpServerConnectionIdentity {
     codex_apps_cache_identity: Option<(PathBuf, ConnectorRuntimeContextKey)>,
     client_elicitation_capability: ElicitationCapability,
     supports_openai_form_elicitation: bool,
+    protocol_mode: McpProtocolMode,
 }
 
 impl McpServerConnectionIdentity {
@@ -76,6 +78,7 @@ impl McpServerConnectionIdentity {
         codex_apps_cache_identity: Option<(PathBuf, ConnectorRuntimeContextKey)>,
         client_elicitation_capability: ElicitationCapability,
         supports_openai_form_elicitation: bool,
+        protocol_mode: McpProtocolMode,
     ) -> Self {
         let config = server.config();
         let protected_target = match &config.transport {
@@ -156,6 +159,7 @@ impl McpServerConnectionIdentity {
             codex_apps_cache_identity,
             client_elicitation_capability,
             supports_openai_form_elicitation,
+            protocol_mode,
         }
     }
 
@@ -184,6 +188,7 @@ impl McpServerConnectionIdentity {
             && self.codex_apps_cache_identity == other.codex_apps_cache_identity
             && self.client_elicitation_capability == other.client_elicitation_capability
             && self.supports_openai_form_elicitation == other.supports_openai_form_elicitation
+            && self.protocol_mode == other.protocol_mode
     }
 
     pub(crate) fn oauth_credentials(&self) -> Result<&Option<StoredOAuthTokens>, &String> {

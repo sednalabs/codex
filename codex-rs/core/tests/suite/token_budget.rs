@@ -286,6 +286,7 @@ async fn token_budget_context_injects_plain_thread_hint_text() -> Result<()> {
                         env_vars: Vec::new(),
                         cwd: None,
                     },
+                    protocol_mode: None,
                     environment_id: "local".to_string(),
                     enabled: true,
                     required: false,
