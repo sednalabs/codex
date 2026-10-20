@@ -147,7 +147,8 @@ fn write_session_file(root: &Path, ts: &str, uuid: Uuid) -> std::io::Result<Path
 fn append_repair_terminates_nonempty_rollout_tail() -> std::io::Result<()> {
     let home = TempDir::new().expect("temp dir");
     let rollout_path = home.path().join("rollout.jsonl");
-    let bytes = serialize_rollout_item(&agent_message_item("complete tail"), /*ordinal*/ None)?;
+    let bytes =
+        serialize_rollout_item(&agent_message_item("complete tail"), /*ordinal*/ None)?;
     fs::write(&rollout_path, &bytes[..bytes.len() - 1])?;
     let guard = PhysicalRolloutGuard::acquire(&rollout_path, /*create_parent*/ false)?;
     drop(open_log_file(&guard, /*initial_open*/ true)?);
@@ -1043,7 +1044,9 @@ async fn writer_state_retains_serialized_meta_and_ordinals_across_real_io_failur
     for flush_error in [false, true] {
         let home = TempDir::new()?;
         let path = home.path().join("rollout.jsonl");
-        let guard = Arc::new(PhysicalRolloutGuard::acquire(&path, /*create_parent*/ true)?);
+        let guard = Arc::new(PhysicalRolloutGuard::acquire(
+            &path, /*create_parent*/ true,
+        )?);
         let file = open_log_file(&guard, /*initial_open*/ true)?;
         let faulty = FaultFile::new(
             file,
@@ -1152,7 +1155,9 @@ async fn writer_state_worker_panic_retains_checkpoint_and_fails_closed() -> std:
     use crate::append_state::tests::FaultFile;
     let home = TempDir::new()?;
     let path = home.path().join("rollout.jsonl");
-    let guard = Arc::new(PhysicalRolloutGuard::acquire(&path, /*create_parent*/ true)?);
+    let guard = Arc::new(PhysicalRolloutGuard::acquire(
+        &path, /*create_parent*/ true,
+    )?);
     let mut faulty = FaultFile::new(
         open_log_file(&guard, /*initial_open*/ true)?,
         vec![1025],

@@ -435,7 +435,8 @@ async fn worker_skips_physical_writer_until_its_fence_is_released() -> anyhow::R
     set_old_mtime(&path)?;
     let before = fs::read(&path)?;
     // No logical lock in this home: this models a physical writer owned elsewhere.
-    let guard = crate::writer_lock::PhysicalRolloutGuard::acquire(&path, /*create_parent*/ false)?;
+    let guard =
+        crate::writer_lock::PhysicalRolloutGuard::acquire(&path, /*create_parent*/ false)?;
     worker::run(home.path().to_path_buf(), Startup).await?;
     assert_eq!(fs::read(&path)?, before);
     assert!(!compressed_rollout_path(&path).exists());

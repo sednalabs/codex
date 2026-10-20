@@ -1907,7 +1907,9 @@ impl RolloutWriterState {
             let _writer_lock = writer_lock;
             let physical_lock = match physical_lock {
                 Some(guard) => guard,
-                None => Arc::new(PhysicalRolloutGuard::acquire(&path, /*create_parent*/ true)?),
+                None => Arc::new(PhysicalRolloutGuard::acquire(
+                    &path, /*create_parent*/ true,
+                )?),
             };
             let file = open_log_file(&physical_lock, initial_open)?;
             Ok::<_, IoError>((file, physical_lock))

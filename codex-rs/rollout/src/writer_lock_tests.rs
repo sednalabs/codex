@@ -162,7 +162,10 @@ fn physical_fence_is_shared_by_distinct_homes_and_directory_and_file_aliases() -
     }
     assert_eq!(owner.path(), fs::canonicalize(&path)?.as_path());
     drop(owner);
-    drop(PhysicalRolloutGuard::acquire(&second_alias, /*create_parent*/ false)?);
+    drop(PhysicalRolloutGuard::acquire(
+        &second_alias,
+        /*create_parent*/ false,
+    )?);
     assert!(path.exists());
     Ok(())
 }

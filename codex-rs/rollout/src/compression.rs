@@ -131,7 +131,8 @@ pub(crate) fn materialize_rollout_for_append_blocking(path: &Path) -> io::Result
         metrics::materialize("missing");
         return Ok(plain_path);
     }
-    let guard = crate::writer_lock::PhysicalRolloutGuard::acquire(path, /*create_parent*/ false)?;
+    let guard =
+        crate::writer_lock::PhysicalRolloutGuard::acquire(path, /*create_parent*/ false)?;
     materialize_rollout_with_guard(&guard)?;
     materialized_path_for_caller(&plain_path, &guard)
 }

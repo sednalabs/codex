@@ -132,7 +132,11 @@ async fn owned_append_retries_only_suffix_after_repeated_partial_progress() -> i
     })?;
     bytes.push(b'\n');
     let mut pending = PendingAppend::new(bytes.clone());
-    let mut file = FaultFile::new(append_file(&path)?, vec![1025, 2049], /*flush_error*/ false);
+    let mut file = FaultFile::new(
+        append_file(&path)?,
+        vec![1025, 2049],
+        /*flush_error*/ false,
+    );
     for length in [1025, 2049] {
         pending
             .finish(&mut file, &path)
