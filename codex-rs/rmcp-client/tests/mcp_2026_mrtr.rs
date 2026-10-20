@@ -373,6 +373,13 @@ async fn modern_tool_mrtr_uses_recovered_protocol_after_legacy_session_expiry() 
                         .insert_header("mcp-session-id", "legacy-session")
                 }
                 Some("notifications/initialized") => ResponseTemplate::new(202),
+                Some("tools/list") => {
+                    if recorded_sessions.lock().expect("sessions lock").len() > 1 {
+                        result_response(&body, json!({"tools": []}))
+                    } else {
+                        ResponseTemplate::new(404)
+                    }
+                }
                 Some("tools/call") => {
                     assert_eq!(
                         body.pointer("/params/_meta/requestContext"),
@@ -394,15 +401,6 @@ async fn modern_tool_mrtr_uses_recovered_protocol_after_legacy_session_expiry() 
                                 body.pointer(
                                     "/params/_meta/io.modelcontextprotocol~1protocolVersion"
                                 ),
-                                None
-                            );
-                            ResponseTemplate::new(404)
-                        }
-                        2 => {
-                            assert_eq!(
-                                body.pointer(
-                                    "/params/_meta/io.modelcontextprotocol~1protocolVersion"
-                                ),
                                 Some(&json!(MODERN_VERSION))
                             );
                             result_response(
@@ -416,7 +414,7 @@ async fn modern_tool_mrtr_uses_recovered_protocol_after_legacy_session_expiry() 
                                 }),
                             )
                         }
-                        3 => {
+                        2 => {
                             assert_eq!(
                                 body.pointer(
                                     "/params/_meta/io.modelcontextprotocol~1protocolVersion"
@@ -456,6 +454,13 @@ async fn modern_tool_mrtr_uses_recovered_protocol_after_legacy_session_expiry() 
     let client = create_client(&server, Arc::clone(&elicitation_modes))
         .await?
         .with_read_only_tools(/*requires_read_only_tools*/ true);
+    assert!(
+        client
+            .list_tools(/*params*/ None, Some(Duration::from_secs(5)))
+            .await?
+            .tools
+            .is_empty()
+    );
     let result = client
         .call_tool(
             "confirm".into(),
@@ -473,7 +478,7 @@ async fn modern_tool_mrtr_uses_recovered_protocol_after_legacy_session_expiry() 
         *sessions.lock().expect("sessions lock"),
         vec!["legacy-session", "modern-session"]
     );
-    assert_eq!(calls.lock().expect("requests lock").len(), 3);
+    assert_eq!(calls.lock().expect("requests lock").len(), 2);
     assert_eq!(
         *elicitation_modes.lock().expect("elicitation lock"),
         vec!["form"]

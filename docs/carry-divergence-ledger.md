@@ -78,6 +78,16 @@ each updated companion source before consumer adoption. Building or retaining
 this source does not authorize bearer provisioning, credential installation or
 live use.
 
+## OAuth login refresh capability
+
+Ordinary OAuth login preserves legacy issuer-less access-token-only grants, but
+rejects a newly returned refresh token without an authorization-server issuer
+before reporting completion or saving credentials. Refresh already requires
+that original binding; current discovery cannot reconstruct it later. The
+failure is actionable and leaves existing stored credentials unchanged rather
+than silently persisting refresh capability that cannot be used securely.
+Remove this producer check when upstream provides an equivalent login contract.
+
 ## Historical usage-ledger checksums
 
 Usage databases may retain exact historical checksums for migrations 1, 5,
