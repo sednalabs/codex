@@ -161,20 +161,23 @@ pub async fn perform_fixed_ops_api_access_token_login_with_callback_input(
     .await
 }
 
+type AuthorizationUrlOpener<'a> = Box<dyn FnOnce(&str) -> Result<()> + 'a>;
+type CallbackUrlReader<'a> = Box<dyn FnOnce(&str) -> Result<String> + 'a>;
+
 enum FixedOAuthInteraction<'a> {
-    Browser(Box<dyn FnOnce(&str) -> Result<()> + 'a>),
-    CallbackInput(Box<dyn FnOnce(&str) -> Result<String> + 'a>),
+    Browser(AuthorizationUrlOpener<'a>),
+    CallbackInput(CallbackUrlReader<'a>),
 }
 
 enum FixedOAuthCallbackSource<'a> {
     Browser {
-        open_authorization_url: Box<dyn FnOnce(&str) -> Result<()> + 'a>,
+        open_authorization_url: AuthorizationUrlOpener<'a>,
         callback: oneshot::Receiver<CallbackResult>,
         redirect_uri: String,
         _guard: CallbackServerGuard,
     },
     CallbackInput {
-        read_callback_url: Box<dyn FnOnce(&str) -> Result<String> + 'a>,
+        read_callback_url: CallbackUrlReader<'a>,
         redirect_uri: String,
     },
 }
