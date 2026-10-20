@@ -182,15 +182,9 @@ fn run_with_interaction(interaction: ProvisioningInteraction) -> Result<i32> {
             codex_rmcp_client::FixedOAuthLoginStage::Precondition => {
                 ProvisioningStage::Precondition
             }
-            codex_rmcp_client::FixedOAuthLoginStage::Discovery => {
-                ProvisioningStage::OAuthDiscovery
-            }
-            codex_rmcp_client::FixedOAuthLoginStage::Callback => {
-                ProvisioningStage::OAuthCallback
-            }
-            codex_rmcp_client::FixedOAuthLoginStage::Exchange => {
-                ProvisioningStage::OAuthExchange
-            }
+            codex_rmcp_client::FixedOAuthLoginStage::Discovery => ProvisioningStage::OAuthDiscovery,
+            codex_rmcp_client::FixedOAuthLoginStage::Callback => ProvisioningStage::OAuthCallback,
+            codex_rmcp_client::FixedOAuthLoginStage::Exchange => ProvisioningStage::OAuthExchange,
             codex_rmcp_client::FixedOAuthLoginStage::TokenValidation => {
                 ProvisioningStage::TokenValidation
             }
@@ -200,11 +194,9 @@ fn run_with_interaction(interaction: ProvisioningInteraction) -> Result<i32> {
 
     let now = api_claim::unix_seconds()
         .map_err(|_| provisioning_failure(ProvisioningStage::TokenValidation))?;
-    let bearer = api_claim::validate_bearer_for_provisioning(
-        access_token.access_token().to_string(),
-        now,
-    )
-    .map_err(|_| provisioning_failure(ProvisioningStage::TokenValidation))?;
+    let bearer =
+        api_claim::validate_bearer_for_provisioning(access_token.access_token().to_string(), now)
+            .map_err(|_| provisioning_failure(ProvisioningStage::TokenValidation))?;
     if bearer.expires_at <= now || bearer.expires_at > access_token.expires_at() {
         return Err(provisioning_failure(ProvisioningStage::TokenValidation));
     }

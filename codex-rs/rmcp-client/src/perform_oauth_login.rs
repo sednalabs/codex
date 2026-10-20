@@ -89,7 +89,11 @@ impl FixedOAuthLoginError {
 
 impl std::fmt::Display for FixedOAuthLoginError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "fixed OAuth login failed at {}", self.stage.as_str())
+        write!(
+            formatter,
+            "fixed OAuth login failed at {}",
+            self.stage.as_str()
+        )
     }
 }
 
@@ -362,8 +366,8 @@ async fn perform_oauth_access_token_login<'a>(
         .get_credentials()
         .await
         .map_err(|_| FixedOAuthLoginError::at(FixedOAuthLoginStage::Exchange))?;
-    let credentials = credentials
-        .ok_or_else(|| FixedOAuthLoginError::at(FixedOAuthLoginStage::Exchange))?;
+    let credentials =
+        credentials.ok_or_else(|| FixedOAuthLoginError::at(FixedOAuthLoginStage::Exchange))?;
     let result = access_token_from_response(credentials, requested_scopes)
         .map_err(|_| FixedOAuthLoginError::at(FixedOAuthLoginStage::TokenValidation));
 
