@@ -302,8 +302,13 @@ fi
 if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && -z "${BUILDBUDDY_API_KEY:-}" ]]; then
   # The Windows cross-compile config depends on authenticated remote
   # execution. When credentials are unavailable, keep the local build shape
-  # and its lower concurrency cap.
-  post_config_bazel_args+=(--jobs=8)
+  # and its lower concurrency cap. Its MSVC exec tools also need native
+  # dependencies compiled with MSVC rather than the GNU target toolchain.
+  post_config_bazel_args+=(
+    --jobs=8
+    --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=0
+    --extra_toolchains=//:windows_msvc_exec_cc_toolchain
+  )
 fi
 
 if [[ -n "${BAZEL_REPO_CONTENTS_CACHE:-}" ]]; then
