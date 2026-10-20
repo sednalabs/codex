@@ -120,6 +120,15 @@ def main():
                     "last_step": bool(steps)
                     and steps[-1].get("name") == "gst-plugins-good-install",
                 }
+                commit_count_class = (
+                    "0" if not commits else "1" if len(commits) == 1 else ">1"
+                )
+                print(
+                    "Receipt commit diagnostics: "
+                    f"STABLE_GIT_COMMIT_count_class={commit_count_class}, "
+                    f"format_valid={str(checks['commit_format']).lower()}",
+                    file=sys.stderr,
+                )
                 print(
                     "Receipt checks failed: "
                     + ", ".join(name for name, valid in checks.items() if not valid),
