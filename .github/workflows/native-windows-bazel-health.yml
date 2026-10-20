@@ -27,7 +27,6 @@ jobs:
       CANDIDATE_TREE: 0f112e9eca38123986259e6ab629bef8c497a2ae
       BASE_SHA: 83086188ae0614bd882818ff1aa23f3194962012
       BUILDBUDDY_API_KEY: ''
-      NATIVE_TEST_REPORT: ${{ runner.temp }}/native-windows-fixed-selectors-${{ github.run_id }}-${{ github.run_attempt }}.tsv
 
     steps:
       - name: Validate dispatch identity before checkout
@@ -45,6 +44,8 @@ jobs:
           [[ "${EXPECTED_HOST_SHA}" =~ ^[0-9a-f]{40}$ ]]
           [[ "${GITHUB_SHA}" == "${EXPECTED_HOST_SHA}" ]]
           [[ "${EXPECTED_HOST_SHA}" != "${SOURCE_SHA}" ]]
+          native_test_report="${RUNNER_TEMP}/native-windows-fixed-selectors-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.tsv"
+          printf 'NATIVE_TEST_REPORT=%s\n' "${native_test_report}" >> "${GITHUB_ENV}"
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -53,6 +54,7 @@ jobs:
           persist-credentials: false
 
       - name: Verify exact source identity and record run provenance
+        id: verify_source
         shell: bash
         run: |
           set -euo pipefail
@@ -62,7 +64,7 @@ jobs:
           [[ "${actual_tree}" == "${CANDIDATE_TREE}" ]]
           git merge-base --is-ancestor "${BASE_SHA}" "${actual_sha}"
           {
-            printf 'schema\tfocused-native-windows-v1\n'
+            printf 'schema\tfocused-native-windows-v2\n'
             printf 'repository\t%s\n' "${GITHUB_REPOSITORY}"
             printf 'workflow_ref\t%s\n' "${GITHUB_WORKFLOW_REF}"
             printf 'workflow_host_sha\t%s\n' "${EXPECTED_HOST_SHA}"
@@ -152,6 +154,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          export LC_ALL=C
           selectors=(
             '//codex-rs/core:core-all-test|suite::subagent_notifications::subagent_stop_replaces_stop_and_skips_internal_subagents'
             '//codex-rs/core:core-all-test|suite::mcp_tool_cache::cached_mcp_startup_is_eager_for_root_and_lazy_for_subagents'
@@ -165,7 +168,7 @@ jobs:
           )
           failures=0
           index=0
-          printf 'selector\ttarget\tstatus\tmatched_pass_lines\ttest_result\n' >> "${NATIVE_TEST_REPORT}"
+          printf 'selector\ttarget\tstatus\tbazel_exit_code\tmatched_pass_lines\ttest_result\tdiagnostics\n' >> "${NATIVE_TEST_REPORT}"
 
           for item in "${selectors[@]}"; do
             index=$((index + 1))
@@ -205,7 +208,39 @@ jobs:
 
             local_config_count="$(grep -Fxc 'BuildBuddy API key is not available; using local Bazel configuration.' "${log}" || true)"
             pass_line_count="$(grep -Fxc "test ${selector} ... ok" "${log}" || true)"
-            result_line="$(grep -F 'test result:' "${log}" | tail -n 1 || true)"
+            result_line="$(grep -F 'test result:' "${log}" | tail -n 1 | tr '\t\r' '  ' | cut -c1-240 || true)"
+            diagnostics="$(
+              {
+                grep -E '^(queue:|explicit:|child stop:|diagnostic_phase=)' "${log}" \
+                  | tail -n 8 \
+                  | cut -c1-256 \
+                  | sed 's/^/fixture=/' || true
+                if grep -Fqi 'PA fatal guard' "${log}"; then
+                  printf 'pa_fatal_guard=detected\n'
+                fi
+                grep -oE 'error\[E[0-9]{4}\]' "${log}" \
+                  | sort -u \
+                  | sed -n '1,4s/error\[E([0-9]{4})\]/rustc_error_code=E\1/p' || true
+                if grep -Eq 'error: linking with .* failed|link\.exe.*failed' "${log}"; then
+                  printf 'compiler_error_category=linker_failure\n'
+                fi
+                if grep -Fq 'error: failed to run custom build command' "${log}"; then
+                  printf 'compiler_error_category=custom_build_script_failure\n'
+                fi
+                if grep -Fq 'error: could not compile' "${log}"; then
+                  printf 'compiler_error_category=rustc_compile_failure\n'
+                fi
+                grep -F 'panicked at' "${log}" \
+                  | tr '\\' '/' \
+                  | grep -oE 'codex-rs/[^[:space:]:]+\.rs:[0-9]+:[0-9]+' \
+                  | sort -u \
+                  | sed -n '1,3s/^/panic_source=/' || true
+                grep -oE 'ExitStatus\([0-9]+\)' "${log}" \
+                  | grep -oE '[0-9]+' \
+                  | sort -u \
+                  | sed -n '1,4s/^/child_exit_status=/' || true
+              } | sed -n '1,16p' | tr '\t\r\n' '   ' | cut -c1-1024
+            )"
             status=FAIL
             if [[ "${bazel_status}" -eq 0 && "${local_config_count}" == "1" &&
                   "${pass_line_count}" == "1" && "${result_line}" == *"1 passed; 0 failed"* ]]; then
@@ -213,11 +248,32 @@ jobs:
             else
               failures=$((failures + 1))
             fi
-            printf '%s\t%s\t%s\t%s\t%s\n' "${selector}" "${target}" "${status}" "${pass_line_count}" "${result_line}" >> "${NATIVE_TEST_REPORT}"
-            printf '%s: %s (%s); exact pass lines=%s; result=%s\n' "${status}" "${selector}" "${target}" "${pass_line_count}" "${result_line}"
+            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${selector}" "${target}" "${status}" "${bazel_status}" "${pass_line_count}" "${result_line}" "${diagnostics}" >> "${NATIVE_TEST_REPORT}"
+            printf '%s: %s (%s); Bazel exit=%s; exact pass lines=%s; result=%s; diagnostics=%s\n' "${status}" "${selector}" "${target}" "${bazel_status}" "${pass_line_count}" "${result_line}" "${diagnostics}"
           done
 
           [[ "${failures}" -eq 0 ]]
+
+      - name: Check formatting of the eight changed Rust files with pinned Rust 1.95
+        if: always() && steps.verify_source.outcome == 'success'
+        shell: pwsh
+        run: |
+          & rustup run 1.95.0 rustfmt --version *> $null
+          if ($LASTEXITCODE -ne 0) {
+            & rustup toolchain install 1.95.0 --profile minimal --component rustfmt
+            if ($LASTEXITCODE -ne 0) {
+              throw "Pinned minimal Rust 1.95 with rustfmt could not be installed."
+            }
+            & rustup run 1.95.0 rustfmt --version *> $null
+            if ($LASTEXITCODE -ne 0) {
+              throw "Pinned Rust 1.95 rustfmt remains unavailable after installation."
+            }
+          }
+
+          & rustup run 1.95.0 rustfmt --check --edition 2024 --config-path codex-rs/rustfmt.toml --config 'imports_granularity=Item,skip_children=true' codex-rs/code-mode-host/src/grpc/robustness_tests.rs codex-rs/code-mode-runtime/src/v8_init.rs codex-rs/core/tests/suite/subagent_notifications.rs codex-rs/core/tests/suite/mcp_tool_cache.rs codex-rs/core/tests/suite/rmcp_client.rs codex-rs/ext/queue/tests/queue_service.rs codex-rs/state/src/runtime.rs codex-rs/state/src/sqlite/validation_tests.rs
+          if ($LASTEXITCODE -ne 0) {
+            throw "Pinned Rust 1.95 rustfmt check failed for the eight changed files."
+          }
 
       - name: Upload fixed-selector identity and result receipt
         if: always() && !cancelled()
