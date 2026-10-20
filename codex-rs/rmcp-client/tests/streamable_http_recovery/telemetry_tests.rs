@@ -22,6 +22,7 @@ use opentelemetry_sdk::metrics::data::MetricData;
 use pretty_assertions::assert_eq;
 use rmcp::transport::auth::OAuthTokenResponse;
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 #[tokio::test]
 async fn recovery_retains_originator_without_initial_credentials() -> anyhow::Result<()> {
@@ -102,6 +103,10 @@ async fn recovery_retains_originator_without_initial_credentials() -> anyhow::Re
             /*www_authenticate_headers*/ &[],
         )
         .await?;
+        let tools = client
+            .list_tools(/*params*/ None, Some(Duration::from_secs(5)))
+            .await?;
+        assert!(tools.tools.iter().any(|tool| tool.name.as_ref() == "echo"));
         assert_eq!(
             call_echo_tool(&client, "recovered").await?,
             expected_echo_result("recovered")
