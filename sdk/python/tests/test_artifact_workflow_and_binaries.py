@@ -224,9 +224,7 @@ def test_root_format_driver_covers_all_formatter_groups(
         "--config",
         "imports_granularity=Item",
     )
-    assert formatters[1].commands == (
-        script.Command(cargo_fmt_args, tmp_path / "codex-rs"),
-    )
+    assert formatters[1].commands == (script.Command(cargo_fmt_args, tmp_path / "codex-rs"),)
     assert checks[1].commands == (
         script.Command(cargo_fmt_args + ("--check",), tmp_path / "codex-rs"),
     )
