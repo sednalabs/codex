@@ -4,7 +4,7 @@ expression: "sanitized.replace(crate::version::CODEX_CLI_VERSION, \"<VERSION>\")
 ---
 /status
 
-  >_ OpenAI Codex (v.<VERSION>)
+  >_ OpenAI Codex (v<VERSION>)
 
   Visit https://chatgpt.com/settings/usage for
   up-to-date
