@@ -16,5 +16,5 @@ expression: terminal_title_popup_snapshot(&mut chat)
   [ ] run-state      Compact session run-state text (Ready, Working, Thinking)
   [ ] thread-name    Current thread name (omitted when unnamed)
 ↓
-  monthly 65% left | weekly 50% left
+  monthly 65% left | weekly 50% left (on pace)
   space toggle · ←/→ reorder · enter save · esc cancel
