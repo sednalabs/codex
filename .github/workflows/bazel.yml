@@ -82,6 +82,10 @@ jobs:
             # transitively through `//...`.
             -//third_party/v8:all
             -//codex-rs/v8-poc:v8-poc-unit-tests
+            # Retain retired Windows-under-Wine fixtures for explicit use, not
+            # as supported Linux/macOS product qualification.
+            -//bazel/rules/testing/wine:wine-test-support-unit-tests
+            -//codex-rs/core/tests/remote_env_windows:smoke-test
           )
 
           bazel_wrapper_args=(
