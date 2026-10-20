@@ -1027,6 +1027,48 @@ exports.chromium = {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn closing_thread_cancels_in_flight_browser_action_without_replay() {
+        let temp = tempfile::tempdir().expect("fixture root");
+        let state_dir = temp.path().join("browser-state");
+        std::fs::create_dir_all(&state_dir).expect("browser state root");
+        std::fs::write(state_dir.join("pause-action"), "pause").expect("pause marker");
+        let config = fake_provider_config(temp.path(), &state_dir);
+        let manager = std::sync::Arc::new(BrowserSessionManager::default());
+        let params = browser_params(
+            "thread-close-action",
+            TOOL_BROWSER_STEP,
+            json!({"action":"type","selector":"#note","text":"uncertain"}),
+        );
+        let task_manager = std::sync::Arc::clone(&manager);
+        let task_config = config.clone();
+        let task = tokio::spawn(async move { task_manager.handle(&params, &task_config).await });
+        wait_for_fixture_file(&state_dir.join("action-started")).await;
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            manager.close_thread("thread-close-action"),
+        )
+        .await
+        .expect("thread close does not wait behind an active provider request");
+        assert!(task.await.expect("request task exits").is_err());
+
+        let retry = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            manager.handle(
+                &browser_params("thread-close-action", TOOL_BROWSER_OBSERVE, json!({})),
+                &config,
+            ),
+        )
+        .await
+        .expect("thread close cleanup remains bounded")
+        .expect("confirmed cleanup permits a resumed same-profile call");
+        assert!(retry.success);
+        assert!(state_dir.join("context-closed").exists());
+        manager.shutdown_all().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn cancelled_pending_launch_closes_late_context_before_retry() {
         let temp = tempfile::tempdir().expect("fixture root");
         let state_dir = temp.path().join("browser-state");

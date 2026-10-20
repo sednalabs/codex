@@ -41,13 +41,27 @@ struct ProfileKey {
     thread_id: String,
 }
 
-#[derive(Default)]
 struct ProfileSlot {
     config: Option<PlaywrightProviderConfig>,
     actor: Option<ActorHandle>,
     unavailable: bool,
+    request_gate: Arc<AsyncMutex<()>>,
+    close_epoch: u64,
 }
 
+impl Default for ProfileSlot {
+    fn default() -> Self {
+        Self {
+            config: None,
+            actor: None,
+            unavailable: false,
+            request_gate: Arc::new(AsyncMutex::new(())),
+            close_epoch: 0,
+        }
+    }
+}
+
+#[derive(Clone)]
 struct ActorHandle {
     commands: mpsc::UnboundedSender<ActorCommand>,
     status_tx: watch::Sender<ActorState>,
@@ -100,7 +114,6 @@ struct RequestLease {
     request_id: u64,
     cancellation: Arc<RequestCancellation>,
     commands: mpsc::UnboundedSender<ActorCommand>,
-    status: watch::Sender<ActorState>,
     completed: bool,
 }
 
@@ -115,7 +128,6 @@ impl Drop for RequestLease {
         if self.completed {
             return;
         }
-        self.status.send_replace(ActorState::Closing);
         self.cancellation.cancel();
         let _ = self.commands.send(ActorCommand::Cancel {
             request_id: self.request_id,
@@ -166,74 +178,127 @@ impl BrowserSessionManager {
     ) -> Result<DynamicToolCallResponse, String> {
         let key = profile_key(config, &params.thread_id)?;
         let slot = self.slot(&key);
-        let mut slot = slot.lock().await;
-        if slot.unavailable {
-            return Err(
-                "Browser profile is unavailable after unconfirmed owner cleanup.".to_string(),
-            );
-        }
+        let (request_gate, invocation_epoch) = {
+            let slot_state = slot.lock().await;
+            (Arc::clone(&slot_state.request_gate), slot_state.close_epoch)
+        };
+        let _request_guard = request_gate.lock().await;
 
-        if let Some(state) = slot.actor.as_ref().map(actor_state) {
-            match state {
-                ActorState::Closing | ActorState::Starting | ActorState::Busy => {
-                    let terminal = wait_for_terminal(
-                        slot.actor.as_mut().expect("actor state came from an actor"),
-                    )
-                    .await;
-                    match terminal {
-                        ActorState::Released => {
-                            slot.actor = None;
-                            slot.config = None;
+        let actor = loop {
+            let mut slot_state = slot.lock().await;
+            if slot_state.close_epoch != invocation_epoch {
+                return Err("Browser thread closed before its request could start.".to_string());
+            }
+            if slot_state.unavailable {
+                return Err(
+                    "Browser profile is unavailable after unconfirmed owner cleanup.".to_string(),
+                );
+            }
+
+            if let Some(state) = slot_state.actor.as_ref().map(actor_state) {
+                match state {
+                    ActorState::Closing | ActorState::Starting | ActorState::Busy => {
+                        let mut actor = slot_state
+                            .actor
+                            .as_ref()
+                            .expect("actor state came from an actor")
+                            .clone();
+                        drop(slot_state);
+                        let terminal = timeout(
+                            CLEANUP_TIMEOUT + Duration::from_secs(1),
+                            wait_for_terminal(&mut actor),
+                        )
+                        .await
+                        .unwrap_or(ActorState::Unavailable);
+                        match terminal {
+                            ActorState::Released => {
+                                let mut slot_state = slot.lock().await;
+                                slot_state.actor = None;
+                                slot_state.config = None;
+                            }
+                            ActorState::Unavailable => {
+                                let mut slot_state = slot.lock().await;
+                                slot_state.unavailable = true;
+                                return Err(
+                                    "Browser profile is unavailable after unconfirmed owner cleanup."
+                                        .to_string(),
+                                );
+                            }
+                            _ => {}
                         }
-                        ActorState::Unavailable => {
-                            slot.unavailable = true;
-                            return Err(
-                                "Browser profile is unavailable after unconfirmed owner cleanup."
-                                    .to_string(),
-                            );
-                        }
-                        _ => {}
+                        continue;
+                    }
+                    ActorState::Unavailable => {
+                        slot_state.unavailable = true;
+                        return Err(
+                            "Browser profile is unavailable after unconfirmed owner cleanup."
+                                .to_string(),
+                        );
+                    }
+                    ActorState::Active => {}
+                    ActorState::Released => {
+                        slot_state.actor = None;
+                        slot_state.config = None;
                     }
                 }
-                ActorState::Unavailable => {
-                    slot.unavailable = true;
+            }
+
+            if slot_state.actor.is_some() && slot_state.config.as_ref() != Some(config) {
+                let mut actor = slot_state
+                    .actor
+                    .as_ref()
+                    .expect("actor checked above")
+                    .clone();
+                drop(slot_state);
+                if close_actor(&mut actor).await.is_err() {
+                    let mut slot_state = slot.lock().await;
+                    slot_state.unavailable = true;
+                    return Err("Browser profile cleanup was not confirmed.".to_string());
+                }
+                let mut slot_state = slot.lock().await;
+                slot_state.actor = None;
+                slot_state.config = None;
+                continue;
+            }
+
+            if slot_state.actor.is_none() {
+                let observed_close_epoch = slot_state.close_epoch;
+                drop(slot_state);
+                let mut new_actor = spawn_actor(key.clone(), config).await?;
+                let mut slot_state = slot.lock().await;
+                if slot_state.close_epoch != observed_close_epoch {
+                    drop(slot_state);
+                    let _ = close_actor(&mut new_actor).await;
+                    return Err("Browser thread closed before its provider could start.".to_string());
+                }
+                if slot_state.unavailable {
+                    drop(slot_state);
+                    let _ = close_actor(&mut new_actor).await;
                     return Err(
                         "Browser profile is unavailable after unconfirmed owner cleanup."
                             .to_string(),
                     );
                 }
-                ActorState::Active => {}
-                ActorState::Released => {
-                    slot.actor = None;
-                    slot.config = None;
-                }
+                slot_state.actor = Some(new_actor);
+                slot_state.config = Some(config.clone());
             }
-        }
+            let actor = slot_state
+                .actor
+                .as_ref()
+                .expect("actor created above")
+                .clone();
+            drop(slot_state);
+            break actor;
+        };
 
-        if slot.actor.is_some() && slot.config.as_ref() != Some(config) {
-            let close_result = close_actor(slot.actor.as_mut().expect("actor checked above")).await;
-            close_result?;
-            slot.actor = None;
-            slot.config = None;
-        }
-
-        if slot.actor.is_none() {
-            slot.actor = Some(spawn_actor(key.clone(), config).await?);
-            slot.config = Some(config.clone());
-        }
-
-        let result = slot
-            .actor
-            .as_mut()
-            .expect("actor created above")
-            .request(params.clone())
-            .await;
-        if slot
+        let result = actor.request(params.clone()).await;
+        let mut slot_state = slot.lock().await;
+        if slot_state
             .actor
             .as_ref()
             .is_some_and(|actor| actor_state(actor) == ActorState::Unavailable)
         {
-            slot.unavailable = true;
+            slot_state.unavailable = true;
         }
         result
     }
@@ -269,9 +334,8 @@ impl BrowserSessionManager {
         for slot in self.matching_slots(Some(thread_id)).await {
             let slot = match timeout(Duration::from_millis(50), slot.lock()).await {
                 Ok(slot) => slot,
-                // A held slot means a request is in flight. Confirm the close
-                // notification before touching that context rather than
-                // blocking TUI event routing on the provider call.
+                // On brief slot contention, conservatively treat the thread
+                // as live until its close notification is confirmed.
                 Err(_) => return true,
             };
             if let Some(actor) = &slot.actor
@@ -283,25 +347,52 @@ impl BrowserSessionManager {
         false
     }
 
-    async fn close_thread(&self, thread_id: &str) {
-        self.close_matching(Some(thread_id)).await;
+    pub(super) async fn close_thread(&self, thread_id: &str) {
+        self.close_matching(Some(thread_id), /*wait_for_ack*/ false)
+            .await;
     }
 
     pub(super) async fn shutdown_all(&self) {
-        self.close_matching(None).await;
+        self.close_matching(None, /*wait_for_ack*/ true).await;
     }
 
-    async fn close_matching(&self, thread_id: Option<&str>) {
+    async fn close_matching(&self, thread_id: Option<&str>, wait_for_ack: bool) {
         for slot in self.matching_slots(thread_id).await {
-            let mut slot = slot.lock().await;
-            if slot.actor.is_some() {
-                let result = close_actor(slot.actor.as_mut().expect("actor checked above")).await;
-                if result.is_err() {
-                    slot.unavailable = true;
-                } else {
-                    slot.actor = None;
-                    slot.config = None;
+            let (actor, request_gate) = {
+                let mut slot_state = slot.lock().await;
+                slot_state.close_epoch = slot_state.close_epoch.wrapping_add(1);
+                (
+                    slot_state.actor.clone(),
+                    Arc::clone(&slot_state.request_gate),
+                )
+            };
+
+            let Some(mut actor) = actor else {
+                if wait_for_ack {
+                    let _ = timeout(
+                        CLEANUP_TIMEOUT + Duration::from_secs(1),
+                        request_gate.lock(),
+                    )
+                    .await;
                 }
+                continue;
+            };
+
+            if wait_for_ack {
+                let result = close_actor(&mut actor).await;
+                let mut slot_state = slot.lock().await;
+                if result.is_err() {
+                    slot_state.unavailable = true;
+                } else if slot_state
+                    .actor
+                    .as_ref()
+                    .is_some_and(|current| actor_state(current) == ActorState::Released)
+                {
+                    slot_state.actor = None;
+                    slot_state.config = None;
+                }
+            } else if queue_close(&mut actor).is_err() {
+                slot.lock().await.unavailable = true;
             }
         }
     }
@@ -309,13 +400,12 @@ impl BrowserSessionManager {
 
 impl ActorHandle {
     async fn request(
-        &mut self,
+        &self,
         params: DynamicToolCallParams,
     ) -> Result<DynamicToolCallResponse, String> {
         let request_id = NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
         let cancellation = Arc::new(RequestCancellation::default());
         let (reply, receiver) = oneshot::channel();
-        self.status_tx.send_replace(ActorState::Busy);
         self.commands
             .send(ActorCommand::Request {
                 request_id,
@@ -329,7 +419,6 @@ impl ActorHandle {
             request_id,
             cancellation,
             commands: self.commands.clone(),
-            status: self.status_tx.clone(),
             completed: false,
         };
         match receiver.await {
@@ -337,7 +426,14 @@ impl ActorHandle {
                 lease.complete();
                 result
             }
-            Err(_) => Err("Browser provider request was cancelled.".to_string()),
+            Err(_) => {
+                // The actor may have completed cleanup and dropped its reply
+                // while handling ThreadClosed. Do not send a stale cancel
+                // after that terminal transition. If this future itself is
+                // dropped while awaiting, RequestLease still cancels it.
+                lease.complete();
+                Err("Browser provider request was cancelled.".to_string())
+            }
         }
     }
 }
@@ -364,21 +460,31 @@ async fn close_actor(actor: &mut ActorHandle) -> Result<(), String> {
         ActorState::Unavailable => {
             return Err("Browser profile cleanup is unconfirmed.".to_string());
         }
-        ActorState::Closing | ActorState::Starting | ActorState::Busy => {
-            return match wait_for_terminal(actor).await {
-                ActorState::Released => Ok(()),
+        ActorState::Closing => {
+            return match timeout(
+                CLEANUP_TIMEOUT + Duration::from_secs(1),
+                wait_for_terminal(actor),
+            )
+            .await
+            {
+                Ok(ActorState::Released) => Ok(()),
                 _ => Err("Browser profile cleanup is unconfirmed.".to_string()),
             };
         }
-        ActorState::Active => {}
+        ActorState::Starting | ActorState::Busy | ActorState::Active => {}
     }
 
-    actor.status_tx.send_replace(ActorState::Closing);
-    let (reply, receiver) = oneshot::channel();
-    actor
-        .commands
-        .send(ActorCommand::Close { reply })
-        .map_err(|_| "Browser profile cleanup is unconfirmed.".to_string())?;
+    let Some(receiver) = queue_close(actor)? else {
+        return match timeout(
+            CLEANUP_TIMEOUT + Duration::from_secs(1),
+            wait_for_terminal(actor),
+        )
+        .await
+        {
+            Ok(ActorState::Released) => Ok(()),
+            _ => Err("Browser profile cleanup acknowledgement was not received.".to_string()),
+        };
+    };
     match timeout(CLEANUP_TIMEOUT + Duration::from_secs(1), receiver).await {
         Ok(Ok(Ok(()))) => Ok(()),
         Ok(Ok(Err(error))) => Err(error),
@@ -386,6 +492,26 @@ async fn close_actor(actor: &mut ActorHandle) -> Result<(), String> {
             Err("Browser profile cleanup acknowledgement was not received.".to_string())
         }
     }
+}
+
+fn queue_close(
+    actor: &mut ActorHandle,
+) -> Result<Option<oneshot::Receiver<Result<(), String>>>, String> {
+    match actor_state(actor) {
+        ActorState::Released => return Ok(None),
+        ActorState::Unavailable => {
+            return Err("Browser profile cleanup is unconfirmed.".to_string());
+        }
+        ActorState::Closing => return Ok(None),
+        ActorState::Starting | ActorState::Busy | ActorState::Active => {}
+    }
+    actor.status_tx.send_replace(ActorState::Closing);
+    let (reply, receiver) = oneshot::channel();
+    if actor.commands.send(ActorCommand::Close { reply }).is_err() {
+        actor.status_tx.send_replace(ActorState::Unavailable);
+        return Err("Browser profile cleanup is unconfirmed.".to_string());
+    }
+    Ok(Some(receiver))
 }
 
 async fn spawn_actor(
@@ -644,6 +770,7 @@ async fn wait_for_request_result(
     cancel: &Arc<RequestCancellation>,
 ) -> RequestResult {
     let mut generation = known_generation.map(ToOwned::to_owned);
+    let mut pending_response = None;
     loop {
         enum Event {
             Cancel,
@@ -719,12 +846,24 @@ async fn wait_for_request_result(
                         if frame.request_id != Some(request_id) {
                             return RequestResult::Unavailable("Browser provider response request identity mismatch.".to_string());
                         }
+                        if pending_response.is_some() {
+                            return RequestResult::Unavailable("Browser provider sent more than one response for a request.".to_string());
+                        }
                         let Some(value) = frame.response else {
                             return RequestResult::Unavailable("Browser provider omitted its response payload.".to_string());
                         };
                         let response = match serde_json::from_value(value) {
                             Ok(response) => response,
                             Err(error) => return RequestResult::Unavailable(format!("invalid Browser provider response: {error}")),
+                        };
+                        pending_response = Some(response);
+                    }
+                    "idle" => {
+                        if frame.request_id != Some(request_id) {
+                            return RequestResult::Unavailable("Browser provider idle acknowledgement request identity mismatch.".to_string());
+                        }
+                        let Some(response) = pending_response.take() else {
+                            return RequestResult::Unavailable("Browser provider entered idle without a response.".to_string());
                         };
                         let Some(token) = generation else {
                             return RequestResult::Unavailable("Browser provider replied before owner identity was established.".to_string());

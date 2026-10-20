@@ -79,6 +79,8 @@ async function main() {
 function startRequestTask(requestId, request, firstRequest) {
   activeRequestSettled = false;
   activeRequestTask = (async () => {
+    let idlePublished = false;
+    let response;
     try {
       if (firstRequest) {
         const profile = await initializationPromise;
@@ -90,7 +92,6 @@ function startRequestTask(requestId, request, firstRequest) {
         });
       }
       if (cancelRequested) return;
-      let response;
       try {
         response = await executeRequest(request, firstRequest);
       } catch (error) {
@@ -104,15 +105,27 @@ function startRequestTask(requestId, request, firstRequest) {
       }
       if (!cancelRequested) {
         await writeFrame({ kind: "response", requestId, response });
+        // The caller waits for this frame before sending its next request.
+        // Enter idle before publishing the acknowledgement so the sender
+        // cannot race the task's finally transition.
+        activeRequestSettled = true;
+        lastRequestId = requestId;
+        activeRequestId = null;
+        idlePublished = true;
+        await writeFrame({ kind: "idle", requestId });
       }
     } catch (error) {
       if (!cancelRequested) {
         await writeFrame({ kind: "fatal", error: errorMessage(error) });
       }
     } finally {
-      activeRequestSettled = true;
-      lastRequestId = requestId;
-      activeRequestId = null;
+      // Once idle is published, the next request may already be active. Do
+      // not let this task's finally block overwrite its state.
+      if (!idlePublished) {
+        activeRequestSettled = true;
+        lastRequestId = requestId;
+        activeRequestId = null;
+      }
     }
   })();
 }
