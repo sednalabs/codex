@@ -234,6 +234,151 @@ fn spawn_agent_call(call_id: &str) -> ResponseItem {
     }
 }
 
+#[tokio::test]
+async fn synthetic_fork_retention_payload_comparison() {
+    use std::io::Write as _;
+
+    let (home, config) = test_config_with_cli_overrides(vec![
+        (
+            "features.multi_agent_v2.enabled".to_owned(),
+            TomlValue::Boolean(true),
+        ),
+        (
+            "features.multi_agent_v2.max_concurrent_threads_per_session".to_owned(),
+            TomlValue::Integer(32),
+        ),
+    ])
+    .await;
+    let harness = AgentControlHarness::new_with_config(home, config).await;
+    let parent = harness
+        .manager
+        .start_thread(StartThreadOptions {
+            history_mode: Some(ThreadHistoryMode::Legacy),
+            ..StartThreadOptions::new(harness.config.clone())
+        })
+        .await
+        .expect("start synthetic parent");
+    let parent_thread_id = parent.thread_id;
+    let parent_thread = parent.thread;
+    let recent_context = parent_thread
+        .session
+        .new_default_turn()
+        .await
+        .to_turn_context_item();
+    let partial_marker = "synthetic-partial-payload:";
+    let partial_payload = format!("{partial_marker}{}", "p".repeat(4096));
+    parent_thread
+        .session
+        .persist_rollout_items(&[
+            rollout_response_item(user_message("synthetic older turn")),
+            rollout_response_item(ResponseItem::Message {
+                id: None,
+                role: "assistant".to_owned(),
+                content: vec![ContentItem::OutputText {
+                    text: "synthetic final answer".to_owned(),
+                }],
+                phase: Some(MessagePhase::FinalAnswer),
+                internal_chat_message_metadata_passthrough: None,
+            }),
+            rollout_response_item(user_message("synthetic recent turn")),
+            RolloutItem::TurnContext(recent_context.clone()),
+            rollout_response_item(ResponseItem::Message {
+                id: None,
+                role: "assistant".to_owned(),
+                content: vec![ContentItem::OutputText {
+                    text: partial_payload.clone(),
+                }],
+                phase: Some(MessagePhase::PartialAnswer),
+                internal_chat_message_metadata_passthrough: None,
+            }),
+        ])
+        .await;
+
+    let mut children = Vec::new();
+    for (mode, fork_mode, keeps_older_turn) in [
+        ("all", SpawnAgentForkMode::FullHistory, true),
+        ("last_n_1", SpawnAgentForkMode::LastNTurns(1), false),
+    ] {
+        let call_id = format!("synthetic-fork-{mode}");
+        parent_thread
+            .session
+            .persist_rollout_items(&[rollout_response_item(spawn_agent_call(&call_id))])
+            .await;
+        let child_id = harness
+            .spawn_anonymous_child(
+                parent_thread_id,
+                SpawnAgentOptions {
+                    fork_parent_spawn_call_id: Some(call_id),
+                    fork_mode: Some(fork_mode),
+                    ..Default::default()
+                },
+            )
+            .await;
+        children.push(child_id);
+        let child = harness
+            .manager
+            .get_thread(child_id)
+            .await
+            .expect("synthetic child should be registered");
+        let history = child.session.clone_history().await;
+        assert!(history_contains_text(
+            history.raw_items(),
+            "synthetic recent turn"
+        ));
+        assert_eq!(
+            history_contains_text(history.raw_items(), "synthetic older turn"),
+            keeps_older_turn,
+        );
+        let retained_partial = history_contains_text(history.raw_items(), partial_marker);
+        let items = history.raw_items().collect::<Vec<_>>();
+        let context_bytes = serde_json::to_vec(&items)
+            .expect("synthetic history should serialize")
+            .len();
+        child.ensure_rollout_materialized().await;
+        child.flush_rollout().await.expect("flush synthetic child");
+        let saved = std::fs::read_to_string(
+            child.rollout_path().expect("synthetic child has rollout"),
+        )
+        .expect("read synthetic child rollout");
+        let recent_context_records = saved
+            .lines()
+            .map(|line| codex_rollout::parse_rollout_line(line).expect("parse synthetic rollout"))
+            .filter(|line| {
+                matches!(&line.item, RolloutItem::TurnContext(context)
+                    if context.turn_id == recent_context.turn_id)
+            })
+            .count();
+        // Direct stderr is preserved by the existing named-test result diagnostics.
+        // These are logical model-history bytes, not heap/RSS or rollout-loading peaks.
+        writeln!(
+            std::io::stderr(),
+            "SYNTHETIC_FORK_MEASUREMENT {}",
+            serde_json::json!({
+                "mode": mode,
+                "cohort_children": 2,
+                "history_item_count": items.len(),
+                "serialized_model_history_bytes": context_bytes,
+                "partial_payload_bytes": partial_payload.len(),
+                "partial_payload_retained": retained_partial,
+                "parent_recent_context_records": recent_context_records,
+            }),
+        )
+        .expect("write synthetic measurement");
+    }
+    for child_id in children {
+        let _ = harness
+            .control
+            .shutdown_live_agent(child_id)
+            .await
+            .expect("stop synthetic child");
+    }
+    let _ = harness
+        .control
+        .shutdown_live_agent(parent_thread_id)
+        .await
+        .expect("stop synthetic parent");
+}
+
 struct AgentControlHarness {
     _home: TempDir,
     config: Config,
