@@ -1,0 +1,16 @@
+diff --git a/opus/CMakeLists.txt b/opus/CMakeLists.txt
+--- a/opus/CMakeLists.txt
++++ b/opus/CMakeLists.txt
+@@ -282,2 +282,12 @@
++# Build-script runfiles can expose source headers as symlinks. Install their
++# contents instead of copying links into OUT_DIR, where they can dangle after
++# the temporary source tree is removed.
++set(Opus_REAL_PUBLIC_HEADER)
++foreach(header IN LISTS Opus_PUBLIC_HEADER)
++  get_filename_component(real_header "${header}" REALPATH)
++  list(APPEND Opus_REAL_PUBLIC_HEADER "${real_header}")
++endforeach()
++set(Opus_PUBLIC_HEADER "${Opus_REAL_PUBLIC_HEADER}")
++
+ if(MSVC)
+   if(OPUS_STATIC_RUNTIME)
