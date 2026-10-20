@@ -87,7 +87,10 @@ fn fixed_oauth_login_stages_map_to_provisioning_stages() {
 
     for (oauth_stage, expected_stage) in stages {
         let error = provisioning_failure(oauth_stage.into());
-        assert_eq!(safe_provisioning_failure_stage(&error), Some(expected_stage));
+        assert_eq!(
+            safe_provisioning_failure_stage(&error),
+            Some(expected_stage)
+        );
     }
 }
 
