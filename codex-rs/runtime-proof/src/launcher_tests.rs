@@ -7,6 +7,41 @@ use std::process::Command;
 use std::time::Duration;
 use std::time::Instant;
 
+#[test]
+fn api_bearer_provisioning_accepts_only_the_fixed_browser_modes() {
+    let browser = vec![std::ffi::OsString::from("provision-api-bearer")];
+    let manual_callback = vec![
+        std::ffi::OsString::from("provision-api-bearer"),
+        std::ffi::OsString::from("--no-browser"),
+    ];
+    let extra_argument = vec![
+        std::ffi::OsString::from("provision-api-bearer"),
+        std::ffi::OsString::from("--no-browser"),
+        std::ffi::OsString::from("https://caller.example/callback"),
+    ];
+
+    assert!(matches_api_bearer_invocation(
+        &browser,
+        ApiBearerProvisioningMode::Browser
+    ));
+    assert!(matches_api_bearer_invocation(
+        &manual_callback,
+        ApiBearerProvisioningMode::ManualCallbackInput
+    ));
+    assert!(!matches_api_bearer_invocation(
+        &manual_callback,
+        ApiBearerProvisioningMode::Browser
+    ));
+    assert!(!matches_api_bearer_invocation(
+        &extra_argument,
+        ApiBearerProvisioningMode::ManualCallbackInput
+    ));
+    assert!(!matches_api_bearer_invocation(
+        &extra_argument,
+        ApiBearerProvisioningMode::Browser
+    ));
+}
+
 fn fixed_policy(seed: &[u8; RUNTIME_SEED_BYTES]) -> LauncherPolicy {
     let issuer = SigningKey::from_bytes(seed);
     LauncherPolicy {

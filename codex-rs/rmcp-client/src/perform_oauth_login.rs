@@ -48,7 +48,8 @@ const FIXED_API_CLAIM_RESOURCE: &str = "https://ops-api.grantmatler.com";
 const FIXED_API_CLAIM_CLIENT_ID: &str = "codex-runtime-proof-api-claim";
 const FIXED_API_CLAIM_CALLBACK_PORT: u16 = 8765;
 const FIXED_API_CLAIM_CALLBACK_URL: &str = "http://127.0.0.1:8765/callback";
-const FIXED_API_CLAIM_TIMEOUT_SECS: u64 = 300;
+/// Maximum wait for the fixed Ops API OAuth callback in either interaction mode.
+pub const FIXED_API_CLAIM_TIMEOUT_SECS: u64 = 300;
 
 struct OAuthHttpContext {
     http_headers: Option<HashMap<String, String>>,
@@ -134,13 +135,55 @@ pub async fn perform_fixed_ops_api_access_token_login(
         FIXED_API_CLAIM_CALLBACK_PORT,
         FIXED_API_CLAIM_CALLBACK_URL,
         FIXED_API_CLAIM_TIMEOUT_SECS,
-        open_authorization_url,
+        FixedOAuthInteraction::Browser(Box::new(open_authorization_url)),
     )
     .await
 }
 
+/// Runs the same fixed Ops API OAuth flow using a manually supplied loopback callback URL.
+///
+/// The caller must keep the authorization URL and callback input on the invoking terminal.
+/// The callback is checked against the fixed redirect and the authorization request's state
+/// before the same PKCE verifier and token-response checks used by the browser callback path.
+pub async fn perform_fixed_ops_api_access_token_login_with_callback_input(
+    read_callback_url: impl FnOnce(&str) -> Result<String>,
+) -> Result<OAuthAccessToken> {
+    perform_oauth_access_token_login(
+        FIXED_API_CLAIM_ISSUER,
+        FIXED_API_CLAIM_RESOURCE,
+        FIXED_API_CLAIM_CLIENT_ID,
+        &[FIXED_API_CLAIM_SCOPE.to_string()],
+        FIXED_API_CLAIM_CALLBACK_PORT,
+        FIXED_API_CLAIM_CALLBACK_URL,
+        FIXED_API_CLAIM_TIMEOUT_SECS,
+        FixedOAuthInteraction::CallbackInput(Box::new(read_callback_url)),
+    )
+    .await
+}
+
+type AuthorizationUrlOpener<'a> = Box<dyn FnOnce(&str) -> Result<()> + 'a>;
+type CallbackUrlReader<'a> = Box<dyn FnOnce(&str) -> Result<String> + 'a>;
+
+enum FixedOAuthInteraction<'a> {
+    Browser(AuthorizationUrlOpener<'a>),
+    CallbackInput(CallbackUrlReader<'a>),
+}
+
+enum FixedOAuthCallbackSource<'a> {
+    Browser {
+        open_authorization_url: AuthorizationUrlOpener<'a>,
+        callback: oneshot::Receiver<CallbackResult>,
+        redirect_uri: String,
+        _guard: CallbackServerGuard,
+    },
+    CallbackInput {
+        read_callback_url: CallbackUrlReader<'a>,
+        redirect_uri: String,
+    },
+}
+
 #[allow(clippy::too_many_arguments)]
-async fn perform_oauth_access_token_login(
+async fn perform_oauth_access_token_login<'a>(
     issuer_url: &str,
     resource_url: &str,
     client_id: &str,
@@ -148,7 +191,7 @@ async fn perform_oauth_access_token_login(
     callback_port: u16,
     callback_url: &str,
     timeout_secs: u64,
-    open_authorization_url: impl FnOnce(&str) -> Result<()>,
+    interaction: FixedOAuthInteraction<'a>,
 ) -> Result<OAuthAccessToken> {
     validate_fixed_oauth_inputs(
         issuer_url,
@@ -160,20 +203,41 @@ async fn perform_oauth_access_token_login(
         timeout_secs,
     )?;
 
-    let bind_addr = format!("127.0.0.1:{callback_port}");
-    let server = Arc::new(
-        Server::http(&bind_addr).map_err(|_| anyhow!("bind fixed OAuth callback listener"))?,
-    );
-    let guard = CallbackServerGuard {
-        server: Arc::clone(&server),
-    };
-    let redirect_uri = resolve_redirect_uri(&server, Some(callback_url))?;
     let callback_id = callback_id_from_server_url(issuer_url)?;
-    let redirect_uri = append_callback_id_to_redirect_uri(&redirect_uri, &callback_id)?;
-    let callback_path = callback_path_from_redirect_uri(&redirect_uri)?;
-
-    let (tx, rx) = oneshot::channel();
-    spawn_callback_server(server, tx, callback_path);
+    let callback_source = match interaction {
+        FixedOAuthInteraction::Browser(open_authorization_url) => {
+            let bind_addr = format!("127.0.0.1:{callback_port}");
+            let server = Arc::new(
+                Server::http(&bind_addr)
+                    .map_err(|_| anyhow!("bind fixed OAuth callback listener"))?,
+            );
+            let guard = CallbackServerGuard {
+                server: Arc::clone(&server),
+            };
+            let redirect_uri = resolve_redirect_uri(&server, Some(callback_url))?;
+            let redirect_uri = append_callback_id_to_redirect_uri(&redirect_uri, &callback_id)?;
+            let callback_path = callback_path_from_redirect_uri(&redirect_uri)?;
+            let (tx, callback) = oneshot::channel();
+            spawn_callback_server(server, tx, callback_path);
+            FixedOAuthCallbackSource::Browser {
+                open_authorization_url,
+                callback,
+                redirect_uri,
+                _guard: guard,
+            }
+        }
+        FixedOAuthInteraction::CallbackInput(read_callback_url) => {
+            let redirect_uri = append_callback_id_to_redirect_uri(callback_url, &callback_id)?;
+            FixedOAuthCallbackSource::CallbackInput {
+                read_callback_url,
+                redirect_uri,
+            }
+        }
+    };
+    let redirect_uri = match &callback_source {
+        FixedOAuthCallbackSource::Browser { redirect_uri, .. } => redirect_uri.clone(),
+        FixedOAuthCallbackSource::CallbackInput { redirect_uri, .. } => redirect_uri.clone(),
+    };
 
     let http_client = HttpClientBuilder::new()
         .without_redirects()
@@ -199,14 +263,34 @@ async fn perform_oauth_access_token_login(
     )
     .await?;
 
-    open_authorization_url(&authorization_url)
-        .map_err(|_| anyhow!("open fixed OAuth authorization in the browser"))?;
+    let (callback, callback_guard) = match callback_source {
+        FixedOAuthCallbackSource::Browser {
+            open_authorization_url,
+            callback,
+            _guard,
+            ..
+        } => {
+            open_authorization_url(&authorization_url)
+                .map_err(|_| anyhow!("open fixed OAuth authorization in the browser"))?;
+            let callback = timeout(Duration::from_secs(timeout_secs), callback)
+                .await
+                .map_err(|_| anyhow!("fixed OAuth callback timed out"))?
+                .map_err(|_| anyhow!("fixed OAuth callback was cancelled"))?;
+            (callback, Some(_guard))
+        }
+        FixedOAuthCallbackSource::CallbackInput {
+            read_callback_url,
+            redirect_uri,
+        } => {
+            let callback_url = read_callback_url(&authorization_url)?;
+            (
+                parse_pasted_oauth_callback(&callback_url, &redirect_uri, &authorization_url)?,
+                None,
+            )
+        }
+    };
 
     let result = async {
-        let callback = timeout(Duration::from_secs(timeout_secs), rx)
-            .await
-            .map_err(|_| anyhow!("fixed OAuth callback timed out"))?
-            .map_err(|_| anyhow!("fixed OAuth callback was cancelled"))?;
         let OauthCallbackResult {
             code,
             state: csrf_state,
@@ -230,7 +314,7 @@ async fn perform_oauth_access_token_login(
     }
     .await;
 
-    drop(guard);
+    drop(callback_guard);
     result
 }
 
@@ -726,6 +810,92 @@ fn parse_oauth_callback(path: &str, expected_callback_path: &str) -> CallbackOut
     CallbackOutcome::Invalid
 }
 
+fn parse_pasted_oauth_callback(
+    input: &str,
+    expected_redirect_uri: &str,
+    authorization_url: &str,
+) -> Result<CallbackResult> {
+    const MAX_CALLBACK_URL_BYTES: usize = 64 * 1024;
+
+    let input = input.trim();
+    if input.len() > MAX_CALLBACK_URL_BYTES {
+        bail!("OAuth callback URL exceeds 64 KiB");
+    }
+    let callback = Url::parse(input).map_err(|_| anyhow!("invalid OAuth callback URL"))?;
+    let expected = Url::parse(expected_redirect_uri)
+        .map_err(|_| anyhow!("invalid fixed OAuth redirect URI"))?;
+    let has_userinfo = input
+        .split_once("://")
+        .and_then(|(_, remainder)| remainder.split(['/', '?', '#']).next())
+        .is_some_and(|authority| authority.contains('@'));
+    if callback.scheme() != expected.scheme()
+        || callback.host_str() != expected.host_str()
+        || callback.port_or_known_default() != expected.port_or_known_default()
+        || callback.path() != expected.path()
+        || has_userinfo
+        || !callback.username().is_empty()
+        || callback.password().is_some()
+        || callback.fragment().is_some()
+        || callback.query().is_none()
+        || expected.query().is_some()
+        || expected.fragment().is_some()
+    {
+        bail!("OAuth callback URL does not match this login's fixed redirect");
+    }
+
+    let authorization =
+        Url::parse(authorization_url).map_err(|_| anyhow!("invalid fixed OAuth request"))?;
+    let states = authorization
+        .query_pairs()
+        .filter(|(name, _)| name == "state")
+        .map(|(_, value)| value.into_owned())
+        .collect::<Vec<_>>();
+    let [expected_state] = states.as_slice() else {
+        bail!("fixed OAuth request has no unique state");
+    };
+    if expected_state.is_empty() {
+        bail!("fixed OAuth request has no unique state");
+    }
+
+    let mut parameters = HashMap::new();
+    for (name, value) in callback.query_pairs() {
+        if parameters
+            .insert(name.into_owned(), value.into_owned())
+            .is_some()
+        {
+            bail!("OAuth callback URL contains duplicate parameters");
+        }
+    }
+    let state = parameters
+        .get("state")
+        .filter(|state| !state.is_empty())
+        .ok_or_else(|| anyhow!("OAuth callback URL is missing state"))?;
+    if state != expected_state {
+        bail!("OAuth callback state does not match this login");
+    }
+    if parameters.get("code").is_some_and(String::is_empty) {
+        bail!("OAuth callback URL is missing an authorization code");
+    }
+    if (parameters.contains_key("error") || parameters.contains_key("error_description"))
+        && parameters.contains_key("code")
+    {
+        bail!("OAuth callback URL contains both a code and an error");
+    }
+
+    let callback_path_and_query = format!(
+        "{}?{}",
+        callback.path(),
+        callback.query().unwrap_or_default()
+    );
+    match parse_oauth_callback(&callback_path_and_query, expected.path()) {
+        CallbackOutcome::Success(callback) => Ok(CallbackResult::Success(callback)),
+        CallbackOutcome::Error(_) => Ok(CallbackResult::Error(OAuthProviderError::new(
+            /*error*/ None, /*error_description*/ None,
+        ))),
+        CallbackOutcome::Invalid => bail!("OAuth callback URL is invalid"),
+    }
+}
+
 pub struct OauthLoginHandle {
     authorization_url: String,
     completion: oneshot::Receiver<Result<()>>,
@@ -1093,6 +1263,7 @@ mod tests {
     use tokio::net::TcpListener;
 
     use super::CallbackOutcome;
+    use super::CallbackResult;
     use super::FIXED_API_CLAIM_CALLBACK_URL;
     use super::FIXED_API_CLAIM_CLIENT_ID;
     use super::FIXED_API_CLAIM_ISSUER;
@@ -1109,6 +1280,7 @@ mod tests {
     use super::callback_path_from_redirect_uri;
     use super::fixed_authorization_url;
     use super::parse_oauth_callback;
+    use super::parse_pasted_oauth_callback;
     use super::start_authorization;
     use super::validate_canonical_https_origin;
     use super::validate_fixed_oauth_inputs;
@@ -1489,6 +1661,83 @@ mod tests {
     fn parse_oauth_callback_rejects_wrong_path() {
         let parsed = parse_oauth_callback("/callback?code=abc&state=xyz", "/oauth/callback");
         assert!(matches!(parsed, CallbackOutcome::Invalid));
+    }
+
+    #[test]
+    fn pasted_fixed_callback_requires_the_registered_redirect_and_matching_state() {
+        let redirect = "http://127.0.0.1:8765/callback/gGLT7yyzxEu8";
+        let authorization =
+            "https://auth.grantmatler.com/authorize?state=expected-state&code_challenge=challenge";
+        let callback = parse_pasted_oauth_callback(
+            " http://127.0.0.1:8765/callback/gGLT7yyzxEu8?code=code%2Bvalue&state=expected-state&iss=https%3A%2F%2Fauth.grantmatler.com&session_state=opaque ",
+            redirect,
+            authorization,
+        )
+        .expect("parse the fixed callback URL");
+        assert!(matches!(
+            callback,
+            CallbackResult::Success(OauthCallbackResult {
+                code,
+                state,
+                issuer: Some(issuer),
+            }) if code == "code+value"
+                && state == "expected-state"
+                && issuer == "https://auth.grantmatler.com"
+        ));
+    }
+
+    #[test]
+    fn pasted_fixed_callback_rejects_unbound_or_ambiguous_input_without_echoing_it() {
+        let redirect = "http://127.0.0.1:8765/callback/gGLT7yyzxEu8";
+        let authorization =
+            "https://auth.grantmatler.com/authorize?state=expected-state&code_challenge=challenge";
+        for callback in [
+            "http://127.0.0.2:8765/callback/gGLT7yyzxEu8?code=secret-callback-code&state=expected-state",
+            "http://127.0.0.1:8766/callback/gGLT7yyzxEu8?code=secret-callback-code&state=expected-state",
+            "http://127.0.0.1:8765/callback/other?code=secret-callback-code&state=expected-state",
+            "https://127.0.0.1:8765/callback/gGLT7yyzxEu8?code=secret-callback-code&state=expected-state",
+            "http://user@127.0.0.1:8765/callback/gGLT7yyzxEu8?code=secret-callback-code&state=expected-state",
+            "http://127.0.0.1:8765/callback/gGLT7yyzxEu8?code=secret-callback-code&state=expected-state#fragment",
+            "http://@127.0.0.1:8765/callback/gGLT7yyzxEu8?code=secret-callback-code&state=expected-state",
+            "http://127.0.0.1:8765/callback/gGLT7yyzxEu8?code=&state=expected-state",
+            "http://127.0.0.1:8765/callback/gGLT7yyzxEu8?code=secret-callback-code&state=wrong-state",
+            "http://127.0.0.1:8765/callback/gGLT7yyzxEu8?code=secret-callback-code&state=expected-state&state=second",
+            "http://127.0.0.1:8765/callback/gGLT7yyzxEu8?code=secret-callback-code&%63ode=second&state=expected-state",
+            "http://127.0.0.1:8765/callback/gGLT7yyzxEu8?code=secret-callback-code&state=expected-state&error=denied",
+        ] {
+            let error = parse_pasted_oauth_callback(callback, redirect, authorization)
+                .expect_err("reject callback not bound to this login");
+            assert!(!format!("{error:#}").contains("secret-callback-code"));
+        }
+        assert!(
+            parse_pasted_oauth_callback(&"x".repeat(/*n*/ 65_537), redirect, authorization,)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn pasted_provider_error_is_state_bound_and_redacted() {
+        let redirect = "http://127.0.0.1:8765/callback/gGLT7yyzxEu8";
+        let authorization =
+            "https://auth.grantmatler.com/authorize?state=expected-state&code_challenge=challenge";
+        let callback = parse_pasted_oauth_callback(
+            "http://127.0.0.1:8765/callback/gGLT7yyzxEu8?error=access_denied&error_description=secret-description&state=expected-state",
+            redirect,
+            authorization,
+        )
+        .expect("parse state-bound provider error");
+        let CallbackResult::Error(error) = callback else {
+            panic!("expected provider error");
+        };
+        assert_eq!(error.to_string(), "OAuth provider returned an error");
+        assert!(
+            parse_pasted_oauth_callback(
+                "http://127.0.0.1:8765/callback/gGLT7yyzxEu8?error=access_denied&state=wrong-state",
+                redirect,
+                authorization,
+            )
+            .is_err()
+        );
     }
 
     #[test]

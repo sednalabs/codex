@@ -3903,28 +3903,36 @@ retry. The MCP policy and existing MCP child path remain separate. Source or
 package acceptance alone does not appoint or install the API bearer, authorize
 a claim policy, or establish HTTP first use.
 
-The same measured launcher has a single `provision-api-bearer` mode for the
-fixed HTTP profile. It requires interactive `sudo` through the installed
-root-owned launcher path; `SUDO_UID` is used only to run the fixed browser
-opener as the unprivileged desktop user, never as the OAuth principal. The
-existing Codex callback and PKCE implementation uses a fixed loopback redirect,
-the API resource, and only `ops:write`; it does not write the persistent MCP
-credential store or persist a refresh token. Before storage, the returned token
-must match the fixed issuer, an audience claim containing `ops-api`, the exact
-scope, UUID-shaped subject, and bounded expiry. The configured client-specific
-`ops-api` mapper works with the existing `ops:write` scope, whose audience
-mappers also supply the existing MCP audiences; no shared mapper or scope is
-changed. Provisioning does not require or activate the root claim policy:
-the HTTP launcher later checks the token subject against that policy before
-signing or sending a claim. The short-lived credential is atomically written
-only to `/run/credstore/ops-api-bearer` in a versioned envelope with a fresh
-generation value; the fixed unit loads it through source-less
-`LoadCredential=ops-api-bearer`. After systemd has copied it into the private
-credential directory, the launcher removes only the exact loaded envelope under
-the same lock used by provisioning. A replacement credential, including one
-with the same token but a different generation, is preserved. The unit remains
-inactive while the root claim policy is absent. The mode accepts no
-caller-selected path, URL, client, scope, or command option and sends no claim.
+The same measured launcher has a fixed `provision-api-bearer` mode for the
+HTTP profile. It requires interactive `sudo` through the installed root-owned
+launcher path; `SUDO_UID` is used only to run the fixed browser opener as the
+unprivileged desktop user, never as the OAuth principal. The explicit
+`provision-api-bearer --no-browser` form uses the same authorization-code plus
+PKCE flow and fixed loopback redirect without opening a browser or binding a
+local callback listener; it displays the generated authorization URL for the
+fixed client on the invoking terminal and accepts the complete callback URL
+there. The callback parser binds scheme, loopback host, port, exact registered
+path, unique state, and unambiguous response parameters before the same PKCE
+exchange and token checks. Manual input disables terminal echo and restores the
+original terminal settings on success, error, or a handled cancellation signal.
+Both forms use the API resource and only
+`ops:write`; neither writes the persistent MCP credential store or persists a
+refresh token. Before storage, the returned token must match the fixed issuer, an audience claim
+containing `ops-api`, the exact scope, UUID-shaped subject, and bounded expiry.
+The configured client-specific `ops-api` mapper works with the existing
+`ops:write` scope, whose audience mappers also supply the existing MCP
+audiences; no shared mapper or scope is changed. Provisioning does not require
+or activate the root claim policy: the HTTP launcher later checks the token
+subject against that policy before signing or sending a claim. The short-lived
+credential is atomically written only to `/run/credstore/ops-api-bearer` in a
+versioned envelope with a fresh generation value; the fixed unit loads it
+through source-less `LoadCredential=ops-api-bearer`. After systemd has copied it
+into the private credential directory, the launcher removes only the exact
+loaded envelope under the same lock used by provisioning. A replacement
+credential, including one with the same token but a different generation, is
+preserved. The unit remains inactive while the root claim policy is absent.
+The mode accepts no caller-selected path, URL, client, scope, or command option
+beyond the fixed `--no-browser` switch and sends no claim.
 
 The unit template and binary are packaged for Linux x86_64 and Arm64; packaging
 does not create the host policy, credentials, service account, issuer

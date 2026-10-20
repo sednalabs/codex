@@ -8,7 +8,9 @@
 use crate::api_claim;
 use anyhow::Result;
 use anyhow::bail;
+use codex_rmcp_client::FIXED_API_CLAIM_TIMEOUT_SECS;
 use codex_rmcp_client::perform_fixed_ops_api_access_token_login;
+use codex_rmcp_client::perform_fixed_ops_api_access_token_login_with_callback_input;
 use std::ffi::CStr;
 use std::fs;
 use std::fs::File;
@@ -22,14 +24,131 @@ use std::os::unix::process::CommandExt as _;
 use std::path::Path;
 use std::process::Command;
 use std::process::Stdio;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
+use std::time::Instant;
 use uuid::Uuid;
 
 const BEARER_SOURCE_PATH: &str = "/run/credstore/ops-api-bearer";
 const BEARER_LOCK_NAME: &str = ".codex-runtime-proof-api-bearer.lock";
 const XDG_OPEN_PATH: &str = "/usr/bin/xdg-open";
 const MAX_PASSWD_BUFFER: usize = 64 * 1024;
+const MAX_CALLBACK_URL_BYTES: usize = 64 * 1024;
+static CALLBACK_INPUT_INTERRUPTED: AtomicBool = AtomicBool::new(false);
+
+const CALLBACK_INPUT_SIGNALS: [libc::c_int; 5] = [
+    libc::SIGINT,
+    libc::SIGTERM,
+    libc::SIGHUP,
+    libc::SIGQUIT,
+    libc::SIGTSTP,
+];
+
+struct CallbackSignalGuard {
+    previous: Vec<(libc::c_int, libc::sigaction)>,
+}
+
+impl CallbackSignalGuard {
+    fn install() -> Result<Self> {
+        CALLBACK_INPUT_INTERRUPTED.store(false, Ordering::Relaxed);
+        let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
+        action.sa_sigaction = record_callback_input_signal as *const () as libc::sighandler_t;
+        unsafe { libc::sigemptyset(&mut action.sa_mask) };
+
+        let mut guard = Self {
+            previous: Vec::with_capacity(CALLBACK_INPUT_SIGNALS.len()),
+        };
+        for signal in CALLBACK_INPUT_SIGNALS {
+            let mut previous = MaybeUninit::<libc::sigaction>::uninit();
+            if unsafe { libc::sigaction(signal, &action, previous.as_mut_ptr()) } != 0 {
+                return Err(std::io::Error::last_os_error().into());
+            }
+            guard
+                .previous
+                .push((signal, unsafe { previous.assume_init() }));
+        }
+        Ok(guard)
+    }
+
+    fn restore(&mut self) -> std::io::Result<()> {
+        while let Some((signal, previous)) = self.previous.last() {
+            if unsafe { libc::sigaction(*signal, previous, std::ptr::null_mut()) } != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            self.previous.pop();
+        }
+        Ok(())
+    }
+}
+
+impl Drop for CallbackSignalGuard {
+    fn drop(&mut self) {
+        let _ = self.restore();
+    }
+}
+
+extern "C" fn record_callback_input_signal(_: libc::c_int) {
+    CALLBACK_INPUT_INTERRUPTED.store(true, Ordering::Relaxed);
+}
+
+struct TerminalEchoGuard {
+    fd: libc::c_int,
+    original: libc::termios,
+    active: bool,
+}
+
+impl TerminalEchoGuard {
+    fn disable(fd: libc::c_int) -> Result<Self> {
+        let mut original = MaybeUninit::<libc::termios>::uninit();
+        if unsafe { libc::tcgetattr(fd, original.as_mut_ptr()) } != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        let original = unsafe { original.assume_init() };
+        let mut no_echo = original;
+        no_echo.c_lflag &= !libc::ECHO;
+        if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &no_echo) } != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(Self {
+            fd,
+            original,
+            active: true,
+        })
+    }
+
+    fn restore(&mut self) -> std::io::Result<()> {
+        if !self.active {
+            return Ok(());
+        }
+        if unsafe { libc::tcsetattr(self.fd, libc::TCSANOW, &self.original) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        self.active = false;
+        Ok(())
+    }
+}
+
+impl Drop for TerminalEchoGuard {
+    fn drop(&mut self) {
+        let _ = self.restore();
+    }
+}
 
 pub(crate) fn run() -> Result<i32> {
+    run_with_interaction(ProvisioningInteraction::Browser)
+}
+
+pub(crate) fn run_with_manual_callback_input() -> Result<i32> {
+    run_with_interaction(ProvisioningInteraction::ManualCallbackInput)
+}
+
+enum ProvisioningInteraction {
+    Browser,
+    ManualCallbackInput,
+}
+
+fn run_with_interaction(interaction: ProvisioningInteraction) -> Result<i32> {
     require_interactive_root_invocation()?;
     let bearer_parent = Path::new(BEARER_SOURCE_PATH)
         .parent()
@@ -42,9 +161,17 @@ pub(crate) fn run() -> Result<i32> {
         .map_err(|_| anyhow::anyhow!("build fixed OAuth provisioning runtime"))?;
     let oauth_dispatch = tracing::Dispatch::none();
     let access_token = tracing::dispatcher::with_default(&oauth_dispatch, || {
-        runtime.block_on(perform_fixed_ops_api_access_token_login(
-            open_authorization_url_as_invoking_user,
-        ))
+        if matches!(interaction, ProvisioningInteraction::ManualCallbackInput) {
+            runtime.block_on(
+                perform_fixed_ops_api_access_token_login_with_callback_input(
+                    read_callback_url_from_invoking_terminal,
+                ),
+            )
+        } else {
+            runtime.block_on(perform_fixed_ops_api_access_token_login(
+                open_authorization_url_as_invoking_user,
+            ))
+        }
     })?;
 
     let now = api_claim::unix_seconds()?;
@@ -119,16 +246,7 @@ fn invoking_user_identity() -> Result<(libc::uid_t, libc::gid_t, String)> {
 }
 
 fn open_authorization_url_as_invoking_user(authorization_url: &str) -> Result<()> {
-    let url = url::Url::parse(authorization_url)
-        .map_err(|_| anyhow::anyhow!("fixed OAuth authorization URL is invalid"))?;
-    if url.scheme() != "https"
-        || url.host_str() != Some("auth.grantmatler.com")
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.fragment().is_some()
-    {
-        bail!("fixed OAuth authorization URL is outside the trusted issuer");
-    }
+    validate_fixed_authorization_url(authorization_url)?;
 
     let opener = Path::new(XDG_OPEN_PATH);
     let opener_metadata = fs::symlink_metadata(opener)?;
@@ -184,6 +302,123 @@ fn open_authorization_url_as_invoking_user(authorization_url: &str) -> Result<()
         bail!("fixed local browser authorization could not be opened");
     }
     Ok(())
+}
+
+fn read_callback_url_from_invoking_terminal(authorization_url: &str) -> Result<String> {
+    validate_fixed_authorization_url(authorization_url)?;
+    if unsafe { libc::isatty(libc::STDOUT_FILENO) } != 1 {
+        bail!("manual OAuth callback input requires terminal output");
+    }
+
+    let mut signal_guard = CallbackSignalGuard::install()?;
+    let mut echo_guard = TerminalEchoGuard::disable(libc::STDIN_FILENO)?;
+    let result = read_callback_url_with_echo_disabled(authorization_url);
+    echo_guard
+        .restore()
+        .map_err(|_| anyhow::anyhow!("restore invoking terminal settings"))?;
+    signal_guard
+        .restore()
+        .map_err(|_| anyhow::anyhow!("restore invoking signal handlers"))?;
+    let interruption = ensure_callback_input_not_interrupted();
+    writeln!(std::io::stdout().lock())?;
+    interruption?;
+    result
+}
+
+fn read_callback_url_with_echo_disabled(authorization_url: &str) -> Result<String> {
+    let mut stdout = std::io::stdout().lock();
+    writeln!(
+        stdout,
+        "Open this fixed authorization URL in your browser, complete sign-in, then paste the full callback URL below:\n{authorization_url}"
+    )?;
+    write!(stdout, "Callback URL: ")?;
+    stdout.flush()?;
+
+    let deadline = Instant::now() + Duration::from_secs(FIXED_API_CLAIM_TIMEOUT_SECS);
+    let mut input = Vec::with_capacity(2048);
+    loop {
+        ensure_callback_input_not_interrupted()?;
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            bail!("fixed OAuth callback timed out");
+        }
+        let timeout_ms = remaining.as_millis().clamp(1, i32::MAX as u128) as i32;
+        let mut descriptor = libc::pollfd {
+            fd: libc::STDIN_FILENO,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let ready = unsafe { libc::poll(&mut descriptor, 1, timeout_ms) };
+        if ready == 0 {
+            bail!("fixed OAuth callback timed out");
+        }
+        if ready < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error.into());
+        }
+        let mut byte = [0_u8; 1];
+        let read = unsafe { libc::read(libc::STDIN_FILENO, byte.as_mut_ptr().cast(), byte.len()) };
+        if read < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error.into());
+        }
+        if read == 0 {
+            if input.is_empty() {
+                bail!("no OAuth callback URL was supplied");
+            }
+            break;
+        }
+        if byte[0] == b'\n' {
+            break;
+        }
+        if input.len() == MAX_CALLBACK_URL_BYTES {
+            bail!("OAuth callback URL exceeds 64 KiB");
+        }
+        input.push(byte[0]);
+    }
+    callback_url_from_terminal_input(input)
+}
+
+fn ensure_callback_input_not_interrupted() -> Result<()> {
+    if CALLBACK_INPUT_INTERRUPTED.swap(false, Ordering::Relaxed) {
+        bail!("manual OAuth callback input was interrupted");
+    }
+    Ok(())
+}
+
+fn callback_url_from_terminal_input(mut input: Vec<u8>) -> Result<String> {
+    if input.last() == Some(&b'\r') {
+        input.pop();
+    }
+    if input.is_empty() {
+        bail!("no OAuth callback URL was supplied");
+    }
+    let callback_url =
+        String::from_utf8(input).map_err(|_| anyhow::anyhow!("OAuth callback URL is invalid"))?;
+    if callback_url.chars().any(char::is_control) {
+        bail!("OAuth callback URL is invalid");
+    }
+    Ok(callback_url)
+}
+
+fn validate_fixed_authorization_url(authorization_url: &str) -> Result<url::Url> {
+    let url = url::Url::parse(authorization_url)
+        .map_err(|_| anyhow::anyhow!("fixed OAuth authorization URL is invalid"))?;
+    if url.scheme() != "https"
+        || url.host_str() != Some("auth.grantmatler.com")
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+    {
+        bail!("fixed OAuth authorization URL is outside the trusted issuer");
+    }
+    Ok(url)
 }
 
 fn validate_fixed_parent(parent: &Path) -> Result<()> {
@@ -497,6 +732,130 @@ mod tests {
         assert!(parse_invoking_uid("0").is_err());
         assert!(parse_invoking_uid("+1000").is_err());
         assert!(parse_invoking_uid("1000\n").is_err());
+    }
+
+    #[test]
+    fn manual_callback_line_accepts_terminal_newline_and_rejects_control_input() {
+        assert_eq!(
+            callback_url_from_terminal_input(
+                b"http://127.0.0.1:8765/callback/gGLT7yyzxEu8?code=fake&state=fake\r".to_vec()
+            )
+            .expect("decode CRLF terminal input"),
+            "http://127.0.0.1:8765/callback/gGLT7yyzxEu8?code=fake&state=fake"
+        );
+        assert!(callback_url_from_terminal_input(b"url\nextra".to_vec()).is_err());
+        assert!(callback_url_from_terminal_input(Vec::new()).is_err());
+    }
+
+    #[test]
+    fn manual_callback_input_temporarily_disables_and_restores_terminal_echo() {
+        let mut master = -1;
+        let mut slave = -1;
+        assert_eq!(
+            unsafe {
+                libc::openpty(
+                    &mut master,
+                    &mut slave,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                )
+            },
+            0
+        );
+        let _master = unsafe { File::from_raw_fd(master) };
+        let slave = unsafe { File::from_raw_fd(slave) };
+
+        let mut original = MaybeUninit::<libc::termios>::uninit();
+        assert_eq!(
+            unsafe { libc::tcgetattr(slave.as_raw_fd(), original.as_mut_ptr()) },
+            0
+        );
+        let mut original = unsafe { original.assume_init() };
+        original.c_lflag |= libc::ECHO;
+        assert_eq!(
+            unsafe { libc::tcsetattr(slave.as_raw_fd(), libc::TCSANOW, &original) },
+            0
+        );
+
+        {
+            let mut echo_guard =
+                TerminalEchoGuard::disable(slave.as_raw_fd()).expect("disable terminal echo");
+            let mut disabled = MaybeUninit::<libc::termios>::uninit();
+            assert_eq!(
+                unsafe { libc::tcgetattr(slave.as_raw_fd(), disabled.as_mut_ptr()) },
+                0
+            );
+            let disabled = unsafe { disabled.assume_init() };
+            assert_eq!(disabled.c_lflag & libc::ECHO, 0);
+            assert_eq!(
+                disabled.c_lflag & !libc::ECHO,
+                original.c_lflag & !libc::ECHO
+            );
+            echo_guard.restore().expect("restore terminal echo");
+        }
+
+        let mut restored = MaybeUninit::<libc::termios>::uninit();
+        assert_eq!(
+            unsafe { libc::tcgetattr(slave.as_raw_fd(), restored.as_mut_ptr()) },
+            0
+        );
+        let restored = unsafe { restored.assume_init() };
+        assert_eq!(restored.c_lflag, original.c_lflag);
+    }
+
+    #[test]
+    fn manual_callback_interrupt_restores_terminal_echo() {
+        let mut master = -1;
+        let mut slave = -1;
+        assert_eq!(
+            unsafe {
+                libc::openpty(
+                    &mut master,
+                    &mut slave,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                )
+            },
+            0
+        );
+        let _master = unsafe { File::from_raw_fd(master) };
+        let slave = unsafe { File::from_raw_fd(slave) };
+        let mut original = MaybeUninit::<libc::termios>::uninit();
+        assert_eq!(
+            unsafe { libc::tcgetattr(slave.as_raw_fd(), original.as_mut_ptr()) },
+            0
+        );
+        let mut original = unsafe { original.assume_init() };
+        original.c_lflag |= libc::ECHO;
+        assert_eq!(
+            unsafe { libc::tcsetattr(slave.as_raw_fd(), libc::TCSANOW, &original) },
+            0
+        );
+
+        let mut signal_guard = CallbackSignalGuard::install().expect("install cancel handlers");
+        let mut echo_guard =
+            TerminalEchoGuard::disable(slave.as_raw_fd()).expect("disable terminal echo");
+        assert_eq!(
+            unsafe { libc::raise(libc::SIGINT) },
+            0,
+            "deliver a controlled interrupt"
+        );
+        assert!(ensure_callback_input_not_interrupted().is_err());
+        echo_guard
+            .restore()
+            .expect("restore terminal echo after interrupt");
+        signal_guard
+            .restore()
+            .expect("restore prior signal handlers");
+
+        let mut restored = MaybeUninit::<libc::termios>::uninit();
+        assert_eq!(
+            unsafe { libc::tcgetattr(slave.as_raw_fd(), restored.as_mut_ptr()) },
+            0
+        );
+        assert_ne!(unsafe { restored.assume_init() }.c_lflag & libc::ECHO, 0);
     }
 
     #[test]
