@@ -2231,8 +2231,7 @@ async fn configured_http_mode_overrides_existing_precedence() -> anyhow::Result<
             codex_apps_tools_cache: ConnectorRuntimeManager::default(),
             tool_catalog_cache: McpToolCatalogCache::default(),
             codex_apps_tools_cache_key: ConnectorRuntimeContextKey::personal(
-                /*account_id*/ None,
-                /*chatgpt_user_id*/ None,
+                /*account_id*/ None, /*chatgpt_user_id*/ None,
             ),
             client_mcp_extensions: ClientMcpExtensions::default(),
             auth: None,

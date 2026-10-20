@@ -689,7 +689,11 @@ fn deserialize_stdio_rejects_protocol_mode() {
     )
     .expect_err("stdio servers must not accept an HTTP protocol mode");
 
-    assert!(error.to_string().contains("protocol_mode is not supported for stdio"));
+    assert!(
+        error
+            .to_string()
+            .contains("protocol_mode is not supported for stdio")
+    );
 }
 
 #[test]

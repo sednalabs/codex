@@ -2555,6 +2555,25 @@
       },
       "type": "object"
     },
+    "McpServerProtocolMode": {
+      "description": "Preferred MCP protocol lifecycle behavior for one configured HTTP server.",
+      "oneOf": [
+        {
+          "description": "Use the legacy negotiated MCP protocol behavior.",
+          "enum": [
+            "legacy"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Prefer 2026-07-28 behavior when supported; the client may fall back.",
+          "enum": [
+            "2026-07-28"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "McpServerToolConfig": {
       "additionalProperties": false,
       "description": "Per-tool settings for a single MCP server tool.",
@@ -3905,6 +3924,14 @@
             "$ref": "#/definitions/ToolExposureSurface"
           },
           "type": "array"
+        },
+        "protocol_mode": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/McpServerProtocolMode"
+            }
+          ],
+          "default": null
         },
         "required": {
           "default": null,
