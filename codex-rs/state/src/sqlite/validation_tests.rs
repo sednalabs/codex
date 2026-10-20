@@ -1,11 +1,13 @@
 //! Exercises startup validation, per-file caching, and report-only lazy databases.
 
 use super::QuickCheckOutcome;
+use super::RecoveryMode;
 use super::SqliteQuickCheckManager;
 use super::quick_check;
 use crate::SqliteConfig;
 use crate::StateRuntime;
 use crate::runtime::test_support::unique_temp_dir;
+use crate::telemetry::DbKind;
 use anyhow::Context;
 use codex_utils_absolute_path::test_support::PathExt;
 use pretty_assertions::assert_eq;
@@ -74,23 +76,31 @@ async fn runtime_opens_recover_or_report_corruption_by_database_policy() -> anyh
         pool.close().await;
         tokio::fs::rename(&fixture, &path).await?;
 
-        if path == sqlite.thread_history_db_path() {
+        if spec.recovery == RecoveryMode::Unavailable {
             let telemetry = CorruptionTelemetry::default();
-            // Unrelated corruption must not disable lazy history reads when the
-            // caller has no recovery path. Exercise both migration and reopening.
+            let (migrator, query, db_tag) = match spec.kind {
+                DbKind::ThreadHistory => (
+                    crate::migrations::runtime_thread_history_migrator(),
+                    "SELECT count(*) FROM thread_turns",
+                    "thread_history",
+                ),
+                DbKind::Usage => (
+                    crate::migrations::runtime_usage_migrator(),
+                    "SELECT count(*) FROM usage_provider_calls",
+                    "usage",
+                ),
+                _ => unreachable!("only report-only databases use this branch"),
+            };
+            // Unrelated corruption must not disable lazy reads when the caller
+            // has no recovery path. Exercise both migration and reopening.
             for _ in 0..2 {
                 let pool = sqlite
-                    .open_thread_history_db(
-                        &crate::migrations::runtime_thread_history_migrator(),
-                        Some(&telemetry),
-                    )
+                    .open_runtime_db(spec, &migrator, Some(&telemetry))
                     .await?;
-                assert_eq!(
-                    sqlx::query_scalar::<_, i64>("SELECT count(*) FROM thread_turns")
-                        .fetch_one(&pool)
-                        .await?,
-                    0
-                );
+                let rows = sqlx::query_scalar::<_, i64>(query)
+                    .fetch_one(&pool)
+                    .await?;
+                assert_eq!(rows, 0);
                 assert_eq!(
                     quick_check(&pool, Instant::now() + Duration::from_secs(/*secs*/ 5)).await?,
                     QuickCheckOutcome::CorruptedNeedsFixed
@@ -101,8 +111,13 @@ async fn runtime_opens_recover_or_report_corruption_by_database_policy() -> anyh
                 *telemetry.0.lock().expect("telemetry lock"),
                 vec![CorruptionEvent {
                     count: 1,
-                    tags: BTreeMap::from([("db".to_string(), "thread_history".to_string())]),
+                    tags: BTreeMap::from([("db".to_string(), db_tag.to_string())]),
                 }]
+            );
+            assert!(
+                !home.join("db-backups").exists(),
+                "{} unavailable recovery unexpectedly created backups",
+                spec.label
             );
             continue;
         }
