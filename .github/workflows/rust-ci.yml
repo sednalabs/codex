@@ -32,6 +32,42 @@ jobs:
           output="$RUNNER_TEMP/native-config-output"
           mkdir -p "$output"
           trap 'status=$?; printf "host_binding_exit=%s\n" "$status" >> "$output/identity.txt"' EXIT
+          allowed_repo_paths=(
+            codex-rs/cli/src/mcp_cmd.rs
+            codex-rs/codex-mcp/src/catalog_tests.rs
+            codex-rs/codex-mcp/src/connection_manager.rs
+            codex-rs/codex-mcp/src/connection_manager_tests.rs
+            codex-rs/codex-mcp/src/mcp/mod.rs
+            codex-rs/codex-mcp/src/mcp/mod_tests.rs
+            codex-rs/codex-mcp/src/plugin_config_tests.rs
+            codex-rs/codex-mcp/src/runtime.rs
+            codex-rs/config/src/lib.rs
+            codex-rs/config/src/mcp_requirements_tests.rs
+            codex-rs/config/src/mcp_types.rs
+            codex-rs/config/src/mcp_types_tests.rs
+            codex-rs/config/src/types.rs
+            codex-rs/core-plugins/src/manager_tests.rs
+            codex-rs/core/config.schema.json
+            codex-rs/core/src/config/config_tests.rs
+            codex-rs/core/src/config/edit/document_helpers.rs
+            codex-rs/core/src/config/edit_tests.rs
+            codex-rs/core/src/mcp_skill_dependencies.rs
+            codex-rs/core/src/session/tests.rs
+            codex-rs/core/tests/suite/code_mode.rs
+            codex-rs/core/tests/suite/hooks_mcp.rs
+            codex-rs/core/tests/suite/mcp_refresh_cleanup.rs
+            codex-rs/core/tests/suite/mcp_startup_refresh_http_proxy.rs
+            codex-rs/core/tests/suite/rmcp_client.rs
+            codex-rs/core/tests/suite/search_tool.rs
+            codex-rs/core/tests/suite/sqlite_state.rs
+            codex-rs/core/tests/suite/token_budget.rs
+            codex-rs/core/tests/suite/truncation.rs
+            codex-rs/exec/src/lib_tests.rs
+            codex-rs/ext/mcp/src/plugin/provider_tests.rs
+            codex-rs/tui/src/app/thread_event_buffer.rs
+            codex-rs/tui/src/app/thread_event_buffer_tests.rs
+          )
+          printf '%s\n' "${allowed_repo_paths[@]}" | LC_ALL=C sort > "$output/allowed-paths.txt"
           {
             printf 'repository=%s\n' "$GITHUB_REPOSITORY"
             printf 'event=%s\n' "$GITHUB_EVENT_NAME"
@@ -75,9 +111,35 @@ jobs:
           test "$actual_tree" = "$SOURCE_TREE"
           printf 'source_identity_match=true\n' >> "$output/identity.txt"
 
+      - name: Require pristine source checkout
+        id: pre_transform_clean
+        if: ${{ steps.source_identity.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/native-config-output"
+          trap 'status=$?; printf "pre_transform_clean_exit=%s\n" "$status" >> "$output/identity.txt"' EXIT
+          worktree_clean=true
+          index_clean=true
+          untracked_clean=true
+          git diff --quiet -- || worktree_clean=false
+          git diff --cached --quiet -- || index_clean=false
+          if [[ -n "$(git ls-files --others --exclude-standard)" ]]; then
+            untracked_clean=false
+          fi
+          {
+            printf 'pre_transform_worktree_clean=%s\n' "$worktree_clean"
+            printf 'pre_transform_index_clean=%s\n' "$index_clean"
+            printf 'pre_transform_untracked_clean=%s\n' "$untracked_clean"
+          } >> "$output/identity.txt"
+          if [[ "$worktree_clean" != true || "$index_clean" != true || "$untracked_clean" != true ]]; then
+            printf 'pre_transform_clean_error=non-pristine-source-checkout\n' >> "$output/identity.txt"
+            exit 1
+          fi
+
       - name: Set up pinned Rust formatter and generator toolchain
         id: rust_toolchain
-        if: ${{ steps.source_identity.outcome == 'success' }}
+        if: ${{ steps.pre_transform_clean.outcome == 'success' }}
         uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
         with:
           toolchain: "1.95.0"
@@ -85,7 +147,7 @@ jobs:
 
       - name: Set isolated Cargo target directory
         id: cargo_target
-        if: ${{ steps.source_identity.outcome == 'success' && steps.rust_toolchain.outcome == 'success' }}
+        if: ${{ steps.pre_transform_clean.outcome == 'success' && steps.rust_toolchain.outcome == 'success' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -111,40 +173,13 @@ jobs:
           printf 'rustfmt_version=%s\n' "$(rustfmt --version)" >> "$output/identity.txt"
           printf 'cargo_version=%s\n' "$(cargo --version)" >> "$output/identity.txt"
 
-          rust_paths=(
-            cli/src/mcp_cmd.rs
-            codex-mcp/src/catalog_tests.rs
-            codex-mcp/src/connection_manager.rs
-            codex-mcp/src/connection_manager_tests.rs
-            codex-mcp/src/mcp/mod.rs
-            codex-mcp/src/mcp/mod_tests.rs
-            codex-mcp/src/plugin_config_tests.rs
-            codex-mcp/src/runtime.rs
-            config/src/lib.rs
-            config/src/mcp_requirements_tests.rs
-            config/src/mcp_types.rs
-            config/src/mcp_types_tests.rs
-            config/src/types.rs
-            core-plugins/src/manager_tests.rs
-            core/src/config/config_tests.rs
-            core/src/config/edit/document_helpers.rs
-            core/src/config/edit_tests.rs
-            core/src/mcp_skill_dependencies.rs
-            core/src/session/tests.rs
-            core/tests/suite/code_mode.rs
-            core/tests/suite/hooks_mcp.rs
-            core/tests/suite/mcp_refresh_cleanup.rs
-            core/tests/suite/mcp_startup_refresh_http_proxy.rs
-            core/tests/suite/rmcp_client.rs
-            core/tests/suite/search_tool.rs
-            core/tests/suite/sqlite_state.rs
-            core/tests/suite/token_budget.rs
-            core/tests/suite/truncation.rs
-            exec/src/lib_tests.rs
-            ext/mcp/src/plugin/provider_tests.rs
-            tui/src/app/thread_event_buffer.rs
-            tui/src/app/thread_event_buffer_tests.rs
-          )
+          mapfile -t allowed_repo_paths < "$output/allowed-paths.txt"
+          rust_paths=()
+          for path in "${allowed_repo_paths[@]}"; do
+            [[ "$path" == "codex-rs/core/config.schema.json" ]] && continue
+            [[ "$path" == codex-rs/* ]] || exit 1
+            rust_paths+=("${path#codex-rs/}")
+          done
 
           {
             printf 'rustfmt_command=rustfmt --edition 2024 --config-path rustfmt.toml --config skip_children=true'
@@ -169,15 +204,30 @@ jobs:
           run_checked config_schema env CODEX_REPO_ROOT="$GITHUB_WORKSPACE" cargo run --locked -p codex-config-schema --bin codex-write-config-schema
 
           declare -A allowed_paths=()
-          for path in "${rust_paths[@]}"; do
-            allowed_paths["codex-rs/$path"]=1
+          for path in "${allowed_repo_paths[@]}"; do
+            allowed_paths["$path"]=1
           done
-          allowed_paths["codex-rs/core/config.schema.json"]=1
+          check_post_transform_state() {
+            local staged_clean=true
+            local untracked_clean=true
+            git -C "$GITHUB_WORKSPACE" diff --cached --quiet -- || staged_clean=false
+            if [[ -n "$(git -C "$GITHUB_WORKSPACE" ls-files --others --exclude-standard)" ]]; then
+              untracked_clean=false
+            fi
+            printf 'post_transform_index_clean=%s\n' "$staged_clean" >> "$output/identity.txt"
+            printf 'post_transform_untracked_clean=%s\n' "$untracked_clean" >> "$output/identity.txt"
+            if [[ "$staged_clean" != true || "$untracked_clean" != true ]]; then
+              printf 'post_transform_clean_error=staged-or-untracked-output\n' >> "$output/identity.txt"
+              return 1
+            fi
+            return 0
+          }
           check_output_scope() {
             local path
             local changed_paths
-            changed_paths="$(git -C "$GITHUB_WORKSPACE" diff --name-only)"
-            printf '%s\n' "$changed_paths" > "$output/changed-paths.txt"
+            local filtered_paths=()
+            local unexpected_path_present=false
+            changed_paths="$(git -C "$GITHUB_WORKSPACE" diff HEAD --name-only)"
             if [[ -z "$changed_paths" ]]; then
               printf 'output_scope_error=no-output\n' >> "$output/identity.txt"
               return 1
@@ -185,21 +235,36 @@ jobs:
             while IFS= read -r path; do
               [[ -n "$path" ]] || continue
               if [[ -z "${allowed_paths[$path]+present}" ]]; then
-                printf 'output_scope_error=unexpected-path\n' >> "$output/identity.txt"
-                return 1
+                unexpected_path_present=true
+              else
+                filtered_paths+=("$path")
               fi
             done <<< "$changed_paths"
+            if ((${#filtered_paths[@]})); then
+              printf '%s\n' "${filtered_paths[@]}" > "$output/changed-paths.txt"
+            else
+              : > "$output/changed-paths.txt"
+            fi
+            printf 'unexpected_tracked_path_present=%s\n' "$unexpected_path_present" >> "$output/identity.txt"
+            if [[ "$unexpected_path_present" == true ]]; then
+              printf 'output_scope_error=unexpected-path\n' >> "$output/identity.txt"
+              return 1
+            fi
             if ! grep -Fxq 'codex-rs/core/config.schema.json' <<< "$changed_paths"; then
               printf 'output_scope_error=config-schema-not-updated\n' >> "$output/identity.txt"
+              return 1
+            fi
+            git -C "$GITHUB_WORKSPACE" diff --binary HEAD -- "${allowed_repo_paths[@]}" > "$output/native-config.patch"
+            if [[ ! -s "$output/native-config.patch" ]]; then
+              printf 'output_scope_error=empty-allowed-patch\n' >> "$output/identity.txt"
               return 1
             fi
             return 0
           }
 
+          run_checked post_transform_clean check_post_transform_state
           run_checked output_scope check_output_scope
           printf 'output_scope_check_exit=0\n' >> "$output/identity.txt"
-          git -C "$GITHUB_WORKSPACE" diff --binary > "$output/native-config.patch"
-          test -s "$output/native-config.patch"
           run_checked diff_check git -C "$GITHUB_WORKSPACE" diff --check
 
       - name: Finalize exact output envelope
@@ -209,23 +274,67 @@ jobs:
           HOST_BINDING_OUTCOME: ${{ steps.host_binding.outcome }}
           CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
           SOURCE_IDENTITY_OUTCOME: ${{ steps.source_identity.outcome }}
+          PRE_TRANSFORM_CLEAN_OUTCOME: ${{ steps.pre_transform_clean.outcome }}
           RUST_TOOLCHAIN_OUTCOME: ${{ steps.rust_toolchain.outcome }}
           CARGO_TARGET_OUTCOME: ${{ steps.cargo_target.outcome }}
           TRANSFORM_OUTCOME: ${{ steps.transform.outcome }}
         run: |
           set -euo pipefail
           output="$RUNNER_TEMP/native-config-output"
+          finalizer_failed=false
           {
             printf 'host_binding_outcome=%s\n' "$HOST_BINDING_OUTCOME"
             printf 'checkout_outcome=%s\n' "$CHECKOUT_OUTCOME"
             printf 'source_identity_outcome=%s\n' "$SOURCE_IDENTITY_OUTCOME"
+            printf 'pre_transform_clean_outcome=%s\n' "$PRE_TRANSFORM_CLEAN_OUTCOME"
             printf 'rust_toolchain_outcome=%s\n' "$RUST_TOOLCHAIN_OUTCOME"
             printf 'cargo_target_outcome=%s\n' "$CARGO_TARGET_OUTCOME"
             printf 'transform_outcome=%s\n' "$TRANSFORM_OUTCOME"
           } >> "$output/identity.txt"
-          if git -C "$GITHUB_WORKSPACE" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-            git -C "$GITHUB_WORKSPACE" diff --name-only > "$output/changed-paths.txt"
-            git -C "$GITHUB_WORKSPACE" diff --binary > "$output/native-config.patch"
+          if [[ "$CHECKOUT_OUTCOME" == success && "$SOURCE_IDENTITY_OUTCOME" == success && "$PRE_TRANSFORM_CLEAN_OUTCOME" == success ]] && git -C "$GITHUB_WORKSPACE" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            mapfile -t allowed_repo_paths < "$output/allowed-paths.txt"
+            declare -A allowed_paths=()
+            for path in "${allowed_repo_paths[@]}"; do
+              allowed_paths["$path"]=1
+            done
+            finalizer_index_clean=true
+            finalizer_untracked_clean=true
+            git -C "$GITHUB_WORKSPACE" diff --cached --quiet -- || finalizer_index_clean=false
+            if [[ -n "$(git -C "$GITHUB_WORKSPACE" ls-files --others --exclude-standard)" ]]; then
+              finalizer_untracked_clean=false
+            fi
+            {
+              printf 'finalizer_post_transform_index_clean=%s\n' "$finalizer_index_clean"
+              printf 'finalizer_post_transform_untracked_clean=%s\n' "$finalizer_untracked_clean"
+            } >> "$output/identity.txt"
+            if [[ "$finalizer_index_clean" != true || "$finalizer_untracked_clean" != true ]]; then
+              printf 'finalizer_post_transform_clean_error=staged-or-untracked-output\n' >> "$output/identity.txt"
+              finalizer_failed=true
+            fi
+            filtered_paths=()
+            unexpected_path_present=false
+            while IFS= read -r path; do
+              [[ -n "$path" ]] || continue
+              if [[ -n "${allowed_paths[$path]+present}" ]]; then
+                filtered_paths+=("$path")
+              else
+                unexpected_path_present=true
+              fi
+            done < <(git -C "$GITHUB_WORKSPACE" diff HEAD --name-only)
+            if ((${#filtered_paths[@]})); then
+              printf '%s\n' "${filtered_paths[@]}" > "$output/changed-paths.txt"
+            else
+              : > "$output/changed-paths.txt"
+            fi
+            printf 'finalizer_unexpected_tracked_path_present=%s\n' "$unexpected_path_present" >> "$output/identity.txt"
+            if [[ "$unexpected_path_present" == true ]]; then
+              printf 'finalizer_output_scope_error=unexpected-path\n' >> "$output/identity.txt"
+              finalizer_failed=true
+            fi
+            git -C "$GITHUB_WORKSPACE" diff --binary HEAD -- "${allowed_repo_paths[@]}" > "$output/native-config.patch"
+          fi
+          if [[ "$finalizer_failed" == true ]]; then
+            exit 1
           fi
 
       - name: Upload exact native config output
