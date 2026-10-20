@@ -897,6 +897,20 @@ async fn run_memory_phase_one_model_request_test(
         contents.push_str(&serde_json::to_string(&line)?);
         contents.push('\n');
     }
+    // Exercise bounded reading through the actual extraction request, for both memory versions.
+    contents.push_str(&"x".repeat(1024 * 1024 + 1));
+    contents.push('\n');
+    contents.push_str(
+        &json!({
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+            "type": "response_item",
+            "payload": {"type": "message", "role": "user", "content": [
+                {"type": "input_text", "text": "newest correction after an oversized record"}
+            ]}
+        })
+        .to_string(),
+    );
+    contents.push('\n');
     tokio::fs::write(&path, &contents).await?;
     db.update_thread_git_info(
         source_id,
@@ -935,6 +949,7 @@ async fn run_memory_phase_one_model_request_test(
     let request = wait_for_single_request(&response).await;
     let evidence = request.message_input_texts("user").join("");
     assert!(evidence.contains("replay-bearing assistant evidence"));
+    assert!(evidence.contains("newest correction after an oversized record"));
     assert!(!evidence.contains("encrypted_content"));
     if version == codex_protocol::MemoryVersion::V1 {
         assert!(evidence.contains("memory_test_tool"));
@@ -1272,7 +1287,18 @@ async fn seed_stage1_candidate(
         ),
     };
     let jsonl = serde_json::to_string(&line)?;
-    tokio::fs::write(&rollout_path, format!("{jsonl}\n")).await?;
+    let meta = json!({
+        "timestamp": updated_at.to_rfc3339(),
+        "type": "session_meta",
+        "payload": codex_rollout::SessionMeta {
+            id: thread_id,
+            session_id: thread_id.into(),
+            timestamp: updated_at.to_rfc3339(),
+            cwd: codex_home.to_path_buf(),
+            ..Default::default()
+        }
+    });
+    tokio::fs::write(&rollout_path, format!("{meta}\n{jsonl}\n")).await?;
 
     let mut metadata_builder = codex_state::ThreadMetadataBuilder::new(
         thread_id,
