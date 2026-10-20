@@ -202,6 +202,18 @@ impl ProvisioningStage {
     }
 }
 
+impl From<codex_rmcp_client::FixedOAuthLoginStage> for ProvisioningStage {
+    fn from(stage: codex_rmcp_client::FixedOAuthLoginStage) -> Self {
+        match stage {
+            codex_rmcp_client::FixedOAuthLoginStage::Precondition => Self::Precondition,
+            codex_rmcp_client::FixedOAuthLoginStage::Discovery => Self::OAuthDiscovery,
+            codex_rmcp_client::FixedOAuthLoginStage::Callback => Self::OAuthCallback,
+            codex_rmcp_client::FixedOAuthLoginStage::Exchange => Self::OAuthExchange,
+            codex_rmcp_client::FixedOAuthLoginStage::TokenValidation => Self::TokenValidation,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct ProvisioningFailure {
     stage: ProvisioningStage,

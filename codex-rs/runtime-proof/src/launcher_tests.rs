@@ -60,6 +60,37 @@ fn api_bearer_provisioning_failure_exposes_only_a_fixed_stage() {
     );
 }
 
+#[test]
+fn fixed_oauth_login_stages_map_to_provisioning_stages() {
+    let stages = [
+        (
+            codex_rmcp_client::FixedOAuthLoginStage::Precondition,
+            "precondition",
+        ),
+        (
+            codex_rmcp_client::FixedOAuthLoginStage::Discovery,
+            "oauth_discovery",
+        ),
+        (
+            codex_rmcp_client::FixedOAuthLoginStage::Callback,
+            "oauth_callback",
+        ),
+        (
+            codex_rmcp_client::FixedOAuthLoginStage::Exchange,
+            "oauth_exchange",
+        ),
+        (
+            codex_rmcp_client::FixedOAuthLoginStage::TokenValidation,
+            "token_validation",
+        ),
+    ];
+
+    for (oauth_stage, expected_stage) in stages {
+        let error = provisioning_failure(oauth_stage.into());
+        assert_eq!(safe_provisioning_failure_stage(&error), Some(expected_stage));
+    }
+}
+
 fn fixed_policy(seed: &[u8; RUNTIME_SEED_BYTES]) -> LauncherPolicy {
     let issuer = SigningKey::from_bytes(seed);
     LauncherPolicy {

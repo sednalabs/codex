@@ -177,20 +177,7 @@ fn run_with_interaction(interaction: ProvisioningInteraction) -> Result<i32> {
             ))
         }
     })
-    .map_err(|error| {
-        let stage = match error.stage() {
-            codex_rmcp_client::FixedOAuthLoginStage::Precondition => {
-                ProvisioningStage::Precondition
-            }
-            codex_rmcp_client::FixedOAuthLoginStage::Discovery => ProvisioningStage::OAuthDiscovery,
-            codex_rmcp_client::FixedOAuthLoginStage::Callback => ProvisioningStage::OAuthCallback,
-            codex_rmcp_client::FixedOAuthLoginStage::Exchange => ProvisioningStage::OAuthExchange,
-            codex_rmcp_client::FixedOAuthLoginStage::TokenValidation => {
-                ProvisioningStage::TokenValidation
-            }
-        };
-        provisioning_failure(stage)
-    })?;
+    .map_err(|error| provisioning_failure(error.stage().into()))?;
 
     let now = api_claim::unix_seconds()
         .map_err(|_| provisioning_failure(ProvisioningStage::TokenValidation))?;
