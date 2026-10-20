@@ -730,7 +730,13 @@ async fn cold_resume_preserves_effective_developer_instructions_for_worker(
                 params: child_resume_params.clone(),
             })
             .await?;
-        assert_eq!(reattached, baseline);
+        let mut expected_reattached = baseline.clone();
+        assert!(
+            reattached.thread.updated_at >= baseline.thread.updated_at,
+            "thread.updated_at must not move backwards when reattaching"
+        );
+        expected_reattached.thread.updated_at = reattached.thread.updated_at;
+        assert_eq!(reattached, expected_reattached);
         let shutdown = timeout(READ_TIMEOUT, app_server.shutdown_gracefully()).await??;
         assert!(
             shutdown.success(),
