@@ -1,6 +1,7 @@
 use super::*;
 use codex_config::types::AppToolApproval;
 use codex_config::types::McpServerOAuthConfig;
+use codex_config::types::McpServerProtocolMode;
 use codex_config::types::McpServerToolConfig;
 use codex_config::types::McpServerTransportConfig;
 use codex_config::types::SessionPickerViewMode;
@@ -1062,6 +1063,7 @@ fn blocking_replace_mcp_servers_round_trips() {
     servers.insert(
         "stdio".to_string(),
         McpServerConfig {
+            protocol_mode: None,
             auth: Default::default(),
             transport: McpServerTransportConfig::Stdio {
                 command: "cmd".to_string(),
@@ -1100,6 +1102,7 @@ fn blocking_replace_mcp_servers_round_trips() {
     servers.insert(
         "http".to_string(),
         McpServerConfig {
+            protocol_mode: Some(McpServerProtocolMode::V20260728),
             auth: Default::default(),
             transport: McpServerTransportConfig::StreamableHttp {
                 url: "https://example.com".to_string(),
@@ -1161,6 +1164,7 @@ url = \"https://example.com\"
 bearer_token_env_var = \"TOKEN\"
 http_headers_helper = \"auth-cli headers\"
 enabled = false
+protocol_mode = \"2026-07-28\"
 startup_timeout_sec = 5.0
 disabled_tools = [\"forbidden\"]
 oauth_resource = \"https://resource.example.com\"
@@ -1198,6 +1202,7 @@ fn blocking_replace_mcp_servers_serializes_tool_approval_overrides(output_token_
     servers.insert(
         "docs".to_string(),
         McpServerConfig {
+            protocol_mode: None,
             auth: Default::default(),
             transport: McpServerTransportConfig::Stdio {
                 command: "docs-server".to_string(),
@@ -1276,6 +1281,7 @@ foo = { command = "cmd" }
     servers.insert(
         "foo".to_string(),
         McpServerConfig {
+            protocol_mode: None,
             auth: Default::default(),
             transport: McpServerTransportConfig::Stdio {
                 command: "cmd".to_string(),
@@ -1330,6 +1336,7 @@ foo = { command = "cmd" } # keep me
     servers.insert(
         "foo".to_string(),
         McpServerConfig {
+            protocol_mode: None,
             auth: Default::default(),
             transport: McpServerTransportConfig::Stdio {
                 command: "cmd".to_string(),
@@ -1383,6 +1390,7 @@ foo = { command = "cmd", args = ["--flag"] } # keep me
     servers.insert(
         "foo".to_string(),
         McpServerConfig {
+            protocol_mode: None,
             auth: Default::default(),
             transport: McpServerTransportConfig::Stdio {
                 command: "cmd".to_string(),
@@ -1437,6 +1445,7 @@ foo = { command = "cmd" }
     servers.insert(
         "foo".to_string(),
         McpServerConfig {
+            protocol_mode: None,
             auth: Default::default(),
             transport: McpServerTransportConfig::Stdio {
                 command: "cmd".to_string(),

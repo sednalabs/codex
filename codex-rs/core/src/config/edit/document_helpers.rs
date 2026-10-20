@@ -113,6 +113,9 @@ fn serialize_mcp_server_table(config: &McpServerConfig) -> anyhow::Result<TomlTa
     if !config.is_local_environment() {
         entry["environment_id"] = value(config.environment_id.clone());
     }
+    if let Some(protocol_mode) = config.protocol_mode {
+        entry["protocol_mode"] = value(protocol_mode.as_str());
+    }
     if config.required {
         entry["required"] = value(true);
     }

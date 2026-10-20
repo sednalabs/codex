@@ -262,9 +262,18 @@ fn deserialize_streamable_http_server_config() {
     let cfg: McpServerConfig = toml::from_str(
         r#"
             url = "https://example.com/mcp"
+            protocol_mode = "2026-07-28"
         "#,
     )
     .expect("should deserialize http config");
+
+    assert_eq!(cfg.protocol_mode, Some(McpServerProtocolMode::V20260728));
+    let serialized = toml::to_string(&cfg).expect("should serialize explicit protocol mode");
+    assert!(serialized.contains("protocol_mode = \"2026-07-28\""));
+    assert_eq!(
+        toml::from_str::<McpServerConfig>(&serialized).expect("round-trip protocol mode"),
+        cfg
+    );
 
     assert_eq!(
         cfg.transport,
@@ -629,6 +638,7 @@ fn deserialize_ignores_unknown_server_fields() {
     assert_eq!(
         cfg,
         McpServerConfig {
+            protocol_mode: None,
             auth: Default::default(),
             transport: McpServerTransportConfig::Stdio {
                 command: "echo".to_string(),
@@ -667,6 +677,19 @@ fn deserialize_rejects_command_and_url() {
         "#,
     )
     .expect_err("should reject command+url");
+}
+
+#[test]
+fn deserialize_stdio_rejects_protocol_mode() {
+    let error = toml::from_str::<McpServerConfig>(
+        r#"
+            command = "echo"
+            protocol_mode = "legacy"
+        "#,
+    )
+    .expect_err("stdio servers must not accept an HTTP protocol mode");
+
+    assert!(error.to_string().contains("protocol_mode is not supported for stdio"));
 }
 
 #[test]

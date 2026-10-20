@@ -380,6 +380,7 @@ fn insert_mcp_server(
     servers.insert(
         server_name.to_string(),
         McpServerConfig {
+            protocol_mode: None,
             transport,
             auth: options.auth,
             environment_id: options.environment_id,

@@ -33,6 +33,26 @@ pub enum AppToolApproval {
     Approve,
 }
 
+/// Preferred MCP protocol lifecycle behavior for one configured HTTP server.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum McpServerProtocolMode {
+    /// Use the legacy negotiated MCP protocol behavior.
+    Legacy,
+    /// Prefer 2026-07-28 behavior when supported; the client may fall back.
+    #[serde(rename = "2026-07-28")]
+    V20260728,
+}
+
+impl McpServerProtocolMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Legacy => "legacy",
+            Self::V20260728 => "2026-07-28",
+        }
+    }
+}
+
 impl AppToolApproval {
     /// Requires approval whenever either policy could require it.
     ///
@@ -224,6 +244,11 @@ pub struct McpServerConfig {
     #[serde(flatten)]
     pub transport: McpServerTransportConfig,
 
+    /// Lifecycle preference for this HTTP MCP server, not a guaranteed wire
+    /// version; the client may fall back when the preferred behavior is unavailable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_mode: Option<McpServerProtocolMode>,
+
     /// Authentication flow, including an explicit no-fallback EMA mode.
     #[serde(default, skip_serializing_if = "is_default")]
     pub auth: McpServerAuth,
@@ -392,6 +417,8 @@ pub struct RawMcpServerConfig {
     #[serde(default)]
     pub auth: Option<McpServerAuth>,
     #[serde(default)]
+    pub protocol_mode: Option<McpServerProtocolMode>,
+    #[serde(default)]
     pub startup_timeout_sec: Option<f64>,
     #[serde(default)]
     pub startup_timeout_ms: Option<u64>,
@@ -452,6 +479,7 @@ impl TryFrom<RawMcpServerConfig> for McpServerConfig {
             http_headers_helper,
             environment_id,
             auth,
+            protocol_mode,
             startup_timeout_sec,
             startup_timeout_ms,
             tool_timeout_sec,
@@ -499,6 +527,7 @@ impl TryFrom<RawMcpServerConfig> for McpServerConfig {
             throw_if_set("stdio", "env_http_headers", env_http_headers.as_ref())?;
             throw_if_set("stdio", "oauth", oauth.as_ref())?;
             throw_if_set("stdio", "oauth_resource", oauth_resource.as_ref())?;
+            throw_if_set("stdio", "protocol_mode", protocol_mode.as_ref())?;
             throw_if_set("stdio", "auth", auth.as_ref())?;
             let env_vars = env_vars.unwrap_or_default();
             for env_var in &env_vars {
@@ -572,6 +601,7 @@ impl TryFrom<RawMcpServerConfig> for McpServerConfig {
 
         Ok(Self {
             transport,
+            protocol_mode,
             auth,
             environment_id,
             startup_timeout_sec,

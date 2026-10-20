@@ -664,6 +664,7 @@ fn mcp_server_config_for_url(
     let env_http_headers = None;
 
     McpServerConfig {
+        protocol_mode: None,
         transport: McpServerTransportConfig::StreamableHttp {
             url,
             bearer_token_env_var: codex_apps_mcp_bearer_token_env_var(),

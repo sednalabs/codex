@@ -679,6 +679,7 @@ async fn effective_mcp_servers_preserve_runtime_servers() {
     catalog.register(McpServerRegistration::from_config(
         "sample".to_string(),
         McpServerConfig {
+            protocol_mode: None,
             auth: Default::default(),
             transport: McpServerTransportConfig::StreamableHttp {
                 url: "https://user.example/mcp".to_string(),
@@ -709,6 +710,7 @@ async fn effective_mcp_servers_preserve_runtime_servers() {
     catalog.register(McpServerRegistration::from_config(
         "docs".to_string(),
         McpServerConfig {
+            protocol_mode: None,
             auth: Default::default(),
             transport: McpServerTransportConfig::StreamableHttp {
                 url: "https://docs.example/mcp".to_string(),

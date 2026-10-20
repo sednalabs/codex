@@ -524,6 +524,7 @@ fn stdio_server(
     env_vars: Vec<McpServerEnvVar>,
 ) -> McpServerConfig {
     McpServerConfig {
+        protocol_mode: None,
         auth: Default::default(),
         transport: McpServerTransportConfig::Stdio {
             command: command.to_string(),
@@ -562,6 +563,7 @@ fn declared_placement_preserves_local_plugin_normalization() {
         Vec::new(),
     );
     let expected_http = McpServerConfig {
+        protocol_mode: None,
         auth: Default::default(),
         transport: McpServerTransportConfig::StreamableHttp {
             url: "https://example.com/mcp".to_string(),
@@ -881,6 +883,7 @@ fn local_environment_placement_preserves_http_env_references() {
             servers: BTreeMap::from([(
                 "demo".to_string(),
                 McpServerConfig {
+                    protocol_mode: None,
                     auth: Default::default(),
                     transport: McpServerTransportConfig::StreamableHttp {
                         url: "https://example.com/mcp".to_string(),

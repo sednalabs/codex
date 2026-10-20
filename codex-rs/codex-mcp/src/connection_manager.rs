@@ -361,8 +361,17 @@ impl McpConnectionSet {
                 &configured_config.transport,
                 McpServerTransportConfig::StreamableHttp { .. }
             ) {
-                registration
-                    .and_then(crate::ResolvedMcpServer::protocol_mode)
+                configured_config
+                    .protocol_mode
+                    .map(|mode| match mode {
+                        codex_config::McpServerProtocolMode::Legacy => {
+                            crate::McpProtocolMode::Legacy
+                        }
+                        codex_config::McpServerProtocolMode::V20260728 => {
+                            crate::McpProtocolMode::V20260728
+                        }
+                    })
+                    .or_else(|| registration.and_then(crate::ResolvedMcpServer::protocol_mode))
                     .unwrap_or(if is_host_owned_codex_apps {
                         host_owned_apps_protocol_mode
                     } else {
