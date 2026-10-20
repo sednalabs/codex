@@ -1,5 +1,7 @@
 use super::*;
 use codex_app_server_protocol::AuthRecoveryNotification;
+#[cfg(unix)]
+use codex_app_server_protocol::DynamicToolCallOutputContentItem;
 use codex_otel::set_parent_from_w3c_trace_context;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::models::ActivePermissionProfile;
