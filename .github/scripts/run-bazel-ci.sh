@@ -234,6 +234,107 @@ print_bazel_action_failure_summary() {
   echo "--------------------------------"
 }
 
+print_linux_failure_disk_snapshot() {
+  local -a root_labels=(
+    workspace bazel_output_base bazel_output_user_root bazel_repository_cache
+    bazel_repo_contents_cache cargo_target build_temp runner_temp
+  )
+  local -a root_paths=(
+    "${GITHUB_WORKSPACE:-}" "${BAZEL_OUTPUT_BASE:-}" "${BAZEL_OUTPUT_USER_ROOT:-}"
+    "${BAZEL_REPOSITORY_CACHE:-}" "${BAZEL_REPO_CONTENTS_CACHE:-}"
+    "${CARGO_TARGET_DIR:-}" "${TEMP:-}" "${RUNNER_TEMP:-}"
+  )
+  local -a du_labels=(
+    bazel_output_base bazel_output_user_root bazel_repository_cache
+    bazel_repo_contents_cache cargo_target build_temp
+  )
+  local -a du_paths=(
+    "${BAZEL_OUTPUT_BASE:-}" "${BAZEL_OUTPUT_USER_ROOT:-}"
+    "${BAZEL_REPOSITORY_CACHE:-}" "${BAZEL_REPO_CONTENTS_CACHE:-}"
+    "${CARGO_TARGET_DIR:-}" "${TEMP:-}"
+  )
+  local expected_build_root="${HOME:-}/.cache/codex-ci"
+  local build_root="${CI_BUILD_ROOT:-}"
+  local -a du_expected_paths=(
+    "${HOME:-}/.cache/codex-ci/o" "${HOME:-}/.cache/codex-ci/b"
+    "${HOME:-}/.cache/codex-ci/bazel-repository-cache"
+    "${HOME:-}/.cache/codex-ci/bazel-repo-contents-cache-${GITHUB_RUN_ID:-}-${GITHUB_JOB:-}"
+    "${HOME:-}/.cache/codex-ci/cargo-target" "${HOME:-}/.cache/codex-ci/tmp"
+  )
+  local i label path expected_path device available du_output du_bytes du_status remaining deadline
+
+  echo "::group::Linux disk footprint after Bazel failure"
+  for i in "${!root_labels[@]}"; do
+    label="${root_labels[$i]}"
+    path="${root_paths[$i]}"
+    if [[ -z "$path" || ! -d "$path" || -L "$path" ]]; then
+      printf 'disk root=%s status=unavailable\n' "$label"
+      continue
+    fi
+
+    device="unavailable"
+    if device=$(stat -c '%d' -- "$path" 2>/dev/null) && [[ "$device" =~ ^[0-9]+$ ]]; then
+      :
+    else
+      device="unavailable"
+    fi
+    available="unavailable"
+    if available=$(df -k --output=avail -- "$path" 2>/dev/null | awk 'NR == 2 { print $1; exit }') &&
+      [[ "$available" =~ ^[0-9]+$ ]]; then
+      :
+    else
+      available="unavailable"
+    fi
+    printf 'disk root=%s device=%s avail_kib=%s\n' "$label" "$device" "$available"
+  done
+
+  if [[ "$build_root" != "$expected_build_root" || ! -d "$build_root" || -L "$build_root" ]]; then
+    for label in "${du_labels[@]}"; do
+      printf 'du root=%s status=unavailable_outside_configured_root\n' "$label"
+    done
+    echo "::endgroup::"
+    return 0
+  fi
+
+  deadline=$((SECONDS + 20))
+  for i in "${!du_labels[@]}"; do
+    label="${du_labels[$i]}"
+    path="${du_paths[$i]}"
+    expected_path="${du_expected_paths[$i]}"
+    if [[ -z "$path" || "$path" != "$expected_path" ]]; then
+      printf 'du root=%s status=unavailable_outside_configured_root\n' "$label"
+      continue
+    fi
+    if [[ ! -d "$path" || -L "$path" ]]; then
+      printf 'du root=%s status=unavailable\n' "$label"
+      continue
+    fi
+
+    remaining=$((deadline - SECONDS))
+    if (( remaining <= 0 )); then
+      printf 'du root=%s status=incomplete_timeout\n' "$label"
+      continue
+    fi
+    if du_output=$(LC_ALL=C timeout --signal=TERM --kill-after=1s "${remaining}s" \
+      du -sx --block-size=1 --one-file-system -- "$path" 2>/dev/null); then
+      du_bytes="${du_output%%$'\t'*}"
+      if [[ "$du_bytes" =~ ^[0-9]+$ ]]; then
+        printf 'du root=%s bytes=%s status=complete\n' "$label" "$du_bytes"
+      else
+        printf 'du root=%s status=incomplete_unparsed\n' "$label"
+      fi
+    else
+      du_status=$?
+      if [[ "$du_status" -eq 124 || "$du_status" -eq 137 ]]; then
+        printf 'du root=%s status=incomplete_timeout\n' "$label"
+      else
+        printf 'du root=%s status=incomplete_error\n' "$label"
+      fi
+    fi
+  done
+  echo "::endgroup::"
+}
+
 bazel_args=()
 bazel_targets=()
 found_target_separator=0
@@ -412,6 +513,9 @@ bazel_status=${PIPESTATUS[0]}
 set -e
 
 if [[ ${bazel_status:-0} -ne 0 ]]; then
+  if [[ "${RUNNER_OS:-}" == "Linux" ]]; then
+    print_linux_failure_disk_snapshot || echo "Linux disk footprint snapshot did not complete."
+  fi
   if [[ $print_failed_bazel_action_summary -eq 1 ]]; then
     print_bazel_action_failure_summary "$bazel_console_log"
   fi

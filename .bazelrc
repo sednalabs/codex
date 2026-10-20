@@ -39,10 +39,12 @@ common:macos --test_env=PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr
 # Native pkg-config configure checks execute target programs.
 common:macos --strategy=CcConfigureMakeRule=remote,sandboxed,local
 
-# Pass through some env vars Windows needs to use powershell?
+# Preserve Windows host prerequisites for PowerShell, executable discovery, and MXC.
 common:windows --test_env=SYSTEMROOT
 common:windows --test_env=COMSPEC
 common:windows --test_env=WINDIR
+common:windows --test_env=LOCALAPPDATA
+common:windows --test_env=PATHEXT
 # Rust's libtest harness runs test bodies on std-spawned threads. The default
 # 2 MiB stack can be too small for large async test futures on Windows CI; see
 # https://github.com/openai/codex/pull/19067 for the motivating failure.

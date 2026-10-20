@@ -57,6 +57,7 @@ use core_test_support::wait_for_event_match;
 use core_test_support::wait_for_event_with_timeout;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
+use tokio::sync::Notify;
 use tokio::sync::oneshot;
 
 const TINY_PNG_BYTES: &[u8] = &[
@@ -98,7 +99,8 @@ impl ExtensionEventSink for RecordingEventSink {
 #[derive(Default)]
 struct InstalledQueue {
     service: OnceLock<Arc<QueuedItemService>>,
-    skip_next_idle: Mutex<Option<ThreadId>>,
+    defer_idle_for: Mutex<Option<ThreadId>>,
+    deferred_idle_wake: Notify,
 }
 
 impl ThreadLifecycleContributor<codex_core::config::Config> for InstalledQueue {
@@ -113,12 +115,13 @@ impl ThreadLifecycleContributor<codex_core::config::Config> for InstalledQueue {
 
     fn on_thread_idle<'a>(&'a self, input: ThreadIdleInput<'a>) -> ExtensionFuture<'a, ()> {
         if self
-            .skip_next_idle
+            .defer_idle_for
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take_if(|thread_id| thread_id.to_string() == input.thread_store.level_id())
-            .is_some()
+            .as_ref()
+            .is_some_and(|thread_id| thread_id.to_string() == input.thread_store.level_id())
         {
+            self.deferred_idle_wake.notify_one();
             return Box::pin(async {});
         }
         match self.service.get() {
@@ -643,7 +646,7 @@ async fn externally_changed_queues_dispatch_independently_and_retry_failed_wakes
     tokio::time::sleep(Duration::from_secs(/*secs*/ 1)).await;
     assert!(model_responses.requests().is_empty());
     *installed
-        .skip_next_idle
+        .defer_idle_for
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(thread_id);
     let first = external_queue
@@ -665,15 +668,27 @@ async fn externally_changed_queues_dispatch_independently_and_retry_failed_wakes
         .await?;
 
     advance_queue_poll().await;
-    wait_for_event_with_timeout(
-        independent_thread.thread.as_ref(),
-        |event| matches!(event, EventMsg::TurnComplete(_)),
-        Duration::from_secs(/*secs*/ 25),
-    )
-    .await;
+    // A slow independent turn can outlast a retry interval. Hold the failing
+    // thread until both its deferred wake and independent dispatch are observed.
+    tokio::time::timeout(Duration::from_secs(/*secs*/ 25), async {
+        tokio::join!(
+            wait_for_event_with_timeout(
+                independent_thread.thread.as_ref(),
+                |event| matches!(event, EventMsg::TurnComplete(_)),
+                Duration::from_secs(/*secs*/ 25),
+            ),
+            installed.deferred_idle_wake.notified(),
+        );
+    })
+    .await
+    .context("independent dispatch and deferred wake did not complete")?;
     assert_eq!(1, model_responses.requests().len());
     assert_eq!(vec![updated], queue.list(thread_id).await?);
 
+    *installed
+        .defer_idle_for
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     advance_queue_poll().await;
     wait_for_event_with_timeout(
         test.codex.as_ref(),
@@ -792,11 +807,18 @@ async fn rejected_queue_messages_are_consumed_without_retrying_or_blocking_follo
                         hook_runs.len() < 3,
                         "unexpected extra prompt hook completion"
                     );
-                    let error_category = event
+                    let error_entry = event
                         .run
                         .entries
                         .iter()
-                        .find(|entry| entry.kind == HookOutputEntryKind::Error)
+                        .find(|entry| entry.kind == HookOutputEntryKind::Error);
+                    let exit_code = error_entry.and_then(|entry| {
+                        entry
+                            .text
+                            .strip_prefix("hook exited with code ")
+                            .and_then(|code| code.parse::<i32>().ok())
+                    });
+                    let error_category = error_entry
                         .map(|entry| match entry.text.as_str() {
                             error if error.starts_with("hook timed out after ") => "timeout",
                             error if error.starts_with("failed to write hook stdin: ") => "stdin",
@@ -814,6 +836,7 @@ async fn rejected_queue_messages_are_consumed_without_retrying_or_blocking_follo
                         expected_reason,
                         event.run.duration_ms,
                         error_category,
+                        exit_code,
                     ));
                 }
                 EventMsg::TurnComplete(_) => completed_turns += 1,
@@ -911,11 +934,18 @@ async fn explicitly_started_rejected_queue_messages_are_consumed() -> anyhow::Re
                         hook_runs.is_empty(),
                         "unexpected extra prompt hook completion"
                     );
-                    let error_category = event
+                    let error_entry = event
                         .run
                         .entries
                         .iter()
-                        .find(|entry| entry.kind == HookOutputEntryKind::Error)
+                        .find(|entry| entry.kind == HookOutputEntryKind::Error);
+                    let exit_code = error_entry.and_then(|entry| {
+                        entry
+                            .text
+                            .strip_prefix("hook exited with code ")
+                            .and_then(|code| code.parse::<i32>().ok())
+                    });
+                    let error_category = error_entry
                         .map(|entry| match entry.text.as_str() {
                             error if error.starts_with("hook timed out after ") => "timeout",
                             error if error.starts_with("failed to write hook stdin: ") => "stdin",
@@ -933,6 +963,7 @@ async fn explicitly_started_rejected_queue_messages_are_consumed() -> anyhow::Re
                         expected_reason,
                         event.run.duration_ms,
                         error_category,
+                        exit_code,
                     ));
                 }
                 EventMsg::TurnComplete(_) => completed_turn = true,
