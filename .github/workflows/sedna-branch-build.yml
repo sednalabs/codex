@@ -1,0 +1,37 @@
+name: sedna-branch-build
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Full reviewed companion source commit to build
+        required: false
+        type: string
+      platform:
+        description: Preview artifact platform
+        required: true
+        default: linux-x86_64
+        type: choice
+        options:
+          - linux-x86_64
+          - linux-aarch64
+          - macos
+      host_only:
+        description: Build only the Linux x86_64 code-mode host helper
+        required: false
+        default: false
+        type: boolean
+
+permissions: {}
+
+jobs:
+  require-companion-source:
+    name: Select the maintained companion source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 1
+    steps:
+      - name: Require the companion workflow ref
+        shell: bash
+        run: |
+          echo '::error::This native ref does not build companion artifacts. Select companion/runtime-proof as the workflow ref and set the ref input to the full reviewed companion source commit.'
+          exit 1

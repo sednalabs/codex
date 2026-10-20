@@ -65,9 +65,11 @@ authority. Keep historical tags fixed. Companion updates are reviewed,
 fast-forward source changes that preserve this consumer; do not mirror native
 `main` deletions into it. Compatible upstream changes can be adopted selectively.
 
-Use the companion revision's existing `sedna-branch-build.yml` producer with
-`platform=linux-x86_64`, `host_only=false`, and `ref` set to the full reviewed
-source commit. Its resolved source manifest must match that commit. Pair the
+The default branch retains `sedna-branch-build.yml` as a manual-dispatch
+entrypoint, not a native companion builder. Select `companion/runtime-proof`
+as the workflow ref to run its existing producer with `platform=linux-x86_64`,
+`host_only=false`, and `ref` set to the full reviewed source commit. Its
+resolved source manifest must match that commit. Pair the
 CLI, code-mode host, proxy and runtime-proof launcher from the same source
 build; a native package or a host-only artifact is not a compatible substitute.
 The manifest's launcher hash identifies the launcher member, not the full
