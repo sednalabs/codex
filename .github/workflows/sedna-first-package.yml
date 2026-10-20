@@ -38,8 +38,13 @@ on:
         options:
           - prepare
           - package
+          - prepare-locks
       source_sha:
         description: Exact source commit for a validation-host package run; leave empty for protected main.
+        required: false
+        type: string
+      expected_workflow_host_sha:
+        description: Exact workflow host commit required by the fixed lock-only operation.
         required: false
         type: string
 
@@ -84,6 +89,7 @@ jobs:
           PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
           REPOSITORY: ${{ github.repository }}
           OPERATION_INPUT: ${{ inputs.operation }}
+          EXPECTED_WORKFLOW_HOST_SHA: ${{ inputs.expected_workflow_host_sha }}
           SELECTED_BASE_REF: integration/native-830-20261020
           SELECTED_BASE_SHA: 83086188ae0614bd882818ff1aa23f3194962012
         run: |
@@ -140,13 +146,26 @@ jobs:
                 ;;
             esac
           elif [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
-            if [[ "${OPERATION_INPUT}" != "prepare" && "${OPERATION_INPUT}" != "package" ]]; then
-              echo "Manual operation must be prepare or package." >&2
+            if [[ "${OPERATION_INPUT}" != "prepare" && "${OPERATION_INPUT}" != "package" && "${OPERATION_INPUT}" != "prepare-locks" ]]; then
+              echo "Manual operation must be prepare, package, or the fixed prepare-locks run." >&2
               exit 1
             fi
             if [[ "${EVENT_REF}" == "refs/heads/main" ]]; then
-              if [[ -n "${SOURCE_SHA_INPUT}" || "${SOURCE_SHA}" != "${WORKFLOW_HOST_SHA}" ]]; then
+              if [[ "${OPERATION_INPUT}" == "prepare-locks" || -n "${SOURCE_SHA_INPUT}" || "${SOURCE_SHA}" != "${WORKFLOW_HOST_SHA}" ]]; then
                 echo "Protected-main runs must use the workflow-host commit as their source." >&2
+                exit 1
+              fi
+            elif [[ "${EVENT_REF}" == "refs/heads/validation/native-830-package-tls-locks-e02f31f3" ]]; then
+              if [[ "${OPERATION_INPUT}" != "prepare-locks" || "${SOURCE_SHA_INPUT}" != "e02f31f34f3e4030bbb7174177c4417da559fa8e" || "${source_tree}" != "ba12eb843697b0bf5f3c4f7b03da4b566759c744" ]]; then
+                echo "The lock-only host accepts only its fixed operation, source, and tree." >&2
+                exit 1
+              fi
+              if [[ ! "${EXPECTED_WORKFLOW_HOST_SHA}" =~ ^[0-9a-f]{40}$ || "${EXPECTED_WORKFLOW_HOST_SHA}" != "${WORKFLOW_HOST_SHA}" || "$(git show -s --format=%P HEAD)" != "${SOURCE_SHA}" ]]; then
+                echo "The lock-only host must match the expected SHA and be a direct child of its source." >&2
+                exit 1
+              fi
+              if [[ "$(git rev-parse refs/remotes/origin/validation/native-830-tls-input-e02f31f3)" != "${SOURCE_SHA}" ]]; then
+                echo "The fixed lock-only source ref does not match its frozen commit." >&2
                 exit 1
               fi
             elif [[ "${EVENT_REF}" == refs/heads/validation/native-830-package-* ]]; then
@@ -237,9 +256,173 @@ jobs:
             echo "native_830_source=${native_830_source}"
           } >> "${GITHUB_OUTPUT}"
 
+  prepare-locks:
+    name: Generate only the fixed registry TLS lock updates
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.operation == 'prepare-locks' }}
+    needs: identity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      BUILDBUDDY_API_KEY: ""
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check out the fixed lock source and verify the admitted Git pin
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ needs.identity.outputs.source_sha }}
+          SOURCE_TREE: ${{ needs.identity.outputs.source_tree }}
+          WORKFLOW_HOST_SHA: ${{ needs.identity.outputs.workflow_host_sha }}
+          WORKFLOW_HOST_TREE: ${{ needs.identity.outputs.workflow_host_tree }}
+        run: |
+          set -euo pipefail
+          if [[ "$(git rev-parse HEAD)" != "${WORKFLOW_HOST_SHA}" || "$(git rev-parse HEAD^{tree})" != "${WORKFLOW_HOST_TREE}" ]]; then
+            echo "The lock checkout does not match the frozen workflow host." >&2
+            exit 1
+          fi
+          if [[ "${SOURCE_SHA}" != "e02f31f34f3e4030bbb7174177c4417da559fa8e" || "${SOURCE_TREE}" != "ba12eb843697b0bf5f3c4f7b03da4b566759c744" || "$(git show -s --format=%P HEAD)" != "${SOURCE_SHA}" ]]; then
+            echo "The lock source or workflow-host parent differs from the fixed input." >&2
+            exit 1
+          fi
+          git checkout --detach "${SOURCE_SHA}"
+          if [[ "$(git rev-parse HEAD)" != "${SOURCE_SHA}" || "$(git rev-parse HEAD^{tree})" != "${SOURCE_TREE}" || -n "$(git status --porcelain --untracked-files=normal)" ]]; then
+            echo "Could not check out the clean frozen lock source." >&2
+            exit 1
+          fi
+          grep -Fxq 'i18n-config = { git = "https://github.com/kellpossible/cargo-i18n", rev = "2ce7b1dfe9a8cc224288bf50cbc2a67a6de863c4" }' codex-rs/Cargo.toml
+          grep -Fxq '    "https://github.com/kellpossible/cargo-i18n",' codex-rs/deny.toml
+
+      - name: Set up existing standard CI tools and Bazel
+        uses: ./.github/actions/setup-bazel-ci
+        with:
+          target: x86_64-unknown-linux-gnu
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          toolchain: "1.95.0"
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Generate and check only the two lock outputs
+        shell: bash
+        env:
+          EXPECTED_SOURCE_SHA: ${{ needs.identity.outputs.source_sha }}
+          EXPECTED_SOURCE_TREE: ${{ needs.identity.outputs.source_tree }}
+          EXPECTED_WORKFLOW_HOST_SHA: ${{ needs.identity.outputs.workflow_host_sha }}
+          EXPECTED_WORKFLOW_HOST_TREE: ${{ needs.identity.outputs.workflow_host_tree }}
+        run: |
+          set -euo pipefail
+          if [[ "$(git rev-parse HEAD)" != "${EXPECTED_SOURCE_SHA}" || "$(git rev-parse HEAD^{tree})" != "${EXPECTED_SOURCE_TREE}" || -n "$(git status --porcelain --untracked-files=normal)" ]]; then
+            echo "Refusing lock generation from a changed source checkout." >&2
+            exit 1
+          fi
+
+          verify_active_lock_versions() {
+            python3 - <<'PY'
+          import tomllib
+
+          with open("codex-rs/Cargo.lock", "rb") as lockfile:
+              packages = tomllib.load(lockfile).get("package", [])
+          active_i18n = [package for package in packages if package.get("name") == "i18n-config"]
+          expected_source = "git+https://github.com/kellpossible/cargo-i18n?rev=2ce7b1dfe9a8cc224288bf50cbc2a67a6de863c4#2ce7b1dfe9a8cc224288bf50cbc2a67a6de863c4"
+          if len(active_i18n) != 1 or active_i18n[0].get("version") != "0.4.8" or active_i18n[0].get("source") != expected_source:
+              raise SystemExit("The active i18n-config package must use the exact admitted Git pin at version 0.4.8.")
+          if any(package.get("name") == "basic-toml" for package in packages):
+              raise SystemExit("The active package graph still contains basic-toml.")
+          tls_versions = {
+              "rustls-webpki": "0.103.16",
+              "webpki-roots": "1.0.10",
+              "webpki-root-certs": "1.0.10",
+          }
+          for name, version in tls_versions.items():
+              active = [package for package in packages if package.get("name") == name]
+              if len(active) != 1 or active[0].get("version") != version or active[0].get("source") != "registry+https://github.com/rust-lang/crates.io-index":
+                  raise SystemExit(f"The active {name} package must use the fixed safe registry version {version}.")
+          PY
+          }
+
+          (cd codex-rs && cargo update -p rustls-webpki@0.103.15 --precise 0.103.16)
+          (cd codex-rs && cargo update -p webpki-roots@1.0.5 --precise 1.0.10)
+          (cd codex-rs && cargo update -p webpki-root-certs@1.0.5 --precise 1.0.10)
+          verify_active_lock_versions
+          just bazel-lock-update
+          just bazel-lock-check
+          verify_active_lock_versions
+
+          if [[ "$(git rev-parse HEAD)" != "${EXPECTED_SOURCE_SHA}" || "$(git rev-parse HEAD^{tree})" != "${EXPECTED_SOURCE_TREE}" ]]; then
+            echo "Lock generation changed the source identity." >&2
+            exit 1
+          fi
+          if [[ -n "$(git diff --cached --name-only)" || -n "$(git ls-files --others --exclude-standard)" ]]; then
+            echo "Lock generation staged changes or created unexpected untracked files." >&2
+            git status --short >&2
+            exit 1
+          fi
+          while IFS= read -r path; do
+            case "${path}" in
+              "codex-rs/Cargo.lock"|"MODULE.bazel.lock"|"") ;;
+              *)
+                echo "Lock generation changed an unexpected tracked path." >&2
+                printf '%s\n' "${path}" >&2
+                exit 1
+                ;;
+            esac
+          done < <(git diff --name-only HEAD)
+          git diff --check
+
+          output_dir="${RUNNER_TEMP}/sedna-first-generated-locks"
+          mkdir -p "${output_dir}"
+          git diff --binary HEAD -- codex-rs/Cargo.lock MODULE.bazel.lock > "${output_dir}/generated-outputs.patch"
+          git diff --name-only HEAD -- codex-rs/Cargo.lock MODULE.bazel.lock > "${output_dir}/generated-paths.txt"
+          git diff --stat HEAD -- codex-rs/Cargo.lock MODULE.bazel.lock > "${output_dir}/generated-stat.txt"
+          python3 - <<'PY' > "${output_dir}/generated-identity.json"
+          import json
+          import os
+          import subprocess
+          import sys
+
+          payload = {
+              "sourceCommit": os.environ["EXPECTED_SOURCE_SHA"],
+              "sourceTree": os.environ["EXPECTED_SOURCE_TREE"],
+              "sourceRef": "validation/native-830-tls-input-e02f31f3",
+              "workflowHostCommit": os.environ["EXPECTED_WORKFLOW_HOST_SHA"],
+              "workflowHostTree": os.environ["EXPECTED_WORKFLOW_HOST_TREE"],
+              "workflowRunId": os.environ["GITHUB_RUN_ID"],
+              "operation": "prepare-locks",
+              "i18nConfigGitUrl": "https://github.com/kellpossible/cargo-i18n",
+              "i18nConfigGitRevision": "2ce7b1dfe9a8cc224288bf50cbc2a67a6de863c4",
+              "tlsRegistryVersions": {
+                  "rustls-webpki": "0.103.16",
+                  "webpki-roots": "1.0.10",
+                  "webpki-root-certs": "1.0.10",
+              },
+              "advisoryIds": [
+                  "RUSTSEC-2026-0381",
+                  "RUSTSEC-2026-0382",
+                  "RUSTSEC-2026-0383",
+              ],
+              "generatedPaths": subprocess.check_output(
+                  ["git", "diff", "--name-only", "HEAD"], text=True
+              ).splitlines(),
+          }
+          json.dump(payload, sys.stdout, indent=2)
+          sys.stdout.write("\n")
+          PY
+
+      - name: Upload only the source-bound generated lock patch
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: sedna-first-locks-${{ needs.identity.outputs.source_short }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/sedna-first-generated-locks/*
+          if-no-files-found: error
+          retention-days: 3
+
   prepare-source:
     name: Generate exact-source locks and schemas
-    if: ${{ needs.identity.result == 'success' }}
+    if: ${{ needs.identity.result == 'success' && inputs.operation != 'prepare-locks' }}
     needs: identity
     runs-on: ubuntu-24.04
     timeout-minutes: 210
@@ -490,7 +673,7 @@ jobs:
 
   package-unavailable:
     name: Package route unavailable for this exact source
-    if: ${{ needs.identity.outputs.package_available != 'true' }}
+    if: ${{ needs.identity.outputs.package_available != 'true' && inputs.operation != 'prepare-locks' }}
     needs: identity
     runs-on: ubuntu-24.04
     steps:
