@@ -443,10 +443,21 @@ async fn conpty_delivers_input_to_foreground_children() -> anyhow::Result<()> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn conpty_ctrl_c_interrupts_powershell_foreground_child() -> anyhow::Result<()> {
+    const PROMPT_MARKER: &str = "__CODEX_CTRL_C_PROMPT__";
+    const OUTPUT_LIMIT: usize = 4_096;
+
     let Some(program) = find_powershell() else {
         return Ok(());
     };
-    let args = vec!["-NoLogo".to_string(), "-NoProfile".to_string()];
+    // The complete marker is absent from command text, so echo cannot signal readiness.
+    let setup = "function global:prompt { '__CODEX_CTRL_C_' + 'PROMPT__' }";
+    let args = vec![
+        "-NoLogo".to_string(),
+        "-NoProfile".to_string(),
+        "-NoExit".to_string(),
+        "-Command".to_string(),
+        setup.to_string(),
+    ];
     let env: HashMap<String, String> = std::env::vars().collect();
     let spawned = spawn_pty_process(
         &program,
@@ -460,18 +471,68 @@ async fn conpty_ctrl_c_interrupts_powershell_foreground_child() -> anyhow::Resul
     .await?;
     let (session, mut output_rx, exit_rx) = combine_spawned_output(spawned);
     let writer = session.writer_sender();
+    wait_for_output_contains(&mut output_rx, PROMPT_MARKER, /*timeout_ms*/ 10_000)
+        .await
+        .map_err(|_| anyhow::anyhow!("initial prompt missing: shell={program}"))?;
     writer.send(b"ping.exe -4 -t localhost\n".to_vec()).await?;
-    wait_for_output_contains(&mut output_rx, "127.0.0.1", /*timeout_ms*/ 10_000).await?;
+    // A startup header containing the address is not foreground-child readiness.
+    let mut pre_ctrl_c = Vec::new();
+    let ready = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match output_rx.recv().await {
+                Ok(chunk) => {
+                    pre_ctrl_c.extend_from_slice(&chunk);
+                    let complete_reply = String::from_utf8_lossy(&pre_ctrl_c)
+                        .split_inclusive('\n')
+                        .any(|line| {
+                            line.ends_with('\n') && line.contains("Reply from 127.0.0.1:")
+                        });
+                    if pre_ctrl_c.len() > OUTPUT_LIMIT {
+                        let keep_from = pre_ctrl_c.len() - OUTPUT_LIMIT;
+                        pre_ctrl_c = pre_ctrl_c.split_off(keep_from);
+                    }
+                    if complete_reply {
+                        return Ok(());
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(err) => return Err(err),
+            }
+        }
+    })
+    .await;
+    anyhow::ensure!(
+        matches!(ready, Ok(Ok(()))),
+        "foreground ping not ready: shell={}, pre_ctrl_c_bytes={}",
+        program,
+        pre_ctrl_c.len(),
+    );
 
     writer.send(vec![0x03]).await?;
-    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+    let post_ctrl_c = wait_for_output_contains(
+        &mut output_rx,
+        PROMPT_MARKER,
+        /*timeout_ms*/ 10_000,
+    )
+    .await
+    .map_err(|err| {
+        // Keep failure context bounded and do not publish raw terminal text.
+        let replies = err.to_string().matches("Reply from 127.0.0.1:").count();
+        anyhow::anyhow!(
+            "no prompt after Ctrl-C: shell={}, pre_ctrl_c_bytes={}, post_ctrl_c_replies={}",
+            program,
+            pre_ctrl_c.len(),
+            replies,
+        )
+    })?;
     writer.send(b"cmd.exe /D /C ver\n".to_vec()).await?;
     let mut output = wait_for_output_contains(
         &mut output_rx,
         "Microsoft Windows",
         /*timeout_ms*/ 10_000,
     )
-    .await?;
+    .await
+    .map_err(|_| anyhow::anyhow!("version banner missing after Ctrl-C: shell={program}"))?;
 
     writer.send(b"exit 0\n".to_vec()).await?;
     let (remaining, exit_code) =
@@ -480,8 +541,11 @@ async fn conpty_ctrl_c_interrupts_powershell_foreground_child() -> anyhow::Resul
     assert_eq!(
         exit_code,
         0,
-        "PowerShell did not resume after Ctrl-C: {:?}",
-        String::from_utf8_lossy(&output)
+        "PowerShell did not resume: shell={}, pre_bytes={}, post_bytes={}, output_bytes={}",
+        program,
+        pre_ctrl_c.len(),
+        post_ctrl_c.len(),
+        output.len(),
     );
     Ok(())
 }
