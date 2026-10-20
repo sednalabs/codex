@@ -124,6 +124,14 @@
     {
       "package": "codex-rmcp-client",
       "target_kind": "integration",
+      "target": "mcp_2026_mrtr",
+      "profiles": ["rust_minimal"],
+      "inventory_argv": ["cargo","test","--locked","-p","codex-rmcp-client","--test","mcp_2026_mrtr","--","--list"],
+      "execution_argv": ["cargo","test","--locked","-p","codex-rmcp-client","--test","mcp_2026_mrtr","--","--test-threads=1"]
+    },
+    {
+      "package": "codex-rmcp-client",
+      "target_kind": "integration",
       "target": "streamable_http_oauth_store_pinning",
       "profiles": ["rust_minimal"],
       "inventory_argv": ["cargo","test","--locked","-p","codex-rmcp-client","--test","streamable_http_oauth_store_pinning","--","--list"],

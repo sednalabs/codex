@@ -454,11 +454,13 @@ async fn modern_tool_mrtr_uses_recovered_protocol_after_legacy_session_expiry() 
     let client = create_client(&server, Arc::clone(&elicitation_modes))
         .await?
         .with_read_only_tools(/*requires_read_only_tools*/ true);
-    assert!(client
-        .list_tools(/*params*/ None, Some(Duration::from_secs(5)))
-        .await?
-        .tools
-        .is_empty());
+    assert!(
+        client
+            .list_tools(/*params*/ None, Some(Duration::from_secs(5)))
+            .await?
+            .tools
+            .is_empty()
+    );
     let result = client
         .call_tool(
             "confirm".into(),
