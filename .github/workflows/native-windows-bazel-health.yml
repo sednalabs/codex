@@ -366,21 +366,21 @@ jobs:
           $report = Join-Path $env:RUNNER_TEMP "voice-loader-dependencies-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT).tsv"
           "VOICE_DLL_REPORT=$report" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           $lines = @(
-            'schema' + "`t" + 'focused-voice-loader-dependencies-v1',
-            'repository' + "`t" + $env:GITHUB_REPOSITORY,
-            'workflow_host_sha' + "`t" + $env:EXPECTED_HOST_SHA,
-            'workflow_run_id' + "`t" + $env:GITHUB_RUN_ID,
-            'workflow_run_attempt' + "`t" + $env:GITHUB_RUN_ATTEMPT,
-            'source_sha' + "`t" + $actualSha,
-            'source_tree' + "`t" + $actualTree,
-            'base_sha' + "`t" + $env:BASE_SHA,
-            'windows_runner' + "`t" + 'windows-2025',
-            'target_platform' + "`t" + 'windows_x86_64_gnullvm',
-            'execution_host' + "`t" + 'local_windows_msvc_no_rbe',
-            'build_only' + "`t" + 'true',
-            'target' + "`t" + '//codex-rs/voice-host:codex-voice-host',
-            'target' + "`t" + '//codex-rs/voice-host:codex-voice-host-bin-unit-tests',
-            'component' + "`t" + 'dll' + "`t" + 'x64_system32_file_or_api_set_name_observed' + "`t" + 'component_pe_dir_presence_observed' + "`t" + 'required_test_ci_path_presence_observed' + "`t" + 'unit_test_runfiles_manifest_name_entry_observed' + "`t" + 'workspace_root_presence_observed' + "`t" + 'copied_helper_system32_or_api_set_name_or_test_ci_path_observed'
+            ('schema' + "`t" + 'focused-voice-loader-dependencies-v1'),
+            ('repository' + "`t" + $env:GITHUB_REPOSITORY),
+            ('workflow_host_sha' + "`t" + $env:EXPECTED_HOST_SHA),
+            ('workflow_run_id' + "`t" + $env:GITHUB_RUN_ID),
+            ('workflow_run_attempt' + "`t" + $env:GITHUB_RUN_ATTEMPT),
+            ('source_sha' + "`t" + $actualSha),
+            ('source_tree' + "`t" + $actualTree),
+            ('base_sha' + "`t" + $env:BASE_SHA),
+            ('windows_runner' + "`t" + 'windows-2025'),
+            ('target_platform' + "`t" + 'windows_x86_64_gnullvm'),
+            ('execution_host' + "`t" + 'local_windows_msvc_no_rbe'),
+            ('build_only' + "`t" + 'true'),
+            ('target' + "`t" + '//codex-rs/voice-host:codex-voice-host'),
+            ('target' + "`t" + '//codex-rs/voice-host:codex-voice-host-bin-unit-tests'),
+            ('component' + "`t" + 'dll' + "`t" + 'x64_system32_file_or_api_set_name_observed' + "`t" + 'component_pe_dir_presence_observed' + "`t" + 'required_test_ci_path_presence_observed' + "`t" + 'unit_test_runfiles_manifest_name_entry_observed' + "`t" + 'workspace_root_presence_observed' + "`t" + 'copied_helper_system32_or_api_set_name_or_test_ci_path_observed')
           )
           Set-Content -LiteralPath $report -Value $lines -Encoding utf8
           "VOICE_DLL_REPORT=$report" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
