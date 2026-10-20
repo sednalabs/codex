@@ -158,12 +158,13 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update -y
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev libglib2.0-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev libglib2.0-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libasound2-dev
           pkg-config --exists \
             'gstreamer-1.0 >= 1.28' \
             'gstreamer-base-1.0 >= 1.28' \
             'gstreamer-app-1.0 >= 1.28' \
-            'gstreamer-audio-1.0 >= 1.28'
+            'gstreamer-audio-1.0 >= 1.28' \
+            alsa
 
       - name: Install Rust toolchain
         if: ${{ needs.scope.outputs.clippy == 'true' }}
