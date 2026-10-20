@@ -51,6 +51,54 @@ const FIXED_API_CLAIM_CALLBACK_URL: &str = "http://127.0.0.1:8765/callback";
 /// Maximum wait for the fixed Ops API OAuth callback in either interaction mode.
 pub const FIXED_API_CLAIM_TIMEOUT_SECS: u64 = 300;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FixedOAuthLoginStage {
+    Precondition,
+    Discovery,
+    Callback,
+    Exchange,
+    TokenValidation,
+}
+
+impl FixedOAuthLoginStage {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Precondition => "precondition",
+            Self::Discovery => "oauth_discovery",
+            Self::Callback => "oauth_callback",
+            Self::Exchange => "oauth_exchange",
+            Self::TokenValidation => "token_validation",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct FixedOAuthLoginError {
+    stage: FixedOAuthLoginStage,
+}
+
+impl FixedOAuthLoginError {
+    fn at(stage: FixedOAuthLoginStage) -> Self {
+        Self { stage }
+    }
+
+    pub fn stage(&self) -> FixedOAuthLoginStage {
+        self.stage
+    }
+}
+
+impl std::fmt::Display for FixedOAuthLoginError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "fixed OAuth login failed at {}",
+            self.stage.as_str()
+        )
+    }
+}
+
+impl std::error::Error for FixedOAuthLoginError {}
+
 struct OAuthHttpContext {
     http_headers: Option<HashMap<String, String>>,
     env_http_headers: Option<HashMap<String, String>>,
@@ -126,7 +174,7 @@ impl OAuthAccessToken {
 /// discarded when the flow returns.
 pub async fn perform_fixed_ops_api_access_token_login(
     open_authorization_url: impl FnOnce(&str) -> Result<()>,
-) -> Result<OAuthAccessToken> {
+) -> std::result::Result<OAuthAccessToken, FixedOAuthLoginError> {
     perform_oauth_access_token_login(
         FIXED_API_CLAIM_ISSUER,
         FIXED_API_CLAIM_RESOURCE,
@@ -147,7 +195,7 @@ pub async fn perform_fixed_ops_api_access_token_login(
 /// before the same PKCE verifier and token-response checks used by the browser callback path.
 pub async fn perform_fixed_ops_api_access_token_login_with_callback_input(
     read_callback_url: impl FnOnce(&str) -> Result<String>,
-) -> Result<OAuthAccessToken> {
+) -> std::result::Result<OAuthAccessToken, FixedOAuthLoginError> {
     perform_oauth_access_token_login(
         FIXED_API_CLAIM_ISSUER,
         FIXED_API_CLAIM_RESOURCE,
@@ -192,7 +240,7 @@ async fn perform_oauth_access_token_login<'a>(
     callback_url: &str,
     timeout_secs: u64,
     interaction: FixedOAuthInteraction<'a>,
-) -> Result<OAuthAccessToken> {
+) -> std::result::Result<OAuthAccessToken, FixedOAuthLoginError> {
     validate_fixed_oauth_inputs(
         issuer_url,
         resource_url,
@@ -201,22 +249,27 @@ async fn perform_oauth_access_token_login<'a>(
         callback_port,
         callback_url,
         timeout_secs,
-    )?;
+    )
+    .map_err(|_| FixedOAuthLoginError::at(FixedOAuthLoginStage::Precondition))?;
 
-    let callback_id = callback_id_from_server_url(issuer_url)?;
+    let callback_id = callback_id_from_server_url(issuer_url)
+        .map_err(|_| FixedOAuthLoginError::at(FixedOAuthLoginStage::Precondition))?;
     let callback_source = match interaction {
         FixedOAuthInteraction::Browser(open_authorization_url) => {
             let bind_addr = format!("127.0.0.1:{callback_port}");
             let server = Arc::new(
                 Server::http(&bind_addr)
-                    .map_err(|_| anyhow!("bind fixed OAuth callback listener"))?,
+                    .map_err(|_| FixedOAuthLoginError::at(FixedOAuthLoginStage::Callback))?,
             );
             let guard = CallbackServerGuard {
                 server: Arc::clone(&server),
             };
-            let redirect_uri = resolve_redirect_uri(&server, Some(callback_url))?;
-            let redirect_uri = append_callback_id_to_redirect_uri(&redirect_uri, &callback_id)?;
-            let callback_path = callback_path_from_redirect_uri(&redirect_uri)?;
+            let redirect_uri = resolve_redirect_uri(&server, Some(callback_url))
+                .map_err(|_| FixedOAuthLoginError::at(FixedOAuthLoginStage::Precondition))?;
+            let redirect_uri = append_callback_id_to_redirect_uri(&redirect_uri, &callback_id)
+                .map_err(|_| FixedOAuthLoginError::at(FixedOAuthLoginStage::Precondition))?;
+            let callback_path = callback_path_from_redirect_uri(&redirect_uri)
+                .map_err(|_| FixedOAuthLoginError::at(FixedOAuthLoginStage::Precondition))?;
             let (tx, callback) = oneshot::channel();
             spawn_callback_server(server, tx, callback_path);
             FixedOAuthCallbackSource::Browser {
@@ -227,7 +280,8 @@ async fn perform_oauth_access_token_login<'a>(
             }
         }
         FixedOAuthInteraction::CallbackInput(read_callback_url) => {
-            let redirect_uri = append_callback_id_to_redirect_uri(callback_url, &callback_id)?;
+            let redirect_uri = append_callback_id_to_redirect_uri(callback_url, &callback_id)
+                .map_err(|_| FixedOAuthLoginError::at(FixedOAuthLoginStage::Precondition))?;
             FixedOAuthCallbackSource::CallbackInput {
                 read_callback_url,
                 redirect_uri,
@@ -245,7 +299,7 @@ async fn perform_oauth_access_token_login<'a>(
         .without_request_logging()
         .connect_timeout(Duration::from_secs(3))
         .build_direct()
-        .map_err(|_| anyhow!("build fixed OAuth HTTP client"))?;
+        .map_err(|_| FixedOAuthLoginError::at(FixedOAuthLoginStage::Discovery))?;
     let oauth_http_client: Arc<dyn OAuthHttpClient> =
         Arc::new(OAuthHttpClientAdapter::new_direct_with_max_timeout(
             http_client,
@@ -261,7 +315,8 @@ async fn perform_oauth_access_token_login<'a>(
         &redirect_uri,
         oauth_http_client,
     )
-    .await?;
+    .await
+    .map_err(|_| FixedOAuthLoginError::at(FixedOAuthLoginStage::Discovery))?;
 
     let (callback, callback_guard) = match callback_source {
         FixedOAuthCallbackSource::Browser {
@@ -271,48 +326,50 @@ async fn perform_oauth_access_token_login<'a>(
             ..
         } => {
             open_authorization_url(&authorization_url)
-                .map_err(|_| anyhow!("open fixed OAuth authorization in the browser"))?;
+                .map_err(|_| FixedOAuthLoginError::at(FixedOAuthLoginStage::Callback))?;
             let callback = timeout(Duration::from_secs(timeout_secs), callback)
                 .await
-                .map_err(|_| anyhow!("fixed OAuth callback timed out"))?
-                .map_err(|_| anyhow!("fixed OAuth callback was cancelled"))?;
+                .map_err(|_| FixedOAuthLoginError::at(FixedOAuthLoginStage::Callback))?
+                .map_err(|_| FixedOAuthLoginError::at(FixedOAuthLoginStage::Callback))?;
             (callback, Some(_guard))
         }
         FixedOAuthCallbackSource::CallbackInput {
             read_callback_url,
             redirect_uri,
         } => {
-            let callback_url = read_callback_url(&authorization_url)?;
+            let callback_url = read_callback_url(&authorization_url)
+                .map_err(|_| FixedOAuthLoginError::at(FixedOAuthLoginStage::Callback))?;
             (
-                parse_pasted_oauth_callback(&callback_url, &redirect_uri, &authorization_url)?,
+                parse_pasted_oauth_callback(&callback_url, &redirect_uri, &authorization_url)
+                    .map_err(|_| FixedOAuthLoginError::at(FixedOAuthLoginStage::Callback))?,
                 None,
             )
         }
     };
 
-    let result = async {
-        let OauthCallbackResult {
-            code,
-            state: csrf_state,
-            issuer,
-        } = match callback {
-            CallbackResult::Success(callback) => callback,
-            CallbackResult::Error(_) => bail!("fixed OAuth authorization was rejected"),
-        };
+    let OauthCallbackResult {
+        code,
+        state: csrf_state,
+        issuer,
+    } = match callback {
+        CallbackResult::Success(callback) => callback,
+        CallbackResult::Error(_) => {
+            return Err(FixedOAuthLoginError::at(FixedOAuthLoginStage::Callback));
+        }
+    };
 
-        oauth_state
-            .handle_callback_with_issuer(&code, &csrf_state, issuer.as_deref())
-            .await
-            .map_err(|_| anyhow!("complete fixed OAuth authorization"))?;
-        let (_, credentials) = oauth_state
-            .get_credentials()
-            .await
-            .map_err(|_| anyhow!("read in-memory OAuth response"))?;
-        let credentials =
-            credentials.ok_or_else(|| anyhow!("OAuth response omitted credentials"))?;
-        access_token_from_response(credentials, requested_scopes)
-    }
-    .await;
+    oauth_state
+        .handle_callback_with_issuer(&code, &csrf_state, issuer.as_deref())
+        .await
+        .map_err(|_| FixedOAuthLoginError::at(FixedOAuthLoginStage::Exchange))?;
+    let (_, credentials) = oauth_state
+        .get_credentials()
+        .await
+        .map_err(|_| FixedOAuthLoginError::at(FixedOAuthLoginStage::Exchange))?;
+    let credentials =
+        credentials.ok_or_else(|| FixedOAuthLoginError::at(FixedOAuthLoginStage::Exchange))?;
+    let result = access_token_from_response(credentials, requested_scopes)
+        .map_err(|_| FixedOAuthLoginError::at(FixedOAuthLoginStage::TokenValidation));
 
     drop(callback_guard);
     result

@@ -19,8 +19,14 @@ fn main() {
     #[cfg(target_os = "linux")]
     let exit_code = match result {
         Ok(code) => code,
-        Err(_) => {
-            eprintln!("runtime-proof launcher failed closed");
+        Err(error) => {
+            if let Some(stage) =
+                codex_runtime_proof::launcher::safe_provisioning_failure_stage(&error)
+            {
+                eprintln!("runtime-proof launcher failed closed (stage: {stage})");
+            } else {
+                eprintln!("runtime-proof launcher failed closed");
+            }
             1
         }
     };
