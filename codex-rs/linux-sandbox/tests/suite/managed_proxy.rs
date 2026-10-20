@@ -795,6 +795,8 @@ async fn managed_proxy_mode_routes_through_bridge_and_blocks_direct_egress() {
         format!("http://127.0.0.1:{proxy_port}"),
     );
 
+    let sandbox_helper = std::fs::canonicalize(env!("CARGO_BIN_EXE_codex-linux-sandbox"))
+        .expect("sandbox helper should resolve");
     let sandbox_helper_dir = std::path::Path::new(env!("CARGO_BIN_EXE_codex-linux-sandbox"))
         .parent()
         .expect("sandbox helper should have a parent");
@@ -810,7 +812,11 @@ async fn managed_proxy_mode_routes_through_bridge_and_blocks_direct_egress() {
             std::env::current_dir()
                 .expect("current directory should exist")
                 .as_path(),
-            &[AbsolutePathBuf::try_from(sandbox_helper_dir).expect("absolute helper dir")],
+            &[
+                AbsolutePathBuf::try_from(sandbox_helper_dir).expect("absolute helper dir"),
+                AbsolutePathBuf::try_from(sandbox_helper.as_path())
+                    .expect("absolute sandbox helper"),
+            ],
         );
     let permission_profile = PermissionProfile::from_runtime_permissions(
         &file_system_sandbox_policy,
