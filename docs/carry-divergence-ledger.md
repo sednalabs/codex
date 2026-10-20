@@ -106,6 +106,16 @@ schema before applying pending migrations.
 Remove this adapter when an equivalent native upgrade path is demonstrated, or
 when support for these historical databases is explicitly retired.
 
+## Native Windows support retirement
+
+Native Windows product support is retired. Supported release, npm, installer,
+and active CI routes cover Linux and macOS; Windows users can use the Linux
+path through WSL2. Portable Windows implementation and test sources remain for
+upstream convergence, not as a supported or qualified product. Previously
+failing Windows confinement behavior remains unresolved; retiring support is
+not a security fix or a passing result. Reintroducing native Windows requires
+an explicit support decision and qualification of its security and consumers.
+
 ## Upgrading and retiring carries
 
 Pin the upstream revision being considered, then compare it against current
@@ -119,8 +129,34 @@ for the exact candidate. Validate the exact package artifact with its consumer
 in the same run. Then satisfy required pull-request checks, merge-queue checks,
 and confirm the actual merge before calling the upgrade landed.
 
-For state or profile cutovers, verify compatibility and define a specific
-rollback for the affected state as well as the executable; restoring an old
-executable alone does not reverse a migration. Record each justified residual
-carry's rationale and removal condition. If an upgrade would materially lose
-behavior, seek acceptance of that loss before retiring the carry.
+For state or profile cutovers, treat the executable and affected database cohort
+as one rollback unit:
+
+1. Resolve the effective configuration and SQLite root without changing account
+   or authentication settings. Different profile homes can share one database
+   root. Identify every user of that root and arrange a normal checkpoint and
+   exit before the cutover; do not stop running sessions unannounced.
+2. Stage and verify the exact package before selecting it. Compare every
+   existing migration identity, checksum and required schema with the candidate,
+   including retained historical variants; checking only the maximum version or
+   a few recent rows is insufficient.
+3. Under a verified quiescent window, take SQLite-consistent, WAL-aware backups
+   of all existing managed databases: state, logs, goals, memories, queue, thread
+   history and usage, plus optional managed databases when present. Verify the
+   snapshots and retain the old selector. A raw main-file copy without committed
+   WAL state is not a rollback snapshot, and per-database backups made while
+   writers continue do not establish a common cohort rollback point.
+4. Change only the executable selector, preserving profile, account and config
+   mappings. Exercise the required native openers and consumers against that
+   cohort, distinguish lazy database paths from initialized pools, and verify
+   that historical migration records survive without recovery or replacement.
+5. Before any new runtime opens the databases, the old selector can be restored
+   alone. After migration, binary-only rollback is not safe: older strict
+   migration bridges can reject newer identities, including state migration 61.
+   Any restore requires all cohort users quiescent, preservation of the complete
+   post-upgrade state and WAL, and the coherent pre-cutover snapshot set with its
+   old selector. Do not delete migration records or silently discard new work.
+
+Record each justified residual carry's rationale and removal condition. If an
+upgrade would materially lose behavior, seek acceptance of that loss before
+retiring the carry.
