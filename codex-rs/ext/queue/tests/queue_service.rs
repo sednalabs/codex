@@ -759,6 +759,7 @@ async fn rejected_queue_messages_are_consumed_without_retrying_or_blocking_follo
     let queue = install_registered_queue(&test, installed.as_ref())?;
 
     let mut hook_runs = Vec::new();
+    let mut hook_starts = 0;
     let mut completed_turns = 0;
     let outcome = tokio::time::timeout(Duration::from_secs(10), async {
         // submit_text_turn would consume the first hook completion before we could inspect it.
@@ -775,6 +776,11 @@ async fn rejected_queue_messages_are_consumed_without_retrying_or_blocking_follo
                 .await
                 .map_err(|_| anyhow::anyhow!("queue event stream failed"))?;
             match event.msg {
+                EventMsg::HookStarted(event)
+                    if event.run.event_name == HookEventName::UserPromptSubmit =>
+                {
+                    hook_starts += 1;
+                }
                 EventMsg::HookCompleted(event)
                     if event.run.event_name == HookEventName::UserPromptSubmit =>
                 {
@@ -782,11 +788,33 @@ async fn rejected_queue_messages_are_consumed_without_retrying_or_blocking_follo
                         entry.kind == HookOutputEntryKind::Feedback
                             && entry.text == "blocked by queue hook"
                     });
-                    hook_runs.push((event.run.status, expected_reason));
                     assert!(
-                        hook_runs.len() <= 3,
+                        hook_runs.len() < 3,
                         "unexpected extra prompt hook completion"
                     );
+                    let error_category = event
+                        .run
+                        .entries
+                        .iter()
+                        .find(|entry| entry.kind == HookOutputEntryKind::Error)
+                        .map(|entry| match entry.text.as_str() {
+                            error if error.starts_with("hook timed out after ") => "timeout",
+                            error if error.starts_with("failed to write hook stdin: ") => "stdin",
+                            "hook returned invalid user prompt submit JSON output" => "bad_json",
+                            error if error.starts_with("hook exited with code ") => "nonzero_exit",
+                            "hook exited without a status code" => "missing_exit_status",
+                            error if error.starts_with("UserPromptSubmit hook exited") => {
+                                "exit2_without_reason"
+                            }
+                            _ => "other_error",
+                        })
+                        .unwrap_or("none");
+                    hook_runs.push((
+                        event.run.status,
+                        expected_reason,
+                        event.run.duration_ms,
+                        error_category,
+                    ));
                 }
                 EventMsg::TurnComplete(_) => completed_turns += 1,
                 _ => {}
@@ -799,11 +827,14 @@ async fn rejected_queue_messages_are_consumed_without_retrying_or_blocking_follo
                 (HookRunStatus::Completed, false),
             ],
             hook_runs
+                .iter()
+                .map(|(status, reason, ..)| (*status, *reason))
+                .collect::<Vec<_>>()
         );
         anyhow::Ok(())
     })
     .await;
-    eprintln!("queue progress: turns={completed_turns}, hooks={hook_runs:?}");
+    eprintln!("queue: {completed_turns} turns, {hook_starts} starts, {hook_runs:?}");
     outcome.context("queue rejection did not complete within 10 seconds")??;
 
     let prompts = responses
@@ -854,6 +885,7 @@ async fn explicitly_started_rejected_queue_messages_are_consumed() -> anyhow::Re
     .expect("explicitly started input should be submitted");
     assert!(matches!(submission, StartIfIdleSubmission::Started { .. }));
     let mut hook_runs = Vec::new();
+    let mut hook_starts = 0;
     let mut completed_turn = false;
     let outcome = tokio::time::timeout(Duration::from_secs(10), async {
         while !completed_turn || hook_runs.is_empty() {
@@ -863,6 +895,11 @@ async fn explicitly_started_rejected_queue_messages_are_consumed() -> anyhow::Re
                 .await
                 .map_err(|_| anyhow::anyhow!("queue event stream failed"))?;
             match event.msg {
+                EventMsg::HookStarted(event)
+                    if event.run.event_name == HookEventName::UserPromptSubmit =>
+                {
+                    hook_starts += 1;
+                }
                 EventMsg::HookCompleted(event)
                     if event.run.event_name == HookEventName::UserPromptSubmit =>
                 {
@@ -870,22 +907,49 @@ async fn explicitly_started_rejected_queue_messages_are_consumed() -> anyhow::Re
                         entry.kind == HookOutputEntryKind::Feedback
                             && entry.text == "blocked by queue hook"
                     });
-                    hook_runs.push((event.run.status, expected_reason));
-                    assert_eq!(
-                        1,
-                        hook_runs.len(),
+                    assert!(
+                        hook_runs.is_empty(),
                         "unexpected extra prompt hook completion"
                     );
+                    let error_category = event
+                        .run
+                        .entries
+                        .iter()
+                        .find(|entry| entry.kind == HookOutputEntryKind::Error)
+                        .map(|entry| match entry.text.as_str() {
+                            error if error.starts_with("hook timed out after ") => "timeout",
+                            error if error.starts_with("failed to write hook stdin: ") => "stdin",
+                            "hook returned invalid user prompt submit JSON output" => "bad_json",
+                            error if error.starts_with("hook exited with code ") => "nonzero_exit",
+                            "hook exited without a status code" => "missing_exit_status",
+                            error if error.starts_with("UserPromptSubmit hook exited") => {
+                                "exit2_without_reason"
+                            }
+                            _ => "other_error",
+                        })
+                        .unwrap_or("none");
+                    hook_runs.push((
+                        event.run.status,
+                        expected_reason,
+                        event.run.duration_ms,
+                        error_category,
+                    ));
                 }
                 EventMsg::TurnComplete(_) => completed_turn = true,
                 _ => {}
             }
         }
-        assert_eq!(vec![(HookRunStatus::Blocked, true)], hook_runs);
+        assert_eq!(
+            vec![(HookRunStatus::Blocked, true)],
+            hook_runs
+                .iter()
+                .map(|(status, reason, ..)| (*status, *reason))
+                .collect::<Vec<_>>()
+        );
         anyhow::Ok(())
     })
     .await;
-    eprintln!("explicit progress: complete={completed_turn}, hooks={hook_runs:?}");
+    eprintln!("explicit: complete={completed_turn}, starts={hook_starts}, {hook_runs:?}");
     outcome.context("explicit rejection did not complete within 10 seconds")??;
     assert!(queue.list(thread_id).await?.is_empty());
     let hook_log = std::fs::read_to_string(test.codex_home_path().join("queue_prompt_hook.log"))?;
