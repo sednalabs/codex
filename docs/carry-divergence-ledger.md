@@ -34,6 +34,20 @@ tests compare replay insertion and rendered presentations with the originals.
 Remove this carry when upstream provides equivalent replay retention, or revisit
 it before introducing an image-aware replay renderer.
 
+## Per-server MCP protocol preference
+
+The `mcp-per-server-protocol-selection` carry exposes `protocol_mode = "legacy"`
+or `protocol_mode = "2026-07-28"` for a Streamable HTTP server. The explicit
+preference follows the winning server configuration; when absent, native
+registration, host-owned Apps, and global defaults retain their precedence.
+The field is rejected on stdio. Modern mode requests discovery and can fall
+back to legacy; configuration alone does not prove the negotiated wire mode.
+Connection reuse remains mode-aware, and uncertain `tools/call` requests are
+not replayed. Config parsing, canonical TOML edits, precedence and reuse tests
+protect this adapter alongside native transport tests. Installed first use is
+separate acceptance. Remove the config adapter when upstream provides an
+equivalent per-server preference without losing these boundaries.
+
 ## Upgrading and retiring carries
 
 Pin the upstream revision being considered, then compare it against current

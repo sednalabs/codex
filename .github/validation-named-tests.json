@@ -26,6 +26,14 @@
       "execution_argv": ["cargo","test","--locked","-p","codex-cli","--test","mcp_device_login","--","--test-threads=1"]
     },
     {
+      "package": "codex-config",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal"],
+      "inventory_argv": ["cargo","test","--locked","-p","codex-config","--lib","--","--list"],
+      "execution_argv": ["cargo","test","--locked","-p","codex-config","--lib","--","--test-threads=1"]
+    },
+    {
       "package": "codex-core",
       "target_kind": "lib",
       "target": "",
@@ -80,6 +88,14 @@
       "profiles": ["rust_minimal"],
       "inventory_argv": ["cargo","test","--locked","-p","codex-keyring-store","--lib","--","--list"],
       "execution_argv": ["cargo","test","--locked","-p","codex-keyring-store","--lib","--","--test-threads=1"]
+    },
+    {
+      "package": "codex-mcp",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal"],
+      "inventory_argv": ["cargo","test","--locked","-p","codex-mcp","--lib","--","--list"],
+      "execution_argv": ["cargo","test","--locked","-p","codex-mcp","--lib","--","--test-threads=1"]
     },
     {
       "package": "codex-memories-write",
