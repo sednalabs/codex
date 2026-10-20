@@ -484,9 +484,7 @@ async fn conpty_ctrl_c_interrupts_powershell_foreground_child() -> anyhow::Resul
                     pre_ctrl_c.extend_from_slice(&chunk);
                     let complete_reply = String::from_utf8_lossy(&pre_ctrl_c)
                         .split_inclusive('\n')
-                        .any(|line| {
-                            line.ends_with('\n') && line.contains("Reply from 127.0.0.1:")
-                        });
+                        .any(|line| line.ends_with('\n') && line.contains("Reply from 127.0.0.1:"));
                     if pre_ctrl_c.len() > OUTPUT_LIMIT {
                         let keep_from = pre_ctrl_c.len() - OUTPUT_LIMIT;
                         pre_ctrl_c = pre_ctrl_c.split_off(keep_from);
@@ -509,22 +507,19 @@ async fn conpty_ctrl_c_interrupts_powershell_foreground_child() -> anyhow::Resul
     );
 
     writer.send(vec![0x03]).await?;
-    let post_ctrl_c = wait_for_output_contains(
-        &mut output_rx,
-        PROMPT_MARKER,
-        /*timeout_ms*/ 10_000,
-    )
-    .await
-    .map_err(|err| {
-        // Keep failure context bounded and do not publish raw terminal text.
-        let replies = err.to_string().matches("Reply from 127.0.0.1:").count();
-        anyhow::anyhow!(
-            "no prompt after Ctrl-C: shell={}, pre_ctrl_c_bytes={}, post_ctrl_c_replies={}",
-            program,
-            pre_ctrl_c.len(),
-            replies,
-        )
-    })?;
+    let post_ctrl_c =
+        wait_for_output_contains(&mut output_rx, PROMPT_MARKER, /*timeout_ms*/ 10_000)
+            .await
+            .map_err(|err| {
+                // Keep failure context bounded and do not publish raw terminal text.
+                let replies = err.to_string().matches("Reply from 127.0.0.1:").count();
+                anyhow::anyhow!(
+                    "no prompt after Ctrl-C: shell={}, pre_ctrl_c_bytes={}, post_ctrl_c_replies={}",
+                    program,
+                    pre_ctrl_c.len(),
+                    replies,
+                )
+            })?;
     writer.send(b"cmd.exe /D /C ver\n".to_vec()).await?;
     let mut output = wait_for_output_contains(
         &mut output_rx,
