@@ -13835,7 +13835,7 @@ async fn terminal_goal_handback_joins_the_completing_turn_idle_result() {
     let session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
         parent_thread_id,
         depth: 1,
-        agent_path: Some(AgentPath::try_from("/root/goal-child").expect("canonical child path")),
+        agent_path: Some(AgentPath::try_from("/root/goal_child").expect("canonical child path")),
         agent_nickname: Some("goal-child".to_string()),
         agent_role: None,
     });
