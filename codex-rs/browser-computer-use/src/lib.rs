@@ -19,6 +19,8 @@ use tokio::io::AsyncWriteExt as _;
 use tokio::process::Command;
 use tokio::time::timeout;
 
+mod browser_sessions;
+
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const ENV_PROVIDER: &str = "CODEX_BROWSER_COMPUTER_USE_PROVIDER";
 const ENV_COMMAND: &str = "CODEX_BROWSER_COMPUTER_USE_COMMAND";
@@ -173,26 +175,26 @@ async fn run_playwright_provider(
     params: &DynamicToolCallParams,
     config: &PlaywrightProviderConfig,
 ) -> Result<DynamicToolCallResponse, String> {
-    let mut script_file = tempfile::Builder::new()
-        .prefix("codex-browser-provider-")
-        .suffix(".mjs")
-        .tempfile()
-        .map_err(|err| format!("failed to create browser provider script: {err}"))?;
-    script_file
-        .as_file_mut()
-        .write_all(PLAYWRIGHT_BRIDGE_SCRIPT.as_bytes())
-        .map_err(|err| format!("failed to write browser provider script: {err}"))?;
+    browser_sessions::handle(params, config).await
+}
 
-    // Close the writable handle before asking the external Node process to
-    // read the temporary script, while retaining cleanup on drop.
-    let script_file = script_file.into_temp_path();
-    let script_path = <tempfile::TempPath as AsRef<std::path::Path>>::as_ref(&script_file)
-        .to_string_lossy()
-        .to_string();
-    let envs = playwright_provider_envs(config);
+/// Return whether the process-scoped native Browser manager currently owns a
+/// session for this thread. TUI uses this to decide whether a ThreadClosed
+/// notification needs the same authoritative readback used for the displayed
+/// thread before releasing its retained page.
+pub async fn has_browser_session_for_thread(thread_id: &str) -> bool {
+    browser_sessions::has_session_for_thread(thread_id).await
+}
 
-    let output = run_provider_process(&[config.node.clone(), script_path], params, &envs).await?;
-    parse_provider_response(&output)
+/// Close a retained Browser session only after the caller has confirmed the
+/// thread is unloaded.
+pub async fn close_browser_thread(thread_id: &str) {
+    browser_sessions::close_thread(thread_id).await;
+}
+
+/// Gracefully close process-owned Browser sessions before frontend shutdown.
+pub async fn shutdown_browser_sessions() {
+    browser_sessions::shutdown_all().await;
 }
 
 fn playwright_provider_envs(config: &PlaywrightProviderConfig) -> Vec<(String, String)> {
@@ -802,41 +804,71 @@ fn failed_response(error: String) -> DynamicToolCallResponse {
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]
+    use super::browser_sessions::BrowserSessionManager;
+    #[cfg(unix)]
     use super::*;
 
     #[cfg(unix)]
-    #[tokio::test]
-    async fn playwright_provider_keeps_thread_state_and_returns_typed_image() {
-        let temp = tempfile::tempdir().expect("fixture root");
-        let node_path = temp.path().join("node-modules");
+    fn fake_provider_config(fixture_root: &Path, state_dir: &Path) -> PlaywrightProviderConfig {
+        let node_path = fixture_root.join("node-modules");
         let playwright = node_path.join("playwright");
         std::fs::create_dir_all(&playwright).expect("fake Playwright module directory");
         std::fs::write(
             playwright.join("index.js"),
             r#"
+const fs = require("node:fs");
+const path = require("node:path");
+const root = process.env.CODEX_BROWSER_PLAYWRIGHT_STATE_DIR;
+const marker = (name) => path.join(root, name);
 let currentUrl = "about:blank";
+let currentText = "";
+let pendingFillResolve = null;
 const page = {
   isClosed: () => false,
   url: () => currentUrl,
   goto: async (url) => { currentUrl = url; },
   waitForLoadState: async () => {},
   screenshot: async () => Buffer.from("synthetic-browser-image"),
-  title: async () => "fixture page",
+  title: async () => currentText || "fixture page",
+  locator: () => ({
+    fill: async (text) => {
+      if (fs.existsSync(marker("pause-action"))) {
+        fs.writeFileSync(marker("action-started"), "started");
+        await new Promise((resolve) => { pendingFillResolve = resolve; });
+      }
+      currentText = text;
+    },
+  }),
   viewportSize: () => ({ width: 1280, height: 720 }),
 };
+const context = {
+  pages: () => [],
+  newPage: async () => page,
+  close: async () => {
+    fs.writeFileSync(marker("context-closed"), "closed");
+    if (pendingFillResolve) {
+      pendingFillResolve();
+      pendingFillResolve = null;
+    }
+    if (fs.existsSync(marker("hang-close"))) {
+      await new Promise(() => {});
+    }
+  },
+};
 exports.chromium = {
-  launchPersistentContext: async () => ({
-    pages: () => [],
-    newPage: async () => page,
-    close: async () => {},
-  }),
+  launchPersistentContext: async () => {
+    if (fs.existsSync(marker("pause-launch"))) {
+      fs.writeFileSync(marker("launch-started"), "started");
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    return context;
+  },
 };
 "#,
         )
         .expect("fake Playwright module source");
 
-        let state_dir = temp.path().join("browser-state");
-        let config = PlaywrightProviderConfig {
+        PlaywrightProviderConfig {
             node: "node".to_string(),
             node_path: Some(node_path.to_string_lossy().into_owned()),
             state_dir: Some(state_dir.to_string_lossy().into_owned()),
@@ -846,32 +878,84 @@ exports.chromium = {
             display: None,
             viewport_width: None,
             viewport_height: None,
-        };
+        }
+    }
 
-        async fn observe(
+    #[cfg(unix)]
+    fn browser_params(thread_id: &str, tool: &str, arguments: Value) -> DynamicToolCallParams {
+        DynamicToolCallParams {
+            thread_id: thread_id.to_string(),
+            turn_id: format!("{thread_id}-turn"),
+            call_id: format!("{thread_id}-{tool}"),
+            namespace: Some("codex_browser".to_string()),
+            tool: tool.to_string(),
+            arguments,
+        }
+    }
+
+    #[cfg(unix)]
+    async fn wait_for_fixture_file(path: &Path) {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !path.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("synthetic provider reached requested lifecycle seam");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn playwright_provider_keeps_thread_state_and_returns_typed_image() {
+        let temp = tempfile::tempdir().expect("fixture root");
+        let state_dir = temp.path().join("browser-state");
+        let config = fake_provider_config(temp.path(), &state_dir);
+        let manager = BrowserSessionManager::default();
+
+        async fn call(
+            manager: &BrowserSessionManager,
             config: &PlaywrightProviderConfig,
             thread_id: &str,
+            tool: &str,
             arguments: Value,
         ) -> DynamicToolCallResponse {
-            let params = DynamicToolCallParams {
-                thread_id: thread_id.to_string(),
-                turn_id: format!("{thread_id}-turn"),
-                call_id: format!("{thread_id}-observe"),
-                namespace: Some("codex_browser".to_string()),
-                tool: TOOL_BROWSER_OBSERVE.to_string(),
-                arguments,
-            };
-            run_playwright_provider(&params, config)
+            let params = browser_params(thread_id, tool, arguments);
+            manager
+                .handle(&params, config)
                 .await
                 .expect("synthetic Browser provider call")
         }
 
         let first_url = "https://same-thread.example/remembered";
-        let first = observe(&config, "thread-a", json!({"url": first_url})).await;
+        let first = call(
+            &manager,
+            &config,
+            "thread-a",
+            TOOL_BROWSER_OBSERVE,
+            json!({"url": first_url}),
+        )
+        .await;
         assert!(first.success);
         assert!(response_includes_native_image(&first));
 
-        let continued = observe(&config, "thread-a", json!({})).await;
+        let typed = call(
+            &manager,
+            &config,
+            "thread-a",
+            TOOL_BROWSER_STEP,
+            json!({"action":"type","selector":"#note","text":"unsaved draft"}),
+        )
+        .await;
+        assert!(typed.success);
+
+        let continued = call(
+            &manager,
+            &config,
+            "thread-a",
+            TOOL_BROWSER_OBSERVE,
+            json!({}),
+        )
+        .await;
         assert!(continued.success);
         assert!(response_includes_native_image(&continued));
         let text = continued.content_items.iter().find_map(|item| match item {
@@ -879,8 +963,16 @@ exports.chromium = {
             _ => None,
         });
         assert!(text.is_some_and(|text| text.contains(first_url)));
+        assert!(text.is_some_and(|text| text.contains("unsaved draft")));
 
-        let isolated = observe(&config, "thread-b", json!({})).await;
+        let isolated = call(
+            &manager,
+            &config,
+            "thread-b",
+            TOOL_BROWSER_OBSERVE,
+            json!({}),
+        )
+        .await;
         assert!(isolated.success);
         assert!(response_includes_native_image(&isolated));
         let text = isolated.content_items.iter().find_map(|item| match item {
@@ -894,5 +986,120 @@ exports.chromium = {
             .collect::<Result<Vec<_>, _>>()
             .expect("profile entries");
         assert_eq!(profiles.len(), 2);
+        manager.shutdown_all().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancelled_browser_action_closes_before_same_profile_retry() {
+        let temp = tempfile::tempdir().expect("fixture root");
+        let state_dir = temp.path().join("browser-state");
+        std::fs::create_dir_all(&state_dir).expect("browser state root");
+        std::fs::write(state_dir.join("pause-action"), "pause").expect("pause marker");
+        let config = fake_provider_config(temp.path(), &state_dir);
+        let manager = std::sync::Arc::new(BrowserSessionManager::default());
+        let params = browser_params(
+            "thread-cancel-action",
+            TOOL_BROWSER_STEP,
+            json!({"action":"type","selector":"#note","text":"uncertain"}),
+        );
+        let task_manager = std::sync::Arc::clone(&manager);
+        let task_config = config.clone();
+        let task = tokio::spawn(async move { task_manager.handle(&params, &task_config).await });
+        wait_for_fixture_file(&state_dir.join("action-started")).await;
+        task.abort();
+        let _ = task.await;
+
+        let retry = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            manager.handle(
+                &browser_params("thread-cancel-action", TOOL_BROWSER_OBSERVE, json!({})),
+                &config,
+            ),
+        )
+        .await
+        .expect("confirmed cleanup permits a same-profile retry")
+        .expect("same-profile retry succeeds after cancellation cleanup");
+        assert!(retry.success);
+        assert!(state_dir.join("context-closed").exists());
+        manager.shutdown_all().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancelled_pending_launch_closes_late_context_before_retry() {
+        let temp = tempfile::tempdir().expect("fixture root");
+        let state_dir = temp.path().join("browser-state");
+        std::fs::create_dir_all(&state_dir).expect("browser state root");
+        std::fs::write(state_dir.join("pause-launch"), "pause").expect("pause marker");
+        let config = fake_provider_config(temp.path(), &state_dir);
+        let manager = std::sync::Arc::new(BrowserSessionManager::default());
+        let params = browser_params("thread-cancel-launch", TOOL_BROWSER_OBSERVE, json!({}));
+        let task_manager = std::sync::Arc::clone(&manager);
+        let task_config = config.clone();
+        let task = tokio::spawn(async move { task_manager.handle(&params, &task_config).await });
+        wait_for_fixture_file(&state_dir.join("launch-started")).await;
+        task.abort();
+        let _ = task.await;
+
+        let retry = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            manager.handle(
+                &browser_params("thread-cancel-launch", TOOL_BROWSER_OBSERVE, json!({})),
+                &config,
+            ),
+        )
+        .await
+        .expect("late launch cleanup is bounded")
+        .expect("confirmed cleanup permits a same-profile retry");
+        assert!(retry.success);
+        assert!(state_dir.join("context-closed").exists());
+        manager.shutdown_all().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unconfirmed_browser_cleanup_retains_lock_and_rejects_retry() {
+        let temp = tempfile::tempdir().expect("fixture root");
+        let state_dir = temp.path().join("browser-state");
+        std::fs::create_dir_all(&state_dir).expect("browser state root");
+        std::fs::write(state_dir.join("pause-action"), "pause").expect("pause marker");
+        std::fs::write(state_dir.join("hang-close"), "hang").expect("cleanup marker");
+        let config = fake_provider_config(temp.path(), &state_dir);
+        let manager = std::sync::Arc::new(BrowserSessionManager::default());
+        let params = browser_params(
+            "thread-unconfirmed-cleanup",
+            TOOL_BROWSER_STEP,
+            json!({"action":"type","selector":"#note","text":"uncertain"}),
+        );
+        let task_manager = std::sync::Arc::clone(&manager);
+        let task_config = config.clone();
+        let task = tokio::spawn(async move { task_manager.handle(&params, &task_config).await });
+        wait_for_fixture_file(&state_dir.join("action-started")).await;
+        task.abort();
+        let _ = task.await;
+
+        let retry = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            manager.handle(
+                &browser_params(
+                    "thread-unconfirmed-cleanup",
+                    TOOL_BROWSER_OBSERVE,
+                    json!({}),
+                ),
+                &config,
+            ),
+        )
+        .await
+        .expect("cleanup deadline is finite");
+        assert!(retry.is_err());
+        let profile = std::fs::read_dir(state_dir.join("profiles"))
+            .expect("profile directory")
+            .next()
+            .expect("one thread profile")
+            .expect("profile entry")
+            .path();
+        assert!(profile.join(".codex-provider.lock").is_dir());
+        manager.shutdown_all().await;
     }
 }

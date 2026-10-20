@@ -1,24 +1,30 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
+import { createInterface } from "node:readline";
 
 const TOOL_OBSERVE = "browser_observe";
 const TOOL_STEP = "browser_step";
 const DEFAULT_PROFILE_LOCK_TIMEOUT_MS = 120_000;
-const PROFILE_LOCK_STALE_MS = 10 * 60_000;
 const PROFILE_LOCK_POLL_MS = 250;
+const CLEANUP_TIMEOUT_MS = 10_000;
 
-main().catch((error) => {
-  writeResponse({
-    contentItems: [{
-      type: "inputText",
-      text: "Browser Playwright provider failed: " + errorMessage(error),
-    }],
-    success: false,
-    error: errorMessage(error),
-  });
+let context;
+let page;
+let stateDir;
+let lockDir;
+let ownerToken;
+let cancelRequested = false;
+let activeRequestId = null;
+let lastRequestId = null;
+let initializationPromise;
+let activeRequestTask;
+let activeRequestSettled = true;
+
+main().catch(async (error) => {
+  await writeFrame({ kind: "fatal", error: errorMessage(error) }).catch(() => {});
   process.exitCode = 0;
 });
 
@@ -26,51 +32,202 @@ async function main() {
   if (process.platform === "win32") {
     throw new Error("Native Browser profile state is unsupported on Windows; no state was changed.");
   }
-  const request = JSON.parse(await readStdin());
-  validateVisualArguments(request.arguments || {});
-  const { chromium } = loadPlaywright();
-  const { stateDir } = await browserProfile(request);
-  await withProfileLock(stateDir, async () => {
-    const headless = playwrightHeadless();
-    const viewport = viewportFromRequest(request);
-    const context = await chromium.launchPersistentContext(stateDir, {
-      ...launchOptions({ headless, viewport }),
-      headless,
-      viewport,
-    });
-    try {
-      const page = await activePage(context);
-      await restoreOrNavigate(page, request, stateDir);
-      const summaries = [];
-      if (request.tool === TOOL_STEP) {
-        const actions = canonicalActions(request.arguments);
-        if (actions.length === 0) {
-          throw new Error("browser_step requires an action or non-empty actions array.");
-        }
-        for (const action of actions) summaries.push(await runAction(page, action));
-      } else if (request.tool !== TOOL_OBSERVE) {
-        throw new Error("Unsupported browser tool " + request.tool);
+  const input = createInterface({ input: process.stdin, crlfDelay: Infinity });
+  for await (const line of input) {
+    const message = JSON.parse(line);
+    if (message.kind === "start") {
+      if (initializationPromise || activeRequestId !== null) {
+        throw new Error("Browser provider received more than one start frame.");
       }
-      await page.waitForLoadState("domcontentloaded", { timeout: 10_000 }).catch(() => {});
-      const screenshot = await captureScreenshot(page);
-      await saveState(stateDir, page);
-      writeResponse(await responseForPage(page, screenshot, summaries));
-    } finally {
-      await context.close().catch(() => {});
+      activeRequestId = message.requestId;
+      initializationPromise = initialize(message.request);
+      startRequestTask(message.requestId, message.request, /*firstRequest*/ true);
+      continue;
     }
-  });
+    if (message.kind === "request") {
+      if (!initializationPromise || !activeRequestSettled || activeRequestId !== null) {
+        throw new Error("Browser provider received a concurrent request.");
+      }
+      activeRequestId = message.requestId;
+      startRequestTask(message.requestId, message.request, /*firstRequest*/ false);
+      continue;
+    }
+    if (message.kind === "cancel") {
+      if (message.requestId !== activeRequestId
+          && !(activeRequestId === null && message.requestId === lastRequestId)) {
+        throw new Error("Browser cancellation request identity mismatch.");
+      }
+      cancelRequested = true;
+      if (await cleanupAndRelease(message.requestId)) {
+        await writeReleased(message.requestId);
+      }
+      return;
+    }
+    if (message.kind === "close") {
+      cancelRequested = true;
+      if (await cleanupAndRelease(null)) {
+        await writeReleased(null);
+      }
+      return;
+    }
+    throw new Error("Unsupported Browser provider protocol frame.");
+  }
+  // EOF is not proof that this process completed cleanup. Leave any acquired
+  // owner lock intact so the next invocation fails closed.
 }
+
+function startRequestTask(requestId, request, firstRequest) {
+  activeRequestSettled = false;
+  activeRequestTask = (async () => {
+    try {
+      if (firstRequest) {
+        const profile = await initializationPromise;
+        if (cancelRequested) return;
+        await writeFrame({
+          kind: "ready",
+          profileKey: profile.stateDir,
+          generation: profile.generation,
+        });
+      }
+      if (cancelRequested) return;
+      let response;
+      try {
+        response = await executeRequest(request, firstRequest);
+      } catch (error) {
+        response = {
+          contentItems: [{
+            type: "inputText",
+            text: "Browser Playwright provider failed: " + errorMessage(error),
+          }],
+          success: false,
+        };
+      }
+      if (!cancelRequested) {
+        await writeFrame({ kind: "response", requestId, response });
+      }
+    } catch (error) {
+      if (!cancelRequested) {
+        await writeFrame({ kind: "fatal", error: errorMessage(error) });
+      }
+    } finally {
+      activeRequestSettled = true;
+      lastRequestId = requestId;
+      activeRequestId = null;
+    }
+  })();
+}
+
 function loadPlaywright() {
   const require = createRequire(import.meta.url);
   return require("playwright");
 }
 
-async function readStdin() {
-  const chunks = [];
-  for await (const chunk of process.stdin) {
-    chunks.push(chunk);
+async function initialize(firstRequest) {
+  validateVisualArguments(firstRequest.arguments || {});
+  const { chromium } = loadPlaywright();
+  const profile = await browserProfile(firstRequest);
+  stateDir = profile.stateDir;
+  lockDir = await acquireProfileLock(stateDir);
+  ownerToken = randomUUID();
+  await fs.writeFile(
+    path.join(lockDir, "owner.json"),
+    JSON.stringify({ generation: ownerToken, pid: process.pid, startedAt: new Date().toISOString() }),
+    { flag: "wx", mode: 0o600 },
+  );
+  const headless = playwrightHeadless();
+  const viewport = viewportFromRequest(firstRequest);
+  context = await chromium.launchPersistentContext(stateDir, {
+    ...launchOptions({ headless, viewport }),
+    headless,
+    viewport,
+  });
+  if (cancelRequested) return { stateDir, generation: ownerToken };
+  page = await activePage(context);
+  if (cancelRequested) return { stateDir, generation: ownerToken };
+  await restoreOrNavigate(page, firstRequest, stateDir);
+  return { stateDir, generation: ownerToken };
+}
+
+async function executeRequest(request, firstRequest) {
+  validateVisualArguments(request.arguments || {});
+  if (!firstRequest && request.arguments?.url) {
+    await page.goto(request.arguments.url, {
+      waitUntil: "domcontentloaded",
+      timeout: timeoutMs(request),
+    });
   }
-  return Buffer.concat(chunks).toString("utf8");
+  if (cancelRequested) throw new Error("Browser request cancelled.");
+  const summaries = [];
+  if (request.tool === TOOL_STEP) {
+    const actions = canonicalActions(request.arguments);
+    if (actions.length === 0) {
+      throw new Error("browser_step requires an action or non-empty actions array.");
+    }
+    for (const action of actions) {
+      summaries.push(await runAction(page, action));
+      if (cancelRequested) throw new Error("Browser request cancelled.");
+    }
+  } else if (request.tool !== TOOL_OBSERVE) {
+    throw new Error("Unsupported browser tool " + request.tool);
+  }
+  if (cancelRequested) throw new Error("Browser request cancelled.");
+  await page.waitForLoadState("domcontentloaded", { timeout: 10_000 }).catch(() => {});
+  if (cancelRequested) throw new Error("Browser request cancelled.");
+  const screenshot = await captureScreenshot(page);
+  if (cancelRequested) throw new Error("Browser request cancelled.");
+  await saveState(stateDir, page);
+  if (cancelRequested) throw new Error("Browser request cancelled.");
+  return responseForPage(page, screenshot, summaries);
+}
+
+async function cleanupAndRelease(requestId) {
+  const deadline = Date.now() + CLEANUP_TIMEOUT_MS;
+  if (requestId !== null
+      && requestId !== activeRequestId
+      && !(activeRequestId === null && requestId === lastRequestId)) {
+    return false;
+  }
+  if (!initializationPromise) return false;
+  if (!await settleBefore(initializationPromise, deadline, /*acceptFailure*/ false)) return false;
+  if (!lockDir || !ownerToken || !stateDir) return false;
+  if (context && !await settleBefore(context.close(), deadline, /*acceptFailure*/ false)) return false;
+  if (activeRequestTask && !activeRequestSettled) {
+    if (!await settleBefore(activeRequestTask, deadline, /*acceptFailure*/ true)) return false;
+  }
+  if (Date.now() >= deadline) return false;
+  try {
+    await releaseProfileLock(lockDir, ownerToken);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function settleBefore(promise, deadline, acceptFailure) {
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) return false;
+  let timer;
+  const timerPromise = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(false), remaining);
+  });
+  const result = await Promise.race([
+    Promise.resolve(promise).then(
+      () => true,
+      () => acceptFailure,
+    ),
+    timerPromise,
+  ]);
+  clearTimeout(timer);
+  return result === true;
+}
+
+async function writeReleased(requestId) {
+  await writeFrame({
+    kind: "released",
+    profileKey: stateDir,
+    generation: ownerToken,
+    requestId,
+  });
 }
 
 async function browserProfile(request) {
@@ -87,7 +244,7 @@ async function browserProfile(request) {
   await ensurePrivateStateDirectory(baseDir);
   await ensurePrivateStateDirectory(profilesDir);
   await ensurePrivateStateDirectory(profileDir);
-  return { stateDir: profileDir };
+  return { stateDir: await fs.realpath(profileDir) };
 }
 
 async function browserStateRoot(configured) {
@@ -206,34 +363,20 @@ function safePathComponent(value) {
   return `${slug}-${hash}`;
 }
 
-async function withProfileLock(stateDir, body) {
+async function acquireProfileLock(stateDir) {
   const lockDir = path.join(stateDir, ".codex-provider.lock");
   const deadline = Date.now() + lockTimeoutMs();
   while (true) {
     try {
       await fs.mkdir(lockDir);
-      await fs.writeFile(
-        path.join(lockDir, "owner.json"),
-        JSON.stringify({
-          pid: process.pid,
-          startedAt: new Date().toISOString(),
-        }),
-      );
-      try {
-        return await body();
-      } finally {
-        await fs.rm(lockDir, { recursive: true, force: true }).catch(() => {});
-      }
+      return lockDir;
     } catch (error) {
       if (error?.code !== "EEXIST") {
         throw error;
       }
-      if (await removeStaleProfileLock(lockDir)) {
-        continue;
-      }
       if (Date.now() >= deadline) {
         throw new Error(
-          `Timed out waiting for browser profile lock at ${lockDir}. Another native browser call may still be using the headed Chrome profile.`,
+          `Timed out waiting for browser profile lock at ${lockDir}. The existing owner is unknown, so the profile remains unavailable.`,
         );
       }
       await sleep(PROFILE_LOCK_POLL_MS);
@@ -241,17 +384,14 @@ async function withProfileLock(stateDir, body) {
   }
 }
 
-async function removeStaleProfileLock(lockDir) {
-  try {
-    const stat = await fs.stat(lockDir);
-    if (Date.now() - stat.mtimeMs < PROFILE_LOCK_STALE_MS) {
-      return false;
-    }
-    await fs.rm(lockDir, { recursive: true, force: true });
-    return true;
-  } catch (error) {
-    return error?.code === "ENOENT";
+async function releaseProfileLock(lockDir, generation) {
+  const ownerPath = path.join(lockDir, "owner.json");
+  const owner = JSON.parse(await fs.readFile(ownerPath, "utf8"));
+  if (owner.generation !== generation) {
+    throw new Error("Browser profile lock owner changed before release.");
   }
+  await fs.unlink(ownerPath);
+  await fs.rmdir(lockDir);
 }
 
 function lockTimeoutMs() {
@@ -772,6 +912,11 @@ function trimmedEnv(name) {
   return value && value.trim() ? value.trim() : null;
 }
 
-function writeResponse(response) {
-  process.stdout.write(JSON.stringify(response));
+function writeFrame(frame) {
+  return new Promise((resolve, reject) => {
+    process.stdout.write(JSON.stringify(frame) + "\n", (error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
 }

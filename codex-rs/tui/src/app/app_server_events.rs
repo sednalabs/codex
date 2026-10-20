@@ -162,12 +162,20 @@ impl App {
         app_server_client: &AppServerSession,
         notification: ServerNotification,
     ) {
+        let browser_thread_has_session = match &notification {
+            ServerNotification::ThreadClosed(closed) => {
+                codex_browser_computer_use::has_browser_session_for_thread(&closed.thread_id).await
+            }
+            _ => false,
+        };
+        let mut browser_thread_confirmed_closed = false;
         // A picker can leave an old runtime's close notification queued while the same thread
         // is resumed. Thread IDs survive reloads, so confirm that the displayed thread is still
-        // unloaded before routing a close that would exit the TUI or switch away from it.
+        // unloaded before routing a close that would exit the TUI or switch away from it. Apply
+        // the same readback to any retained Browser context, including a non-displayed thread.
         if let ServerNotification::ThreadClosed(closed) = &notification
             && let Ok(thread_id) = ThreadId::from_string(&closed.thread_id)
-            && self.current_displayed_thread_id() == Some(thread_id)
+            && (self.current_displayed_thread_id() == Some(thread_id) || browser_thread_has_session)
         {
             let deadline = tokio::time::Instant::now() + Duration::from_secs(/*secs*/ 5);
             for attempt in 0..2 {
@@ -192,7 +200,11 @@ impl App {
                     {
                         return;
                     }
-                    Ok(Ok(_)) => break,
+                    Ok(Ok(response)) => {
+                        browser_thread_confirmed_closed =
+                            matches!(response.thread.status, ThreadStatus::NotLoaded);
+                        break;
+                    }
                     // Unpersisted closed threads can no longer be read. Preserve that close
                     // and compatibility with servers that do not support this request.
                     Ok(Err(TypedRequestError::Server { source, .. }))
@@ -216,6 +228,11 @@ impl App {
                     }
                 }
             }
+        }
+        if browser_thread_confirmed_closed
+            && let ServerNotification::ThreadClosed(closed) = &notification
+        {
+            codex_browser_computer_use::close_browser_thread(&closed.thread_id).await;
         }
 
         if let ServerNotification::ThreadStatusChanged(status) = &notification {
