@@ -265,8 +265,10 @@ async fn synthetic_fork_retention_payload_comparison() {
         .new_default_turn()
         .await
         .to_turn_context_item();
-    let partial_marker = "synthetic-partial-payload:";
-    let partial_payload = format!("{partial_marker}{}", "p".repeat(4096));
+    let partial_phase_supported =
+        serde_json::from_str::<MessagePhase>("\"partial_answer\"").is_ok();
+    let interim_marker = "synthetic-interim-payload:";
+    let interim_payload = format!("{interim_marker}{}", "p".repeat(4096));
     parent_thread
         .session
         .persist_rollout_items(&[
@@ -286,9 +288,9 @@ async fn synthetic_fork_retention_payload_comparison() {
                 id: None,
                 role: "assistant".to_owned(),
                 content: vec![ContentItem::OutputText {
-                    text: partial_payload.clone(),
+                    text: interim_payload.clone(),
                 }],
-                phase: Some(MessagePhase::PartialAnswer),
+                phase: Some(MessagePhase::Commentary),
                 internal_chat_message_metadata_passthrough: None,
             }),
         ])
@@ -329,7 +331,7 @@ async fn synthetic_fork_retention_payload_comparison() {
             history_contains_text(history.raw_items(), "synthetic older turn"),
             keeps_older_turn,
         );
-        let retained_partial = history_contains_text(history.raw_items(), partial_marker);
+        let retained_interim = history_contains_text(history.raw_items(), interim_marker);
         let items = history.raw_items().collect::<Vec<_>>();
         let context_bytes = serde_json::to_vec(&items)
             .expect("synthetic history should serialize")
@@ -358,8 +360,9 @@ async fn synthetic_fork_retention_payload_comparison() {
                 "cohort_children": 2,
                 "history_item_count": items.len(),
                 "serialized_model_history_bytes": context_bytes,
-                "partial_payload_bytes": partial_payload.len(),
-                "partial_payload_retained": retained_partial,
+                "interim_payload_bytes": interim_payload.len(),
+                "interim_payload_retained": retained_interim,
+                "partial_phase_supported": partial_phase_supported,
                 "parent_recent_context_records": recent_context_records,
             }),
         )
