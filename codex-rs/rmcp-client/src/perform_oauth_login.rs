@@ -970,12 +970,12 @@ mod tests {
     use futures::future::BoxFuture;
     use http::HeaderMap;
     use oauth2::AccessToken;
-    use oauth2::EmptyExtraTokenFields;
     use oauth2::RefreshToken;
     use oauth2::TokenResponse;
     use oauth2::basic::BasicTokenType;
     use pretty_assertions::assert_eq;
     use rmcp::transport::auth::OAuthTokenResponse;
+    use rmcp::transport::auth::VendorExtraTokenFields;
     use serde_json::json;
     use tokio::net::TcpListener;
     use url::Url;
@@ -1150,7 +1150,7 @@ mod tests {
             let mut previous_response = OAuthTokenResponse::new(
                 AccessToken::new("previous-access-token".to_string()),
                 BasicTokenType::Bearer,
-                EmptyExtraTokenFields {},
+                VendorExtraTokenFields::default(),
             );
             previous_response.set_refresh_token(Some(RefreshToken::new(
                 "previous-refresh-token".to_string(),
