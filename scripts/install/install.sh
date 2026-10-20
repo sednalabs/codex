@@ -1090,7 +1090,7 @@ case "$(uname -s)" in
     os="linux"
     ;;
   *)
-    echo "install.sh supports macOS and Linux. Use install.ps1 on Windows." >&2
+    echo "Codex CLI supports macOS and Linux. On Windows, use WSL2; native Windows is not supported." >&2
     exit 1
     ;;
 esac

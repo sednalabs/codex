@@ -21,20 +21,13 @@ Run the following on Mac or Linux to install Codex CLI:
 curl -fsSL https://chatgpt.com/codex/install.sh | sh
 ```
 
-Run the following on Windows to install Codex CLI:
-
-```shell
-powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"
-```
+Native Windows is not supported. On Windows, use WSL2 and follow the Linux
+installation instructions.
 
 The standalone installers download from `https://releases.openai.com/codex` by default and fall back to GitHub Releases if a metadata or asset download is unavailable. To force GitHub Releases, set `CODEX_INSTALLER_USE_RELEASES_OPENAI_COM` to `false` (`0` and `no` are also accepted):
 
 ```shell
 curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_INSTALLER_USE_RELEASES_OPENAI_COM=false sh
-```
-
-```powershell
-$env:CODEX_INSTALLER_USE_RELEASES_OPENAI_COM='false'; irm https://chatgpt.com/codex/install.ps1 | iex
 ```
 
 Codex CLI can also be installed via the following package managers:

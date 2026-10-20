@@ -547,7 +547,7 @@ jobs:
             tar -C "$dest" -czf "$dest/${base}.tar.gz" "$base"
 
             # Also create .zst and remove the uncompressed binaries to keep
-            # non-Windows artifact directories small.
+            # artifact directories small.
             zstd -T0 -19 --rm "$dest/$base"
           done
 
@@ -1528,11 +1528,6 @@ jobs:
     uses: ./.github/workflows/rust-release-provisioned-macos.yml
     secrets: inherit
 
-  build-windows:
-    needs: tag-check
-    uses: ./.github/workflows/rust-release-windows.yml
-    secrets: inherit
-
   argument-comment-lint-release-assets:
     name: argument-comment-lint release assets
     needs: tag-check
@@ -1545,7 +1540,6 @@ jobs:
     needs:
       - build
       - finalize-macos
-      - build-windows
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -1560,7 +1554,7 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: dist
-          pattern: "{aarch64,x86_64}-{apple-darwin{,-app-server},unknown-linux-musl{,-app-server},pc-windows-msvc}"
+          pattern: "{aarch64,x86_64}-{apple-darwin{,-app-server},unknown-linux-musl{,-app-server}}"
 
       - name: Setup pnpm
         uses: pnpm/action-setup@a8198c4bff370c8506180b035930dea56dbd5288 # v5
@@ -1603,7 +1597,6 @@ jobs:
       - tag-check
       - build
       - finalize-macos
-      - build-windows
       - argument-comment-lint-release-assets
       - stage-npm-packages
       - provisioned-macos-candidate
@@ -1613,7 +1606,6 @@ jobs:
         needs.tag-check.result == 'success' &&
         needs.build.result == 'success' &&
         needs.finalize-macos.result == 'success' &&
-        needs.build-windows.result == 'success' &&
         needs.argument-comment-lint-release-assets.result == 'success' &&
         needs.stage-npm-packages.result == 'success' &&
         (needs.provisioned-macos-candidate.result == 'success' ||
@@ -1662,7 +1654,7 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: dist
-          pattern: "{{aarch64,x86_64}-{apple-darwin{,-app-server},unknown-linux-musl{,-app-server},pc-windows-msvc}{,-bazel},*-symbols{,-bazel},argument-comment-lint-*,python-runtime-wheel-*,npm-packages}"
+          pattern: "{{aarch64,x86_64}-{apple-darwin{,-app-server},unknown-linux-musl{,-app-server}}{,-bazel},*-symbols{,-bazel},argument-comment-lint-*,python-runtime-wheel-*,npm-packages}"
 
       - name: Download verified provisioned macOS packages
         if: vars.CODEX_PROVISIONED_MACOS_CANDIDATE == 'true'
@@ -1747,7 +1739,6 @@ jobs:
       - name: Stage installer scripts
         run: |
           cp scripts/install/install.sh dist/install.sh
-          mv dist/x86_64-pc-windows-msvc/install.ps1 dist/install.ps1
 
       - name: Create GitHub Release
         env:
@@ -1903,7 +1894,6 @@ jobs:
             "codex-npm-${version}.tgz"
             "codex-npm-linux-*-${version}.tgz"
             "codex-npm-darwin-*-${version}.tgz"
-            "codex-npm-win32-*-${version}.tgz"
             "codex-responses-api-proxy-npm-${version}.tgz"
             "codex-sdk-npm-${version}.tgz"
           )
@@ -1937,8 +1927,6 @@ jobs:
             "dist/npm/codex-npm-linux-arm64-${VERSION}.tgz"
             "dist/npm/codex-npm-darwin-x64-${VERSION}.tgz"
             "dist/npm/codex-npm-darwin-arm64-${VERSION}.tgz"
-            "dist/npm/codex-npm-win32-x64-${VERSION}.tgz"
-            "dist/npm/codex-npm-win32-arm64-${VERSION}.tgz"
           )
 
           for required_tarball in "${platform_tarballs[@]}" "${root_tarball}"; do
@@ -1987,7 +1975,7 @@ jobs:
             tag=""
 
             case "${filename}" in
-              codex-npm-linux-*-"${VERSION}".tgz|codex-npm-darwin-*-"${VERSION}".tgz|codex-npm-win32-*-"${VERSION}".tgz)
+              codex-npm-linux-*-"${VERSION}".tgz|codex-npm-darwin-*-"${VERSION}".tgz)
                 platform="${filename#codex-npm-}"
                 platform="${platform%-${VERSION}.tgz}"
                 tag="${prefix}${platform}"
@@ -2057,68 +2045,6 @@ jobs:
             echo "::warning title=developers.openai.com deploy hook failed::Vercel deploy hook POST failed for ${GITHUB_REF_NAME}"
             exit 1
           fi
-
-  winget:
-    concurrency: *release-publication
-    name: winget
-    needs: release
-    # Only publish stable/mainline releases to WinGet; pre-releases include a
-    # '-' in the semver string (e.g., 1.2.3-alpha.1).
-    if: >-
-      ${{
-        !cancelled() &&
-        needs.release.result == 'success' &&
-        !contains(needs.release.outputs.version, '-')
-      }}
-    # komac opens the winget-pkgs PR using the published Windows archives;
-    # it runs on Linux and does not execute the Windows binaries.
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    environment:
-      name: mainline-release-winget
-      deployment: false
-
-    steps:
-      # Adapted from the WinGet Releaser version previously used by this job:
-      # https://github.com/vedantmgoyal9/winget-releaser/blob/7bd472be23763def6e16bd06cc8b1cdfab0e2fd5/action.yml
-      # Keep dependencies explicit because its cargo-binstall@main reference
-      # violates the policy requiring full commit SHA action pins.
-      - name: Install cargo-binstall
-        uses: cargo-bins/cargo-binstall@b874e25ea559687bec77e281e9b271aa1367b624 # v1.23.0
-        with:
-          version: "1.23.0"
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-
-      - name: Install komac
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: cargo-binstall komac --version 2.16.0 --no-confirm
-
-      - name: Publish to WinGet
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GITHUB_TOKEN: ${{ secrets.WINGET_PUBLISH_PAT }}
-          RELEASE_VERSION: ${{ needs.release.outputs.version }}
-          RELEASE_TAG: ${{ needs.release.outputs.tag }}
-          KOMAC_FORK_OWNER: openai-oss-forks
-          KOMAC_CREATED_WITH: Codex release workflow
-          KOMAC_CREATED_WITH_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          set -euo pipefail
-          installer_urls="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
-            --json assets \
-            --jq '.assets[] | select(.name | test("^codex-(x86_64|aarch64)-pc-windows-msvc\\.exe\\.zip$")) | .url')"
-          mapfile -t urls <<< "$installer_urls"
-          if [[ ${#urls[@]} -ne 2 ]]; then
-            echo "::error::Expected x86_64 and aarch64 Windows archives for $RELEASE_TAG"
-            exit 1
-          fi
-          komac sync-fork
-          komac update OpenAI.Codex --version "$RELEASE_VERSION" --submit --urls "${urls[@]}"
-          komac cleanup --only-merged
 
   update-branch:
     concurrency: *release-publication

@@ -104,8 +104,6 @@ jobs:
             runner: ubuntu-24.04
           - name: macOS
             runner: macos-15
-          - name: Windows
-            runner: windows-2025
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -120,7 +118,6 @@ jobs:
           sudo DEBIAN_FRONTEND=noninteractive apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
       - name: Run argument comment lint on codex-rs via Bazel
-        if: ${{ runner.os != 'Windows' }}
         shell: bash
         run: |
           bazel_targets="$(./tools/argument-comment-lint/list-bazel-targets.sh)"
@@ -132,16 +129,6 @@ jobs:
             --build_metadata=COMMIT_SHA=${GITHUB_SHA} \
             -- \
             ${bazel_targets}
-      - name: Run argument comment lint on codex-rs via Bazel
-        if: ${{ runner.os == 'Windows' }}
-        shell: bash
-        run: |
-          ./.github/scripts/run-argument-comment-lint-bazel.sh \
-            --config=argument-comment-lint \
-            --platforms=//:local_windows \
-            --keep_going \
-            --build_metadata=COMMIT_SHA=${GITHUB_SHA}
-
   # --- CI to validate on different os/targets --------------------------------
   lint_build:
     name: Lint/Build — ${{ matrix.runner }} - ${{ matrix.target }}${{ matrix.profile == 'release' && ' (release)' || '' }}
@@ -151,8 +138,8 @@ jobs:
       run:
         working-directory: codex-rs
     env:
-      # Reuse compiled objects on the supported non-Windows cache paths.
-      USE_SCCACHE: ${{ startsWith(matrix.runner, 'windows') && 'false' || 'true' }}
+      # Reuse compiled objects on the supported cache paths.
+      USE_SCCACHE: "true"
       CARGO_INCREMENTAL: "0"
       SCCACHE_CACHE_SIZE: 10G
 
@@ -178,13 +165,6 @@ jobs:
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             profile: dev
-          - runner: windows-2025
-            target: x86_64-pc-windows-msvc
-            profile: dev
-          - runner: windows-11-arm
-            target: aarch64-pc-windows-msvc
-            profile: dev
-
           # Also run representative release builds on Mac and Linux because
           # there could be release-only build errors we want to catch.
           # Hopefully this also pre-populates the build cache to speed up
@@ -198,13 +178,6 @@ jobs:
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
             profile: release
-          - runner: windows-2025
-            target: x86_64-pc-windows-msvc
-            profile: release
-          - runner: windows-11-arm
-            target: aarch64-pc-windows-msvc
-            profile: release
-
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -449,28 +422,6 @@ jobs:
       artifact_id: linux-arm64
       use_sccache: true
 
-  tests_windows_x64:
-    name: Tests — windows-2025 - x86_64-pc-windows-msvc
-    uses: ./.github/workflows/rust-ci-full-nextest-platform.yml
-    with:
-      runner: windows-2025
-      target: x86_64-pc-windows-msvc
-      profile: ci-test
-      artifact_id: windows-x64
-      test_threads: 8
-
-  tests_windows_arm64:
-    name: Tests — windows-11-arm - aarch64-pc-windows-msvc
-    uses: ./.github/workflows/rust-ci-full-nextest-platform.yml
-    with:
-      runner: windows-11-arm
-      archive_runner: windows-2025
-      target: aarch64-pc-windows-msvc
-      profile: ci-test
-      artifact_id: windows-arm64
-      test_threads: 8
-      use_sccache: true
-
   # --- Gatherer job for the full post-merge workflow --------------------------
   results:
     name: Full CI results
@@ -484,8 +435,6 @@ jobs:
         tests_macos_aarch64,
         tests_linux_x64_remote,
         tests_linux_arm64,
-        tests_windows_x64,
-        tests_windows_arm64,
       ]
     if: always()
     runs-on: ubuntu-24.04
@@ -501,8 +450,6 @@ jobs:
           echo "test macos : ${{ needs.tests_macos_aarch64.result }}"
           echo "test linux : ${{ needs.tests_linux_x64_remote.result }}"
           echo "test arm64 : ${{ needs.tests_linux_arm64.result }}"
-          echo "test winx64: ${{ needs.tests_windows_x64.result }}"
-          echo "test winarm: ${{ needs.tests_windows_arm64.result }}"
           [[ '${{ needs.argument_comment_lint_package.result }}' == 'success' ]] || { echo 'argument_comment_lint_package failed'; exit 1; }
           [[ '${{ needs.argument_comment_lint_prebuilt.result }}' == 'success' ]] || { echo 'argument_comment_lint_prebuilt failed'; exit 1; }
           [[ '${{ needs.general.result }}' == 'success' ]] || { echo 'general failed'; exit 1; }
@@ -511,8 +458,6 @@ jobs:
           [[ '${{ needs.tests_macos_aarch64.result }}' == 'success' ]] || { echo 'tests_macos_aarch64 failed'; exit 1; }
           [[ '${{ needs.tests_linux_x64_remote.result }}' == 'success' ]] || { echo 'tests_linux_x64_remote failed'; exit 1; }
           [[ '${{ needs.tests_linux_arm64.result }}' == 'success' ]] || { echo 'tests_linux_arm64 failed'; exit 1; }
-          [[ '${{ needs.tests_windows_x64.result }}' == 'success' ]] || { echo 'tests_windows_x64 failed'; exit 1; }
-          [[ '${{ needs.tests_windows_arm64.result }}' == 'success' ]] || { echo 'tests_windows_arm64 failed'; exit 1; }
 
       - name: sccache summary note
         if: always()

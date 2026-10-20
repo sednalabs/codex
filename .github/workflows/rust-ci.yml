@@ -177,8 +177,6 @@ jobs:
             runner: ubuntu-24.04
           - name: macOS
             runner: macos-15
-          - name: Windows
-            runner: windows-2025
     steps:
       - name: Check whether argument comment lint should run
         id: argument_comment_lint_gate
