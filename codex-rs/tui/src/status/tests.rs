@@ -830,7 +830,10 @@ async fn status_uses_server_provider_id_and_auth_requirement() {
     );
     let rendered =
         sanitize_directory(render_lines(&composite.display_lines(/*width*/ 120))).join("\n");
-    assert_snapshot!("status_server_auth_required", rendered);
+    assert_snapshot!(
+        "status_server_auth_required",
+        rendered.replace(crate::version::CODEX_CLI_VERSION, "<VERSION>")
+    );
 
     for width in [24, 42, 120] {
         let lines = composite.display_hyperlink_lines(width);
@@ -1149,7 +1152,7 @@ async fn status_snapshot_includes_enterprise_monthly_credit_limit() {
     let sanitized = sanitize_directory(rendered_lines).join("\n");
     assert_snapshot!(
         "status_snapshot_wraps_enterprise_monthly_credit_details_in_narrow_terminal",
-        sanitized
+        sanitized.replace(crate::version::CODEX_CLI_VERSION, "<VERSION>")
     );
 }
 
