@@ -3,6 +3,14 @@ name: Focused native Windows Bazel validation
 on:
   workflow_dispatch:
     inputs:
+      operation:
+        description: Focused selectors or Voice PE dependency inspection.
+        required: true
+        default: selectors
+        type: choice
+        options:
+          - selectors
+          - voice-loader-diagnostic
       source_sha:
         description: Exact source commit for this focused validation.
         required: true
@@ -17,6 +25,7 @@ permissions:
 
 jobs:
   focused-current-ci-local-msvc:
+    if: inputs.operation == 'selectors'
     name: Focused required-CI selectors on Windows 2025 local MSVC
     runs-on: windows-2025
     timeout-minutes: 90
@@ -33,7 +42,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          expected_ref="refs/heads/validation/pr965-focused-windows-62789f78"
+          expected_ref="refs/heads/validation/pr965-voice-loader-dbd4-20261021"
           expected_workflow_ref="sednalabs/codex/.github/workflows/native-windows-bazel-health.yml@${expected_ref}"
           [[ "${GITHUB_REPOSITORY}" == "sednalabs/codex" ]]
           [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]
@@ -299,3 +308,364 @@ jobs:
           path: ${{ runner.temp }}/native-windows-fixed-selectors-${{ github.run_id }}-${{ github.run_attempt }}.tsv
           if-no-files-found: warn
           retention-days: 3
+
+  voice-loader-dependency-diagnostic:
+    if: inputs.operation == 'voice-loader-diagnostic'
+    name: Inspect required-CI gnullvm Voice PE dependencies on Windows 2025
+    runs-on: windows-2025
+    timeout-minutes: 90
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      EXPECTED_HOST_SHA: ${{ inputs.expected_host_sha }}
+      DIAGNOSTIC_SOURCE_SHA: dbd4fa5ed7b2612a5de57bade56c59e854097669
+      DIAGNOSTIC_SOURCE_TREE: 7880f08c0d97de6c5fecd4028637bf9aae264d5b
+      BASE_SHA: 83086188ae0614bd882818ff1aa23f3194962012
+      BUILDBUDDY_API_KEY: ''
+
+    steps:
+      - name: Validate diagnostic dispatch identity before checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_ref="refs/heads/validation/pr965-voice-loader-dbd4-20261021"
+          expected_workflow_ref="sednalabs/codex/.github/workflows/native-windows-bazel-health.yml@${expected_ref}"
+          [[ "${GITHUB_REPOSITORY}" == "sednalabs/codex" ]]
+          [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]
+          [[ "${GITHUB_REF}" == "${expected_ref}" ]]
+          [[ "${GITHUB_WORKFLOW_REF}" == "${expected_workflow_ref}" ]]
+          [[ "${SOURCE_SHA}" == "${DIAGNOSTIC_SOURCE_SHA}" ]]
+          [[ "${SOURCE_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${EXPECTED_HOST_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${GITHUB_SHA}" == "${EXPECTED_HOST_SHA}" ]]
+          [[ "${EXPECTED_HOST_SHA}" != "${SOURCE_SHA}" ]]
+          [[ -z "${BUILDBUDDY_API_KEY}" ]]
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify exact gnullvm source and initialize sanitized receipt
+        id: verify_voice_source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $actualSha = (& git rev-parse --verify HEAD).Trim()
+          $actualTree = (& git rev-parse --verify 'HEAD^{tree}').Trim()
+          if ($LASTEXITCODE -ne 0 -or $actualSha -cne $env:DIAGNOSTIC_SOURCE_SHA -or
+              $actualTree -cne $env:DIAGNOSTIC_SOURCE_TREE) {
+            throw "The diagnostic checkout does not match the fixed source identity."
+          }
+          & git merge-base --is-ancestor $env:BASE_SHA $actualSha
+          if ($LASTEXITCODE -ne 0) { throw "The fixed baseline is not an ancestor of the diagnostic source." }
+          $status = @(& git status --porcelain=v1)
+          if ($LASTEXITCODE -ne 0 -or $status.Count -ne 0) {
+            throw "The diagnostic source checkout must be clean before inspection."
+          }
+          $report = Join-Path $env:RUNNER_TEMP "voice-loader-dependencies-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT).tsv"
+          "VOICE_DLL_REPORT=$report" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $lines = @(
+            'schema' + "`t" + 'focused-voice-loader-dependencies-v1',
+            'repository' + "`t" + $env:GITHUB_REPOSITORY,
+            'workflow_host_sha' + "`t" + $env:EXPECTED_HOST_SHA,
+            'workflow_run_id' + "`t" + $env:GITHUB_RUN_ID,
+            'workflow_run_attempt' + "`t" + $env:GITHUB_RUN_ATTEMPT,
+            'source_sha' + "`t" + $actualSha,
+            'source_tree' + "`t" + $actualTree,
+            'base_sha' + "`t" + $env:BASE_SHA,
+            'windows_runner' + "`t" + 'windows-2025',
+            'target_platform' + "`t" + 'windows_x86_64_gnullvm',
+            'execution_host' + "`t" + 'local_windows_msvc_no_rbe',
+            'build_only' + "`t" + 'true',
+            'target' + "`t" + '//codex-rs/voice-host:codex-voice-host',
+            'target' + "`t" + '//codex-rs/voice-host:codex-voice-host-bin-unit-tests',
+            'component' + "`t" + 'dll' + "`t" + 'system' + "`t" + 'helper_source_adjacent' + "`t" + 'unit_test_adjacent' + "`t" + 'test_ci_path' + "`t" + 'unit_test_runfiles' + "`t" + 'workspace_root' + "`t" + 'copied_helper_dependency_available'
+          )
+          Set-Content -LiteralPath $report -Value $lines -Encoding utf8
+          "VOICE_DLL_REPORT=$report" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Prepare Bazel CI
+        uses: ./.github/actions/prepare-bazel-ci
+        with:
+          target: x86_64-pc-windows-gnullvm
+          cache-scope: bazel-focused-voice-loader-diagnostic
+
+      - name: Download pinned public Windows voice inputs
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $manifest = Get-Content -Raw .github/scripts/voice-cygwin-snapshot.json | ConvertFrom-Json
+          $pin = $manifest.archive
+          $source = $manifest.sourceArchive
+          $directory = Join-Path $env:RUNNER_TEMP "voice-cygwin-snapshot"
+          New-Item -ItemType Directory -Path $directory | Out-Null
+          gh release download $pin.tag --repo openai/codex --pattern $pin.name --pattern $source.name --dir $directory
+          if ($LASTEXITCODE -ne 0) { throw "Cannot obtain the pinned public Cygwin inputs and source" }
+          $sourceFile = Join-Path $directory $source.name
+          if ((Get-Item $sourceFile).Length -ne $source.bytes -or
+              (Get-FileHash $sourceFile -Algorithm SHA256).Hash.ToLowerInvariant() -ne $source.sha256) {
+            throw "Public Cygwin source archive mismatch"
+          }
+          "VOICE_CYGWIN_ARCHIVE=$(Join-Path $directory $pin.name)" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install pinned Windows voice build tools without token inheritance
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & ./.github/scripts/setup-voice-windows.ps1 -Target "x86_64-pc-windows-msvc" -SnapshotArchive $env:VOICE_CYGWIN_ARCHIVE
+          if ($LASTEXITCODE -ne 0) { throw "Pinned Windows voice Bazel inputs could not be provisioned" }
+
+      - name: Validate Windows host and exact workspace status
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $systemRoot = $env:SystemRoot
+          if ([string]::IsNullOrWhiteSpace($systemRoot) -or
+              -not [System.IO.Path]::IsPathRooted($systemRoot) -or
+              -not (Test-Path -LiteralPath $systemRoot -PathType Container)) {
+            throw "Windows SystemRoot must be a valid runner directory."
+          }
+          $resolvedSystemRoot = (Resolve-Path -LiteralPath $systemRoot).Path
+          $hostArchitecture = $env:PROCESSOR_ARCHITEW6432
+          if ([string]::IsNullOrWhiteSpace($hostArchitecture)) { $hostArchitecture = $env:PROCESSOR_ARCHITECTURE }
+          if ([string]::IsNullOrWhiteSpace($hostArchitecture) -or
+              [string]::IsNullOrWhiteSpace($env:CODEX_BAZEL_WINDOWS_PATH)) {
+            throw "Windows host architecture and the required CI test PATH must be available."
+          }
+          "CODEX_BAZEL_SYSTEM_ROOT=$resolvedSystemRoot" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "CODEX_BAZEL_PROCESSOR_ARCHITECTURE=$hostArchitecture" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          $checkoutCommit = (& git rev-parse --verify HEAD).Trim()
+          $statusLines = @(& cmd.exe /d /c .\scripts\workspace-status.cmd)
+          $statusExitCode = $LASTEXITCODE
+          $commitLines = @($statusLines | Where-Object { $_.StartsWith('STABLE_GIT_COMMIT ', [StringComparison]::Ordinal) })
+          if ($checkoutCommit -cne $env:SOURCE_SHA -or $statusExitCode -ne 0 -or
+              $commitLines.Count -ne 1 -or $commitLines[0] -cne "STABLE_GIT_COMMIT $($env:SOURCE_SHA)") {
+            throw "Windows workspace status must identify the exact checked-out source once."
+          }
+
+      - name: Build only the failing Voice PE targets with required-CI gnullvm settings
+        id: build_voice_outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          [[ -z "${BUILDBUDDY_API_KEY:-}" ]]
+          bazel_log="${RUNNER_TEMP}/voice-loader-bazel-build.log"
+          bazel_args=(
+            --platforms=//:windows_x86_64_gnullvm
+            --workspace_status_command=./scripts/workspace-status.cmd
+            --build_metadata=COMMIT_SHA=${SOURCE_SHA}
+            --build_metadata=TAG_validation_host_sha=${EXPECTED_HOST_SHA}
+            --build_metadata=TAG_windows_validation_mode=voice_loader_dependency_diagnostic
+            --repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1
+            --action_env="SystemRoot=${CODEX_BAZEL_SYSTEM_ROOT}"
+            --host_action_env="SystemRoot=${CODEX_BAZEL_SYSTEM_ROOT}"
+            --action_env="PROCESSOR_ARCHITECTURE=${CODEX_BAZEL_PROCESSOR_ARCHITECTURE}"
+            --host_action_env="PROCESSOR_ARCHITECTURE=${CODEX_BAZEL_PROCESSOR_ARCHITECTURE}"
+            --inject_repository="voice_windows_tools=${VOICE_WINDOWS_BAZEL_REPOSITORY}"
+            --//third_party/voice:windows_installed_tools=@voice_windows_tools//:tools
+          )
+          targets=(
+            //codex-rs/voice-host:codex-voice-host
+            //codex-rs/voice-host:codex-voice-host-bin-unit-tests
+          )
+          if ./.github/scripts/run-bazel-ci.sh \
+            --print-failed-action-summary \
+            --windows-cross-compile \
+            -- \
+            build \
+            "${bazel_args[@]}" \
+            -- \
+            "${targets[@]}" >"${bazel_log}" 2>&1; then
+            bazel_status=0
+          else
+            bazel_status=$?
+          fi
+          local_config_count="$(grep -Fxc 'BuildBuddy API key is not available; using local Bazel configuration.' "${bazel_log}" || true)"
+          printf 'build_exit_code=%s\n' "${bazel_status}" >> "${VOICE_DLL_REPORT}"
+          printf 'local_bazel_configuration_marker_count=%s\n' "${local_config_count}" >> "${VOICE_DLL_REPORT}"
+          printf 'exit_code=%s\n' "${bazel_status}" >> "${GITHUB_OUTPUT}"
+          if [[ "${local_config_count}" != 1 ]]; then
+            echo "The diagnostic build did not prove the no-key local Bazel path." >&2
+            exit 1
+          fi
+          if [[ "${bazel_status}" -ne 0 ]]; then
+            echo "The focused Voice PE build failed; no PE inspection was performed." >&2
+            exit "${bazel_status}"
+          fi
+
+      - name: Resolve the two PE outputs without executing them
+        id: resolve_voice_outputs
+        if: steps.build_voice_outputs.outputs.exit_code == '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          query_flags=(
+            --platforms=//:windows_x86_64_gnullvm
+            --host_platform=//:local_windows_msvc
+            --repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1
+            --inject_repository="voice_windows_tools=${VOICE_WINDOWS_BAZEL_REPOSITORY}"
+            --//third_party/voice:windows_installed_tools=@voice_windows_tools//:tools
+          )
+          query_output() {
+            local target="$1"
+            local suffix="$2"
+            local log="${RUNNER_TEMP}/voice-loader-cquery-$3.log"
+            if ! ./.github/scripts/run-bazel-ci.sh \
+              --windows-cross-compile \
+              -- \
+              cquery \
+              --output=files \
+              "${query_flags[@]}" \
+              -- \
+              "${target}" >"${log}" 2>&1; then
+              echo "Exact Voice output resolution failed." >&2
+              return 1
+            fi
+            local local_config_count
+            local_config_count="$(grep -Fxc 'BuildBuddy API key is not available; using local Bazel configuration.' "${log}" || true)"
+            [[ "${local_config_count}" == 1 ]]
+            local -a outputs=()
+            mapfile -t outputs < <(tr -d '\r' < "${log}" | grep -Ei "^[^[:space:]].*\.${suffix}$")
+            [[ "${#outputs[@]}" -eq 1 ]]
+            [[ "${outputs[0]}" == bazel-out/* ]]
+            printf '%s' "${outputs[0]}"
+          }
+          helper_pe="$(query_output '//codex-rs/voice-host:codex-voice-host' exe helper)"
+          test_pe="$(query_output '//codex-rs/voice-host:codex-voice-host-bin-unit-tests-bin' exe unit-test)"
+          test_launcher="$(query_output '//codex-rs/voice-host:codex-voice-host-bin-unit-tests' bat launcher)"
+          {
+            printf 'VOICE_HELPER_PE=%s\n' "${helper_pe}"
+            printf 'VOICE_TEST_PE=%s\n' "${test_pe}"
+            printf 'VOICE_TEST_LAUNCHER=%s\n' "${test_launcher}"
+          } >> "${GITHUB_ENV}"
+
+      - name: Inspect imported DLL names and exact test resolution locations
+        id: inspect_voice_pes
+        if: steps.resolve_voice_outputs.outcome == 'success'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $workspace = (Resolve-Path -LiteralPath '.').Path
+          $helperPe = (Resolve-Path -LiteralPath $env:VOICE_HELPER_PE).Path
+          $testPe = (Resolve-Path -LiteralPath $env:VOICE_TEST_PE).Path
+          $testLauncher = (Resolve-Path -LiteralPath $env:VOICE_TEST_LAUNCHER).Path
+          $systemDirectories = @(
+            (Join-Path $env:SystemRoot 'System32'),
+            (Join-Path $env:SystemRoot 'SysWOW64')
+          )
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) { throw 'The standard Visual Studio locator is unavailable.' }
+          $installations = @(& $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | Where-Object { $_ })
+          if ($LASTEXITCODE -ne 0 -or $installations.Count -ne 1) { throw 'The standard Windows C++ inspection toolchain was not uniquely located.' }
+          $toolsetRoot = Join-Path $installations[0] 'VC\Tools\MSVC'
+          $toolsets = @(Get-ChildItem -LiteralPath $toolsetRoot -Directory -ErrorAction Stop |
+            Sort-Object { [version]$_.Name } -Descending)
+          $dumpbin = $null
+          foreach ($toolset in $toolsets) {
+            $candidate = Join-Path $toolset.FullName 'bin\Hostx64\x64\dumpbin.exe'
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+              $dumpbin = (Resolve-Path -LiteralPath $candidate).Path
+              break
+            }
+          }
+          if ([string]::IsNullOrWhiteSpace($dumpbin)) { throw 'The standard x64 dumpbin executable was not found.' }
+
+          $manifestCandidates = @(
+            "$testLauncher.runfiles_manifest",
+            "$([System.IO.Path]::ChangeExtension($testLauncher, $null)).runfiles_manifest",
+            "$testLauncher.exe.runfiles_manifest"
+          ) | Select-Object -Unique
+          $manifests = @($manifestCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf })
+          if ($manifests.Count -ne 1) { throw 'The exact unit-test runfiles manifest was not uniquely located.' }
+
+          $runfilesNames = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+          foreach ($line in Get-Content -LiteralPath $manifests[0]) {
+            if ([string]::IsNullOrWhiteSpace($line)) { continue }
+            $parts = $line -split ' ', 2
+            foreach ($value in $parts) {
+              $name = [System.IO.Path]::GetFileName($value.Trim('"'))
+              if (-not [string]::IsNullOrWhiteSpace($name)) { [void]$runfilesNames.Add($name) }
+            }
+          }
+
+          $testPathEntries = @($env:CODEX_BAZEL_WINDOWS_PATH -split ';' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+          if ($testPathEntries.Count -eq 0) { throw 'The exact required-CI Windows test PATH is empty.' }
+          function Get-PeImports([string]$Path) {
+            $lines = & $dumpbin /DEPENDENTS $Path 2>$null
+            if ($LASTEXITCODE -ne 0) { throw 'The standard PE dependency inspection failed.' }
+            $imports = @(
+              foreach ($line in $lines) {
+                $name = $line.Trim()
+                if ($name -match '(?i)^[A-Za-z0-9_.+-]+\.dll$') { $name.ToLowerInvariant() }
+              }
+            ) | Sort-Object -Unique
+            if ($imports.Count -eq 0) { throw 'The PE dependency inspection returned no import names.' }
+            return $imports
+          }
+          function Test-SystemImport([string]$Name) {
+            if ($Name -match '^(api-ms-win-|ext-ms-win-)') { return $true }
+            foreach ($directory in $systemDirectories) {
+              if (Test-Path -LiteralPath (Join-Path $directory $Name) -PathType Leaf) { return $true }
+            }
+            return $false
+          }
+          function Test-PathImport([string]$Name) {
+            foreach ($directory in $testPathEntries) {
+              if (Test-Path -LiteralPath (Join-Path $directory $Name) -PathType Leaf) { return $true }
+            }
+            return $false
+          }
+          $rows = [System.Collections.Generic.List[string]]::new()
+          foreach ($component in @(
+            @{ Name = 'voice-helper'; Path = $helperPe },
+            @{ Name = 'voice-bin-unit-tests'; Path = $testPe }
+          )) {
+            $exeDirectory = Split-Path -Parent $component.Path
+            foreach ($dll in (Get-PeImports $component.Path)) {
+              $isSystem = Test-SystemImport $dll
+              $adjacent = Test-Path -LiteralPath (Join-Path $exeDirectory $dll) -PathType Leaf
+              $onPath = Test-PathImport $dll
+              $inRunfiles = $runfilesNames.Contains($dll)
+              $inWorkspace = Test-Path -LiteralPath (Join-Path $workspace $dll) -PathType Leaf
+              $copyAvailable = if ($component.Name -eq 'voice-helper') { [string]($isSystem -or $onPath) } else { 'n/a' }
+              $rows.Add(($component.Name, $dll, [string]$isSystem, [string]$adjacent, [string]$onPath, [string]$inRunfiles, [string]$inWorkspace, $copyAvailable) -join "`t")
+            }
+          }
+          Add-Content -LiteralPath $env:VOICE_DLL_REPORT -Value $rows.ToArray() -Encoding utf8
+          'inspection_complete=true' | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Finalize sanitized diagnostic status
+        if: always()
+        shell: pwsh
+        env:
+          BUILD_OUTCOME: ${{ steps.build_voice_outputs.outcome }}
+          BUILD_EXIT_CODE: ${{ steps.build_voice_outputs.outputs.exit_code }}
+          RESOLVE_OUTCOME: ${{ steps.resolve_voice_outputs.outcome }}
+          INSPECT_OUTCOME: ${{ steps.inspect_voice_pes.outcome }}
+        run: |
+          if (Test-Path -LiteralPath $env:VOICE_DLL_REPORT -PathType Leaf) {
+            Add-Content -LiteralPath $env:VOICE_DLL_REPORT -Value @(
+              "build_step_outcome`t$env:BUILD_OUTCOME",
+              "build_exit_code`t$env:BUILD_EXIT_CODE",
+              "output_resolution_outcome`t$env:RESOLVE_OUTCOME",
+              "pe_inspection_outcome`t$env:INSPECT_OUTCOME"
+            ) -Encoding utf8
+          }
+
+      - name: Check for a clean worktree
+        if: always() && !cancelled() && steps.verify_voice_source.outcome == 'success'
+        uses: ./.github/actions/check-clean-worktree
+
+      - name: Upload sanitized Voice dependency receipt only
+        if: always() && !cancelled()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: native-windows-voice-dependencies-${{ github.run_id }}-${{ github.sha }}
+          path: ${{ runner.temp }}/voice-loader-dependencies-${{ github.run_id }}-${{ github.run_attempt }}.tsv
+          if-no-files-found: error
+          retention-days: 1
