@@ -288,7 +288,7 @@ fn require_installed_launcher_image() -> Result<()> {
     if current_path != expected_path || current_path.canonicalize()? != expected_path {
         bail!("API bearer provisioning must use the installed fixed launcher");
     }
-    require_controlled_parent_directories(expected_path, Path::new("/"), 0)?;
+    require_controlled_parent_directories(expected_path, Path::new("/"), /*expected_uid*/ 0)?;
     let path_metadata = fs::symlink_metadata(expected_path)?;
     let executable = File::open("/proc/self/exe")?;
     let image_metadata = executable.metadata()?;

@@ -2,7 +2,6 @@ use super::*;
 use ed25519_dalek::Signature;
 use ed25519_dalek::Verifier as _;
 use pretty_assertions::assert_eq;
-use std::os::unix::fs::MetadataExt as _;
 use std::os::unix::fs::PermissionsExt as _;
 use std::process::Command;
 use std::time::Duration;
