@@ -237,6 +237,58 @@ async fn dropping_a_lease_after_its_host_shuts_down_closes_the_session() {
         .expect("dropping a lease must close its session after the host disappears");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_runtime_start_executes_cells_and_closes_sessions() {
+    let barrier = Arc::new(tokio::sync::Barrier::new(3));
+    let mut starts = Vec::new();
+
+    for index in 0..2 {
+        let barrier = barrier.clone();
+        starts.push(tokio::spawn(async move {
+            let host = GrpcCodeModeHost::new();
+            let (session_id, _session_events) = open_session(&host).await;
+            barrier.wait().await;
+
+            let mut request = execute_request(
+                &session_id,
+                &format!("concurrent-start-{index}"),
+                "text('allocator-ready');",
+            );
+            request.yield_time_ms = Some(60_000);
+            let (_, mut execution) = execute_events(&host, request).await;
+            let event = execution
+                .next()
+                .await
+                .expect("runtime execution outcome")
+                .expect("runtime execution event");
+            let Some(proto::execute_event::Event::Outcome(outcome)) = event.event else {
+                panic!("expected completed runtime execution outcome");
+            };
+            assert!(matches!(
+                outcome.outcome,
+                Some(proto::execution_outcome::Outcome::Completed(_))
+            ));
+            assert_eq!(
+                outcome.content_items,
+                vec![proto::ContentItem {
+                    item: Some(proto::content_item::Item::Text(proto::TextContent {
+                        text: "allocator-ready".to_string(),
+                    })),
+                }]
+            );
+
+            host.close_session(Request::new(proto::CloseSessionRequest { session_id }))
+                .await
+                .expect("close completed runtime session");
+        }));
+    }
+
+    barrier.wait().await;
+    for start in starts {
+        start.await.expect("concurrent runtime start task");
+    }
+}
+
 #[tokio::test]
 async fn session_closure_cancels_pending_termination() {
     let host = GrpcCodeModeHost::new();
