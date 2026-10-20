@@ -824,10 +824,13 @@ fn parse_pasted_oauth_callback(
     let callback = Url::parse(input).map_err(|_| anyhow!("invalid OAuth callback URL"))?;
     let expected = Url::parse(expected_redirect_uri)
         .map_err(|_| anyhow!("invalid fixed OAuth redirect URI"))?;
-    let has_userinfo = callback
-        .as_str()
-        .split('/')
-        .nth(2)
+    let has_userinfo = input
+        .split_once("://")
+        .and_then(|(_, remainder)| {
+            remainder
+                .split(|character| matches!(character, '/' | '?' | '#'))
+                .next()
+        })
         .is_some_and(|authority| authority.contains('@'));
     if callback.scheme() != expected.scheme()
         || callback.host_str() != expected.host_str()
