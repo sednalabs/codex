@@ -4744,6 +4744,59 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn('if [[ "${LAB_PROFILE}" == "artifact"', run_script)
         self.assertIn("git -C \"${target_checkout}\" tag --merged HEAD", run_script)
 
+    def test_sedna_branch_preview_version_preserves_build_metadata(self) -> None:
+        metadata_step = workflow_step_by_name(
+            REPO_ROOT / ".github/workflows/sedna-branch-build.yml",
+            "metadata",
+            "Compute preview version",
+        )
+        run_script = metadata_step.get("run") or ""
+        for base_version, expected_prefix in (
+            (
+                "0.146.0-alpha.8-sedna.10+upstream.8593",
+                "0.146.0-alpha.8-sedna.10+upstream.8593.ci.896.g",
+            ),
+            (
+                "0.146.0-alpha.8-sedna.10",
+                "0.146.0-alpha.8-sedna.10-ci.896+g",
+            ),
+            (None, "0.0.0-sedna.0-ci.896+g"),
+        ):
+            with self.subTest(base_version=base_version):
+                repo = TempGitRepo()
+                self.addCleanup(repo.cleanup)
+                source_sha = repo.commit("preview fixture", {"fixture.txt": "preview\n"})
+                if base_version is not None:
+                    repo._git("tag", f"v{base_version}")
+                output = repo.root / "github-output"
+                subprocess.run(
+                    ["bash", "-c", run_script],
+                    cwd=repo.root,
+                    env={
+                        **os.environ,
+                        "CHECKOUT_REF": source_sha,
+                        "DISPLAY_REF": "fixture/preview",
+                        "HOST_ONLY": "false",
+                        "PLATFORM": "linux-aarch64",
+                        "GITHUB_RUN_NUMBER": "896",
+                        "GITHUB_OUTPUT": str(output),
+                    },
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                values = parse_github_output_file(output)
+                short_sha = source_sha[:8]
+                self.assertEqual(
+                    values["preview_version"], f"{expected_prefix}{short_sha}"
+                )
+                self.assertEqual(values["preview_version"].count("+"), 1)
+                self.assertEqual(values["checkout_ref"], source_sha)
+                self.assertEqual(values["display_ref"], "fixture/preview")
+                self.assertEqual(
+                    values["artifact_name"], f"sedna-branch-fixture-preview-{short_sha}"
+                )
+
     def test_sedna_branch_build_uses_safe_ref_env_and_cached_macos_x64_preview(
         self,
     ) -> None:
