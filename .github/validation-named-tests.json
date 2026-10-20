@@ -82,6 +82,14 @@
       "execution_argv": ["cargo","test","--locked","-p","codex-keyring-store","--lib","--","--test-threads=1"]
     },
     {
+      "package": "codex-memories-write",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal"],
+      "inventory_argv": ["cargo","test","--locked","-p","codex-memories-write","--lib","--","--list"],
+      "execution_argv": ["cargo","test","--locked","-p","codex-memories-write","--lib","--","--test-threads=1"]
+    },
+    {
       "package": "codex-rmcp-client",
       "target_kind": "lib",
       "target": "",
