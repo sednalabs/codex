@@ -265,6 +265,7 @@ async fn perform_oauth_access_token_login<'a>(
             open_authorization_url,
             callback,
             _guard,
+            ..
         } => {
             open_authorization_url(&authorization_url)
                 .map_err(|_| anyhow!("open fixed OAuth authorization in the browser"))?;
@@ -1260,6 +1261,7 @@ mod tests {
     use tokio::net::TcpListener;
 
     use super::CallbackOutcome;
+    use super::CallbackResult;
     use super::FIXED_API_CLAIM_CALLBACK_URL;
     use super::FIXED_API_CLAIM_CLIENT_ID;
     use super::FIXED_API_CLAIM_ISSUER;

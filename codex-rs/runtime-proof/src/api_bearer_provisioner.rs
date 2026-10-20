@@ -788,7 +788,10 @@ mod tests {
             );
             let disabled = unsafe { disabled.assume_init() };
             assert_eq!(disabled.c_lflag & libc::ECHO, 0);
-            assert_eq!(disabled.c_lflag & !libc::ECHO, original.c_lflag & !libc::ECHO);
+            assert_eq!(
+                disabled.c_lflag & !libc::ECHO,
+                original.c_lflag & !libc::ECHO
+            );
             echo_guard.restore().expect("restore terminal echo");
         }
 
@@ -840,7 +843,9 @@ mod tests {
             "deliver a controlled interrupt"
         );
         assert!(ensure_callback_input_not_interrupted().is_err());
-        echo_guard.restore().expect("restore terminal echo after interrupt");
+        echo_guard
+            .restore()
+            .expect("restore terminal echo after interrupt");
         signal_guard
             .restore()
             .expect("restore prior signal handlers");
