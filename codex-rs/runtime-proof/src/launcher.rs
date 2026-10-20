@@ -315,10 +315,7 @@ fn require_controlled_parent_directories(
         .context("installed fixed launcher has no parent directory")?;
     loop {
         let metadata = fs::symlink_metadata(path)?;
-        if !metadata.is_dir()
-            || metadata.uid() != expected_uid
-            || metadata.mode() & 0o022 != 0
-        {
+        if !metadata.is_dir() || metadata.uid() != expected_uid || metadata.mode() & 0o022 != 0 {
             bail!("installed fixed launcher path is not root controlled");
         }
         if path == trust_boundary {
