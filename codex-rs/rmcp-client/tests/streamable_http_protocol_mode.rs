@@ -84,7 +84,10 @@ async fn current_protocol_mode_discovers_and_sends_stateless_http_requests() -> 
 
     initialize_client(&client).await?;
     let result = client
-        .list_tools(/*params*/ None, Some(std::time::Duration::from_secs(5)))
+        .list_tools(
+            /*params*/ None,
+            Some(std::time::Duration::from_secs(5)),
+        )
         .await?;
     assert!(result.tools.is_empty());
     client.shutdown().await;
