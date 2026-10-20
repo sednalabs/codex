@@ -783,7 +783,10 @@ async fn rejected_queue_messages_are_consumed_without_retrying_or_blocking_follo
                             && entry.text == "blocked by queue hook"
                     });
                     hook_runs.push((event.run.status, expected_reason));
-                    assert!(hook_runs.len() <= 3, "unexpected extra prompt hook completion");
+                    assert!(
+                        hook_runs.len() <= 3,
+                        "unexpected extra prompt hook completion"
+                    );
                 }
                 EventMsg::TurnComplete(_) => completed_turns += 1,
                 _ => {}
@@ -868,7 +871,11 @@ async fn explicitly_started_rejected_queue_messages_are_consumed() -> anyhow::Re
                             && entry.text == "blocked by queue hook"
                     });
                     hook_runs.push((event.run.status, expected_reason));
-                    assert_eq!(1, hook_runs.len(), "unexpected extra prompt hook completion");
+                    assert_eq!(
+                        1,
+                        hook_runs.len(),
+                        "unexpected extra prompt hook completion"
+                    );
                 }
                 EventMsg::TurnComplete(_) => completed_turn = true,
                 _ => {}
