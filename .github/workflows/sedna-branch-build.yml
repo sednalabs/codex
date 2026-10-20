@@ -1,6 +1,6 @@
 name: sedna-branch-build
 run-name: >-
-  sedna-branch-build
+  ${{ inputs.operation == 'inspect-original-companion-artifact' && 'Inspect retained companion artifact 8eac9e35' || 'sedna-branch-build' }}
   [target=${{ inputs.ref || github.ref_name }} platform=${{ inputs.platform }} host_only=${{ inputs.host_only }}]
 
 on:
@@ -24,9 +24,24 @@ on:
         required: false
         default: false
         type: boolean
+      operation:
+        description: Build a preview or inspect the one retained companion artifact
+        required: false
+        default: build
+        type: choice
+        options:
+          - build
+          - inspect-original-companion-artifact
+      expected_host_sha:
+        description: Exact workflow-host commit for the retained-artifact inspection only
+        required: false
+        type: string
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref_name }}-${{ inputs.platform }}-${{ inputs.host_only }}
+  group: >-
+    ${{ inputs.operation == 'inspect-original-companion-artifact'
+        && format('{0}-inspect-original-companion-artifact-8eac9e35', github.workflow)
+        || format('{0}-{1}-{2}-{3}', github.workflow, github.event_name == 'workflow_dispatch' && inputs.ref || github.ref_name, inputs.platform, inputs.host_only) }}
   cancel-in-progress: true
 
 permissions:
@@ -35,6 +50,7 @@ permissions:
 jobs:
   metadata:
     name: Resolve preview metadata
+    if: ${{ inputs.operation == 'build' }}
     runs-on: ubuntu-24.04
     outputs:
       checkout_ref: ${{ steps.meta.outputs.checkout_ref }}
@@ -80,6 +96,194 @@ jobs:
             echo "preview_version=${preview_version}"
             echo "artifact_name=sedna-branch-${branch_slug}-${short_sha}"
           } >> "$GITHUB_OUTPUT"
+
+  inspect-original-companion-artifact:
+    name: Inspect retained companion artifact manifest and launcher
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.operation == 'inspect-original-companion-artifact' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Verify the exact inspection host
+        shell: bash
+        env:
+          EXPECTED_HOST_SHA: ${{ inputs.expected_host_sha }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${EXPECTED_HOST_SHA}" || "${GITHUB_SHA}" != "${EXPECTED_HOST_SHA}" ]]; then
+            echo "::error::Inspection host commit does not match the supplied exact SHA." >&2
+            exit 1
+          fi
+          if [[ "${GITHUB_REF}" != "refs/heads/validation/companion-artifact-inspect-8eac9e35" ]]; then
+            echo "::error::This inspection is restricted to its exact validation ref." >&2
+            exit 1
+          fi
+
+      - name: Download only the pinned original companion artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: 12272855385
+          github-token: ${{ github.token }}
+          repository: sednalabs/codex
+          run-id: 39426308036
+          path: ${{ runner.temp }}/companion-artifact
+          skip-decompress: true
+          digest-mismatch: error
+
+      - name: Verify provider artifact, source manifest, and launcher member
+        shell: bash
+        env:
+          ARTIFACT_DIR: ${{ runner.temp }}/companion-artifact
+          RECEIPT_PATH: ${{ runner.temp }}/companion-artifact-readback.json
+          EXPECTED_ARTIFACT_ID: "12272855385"
+          EXPECTED_ARTIFACT_NAME: sedna-branch-8eac9e3526b0e41b6b8108719a44855bfc150a31-8eac9e35-x86_64-unknown-linux-gnu
+          EXPECTED_ARTIFACT_SIZE: "335732356"
+          EXPECTED_ARTIFACT_SHA256: 056afc302c3e50dae8ad9d6accb99e2e80f95d9519b1ac2eeee24e2335663ead
+          EXPECTED_PRODUCER_RUN_ID: "39426308036"
+          EXPECTED_SOURCE_SHA: 8eac9e3526b0e41b6b8108719a44855bfc150a31
+          EXPECTED_SOURCE_TREE: 4ed7df1359ca56d0ed97b787b9ae25466fcbbfde
+          EXPECTED_SOURCE_REF: 8eac9e3526b0e41b6b8108719a44855bfc150a31
+          EXPECTED_REPOSITORY: sednalabs/codex
+          EXPECTED_WORKFLOW_URL: https://github.com/sednalabs/codex/actions/runs/39426308036
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import tarfile
+          import zipfile
+
+          def require(condition, message):
+              if not condition:
+                  raise SystemExit(message)
+
+          artifact_dir = Path(os.environ["ARTIFACT_DIR"])
+          downloaded = [path for path in artifact_dir.iterdir() if path.is_file()]
+          require(len(downloaded) == 1, "expected exactly one downloaded artifact archive")
+          outer_archive = downloaded[0]
+          expected_size = int(os.environ["EXPECTED_ARTIFACT_SIZE"])
+          require(outer_archive.stat().st_size == expected_size, "provider artifact size mismatch")
+
+          outer_sha = hashlib.sha256()
+          with outer_archive.open("rb") as stream:
+              for block in iter(lambda: stream.read(1024 * 1024), b""):
+                  outer_sha.update(block)
+          outer_sha256 = outer_sha.hexdigest()
+          require(outer_sha256 == os.environ["EXPECTED_ARTIFACT_SHA256"], "provider artifact digest mismatch")
+          require(zipfile.is_zipfile(outer_archive), "downloaded artifact is not the expected ZIP archive")
+
+          with zipfile.ZipFile(outer_archive) as bundle:
+              manifest_candidates = []
+              archives = []
+              for entry in bundle.infolist():
+                  if entry.is_dir():
+                      continue
+                  if entry.filename.endswith(".tar.gz"):
+                      archives.append(entry)
+                  elif entry.filename.endswith(".json"):
+                      require(entry.file_size <= 65536, "manifest entry exceeds the bounded read size")
+                      payload = json.loads(bundle.read(entry))
+                      if isinstance(payload, dict) and "runtimeProofLauncherSha256" in payload:
+                          manifest_candidates.append((entry.filename, payload))
+
+              require(len(manifest_candidates) == 1, "expected exactly one runtime-proof manifest")
+              require(len(archives) == 1, "expected exactly one preview tar archive")
+              manifest_name, manifest = manifest_candidates[0]
+              require(
+                  Path(manifest_name).name.removesuffix(".json")
+                  == Path(archives[0].filename).name.removesuffix(".tar.gz"),
+                  "manifest and preview archive names differ",
+              )
+              require(manifest.get("repository") == os.environ["EXPECTED_REPOSITORY"], "manifest repository mismatch")
+              require(manifest.get("commit") == os.environ["EXPECTED_SOURCE_SHA"], "manifest source commit mismatch")
+              require(manifest.get("ref") == os.environ["EXPECTED_SOURCE_REF"], "manifest source ref mismatch")
+              require(manifest.get("workflow") == os.environ["EXPECTED_WORKFLOW_URL"], "manifest producer run mismatch")
+              manifest_launcher_sha = str(manifest.get("runtimeProofLauncherSha256", ""))
+              require(re.fullmatch(r"[0-9a-f]{64}", manifest_launcher_sha) is not None, "manifest launcher digest is malformed")
+
+              expected_binaries = {
+                  "codex": {"codex", "./codex"},
+                  "codex-code-mode-host": {"codex-code-mode-host", "./codex-code-mode-host"},
+                  "codex-responses-api-proxy": {"codex-responses-api-proxy", "./codex-responses-api-proxy"},
+                  "codex-runtime-proof-launcher": {"codex-runtime-proof-launcher", "./codex-runtime-proof-launcher"},
+              }
+              seen_binaries = {name: 0 for name in expected_binaries}
+              computed_launcher_sha = None
+              with bundle.open(archives[0]) as compressed_tar:
+                  with tarfile.open(fileobj=compressed_tar, mode="r|gz") as archive:
+                      for member in archive:
+                          matched = [name for name, names in expected_binaries.items() if member.name in names]
+                          if not matched:
+                              continue
+                          name = matched[0]
+                          require(member.isfile(), "expected preview binary is not a regular file")
+                          seen_binaries[name] += 1
+                          if name == "codex-runtime-proof-launcher":
+                              launcher = archive.extractfile(member)
+                              require(launcher is not None, "runtime-proof launcher member is unreadable")
+                              digest = hashlib.sha256()
+                              with launcher:
+                                  for block in iter(lambda: launcher.read(1024 * 1024), b""):
+                                      digest.update(block)
+                              computed_launcher_sha = digest.hexdigest()
+
+              require(all(count == 1 for count in seen_binaries.values()), "preview archive binary inventory mismatch")
+              require(computed_launcher_sha == manifest_launcher_sha, "manifest launcher digest does not match archive member")
+
+              receipt = {
+                  "inspection_host": {
+                      "run_id": os.environ["GITHUB_RUN_ID"],
+                      "attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+                      "ref": os.environ["GITHUB_REF"],
+                      "sha": os.environ["GITHUB_SHA"],
+                  },
+                  "producer": {
+                      "repository": os.environ["EXPECTED_REPOSITORY"],
+                      "run_id": os.environ["EXPECTED_PRODUCER_RUN_ID"],
+                      "source_commit": manifest["commit"],
+                      "source_ref": manifest["ref"],
+                      "source_tree": os.environ["EXPECTED_SOURCE_TREE"],
+                      "source_tree_is_manifest_field": False,
+                      "workflow_url": manifest["workflow"],
+                      "preview_version": manifest.get("previewVersion"),
+                  },
+                  "provider_artifact": {
+                      "id": os.environ["EXPECTED_ARTIFACT_ID"],
+                      "name": os.environ["EXPECTED_ARTIFACT_NAME"],
+                      "size": expected_size,
+                      "sha256": outer_sha256,
+                      "digest_matches_recorded_provider_digest": True,
+                  },
+                  "manifest": {
+                      "entry": Path(manifest_name).name,
+                      "runtime_proof_launcher_sha256": manifest_launcher_sha,
+                      "archive_digest_field_present": "archive_digest" in manifest,
+                      "archive_digest_field_value_not_interpreted_as_outer_zip_digest": manifest.get("archive_digest"),
+                  },
+                  "archive_members": {
+                      "required_binary_count_each": seen_binaries,
+                      "runtime_proof_launcher_sha256": computed_launcher_sha,
+                      "runtime_proof_launcher_matches_manifest": True,
+                      "binary_executed": False,
+                  },
+              }
+
+          Path(os.environ["RECEIPT_PATH"]).write_text(json.dumps(receipt, indent=2) + "\n")
+          print(json.dumps(receipt, sort_keys=True))
+          PY
+
+      - name: Upload the compact inspection receipt
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: companion-artifact-readback-8eac9e35-${{ github.run_id }}
+          path: ${{ runner.temp }}/companion-artifact-readback.json
+          if-no-files-found: error
+          retention-days: 1
 
   build-linux-x86_64:
     needs: metadata
