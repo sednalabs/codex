@@ -3105,6 +3105,7 @@ async fn stdio_image_responses_resize_large_image() -> anyhow::Result<()> {
         .build_with_auto_env(&server)
         .await?;
     wait_for_mcp_server(&fixture.codex, server_name).await?;
+    eprintln!("diagnostic_phase=mcp_startup_ready");
 
     fixture
         .codex
@@ -3113,7 +3114,25 @@ async fn stdio_image_responses_resize_large_image() -> anyhow::Result<()> {
             "call the rmcp image_scenario tool",
         ))
         .await?;
-    wait_for_event(&fixture.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+    let mut saw_tool_call_begin = false;
+    let mut saw_tool_call_end = false;
+    wait_for_event(&fixture.codex, |ev| {
+        if matches!(ev, EventMsg::McpToolCallBegin(_)) && !saw_tool_call_begin {
+            saw_tool_call_begin = true;
+            eprintln!("diagnostic_phase=mcp_tool_call_begin");
+        }
+        if matches!(ev, EventMsg::McpToolCallEnd(_)) && !saw_tool_call_end {
+            saw_tool_call_end = true;
+            eprintln!("diagnostic_phase=mcp_tool_call_end");
+        }
+        if matches!(ev, EventMsg::TurnComplete(_)) {
+            eprintln!("diagnostic_phase=turn_complete");
+            true
+        } else {
+            false
+        }
+    })
+    .await;
 
     let output_item = final_mock.single_request().function_call_output(call_id);
     assert_eq!(output_item["call_id"], call_id);
