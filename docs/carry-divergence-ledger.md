@@ -22,6 +22,18 @@ behavior only when an equivalent replacement is demonstrated or its loss is
 explicitly accepted. Tests should protect these consumer-visible contracts and
 meaningful security boundaries, not incidental file, module, or handler layout.
 
+## Dynamic tool image replay
+
+The TUI replay cache projects dynamic tool images to the renderer's existing
+`<image content>` placeholder before retaining a copy. Original live typed-image
+notifications and canonical thread history remain unchanged, as do text/audio,
+item metadata and pending interactive requests. This avoids duplicating image
+bytes that the current renderer does not display; it is not a process memory
+limit or a change to child-session residency. Focused `thread_event_buffer`
+tests compare replay insertion and rendered presentations with the originals.
+Remove this carry when upstream provides equivalent replay retention, or revisit
+it before introducing an image-aware replay renderer.
+
 ## Upgrading and retiring carries
 
 Pin the upstream revision being considered, then compare it against current
