@@ -1,6 +1,0 @@
----
-source: tui/src/app/tests/mcp_login_tests.rs
-expression: "messages.join(\"\\n\")"
----
-• Signed in to enterprise.
-■ Unknown MCP server typo
