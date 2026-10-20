@@ -57,6 +57,25 @@ callback validation, privileged credential envelope and current artifact
 qualification remain independent of a native source-ancestry merge. The
 native package does not acquire that provisioner by importing its history.
 
+The independently maintained companion source branch is
+`companion/runtime-proof`. Its initial source is commit
+`8eac9e3526b0e41b6b8108719a44855bfc150a31`, also retained by the historical tag
+`companion-runtime-proof-8eac9e35`; the full commit, not an alias, is the source
+authority. Keep historical tags fixed. Companion updates are reviewed,
+fast-forward source changes that preserve this consumer; do not mirror native
+`main` deletions into it. Compatible upstream changes can be adopted selectively.
+
+Use the companion revision's existing `sedna-branch-build.yml` producer with
+`platform=linux-x86_64`, `host_only=false`, and `ref` set to the full reviewed
+source commit. Its resolved source manifest must match that commit. Pair the
+CLI, code-mode host, proxy and runtime-proof launcher from the same source
+build; a native package or a host-only artifact is not a compatible substitute.
+The manifest's launcher hash identifies the launcher member, not the full
+archive. Retain the producer run and artifact digest separately, and qualify
+each updated companion source before consumer adoption. Building or retaining
+this source does not authorize bearer provisioning, credential installation or
+live use.
+
 ## Upgrading and retiring carries
 
 Pin the upstream revision being considered, then compare it against current
