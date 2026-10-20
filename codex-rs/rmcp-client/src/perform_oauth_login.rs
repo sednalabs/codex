@@ -828,14 +828,23 @@ impl OauthLoginFlow {
             let credentials = credentials_opt
                 .ok_or_else(|| anyhow!("OAuth provider did not return credentials"))?;
             let expires_at = compute_expires_at_millis(&credentials);
-            Ok(StoredOAuthTokens {
+            let stored = StoredOAuthTokens {
                 server_name: self.server_name.clone(),
                 url: self.server_url.clone(),
                 issuer: self.authorization_server_issuer.clone(),
                 client_id,
                 token_response: WrappedOAuthTokenResponse(credentials),
                 expires_at,
-            })
+            };
+            // Legacy access-only grants remain supported, but a new refresh grant must already
+            // have the issuer binding that refresh requires before reporting success or saving it.
+            if stored.has_refresh_token() && stored.bound_issuer().is_none() {
+                bail!(
+                    "OAuth provider returned a refresh token without an authorization server issuer; \
+                     new credentials were not saved. The provider must publish an issuer to support token refresh."
+                );
+            }
+            Ok(stored)
         }
         .await;
 
@@ -960,8 +969,13 @@ mod tests {
     use codex_http_client::OutboundProxyPolicy;
     use futures::future::BoxFuture;
     use http::HeaderMap;
+    use oauth2::AccessToken;
+    use oauth2::EmptyExtraTokenFields;
+    use oauth2::RefreshToken;
     use oauth2::TokenResponse;
+    use oauth2::basic::BasicTokenType;
     use pretty_assertions::assert_eq;
+    use rmcp::transport::auth::OAuthTokenResponse;
     use serde_json::json;
     use tokio::net::TcpListener;
     use url::Url;
@@ -983,8 +997,11 @@ mod tests {
     use super::perform_oauth_login_silent;
     use super::resolve_authorization_manager;
     use super::start_authorization;
+    use crate::StoredOAuthTokens;
+    use crate::WrappedOAuthTokenResponse;
     use crate::oauth::stored_oauth_credentials;
     use crate::oauth::test_support::TempCodexHome;
+    use crate::save_oauth_tokens;
 
     #[derive(Default)]
     struct RecordingHttpClient {
@@ -1017,19 +1034,32 @@ mod tests {
         }
     }
 
-    async fn spawn_oauth_metadata_server() -> (String, Arc<AtomicUsize>) {
+    async fn spawn_oauth_metadata_server(
+        include_issuer: bool,
+        include_refresh_token: bool,
+    ) -> (String, Arc<AtomicUsize>) {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind metadata listener");
         let addr = listener.local_addr().expect("read metadata listener addr");
         let base_url = format!("http://{addr}");
-        let metadata = json!({
-            "issuer": format!("{base_url}/mcp"),
+        let mut metadata = json!({
             "authorization_endpoint": format!("{base_url}/oauth/authorize"),
             "token_endpoint": format!("{base_url}/oauth/token"),
             "registration_endpoint": format!("{base_url}/oauth/register"),
             "scopes_supported": ["read", "offline_access"],
         });
+        if include_issuer {
+            metadata["issuer"] = json!(format!("{base_url}/mcp"));
+        }
+        let mut token_response = json!({
+            "access_token": "test-access-token",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+        });
+        if include_refresh_token {
+            token_response["refresh_token"] = json!("test-refresh-token");
+        }
         let registration_requests = Arc::new(AtomicUsize::new(0));
         let captured_registration_requests = Arc::clone(&registration_requests);
         let path_scoped_metadata = metadata.clone();
@@ -1060,11 +1090,9 @@ mod tests {
             )
             .route(
                 "/oauth/token",
-                post(|| async {
-                    Json(json!({
-                        "access_token": "test-access-token",
-                        "token_type": "Bearer",
-                    }))
+                post(move || {
+                    let token_response = token_response.clone();
+                    async move { Json(token_response) }
                 }),
             );
 
@@ -1107,70 +1135,134 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ordinary_oauth_login_persists_issuer_without_a_refresh_token() -> anyhow::Result<()> {
+    async fn ordinary_oauth_login_preserves_issuer_and_refresh_contract() -> anyhow::Result<()> {
         let _env = TempCodexHome::new();
-        let (base_url, _registration_requests) = spawn_oauth_metadata_server().await;
-        let server_url = format!("{base_url}/mcp");
-        let flow = OauthLoginFlow::new(
-            "issuer-persistence-test",
-            &server_url,
-            OAuthCredentialsStoreMode::File,
-            AuthKeyringBackendKind::Direct,
-            OAuthHttpContext {
-                http_headers: None,
-                env_http_headers: None,
-                http_client: Arc::new(RouteAwareHttpClient::new(HttpClientFactory::new(
-                    OutboundProxyPolicy::ReqwestDefault,
-                ))),
-                redirect_mode: StreamableHttpRedirectMode::Legacy,
-            },
-            &[],
-            Some(&McpServerOAuthConfig {
-                client_id: Some("test-client".to_string()),
-                ..Default::default()
-            }),
-            OAuthLoginPurpose::Mcp,
-            McpOAuthClientRegistration::Auto,
-            /*oauth_resource*/ None,
-            /*launch_browser*/ false,
-            /*callback_port*/ None,
-            /*callback_url*/ None,
-            /*global_callback_url*/ None,
-            Some(/*timeout_secs*/ 5),
+        let credential_path = std::path::PathBuf::from(
+            std::env::var_os("CODEX_HOME").expect("test CODEX_HOME should be set"),
         )
-        .await?;
-        let authorization_url = Url::parse(&flow.authorization_url())?;
-        let query = authorization_url.query_pairs().collect::<HashMap<_, _>>();
-        let redirect_uri = query
-            .get("redirect_uri")
-            .ok_or_else(|| anyhow::anyhow!("authorization URL should include redirect_uri"))?;
-        let state = query
-            .get("state")
-            .ok_or_else(|| anyhow::anyhow!("authorization URL should include state"))?;
-        let mut callback_url = Url::parse(redirect_uri)?;
-        callback_url
-            .query_pairs_mut()
-            .append_pair("code", "test-code")
-            .append_pair("state", state);
-        send_oauth_callback(callback_url).await?;
-        flow.finish(/*emit_browser_url*/ false).await?;
-
-        let stored = stored_oauth_credentials(
-            "issuer-persistence-test",
-            &server_url,
-            OAuthCredentialsStoreMode::File,
-            AuthKeyringBackendKind::Direct,
-        )?
-        .expect("OAuth login should persist credentials");
-        assert_eq!(stored.issuer.as_deref(), Some(server_url.as_str()));
-        assert!(stored.token_response.0.refresh_token().is_none());
+        .join(".credentials.json");
+        for (include_issuer, include_refresh_token) in
+            [(true, false), (true, true), (false, false), (false, true)]
+        {
+            let (base_url, registration_requests) =
+                spawn_oauth_metadata_server(include_issuer, include_refresh_token).await;
+            let server_url = format!("{base_url}/mcp");
+            let mut previous_response = OAuthTokenResponse::new(
+                AccessToken::new("previous-access-token".to_string()),
+                BasicTokenType::Bearer,
+                EmptyExtraTokenFields {},
+            );
+            previous_response.set_refresh_token(Some(RefreshToken::new(
+                "previous-refresh-token".to_string(),
+            )));
+            let previous = StoredOAuthTokens {
+                server_name: "issuer-persistence-test".to_string(),
+                url: server_url.clone(),
+                issuer: Some(server_url.clone()),
+                client_id: "previous-client".to_string(),
+                token_response: WrappedOAuthTokenResponse(previous_response),
+                expires_at: Some(0),
+            };
+            save_oauth_tokens(
+                &previous.server_name,
+                &previous,
+                OAuthCredentialsStoreMode::File,
+                AuthKeyringBackendKind::Direct,
+            )
+            .await?;
+            let before = std::fs::read(&credential_path)?;
+            let flow = OauthLoginFlow::new(
+                "issuer-persistence-test",
+                &server_url,
+                OAuthCredentialsStoreMode::File,
+                AuthKeyringBackendKind::Direct,
+                OAuthHttpContext {
+                    http_headers: None,
+                    env_http_headers: None,
+                    http_client: Arc::new(RouteAwareHttpClient::new(HttpClientFactory::new(
+                        OutboundProxyPolicy::ReqwestDefault,
+                    ))),
+                    redirect_mode: StreamableHttpRedirectMode::Legacy,
+                },
+                &[],
+                Some(&McpServerOAuthConfig {
+                    client_id: Some("test-client".to_string()),
+                    ..Default::default()
+                }),
+                OAuthLoginPurpose::Mcp,
+                McpOAuthClientRegistration::Auto,
+                /*oauth_resource*/ None,
+                /*launch_browser*/ false,
+                /*callback_port*/ None,
+                /*callback_url*/ None,
+                /*global_callback_url*/ None,
+                Some(/*timeout_secs*/ 5),
+            )
+            .await?;
+            let authorization_url = Url::parse(&flow.authorization_url())?;
+            let query = authorization_url.query_pairs().collect::<HashMap<_, _>>();
+            let redirect_uri = query
+                .get("redirect_uri")
+                .ok_or_else(|| anyhow::anyhow!("authorization URL should include redirect_uri"))?;
+            let state = query
+                .get("state")
+                .ok_or_else(|| anyhow::anyhow!("authorization URL should include state"))?;
+            let mut callback_url = Url::parse(redirect_uri)?;
+            callback_url
+                .query_pairs_mut()
+                .append_pair("code", "test-code")
+                .append_pair("state", state);
+            send_oauth_callback(callback_url).await?;
+            let result = flow.finish(/*emit_browser_url*/ false).await;
+            assert_eq!(registration_requests.load(Ordering::SeqCst), 0);
+            let stored = stored_oauth_credentials(
+                "issuer-persistence-test",
+                &server_url,
+                OAuthCredentialsStoreMode::File,
+                AuthKeyringBackendKind::Direct,
+            )?
+            .expect("original or newly saved credentials should remain");
+            if include_refresh_token && !include_issuer {
+                let error = result.expect_err("unbound refresh credentials must not report success");
+                assert_eq!(
+                    error.to_string(),
+                    "OAuth provider returned a refresh token without an authorization server issuer; \
+                     new credentials were not saved. The provider must publish an issuer to support token refresh."
+                );
+                assert_eq!(std::fs::read(&credential_path)?, before);
+                assert_eq!(stored, previous);
+            } else {
+                result?;
+                assert_eq!(
+                    stored.issuer.as_deref(),
+                    include_issuer.then_some(server_url.as_str())
+                );
+                assert_eq!(
+                    stored
+                        .token_response
+                        .0
+                        .refresh_token()
+                        .map(|token| token.secret().as_str()),
+                    include_refresh_token.then_some("test-refresh-token")
+                );
+                assert_eq!(
+                    stored.token_response.0.access_token().secret(),
+                    "test-access-token"
+                );
+                assert!(stored.access_token_is_usable_without_refresh());
+            }
+        }
         Ok(())
     }
 
     #[tokio::test]
     async fn configured_client_preserves_exact_scopes_and_redirect_without_registration() {
         for (scopes, expected_scope) in [(&[][..], None), (&["read"][..], Some("read"))] {
-            let (base_url, registration_requests) = spawn_oauth_metadata_server().await;
+            let (base_url, registration_requests) = spawn_oauth_metadata_server(
+                /*include_issuer*/ true,
+                /*include_refresh_token*/ false,
+            )
+            .await;
             let redirect_uri = "http://127.0.0.1:43123/callback/configured-client";
             let (auth_manager, metadata) = resolve_authorization_manager(
                 &format!("{base_url}/mcp"),
