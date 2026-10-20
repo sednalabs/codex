@@ -3,6 +3,14 @@
   "targets": [
     {
       "package": "codex-app-server",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal"],
+      "inventory_argv": ["cargo","test","--locked","-p","codex-app-server","--lib","--","--list"],
+      "execution_argv": ["cargo","test","--locked","-p","codex-app-server","--lib","--","--test-threads=1"]
+    },
+    {
+      "package": "codex-app-server",
       "target_kind": "integration",
       "target": "all",
       "profiles": ["rust_minimal"],

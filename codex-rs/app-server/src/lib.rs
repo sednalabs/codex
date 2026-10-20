@@ -660,10 +660,7 @@ pub async fn run_main_with_transport_options(
     let state_db_init = match init_sqlite_state_db_with_fresh_start_on_corruption(&config).await {
         Ok(state_db_init) => state_db_init,
         Err(err) => {
-            return Err(std::io::Error::other(format!(
-                "failed to initialize sqlite state runtime under {}: {err}",
-                config.sqlite_config().home().display()
-            )));
+            return Err(state_db_init_io_error(config.sqlite_config().home(), err));
         }
     };
     let state_db = state_db_init.state_db;
@@ -1392,6 +1389,13 @@ struct StateDbInitResult {
     recovery_notice: Option<SqliteRecoveryNotice>,
 }
 
+fn state_db_init_io_error(sqlite_home: &Path, error: anyhow::Error) -> std::io::Error {
+    std::io::Error::other(error.context(format!(
+        "failed to initialize sqlite state runtime under {}",
+        sqlite_home.display()
+    )))
+}
+
 async fn init_sqlite_state_db_with_fresh_start_on_corruption(
     config: &Config,
 ) -> anyhow::Result<StateDbInitResult> {
@@ -1561,12 +1565,28 @@ mod tests {
     use super::ShutdownState;
     #[cfg(debug_assertions)]
     use super::loader_overrides_with_test_user_config_file;
+    use super::state_db_init_io_error;
     use super::turn_admission::TurnAdmission;
     #[cfg(debug_assertions)]
     use codex_config::LoaderOverrides;
     #[cfg(debug_assertions)]
     use codex_utils_absolute_path::AbsolutePathBuf;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn sqlite_startup_error_preserves_underlying_cause() {
+        let error = anyhow::anyhow!("fixture migration checksum mismatch")
+            .context("fixture usage migrate phase")
+            .context("failed to initialize state runtime");
+        let error = state_db_init_io_error(std::path::Path::new("fixture-home"), error);
+        let error = anyhow::Error::new(error);
+        let chain = error.chain().map(ToString::to_string).collect::<Vec<_>>();
+        assert!(chain.contains(&"fixture usage migrate phase".to_owned()));
+        assert!(chain.contains(&"fixture migration checksum mismatch".to_owned()));
+        let rendered = format!("{error:?}");
+        assert!(rendered.contains("failed to initialize sqlite state runtime"));
+        assert!(rendered.contains("fixture migration checksum mismatch"));
+    }
 
     #[test]
     fn shutdown_waits_for_admitted_requests_but_force_remains_available() {

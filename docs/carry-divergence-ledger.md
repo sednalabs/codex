@@ -80,12 +80,19 @@ live use.
 
 ## Historical usage-ledger checksums
 
-Usage databases may retain either of two exact historical checksums for
-migrations 1 and 5. The usage opener selects those expected checksums in memory
+Usage databases may retain exact historical checksums for migrations 1, 5,
+and 9. The usage opener selects those expected checksums in memory
 only when that recorded identity matches, then runs the existing migrations.
 It does not rewrite migration history or accept unknown checksum mismatches.
-Focused tests preserve canonical and historical ledgers across reopen, upgrade
-the historical credit views, and reject unknown checksums without ledger rewrites.
+The original migration 9 is accepted only with its two ordinary nullable text
+principal columns under their original names, without the newer names. Native
+provider-call and thread usage APIs do not consume those dormant columns, so
+the adapter preserves their schema and data rather than inventing a rename.
+Focused tests execute the original shipped SQL through migration 19, including
+the retained migration 6, then exercise native runtime usage writes, queries,
+and reopen. They preserve original ledger tuples while applying normal pending
+migrations, retain canonical behavior, and reject unknown checksums or affected
+schema before applying pending migrations.
 Remove this adapter when an equivalent native upgrade path is demonstrated, or
 when support for these historical databases is explicitly retired.
 

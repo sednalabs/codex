@@ -1,4 +1,5 @@
 use anyhow::Context;
+use anyhow::ensure;
 use sqlx::QueryBuilder;
 use sqlx::Row;
 use sqlx::Sqlite;
@@ -9,7 +10,7 @@ use std::borrow::Cow;
 
 // These are the SHA-384 checksums recorded by the shipped old-main usage
 // database. They are intentionally exact: this is a compatibility map for
-// two known historical variants, not a general SQLx checksum bypass.
+// known historical variants, not a general SQLx checksum bypass.
 const OLD_MAIN_0001_CHECKSUM: &[u8] = &[
     0xd5, 0x10, 0x0b, 0x3e, 0x67, 0xe9, 0x8f, 0xac, 0xdf, 0x91, 0xe0, 0x63, 0x34, 0x5e, 0xb8, 0x83,
     0x0f, 0xc3, 0x1c, 0xde, 0x63, 0x40, 0x7e, 0x8f, 0xa6, 0xe0, 0xc0, 0x20, 0x2d, 0xd2, 0x3d, 0xf7,
@@ -19,6 +20,12 @@ const OLD_MAIN_0005_CHECKSUM: &[u8] = &[
     0x81, 0x7a, 0x9d, 0x40, 0x2e, 0xeb, 0xf0, 0x82, 0x7a, 0x55, 0x82, 0xa6, 0x10, 0xdb, 0xff, 0xdc,
     0x71, 0xa2, 0x7c, 0xc5, 0x8e, 0xef, 0xe5, 0xfd, 0x36, 0x85, 0xe7, 0x05, 0x80, 0x4a, 0xc1, 0x5e,
     0x22, 0xea, 0x39, 0x3e, 0xf6, 0x5b, 0xc8, 0xeb, 0x39, 0x36, 0x1e, 0x15, 0xaf, 0x22, 0xe9, 0x8c,
+];
+
+const ORIGINAL_0009_CHECKSUM: &[u8] = &[
+    0x70, 0xfb, 0x40, 0xc4, 0xb8, 0xf9, 0x56, 0x84, 0x68, 0xc9, 0x8f, 0xcc, 0x96, 0x4c, 0xb1, 0x4e,
+    0x5b, 0xfe, 0x05, 0xfd, 0x16, 0x5c, 0xe3, 0x6d, 0x6f, 0xba, 0x56, 0x45, 0xaa, 0x9a, 0xd4, 0x2d,
+    0x26, 0xf7, 0xb0, 0x56, 0xfa, 0xd1, 0x7f, 0x76, 0x89, 0x95, 0x40, 0x26, 0xfe, 0xbf, 0xe2, 0xab,
 ];
 
 struct HistoricalVariant {
@@ -35,6 +42,10 @@ const OLD_MAIN_VARIANTS: &[HistoricalVariant] = &[
         version: 5,
         checksum: OLD_MAIN_0005_CHECKSUM,
     },
+    HistoricalVariant {
+        version: 9,
+        checksum: ORIGINAL_0009_CHECKSUM,
+    },
 ];
 
 /// Build a usage migrator whose expected checksums include only the exact
@@ -45,7 +56,10 @@ const OLD_MAIN_VARIANTS: &[HistoricalVariant] = &[
 /// otherwise usable database before the additive compatibility migration can
 /// restore the status-gated views. We keep the historical checksum in
 /// `_sqlx_migrations` and only adjust the in-memory expected checksum for a
-/// known old-main variant. Any other mismatch is left for SQLx to reject.
+/// known old-main variant. The original 0009 used a different name for dormant
+/// principal columns. Preserve that data only when both original column shapes
+/// are recognized; native provider/thread usage APIs do not consume them.
+/// Any other checksum mismatch is left for SQLx to reject.
 pub(crate) async fn migrator_for_usage_database(
     pool: &SqlitePool,
     base: &Migrator,
@@ -62,6 +76,9 @@ pub(crate) async fn migrator_for_usage_database(
             continue;
         };
         if recorded_checksum == variant.checksum {
+            if variant.version == 9 {
+                validate_original_principal_columns(pool).await?;
+            }
             let migration = migrations
                 .iter_mut()
                 .find(|migration| migration.version == variant.version)
@@ -76,6 +93,41 @@ pub(crate) async fn migrator_for_usage_database(
     }
 
     Ok(clone_migrator(base, migrations))
+}
+
+async fn validate_original_principal_columns(pool: &SqlitePool) -> anyhow::Result<()> {
+    for table in [
+        "usage_automatic_turn_eligibility",
+        "usage_automatic_turns",
+    ] {
+        let table_type = sqlx::query_scalar::<_, String>(
+            "SELECT type FROM pragma_table_list WHERE schema = 'main' AND name = ?",
+        )
+        .bind(table)
+        .fetch_optional(pool)
+        .await?;
+        ensure!(
+            table_type.as_deref() == Some("table"),
+            "unsupported original usage migration 9 principal table schema in {table}"
+        );
+        let columns = sqlx::query_as::<_, (String, String, i64, Option<String>, i64, i64)>(
+            r#"SELECT name, type, "notnull", dflt_value, pk, hidden
+               FROM pragma_table_xinfo(?, 'main')
+               WHERE name IN ('connection_principal', 'principal_identity')"#,
+        )
+        .bind(table)
+        .fetch_all(pool)
+        .await?;
+        ensure!(
+            matches!(
+                columns.as_slice(),
+                [(name, column_type, 0, None, 0, 0)]
+                    if name == "connection_principal" && column_type == "TEXT"
+            ),
+            "unsupported original usage migration 9 principal column schema in {table}"
+        );
+    }
+    Ok(())
 }
 
 fn clone_migrator(base: &Migrator, migrations: Vec<Migration>) -> Migrator {
@@ -120,8 +172,14 @@ async fn recorded_checksum(
 mod tests {
     use super::OLD_MAIN_0001_CHECKSUM;
     use super::OLD_MAIN_0005_CHECKSUM;
+    use super::ORIGINAL_0009_CHECKSUM;
+    use super::clone_migrator;
     use super::migrator_for_usage_database;
+    use crate::ProviderCallUsageRecord;
+    use crate::ProviderCallUsageWriteOutcome;
     use crate::SqliteConfig;
+    use crate::StateRuntime;
+    use crate::UsageThreadRecord;
     use crate::migrations::USAGE_MIGRATOR;
     use crate::migrations::runtime_usage_migrator;
     use crate::runtime::test_support::unique_temp_dir;
@@ -170,6 +228,11 @@ mod tests {
                     "        WHEN status = 'ok'\n         AND matching_policy_count",
                     "        WHEN matching_policy_count",
                 ),
+            9 => include_str!(
+                "../../usage_migrations/0009_usage_automatic_turn_provenance_hardening.sql"
+            )
+            .replace("\r\n", "\n")
+            .replace("principal_identity", "connection_principal"),
             _ => panic!("unsupported historical migration fixture: {version}"),
         };
         Migration::new(
@@ -190,6 +253,10 @@ mod tests {
         assert_eq!(
             shipped_main_migration(/*version*/ 5).checksum.as_ref(),
             OLD_MAIN_0005_CHECKSUM
+        );
+        assert_eq!(
+            shipped_main_migration(/*version*/ 9).checksum.as_ref(),
+            ORIGINAL_0009_CHECKSUM
         );
     }
 
@@ -398,6 +465,316 @@ mod tests {
             .await
             .expect("create usage database directory");
         SqliteConfig::new_for_testing(codex_home.as_path().abs())
+    }
+
+    async fn shipped_generation(sqlite: &SqliteConfig) -> SqlitePool {
+        let pool = sqlite
+            .open_read_write_pool(&sqlite.usage_db_path())
+            .await
+            .expect("shipped usage database should open");
+        let mut migrations = USAGE_MIGRATOR
+            .iter()
+            .filter(|migration| migration.version <= 19)
+            .map(|migration| match migration.version {
+                1 | 5 | 9 => shipped_main_migration(migration.version),
+                _ => migration.clone(),
+            })
+            .collect::<Vec<_>>();
+        // Recover the exact historical migration absent from the native embedded set.
+        let lineage_sql = concat!(
+            "-- Persist the unambiguous relationship kind and spawn request on each thread.\n",
+            "-- Both fields are nullable so older ledgers remain readable and can be upgraded\n",
+            "-- without reconstructing historical provenance.\n",
+            "ALTER TABLE usage_threads ADD COLUMN lineage_edge_kind TEXT;\n",
+            "ALTER TABLE usage_threads ADD COLUMN spawn_request_id TEXT;\n",
+            "\n",
+            "CREATE INDEX IF NOT EXISTS usage_threads_root_thread_idx\n",
+            "ON usage_threads(root_thread_id);\n",
+            "\n",
+            "CREATE INDEX IF NOT EXISTS usage_threads_spawn_request_idx\n",
+            "ON usage_threads(spawn_request_id);\n",
+        );
+        let first = USAGE_MIGRATOR
+            .iter()
+            .next()
+            .expect("usage migration set should not be empty");
+        let lineage = Migration::new(
+            /*version*/ 6,
+            "usage thread lineage telemetry".to_owned().into(),
+            first.migration_type,
+            AssertSqlSafe(lineage_sql.to_owned()).into_sql_str(),
+            /*no_tx*/ false,
+        );
+        assert_eq!(
+            lineage.checksum.as_ref(),
+            &[
+                0x58, 0xb4, 0x6b, 0x49, 0x7e, 0xf0, 0x5c, 0x8f, 0x21, 0x6b, 0xd7, 0x24, 0x53, 0xd1, 0xdb, 0x8d,
+                0x2e, 0x24, 0xc8, 0x20, 0x86, 0xd8, 0xb1, 0xa8, 0x2f, 0xf8, 0x6a, 0x14, 0x26, 0xd4, 0x41, 0x62,
+                0xd8, 0x45, 0xef, 0xee, 0x1f, 0xe3, 0x9f, 0xeb, 0x10, 0x2f, 0x75, 0xa2, 0x62, 0xaa, 0xbb, 0x0d,
+            ]
+        );
+        migrations.push(lineage);
+        migrations.sort_by_key(|migration| migration.version);
+        clone_migrator(&runtime_usage_migrator(), migrations)
+            .run(&pool)
+            .await
+            .expect("original shipped SQL should apply");
+        let ledger = ledger_rows(&pool).await;
+        assert_eq!(
+            ledger.iter().map(|row| row.0).collect::<Vec<_>>(),
+            (1_i64..=19).collect::<Vec<_>>()
+        );
+        for (version, checksum) in [
+            (1_i64, OLD_MAIN_0001_CHECKSUM),
+            (5_i64, OLD_MAIN_0005_CHECKSUM),
+            (9_i64, ORIGINAL_0009_CHECKSUM),
+        ] {
+            assert_eq!(
+                ledger
+                    .iter()
+                    .find(|row| row.0 == version)
+                    .expect("original migration should be recorded")
+                    .4
+                    .as_slice(),
+                checksum
+            );
+        }
+        raw_sql(
+            "INSERT INTO usage_threads
+                 (thread_id, root_thread_id, source, lineage_edge_kind, spawn_request_id)
+             VALUES ('shipped-thread', 'shipped-thread', 'cli', 'fork', 'shipped-spawn');
+             INSERT INTO usage_automatic_turn_eligibility
+                 (thread_id, trigger_turn_id, generation, next_attempt, max_attempts,
+                  capability, event_occurrence_id, connection_principal)
+             VALUES ('shipped-thread', 'trigger', 0, 1, 2,
+                     'fixture-capability', 'event', 'fixture-principal');
+             INSERT INTO usage_automatic_turns
+                 (thread_id, client_user_message_id, trigger_turn_id, turn_id, origin,
+                  generation, capability, attempt, max_attempts, provenance_source,
+                  event_occurrence_id, connection_principal)
+             VALUES ('shipped-thread', 'message', 'trigger', 'turn', 'fixture',
+                     0, 'fixture-capability', 1, 2, 'server', 'event', 'fixture-principal');",
+        )
+        .execute(&pool)
+        .await
+        .expect("shipped data should be stored under the original column names");
+        pool
+    }
+
+    async fn principal_schema(pool: &SqlitePool) -> Vec<(String, String)> {
+        sqlx::query_as(
+            "SELECT name, sql FROM sqlite_master
+             WHERE type = 'table'
+               AND name IN ('usage_automatic_turn_eligibility', 'usage_automatic_turns')
+             ORDER BY name",
+        )
+        .fetch_all(pool)
+        .await
+        .expect("principal table definitions should be readable")
+    }
+
+    async fn assert_shipped_data(pool: &SqlitePool) {
+        let principals = sqlx::query_scalar::<_, String>(
+            "SELECT connection_principal FROM usage_automatic_turn_eligibility
+             UNION ALL SELECT connection_principal FROM usage_automatic_turns",
+        )
+        .fetch_all(pool)
+        .await
+        .expect("original principal values should remain readable");
+        assert_eq!(principals, vec!["fixture-principal"; 2]);
+        let lineage = sqlx::query_as::<_, (String, String)>(
+            "SELECT lineage_edge_kind, spawn_request_id FROM usage_threads
+             WHERE thread_id = 'shipped-thread'",
+        )
+        .fetch_one(pool)
+        .await
+        .expect("historical lineage data should remain readable");
+        assert_eq!(lineage, ("fork".to_owned(), "shipped-spawn".to_owned()));
+        let renamed_columns = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM pragma_table_xinfo('usage_automatic_turn_eligibility')
+             WHERE name = 'principal_identity'",
+        )
+        .fetch_one(pool)
+        .await
+        .expect("original schema should be inspectable");
+        assert_eq!(renamed_columns, 0);
+    }
+
+    #[tokio::test]
+    async fn runtime_opens_shipped_generation_and_preserves_data_and_history_on_reopen() {
+        let sqlite = test_sqlite().await;
+        let pool = shipped_generation(&sqlite).await;
+        let original = ledger_rows(&pool).await;
+        pool.close().await;
+        let mut upgraded_ledger = None;
+        for iteration in 0..3 {
+            let runtime = StateRuntime::init(sqlite.clone(), "openai".to_owned())
+                .await
+                .expect("native runtime should open the original shipped generation");
+            let pool = runtime.usage_pool();
+            let ledger = ledger_rows(&pool).await;
+            assert_eq!(&ledger[..original.len()], original.as_slice());
+            assert_eq!(
+                ledger[original.len()..]
+                    .iter()
+                    .map(|row| row.0)
+                    .collect::<Vec<_>>(),
+                vec![20, 21]
+            );
+            if let Some(expected) = &upgraded_ledger {
+                assert_eq!(&ledger, expected);
+            } else {
+                upgraded_ledger = Some(ledger);
+            }
+            assert_shipped_data(&pool).await;
+            if iteration == 0 {
+                runtime
+                    .record_usage_thread(&UsageThreadRecord {
+                        thread_id: "shipped-thread".to_owned(),
+                        parent_thread_id: None,
+                        root_thread_id: Some("shipped-thread".to_owned()),
+                        fork_parent_thread_id: None,
+                        source: Some("cli".to_owned()),
+                    })
+                    .await
+                    .expect("native thread usage API should preserve the historical row");
+                let record = ProviderCallUsageRecord {
+                    provider_call_id: "fixture-call".to_owned(),
+                    thread_id: "shipped-thread".to_owned(),
+                    turn_id: "fixture-turn".to_owned(),
+                    provider: "openai".to_owned(),
+                    provider_account_scope: None,
+                    requested_model: "gpt-5.6-luna".to_owned(),
+                    actual_model_used: Some("gpt-5.6-luna".to_owned()),
+                    response_id: "fixture-response".to_owned(),
+                    requested_service_tier: None,
+                    actual_service_tier: None,
+                    actual_service_tier_source: None,
+                    fast_mode_requested: None,
+                    fast_mode_used: None,
+                    billing_surface: None,
+                    account_plan: None,
+                    started_at: "2026-01-01T00:00:00Z".to_owned(),
+                    completed_at: "2026-01-01T00:00:01Z".to_owned(),
+                    input_tokens_uncached: Some(10),
+                    input_tokens_cached: Some(2),
+                    input_tokens_cache_write: Some(0),
+                    output_tokens: Some(4),
+                    total_tokens: Some(16),
+                    status: "ok",
+                };
+                assert_eq!(
+                    runtime
+                        .record_provider_call_usage(&record)
+                        .await
+                        .expect("native provider usage API should write"),
+                    ProviderCallUsageWriteOutcome::Inserted
+                );
+                assert_eq!(
+                    runtime
+                        .record_provider_call_usage(&record)
+                        .await
+                        .expect("native provider usage API should deduplicate"),
+                    ProviderCallUsageWriteOutcome::Duplicate
+                );
+            }
+            let calls = sqlx::query_as::<_, (String, i64)>(
+                "SELECT provider_call_id, total_tokens FROM usage_provider_calls
+                 WHERE request_id = 'fixture-response'",
+            )
+            .fetch_all(&*pool)
+            .await
+            .expect("native-written usage should remain queryable");
+            assert_eq!(calls, vec![("fixture-call".to_owned(), 16)]);
+            let estimates = sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM usage_provider_call_credit_estimates
+                 WHERE provider_call_id = 'fixture-call'",
+            )
+            .fetch_one(&*pool)
+            .await
+            .expect("current credit view should query the native-written row");
+            assert_eq!(estimates, 1);
+            assert_shipped_data(&pool).await;
+            runtime.close().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn shipped_generation_unknown_checksums_preserve_pending_migrations_and_data() {
+        for version in [1_i64, 5, 9, 19] {
+            let sqlite = test_sqlite().await;
+            let pool = shipped_generation(&sqlite).await;
+            sqlx::query("UPDATE _sqlx_migrations SET checksum = ? WHERE version = ?")
+                .bind(vec![0x5a; 48])
+                .bind(version)
+                .execute(&pool)
+                .await
+                .expect("unknown checksum fixture should be stored");
+            let before = ledger_rows(&pool).await;
+            let schema = principal_schema(&pool).await;
+            pool.close().await;
+            let error = sqlite
+                .open_usage_db(&runtime_usage_migrator(), /*telemetry_override*/ None)
+                .await
+                .expect_err("unknown checksums must reject the shipped generation");
+            let migration_error = error
+                .chain()
+                .find_map(|source| source.downcast_ref::<MigrateError>());
+            assert!(matches!(
+                migration_error,
+                Some(MigrateError::VersionMismatch(rejected)) if *rejected == version
+            ));
+            let preserved = sqlite
+                .open_read_only_pool(&sqlite.usage_db_path(), /*busy_timeout*/ None)
+                .await
+                .expect("rejected usage should remain readable");
+            assert_eq!(ledger_rows(&preserved).await, before);
+            assert_eq!(principal_schema(&preserved).await, schema);
+            assert_shipped_data(&preserved).await;
+            preserved.close().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn shipped_generation_unknown_principal_schema_rejects_before_migration() {
+        for mutation in [
+            "ALTER TABLE usage_automatic_turn_eligibility
+             ADD COLUMN principal_identity TEXT",
+            "ALTER TABLE usage_automatic_turns ADD COLUMN principal_identity TEXT",
+            "ALTER TABLE usage_automatic_turn_eligibility
+             RENAME COLUMN connection_principal TO unexpected_principal",
+            "ALTER TABLE usage_automatic_turns
+             RENAME COLUMN connection_principal TO unexpected_principal",
+            "ALTER TABLE usage_automatic_turns
+             RENAME COLUMN connection_principal TO unexpected_principal;
+             ALTER TABLE usage_automatic_turns ADD COLUMN connection_principal INTEGER",
+            "ALTER TABLE usage_automatic_turn_eligibility RENAME TO fixture_eligibility;
+             CREATE VIEW usage_automatic_turn_eligibility
+             AS SELECT * FROM fixture_eligibility",
+        ] {
+            let sqlite = test_sqlite().await;
+            let pool = shipped_generation(&sqlite).await;
+            raw_sql(mutation)
+                .execute(&pool)
+                .await
+                .expect("unknown principal schema fixture should apply");
+            let before = ledger_rows(&pool).await;
+            let schema = principal_schema(&pool).await;
+            pool.close().await;
+            let error = sqlite
+                .open_usage_db(&runtime_usage_migrator(), /*telemetry_override*/ None)
+                .await
+                .expect_err("unknown principal schema must be rejected");
+            let message = format!("{error:#}");
+            assert!(message.contains("unsupported original usage migration 9 principal"));
+            let preserved = sqlite
+                .open_read_only_pool(&sqlite.usage_db_path(), /*busy_timeout*/ None)
+                .await
+                .expect("rejected usage should remain readable");
+            assert_eq!(ledger_rows(&preserved).await, before);
+            assert_eq!(principal_schema(&preserved).await, schema);
+            preserved.close().await;
+        }
     }
 
     #[tokio::test]
