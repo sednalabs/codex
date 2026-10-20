@@ -168,7 +168,7 @@ jobs:
           )
           failures=0
           index=0
-          printf 'selector\ttarget\tstatus\tbazel_exit_code\tmatched_pass_lines\ttest_result\tdiagnostics\n' >> "${NATIVE_TEST_REPORT}"
+          printf 'selector\ttarget\tstatus\tbazel_exit_code\tmatched_pass_lines\tearly_skip\ttest_result\tdiagnostics\n' >> "${NATIVE_TEST_REPORT}"
 
           for item in "${selectors[@]}"; do
             index=$((index + 1))
@@ -187,6 +187,7 @@ jobs:
               --test_arg="${selector}" \
               --test_arg=--exact \
               --test_arg=--color=never \
+              --test_arg=--show-output \
               --test_tag_filters=-argument-comment-lint \
               --test_verbose_timeout_warnings \
               --repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1 \
@@ -209,9 +210,17 @@ jobs:
 
             local_config_count="$(grep -Fxc 'BuildBuddy API key is not available; using local Bazel configuration.' "${log}" || true)"
             pass_line_count="$(grep -Fxc "test ${selector} ... ok" "${log}" || true)"
+            early_skip=0
+            if grep -Fq 'Skipping test because it cannot execute when network is disabled in a Codex sandbox.' "${log}" ||
+              grep -Fq 'Skipping test in ' "${log}"; then
+              early_skip=1
+            fi
             result_line="$(grep -F 'test result:' "${log}" | tail -n 1 | tr '\t\r' '  ' | cut -c1-240 || true)"
             diagnostics="$(
               {
+                if [[ "${early_skip}" -ne 0 ]]; then
+                  printf 'execution_category=early_skip\n'
+                fi
                 grep -E '^(queue:|explicit:|child stop:|diagnostic_phase=)' "${log}" \
                   | tail -n 8 \
                   | cut -c1-256 \
@@ -245,13 +254,14 @@ jobs:
             )"
             status=FAIL
             if [[ "${bazel_status}" -eq 0 && "${local_config_count}" == "1" &&
-                  "${pass_line_count}" == "1" && "${result_line}" == *"1 passed; 0 failed"* ]]; then
+                  "${pass_line_count}" == "1" && "${early_skip}" -eq 0 &&
+                  "${result_line}" == *"1 passed; 0 failed"* ]]; then
               status=PASS
             else
               failures=$((failures + 1))
             fi
-            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${selector}" "${target}" "${status}" "${bazel_status}" "${pass_line_count}" "${result_line}" "${diagnostics}" >> "${NATIVE_TEST_REPORT}"
-            printf '%s: %s (%s); Bazel exit=%s; exact pass lines=%s; result=%s; diagnostics=%s\n' "${status}" "${selector}" "${target}" "${bazel_status}" "${pass_line_count}" "${result_line}" "${diagnostics}"
+            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${selector}" "${target}" "${status}" "${bazel_status}" "${pass_line_count}" "${early_skip}" "${result_line}" "${diagnostics}" >> "${NATIVE_TEST_REPORT}"
+            printf '%s: %s (%s); Bazel exit=%s; exact pass lines=%s; early skip=%s; result=%s; diagnostics=%s\n' "${status}" "${selector}" "${target}" "${bazel_status}" "${pass_line_count}" "${early_skip}" "${result_line}" "${diagnostics}"
           done
 
           [[ "${failures}" -eq 0 ]]
@@ -276,6 +286,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "Pinned Rust 1.95 rustfmt check failed for the eight changed files."
           }
+
+      - name: Check for a clean worktree
+        if: always() && !cancelled() && steps.verify_source.outcome == 'success'
+        uses: ./.github/actions/check-clean-worktree
 
       - name: Upload fixed-selector identity and result receipt
         if: always() && !cancelled()
