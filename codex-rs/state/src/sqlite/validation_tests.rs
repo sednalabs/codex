@@ -1,7 +1,7 @@
 //! Exercises startup validation, per-file caching, and report-only lazy databases.
 
+use super::super::RecoveryMode;
 use super::QuickCheckOutcome;
-use super::RecoveryMode;
 use super::SqliteQuickCheckManager;
 use super::quick_check;
 use crate::SqliteConfig;
