@@ -1223,7 +1223,7 @@ mod tests {
             )?
             .expect("original or newly saved credentials should remain");
             if include_refresh_token && !include_issuer {
-                let error = result.expect_err("unbound refresh credentials must not report success");
+                let error = result.expect_err("unbound refresh grants must fail");
                 assert_eq!(
                     error.to_string(),
                     "OAuth provider returned a refresh token without an authorization server issuer; \
