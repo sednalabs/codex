@@ -1259,8 +1259,7 @@ mod tests {
     async fn configured_client_preserves_exact_scopes_and_redirect_without_registration() {
         for (scopes, expected_scope) in [(&[][..], None), (&["read"][..], Some("read"))] {
             let (base_url, registration_requests) = spawn_oauth_metadata_server(
-                /*include_issuer*/ true,
-                /*include_refresh_token*/ false,
+                /*include_issuer*/ true, /*include_refresh_token*/ false,
             )
             .await;
             let redirect_uri = "http://127.0.0.1:43123/callback/configured-client";
