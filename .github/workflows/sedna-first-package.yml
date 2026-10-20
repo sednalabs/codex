@@ -38,8 +38,13 @@ on:
         options:
           - prepare
           - package
+          - prepare-locks
       source_sha:
-        description: Exact source commit for a validation-host package run; leave empty for protected main.
+        description: Exact source commit for a validation-host package or fixed lock-only run.
+        required: false
+        type: string
+      expected_workflow_host_sha:
+        description: Exact workflow-host commit required by the fixed lock-only operation.
         required: false
         type: string
 
@@ -84,6 +89,7 @@ jobs:
           PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
           REPOSITORY: ${{ github.repository }}
           OPERATION_INPUT: ${{ inputs.operation }}
+          EXPECTED_WORKFLOW_HOST_SHA: ${{ inputs.expected_workflow_host_sha }}
           SELECTED_BASE_REF: integration/native-830-20261020
           SELECTED_BASE_SHA: 83086188ae0614bd882818ff1aa23f3194962012
         run: |
@@ -140,13 +146,26 @@ jobs:
                 ;;
             esac
           elif [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
-            if [[ "${OPERATION_INPUT}" != "prepare" && "${OPERATION_INPUT}" != "package" ]]; then
-              echo "Manual operation must be prepare or package." >&2
+            if [[ "${OPERATION_INPUT}" != "prepare" && "${OPERATION_INPUT}" != "package" && "${OPERATION_INPUT}" != "prepare-locks" ]]; then
+              echo "Manual operation must be prepare, package, or the fixed prepare-locks run." >&2
               exit 1
             fi
             if [[ "${EVENT_REF}" == "refs/heads/main" ]]; then
-              if [[ -n "${SOURCE_SHA_INPUT}" || "${SOURCE_SHA}" != "${WORKFLOW_HOST_SHA}" ]]; then
+              if [[ "${OPERATION_INPUT}" == "prepare-locks" || -n "${SOURCE_SHA_INPUT}" || "${SOURCE_SHA}" != "${WORKFLOW_HOST_SHA}" ]]; then
                 echo "Protected-main runs must use the workflow-host commit as their source." >&2
+                exit 1
+              fi
+            elif [[ "${EVENT_REF}" == "refs/heads/validation/native-830-package-browser-locks-df6aa4a3" ]]; then
+              if [[ "${OPERATION_INPUT}" != "prepare-locks" || "${SOURCE_SHA_INPUT}" != "df6aa4a30ecfc2082182b1c8d63c92594f79084d" || "${source_tree}" != "1e07c0e53d733bbd8e436284d584c5281d813713" ]]; then
+                echo "The lock-only host accepts only its fixed operation, source, and tree." >&2
+                exit 1
+              fi
+              if [[ ! "${EXPECTED_WORKFLOW_HOST_SHA}" =~ ^[0-9a-f]{40}$ || "${EXPECTED_WORKFLOW_HOST_SHA}" != "${WORKFLOW_HOST_SHA}" || "$(git show -s --format=%P HEAD)" != "${SOURCE_SHA}" ]]; then
+                echo "The lock-only host must match the expected SHA and be a direct child of its source." >&2
+                exit 1
+              fi
+              if [[ "$(git rev-parse refs/remotes/origin/validation/native-830-browser-input-df6aa4a3)" != "${SOURCE_SHA}" ]]; then
+                echo "The fixed lock-only source ref does not match its frozen commit." >&2
                 exit 1
               fi
             elif [[ "${EVENT_REF}" == refs/heads/validation/native-830-package-* ]]; then
@@ -237,9 +256,231 @@ jobs:
             echo "native_830_source=${native_830_source}"
           } >> "${GITHUB_OUTPUT}"
 
+  prepare-locks:
+    name: Generate only the fixed Browser sha2 lock edge
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.operation == 'prepare-locks' }}
+    needs: identity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      BUILDBUDDY_API_KEY: ""
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check out the fixed Browser source and verify its declared edge
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ needs.identity.outputs.source_sha }}
+          SOURCE_TREE: ${{ needs.identity.outputs.source_tree }}
+          WORKFLOW_HOST_SHA: ${{ needs.identity.outputs.workflow_host_sha }}
+          WORKFLOW_HOST_TREE: ${{ needs.identity.outputs.workflow_host_tree }}
+        run: |
+          set -euo pipefail
+          if [[ "$(git rev-parse HEAD)" != "${WORKFLOW_HOST_SHA}" || "$(git rev-parse HEAD^{tree})" != "${WORKFLOW_HOST_TREE}" ]]; then
+            echo "The lock checkout does not match the frozen workflow host." >&2
+            exit 1
+          fi
+          if [[ "${SOURCE_SHA}" != "df6aa4a30ecfc2082182b1c8d63c92594f79084d" || "${SOURCE_TREE}" != "1e07c0e53d733bbd8e436284d584c5281d813713" || "$(git show -s --format=%P HEAD)" != "${SOURCE_SHA}" ]]; then
+            echo "The lock source or workflow-host parent differs from the fixed Browser input." >&2
+            exit 1
+          fi
+          if [[ "$(git rev-parse refs/remotes/origin/validation/native-830-browser-input-df6aa4a3)" != "${SOURCE_SHA}" ]]; then
+            echo "The fixed Browser source ref does not match its frozen commit." >&2
+            exit 1
+          fi
+          git checkout --detach "${SOURCE_SHA}"
+          if [[ "$(git rev-parse HEAD)" != "${SOURCE_SHA}" || "$(git rev-parse HEAD^{tree})" != "${SOURCE_TREE}" || -n "$(git status --porcelain --untracked-files=normal)" ]]; then
+            echo "Could not check out the clean frozen Browser source." >&2
+            exit 1
+          fi
+          grep -Fxq 'sha2 = "0.10"' codex-rs/Cargo.toml
+          grep -Fxq 'sha2 = { workspace = true }' codex-rs/browser-computer-use/Cargo.toml
+          grep -Fxq 'i18n-config = { git = "https://github.com/kellpossible/cargo-i18n", rev = "2ce7b1dfe9a8cc224288bf50cbc2a67a6de863c4" }' codex-rs/Cargo.toml
+          grep -Fxq '    "https://github.com/kellpossible/cargo-i18n",' codex-rs/deny.toml
+          mkdir -p "${RUNNER_TEMP}/sedna-browser-locks"
+          cp codex-rs/Cargo.lock "${RUNNER_TEMP}/sedna-browser-locks/Cargo.lock.before"
+
+      - name: Set up existing standard CI tools and Bazel
+        uses: ./.github/actions/setup-bazel-ci
+        with:
+          target: x86_64-unknown-linux-gnu
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          toolchain: "1.95.0"
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Generate and check only source-bound lock outputs
+        shell: bash
+        env:
+          EXPECTED_SOURCE_SHA: ${{ needs.identity.outputs.source_sha }}
+          EXPECTED_SOURCE_TREE: ${{ needs.identity.outputs.source_tree }}
+          EXPECTED_WORKFLOW_HOST_SHA: ${{ needs.identity.outputs.workflow_host_sha }}
+          EXPECTED_WORKFLOW_HOST_TREE: ${{ needs.identity.outputs.workflow_host_tree }}
+        run: |
+          set -euo pipefail
+          if [[ "$(git rev-parse HEAD)" != "${EXPECTED_SOURCE_SHA}" || "$(git rev-parse HEAD^{tree})" != "${EXPECTED_SOURCE_TREE}" || -n "$(git status --porcelain --untracked-files=normal)" ]]; then
+            echo "Refusing lock generation from a changed Browser source checkout." >&2
+            exit 1
+          fi
+
+          (cd codex-rs && cargo update -p sha2@0.10.9 --precise 0.10.9)
+          just bazel-lock-update
+          just bazel-lock-check
+
+          python3 - "${RUNNER_TEMP}/sedna-browser-locks/Cargo.lock.before" codex-rs/Cargo.lock <<'PY'
+          import collections
+          import sys
+          import tomllib
+
+          before_path, after_path = sys.argv[1:]
+
+          def read_lock(path):
+              with open(path, "rb") as lockfile:
+                  return tomllib.load(lockfile)
+
+          before = read_lock(before_path)
+          after = read_lock(after_path)
+
+          def packages_by_identity(lock, label):
+              packages = lock.get("package")
+              if not isinstance(packages, list):
+                  raise SystemExit(f"{label} has no package array.")
+              result = {}
+              for package in packages:
+                  identity = (package.get("name"), package.get("version"), package.get("source"))
+                  if identity in result:
+                      raise SystemExit(f"{label} repeats package identity {identity}.")
+                  result[identity] = package
+              return result
+
+          def validate_invariants(lock, label, expect_browser_edge):
+              packages = lock.get("package", [])
+              if any(package.get("name") == "basic-toml" for package in packages):
+                  raise SystemExit(f"{label} contains the prohibited basic-toml package.")
+              expected_git_source = "git+https://github.com/kellpossible/cargo-i18n?rev=2ce7b1dfe9a8cc224288bf50cbc2a67a6de863c4#2ce7b1dfe9a8cc224288bf50cbc2a67a6de863c4"
+              i18n = [package for package in packages if package.get("name") == "i18n-config"]
+              if len(i18n) != 1 or i18n[0].get("version") != "0.4.8" or i18n[0].get("source") != expected_git_source:
+                  raise SystemExit(f"{label} does not preserve the exact i18n-config Git pin.")
+              expected_tls = {
+                  "rustls-webpki": "0.103.16",
+                  "webpki-roots": "1.0.10",
+                  "webpki-root-certs": "1.0.10",
+              }
+              for name, version in expected_tls.items():
+                  selected = [package for package in packages if package.get("name") == name]
+                  if len(selected) != 1 or selected[0].get("version") != version or selected[0].get("source") != "registry+https://github.com/rust-lang/crates.io-index":
+                      raise SystemExit(f"{label} does not preserve fixed {name} {version}.")
+              sha2 = [package for package in packages if package.get("name") == "sha2" and package.get("version") == "0.10.9"]
+              if len(sha2) != 1 or sha2[0].get("source") != "registry+https://github.com/rust-lang/crates.io-index":
+                  raise SystemExit(f"{label} does not preserve the exact registry sha2 0.10.9 package.")
+              browser = [package for package in packages if package.get("name") == "codex-browser-computer-use" and package.get("version") == "0.163.0"]
+              if len(browser) != 1:
+                  raise SystemExit(f"{label} does not contain exactly one expected Browser workspace package.")
+              deps = browser[0].get("dependencies", [])
+              edge_count = deps.count("sha2 0.10.9")
+              if edge_count != (1 if expect_browser_edge else 0):
+                  raise SystemExit(f"{label} has an unexpected Browser-to-sha2 dependency edge count.")
+              return browser[0]
+
+          before_packages = packages_by_identity(before, "input Cargo.lock")
+          after_packages = packages_by_identity(after, "generated Cargo.lock")
+          before_browser = validate_invariants(before, "input Cargo.lock", False)
+          after_browser = validate_invariants(after, "generated Cargo.lock", True)
+          if set(before_packages) != set(after_packages):
+              raise SystemExit("Cargo package identities changed beyond the authorized Browser dependency edge.")
+          if {key: value for key, value in before.items() if key != "package"} != {key: value for key, value in after.items() if key != "package"}:
+              raise SystemExit("Cargo lock top-level metadata changed unexpectedly.")
+          expected_browser_deps = collections.Counter(before_browser.get("dependencies", []))
+          expected_browser_deps["sha2 0.10.9"] += 1
+          if collections.Counter(after_browser.get("dependencies", [])) != expected_browser_deps:
+              raise SystemExit("The Browser dependency array differs by more than the exact sha2 0.10.9 edge.")
+          for identity in before_packages:
+              old_package = before_packages[identity]
+              new_package = after_packages[identity]
+              if identity == ("codex-browser-computer-use", "0.163.0", None):
+                  old_copy = dict(old_package)
+                  new_copy = dict(new_package)
+                  old_copy.pop("dependencies", None)
+                  new_copy.pop("dependencies", None)
+                  if old_copy != new_copy:
+                      raise SystemExit("The Browser package identity, source, or checksum changed unexpectedly.")
+              elif old_package != new_package:
+                  raise SystemExit(f"Package metadata or dependencies changed unexpectedly for {identity}.")
+          PY
+
+          if [[ "$(git rev-parse HEAD)" != "${EXPECTED_SOURCE_SHA}" || "$(git rev-parse HEAD^{tree})" != "${EXPECTED_SOURCE_TREE}" ]]; then
+            echo "Lock generation changed the Browser source identity." >&2
+            exit 1
+          fi
+          if [[ -n "$(git diff --cached --name-only)" || -n "$(git ls-files --others --exclude-standard)" ]]; then
+            echo "Lock generation staged changes or created unexpected untracked files." >&2
+            git status --short >&2
+            exit 1
+          fi
+          while IFS= read -r path; do
+            case "${path}" in
+              "codex-rs/Cargo.lock"|"MODULE.bazel.lock"|"") ;;
+              *)
+                echo "Lock generation changed an unexpected tracked path." >&2
+                printf '%s\n' "${path}" >&2
+                exit 1
+                ;;
+            esac
+          done < <(git diff --name-only HEAD)
+          git diff --check
+
+          output_dir="${RUNNER_TEMP}/sedna-browser-generated-locks"
+          mkdir -p "${output_dir}"
+          git diff --binary HEAD -- codex-rs/Cargo.lock MODULE.bazel.lock > "${output_dir}/generated-outputs.patch"
+          git diff --name-only HEAD -- codex-rs/Cargo.lock MODULE.bazel.lock > "${output_dir}/generated-paths.txt"
+          git diff --stat HEAD -- codex-rs/Cargo.lock MODULE.bazel.lock > "${output_dir}/generated-stat.txt"
+          python3 - <<'PY' > "${output_dir}/generated-identity.json"
+          import json
+          import os
+          import subprocess
+          import sys
+
+          payload = {
+              "sourceCommit": os.environ["EXPECTED_SOURCE_SHA"],
+              "sourceTree": os.environ["EXPECTED_SOURCE_TREE"],
+              "sourceRef": "validation/native-830-browser-input-df6aa4a3",
+              "workflowHostCommit": os.environ["EXPECTED_WORKFLOW_HOST_SHA"],
+              "workflowHostTree": os.environ["EXPECTED_WORKFLOW_HOST_TREE"],
+              "workflowHostRef": "validation/native-830-package-browser-locks-df6aa4a3",
+              "workflowRunId": os.environ["GITHUB_RUN_ID"],
+              "operation": "prepare-locks",
+              "cargoUpdate": "sha2@0.10.9 --precise 0.10.9",
+              "expectedBrowserDependency": "sha2 0.10.9",
+              "preservedI18nConfigGitRevision": "2ce7b1dfe9a8cc224288bf50cbc2a67a6de863c4",
+              "preservedTlsRegistryVersions": {
+                  "rustls-webpki": "0.103.16",
+                  "webpki-roots": "1.0.10",
+                  "webpki-root-certs": "1.0.10",
+              },
+              "generatedPaths": subprocess.check_output(
+                  ["git", "diff", "--name-only", "HEAD"], text=True
+              ).splitlines(),
+          }
+          json.dump(payload, sys.stdout, indent=2)
+          sys.stdout.write("\n")
+          PY
+
+      - name: Upload only the source-bound generated lock patch
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: sedna-first-browser-locks-${{ needs.identity.outputs.source_short }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/sedna-browser-generated-locks/*
+          if-no-files-found: error
+          retention-days: 3
+
   prepare-source:
     name: Generate exact-source locks and schemas
-    if: ${{ needs.identity.result == 'success' }}
+    if: ${{ needs.identity.result == 'success' && inputs.operation != 'prepare-locks' }}
     needs: identity
     runs-on: ubuntu-24.04
     timeout-minutes: 210
@@ -490,7 +731,7 @@ jobs:
 
   package-unavailable:
     name: Package route unavailable for this exact source
-    if: ${{ needs.identity.outputs.package_available != 'true' }}
+    if: ${{ needs.identity.outputs.package_available != 'true' && inputs.operation != 'prepare-locks' }}
     needs: identity
     runs-on: ubuntu-24.04
     steps:
