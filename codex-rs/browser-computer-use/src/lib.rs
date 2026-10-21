@@ -808,6 +808,11 @@ mod tests {
     use super::*;
 
     #[cfg(unix)]
+    fn canonical_fixture_root(temp: &tempfile::TempDir) -> std::path::PathBuf {
+        temp.path().canonicalize().expect("canonical fixture root")
+    }
+
+    #[cfg(unix)]
     fn fake_provider_config(fixture_root: &Path, state_dir: &Path) -> PlaywrightProviderConfig {
         let node_path = fixture_root.join("node-modules");
         let playwright = node_path.join("playwright");
@@ -917,8 +922,9 @@ exports.chromium = {
     #[tokio::test]
     async fn playwright_provider_keeps_thread_state_and_returns_typed_image() {
         let temp = tempfile::tempdir().expect("fixture root");
-        let state_dir = temp.path().join("browser-state");
-        let config = fake_provider_config(temp.path(), &state_dir);
+        let fixture_root = canonical_fixture_root(&temp);
+        let state_dir = fixture_root.join("browser-state");
+        let config = fake_provider_config(&fixture_root, &state_dir);
         let manager = BrowserSessionManager::default();
 
         async fn call(
@@ -1031,10 +1037,11 @@ exports.chromium = {
     #[tokio::test]
     async fn cancelled_browser_action_closes_before_same_profile_retry() {
         let temp = tempfile::tempdir().expect("fixture root");
-        let state_dir = temp.path().join("browser-state");
+        let fixture_root = canonical_fixture_root(&temp);
+        let state_dir = fixture_root.join("browser-state");
         std::fs::create_dir_all(&state_dir).expect("browser state root");
         std::fs::write(state_dir.join("pause-action"), "pause").expect("pause marker");
-        let config = fake_provider_config(temp.path(), &state_dir);
+        let config = fake_provider_config(&fixture_root, &state_dir);
         let manager = std::sync::Arc::new(BrowserSessionManager::default());
         let params = browser_params(
             "thread-cancel-action",
@@ -1067,10 +1074,11 @@ exports.chromium = {
     #[tokio::test]
     async fn closing_thread_cancels_in_flight_browser_action_without_replay() {
         let temp = tempfile::tempdir().expect("fixture root");
-        let state_dir = temp.path().join("browser-state");
+        let fixture_root = canonical_fixture_root(&temp);
+        let state_dir = fixture_root.join("browser-state");
         std::fs::create_dir_all(&state_dir).expect("browser state root");
         std::fs::write(state_dir.join("pause-action"), "pause").expect("pause marker");
-        let config = fake_provider_config(temp.path(), &state_dir);
+        let config = fake_provider_config(&fixture_root, &state_dir);
         let manager = std::sync::Arc::new(BrowserSessionManager::default());
         let params = browser_params(
             "thread-close-action",
@@ -1109,10 +1117,11 @@ exports.chromium = {
     #[tokio::test]
     async fn cancelled_pending_launch_closes_late_context_before_retry() {
         let temp = tempfile::tempdir().expect("fixture root");
-        let state_dir = temp.path().join("browser-state");
+        let fixture_root = canonical_fixture_root(&temp);
+        let state_dir = fixture_root.join("browser-state");
         std::fs::create_dir_all(&state_dir).expect("browser state root");
         std::fs::write(state_dir.join("pause-launch"), "pause").expect("pause marker");
-        let config = fake_provider_config(temp.path(), &state_dir);
+        let config = fake_provider_config(&fixture_root, &state_dir);
         let manager = std::sync::Arc::new(BrowserSessionManager::default());
         let params = browser_params("thread-cancel-launch", TOOL_BROWSER_OBSERVE, json!({}));
         let task_manager = std::sync::Arc::clone(&manager);
@@ -1141,11 +1150,12 @@ exports.chromium = {
     #[tokio::test]
     async fn unconfirmed_browser_cleanup_retains_lock_and_rejects_retry() {
         let temp = tempfile::tempdir().expect("fixture root");
-        let state_dir = temp.path().join("browser-state");
+        let fixture_root = canonical_fixture_root(&temp);
+        let state_dir = fixture_root.join("browser-state");
         std::fs::create_dir_all(&state_dir).expect("browser state root");
         std::fs::write(state_dir.join("pause-action"), "pause").expect("pause marker");
         std::fs::write(state_dir.join("hang-close"), "hang").expect("cleanup marker");
-        let config = fake_provider_config(temp.path(), &state_dir);
+        let config = fake_provider_config(&fixture_root, &state_dir);
         let manager = std::sync::Arc::new(BrowserSessionManager::default());
         let params = browser_params(
             "thread-unconfirmed-cleanup",
