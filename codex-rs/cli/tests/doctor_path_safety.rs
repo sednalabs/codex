@@ -574,7 +574,9 @@ async fn interactive_tmux_startup_does_not_execute_workspace_helpers() -> Result
                 .chars()
                 .filter(|character| !character.is_whitespace())
                 .collect();
-            if text.contains("Trustthisfolder?") {
+            if text.contains("Config,hooks,andexecpoliciesfromuntrustedfoldersstaydisabled.")
+                && text.contains("Openrestricted")
+            {
                 return Ok::<_, anyhow::Error>(());
             }
         }
