@@ -1281,16 +1281,18 @@ def _matches_head_sha_prefix(run_head_sha, expected_head_sha):
     return any(observed.startswith(prefix) for prefix in expected_prefixes)
 
 def _run_attempt(run_view):
-    """Return the API's attempt identity, tolerating older fixture spellings."""
-    value = _dict_or_empty(run_view).get("attempt")
-    if value is None:
-        value = _dict_or_empty(run_view).get("runAttempt")
-    if value is None:
-        value = _dict_or_empty(run_view).get("run_attempt")
-    try:
-        return int(value) if value is not None else None
-    except (TypeError, ValueError):
-        return None
+    """Return one positive attempt identity; only absent/null fields are unknown."""
+    observed = None
+    for key in ("attempt", "runAttempt", "run_attempt"):
+        value = _dict_or_empty(run_view).get(key)
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise GhCommandError(f"Malformed GitHub run attempt: invalid `{key}`")
+        if observed is not None and observed != value:
+            raise GhCommandError("Malformed GitHub run attempt: conflicting attempt fields")
+        observed = value
+    return observed
 
 def _payload_has_pending_retry_settle(payload, retry_state, settle_seconds):
     """Keep terminal waits open briefly for a rerun of the same Actions run.
@@ -1584,10 +1586,15 @@ def _normalize_rest_job(job, *, run_id, job_index):
         normalized["runnerId"] = job["runner_id"]
     return normalized
 
-def _list_run_jobs_rest(repo, run_id):
+def _list_run_jobs_rest(repo, run_id, attempt=None):
+    attempt = _run_attempt({"attempt": attempt})
+    endpoint_base = f"/repos/{repo}/actions/runs/{run_id}"
+    if attempt is not None:
+        endpoint_base += f"/attempts/{attempt}"
+    observed_attempt = attempt
     jobs, expected_total, seen_job_ids = [], None, set()
     for page in range(1, 1001):
-        endpoint = f"/repos/{repo}/actions/runs/{run_id}/jobs?per_page=100&page={page}"
+        endpoint = f"{endpoint_base}/jobs?per_page=100&page={page}"
         payload = gh_json(["api", endpoint], repo=repo)
         context = f"jobs page {page} for run {run_id}"
         if not isinstance(payload, dict):
@@ -1607,6 +1614,13 @@ def _list_run_jobs_rest(repo, run_id):
             normalized = _normalize_rest_job(
                 job, run_id=run_id, job_index=page_offset + job_index
             )
+            if "run_attempt" in job:
+                job_attempt = _rest_required_id(job, "run_attempt", context)
+                if observed_attempt is not None and job_attempt != observed_attempt:
+                    raise GhCommandError(
+                        f"GitHub REST {context} returned job attempt {job_attempt}, expected {observed_attempt}"
+                    )
+                observed_attempt = job_attempt
             if normalized["databaseId"] in seen_job_ids:
                 raise GhCommandError(f"GitHub REST {context} repeated job id {normalized['databaseId']}")
             seen_job_ids.add(normalized["databaseId"])
@@ -1634,13 +1648,14 @@ def _view_run_via_actions_api(repo, run_id):
     if observed_repo != str(repo).strip().lower():
         raise GhCommandError(f"GitHub REST run repository {observed_repo!r} does not match requested {repo!r}")
     workflow_name = _rest_required_text(run, "name", context)
+    attempt = _run_attempt(run)
     return {
         "databaseId": observed_run_id,
         "displayTitle": _rest_required_text(run, "display_title", context),
         "event": _rest_required_text(run, "event", context),
         "headBranch": run.get("head_branch"),
         "headSha": _rest_required_text(run, "head_sha", context),
-        "attempt": _run_attempt(run),
+        "attempt": attempt,
         "name": workflow_name,
         "number": _rest_required_id(run, "run_number", context),
         "status": _rest_required_text(run, "status", context),
@@ -1649,7 +1664,7 @@ def _view_run_via_actions_api(repo, run_id):
         "workflowName": workflow_name,
         "createdAt": _rest_optional_timestamp(run, "created_at", context),
         "updatedAt": _rest_optional_timestamp(run, "updated_at", context),
-        "jobs": _list_run_jobs_rest(repo, run_id),
+        "jobs": _list_run_jobs_rest(repo, run_id, attempt),
         "retrievedVia": "actions_api",
     }
 
@@ -3795,7 +3810,7 @@ def _enrich_job_assignment_fields(repo, run_view):
     run_id = int(run_view.get("databaseId") or 0)
     if run_id <= 0:
         return run_view
-    rest_jobs = _list_run_jobs_rest(repo, run_id)
+    rest_jobs = _list_run_jobs_rest(repo, run_id, _run_attempt(run_view))
     by_id = {
         int(job.get("databaseId")): job
         for job in rest_jobs

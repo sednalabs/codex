@@ -149,6 +149,130 @@ class GhProcessBoundaryTests(unittest.TestCase):
         sleep.assert_called_once_with(1)
 
 
+class RunJobAttemptTests(unittest.TestCase):
+    @staticmethod
+    def _job(job_id, attempt=2):
+        return {
+            "id": job_id, "run_id": 42, "run_attempt": attempt,
+            "name": "required", "status": "queued", "conclusion": None,
+            "html_url": f"https://example.invalid/jobs/{job_id}",
+            "started_at": None, "completed_at": None, "steps": [],
+        }
+
+    def test_attempt_identity_accepts_only_matching_positive_integer_aliases(self):
+        for field in ("attempt", "runAttempt", "run_attempt"):
+            with self.subTest(field=field):
+                self.assertEqual(MODULE._run_attempt({field: 2}), 2)
+        self.assertEqual(MODULE._run_attempt({"attempt": 2, "runAttempt": 2, "run_attempt": 2}), 2)
+        self.assertEqual(MODULE._run_attempt({"attempt": None, "run_attempt": 2}), 2)
+        for payload in ({}, {"attempt": None, "runAttempt": None, "run_attempt": None}):
+            self.assertIsNone(MODULE._run_attempt(payload))
+
+    def test_malformed_or_conflicting_attempt_identity_never_becomes_unknown(self):
+        for field in ("attempt", "runAttempt", "run_attempt"):
+            for value in (True, False, 0, -1, "2", 2.0, 2.5, [], {}):
+                with self.subTest(field=field, value=value), self.assertRaises(MODULE.GhCommandError):
+                    MODULE._run_attempt({field: value})
+        for payload in ({"attempt": 1, "run_attempt": 2}, {"attempt": 2, "runAttempt": "2"}):
+            with self.subTest(payload=payload), self.assertRaises(MODULE.GhCommandError):
+                MODULE._run_attempt(payload)
+
+    def test_known_attempt_pins_every_jobs_page_to_the_same_snapshot(self):
+        pages = [
+            {"total_count": 2, "jobs": [self._job(501)]},
+            {"total_count": 2, "jobs": [self._job(502)]},
+        ]
+        with patch.object(MODULE, "gh_json", side_effect=pages) as read:
+            jobs = MODULE._list_run_jobs_rest("owner/repo", 42, 2)
+        self.assertEqual([job["databaseId"] for job in jobs], [501, 502])
+        self.assertEqual([request.args[0] for request in read.call_args_list], [
+            ["api", "/repos/owner/repo/actions/runs/42/attempts/2/jobs?per_page=100&page=1"],
+            ["api", "/repos/owner/repo/actions/runs/42/attempts/2/jobs?per_page=100&page=2"],
+        ])
+        self.assertEqual([request.kwargs for request in read.call_args_list], [{"repo": "owner/repo"}] * 2)
+
+    def test_genuinely_unknown_attempt_keeps_unscoped_compatibility(self):
+        for observed in (False, True):
+            first, second = self._job(501), self._job(502)
+            if not observed:
+                first.pop("run_attempt")
+                second.pop("run_attempt")
+            with self.subTest(observed=observed), patch.object(MODULE, "gh_json", side_effect=[
+                {"total_count": 2, "jobs": [first]},
+                {"total_count": 2, "jobs": [second]},
+            ]) as read:
+                jobs = MODULE._list_run_jobs_rest("owner/repo", 42)
+            self.assertEqual(len(jobs), 2)
+            self.assertEqual([request.args[0] for request in read.call_args_list], [
+                ["api", "/repos/owner/repo/actions/runs/42/jobs?per_page=100&page=1"],
+                ["api", "/repos/owner/repo/actions/runs/42/jobs?per_page=100&page=2"],
+            ])
+
+    def test_missing_job_attempt_does_not_discard_a_known_run_attempt(self):
+        job = self._job(501)
+        job.pop("run_attempt")
+        with patch.object(MODULE, "gh_json", return_value={"total_count": 1, "jobs": [job]}) as read:
+            self.assertEqual(len(MODULE._list_run_jobs_rest("owner/repo", 42, 2)), 1)
+        read.assert_called_once_with(
+            ["api", "/repos/owner/repo/actions/runs/42/attempts/2/jobs?per_page=100&page=1"], repo="owner/repo"
+        )
+
+    def test_malformed_expected_attempt_is_rejected_before_any_request(self):
+        for value in (True, False, 0, -1, "2", 2.0, [], {}):
+            with self.subTest(value=value), patch.object(MODULE, "gh_json") as read:
+                with self.assertRaises(MODULE.GhCommandError):
+                    MODULE._list_run_jobs_rest("owner/repo", 42, value)
+                read.assert_not_called()
+
+    def test_job_attempt_mismatch_or_malformed_value_is_not_joined_or_retried(self):
+        for expected in (None, 2):
+            values = (None, True, False, 0, -1, "2", 2.0, [], {})
+            if expected is not None:
+                values += (1, 3)
+            for value in values:
+                with self.subTest(expected=expected, value=value), patch.object(
+                    MODULE, "gh_json", return_value={"total_count": 1, "jobs": [self._job(501, value)]}
+                ) as read, self.assertRaises(MODULE.GhCommandError):
+                    MODULE._list_run_jobs_rest("owner/repo", 42, expected)
+                self.assertEqual(read.call_count, 1)
+
+    def test_unknown_attempt_rejects_mixed_job_attempts_across_pages(self):
+        with patch.object(MODULE, "gh_json", side_effect=[
+            {"total_count": 2, "jobs": [self._job(501, 2)]},
+            {"total_count": 2, "jobs": [self._job(502, 3)]},
+        ]) as read, self.assertRaisesRegex(MODULE.GhCommandError, "job attempt 3, expected 2"):
+            MODULE._list_run_jobs_rest("owner/repo", 42)
+        self.assertEqual(read.call_count, 2)
+
+    def test_scoped_endpoint_failure_does_not_fall_back_or_add_retries(self):
+        with patch.object(MODULE, "gh_json", side_effect=MODULE.GhCommandError("HTTP 502")) as read:
+            with self.assertRaisesRegex(MODULE.GhCommandError, "HTTP 502"):
+                MODULE._list_run_jobs_rest("owner/repo", 42, 2)
+        read.assert_called_once_with(
+            ["api", "/repos/owner/repo/actions/runs/42/attempts/2/jobs?per_page=100&page=1"], repo="owner/repo"
+        )
+
+    def test_attempt_scoping_preserves_existing_job_and_pagination_guards(self):
+        cases = [
+            [{"total_count": 1, "jobs": [{**self._job(501), "run_id": 43}]}],
+            [{"total_count": 2, "jobs": [self._job(501)]}, {"total_count": 2, "jobs": [self._job(501)]}],
+            [{"total_count": 2, "jobs": [self._job(501)]}, {"total_count": 3, "jobs": [self._job(502)]}],
+            [{"total_count": 1, "jobs": [self._job(501), self._job(502)]}],
+            [{"total_count": 1, "jobs": []}],
+        ]
+        for pages in cases:
+            with self.subTest(pages=pages), patch.object(MODULE, "gh_json", side_effect=pages):
+                with self.assertRaises(MODULE.GhCommandError):
+                    MODULE._list_run_jobs_rest("owner/repo", 42, 2)
+
+    def test_assignment_enrichment_propagates_each_known_attempt_alias(self):
+        for field in ("attempt", "runAttempt", "run_attempt"):
+            run = {"databaseId": 42, field: 2, "jobs": []}
+            with self.subTest(field=field), patch.object(MODULE, "_list_run_jobs_rest", return_value=[]) as read:
+                self.assertIs(MODULE._enrich_job_assignment_fields("owner/repo", run), run)
+            read.assert_called_once_with("owner/repo", 42, 2)
+
+
 class ProofIdentityTests(unittest.TestCase):
     def test_list_workflow_runs_matches_expected_head_sha_case_insensitively(self):
         runs = [
@@ -610,7 +734,7 @@ class ProofIdentityTests(unittest.TestCase):
                 })
                 self.assertEqual([call.args for call in read.call_args_list], [
                     (["api", "repos/owner/repo/actions/runs/30440173012"],),
-                    (["api", "/repos/owner/repo/actions/runs/30440173012/jobs?per_page=100&page=1"],)
+                    (["api", "/repos/owner/repo/actions/runs/30440173012/attempts/3/jobs?per_page=100&page=1"],)
                 ])
                 self.assertEqual([call.kwargs for call in read.call_args_list], [
                     {"repo": "owner/repo"}, {"repo": "owner/repo"}
