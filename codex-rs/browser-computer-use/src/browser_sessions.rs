@@ -36,6 +36,7 @@ use tokio::process::ChildStdout;
 use tokio::process::Command;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::Notify;
+use tokio::sync::Semaphore;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::sync::watch;
@@ -60,7 +61,7 @@ struct ProfileSlot {
     config: Option<PlaywrightProviderConfig>,
     actor: Option<ActorHandle>,
     unavailable: bool,
-    request_gate: Arc<AsyncMutex<()>>,
+    request_gate: Arc<Semaphore>,
     close_epoch: u64,
 }
 
@@ -70,7 +71,7 @@ impl Default for ProfileSlot {
             config: None,
             actor: None,
             unavailable: false,
-            request_gate: Arc::new(AsyncMutex::new(())),
+            request_gate: Arc::new(Semaphore::new(1)),
             close_epoch: 0,
         }
     }
@@ -96,7 +97,7 @@ enum ActorState {
 enum ActorCommand {
     Request {
         request_id: u64,
-        params: DynamicToolCallParams,
+        params: Box<DynamicToolCallParams>,
         cancel: Arc<RequestCancellation>,
         reply: oneshot::Sender<Result<DynamicToolCallResponse, String>>,
     },
@@ -197,122 +198,119 @@ impl BrowserSessionManager {
             let slot_state = slot.lock().await;
             (Arc::clone(&slot_state.request_gate), slot_state.close_epoch)
         };
-        let _request_guard = request_gate.lock().await;
+        let _request_permit = Arc::clone(&request_gate)
+            .acquire_owned()
+            .await
+            .map_err(|_| "Browser profile request gate is unavailable.".to_string())?;
+
+        enum SlotAction {
+            Wait(ActorHandle),
+            Close(ActorHandle),
+            Spawn(u64),
+            Use(ActorHandle),
+        }
 
         let actor = loop {
-            let mut slot_state = slot.lock().await;
-            if slot_state.close_epoch != invocation_epoch {
-                return Err("Browser thread closed before its request could start.".to_string());
-            }
-            if slot_state.unavailable {
-                return Err(
-                    "Browser profile is unavailable after unconfirmed owner cleanup.".to_string(),
-                );
-            }
+            let action = {
+                let mut slot_state = slot.lock().await;
+                if slot_state.close_epoch != invocation_epoch {
+                    return Err(
+                        "Browser thread closed before its request could start.".to_string(),
+                    );
+                }
+                if slot_state.unavailable {
+                    return Err(
+                        "Browser profile is unavailable after unconfirmed owner cleanup."
+                            .to_string(),
+                    );
+                }
 
-            if let Some(state) = slot_state.actor.as_ref().map(actor_state) {
-                match state {
-                    ActorState::Closing | ActorState::Starting | ActorState::Busy => {
-                        let mut actor = slot_state
-                            .actor
-                            .as_ref()
-                            .expect("actor state came from an actor")
-                            .clone();
-                        drop(slot_state);
-                        let terminal = timeout(
-                            CLEANUP_TIMEOUT + Duration::from_secs(1),
-                            wait_for_terminal(&mut actor),
-                        )
-                        .await
-                        .unwrap_or(ActorState::Unavailable);
-                        match terminal {
-                            ActorState::Released => {
-                                let mut slot_state = slot.lock().await;
-                                slot_state.actor = None;
-                                slot_state.config = None;
-                            }
-                            ActorState::Unavailable => {
-                                let mut slot_state = slot.lock().await;
-                                slot_state.unavailable = true;
-                                return Err(
-                                    "Browser profile is unavailable after unconfirmed owner cleanup."
-                                        .to_string(),
-                                );
-                            }
-                            _ => {}
+                match slot_state.actor.as_ref().map(actor_state) {
+                    Some(ActorState::Closing | ActorState::Starting | ActorState::Busy) => {
+                        match slot_state.actor.as_ref() {
+                            Some(actor) => SlotAction::Wait(actor.clone()),
+                            None => SlotAction::Spawn(slot_state.close_epoch),
                         }
-                        continue;
                     }
-                    ActorState::Unavailable => {
+                    Some(ActorState::Unavailable) => {
                         slot_state.unavailable = true;
                         return Err(
                             "Browser profile is unavailable after unconfirmed owner cleanup."
                                 .to_string(),
                         );
                     }
-                    ActorState::Active => {}
-                    ActorState::Released => {
+                    Some(ActorState::Released) => {
                         slot_state.actor = None;
                         slot_state.config = None;
+                        SlotAction::Spawn(slot_state.close_epoch)
+                    }
+                    Some(ActorState::Active) => match slot_state.actor.as_ref() {
+                        Some(actor) if slot_state.config.as_ref() != Some(config) => {
+                            SlotAction::Close(actor.clone())
+                        }
+                        Some(actor) => SlotAction::Use(actor.clone()),
+                        None => SlotAction::Spawn(slot_state.close_epoch),
+                    },
+                    None => SlotAction::Spawn(slot_state.close_epoch),
+                }
+            };
+
+            match action {
+                SlotAction::Wait(mut actor) => {
+                    let terminal = timeout(
+                        CLEANUP_TIMEOUT + Duration::from_secs(1),
+                        wait_for_terminal(&mut actor),
+                    )
+                    .await
+                    .unwrap_or(ActorState::Unavailable);
+                    match terminal {
+                        ActorState::Released => {
+                            let mut slot_state = slot.lock().await;
+                            slot_state.actor = None;
+                            slot_state.config = None;
+                        }
+                        ActorState::Unavailable => {
+                            let mut slot_state = slot.lock().await;
+                            slot_state.unavailable = true;
+                            return Err(
+                                "Browser profile is unavailable after unconfirmed owner cleanup."
+                                    .to_string(),
+                            );
+                        }
+                        _ => {}
                     }
                 }
-            }
-
-            if slot_state.actor.is_some() && slot_state.config.as_ref() != Some(config) {
-                let mut actor = slot_state
-                    .actor
-                    .as_ref()
-                    .expect("actor checked above")
-                    .clone();
-                drop(slot_state);
-                if close_actor(&mut actor).await.is_err() {
+                SlotAction::Close(mut actor) => {
+                    if close_actor(&mut actor).await.is_err() {
+                        slot.lock().await.unavailable = true;
+                        return Err("Browser profile cleanup was not confirmed.".to_string());
+                    }
                     let mut slot_state = slot.lock().await;
-                    slot_state.unavailable = true;
-                    return Err("Browser profile cleanup was not confirmed.".to_string());
+                    slot_state.actor = None;
+                    slot_state.config = None;
                 }
-                let mut slot_state = slot.lock().await;
-                slot_state.actor = None;
-                slot_state.config = None;
-                continue;
+                SlotAction::Spawn(observed_close_epoch) => {
+                    let mut new_actor = spawn_actor(key.clone(), config).await?;
+                    let install_result = {
+                        let mut slot_state = slot.lock().await;
+                        if slot_state.close_epoch != observed_close_epoch {
+                            Err("Browser thread closed before its provider could start.")
+                        } else if slot_state.unavailable {
+                            Err("Browser profile is unavailable after unconfirmed owner cleanup.")
+                        } else {
+                            slot_state.actor = Some(new_actor.clone());
+                            slot_state.config = Some(config.clone());
+                            Ok(())
+                        }
+                    };
+                    if let Err(error) = install_result {
+                        let _ = close_actor(&mut new_actor).await;
+                        return Err(error.to_string());
+                    }
+                    break new_actor;
+                }
+                SlotAction::Use(actor) => break actor,
             }
-
-            if slot_state.actor.is_none() {
-                let observed_close_epoch = slot_state.close_epoch;
-                drop(slot_state);
-                let mut new_actor = spawn_actor(key.clone(), config).await?;
-                let mut slot_state = slot.lock().await;
-                if slot_state.close_epoch != observed_close_epoch {
-                    drop(slot_state);
-                    let _ = close_actor(&mut new_actor).await;
-                    return Err(
-                        "Browser thread closed before its provider could start.".to_string()
-                    );
-                }
-                if slot_state.unavailable {
-                    drop(slot_state);
-                    let _ = close_actor(&mut new_actor).await;
-                    return Err(
-                        "Browser profile is unavailable after unconfirmed owner cleanup."
-                            .to_string(),
-                    );
-                }
-                slot_state.actor = Some(new_actor);
-                slot_state.config = Some(config.clone());
-                let actor = slot_state
-                    .actor
-                    .as_ref()
-                    .expect("actor created above")
-                    .clone();
-                drop(slot_state);
-                break actor;
-            }
-            let actor = slot_state
-                .actor
-                .as_ref()
-                .expect("actor created above")
-                .clone();
-            drop(slot_state);
-            break actor;
         };
 
         let result = actor.request(params.clone()).await;
@@ -344,13 +342,10 @@ impl BrowserSessionManager {
             .slots
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let keys = slots
-            .keys()
-            .filter(|key| thread_id.is_none_or(|thread_id| key.thread_id == thread_id))
-            .cloned()
-            .collect::<Vec<_>>();
-        keys.into_iter()
-            .filter_map(|key| slots.get(&key).cloned())
+        slots
+            .iter()
+            .filter(|(key, _)| thread_id.is_none_or(|thread_id| key.thread_id == thread_id))
+            .map(|(_, slot)| Arc::clone(slot))
             .collect()
     }
 
@@ -395,7 +390,7 @@ impl BrowserSessionManager {
                 if wait_for_ack {
                     let _ = timeout(
                         CLEANUP_TIMEOUT + Duration::from_secs(1),
-                        request_gate.lock(),
+                        Arc::clone(&request_gate).acquire_owned(),
                     )
                     .await;
                 }
@@ -433,7 +428,7 @@ impl ActorHandle {
         self.commands
             .send(ActorCommand::Request {
                 request_id,
-                params,
+                params: Box::new(params),
                 cancel: Arc::clone(&cancellation),
                 reply,
             })
@@ -627,9 +622,9 @@ async fn run_actor(
                     return;
                 }
                 let frame = if started {
-                    json!({"kind":"request","requestId":request_id,"request":params})
+                    json!({"kind":"request","requestId":request_id,"request":*params})
                 } else {
-                    json!({"kind":"start","requestId":request_id,"request":params})
+                    json!({"kind":"start","requestId":request_id,"request":*params})
                 };
                 if write_frame(&mut stdin, &frame).await.is_err() {
                     fail_actor(&mut child, &status).await;
@@ -640,9 +635,11 @@ async fn run_actor(
                 status.send_replace(ActorState::Busy);
 
                 let result = wait_for_request_result(
-                    request_id,
-                    &key,
-                    generation.as_deref(),
+                    RequestIdentity {
+                        request_id,
+                        key: &key,
+                        known_generation: generation.as_deref(),
+                    },
                     &mut child,
                     &mut stdin,
                     &mut stdout,
@@ -776,10 +773,14 @@ enum RequestResult {
     Unavailable(String),
 }
 
-async fn wait_for_request_result(
+struct RequestIdentity<'a> {
     request_id: u64,
-    key: &ProfileKey,
-    known_generation: Option<&str>,
+    key: &'a ProfileKey,
+    known_generation: Option<&'a str>,
+}
+
+async fn wait_for_request_result(
+    identity: RequestIdentity<'_>,
     child: &mut Child,
     stdin: &mut ChildStdin,
     stdout: &mut tokio::io::Lines<BufReader<ChildStdout>>,
@@ -787,6 +788,11 @@ async fn wait_for_request_result(
     status: &watch::Sender<ActorState>,
     cancel: &Arc<RequestCancellation>,
 ) -> RequestResult {
+    let RequestIdentity {
+        request_id,
+        key,
+        known_generation,
+    } = identity;
     let mut generation = known_generation.map(ToOwned::to_owned);
     let mut pending_response = None;
     loop {
