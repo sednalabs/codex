@@ -198,7 +198,7 @@ impl BrowserSessionManager {
             let slot_state = slot.lock().await;
             (Arc::clone(&slot_state.request_gate), slot_state.close_epoch)
         };
-        let _request_permit = Arc::clone(&request_gate)
+        let _request_permit = request_gate
             .acquire_owned()
             .await
             .map_err(|_| "Browser profile request gate is unavailable.".to_string())?;
@@ -390,7 +390,7 @@ impl BrowserSessionManager {
                 if wait_for_ack {
                     let _ = timeout(
                         CLEANUP_TIMEOUT + Duration::from_secs(1),
-                        Arc::clone(&request_gate).acquire_owned(),
+                        request_gate.acquire_owned(),
                     )
                     .await;
                 }
