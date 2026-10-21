@@ -155,7 +155,9 @@ jobs:
               echo "Bazel shard assignment does not cover the exact target inventory" >&2
               exit 1
             fi
-            mapfile -t bazel_targets < "${shard_tmp_dir}/shard-${BAZEL_TEST_SHARD}.txt"
+            while IFS= read -r target; do
+              bazel_targets+=("${target}")
+            done < "${shard_tmp_dir}/shard-${BAZEL_TEST_SHARD}.txt"
           fi
 
           bazel_wrapper_args=(
