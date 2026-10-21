@@ -139,6 +139,7 @@ mod tests {
     use std::io::ErrorKind;
     #[cfg(unix)]
     use std::os::unix::ffi::OsStrExt as _;
+    use std::path::PathBuf;
     use tempfile::TempDir;
 
     #[test]

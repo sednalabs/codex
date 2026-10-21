@@ -339,13 +339,21 @@ fn send_api_token_frame(channel: &File, token: &str, expires_at: i64) -> Result<
     frame.extend_from_slice(API_TOKEN_FRAME_MAGIC);
     frame.extend_from_slice(&expires_at.to_be_bytes());
     frame.extend_from_slice(token.as_bytes());
-    let sent = unsafe {
-        libc::send(
-            channel.as_raw_fd(),
-            frame.as_ptr().cast(),
-            frame.len(),
-            libc::MSG_NOSIGNAL,
-        )
+    let sent = loop {
+        let sent = unsafe {
+            libc::send(
+                channel.as_raw_fd(),
+                frame.as_ptr().cast(),
+                frame.len(),
+                libc::MSG_NOSIGNAL,
+            )
+        };
+        if sent >= 0 {
+            break sent;
+        }
+        if std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+            bail!("fixed API access token handoff failed");
+        }
     };
     if sent < 0 || sent as usize != frame.len() {
         bail!("fixed API access token handoff failed");
@@ -354,24 +362,48 @@ fn send_api_token_frame(channel: &File, token: &str, expires_at: i64) -> Result<
 }
 
 fn receive_api_token_frame(channel: &File) -> Result<TransferredAccessToken> {
-    let mut poll = libc::pollfd {
-        fd: channel.as_raw_fd(),
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    let timeout_ms = i32::try_from(API_PROFILE_CHILD_TIMEOUT.as_millis()).unwrap_or(i32::MAX);
-    let ready = unsafe { libc::poll(&mut poll, 1, timeout_ms) };
-    if ready <= 0 || poll.revents & libc::POLLIN == 0 {
-        bail!("fixed API credential child did not complete in time");
+    let deadline = Instant::now() + API_PROFILE_CHILD_TIMEOUT;
+    loop {
+        let mut poll = libc::pollfd {
+            fd: channel.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let timeout_ms = i32::try_from(remaining.as_millis()).unwrap_or(i32::MAX);
+        if timeout_ms == 0 {
+            bail!("fixed API credential child did not complete in time");
+        }
+        let ready = unsafe { libc::poll(&mut poll, 1, timeout_ms) };
+        if ready > 0 {
+            if poll.revents & libc::POLLIN == 0 {
+                bail!("fixed API credential child did not complete in time");
+            }
+            break;
+        }
+        if ready == 0 {
+            bail!("fixed API credential child did not complete in time");
+        }
+        if std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+            bail!("fixed API credential child did not complete in time");
+        }
     }
     let mut frame = zeroize::Zeroizing::new(vec![0_u8; MAX_API_TOKEN_FRAME_BYTES]);
-    let received = unsafe {
-        libc::recv(
-            channel.as_raw_fd(),
-            frame.as_mut_ptr().cast(),
-            frame.len(),
-            libc::MSG_TRUNC,
-        )
+    let received = loop {
+        let received = unsafe {
+            libc::recv(
+                channel.as_raw_fd(),
+                frame.as_mut_ptr().cast(),
+                frame.len(),
+                libc::MSG_TRUNC,
+            )
+        };
+        if received >= 0 {
+            break received;
+        }
+        if std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+            bail!("fixed API access token handoff has an invalid size");
+        }
     };
     if received < 12 || received as usize > frame.len() {
         bail!("fixed API access token handoff has an invalid size");
