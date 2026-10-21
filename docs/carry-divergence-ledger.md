@@ -34,6 +34,17 @@ tests compare replay insertion and rendered presentations with the originals.
 Remove this carry when upstream provides equivalent replay retention, or revisit
 it before introducing an image-aware replay renderer.
 
+## Persisted Browser tool routing
+
+Session metadata restores the native Browser namespace only for the exact
+legacy adapter declarations, including their original capability and
+non-persistence markers. This prevents resumed Browser calls from falling
+through to the separate task-tool transport. New public tool declarations and
+the task-tool approval boundary are unchanged; names alone do not grant native
+Browser routing. Remove this compatibility adapter when these historical
+session declarations are no longer supported, or upstream provides equivalent
+persisted-session normalization.
+
 ## Per-server MCP protocol preference
 
 The `mcp-per-server-protocol-selection` carry exposes `protocol_mode = "legacy"`
