@@ -3136,9 +3136,10 @@ async fn stdio_image_responses_resize_large_image() -> anyhow::Result<()> {
         }
     })
     .await;
-    if matches!(completion, EventMsg::Error(_)) {
+    if let EventMsg::Error(error) = completion {
         anyhow::bail!(
-            "diagnostic_phase=completion_error_event final_mock_received_count={}",
+            "diagnostic_phase=completion_error_event code={:?} final_mock_received_count={}",
+            error.codex_error_info,
             final_mock.requests().len()
         );
     }

@@ -178,6 +178,14 @@
       "execution_argv": ["cargo","test","--locked","-p","codex-tui","--lib","--","--test-threads=1"]
     },
     {
+      "package": "codex-websocket-client",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal"],
+      "inventory_argv": ["cargo","test","--locked","-p","codex-websocket-client","--lib","--","--list"],
+      "execution_argv": ["cargo","test","--locked","-p","codex-websocket-client","--lib","--","--test-threads=1"]
+    },
+    {
       "package": "core_test_support",
       "target_kind": "lib",
       "target": "",

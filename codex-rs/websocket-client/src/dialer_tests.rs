@@ -40,7 +40,7 @@ use crate::WebSocketTlsMode;
 #[tokio::test]
 async fn public_connector_uses_factory_and_exposes_stream_and_sink() {
     let (target_addr, target_task) = start_echo_websocket_server(/*acceptor*/ None).await;
-    let request = format!("ws://localhost:{}/v1/responses", target_addr.port())
+    let request = format!("ws://{target_addr}/v1/responses")
         .into_client_request()
         .expect("websocket request should build");
     let factory = HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault);
@@ -69,7 +69,7 @@ async fn public_connector_uses_factory_and_exposes_stream_and_sink() {
 #[tokio::test]
 async fn public_connector_enables_tcp_nodelay_when_requested() {
     let (target_addr, target_task) = start_echo_websocket_server(/*acceptor*/ None).await;
-    let request = format!("ws://localhost:{}/v1/responses", target_addr.port())
+    let request = format!("ws://{target_addr}/v1/responses")
         .into_client_request()
         .expect("websocket request should build");
     let factory = HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault);
