@@ -1610,7 +1610,7 @@ async fn denying_network_policy_amendment_persists_and_blocks_request() -> Resul
     assert!(
         output.contains("rejected by user"),
         "network_output_category={}",
-        network_output_category(output)
+        network_output_category(&output)
     );
     Ok(())
 }
@@ -1667,7 +1667,7 @@ async fn failed_network_policy_amendment_denies_request_and_does_not_approve_hos
     assert!(
         denied_output.contains("blocked by policy"),
         "network_output_category={}",
-        network_output_category(denied_output)
+        network_output_category(&denied_output)
     );
     mount_exec_network_turn(
         &server,
