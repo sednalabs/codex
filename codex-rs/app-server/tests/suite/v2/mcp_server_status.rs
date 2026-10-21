@@ -1331,12 +1331,8 @@ impl ServerHandler for SlowInventoryServer {
 #[tokio::test]
 async fn mcp_server_status_list_tools_and_auth_only_skips_slow_inventory_calls() -> Result<()> {
     let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
-    let (
-        mcp_server_url,
-        mcp_server_handle,
-        resource_list_calls,
-        resource_template_list_calls,
-    ) = start_slow_inventory_mcp_server("lookup").await?;
+    let (mcp_server_url, mcp_server_handle, resource_list_calls, resource_template_list_calls) =
+        start_slow_inventory_mcp_server("lookup").await?;
     let codex_home = TempDir::new()?;
     mock_responses_config(&server.uri())
         .with_extra_config(&format!(
@@ -1477,12 +1473,7 @@ async fn start_mcp_server(
 
 async fn start_slow_inventory_mcp_server(
     tool_name: &str,
-) -> Result<(
-    String,
-    JoinHandle<()>,
-    Arc<AtomicUsize>,
-    Arc<AtomicUsize>,
-)> {
+) -> Result<(String, JoinHandle<()>, Arc<AtomicUsize>, Arc<AtomicUsize>)> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
     let tool_name = Arc::new(tool_name.to_string());
