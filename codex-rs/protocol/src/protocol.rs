@@ -3292,7 +3292,7 @@ pub struct SessionMeta {
     pub base_instructions: Option<BaseInstructions>,
     #[serde(
         default,
-        deserialize_with = "crate::dynamic_tools::deserialize_dynamic_tool_specs",
+        deserialize_with = "crate::dynamic_tools::deserialize_session_dynamic_tool_specs",
         skip_serializing_if = "Option::is_none"
     )]
     pub dynamic_tools: Option<Vec<DynamicToolSpec>>,
@@ -4778,6 +4778,81 @@ mod tests {
                 },
             )])
         );
+        Ok(())
+    }
+
+    #[test]
+    fn session_meta_restores_legacy_browser_namespace_only_for_adapter_specs() -> Result<()> {
+        let observe = json!({
+            "name": "browser_observe",
+            "description": "Capture the current browser viewport as a model-visible screenshot.",
+            "inputSchema": {"type": "object", "additionalProperties": true},
+            "deferLoading": false,
+            "persistOnResume": false,
+            "capability": {
+                "family": "browser",
+                "capabilityScope": "session",
+                "mutationClass": "non_mutating"
+            }
+        });
+        let mut step = observe.clone();
+        step["name"] = json!("browser_step");
+        step["description"] =
+            json!("Perform bounded browser actions, then return a fresh browser screenshot.");
+        step["capability"]["mutationClass"] = json!("mutating");
+        let mut value = serde_json::to_value(SessionMeta::default())?;
+        value["dynamic_tools"] = json!([observe.clone(), step]);
+        let meta: SessionMeta = serde_json::from_value(value.clone())?;
+        let tools = meta.dynamic_tools.as_ref().expect("browser tools");
+        assert!(matches!(
+            &tools[..],
+            [DynamicToolSpec::Namespace(namespace)]
+                if namespace.name == "codex_browser" && namespace.tools.len() == 2
+        ));
+        let round_trip: SessionMeta = serde_json::from_value(serde_json::to_value(&meta)?)?;
+        assert_eq!(round_trip.dynamic_tools, meta.dynamic_tools);
+
+        // The public/new-tool normalizer must not grant the namespace migration.
+        assert!(matches!(
+            &crate::dynamic_tools::normalize_dynamic_tool_specs(vec![observe.clone()])?[..],
+            [DynamicToolSpec::Function(_)]
+        ));
+        for (field, replacement) in [
+            ("namespace", json!("custom_browser")),
+            ("description", json!("Custom observation")),
+            ("inputSchema", json!({"type": "object"})),
+            ("persistOnResume", json!(true)),
+            ("capability", json!(null)),
+            (
+                "capability",
+                json!({"family": "browser", "capabilityScope": "thread", "mutationClass": "non_mutating"}),
+            ),
+            (
+                "capability",
+                json!({"family": "browser", "capabilityScope": "session", "mutationClass": "mutating"}),
+            ),
+        ] {
+            let mut other = observe.clone();
+            other[field] = replacement;
+            value["dynamic_tools"] = json!([other.clone()]);
+            let actual: SessionMeta = serde_json::from_value(value.clone())?;
+            assert_eq!(
+                actual.dynamic_tools,
+                Some(crate::dynamic_tools::normalize_dynamic_tool_specs(vec![
+                    other
+                ])?)
+            );
+        }
+        for field in ["persistOnResume", "capability"] {
+            let mut other = observe.clone();
+            other.as_object_mut().expect("tool object").remove(field);
+            value["dynamic_tools"] = json!([other]);
+            let actual: SessionMeta = serde_json::from_value(value.clone())?;
+            assert!(matches!(
+                &actual.dynamic_tools.expect("custom tool")[..],
+                [DynamicToolSpec::Function(_)]
+            ));
+        }
         Ok(())
     }
 

@@ -173,3 +173,48 @@ where
         .map(Some)
         .map_err(D::Error::custom)
 }
+
+/// Restore the namespace of Browser tools saved by the former session adapter.
+/// This migration applies only to persisted session metadata, never to new tool
+/// declarations supplied through the app-server API.
+pub fn deserialize_session_dynamic_tool_specs<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vec<DynamicToolSpec>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let Some(mut values) = Option::<Vec<JsonValue>>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    for value in &mut values {
+        let (description, mutation_class) = match value.get("name").and_then(JsonValue::as_str) {
+            Some("browser_observe") => (
+                "Capture the current browser viewport as a model-visible screenshot.",
+                "non_mutating",
+            ),
+            Some("browser_step") => (
+                "Perform bounded browser actions, then return a fresh browser screenshot.",
+                "mutating",
+            ),
+            _ => continue,
+        };
+        if value.get("type").is_none()
+            && value.get("namespace").is_none_or(JsonValue::is_null)
+            && value.get("description").and_then(JsonValue::as_str) == Some(description)
+            && value.get("persistOnResume") == Some(&JsonValue::Bool(false))
+            && value.get("inputSchema")
+                == Some(&serde_json::json!({"type": "object", "additionalProperties": true}))
+            && value.get("capability")
+                == Some(&serde_json::json!({
+                    "family": "browser",
+                    "capabilityScope": "session",
+                    "mutationClass": mutation_class,
+                }))
+        {
+            value["namespace"] = JsonValue::String("codex_browser".to_string());
+        }
+    }
+    normalize_dynamic_tool_specs(values)
+        .map(Some)
+        .map_err(D::Error::custom)
+}

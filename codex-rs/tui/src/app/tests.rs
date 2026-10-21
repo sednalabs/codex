@@ -116,6 +116,101 @@ use crate::app_backtrack::user_count;
 use crate::app_event::HistoryBatchEntryResponse;
 use crate::test_support::boxed_future;
 
+#[tokio::test]
+async fn resumed_legacy_browser_call_uses_browser_dispatch_before_task_mcp_gate() -> Result<()> {
+    let (mut app, mut events, _ops) = make_test_app_with_channels().await;
+    std::fs::write(
+        app.config.codex_home.join("browser-computer-use.json"),
+        r#"{"provider":"none"}"#,
+    )?;
+    let (mut server, _requests, proxy) = session_lifecycle_requests::start_recording_app_server(
+        &app.config,
+        /*blocked_thread_list*/ None,
+        /*failed_thread_name*/ None,
+    )
+    .await?;
+    server
+        .start_dynamic_tool_mcp(
+            app.config.clone(),
+            app.app_event_tx.clone(),
+            app.dynamic_tool_status_updates.clone(),
+        )
+        .await?;
+    assert!(matches!(
+        server.thread_tool_transport(),
+        crate::dynamic_tools_mcp::ThreadToolTransport::Mcp(_)
+    ));
+
+    let mut saved = serde_json::to_value(codex_protocol::protocol::SessionMeta::default())?;
+    saved["dynamic_tools"] = serde_json::json!([{
+        "name": "browser_observe",
+        "description": "Capture the current browser viewport as a model-visible screenshot.",
+        "inputSchema": {"type": "object", "additionalProperties": true},
+        "persistOnResume": false,
+        "capability": {
+            "family": "browser",
+            "capabilityScope": "session",
+            "mutationClass": "non_mutating"
+        }
+    }]);
+    let restored: codex_protocol::protocol::SessionMeta = serde_json::from_value(saved)?;
+    let tools = restored.dynamic_tools.expect("restored tools");
+    let [codex_protocol::dynamic_tools::DynamicToolSpec::Namespace(namespace)] = &tools[..] else {
+        panic!("legacy Browser must restore its namespace");
+    };
+    let thread_id = ThreadId::new().to_string();
+    for (request_id, namespace, expected) in [
+        (
+            "browser",
+            namespace.name.as_str(),
+            "Browser request did not match an available native tool.",
+        ),
+        (
+            "task",
+            crate::dynamic_tools::NAMESPACE,
+            "TUI task tools require the approval-gated MCP server",
+        ),
+    ] {
+        let request = ServerRequest::DynamicToolCall {
+            request_id: AppServerRequestId::String(request_id.to_string()),
+            params: codex_app_server_protocol::DynamicToolCallParams {
+                thread_id: thread_id.clone(),
+                turn_id: "turn".to_string(),
+                call_id: request_id.to_string(),
+                namespace: Some(namespace.to_string()),
+                tool: "browser_observe".to_string(),
+                arguments: serde_json::json!({}),
+            },
+        };
+        let buffered = super::app_server_requests::BufferedServerRequest::new(
+            request,
+            &server.request_handle(),
+        );
+        app.handle_server_request_event(&server, buffered).await;
+        let response = time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let AppEvent::DynamicToolCallCompleted { response, .. } =
+                    events.recv().await.expect("app event channel")
+                {
+                    break response;
+                }
+            }
+        })
+        .await?;
+        assert!(!response.success);
+        assert_eq!(
+            response.content_items,
+            vec![
+                codex_app_server_protocol::DynamicToolCallOutputContentItem::InputText {
+                    text: expected.to_string(),
+                }
+            ]
+        );
+    }
+    proxy.abort();
+    Ok(())
+}
+
 async fn drain_managed_worktree_start(app: &mut App, server: &mut AppServerSession) {
     if let Some((mode, name)) = app.pending_start_managed_worktree.take() {
         app.start_managed_worktree(server, mode, name).await;
