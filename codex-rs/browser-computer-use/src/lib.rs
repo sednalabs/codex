@@ -11,7 +11,6 @@ use codex_protocol::dynamic_tools::DynamicToolFunctionSpec;
 use serde::Deserialize;
 use serde_json::Value;
 use serde_json::json;
-use std::io::Write as _;
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
