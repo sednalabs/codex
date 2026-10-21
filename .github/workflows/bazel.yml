@@ -6,6 +6,15 @@ name: Bazel
 on:
   workflow_call:
   workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact source commit containing the updater and MCP regression fixtures
+        required: true
+        type: string
+      expected_workflow_host_sha:
+        description: Exact commit containing this validation-host workflow
+        required: true
+        type: string
 
 concurrency:
   # Cancel previous actions from the same PR or branch except 'main' branch.
@@ -15,6 +24,7 @@ concurrency:
 
 jobs:
   test:
+    if: ${{ github.event_name == 'workflow_call' }}
     # Code-mode unit tests run on every supported Bazel target.
     # Allow cold local builds on standard hosted runners a bounded 90-minute budget.
     timeout-minutes: 90
@@ -169,6 +179,7 @@ jobs:
         uses: ./.github/actions/check-clean-worktree
 
   clippy:
+    if: ${{ github.event_name == 'workflow_call' }}
     timeout-minutes: 90
     strategy:
       fail-fast: false
@@ -244,6 +255,7 @@ jobs:
         uses: ./.github/actions/check-clean-worktree
 
   verify-release-build:
+    if: ${{ github.event_name == 'workflow_call' }}
     timeout-minutes: 90
     strategy:
       fail-fast: false
@@ -337,3 +349,307 @@ jobs:
       - name: Check for a clean worktree
         if: always() && !cancelled()
         uses: ./.github/actions/check-clean-worktree
+
+  native-ci-contracts:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    name: GNU native updater and MCP CI contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      BUILDBUDDY_API_KEY: ''
+
+    steps:
+      - name: Verify fixed validation-host identity
+        shell: bash
+        env:
+          EXPECTED_HOST_SHA: ${{ inputs.expected_workflow_host_sha }}
+        run: |
+          set -euo pipefail
+          expected_ref='validation/native-830-ci-contracts-bazel-2f47b62f'
+          if [[ "${GITHUB_EVENT_NAME}" != workflow_dispatch ||
+                "${GITHUB_REPOSITORY}" != sednalabs/codex ||
+                "${GITHUB_REF_NAME}" != "${expected_ref}" ||
+                "${GITHUB_SHA}" != "${EXPECTED_HOST_SHA}" ]]; then
+            echo 'Dispatch does not match the fixed host ref and requested host SHA.' >&2
+            exit 1
+          fi
+
+      - name: Check out exact native candidate
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify source, host-parent, and base identity
+        shell: bash
+        env:
+          EXPECTED_HOST_SHA: ${{ inputs.expected_workflow_host_sha }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          expected_source_sha='2f47b62f1f5da0c01686041cf8dce2472d83f0df'
+          expected_source_tree='2d28ca537ef236e912e8b283d4be6e7872c9d61b'
+          expected_source_parent='2c0725aeab8c862bfca1bacc3fac3ef7f1b9447f'
+          expected_source_ref='validation/native-830-ci-contracts-2f47b62f'
+          expected_host_ref='validation/native-830-ci-contracts-bazel-2f47b62f'
+          expected_base='83086188ae0614bd882818ff1aa23f3194962012'
+
+          [[ "${SOURCE_SHA}" == "${expected_source_sha}" ]]
+          [[ "$(git rev-parse HEAD)" == "${expected_source_sha}" ]]
+          [[ "$(git rev-parse HEAD^{tree})" == "${expected_source_tree}" ]]
+          [[ "$(git rev-parse HEAD^)" == "${expected_source_parent}" ]]
+          git cat-file -e "${EXPECTED_HOST_SHA}^{commit}"
+          [[ "$(git rev-parse "${EXPECTED_HOST_SHA}^")" == "${expected_source_sha}" ]]
+          git merge-base --is-ancestor "${expected_base}" "${expected_source_sha}"
+          git show-ref --verify --quiet "refs/remotes/origin/${expected_source_ref}"
+          [[ "$(git rev-parse "refs/remotes/origin/${expected_source_ref}")" == "${expected_source_sha}" ]]
+          [[ "$(git rev-parse "${EXPECTED_HOST_SHA}")" == "${GITHUB_SHA}" ]]
+          [[ "${GITHUB_REF_NAME}" == "${expected_host_ref}" ]]
+
+      - name: Prepare Bazel CI
+        id: prepare_bazel
+        uses: ./.github/actions/prepare-bazel-ci
+        with:
+          target: x86_64-unknown-linux-gnu
+          cache-scope: native-830-ci-contracts-${{ inputs.source_sha }}
+
+      - name: Run updater and MCP contracts with exact receipts
+        id: run_contracts
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          HOST_SHA: ${{ inputs.expected_workflow_host_sha }}
+        run: |
+          set -euo pipefail
+          unset BUILDBUDDY_API_KEY
+
+          lifecycle_tests=(
+            managed_daemon_restarts_from_deleted_working_directory
+            managed_identity_survives_locale_and_timezone_changes
+            package_ownership_check_does_not_start_an_updater
+            managed_starts_ensure_one_updater_and_recover_a_missing_one
+            managed_start_succeeds_when_updater_record_is_invalid
+            wall_clock_shift_keeps_server_and_updater_managed
+            managed_start_keeps_updater_on_marker_mismatch_but_stops_it_for_pin
+            restart_applies_saved_updater_preference
+            unmanaged_app_server_does_not_launch_updater
+            manual_update_rejects_an_unowned_installation
+          )
+          package_tests=(
+            packaged_daemon_start_and_explicit_replacement
+            packaged_daemon_restart_seeds_local_package
+            packaged_daemon_bootstrap_seeds_local_package
+            packaged_daemon_explicit_replacement_migrates_running_legacy
+          )
+          mcp_test='suite::v2::mcp_server_status::mcp_server_status_list_tools_and_auth_only_skips_slow_inventory_calls'
+          targets=(
+            //codex-rs/cli:cli-app_server_daemon-test
+            //codex-rs/cli:cli-app_server_daemon_package-test
+            //codex-rs/app-server:app-server-all-test
+          )
+          labels=(lifecycle package mcp-status)
+          logs_dir="${RUNNER_TEMP}/native-ci-contract-logs"
+          commands="${RUNNER_TEMP}/native-ci-contract-commands.tsv"
+          tests="${RUNNER_TEMP}/native-ci-contract-tests.tsv"
+          mkdir -p "${logs_dir}"
+          : > "${commands}"
+          : > "${tests}"
+          run_contract() {
+            local index="$1"
+            local label="${labels[$index]}"
+            local target="${targets[$index]}"
+            local log="${logs_dir}/${label}.log"
+            local expected_tests=()
+            local exact_args=()
+            case "${index}" in
+              0) expected_tests=("${lifecycle_tests[@]}") ;;
+              1) expected_tests=("${package_tests[@]}") ;;
+              2)
+                expected_tests=("${mcp_test}")
+                exact_args=(--test_arg=--exact "--test_arg=${mcp_test}")
+                ;;
+            esac
+
+            local statuses=()
+            set +e
+            ./.github/scripts/run-bazel-ci.sh \
+              --print-failed-action-summary \
+              --print-failed-test-logs \
+              -- \
+              test \
+              --color=no \
+              --test_sharding_strategy=disabled \
+              --nocache_test_results \
+              --test_output=all \
+              --build_metadata=COMMIT_SHA="${GITHUB_SHA}" \
+              "${exact_args[@]}" \
+              -- \
+              "${target}" 2>&1 | tee "${log}"
+            statuses=("${PIPESTATUS[@]}")
+            set -e
+
+            local summary_line
+            summary_line="$(grep -E '^test result: (ok|FAILED)\. [0-9]+ passed; [0-9]+ failed; [0-9]+ ignored; [0-9]+ measured; [0-9]+ filtered out;' "${log}" | tail -n 1 || true)"
+            local summary_result='missing'
+            local passed_count='null'
+            local failed_count='null'
+            local ignored_count='null'
+            local measured_count='null'
+            local filtered_count='null'
+            if [[ -n "${summary_line}" ]]; then
+              IFS=$'\t' read -r summary_result passed_count failed_count ignored_count measured_count filtered_count < <(
+                sed -E 's/^test result: (ok|FAILED)\. ([0-9]+) passed; ([0-9]+) failed; ([0-9]+) ignored; ([0-9]+) measured; ([0-9]+) filtered out;.*/\1\t\2\t\3\t\4\t\5\t\6/' <<< "${summary_line}"
+              )
+            fi
+
+            local target_ok=1
+            if [[ "${statuses[0]}" -ne 0 ||
+                  "${statuses[1]}" -ne 0 ||
+                  "${summary_result}" != ok ||
+                  "${passed_count}" != "${#expected_tests[@]}" ||
+                  "${failed_count}" != 0 ||
+                  "${ignored_count}" != 0 ||
+                  "${measured_count}" != 0 ||
+                  "${filtered_count}" == null ]]; then
+              target_ok=0
+            fi
+            if [[ "${index}" -lt 2 && "${filtered_count}" != 0 ]]; then
+              target_ok=0
+            fi
+
+            for test_name in "${expected_tests[@]}"; do
+              local exact_ok exact_failed exact_ignored
+              exact_ok="$(grep -Fxc "test ${test_name} ... ok" "${log}" || true)"
+              exact_failed="$(grep -Fxc "test ${test_name} ... FAILED" "${log}" || true)"
+              exact_ignored="$(grep -Fxc "test ${test_name} ... ignored" "${log}" || true)"
+              if [[ "${exact_ok}" != 1 || "${exact_failed}" != 0 || "${exact_ignored}" != 0 ]]; then
+                target_ok=0
+              fi
+              printf '%s\t%s\t%s\t%s\n' \
+                "${label}" "${test_name}" "${exact_ok}" "${exact_failed},${exact_ignored}" >> "${tests}"
+            done
+
+            local target_status='failed/unreconciled'
+            if [[ "${target_ok}" -eq 1 ]]; then
+              target_status='executed-pass'
+            fi
+            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+              "${label}" "${target}" "${statuses[0]}" "${statuses[1]}" \
+              "${target_status}" "${summary_result}" "${passed_count}" \
+              "${failed_count}" "${ignored_count}" "${measured_count}" \
+              "${filtered_count}" >> "${commands}"
+          }
+
+          run_contract 0
+          run_contract 1
+          run_contract 2
+
+          source_worktree_clean=1
+          if [[ -n "$(git status --porcelain)" ]]; then
+            source_worktree_clean=0
+            git status --short >&2
+          fi
+
+          receipt="${RUNNER_TEMP}/native-ci-contract-receipt.json"
+          python3 - "${receipt}" "${commands}" "${tests}" "${HOST_SHA}" "${SOURCE_SHA}" "${GITHUB_RUN_ID}" "${GITHUB_RUN_ATTEMPT}" "${source_worktree_clean}" <<'PY'
+          import json
+          import sys
+
+          path, commands_path, tests_path, host_sha, source_sha, run_id, attempt, source_clean = sys.argv[1:]
+          targets = {}
+          with open(commands_path, encoding="utf-8") as stream:
+              for line in stream:
+                  (
+                      label,
+                      target,
+                      bazel_exit,
+                      tee_exit,
+                      status,
+                      summary_result,
+                      passed,
+                      failed,
+                      ignored,
+                      measured,
+                      filtered,
+                  ) = line.rstrip("\n").split("\t")
+                  targets[label] = {
+                      "target": target,
+                      "bazel_exit": int(bazel_exit),
+                      "tee_exit": int(tee_exit),
+                      "status": status,
+                      "test_summary": {
+                          "result": summary_result,
+                          "passed": None if passed == "null" else int(passed),
+                          "failed": None if failed == "null" else int(failed),
+                          "ignored": None if ignored == "null" else int(ignored),
+                          "measured": None if measured == "null" else int(measured),
+                          "filtered_out": None if filtered == "null" else int(filtered),
+                      },
+                      "tests": [],
+                  }
+          with open(tests_path, encoding="utf-8") as stream:
+              for line in stream:
+                  label, name, passed, failed_ignored = line.rstrip("\n").split("\t")
+                  failed, ignored = failed_ignored.split(",")
+                  targets[label]["tests"].append(
+                      {
+                          "name": name,
+                          "passed": int(passed),
+                          "failed": int(failed),
+                          "ignored": int(ignored),
+                      }
+                  )
+          expected = {
+              "lifecycle": ("//codex-rs/cli:cli-app_server_daemon-test", 10, 0),
+              "package": ("//codex-rs/cli:cli-app_server_daemon_package-test", 4, 0),
+              "mcp-status": ("//codex-rs/app-server:app-server-all-test", 1, None),
+          }
+          expected_ok = len(targets) == len(expected)
+          for label, (target, count, expected_filtered_out) in expected.items():
+              row = targets.get(label)
+              expected_ok = expected_ok and row is not None
+              if row is None:
+                  continue
+              expected_ok = expected_ok and row["target"] == target
+              expected_ok = expected_ok and row["status"] == "executed-pass"
+              expected_ok = expected_ok and row["test_summary"]["result"] == "ok"
+              expected_ok = expected_ok and row["bazel_exit"] == 0 and row["tee_exit"] == 0
+              expected_ok = expected_ok and len(row["tests"]) == count
+              if expected_filtered_out is not None:
+                  expected_ok = expected_ok and row["test_summary"]["filtered_out"] == expected_filtered_out
+              else:
+                  expected_ok = expected_ok and row["test_summary"]["filtered_out"] is not None
+              expected_ok = expected_ok and all(
+                  test["passed"] == 1 and test["failed"] == 0 and test["ignored"] == 0
+                  for test in row["tests"]
+              )
+          worktree_clean = source_clean == "1"
+          receipt = {
+              "schema": "native-830-ci-contracts-v1",
+              "host_sha": host_sha,
+              "source_sha": source_sha,
+              "source_tree": "2d28ca537ef236e912e8b283d4be6e7872c9d61b",
+              "source_parent": "2c0725aeab8c862bfca1bacc3fac3ef7f1b9447f",
+              "base_sha": "83086188ae0614bd882818ff1aa23f3194962012",
+              "run_id": int(run_id),
+              "run_attempt": int(attempt),
+              "mode": "standard-hosted-ubuntu24-local-gnu",
+              "source_worktree_clean": worktree_clean,
+              "targets": targets,
+              "overall_status": "passed" if expected_ok and worktree_clean else "failed",
+          }
+          with open(path, "w", encoding="utf-8") as receipt_file:
+              json.dump(receipt, receipt_file, separators=(",", ":"))
+          print(json.dumps(receipt, separators=(",", ":")))
+          if receipt["overall_status"] != "passed":
+              raise SystemExit(1)
+          PY
+
+      - name: Upload CI contract receipt
+        if: always() && !cancelled() && steps.run_contracts.outcome != 'skipped'
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: native-ci-contracts-${{ inputs.source_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/native-ci-contract-receipt.json
+          if-no-files-found: error
