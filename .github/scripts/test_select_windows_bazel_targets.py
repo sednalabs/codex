@@ -10,6 +10,21 @@ from select_windows_bazel_targets import read_durations
 
 
 class SelectWindowsBazelTargetsTest(unittest.TestCase):
+    def test_partition_keeps_non_test_roots_and_test_labels_once(self) -> None:
+        targets = [
+            "//codex-rs/core:library",
+            "//codex-rs/core:unit-tests",
+            "//codex-rs/core:runtime-helper",
+            "//tools:generated-source",
+        ]
+
+        assignments, _ = assign_targets(targets, {}, 2)
+
+        selected = [target for shard in assignments for target in shard]
+        self.assertEqual(sorted(selected), sorted(targets))
+        self.assertEqual(len(selected), len(set(selected)))
+        self.assertTrue(all(shard == sorted(shard) for shard in assignments))
+
     def test_balances_targets_with_complete_deterministic_coverage(self) -> None:
         durations = {
             f"//test:{name}": duration
@@ -110,7 +125,7 @@ class SelectWindowsBazelTargetsTest(unittest.TestCase):
                         check=True,
                     )
                     self.assertEqual(result.stdout, expected)
-                    self.assertIn(b"estimated test-seconds=[9, 2]", result.stderr)
+                    self.assertIn(b"estimated weights=[9, 2]", result.stderr)
                     self.assertIn(b"unused weights=0", result.stderr)
 
             result = subprocess.run(
