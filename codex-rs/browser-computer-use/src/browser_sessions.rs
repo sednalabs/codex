@@ -370,7 +370,8 @@ impl BrowserSessionManager {
     }
 
     pub(super) async fn shutdown_all(&self) {
-        self.close_matching(None, /*wait_for_ack*/ true).await;
+        self.close_matching(/*thread_id*/ None, /*wait_for_ack*/ true)
+            .await;
     }
 
     async fn close_matching(&self, thread_id: Option<&str>, wait_for_ack: bool) {
@@ -1014,7 +1015,7 @@ async fn release_after_close(
         let _ = child.kill().await;
         return false;
     }
-    wait_for_release(key, generation, None, child, stdout).await
+    wait_for_release(key, generation, /*request_id*/ None, child, stdout).await
 }
 
 async fn wait_for_release(
