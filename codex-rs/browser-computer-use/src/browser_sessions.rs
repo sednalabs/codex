@@ -679,10 +679,7 @@ async fn run_actor(
                             return;
                         }
                     }
-                    RequestResult::Cancelled {
-                        generation: current_generation,
-                    } => {
-                        generation = current_generation.or(generation);
+                    RequestResult::Cancelled => {
                         status.send_replace(ActorState::Released);
                         let _ = reply.send(Err("Browser request was cancelled.".to_string()));
                         return;
@@ -758,9 +755,7 @@ enum RequestResult {
         response: DynamicToolCallResponse,
         generation: String,
     },
-    Cancelled {
-        generation: Option<String>,
-    },
+    Cancelled,
     Unavailable(String),
 }
 
@@ -792,7 +787,7 @@ async fn wait_for_request_result(
             Event::Cancel => {
                 status.send_replace(ActorState::Closing);
                 return if cancel_and_release(request_id, key, generation.as_deref(), child, stdin, stdout).await {
-                    RequestResult::Cancelled { generation }
+                    RequestResult::Cancelled
                 } else {
                     RequestResult::Unavailable("Browser cancellation cleanup was not confirmed; the profile remains unavailable.".to_string())
                 };
@@ -802,7 +797,7 @@ async fn wait_for_request_result(
                     Some(ActorCommand::Cancel { request_id: cancelled_id }) if cancelled_id == request_id => {
                         status.send_replace(ActorState::Closing);
                         return if cancel_and_release(request_id, key, generation.as_deref(), child, stdin, stdout).await {
-                            RequestResult::Cancelled { generation }
+                            RequestResult::Cancelled
                         } else {
                             RequestResult::Unavailable("Browser cancellation cleanup was not confirmed; the profile remains unavailable.".to_string())
                         };
@@ -812,7 +807,7 @@ async fn wait_for_request_result(
                         let released = cancel_and_release(request_id, key, generation.as_deref(), child, stdin, stdout).await;
                         if released {
                             let _ = reply.send(Ok(()));
-                            return RequestResult::Cancelled { generation };
+                            return RequestResult::Cancelled;
                         }
                         let _ = reply.send(Err("Browser profile cleanup was not confirmed.".to_string()));
                         return RequestResult::Unavailable("Browser profile cleanup was not confirmed; the profile remains unavailable.".to_string());
@@ -883,7 +878,7 @@ async fn wait_for_request_result(
                         if !valid_release(&frame, key, generation.as_deref(), Some(request_id)) {
                             return RequestResult::Unavailable("Browser cleanup acknowledgement identity mismatch.".to_string());
                         }
-                        return RequestResult::Cancelled { generation: frame.generation };
+                        return RequestResult::Cancelled;
                     }
                     _ => return RequestResult::Unavailable("Browser provider sent an unknown frame.".to_string()),
                 }
