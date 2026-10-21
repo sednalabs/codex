@@ -829,15 +829,19 @@ const page = {
   waitForLoadState: async () => {},
   screenshot: async () => Buffer.from("synthetic-browser-image"),
   title: async () => currentText || "fixture page",
-  locator: () => ({
-    fill: async (text) => {
-      if (fs.existsSync(marker("pause-action"))) {
-        fs.writeFileSync(marker("action-started"), "started");
-        await new Promise((resolve) => { pendingFillResolve = resolve; });
-      }
-      currentText = text;
-    },
-  }),
+  locator: () => {
+    const locator = {
+      first: () => locator,
+      fill: async (text) => {
+        if (fs.existsSync(marker("pause-action"))) {
+          fs.writeFileSync(marker("action-started"), "started");
+          await new Promise((resolve) => { pendingFillResolve = resolve; });
+        }
+        currentText = text;
+      },
+    };
+    return locator;
+  },
   viewportSize: () => ({ width: 1280, height: 720 }),
 };
 const context = {
