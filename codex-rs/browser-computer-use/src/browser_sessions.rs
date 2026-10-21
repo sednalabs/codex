@@ -16,14 +16,29 @@ use sha2::Digest as _;
 use sha2::Sha256;
 use std::collections::HashMap;
 use std::io::Write as _;
-use std::path::{Component, Path, PathBuf};
+use std::path::Component;
+use std::path::Path;
+use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::OnceLock;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
-use tokio::sync::{Mutex as AsyncMutex, Notify, mpsc, oneshot, watch};
+use tokio::io::AsyncBufReadExt as _;
+use tokio::io::AsyncWriteExt as _;
+use tokio::io::BufReader;
+use tokio::process::Child;
+use tokio::process::ChildStdin;
+use tokio::process::ChildStdout;
+use tokio::process::Command;
+use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::Notify;
+use tokio::sync::mpsc;
+use tokio::sync::oneshot;
+use tokio::sync::watch;
 use tokio::time::timeout;
 
 const CLEANUP_TIMEOUT: Duration = Duration::from_secs(10);
@@ -269,7 +284,9 @@ impl BrowserSessionManager {
                 if slot_state.close_epoch != observed_close_epoch {
                     drop(slot_state);
                     let _ = close_actor(&mut new_actor).await;
-                    return Err("Browser thread closed before its provider could start.".to_string());
+                    return Err(
+                        "Browser thread closed before its provider could start.".to_string()
+                    );
                 }
                 if slot_state.unavailable {
                     drop(slot_state);
@@ -786,101 +803,178 @@ async fn wait_for_request_result(
         match event {
             Event::Cancel => {
                 status.send_replace(ActorState::Closing);
-                return if cancel_and_release(request_id, key, generation.as_deref(), child, stdin, stdout).await {
+                return if cancel_and_release(
+                    request_id,
+                    key,
+                    generation.as_deref(),
+                    child,
+                    stdin,
+                    stdout,
+                )
+                .await
+                {
                     RequestResult::Cancelled
                 } else {
                     RequestResult::Unavailable("Browser cancellation cleanup was not confirmed; the profile remains unavailable.".to_string())
                 };
             }
-            Event::Command(command) => {
-                match command {
-                    Some(ActorCommand::Cancel { request_id: cancelled_id }) if cancelled_id == request_id => {
-                        status.send_replace(ActorState::Closing);
-                        return if cancel_and_release(request_id, key, generation.as_deref(), child, stdin, stdout).await {
-                            RequestResult::Cancelled
-                        } else {
-                            RequestResult::Unavailable("Browser cancellation cleanup was not confirmed; the profile remains unavailable.".to_string())
-                        };
-                    }
-                    Some(ActorCommand::Close { reply }) => {
-                        status.send_replace(ActorState::Closing);
-                        let released = cancel_and_release(request_id, key, generation.as_deref(), child, stdin, stdout).await;
-                        if released {
-                            let _ = reply.send(Ok(()));
-                            return RequestResult::Cancelled;
-                        }
-                        let _ = reply.send(Err("Browser profile cleanup was not confirmed.".to_string()));
-                        return RequestResult::Unavailable("Browser profile cleanup was not confirmed; the profile remains unavailable.".to_string());
-                    }
-                    Some(ActorCommand::Cancel { .. }) | Some(ActorCommand::Request { .. }) => {
-                        return RequestResult::Unavailable("unexpected concurrent Browser provider command".to_string());
-                    }
-                    None => {
-                        return RequestResult::Unavailable("Browser provider supervisor disconnected.".to_string());
-                    }
+            Event::Command(command) => match command {
+                Some(ActorCommand::Cancel {
+                    request_id: cancelled_id,
+                }) if cancelled_id == request_id => {
+                    status.send_replace(ActorState::Closing);
+                    return if cancel_and_release(
+                        request_id,
+                        key,
+                        generation.as_deref(),
+                        child,
+                        stdin,
+                        stdout,
+                    )
+                    .await
+                    {
+                        RequestResult::Cancelled
+                    } else {
+                        RequestResult::Unavailable("Browser cancellation cleanup was not confirmed; the profile remains unavailable.".to_string())
+                    };
                 }
-            }
+                Some(ActorCommand::Close { reply }) => {
+                    status.send_replace(ActorState::Closing);
+                    let released = cancel_and_release(
+                        request_id,
+                        key,
+                        generation.as_deref(),
+                        child,
+                        stdin,
+                        stdout,
+                    )
+                    .await;
+                    if released {
+                        let _ = reply.send(Ok(()));
+                        return RequestResult::Cancelled;
+                    }
+                    let _ =
+                        reply.send(Err("Browser profile cleanup was not confirmed.".to_string()));
+                    return RequestResult::Unavailable("Browser profile cleanup was not confirmed; the profile remains unavailable.".to_string());
+                }
+                Some(ActorCommand::Cancel { .. }) | Some(ActorCommand::Request { .. }) => {
+                    return RequestResult::Unavailable(
+                        "unexpected concurrent Browser provider command".to_string(),
+                    );
+                }
+                None => {
+                    return RequestResult::Unavailable(
+                        "Browser provider supervisor disconnected.".to_string(),
+                    );
+                }
+            },
             Event::Output(line) => {
                 let frame = match line {
                     Ok(Some(line)) => match serde_json::from_str::<ProviderFrame>(&line) {
                         Ok(frame) => frame,
-                        Err(error) => return RequestResult::Unavailable(format!("invalid Browser provider frame: {error}")),
+                        Err(error) => {
+                            return RequestResult::Unavailable(format!(
+                                "invalid Browser provider frame: {error}"
+                            ));
+                        }
                     },
-                    Ok(None) => return RequestResult::Unavailable("Browser provider exited before replying.".to_string()),
-                    Err(error) => return RequestResult::Unavailable(format!("failed to read Browser provider response: {error}")),
+                    Ok(None) => {
+                        return RequestResult::Unavailable(
+                            "Browser provider exited before replying.".to_string(),
+                        );
+                    }
+                    Err(error) => {
+                        return RequestResult::Unavailable(format!(
+                            "failed to read Browser provider response: {error}"
+                        ));
+                    }
                 };
                 match frame.kind.as_str() {
                     "ready" => {
                         let Some(frame_key) = frame.profile_key.as_deref() else {
-                            return RequestResult::Unavailable("Browser provider omitted its profile identity.".to_string());
+                            return RequestResult::Unavailable(
+                                "Browser provider omitted its profile identity.".to_string(),
+                            );
                         };
                         if frame_key != profile_key_string(key) {
                             return RequestResult::Unavailable("Browser provider profile identity did not match the requested profile.".to_string());
                         }
                         let Some(token) = frame.generation else {
-                            return RequestResult::Unavailable("Browser provider omitted its owner generation.".to_string());
+                            return RequestResult::Unavailable(
+                                "Browser provider omitted its owner generation.".to_string(),
+                            );
                         };
                         generation = Some(token);
                         status.send_replace(ActorState::Busy);
                     }
                     "response" => {
                         if frame.request_id != Some(request_id) {
-                            return RequestResult::Unavailable("Browser provider response request identity mismatch.".to_string());
+                            return RequestResult::Unavailable(
+                                "Browser provider response request identity mismatch.".to_string(),
+                            );
                         }
                         if pending_response.is_some() {
-                            return RequestResult::Unavailable("Browser provider sent more than one response for a request.".to_string());
+                            return RequestResult::Unavailable(
+                                "Browser provider sent more than one response for a request."
+                                    .to_string(),
+                            );
                         }
                         let Some(value) = frame.response else {
-                            return RequestResult::Unavailable("Browser provider omitted its response payload.".to_string());
+                            return RequestResult::Unavailable(
+                                "Browser provider omitted its response payload.".to_string(),
+                            );
                         };
                         let response = match serde_json::from_value(value) {
                             Ok(response) => response,
-                            Err(error) => return RequestResult::Unavailable(format!("invalid Browser provider response: {error}")),
+                            Err(error) => {
+                                return RequestResult::Unavailable(format!(
+                                    "invalid Browser provider response: {error}"
+                                ));
+                            }
                         };
                         pending_response = Some(response);
                     }
                     "idle" => {
                         if frame.request_id != Some(request_id) {
-                            return RequestResult::Unavailable("Browser provider idle acknowledgement request identity mismatch.".to_string());
+                            return RequestResult::Unavailable(
+                                "Browser provider idle acknowledgement request identity mismatch."
+                                    .to_string(),
+                            );
                         }
                         let Some(response) = pending_response.take() else {
-                            return RequestResult::Unavailable("Browser provider entered idle without a response.".to_string());
+                            return RequestResult::Unavailable(
+                                "Browser provider entered idle without a response.".to_string(),
+                            );
                         };
                         let Some(token) = generation else {
-                            return RequestResult::Unavailable("Browser provider replied before owner identity was established.".to_string());
+                            return RequestResult::Unavailable(
+                                "Browser provider replied before owner identity was established."
+                                    .to_string(),
+                            );
                         };
-                        return RequestResult::Response { response, generation: token };
+                        return RequestResult::Response {
+                            response,
+                            generation: token,
+                        };
                     }
                     "fatal" => {
-                        return RequestResult::Unavailable(frame.error.unwrap_or_else(|| "Browser provider failed during startup.".to_string()));
+                        return RequestResult::Unavailable(frame.error.unwrap_or_else(|| {
+                            "Browser provider failed during startup.".to_string()
+                        }));
                     }
                     "released" => {
                         if !valid_release(&frame, key, generation.as_deref(), Some(request_id)) {
-                            return RequestResult::Unavailable("Browser cleanup acknowledgement identity mismatch.".to_string());
+                            return RequestResult::Unavailable(
+                                "Browser cleanup acknowledgement identity mismatch.".to_string(),
+                            );
                         }
                         return RequestResult::Cancelled;
                     }
-                    _ => return RequestResult::Unavailable("Browser provider sent an unknown frame.".to_string()),
+                    _ => {
+                        return RequestResult::Unavailable(
+                            "Browser provider sent an unknown frame.".to_string(),
+                        );
+                    }
                 }
             }
         }
