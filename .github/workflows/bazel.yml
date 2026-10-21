@@ -16,8 +16,8 @@ concurrency:
 jobs:
   test:
     # Code-mode unit tests run on every supported Bazel target.
-    # Allow cold local builds on standard hosted runners a bounded 90-minute budget.
-    timeout-minutes: 90
+    # Keep standard-hosted builds finite while allowing longer macOS cold builds.
+    timeout-minutes: ${{ startsWith(matrix.os, 'macos-') && 180 || 90 }}
     strategy:
       fail-fast: false
       matrix:
@@ -169,7 +169,7 @@ jobs:
         uses: ./.github/actions/check-clean-worktree
 
   clippy:
-    timeout-minutes: 90
+    timeout-minutes: ${{ startsWith(matrix.os, 'macos-') && 180 || 90 }}
     strategy:
       fail-fast: false
       matrix:
@@ -244,7 +244,7 @@ jobs:
         uses: ./.github/actions/check-clean-worktree
 
   verify-release-build:
-    timeout-minutes: 90
+    timeout-minutes: ${{ startsWith(matrix.os, 'macos-') && 180 || 90 }}
     strategy:
       fail-fast: false
       matrix:
