@@ -559,11 +559,11 @@ async fn oauth_login_automatically_selects_callback_specific_cimd_without_metada
                             .and_then(|value| value.to_str().ok())
                             .map(str::to_string),
                     ));
+                    // Issuerless CIMD remains supported for access-only grants.
                     Json(json!({
                         "access_token": "cimd-access-token",
                         "token_type": "Bearer",
                         "expires_in": 3600,
-                        "refresh_token": "test-refresh-token",
                     }))
                 }
             }),
