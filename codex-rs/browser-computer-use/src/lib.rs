@@ -821,7 +821,14 @@ const root = process.env.CODEX_BROWSER_PLAYWRIGHT_STATE_DIR;
 const marker = (name) => path.join(root, name);
 let currentUrl = "about:blank";
 let currentText = "";
-let pendingFillResolve = null;
+let pendingTextResolve = null;
+const enterText = async (text) => {
+  if (fs.existsSync(marker("pause-action"))) {
+    fs.writeFileSync(marker("action-started"), "started");
+    await new Promise((resolve) => { pendingTextResolve = resolve; });
+  }
+  currentText = text;
+};
 const page = {
   isClosed: () => false,
   url: () => currentUrl,
@@ -829,16 +836,15 @@ const page = {
   waitForLoadState: async () => {},
   screenshot: async () => Buffer.from("synthetic-browser-image"),
   title: async () => currentText || "fixture page",
+  keyboard: {
+    press: async () => {},
+    type: enterText,
+  },
   locator: () => {
     const locator = {
       first: () => locator,
-      fill: async (text) => {
-        if (fs.existsSync(marker("pause-action"))) {
-          fs.writeFileSync(marker("action-started"), "started");
-          await new Promise((resolve) => { pendingFillResolve = resolve; });
-        }
-        currentText = text;
-      },
+      click: async () => {},
+      fill: enterText,
     };
     return locator;
   },
@@ -849,9 +855,9 @@ const context = {
   newPage: async () => page,
   close: async () => {
     fs.writeFileSync(marker("context-closed"), "closed");
-    if (pendingFillResolve) {
-      pendingFillResolve();
-      pendingFillResolve = null;
+    if (pendingTextResolve) {
+      pendingTextResolve();
+      pendingTextResolve = null;
     }
     if (fs.existsSync(marker("hang-close"))) {
       await new Promise(() => {});
