@@ -2271,7 +2271,13 @@ async fn websocket_overload_without_retry_after_recovers_on_the_same_model() -> 
     let recovered = server
         .wait_for_request(/*connection_index*/ 1, /*request_index*/ 0)
         .await;
-    assert_eq!(original.body_json()["input"], recovered.body_json()["input"]);
+    // The first generation reuses the prewarm prefix; a new socket resends it.
+    // Compare complete logical input, not a compressed delta against a full replay.
+    assert_eq!(original.body_json()["previous_response_id"], json!("prewarm"));
+    assert!(recovered.body_json()["previous_response_id"].is_null());
+    let mut original_input = warmup.input();
+    original_input.extend(original.input());
+    assert_eq!(original_input, recovered.input());
     assert_eq!(original.body_json()["model"], recovered.body_json()["model"]);
     assert_eq!(
         telemetry.events.try_recv(),
