@@ -1271,6 +1271,8 @@ impl ServerHandler for McpStatusServer {
 #[derive(Clone)]
 struct SlowInventoryServer {
     tool_name: Arc<String>,
+    resource_list_calls: Arc<AtomicUsize>,
+    resource_template_list_calls: Arc<AtomicUsize>,
 }
 
 impl ServerHandler for SlowInventoryServer {
@@ -1309,6 +1311,7 @@ impl ServerHandler for SlowInventoryServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<rmcp::service::RoleServer>,
     ) -> Result<ListResourcesResult, rmcp::ErrorData> {
+        self.resource_list_calls.fetch_add(1, Ordering::SeqCst);
         tokio::time::sleep(Duration::from_secs(2)).await;
         Ok(ListResourcesResult::with_all_items(Vec::new()))
     }
@@ -1318,6 +1321,8 @@ impl ServerHandler for SlowInventoryServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<rmcp::service::RoleServer>,
     ) -> Result<ListResourceTemplatesResult, rmcp::ErrorData> {
+        self.resource_template_list_calls
+            .fetch_add(1, Ordering::SeqCst);
         tokio::time::sleep(Duration::from_secs(2)).await;
         Ok(ListResourceTemplatesResult::with_all_items(Vec::new()))
     }
@@ -1326,7 +1331,12 @@ impl ServerHandler for SlowInventoryServer {
 #[tokio::test]
 async fn mcp_server_status_list_tools_and_auth_only_skips_slow_inventory_calls() -> Result<()> {
     let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
-    let (mcp_server_url, mcp_server_handle) = start_slow_inventory_mcp_server("lookup").await?;
+    let (
+        mcp_server_url,
+        mcp_server_handle,
+        resource_list_calls,
+        resource_template_list_calls,
+    ) = start_slow_inventory_mcp_server("lookup").await?;
     let codex_home = TempDir::new()?;
     mock_responses_config(&server.uri())
         .with_extra_config(&format!(
@@ -1350,8 +1360,10 @@ async fn mcp_server_status_list_tools_and_auth_only_skips_slow_inventory_calls()
         })
         .await?;
     let response: ListMcpServerStatusResponse =
-        timeout(Duration::from_millis(500), mcp.read_response(request_id)).await??;
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(request_id)).await??;
 
+    assert_eq!(resource_list_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(resource_template_list_calls.load(Ordering::SeqCst), 0);
     assert_eq!(response.next_cursor, None);
     assert_eq!(response.data.len(), 1);
     let status = &response.data[0];
@@ -1463,14 +1475,27 @@ async fn start_mcp_server(
     Ok((format!("http://{addr}"), handle))
 }
 
-async fn start_slow_inventory_mcp_server(tool_name: &str) -> Result<(String, JoinHandle<()>)> {
+async fn start_slow_inventory_mcp_server(
+    tool_name: &str,
+) -> Result<(
+    String,
+    JoinHandle<()>,
+    Arc<AtomicUsize>,
+    Arc<AtomicUsize>,
+)> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
     let tool_name = Arc::new(tool_name.to_string());
+    let resource_list_calls = Arc::new(AtomicUsize::new(0));
+    let resource_template_list_calls = Arc::new(AtomicUsize::new(0));
+    let server_resource_list_calls = Arc::clone(&resource_list_calls);
+    let server_resource_template_list_calls = Arc::clone(&resource_template_list_calls);
     let mcp_service = StreamableHttpService::new(
         move || {
             Ok(SlowInventoryServer {
                 tool_name: Arc::clone(&tool_name),
+                resource_list_calls: Arc::clone(&server_resource_list_calls),
+                resource_template_list_calls: Arc::clone(&server_resource_template_list_calls),
             })
         },
         Arc::new(LocalSessionManager::default()),
@@ -1482,7 +1507,12 @@ async fn start_slow_inventory_mcp_server(tool_name: &str) -> Result<(String, Joi
         let _ = axum::serve(listener, router).await;
     });
 
-    Ok((format!("http://{addr}"), handle))
+    Ok((
+        format!("http://{addr}"),
+        handle,
+        resource_list_calls,
+        resource_template_list_calls,
+    ))
 }
 
 fn mock_responses_config(server_uri: &str) -> MockResponsesConfig {
