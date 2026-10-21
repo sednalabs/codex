@@ -175,7 +175,7 @@ async fn daemon_startup(command: &str) -> Result<()> {
          notice.model_migrations.\"gpt-5.6-terra\" = \"gpt-6-sol\"\n\
          [projects.{}]\ntrust_level = \"trusted\"\n",
             if command == "discovered" {
-                "tui.status_line=[\"model\",\"thread-id\",\"thread-name\"]"
+                "tui.status_line=[\"model\",\"thread-id\",\"thread-name\"]\nfeatures.daemon_auto_start=false"
             } else {
                 ""
             },
@@ -281,7 +281,10 @@ async fn daemon_startup(command: &str) -> Result<()> {
             steps.push_back(("·daemon-restart-test", b"/daemon\r"));
             steps.push_back(("Restartbackgroundserver", b"2"));
             steps.push_back(("Restartbackgroundserver?", b"2\r"));
-            steps.push_back(("GPT-5.6-Terra", b"/status\r"));
+            // Reconnect can leave the old command popup visible until the new transcript
+            // is painted. Submit the status draft only after observing its fresh popup.
+            steps.push_back(("GPT-5.6-Terra", b"/status"));
+            steps.push_back(("/statusshowcurrentsessionconfigurationandtokenusage", b"\r"));
             "Server:Localbackgroundserver"
         } else if elevated_launch || command == "restrictive-job" && elevated {
             if let Some(action) = command.strip_prefix("elevated-") {
@@ -375,6 +378,15 @@ async fn daemon_startup(command: &str) -> Result<()> {
                         *query = "";
                     }
                 }
+                // PTY reads can split a redraw after the reconnect notice is erased but
+                // before it is repainted. Only inspect completed synchronized updates.
+                if command == "discovered"
+                    && output
+                        .rfind("\x1b[?2026l")
+                        .is_none_or(|end| output[end..].contains("\x1b[?2026h"))
+                {
+                    continue;
+                }
                 let text: String = screen
                     .screen()
                     .contents()
@@ -395,14 +407,18 @@ async fn daemon_startup(command: &str) -> Result<()> {
                             }) {
                                 continue;
                             }
-                            // The old header can linger while the daemon stops. Do not send
-                            // /status until the new process is up and reconnect has finished.
-                            if steps.len() == 1
-                                && (!fs::read(&pid_file).is_ok_and(|pid| Some(pid) != existing_daemon)
-                                    || text.contains("Reconnecting"))
-                            {
-                                continue;
-                            }
+                        }
+                        // Wait for the reconnect clear-screen fence before submitting the
+                        // status draft; then keep checking the replacement process and UI
+                        // through the popup confirmation as well.
+                        if *input == b"/status" && !output.contains("\x1b[3J") {
+                            continue;
+                        }
+                        if (*input == b"/status" || *input == b"\r")
+                            && (!fs::read(&pid_file).is_ok_and(|pid| Some(pid) != existing_daemon)
+                                || text.contains("Reconnecting"))
+                        {
+                            continue;
                         }
                     }
                     if disabling && *ready == "Backgroundserverhasincompatiblefeaturesettings" {
