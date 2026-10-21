@@ -317,6 +317,7 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = [
     "https://github.com/dzbarsky/rules_rust",
     "https://github.com/helix-editor/nucleo.git",
+    "https://github.com/kellpossible/cargo-i18n",
     "https://github.com/modelcontextprotocol/rust-sdk",
     "https://github.com/sednalabs/rust-sdks.git",
     "https://github.com/nornagon/crossterm",

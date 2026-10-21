@@ -16,6 +16,7 @@
 //!
 //! If the keyring is not available or fails, we fall back to CODEX_HOME/.credentials.json which is consistent with other coding CLI agents.
 
+mod api_profile;
 mod refresh_lock;
 mod refresh_transaction;
 mod resolved_store;
@@ -82,6 +83,8 @@ use tokio::sync::Mutex;
 
 use codex_utils_home_dir::find_codex_home;
 
+pub use self::api_profile::delete_fixed_ops_api_refresh_credential;
+pub use self::api_profile::perform_fixed_ops_api_access_token_with_refresh;
 pub(crate) use self::resolved_store::ResolvedOAuthCredentialStore;
 pub(crate) use self::resolved_store::ResolvedOAuthTokens;
 pub(crate) use self::resolved_store::resolve_oauth_tokens_from_store_policy;
