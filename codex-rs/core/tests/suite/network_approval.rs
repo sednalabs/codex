@@ -3258,19 +3258,83 @@ async fn agent_started_proxy_denies_brokered_provider_alias() -> Result<()> {
         .await
         .map_err(|_| anyhow::anyhow!("stage=start_turn_failed"))?;
     eprintln!("stage=waiting_for_turn_complete");
-    match wait_for_event(&test.codex, |event| {
-        matches!(event, EventMsg::Error(_) | EventMsg::TurnComplete(_))
-    })
-    .await
-    {
-        EventMsg::TurnComplete(_) => {}
-        EventMsg::Error(error) => {
-            panic!(
-                "stage=turn_error codex_error_info={:?}",
-                error.codex_error_info
-            )
+
+    fn command_exit_category(responses: &ResponseMock, call_id: &str) -> &'static str {
+        let Some(output) = responses.function_call_output_text(call_id) else {
+            return "missing";
+        };
+        for line in output.lines() {
+            if line.starts_with("Process running with session ID ") {
+                return "running";
+            }
+            if let Some(code) = line.strip_prefix("Process exited with code ") {
+                return match code.parse::<i32>() {
+                    Ok(0) => "exit_zero",
+                    Ok(_) => "exit_nonzero",
+                    Err(_) => "unclassified",
+                };
+            }
         }
-        _ => unreachable!("event predicate only accepts error or turn completion"),
+        "unclassified"
+    }
+
+    let mut event_count = 0_usize;
+    let mut nonterminal_event_count = 0_usize;
+    let mut exec_begin_count = 0_usize;
+    let mut exec_end_count = 0_usize;
+    let mut last_event_class = "none";
+    macro_rules! wait_failure_diagnostics {
+        () => {
+            format!(
+                "event_count={event_count} nonterminal_event_count={nonterminal_event_count} \
+                 exec_begin_count={exec_begin_count} exec_end_count={exec_end_count} \
+                 last_event_class={last_event_class} model_request_capture_count={} \
+                 command_exit_category={}",
+                responses.requests().len(),
+                command_exit_category(&responses, call_id),
+            )
+        };
+    }
+    loop {
+        let next_event =
+            tokio::time::timeout(Duration::from_secs(10), test.codex.next_event()).await;
+        let event = match next_event {
+            Err(_) => panic!(
+                "stage=waiting_for_turn_complete boundary=timeout {}",
+                wait_failure_diagnostics!()
+            ),
+            Ok(Err(_)) => panic!(
+                "stage=waiting_for_turn_complete boundary=stream_ended {}",
+                wait_failure_diagnostics!()
+            ),
+            Ok(Ok(event)) => event,
+        };
+        event_count += 1;
+        match &event.msg {
+            EventMsg::ExecCommandBegin(event) if event.call_id == call_id => {
+                nonterminal_event_count += 1;
+                exec_begin_count += 1;
+                last_event_class = "exec_begin";
+            }
+            EventMsg::ExecCommandEnd(event) if event.call_id == call_id => {
+                nonterminal_event_count += 1;
+                exec_end_count += 1;
+                last_event_class = "exec_end";
+            }
+            EventMsg::Error(error) => {
+                last_event_class = "error";
+                panic!(
+                    "stage=turn_error codex_error_info={:?} {}",
+                    error.codex_error_info,
+                    wait_failure_diagnostics!()
+                )
+            }
+            EventMsg::TurnComplete(_) => break,
+            _ => {
+                nonterminal_event_count += 1;
+                last_event_class = "other";
+            }
+        }
     }
     let output = responses
         .function_call_output_text(call_id)
