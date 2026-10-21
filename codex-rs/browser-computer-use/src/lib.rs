@@ -955,7 +955,7 @@ exports.chromium = {
             json!({"action":"type","selector":"#note","text":"unsaved draft"}),
         )
         .await;
-        assert!(typed.success);
+        assert!(typed.success, "typed Browser response: {typed:?}");
 
         let continued = call(
             &manager,
