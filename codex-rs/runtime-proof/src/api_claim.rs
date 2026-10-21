@@ -37,6 +37,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(crate) struct ApiBearer {
     pub(crate) value: SecretString,
+    pub(crate) principal: Uuid,
     pub(crate) expires_at: i64,
 }
 
@@ -168,8 +169,9 @@ fn validate_bearer_profile(
     let token_principal = Uuid::parse_str(&claims.sub)
         .ok()
         .filter(|principal| principal.to_string() == claims.sub);
-    let subject_matches = token_principal.is_some()
-        && expected_principal.is_none_or(|principal| token_principal == Some(principal));
+    let principal = token_principal
+        .ok_or_else(|| anyhow::anyhow!("fixed Ops API bearer has no canonical principal"))?;
+    let subject_matches = expected_principal.is_none_or(|expected| principal == expected);
     let has_scope = claims
         .scope
         .as_deref()
@@ -198,6 +200,7 @@ fn validate_bearer_profile(
     }
     Ok(ApiBearer {
         value,
+        principal,
         expires_at: claims.exp,
     })
 }

@@ -31,9 +31,17 @@ pub(super) struct RefreshCredentialLock {
 
 impl RefreshCredentialLock {
     pub(super) async fn acquire_for_server(server_name: &str, url: &str) -> Result<Self> {
-        let store_key = super::compute_store_key(server_name, url)?;
         let codex_home = find_codex_home()?;
-        Self::acquire_in(&codex_home, &store_key, REFRESH_LOCK_ACQUIRE_TIMEOUT)
+        Self::acquire_for_server_in(&codex_home, server_name, url).await
+    }
+
+    pub(super) async fn acquire_for_server_in(
+        codex_home: &Path,
+        server_name: &str,
+        url: &str,
+    ) -> Result<Self> {
+        let store_key = super::compute_store_key(server_name, url)?;
+        Self::acquire_in(codex_home, &store_key, REFRESH_LOCK_ACQUIRE_TIMEOUT)
             .await
             .with_context(|| format!("failed to acquire OAuth credential lock for {server_name}"))
     }

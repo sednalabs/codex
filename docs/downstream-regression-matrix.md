@@ -1218,12 +1218,16 @@ listener; it validates the exact redirect and single-use state before the same
 PKCE exchange while suppressing and restoring TTY input echo, including when a
 handled cancellation signal interrupts input. Its regressions check the exact
 client/resource/scope and S256 request, reject unsafe or ambiguous callback
-input and issuer metadata and
-unsupported token-type/lifetime responses, discard the refresh response without
-persistence, and verify atomic replacement of only one root-owned credential
-basename. It supports the installed root-owned launcher under interactive
-`sudo`; `SUDO_UID` selects only the unprivileged browser process and does not
-attest the OAuth subject. Provisioning checks issuer/audience/scope/UUID-subject-
+input, issuer metadata, token types, and lifetimes, and prevent scope
+expansion. They verify atomic replacement of only one root-owned credential
+basename. The invoking user's direct OS keyring holds a separate
+fixed API refresh profile; a rotated refresh token must be persisted before
+the short-lived access token reaches root over the bounded private handoff.
+Tests cover successful rotation, keyring-write failure, subject continuity,
+API-only logout, and handoff framing. It supports the installed root-owned
+launcher under interactive `sudo`; `SUDO_UID` selects only the unprivileged
+API-profile child and optional browser process and does not attest the OAuth
+subject. Provisioning checks issuer/audience/scope/UUID-subject-
 shape/expiry without requiring the claim policy. At actual use, the fixed HTTP
 launcher still requires the token subject to match the root policy before
 signing or sending.

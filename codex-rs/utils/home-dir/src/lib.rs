@@ -1,5 +1,11 @@
 use codex_utils_absolute_path::AbsolutePathBuf;
 use dirs::home_dir;
+#[cfg(unix)]
+use std::ffi::CStr;
+#[cfg(unix)]
+use std::mem::MaybeUninit;
+#[cfg(unix)]
+use std::os::unix::ffi::OsStrExt as _;
 use std::path::PathBuf;
 
 /// Returns the path to the Codex configuration directory, which can be
@@ -15,6 +21,76 @@ pub fn find_codex_home() -> std::io::Result<AbsolutePathBuf> {
         .ok()
         .filter(|val| !val.is_empty());
     find_codex_home_from_env(codex_home_env.as_deref())
+}
+
+/// Returns the stable default Codex home without consulting `CODEX_HOME`.
+///
+/// Credential stores shared by an OS user must use the same lock location even
+/// when individual Codex processes select different configuration homes.
+pub fn find_default_codex_home() -> std::io::Result<AbsolutePathBuf> {
+    let mut path = home_dir().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "Could not find home directory",
+        )
+    })?;
+    path.push(".codex");
+    AbsolutePathBuf::from_absolute_path_checked(path)
+}
+
+/// Returns the effective OS user's default Codex home from the passwd database.
+///
+/// This deliberately ignores `HOME` and `CODEX_HOME`. It is for credentials
+/// shared by an OS user across Codex configuration homes, where every caller
+/// must rendezvous on the same refresh lock.
+#[cfg(unix)]
+pub fn find_default_codex_home_for_current_user() -> std::io::Result<AbsolutePathBuf> {
+    let uid = unsafe { libc::geteuid() };
+    let mut buffer = vec![0_u8; 64 * 1024];
+    let mut passwd = MaybeUninit::<libc::passwd>::uninit();
+    let mut entry = std::ptr::null_mut();
+    let status = unsafe {
+        libc::getpwuid_r(
+            uid,
+            passwd.as_mut_ptr(),
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+            &mut entry,
+        )
+    };
+    if status != 0 {
+        return Err(std::io::Error::from_raw_os_error(status));
+    }
+    if entry.is_null() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "Could not resolve effective user's passwd entry",
+        ));
+    }
+
+    let passwd = unsafe { passwd.assume_init_ref() };
+    if passwd.pw_uid != uid || passwd.pw_dir.is_null() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Effective user's passwd entry has no home directory",
+        ));
+    }
+    let home = unsafe { CStr::from_ptr(passwd.pw_dir) };
+    let home = PathBuf::from(std::ffi::OsStr::from_bytes(home.to_bytes()));
+    if !home.is_absolute() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Effective user's passwd home is not absolute",
+        ));
+    }
+    let path = home.join(".codex");
+    AbsolutePathBuf::from_absolute_path_checked(path)
+}
+
+/// Uses the platform's configured home on systems without a Unix passwd DB.
+#[cfg(not(unix))]
+pub fn find_default_codex_home_for_current_user() -> std::io::Result<AbsolutePathBuf> {
+    find_default_codex_home()
 }
 
 fn find_codex_home_from_env(codex_home_env: Option<&str>) -> std::io::Result<AbsolutePathBuf> {
@@ -49,16 +125,7 @@ fn find_codex_home_from_env(codex_home_env: Option<&str>) -> std::io::Result<Abs
                 AbsolutePathBuf::from_absolute_path_checked(canonical)
             }
         }
-        None => {
-            let mut p = home_dir().ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "Could not find home directory",
-                )
-            })?;
-            p.push(".codex");
-            AbsolutePathBuf::from_absolute_path_checked(p)
-        }
+        None => find_default_codex_home(),
     }
 }
 
@@ -68,8 +135,13 @@ mod tests {
     use codex_utils_absolute_path::AbsolutePathBuf;
     use dirs::home_dir;
     use pretty_assertions::assert_eq;
+    #[cfg(unix)]
+    use std::ffi::CStr;
     use std::fs;
     use std::io::ErrorKind;
+    #[cfg(unix)]
+    use std::os::unix::ffi::OsStrExt as _;
+    use std::path::PathBuf;
     use tempfile::TempDir;
 
     #[test]
@@ -130,5 +202,54 @@ mod tests {
         expected.push(".codex");
         let expected = AbsolutePathBuf::from_absolute_path(expected).expect("absolute home");
         assert_eq!(resolved, expected);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn default_codex_home_for_current_user_uses_passwd_home() {
+        let resolved =
+            super::find_default_codex_home_for_current_user().expect("passwd-derived home");
+        let uid = unsafe { libc::geteuid() };
+        let mut buffer = vec![0_u8; 64 * 1024];
+        let mut passwd = std::mem::MaybeUninit::<libc::passwd>::uninit();
+        let mut entry = std::ptr::null_mut();
+        let status = unsafe {
+            libc::getpwuid_r(
+                uid,
+                passwd.as_mut_ptr(),
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+                &mut entry,
+            )
+        };
+        assert_eq!(status, 0);
+        assert!(!entry.is_null());
+        let passwd = unsafe { passwd.assume_init_ref() };
+        let home = unsafe { CStr::from_ptr(passwd.pw_dir) };
+        let home = PathBuf::from(std::ffi::OsStr::from_bytes(home.to_bytes()));
+        assert_eq!(resolved.as_path(), &home.join(".codex"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn default_codex_home_for_current_user_ignores_environment_overrides() {
+        let home_override = TempDir::new().expect("HOME override");
+        let codex_home_override = TempDir::new().expect("CODEX_HOME override");
+        let output =
+            std::process::Command::new(std::env::current_exe().expect("current test executable"))
+                .args([
+                    "--exact",
+                    "tests::default_codex_home_for_current_user_uses_passwd_home",
+                    "--nocapture",
+                ])
+                .env("HOME", home_override.path())
+                .env("CODEX_HOME", codex_home_override.path())
+                .output()
+                .expect("run child test with conflicting home overrides");
+        assert!(
+            output.status.success(),
+            "child test failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }

@@ -6,13 +6,14 @@
 //! volatile systemd credential source consumed by the fixed claim service.
 
 use crate::api_claim;
+use crate::launcher::LAUNCHER_PATH;
 use crate::launcher::ProvisioningStage;
 use crate::launcher::provisioning_failure;
+use crate::launcher::require_installed_launcher_image;
+use crate::launcher::seqpacket_pair;
 use anyhow::Result;
 use anyhow::bail;
 use codex_rmcp_client::FIXED_API_CLAIM_TIMEOUT_SECS;
-use codex_rmcp_client::perform_fixed_ops_api_access_token_login;
-use codex_rmcp_client::perform_fixed_ops_api_access_token_login_with_callback_input;
 use std::ffi::CStr;
 use std::fs;
 use std::fs::File;
@@ -37,6 +38,13 @@ const BEARER_LOCK_NAME: &str = ".codex-runtime-proof-api-bearer.lock";
 const XDG_OPEN_PATH: &str = "/usr/bin/xdg-open";
 const MAX_PASSWD_BUFFER: usize = 64 * 1024;
 const MAX_CALLBACK_URL_BYTES: usize = 64 * 1024;
+const API_PROFILE_CHILD_ACTION: &str = "__runtime-proof-api-profile-child";
+const API_PROFILE_CHANNEL_FD: libc::c_int = 3;
+const API_TOKEN_FRAME_MAGIC: &[u8; 4] = b"R3A1";
+const MAX_API_TOKEN_FRAME_BYTES: usize = 12 * 1024 + 12;
+// Covers the fixed 300-second PKCE callback, existing 60-second credential
+// lock, and bounded discovery/token requests with a small scheduling margin.
+const API_PROFILE_CHILD_TIMEOUT: Duration = Duration::from_secs(400);
 static CALLBACK_INPUT_INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
 const CALLBACK_INPUT_SIGNALS: [libc::c_int; 5] = [
@@ -159,32 +167,18 @@ fn run_with_interaction(interaction: ProvisioningInteraction) -> Result<i32> {
     validate_fixed_parent(bearer_parent)
         .map_err(|_| provisioning_failure(ProvisioningStage::Precondition))?;
 
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|_| provisioning_failure(ProvisioningStage::Runtime))?;
-    let oauth_dispatch = tracing::Dispatch::none();
-    let access_token = tracing::dispatcher::with_default(&oauth_dispatch, || {
-        if matches!(interaction, ProvisioningInteraction::ManualCallbackInput) {
-            runtime.block_on(
-                perform_fixed_ops_api_access_token_login_with_callback_input(
-                    read_callback_url_from_invoking_terminal,
-                ),
-            )
-        } else {
-            runtime.block_on(perform_fixed_ops_api_access_token_login(
-                open_authorization_url_as_invoking_user,
-            ))
-        }
-    })
-    .map_err(|error| provisioning_failure(error.stage().into()))?;
+    let access_token = obtain_access_token_as_invoking_user(interaction)?;
 
     let now = api_claim::unix_seconds()
         .map_err(|_| provisioning_failure(ProvisioningStage::TokenValidation))?;
-    let bearer =
-        api_claim::validate_bearer_for_provisioning(access_token.access_token().to_string(), now)
-            .map_err(|_| provisioning_failure(ProvisioningStage::TokenValidation))?;
-    if bearer.expires_at <= now || bearer.expires_at > access_token.expires_at() {
+    let bearer = api_claim::validate_bearer_for_provisioning(access_token.value.to_string(), now)
+        .map_err(|_| provisioning_failure(ProvisioningStage::TokenValidation))?;
+    let expected_principal = crate::launcher::expected_http_principal_if_configured()
+        .map_err(|_| provisioning_failure(ProvisioningStage::TokenValidation))?;
+    if bearer.expires_at <= now
+        || bearer.expires_at > access_token.expires_at
+        || expected_principal.is_some_and(|principal| principal != bearer.principal)
+    {
         return Err(provisioning_failure(ProvisioningStage::TokenValidation));
     }
     let credential = api_claim::encode_bearer_credential(&bearer.value)
@@ -192,6 +186,303 @@ fn run_with_interaction(interaction: ProvisioningInteraction) -> Result<i32> {
     replace_bearer_source(Path::new(BEARER_SOURCE_PATH), &credential)
         .map_err(|_| provisioning_failure(ProvisioningStage::CredentialWrite))?;
     Ok(0)
+}
+
+/// Entry point for the fixed unprivileged child. It requires an inherited
+/// root-created seqpacket channel and writes only a bounded short-lived access
+/// token frame; the refresh token remains in this user's OS keyring.
+pub(crate) fn run_api_profile_child(use_manual_callback_input: bool) -> Result<i32> {
+    let channel = inherited_api_profile_channel()
+        .map_err(|_| provisioning_failure(ProvisioningStage::Precondition))?;
+    verify_api_profile_parent(&channel)?;
+    require_installed_launcher_image()
+        .map_err(|_| provisioning_failure(ProvisioningStage::Precondition))?;
+    let (uid, _, _) = invoking_user_identity()
+        .map_err(|_| provisioning_failure(ProvisioningStage::Precondition))?;
+    if uid == 0 || unsafe { libc::geteuid() } != uid {
+        return Err(provisioning_failure(ProvisioningStage::Precondition));
+    }
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| provisioning_failure(ProvisioningStage::Runtime))?;
+    let oauth_dispatch = tracing::Dispatch::none();
+    let access_token = tracing::dispatcher::with_default(&oauth_dispatch, || {
+        runtime.block_on(
+            codex_rmcp_client::perform_fixed_ops_api_access_token_with_refresh(
+                open_authorization_url_as_invoking_user,
+                read_callback_url_from_invoking_terminal,
+                use_manual_callback_input,
+            ),
+        )
+    })
+    .map_err(|error| provisioning_failure(error.stage().into()))?;
+
+    send_api_token_frame(
+        &channel,
+        access_token.access_token(),
+        access_token.expires_at(),
+    )?;
+    Ok(0)
+}
+
+fn inherited_api_profile_channel() -> Result<File> {
+    if unsafe { libc::fcntl(API_PROFILE_CHANNEL_FD, libc::F_GETFD) } < 0 {
+        bail!("fixed API credential child has no inherited channel");
+    }
+    Ok(unsafe { File::from_raw_fd(API_PROFILE_CHANNEL_FD) })
+}
+
+fn obtain_access_token_as_invoking_user(
+    interaction: ProvisioningInteraction,
+) -> Result<TransferredAccessToken> {
+    let (uid, gid, home) = invoking_user_identity()
+        .map_err(|_| provisioning_failure(ProvisioningStage::Precondition))?;
+    let (parent_socket, child_socket) =
+        seqpacket_pair().map_err(|_| provisioning_failure(ProvisioningStage::Runtime))?;
+    let child_fd = child_socket.as_raw_fd();
+    let parent_pid = unsafe { libc::getpid() };
+    let mut command = Command::new(LAUNCHER_PATH);
+    command
+        .arg(API_PROFILE_CHILD_ACTION)
+        .arg(match interaction {
+            ProvisioningInteraction::Browser => "browser",
+            ProvisioningInteraction::ManualCallbackInput => "callback-input",
+        })
+        .env_clear()
+        .env("HOME", &home)
+        .env("PATH", "/usr/bin:/bin")
+        .env("SUDO_UID", uid.to_string())
+        // The API refresh profile is global to this user's OS keyring. Keep
+        // its existing OAuth lock in one stable per-user Codex home instead
+        // of allowing different CODEX_HOME values to race the same keyring
+        // refresh token.
+        .env_remove("CODEX_HOME")
+        .current_dir(&home)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    for name in [
+        "DISPLAY",
+        "WAYLAND_DISPLAY",
+        "XAUTHORITY",
+        "XDG_CURRENT_DESKTOP",
+        "XDG_SESSION_TYPE",
+    ] {
+        if let Some(value) = std::env::var_os(name) {
+            let value_bytes = value.as_os_str().as_bytes();
+            if value_bytes.len() <= 4096 && !value_bytes.iter().any(u8::is_ascii_control) {
+                command.env(name, value);
+            }
+        }
+    }
+    if let Some((runtime_directory, bus_address)) = fixed_user_bus(uid) {
+        command
+            .env("XDG_RUNTIME_DIR", runtime_directory)
+            .env("DBUS_SESSION_BUS_ADDRESS", bus_address);
+    }
+
+    unsafe {
+        command.pre_exec(move || {
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) != 0
+                || libc::getppid() != parent_pid
+                || libc::dup2(child_fd, API_PROFILE_CHANNEL_FD) < 0
+                || libc::fcntl(API_PROFILE_CHANNEL_FD, libc::F_SETFD, 0) < 0
+                || libc::setgroups(0, std::ptr::null()) != 0
+                || libc::setresgid(gid, gid, gid) != 0
+                || libc::setresuid(uid, uid, uid) != 0
+                || libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0
+                || libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) != 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::syscall(
+                libc::SYS_close_range,
+                (API_PROFILE_CHANNEL_FD + 1) as u32,
+                u32::MAX,
+                libc::CLOSE_RANGE_CLOEXEC,
+            ) < 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|_| provisioning_failure(ProvisioningStage::Runtime))?;
+    drop(child_socket);
+
+    let packet = receive_api_token_frame(&parent_socket);
+    if packet.is_err() {
+        // A bounded handoff timeout must not be followed by an unbounded wait
+        // for an OAuth/keyring child that failed to produce its one result.
+        let _ = child.kill();
+    }
+    let status = child
+        .wait()
+        .map_err(|_| provisioning_failure(ProvisioningStage::Runtime))?;
+    if !status.success() {
+        return Err(provisioning_failure(ProvisioningStage::OAuthExchange));
+    }
+    packet.map_err(|_| provisioning_failure(ProvisioningStage::OAuthExchange))
+}
+
+struct TransferredAccessToken {
+    value: zeroize::Zeroizing<String>,
+    expires_at: i64,
+}
+
+fn send_api_token_frame(channel: &File, token: &str, expires_at: i64) -> Result<()> {
+    if token.is_empty() || token.len() > 12 * 1024 {
+        bail!("fixed API access token is outside its handoff bounds");
+    }
+    let mut frame = zeroize::Zeroizing::new(Vec::with_capacity(12 + token.len()));
+    frame.extend_from_slice(API_TOKEN_FRAME_MAGIC);
+    frame.extend_from_slice(&expires_at.to_be_bytes());
+    frame.extend_from_slice(token.as_bytes());
+    let sent = loop {
+        let sent = unsafe {
+            libc::send(
+                channel.as_raw_fd(),
+                frame.as_ptr().cast(),
+                frame.len(),
+                libc::MSG_NOSIGNAL,
+            )
+        };
+        if sent >= 0 {
+            break sent;
+        }
+        if std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+            bail!("fixed API access token handoff failed");
+        }
+    };
+    if sent < 0 || sent as usize != frame.len() {
+        bail!("fixed API access token handoff failed");
+    }
+    Ok(())
+}
+
+fn receive_api_token_frame(channel: &File) -> Result<TransferredAccessToken> {
+    let deadline = Instant::now() + API_PROFILE_CHILD_TIMEOUT;
+    loop {
+        let mut poll = libc::pollfd {
+            fd: channel.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let timeout_ms = i32::try_from(remaining.as_millis()).unwrap_or(i32::MAX);
+        if timeout_ms == 0 {
+            bail!("fixed API credential child did not complete in time");
+        }
+        let ready = unsafe { libc::poll(&mut poll, 1, timeout_ms) };
+        if ready > 0 {
+            if poll.revents & libc::POLLIN == 0 {
+                bail!("fixed API credential child did not complete in time");
+            }
+            break;
+        }
+        if ready == 0 {
+            bail!("fixed API credential child did not complete in time");
+        }
+        if std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+            bail!("fixed API credential child did not complete in time");
+        }
+    }
+    let mut frame = zeroize::Zeroizing::new(vec![0_u8; MAX_API_TOKEN_FRAME_BYTES]);
+    let received = loop {
+        let received = unsafe {
+            libc::recv(
+                channel.as_raw_fd(),
+                frame.as_mut_ptr().cast(),
+                frame.len(),
+                libc::MSG_TRUNC,
+            )
+        };
+        if received >= 0 {
+            break received;
+        }
+        if std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+            bail!("fixed API access token handoff has an invalid size");
+        }
+    };
+    if received < 12 || received as usize > frame.len() {
+        bail!("fixed API access token handoff has an invalid size");
+    }
+    decode_api_token_frame(&frame[..received as usize])
+}
+
+fn decode_api_token_frame(frame: &[u8]) -> Result<TransferredAccessToken> {
+    if frame.len() < 12 || frame.len() > MAX_API_TOKEN_FRAME_BYTES {
+        bail!("fixed API access token handoff has an invalid size");
+    }
+    if &frame[..4] != API_TOKEN_FRAME_MAGIC {
+        bail!("fixed API access token handoff has an invalid format");
+    }
+    let expires_at = i64::from_be_bytes(frame[4..12].try_into()?);
+    let token = std::str::from_utf8(&frame[12..])?;
+    if token.is_empty() || token.len() > 12 * 1024 {
+        bail!("fixed API access token handoff has an invalid token size");
+    }
+    Ok(TransferredAccessToken {
+        value: zeroize::Zeroizing::new(token.to_string()),
+        expires_at,
+    })
+}
+
+fn verify_api_profile_parent(channel: &File) -> Result<()> {
+    let mut socket_type: libc::c_int = 0;
+    let mut socket_type_len = std::mem::size_of_val(&socket_type) as libc::socklen_t;
+    let mut peer: libc::ucred = unsafe { std::mem::zeroed() };
+    let mut peer_len = std::mem::size_of_val(&peer) as libc::socklen_t;
+    if unsafe {
+        libc::getsockopt(
+            channel.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_TYPE,
+            (&mut socket_type as *mut libc::c_int).cast(),
+            &mut socket_type_len,
+        )
+    } != 0
+        || socket_type_len as usize != std::mem::size_of_val(&socket_type)
+        || socket_type != libc::SOCK_SEQPACKET
+        || unsafe {
+            libc::getsockopt(
+                channel.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_PEERCRED,
+                (&mut peer as *mut libc::ucred).cast(),
+                &mut peer_len,
+            )
+        } != 0
+        || peer_len as usize != std::mem::size_of_val(&peer)
+        || peer.uid != 0
+    {
+        bail!("fixed API credential child requires its root launcher peer");
+    }
+    Ok(())
+}
+
+fn fixed_user_bus(uid: libc::uid_t) -> Option<(String, String)> {
+    use std::os::unix::fs::FileTypeExt as _;
+
+    let runtime_directory = format!("/run/user/{uid}");
+    let runtime_path = Path::new(&runtime_directory);
+    let runtime = fs::symlink_metadata(runtime_path).ok()?;
+    if !runtime.is_dir() || runtime.uid() != uid || runtime.mode() & 0o077 != 0 {
+        return None;
+    }
+    let bus_path = runtime_path.join("bus");
+    let bus = fs::symlink_metadata(&bus_path).ok()?;
+    if !bus.file_type().is_socket() || bus.uid() != uid {
+        return None;
+    }
+    Some((
+        runtime_directory.clone(),
+        format!("unix:path={runtime_directory}/bus"),
+    ))
 }
 
 fn require_interactive_root_invocation() -> Result<()> {
@@ -292,8 +583,16 @@ fn open_authorization_url_as_invoking_user(authorization_url: &str) -> Result<()
             }
         }
     }
+    let already_invoking_user =
+        unsafe { libc::geteuid() } == uid && unsafe { libc::getegid() } == gid;
     unsafe {
         command.pre_exec(move || {
+            if already_invoking_user {
+                return Ok(());
+            }
+            if libc::geteuid() != 0 {
+                return Err(std::io::Error::from_raw_os_error(libc::EPERM));
+            }
             if libc::setgroups(0, std::ptr::null()) != 0
                 || libc::setgid(gid) != 0
                 || libc::setuid(uid) != 0
@@ -726,6 +1025,26 @@ fn open_fixed_directory(path: &Path) -> std::io::Result<File> {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt as _;
+
+    #[test]
+    fn api_profile_handoff_accepts_only_a_bounded_versioned_access_token_frame() {
+        let mut frame = Vec::new();
+        frame.extend_from_slice(API_TOKEN_FRAME_MAGIC);
+        frame.extend_from_slice(&1_900_000_000_i64.to_be_bytes());
+        frame.extend_from_slice(b"short-lived-access-token");
+
+        let token = decode_api_token_frame(&frame).expect("decode fixed API handoff");
+        assert_eq!(token.value.as_str(), "short-lived-access-token");
+        assert_eq!(token.expires_at, 1_900_000_000);
+
+        let mut wrong_version = frame.clone();
+        wrong_version[0] = b'X';
+        assert!(decode_api_token_frame(&wrong_version).is_err());
+        assert!(decode_api_token_frame(&frame[..11]).is_err());
+
+        let oversized = vec![0; MAX_API_TOKEN_FRAME_BYTES + 1];
+        assert!(decode_api_token_frame(&oversized).is_err());
+    }
 
     #[test]
     fn bearer_source_requires_exact_fixed_path() {

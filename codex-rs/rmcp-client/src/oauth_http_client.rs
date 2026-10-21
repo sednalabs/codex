@@ -9,6 +9,7 @@ use codex_exec_server::HttpRedirectPolicy;
 use codex_exec_server::HttpRequestParams;
 use codex_http_client::HttpClient as DirectHttpClient;
 use futures::StreamExt;
+use futures::future::BoxFuture;
 use oauth2::HttpRequest;
 use oauth2::HttpResponse;
 use reqwest::header::HeaderMap;
@@ -202,5 +203,22 @@ fn append_bounded_body(body: &mut Vec<u8>, chunk: &[u8]) -> Result<(), OAuthHttp
 impl OAuthHttpClient for OAuthHttpClientAdapter {
     fn execute(&self, request: OAuthHttpRequest) -> OAuthHttpClientFuture<'_> {
         Box::pin(self.execute_request(request.request, request.redirect_policy, request.timeout))
+    }
+}
+
+impl<'client> oauth2::AsyncHttpClient<'client> for OAuthHttpClientAdapter {
+    type Error = std::io::Error;
+    type Future = BoxFuture<'client, Result<HttpResponse, Self::Error>>;
+
+    fn call(&'client self, request: HttpRequest) -> Self::Future {
+        Box::pin(async move {
+            self.execute_request(
+                request,
+                OAuthHttpRedirectPolicy::Stop,
+                Some(Duration::from_secs(10)),
+            )
+            .await
+            .map_err(std::io::Error::other)
+        })
     }
 }

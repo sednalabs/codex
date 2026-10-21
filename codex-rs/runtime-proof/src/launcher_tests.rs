@@ -83,6 +83,10 @@ fn fixed_oauth_login_stages_map_to_provisioning_stages() {
             codex_rmcp_client::FixedOAuthLoginStage::TokenValidation,
             "token_validation",
         ),
+        (
+            codex_rmcp_client::FixedOAuthLoginStage::CredentialStore,
+            "credential_store",
+        ),
     ];
 
     for (oauth_stage, expected_stage) in stages {
@@ -181,6 +185,21 @@ fn fixed_policy(seed: &[u8; RUNTIME_SEED_BYTES]) -> LauncherPolicy {
             task_prompt: "Claim the fixed Work item after checking its current state.".to_string(),
         }),
     }
+}
+
+#[test]
+fn api_bearer_provisioning_binds_only_an_installed_http_policy_subject() {
+    let seed = [9_u8; RUNTIME_SEED_BYTES];
+    let mut policy = fixed_policy(&seed);
+    let principal = policy.principal;
+    assert!(http_policy_principal(&policy).is_err());
+
+    policy.target = LauncherTarget::Http(ApiClaimConfig {
+        launcher_sha256: "a".repeat(64),
+        expected_generation: 1,
+        expected_updated_at: "2026-10-22T00:00:00Z".to_string(),
+    });
+    assert_eq!(http_policy_principal(&policy).ok(), Some(principal));
 }
 
 fn fixed_claims() -> wire::CertificateClaims {
