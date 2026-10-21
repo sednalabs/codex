@@ -304,7 +304,7 @@ async fn exchange_fixed_api_refresh_at_endpoint(
     let response = oauth_client
         .exchange_refresh_token(&refresh_token)
         .add_extra_param("resource", FIXED_API_CLAIM_RESOURCE)
-        .request_async(&oauth_http_client)
+        .request_async(oauth_http_client)
         .await
         .map_err(|_| FixedOAuthLoginError::at(FixedOAuthLoginStage::Exchange))?;
     Ok(response)
@@ -629,14 +629,10 @@ fn validate_fixed_oauth_metadata(metadata: &AuthorizationMetadata, issuer_url: &
 }
 
 fn access_token_from_response(
-    response: impl oauth2::TokenResponse,
+    response: impl oauth2::TokenResponse<TokenType = oauth2::basic::BasicTokenType>,
     requested_scopes: &[String],
 ) -> Result<OAuthAccessToken> {
-    if !response
-        .token_type()
-        .as_ref()
-        .eq_ignore_ascii_case("bearer")
-    {
+    if response.token_type() != &oauth2::basic::BasicTokenType::Bearer {
         bail!("fixed OAuth response is not a bearer token");
     }
     let expires_in = response

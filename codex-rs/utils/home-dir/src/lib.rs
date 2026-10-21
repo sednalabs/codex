@@ -235,18 +235,16 @@ mod tests {
     fn default_codex_home_for_current_user_ignores_environment_overrides() {
         let home_override = TempDir::new().expect("HOME override");
         let codex_home_override = TempDir::new().expect("CODEX_HOME override");
-        let output = std::process::Command::new(
-            std::env::current_exe().expect("current test executable"),
-        )
-        .args([
-            "--exact",
-            "tests::default_codex_home_for_current_user_uses_passwd_home",
-            "--nocapture",
-        ])
-        .env("HOME", home_override.path())
-        .env("CODEX_HOME", codex_home_override.path())
-        .output()
-        .expect("run child test with conflicting home overrides");
+        let output = std::process::Command::new(std::env::current_exe().expect("current test executable"))
+            .args([
+                "--exact",
+                "tests::default_codex_home_for_current_user_uses_passwd_home",
+                "--nocapture",
+            ])
+            .env("HOME", home_override.path())
+            .env("CODEX_HOME", codex_home_override.path())
+            .output()
+            .expect("run child test with conflicting home overrides");
         assert!(
             output.status.success(),
             "child test failed: {}",

@@ -8,6 +8,7 @@ use codex_exec_server::HttpHeader;
 use codex_exec_server::HttpRedirectPolicy;
 use codex_exec_server::HttpRequestParams;
 use codex_http_client::HttpClient as DirectHttpClient;
+use futures::future::BoxFuture;
 use futures::StreamExt;
 use oauth2::HttpRequest;
 use oauth2::HttpResponse;
@@ -206,14 +207,18 @@ impl OAuthHttpClient for OAuthHttpClientAdapter {
 }
 
 impl<'client> oauth2::AsyncHttpClient<'client> for OAuthHttpClientAdapter {
-    type Error = OAuthHttpClientError;
-    type Future = OAuthHttpClientFuture<'client>;
+    type Error = std::io::Error;
+    type Future = BoxFuture<'client, Result<HttpResponse, Self::Error>>;
 
     fn call(&'client self, request: HttpRequest) -> Self::Future {
-        self.execute(OAuthHttpRequest {
-            request,
-            redirect_policy: OAuthHttpRedirectPolicy::Stop,
-            timeout: Some(Duration::from_secs(10)),
+        Box::pin(async move {
+            self.execute_request(
+                request,
+                OAuthHttpRedirectPolicy::Stop,
+                Some(Duration::from_secs(10)),
+            )
+            .await
+            .map_err(std::io::Error::other)
         })
     }
 }
