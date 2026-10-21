@@ -15,8 +15,9 @@ concurrency:
 
 jobs:
   test:
-    # Code-mode unit tests run on every supported Bazel target.
-    # Keep standard-hosted builds finite while allowing longer macOS cold builds.
+    # Code-mode unit tests run on every supported Bazel target. Split the
+    # inventory into deterministic target shards to keep standard-hosted jobs
+    # within their existing limits without dropping coverage.
     timeout-minutes: ${{ startsWith(matrix.os, 'macos-') && 180 || 90 }}
     strategy:
       fail-fast: false
@@ -25,22 +26,54 @@ jobs:
           # macOS
           - os: macos-15
             target: aarch64-apple-darwin
+            shard: 1
+            shard_count: 2
+          - os: macos-15
+            target: aarch64-apple-darwin
+            shard: 2
+            shard_count: 2
           - os: macos-15-intel
             target: x86_64-apple-darwin
+            shard: 1
+            shard_count: 2
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            shard: 2
+            shard_count: 2
 
           # Linux
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             shard: 1
+            shard_count: 4
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             shard: 2
+            shard_count: 4
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            shard: 3
+            shard_count: 4
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            shard: 4
+            shard_count: 4
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-musl
             shard: 1
+            shard_count: 4
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-musl
             shard: 2
+            shard_count: 4
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            shard: 3
+            shard_count: 4
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            shard: 4
+            shard_count: 4
           # 2026-02-27 Bazel tests have been flaky on arm in CI.
           # Disable until we can investigate and stabilize them.
           # - os: ubuntu-24.04-arm
@@ -51,7 +84,7 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     # Configure a human readable name for each job
-    name: Bazel test on ${{ matrix.os }} for ${{ matrix.target }}${{ matrix.shard && format(' shard {0}/2', matrix.shard) || '' }}
+    name: Bazel test on ${{ matrix.os }} for ${{ matrix.target }}${{ matrix.shard && format(' shard {0}/{1}', matrix.shard, matrix.shard_count) || '' }}
     environment:
       name: bazel
       deployment: false
@@ -66,7 +99,7 @@ jobs:
         uses: ./.github/actions/prepare-bazel-ci
         with:
           target: ${{ matrix.target }}
-          cache-scope: ${{ matrix.shard && format('bazel-{0}-{1}-shard-{2}', github.job, matrix.target, matrix.shard) || format('bazel-{0}', github.job) }}
+          cache-scope: ${{ matrix.shard && format('bazel-{0}-{1}-shard-{2}-of-{3}', github.job, matrix.target, matrix.shard, matrix.shard_count) || format('bazel-{0}', github.job) }}
 
       - name: Check rusty_v8 MODULE.bazel checksums
         if: matrix.os == 'ubuntu-24.04' && matrix.target == 'x86_64-unknown-linux-gnu' && matrix.shard == 1
@@ -80,10 +113,11 @@ jobs:
         shell: bash
         run: ./scripts/check-module-bazel-lock.sh
 
-      - name: ${{ matrix.shard && format('bazel test shard {0}/2', matrix.shard) || 'bazel test //...' }}
+      - name: ${{ matrix.shard && format('bazel test shard {0}/{1}', matrix.shard, matrix.shard_count) || 'bazel test //...' }}
         shell: bash
         env:
           BAZEL_TEST_SHARD: ${{ matrix.shard }}
+          BAZEL_TEST_SHARD_COUNT: ${{ matrix.shard_count }}
         run: |
           bazel_targets=()
           if [[ -z "${BAZEL_TEST_SHARD:-}" ]]; then
@@ -106,16 +140,17 @@ jobs:
             ./.github/scripts/run-bazel-query-ci.sh --output=label -- "${bazel_test_query}" \
               | LC_ALL=C sort > "${shard_tmp_dir}/targets.txt"
             : > "${shard_tmp_dir}/empty-durations.tsv"
-            for shard in 1 2; do
+            all_shard_files=()
+            for ((shard = 1; shard <= BAZEL_TEST_SHARD_COUNT; shard++)); do
               python3 .github/scripts/select_windows_bazel_targets.py \
                 --shard "${shard}" \
-                --shard-count 2 \
+                --shard-count "${BAZEL_TEST_SHARD_COUNT}" \
                 --durations "${shard_tmp_dir}/empty-durations.tsv" \
                 < "${shard_tmp_dir}/targets.txt" \
                 > "${shard_tmp_dir}/shard-${shard}.txt"
+              all_shard_files+=("${shard_tmp_dir}/shard-${shard}.txt")
             done
-            cat "${shard_tmp_dir}/shard-1.txt" "${shard_tmp_dir}/shard-2.txt" \
-              | LC_ALL=C sort > "${shard_tmp_dir}/all-selected.txt"
+            cat "${all_shard_files[@]}" | LC_ALL=C sort > "${shard_tmp_dir}/all-selected.txt"
             if ! diff -u "${shard_tmp_dir}/targets.txt" "${shard_tmp_dir}/all-selected.txt"; then
               echo "Bazel shard assignment does not cover the exact target inventory" >&2
               exit 1
@@ -150,7 +185,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: bazel-execution-logs-test-${{ matrix.target }}${{ matrix.shard && format('-shard-{0}', matrix.shard) || '' }}
+          name: bazel-execution-logs-test-${{ matrix.target }}${{ matrix.shard && format('-shard-{0}-of-{1}', matrix.shard, matrix.shard_count) || '' }}
           path: ${{ runner.temp }}/bazel-execution-logs
           if-no-files-found: ignore
 
