@@ -4,6 +4,8 @@ use dirs::home_dir;
 use std::ffi::CStr;
 #[cfg(unix)]
 use std::mem::MaybeUninit;
+#[cfg(unix)]
+use std::os::unix::ffi::OsStrExt as _;
 use std::path::PathBuf;
 
 /// Returns the path to the Codex configuration directory, which can be
@@ -226,5 +228,29 @@ mod tests {
         let home = unsafe { CStr::from_ptr(passwd.pw_dir) };
         let home = PathBuf::from(std::ffi::OsStr::from_bytes(home.to_bytes()));
         assert_eq!(resolved.as_path(), &home.join(".codex"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn default_codex_home_for_current_user_ignores_environment_overrides() {
+        let home_override = TempDir::new().expect("HOME override");
+        let codex_home_override = TempDir::new().expect("CODEX_HOME override");
+        let output = std::process::Command::new(
+            std::env::current_exe().expect("current test executable"),
+        )
+        .args([
+            "--exact",
+            "tests::default_codex_home_for_current_user_uses_passwd_home",
+            "--nocapture",
+        ])
+        .env("HOME", home_override.path())
+        .env("CODEX_HOME", codex_home_override.path())
+        .output()
+        .expect("run child test with conflicting home overrides");
+        assert!(
+            output.status.success(),
+            "child test failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }
