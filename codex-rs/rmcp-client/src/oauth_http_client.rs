@@ -204,3 +204,16 @@ impl OAuthHttpClient for OAuthHttpClientAdapter {
         Box::pin(self.execute_request(request.request, request.redirect_policy, request.timeout))
     }
 }
+
+impl<'client> oauth2::AsyncHttpClient<'client> for OAuthHttpClientAdapter {
+    type Error = OAuthHttpClientError;
+    type Future = OAuthHttpClientFuture<'client>;
+
+    fn call(&'client self, request: HttpRequest) -> Self::Future {
+        self.execute(OAuthHttpRequest {
+            request,
+            redirect_policy: OAuthHttpRedirectPolicy::Stop,
+            timeout: Some(Duration::from_secs(10)),
+        })
+    }
+}

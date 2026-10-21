@@ -17,6 +17,21 @@ pub fn find_codex_home() -> std::io::Result<AbsolutePathBuf> {
     find_codex_home_from_env(codex_home_env.as_deref())
 }
 
+/// Returns the stable default Codex home without consulting `CODEX_HOME`.
+///
+/// Credential stores shared by an OS user must use the same lock location even
+/// when individual Codex processes select different configuration homes.
+pub fn find_default_codex_home() -> std::io::Result<AbsolutePathBuf> {
+    let mut path = home_dir().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "Could not find home directory",
+        )
+    })?;
+    path.push(".codex");
+    AbsolutePathBuf::from_absolute_path_checked(path)
+}
+
 fn find_codex_home_from_env(codex_home_env: Option<&str>) -> std::io::Result<AbsolutePathBuf> {
     // Honor the `CODEX_HOME` environment variable when it is set to allow users
     // (and tests) to override the default location.
@@ -49,16 +64,7 @@ fn find_codex_home_from_env(codex_home_env: Option<&str>) -> std::io::Result<Abs
                 AbsolutePathBuf::from_absolute_path_checked(canonical)
             }
         }
-        None => {
-            let mut p = home_dir().ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "Could not find home directory",
-                )
-            })?;
-            p.push(".codex");
-            AbsolutePathBuf::from_absolute_path_checked(p)
-        }
+        None => find_default_codex_home(),
     }
 }
 

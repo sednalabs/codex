@@ -17,6 +17,7 @@ use crate::provider_auth::SecretString;
 use crate::wire;
 use anyhow::Context;
 use anyhow::Result;
+use anyhow::anyhow;
 use anyhow::bail;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -171,6 +172,54 @@ pub fn provision_api_bearer_with_manual_callback_input() -> Result<i32> {
     provision_api_bearer_with_mode(ApiBearerProvisioningMode::ManualCallbackInput)
 }
 
+/// Runs the fixed user-keyring child over the inherited root-created channel.
+pub fn run_api_profile_child(use_manual_callback_input: bool) -> Result<i32> {
+    crate::api_bearer_provisioner::run_api_profile_child(use_manual_callback_input)
+}
+
+/// Removes only the invoking user's fixed Ops API refresh profile.
+pub fn logout_api_profile() -> Result<i32> {
+    if unsafe { libc::geteuid() } == 0 {
+        return Err(provisioning_failure(ProvisioningStage::Precondition));
+    }
+    require_installed_launcher_image()
+        .map_err(|_| provisioning_failure(ProvisioningStage::Precondition))?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| provisioning_failure(ProvisioningStage::Runtime))?;
+    let oauth_dispatch = tracing::Dispatch::none();
+    tracing::dispatcher::with_default(&oauth_dispatch, || {
+        runtime.block_on(codex_rmcp_client::delete_fixed_ops_api_refresh_credential())
+    })
+    .map_err(|_| provisioning_failure(ProvisioningStage::CredentialStore))?;
+    Ok(0)
+}
+
+/// Returns the fixed HTTP policy principal when one is already installed.
+/// Provisioning may precede policy creation, but a present policy must bind
+/// the returned access token to its admitted subject.
+pub(crate) fn expected_http_principal_if_configured() -> Result<Option<Uuid>> {
+    match fs::symlink_metadata(POLICY_PATH) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+        Ok(_) => {}
+    }
+    let policy_bytes = read_root_file(Path::new(POLICY_PATH), MAX_POLICY_BYTES)?;
+    let policy: LauncherPolicy = serde_json::from_slice(&policy_bytes)?;
+    validate_policy(&policy)?;
+    http_policy_principal(&policy).map(Some)
+}
+
+fn http_policy_principal(policy: &LauncherPolicy) -> Result<Uuid> {
+    match &policy.target {
+        LauncherTarget::Http(_) => Ok(policy.principal),
+        LauncherTarget::Mcp(_) => Err(anyhow!(
+            "fixed API bearer provisioning does not match the installed MCP policy"
+        )),
+    }
+}
+
 #[derive(Clone, Copy)]
 enum ApiBearerProvisioningMode {
     Browser,
@@ -185,6 +234,7 @@ pub(crate) enum ProvisioningStage {
     OAuthCallback,
     OAuthExchange,
     TokenValidation,
+    CredentialStore,
     CredentialWrite,
 }
 
@@ -197,6 +247,7 @@ impl ProvisioningStage {
             Self::OAuthCallback => "oauth_callback",
             Self::OAuthExchange => "oauth_exchange",
             Self::TokenValidation => "token_validation",
+            Self::CredentialStore => "credential_store",
             Self::CredentialWrite => "credential_write",
         }
     }
@@ -210,6 +261,7 @@ impl From<codex_rmcp_client::FixedOAuthLoginStage> for ProvisioningStage {
             codex_rmcp_client::FixedOAuthLoginStage::Callback => Self::OAuthCallback,
             codex_rmcp_client::FixedOAuthLoginStage::Exchange => Self::OAuthExchange,
             codex_rmcp_client::FixedOAuthLoginStage::TokenValidation => Self::TokenValidation,
+            codex_rmcp_client::FixedOAuthLoginStage::CredentialStore => Self::CredentialStore,
         }
     }
 }

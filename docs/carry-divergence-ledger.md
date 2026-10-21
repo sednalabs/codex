@@ -3906,7 +3906,8 @@ a claim policy, or establish HTTP first use.
 The same measured launcher has a fixed `provision-api-bearer` mode for the
 HTTP profile. It requires interactive `sudo` through the installed root-owned
 launcher path; `SUDO_UID` is used only to run the fixed browser opener as the
-unprivileged desktop user, never as the OAuth principal. The explicit
+unprivileged desktop user and to select the invoking user's API keyring
+profile, never as the OAuth principal. The explicit
 `provision-api-bearer --no-browser` form uses the same authorization-code plus
 PKCE flow and fixed loopback redirect without opening a browser or binding a
 local callback listener; it displays the generated authorization URL for the
@@ -3916,8 +3917,16 @@ path, unique state, and unambiguous response parameters before the same PKCE
 exchange and token checks. Manual input disables terminal echo and restores the
 original terminal settings on success, error, or a handled cancellation signal.
 Both forms use the API resource and only
-`ops:write`; neither writes the persistent MCP credential store or persists a
-refresh token. Before storage, the returned token must match the fixed issuer, an audience claim
+`ops:write`; neither writes the persistent MCP credential store. The invoking
+user's direct OS keyring stores one versioned API-only refresh profile, keyed
+separately from MCP credentials and bound to its fixed issuer, client, API
+resource, scope, and canonical subject. Each later provision request refreshes
+that profile under the existing OAuth refresh lock, stores a rotated refresh
+token before returning the short-lived access token, and fails closed if the
+keyring write fails. The root process receives only a bounded access-token
+frame from the fixed unprivileged child and still validates issuer, audience,
+scope, subject, and expiry before writing the volatile systemd input. Before
+storage, the returned token must match the fixed issuer, an audience claim
 containing `ops-api`, the exact scope, UUID-shaped subject, and bounded expiry.
 The configured client-specific `ops-api` mapper works with the existing
 `ops:write` scope, whose audience mappers also supply the existing MCP
@@ -3930,7 +3939,9 @@ through source-less `LoadCredential=ops-api-bearer`. After systemd has copied it
 into the private credential directory, the launcher removes only the exact
 loaded envelope under the same lock used by provisioning. A replacement
 credential, including one with the same token but a different generation, is
-preserved. The unit remains inactive while the root claim policy is absent.
+preserved. `logout-api-profile` removes only the invoking user's API refresh
+entry and never touches the MCP profile or the volatile systemd input. The unit
+remains inactive while the root claim policy is absent.
 The mode accepts no caller-selected path, URL, client, scope, or command option
 beyond the fixed `--no-browser` switch and sends no claim.
 Provisioning failures expose only a fixed phase label; internal error text,

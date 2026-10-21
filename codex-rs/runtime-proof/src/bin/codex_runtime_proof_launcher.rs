@@ -7,11 +7,28 @@ fn main() {
             [argument] if argument.as_os_str() == std::ffi::OsStr::new("provision-api-bearer") => {
                 codex_runtime_proof::launcher::provision_api_bearer()
             }
+            [argument] if argument.as_os_str() == std::ffi::OsStr::new("logout-api-profile") => {
+                codex_runtime_proof::launcher::logout_api_profile()
+            }
             [argument, mode]
                 if argument.as_os_str() == std::ffi::OsStr::new("provision-api-bearer")
                     && mode.as_os_str() == std::ffi::OsStr::new("--no-browser") =>
             {
                 codex_runtime_proof::launcher::provision_api_bearer_with_manual_callback_input()
+            }
+            [argument, mode]
+                if argument.as_os_str()
+                    == std::ffi::OsStr::new("__runtime-proof-api-profile-child")
+                    && mode.as_os_str() == std::ffi::OsStr::new("browser") =>
+            {
+                codex_runtime_proof::launcher::run_api_profile_child(false)
+            }
+            [argument, mode]
+                if argument.as_os_str()
+                    == std::ffi::OsStr::new("__runtime-proof-api-profile-child")
+                    && mode.as_os_str() == std::ffi::OsStr::new("callback-input") =>
+            {
+                codex_runtime_proof::launcher::run_api_profile_child(true)
             }
             _ => Err(anyhow::anyhow!("unsupported fixed launcher mode")),
         }

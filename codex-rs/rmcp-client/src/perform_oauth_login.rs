@@ -42,10 +42,10 @@ use crate::utils::build_default_headers;
 use codex_config::types::AuthKeyringBackendKind;
 use codex_config::types::OAuthCredentialsStoreMode;
 
-const FIXED_API_CLAIM_SCOPE: &str = "ops:write";
-const FIXED_API_CLAIM_ISSUER: &str = "https://auth.grantmatler.com/realms/agent-ops";
-const FIXED_API_CLAIM_RESOURCE: &str = "https://ops-api.grantmatler.com";
-const FIXED_API_CLAIM_CLIENT_ID: &str = "codex-runtime-proof-api-claim";
+pub(crate) const FIXED_API_CLAIM_SCOPE: &str = "ops:write";
+pub(crate) const FIXED_API_CLAIM_ISSUER: &str = "https://auth.grantmatler.com/realms/agent-ops";
+pub(crate) const FIXED_API_CLAIM_RESOURCE: &str = "https://ops-api.grantmatler.com";
+pub(crate) const FIXED_API_CLAIM_CLIENT_ID: &str = "codex-runtime-proof-api-claim";
 const FIXED_API_CLAIM_CALLBACK_PORT: u16 = 8765;
 const FIXED_API_CLAIM_CALLBACK_URL: &str = "http://127.0.0.1:8765/callback";
 /// Maximum wait for the fixed Ops API OAuth callback in either interaction mode.
@@ -58,6 +58,7 @@ pub enum FixedOAuthLoginStage {
     Callback,
     Exchange,
     TokenValidation,
+    CredentialStore,
 }
 
 impl FixedOAuthLoginStage {
@@ -68,6 +69,7 @@ impl FixedOAuthLoginStage {
             Self::Callback => "oauth_callback",
             Self::Exchange => "oauth_exchange",
             Self::TokenValidation => "token_validation",
+            Self::CredentialStore => "credential_store",
         }
     }
 }
@@ -78,7 +80,7 @@ pub struct FixedOAuthLoginError {
 }
 
 impl FixedOAuthLoginError {
-    fn at(stage: FixedOAuthLoginStage) -> Self {
+    pub(crate) fn at(stage: FixedOAuthLoginStage) -> Self {
         Self { stage }
     }
 
@@ -145,13 +147,20 @@ impl std::fmt::Display for OAuthProviderError {
 
 impl std::error::Error for OAuthProviderError {}
 
-/// A single access token returned by a fixed authorization-code flow.
+/// The short-lived access token returned by a fixed Ops API OAuth flow.
 ///
-/// The callback state and token response stay in memory. This path never writes
-/// Codex's persistent MCP credential store and returns only the access token.
+/// Any refresh response is held zeroizing and is visible only to the fixed API
+/// profile store. This path never writes Codex's persistent MCP credential
+/// store.
 pub struct OAuthAccessToken {
     access_token: zeroize::Zeroizing<String>,
+    refresh_token: Option<zeroize::Zeroizing<String>>,
     expires_at: i64,
+}
+
+pub(crate) struct FixedOAuthRefreshResult {
+    pub(crate) access_token: std::result::Result<OAuthAccessToken, FixedOAuthLoginError>,
+    pub(crate) rotated_refresh_token: Option<zeroize::Zeroizing<String>>,
 }
 
 impl OAuthAccessToken {
@@ -162,6 +171,23 @@ impl OAuthAccessToken {
     pub fn expires_at(&self) -> i64 {
         self.expires_at
     }
+
+    pub(crate) fn refresh_token(&self) -> Option<&str> {
+        self.refresh_token.as_deref().map(String::as_str)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        access_token: impl Into<String>,
+        refresh_token: Option<impl Into<String>>,
+        expires_at: i64,
+    ) -> Self {
+        Self {
+            access_token: zeroize::Zeroizing::new(access_token.into()),
+            refresh_token: refresh_token.map(|token| zeroize::Zeroizing::new(token.into())),
+            expires_at,
+        }
+    }
 }
 
 /// Runs the fixed Ops API loopback authorization-code flow without storing
@@ -170,8 +196,8 @@ impl OAuthAccessToken {
 /// The issuer, API resource, client ID, redirect, and `ops:write` scope are
 /// fixed in source. The flow requires the exact Keycloak realm endpoints,
 /// authorization-code plus PKCE S256, a loopback callback, and a bounded
-/// Bearer token lifetime. Any refresh response stays in memory only and is
-/// discarded when the flow returns.
+/// Bearer token lifetime. The refresh token is returned only to the fixed
+/// API-profile store so it can be persisted in the invoking user's keyring.
 pub async fn perform_fixed_ops_api_access_token_login(
     open_authorization_url: impl FnOnce(&str) -> Result<()>,
 ) -> std::result::Result<OAuthAccessToken, FixedOAuthLoginError> {
@@ -207,6 +233,81 @@ pub async fn perform_fixed_ops_api_access_token_login_with_callback_input(
         FixedOAuthInteraction::CallbackInput(Box::new(read_callback_url)),
     )
     .await
+}
+
+/// Exchanges the fixed API profile's stored refresh token for one short-lived
+/// access token. The request deliberately omits `scope`: it retains the
+/// authorization grant and adds only the fixed API resource indicator.
+pub(crate) async fn perform_fixed_ops_api_access_token_refresh(
+    refresh_token: &str,
+) -> std::result::Result<FixedOAuthRefreshResult, FixedOAuthLoginError> {
+    if refresh_token.is_empty()
+        || refresh_token.len() > 16 * 1024
+        || refresh_token.chars().any(char::is_control)
+    {
+        return Err(FixedOAuthLoginError::at(FixedOAuthLoginStage::Precondition));
+    }
+
+    let http_client = HttpClientBuilder::new()
+        .without_redirects()
+        .without_retries()
+        .without_request_logging()
+        .connect_timeout(Duration::from_secs(3))
+        .build_direct()
+        .map_err(|_| FixedOAuthLoginError::at(FixedOAuthLoginStage::Discovery))?;
+    let oauth_http_client = OAuthHttpClientAdapter::new_direct_with_max_timeout(
+        http_client,
+        HeaderMap::new(),
+        Duration::from_secs(10),
+    );
+    let discovery_manager = AuthorizationManager::new_with_oauth_http_client(
+        FIXED_API_CLAIM_ISSUER,
+        Arc::new(oauth_http_client.clone()),
+    )
+    .await
+    .map_err(|_| FixedOAuthLoginError::at(FixedOAuthLoginStage::Discovery))?;
+    let metadata = discover_metadata(&discovery_manager)
+        .await
+        .map_err(|_| FixedOAuthLoginError::at(FixedOAuthLoginStage::Discovery))?;
+    validate_fixed_oauth_metadata(&metadata, FIXED_API_CLAIM_ISSUER)
+        .map_err(|_| FixedOAuthLoginError::at(FixedOAuthLoginStage::Discovery))?;
+
+    let response = exchange_fixed_api_refresh_at_endpoint(
+        &metadata.token_endpoint,
+        refresh_token,
+        &oauth_http_client,
+    )
+    .await?;
+    let rotated_refresh_token = response
+        .refresh_token()
+        .map(|token| zeroize::Zeroizing::new(token.secret().to_string()));
+    let access_token = access_token_from_response(response, &[FIXED_API_CLAIM_SCOPE.to_string()])
+        .map_err(|_| FixedOAuthLoginError::at(FixedOAuthLoginStage::TokenValidation));
+    Ok(FixedOAuthRefreshResult {
+        access_token,
+        rotated_refresh_token,
+    })
+}
+
+async fn exchange_fixed_api_refresh_at_endpoint(
+    token_endpoint: &str,
+    refresh_token: &str,
+    oauth_http_client: &OAuthHttpClientAdapter,
+) -> std::result::Result<oauth2::basic::BasicTokenResponse, FixedOAuthLoginError> {
+    let token_url = oauth2::TokenUrl::new(token_endpoint.to_string())
+        .map_err(|_| FixedOAuthLoginError::at(FixedOAuthLoginStage::Discovery))?;
+    let oauth_client = oauth2::basic::BasicClient::new(oauth2::ClientId::new(
+        FIXED_API_CLAIM_CLIENT_ID.to_string(),
+    ))
+    .set_token_uri(token_url);
+    let refresh_token = oauth2::RefreshToken::new(refresh_token.to_string());
+    let response = oauth_client
+        .exchange_refresh_token(&refresh_token)
+        .add_extra_param("resource", FIXED_API_CLAIM_RESOURCE)
+        .request_async(&oauth_http_client)
+        .await
+        .map_err(|_| FixedOAuthLoginError::at(FixedOAuthLoginStage::Exchange))?;
+    Ok(response)
 }
 
 type AuthorizationUrlOpener<'a> = Box<dyn FnOnce(&str) -> Result<()> + 'a>;
@@ -528,7 +629,7 @@ fn validate_fixed_oauth_metadata(metadata: &AuthorizationMetadata, issuer_url: &
 }
 
 fn access_token_from_response(
-    response: rmcp::transport::auth::OAuthTokenResponse,
+    response: impl oauth2::TokenResponse,
     requested_scopes: &[String],
 ) -> Result<OAuthAccessToken> {
     if !response
@@ -572,6 +673,9 @@ fn access_token_from_response(
         .ok_or_else(|| anyhow!("fixed OAuth expiry is outside the supported range"))?;
     Ok(OAuthAccessToken {
         access_token: zeroize::Zeroizing::new(access_token.to_string()),
+        refresh_token: response
+            .refresh_token()
+            .map(|token| zeroize::Zeroizing::new(token.secret().to_string())),
         expires_at,
     })
 }
@@ -1304,12 +1408,16 @@ fn append_query_param(url: &str, key: &str, value: Option<&str>) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::sync::Arc;
+    use std::sync::Mutex;
     use std::time::Duration;
 
     use axum::Json;
     use axum::Router;
+    use axum::body::Bytes;
     use axum::routing::get;
+    use axum::routing::post;
     use codex_exec_server::RouteAwareHttpClient;
     use codex_http_client::HttpClientFactory;
     use codex_http_client::OutboundProxyPolicy;
@@ -1335,6 +1443,7 @@ mod tests {
     use super::append_query_param;
     use super::callback_id_from_server_url;
     use super::callback_path_from_redirect_uri;
+    use super::exchange_fixed_api_refresh_at_endpoint;
     use super::fixed_authorization_url;
     use super::parse_oauth_callback;
     use super::parse_pasted_oauth_callback;
@@ -1380,6 +1489,92 @@ mod tests {
         });
 
         base_url
+    }
+
+    #[tokio::test]
+    async fn fixed_api_refresh_sends_only_the_fixed_resource_without_scope_expansion() {
+        let received = Arc::new(Mutex::new(None::<HashMap<String, String>>));
+        let received_by_handler = Arc::clone(&received);
+        let app = Router::new().route(
+            "/oauth/token",
+            post(move |body: Bytes| {
+                let received = Arc::clone(&received_by_handler);
+                async move {
+                    let fields = url::form_urlencoded::parse(&body)
+                        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+                        .collect::<HashMap<_, _>>();
+                    *received.lock().unwrap() = Some(fields);
+                    Json(json!({
+                        "access_token": "header.payload.signature",
+                        "token_type": "Bearer",
+                        "expires_in": 300,
+                        "refresh_token": "rotated-refresh-token"
+                    }))
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind refresh endpoint");
+        let address = listener.local_addr().expect("refresh endpoint address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve refresh endpoint");
+        });
+        let http_client = HttpClientBuilder::new()
+            .without_redirects()
+            .without_retries()
+            .without_request_logging()
+            .build_direct()
+            .expect("build direct test HTTP client");
+        let oauth_http_client = OAuthHttpClientAdapter::new_direct_with_max_timeout(
+            http_client,
+            HeaderMap::new(),
+            Duration::from_secs(2),
+        );
+
+        let result = exchange_fixed_api_refresh_at_endpoint(
+            &format!("http://{address}/oauth/token"),
+            "existing-refresh-token",
+            &oauth_http_client,
+        )
+        .await
+        .expect("refresh fixed API profile");
+
+        assert_eq!(result.access_token().secret(), "header.payload.signature");
+        assert_eq!(
+            result.refresh_token().map(|token| token.secret().as_str()),
+            Some("rotated-refresh-token")
+        );
+        let fields = received
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("token endpoint request");
+        assert_eq!(
+            fields.get("grant_type").map(String::as_str),
+            Some("refresh_token")
+        );
+        assert_eq!(
+            fields.get("client_id").map(String::as_str),
+            Some(FIXED_API_CLAIM_CLIENT_ID)
+        );
+        assert_eq!(
+            fields.get("refresh_token").map(String::as_str),
+            Some("existing-refresh-token")
+        );
+        assert_eq!(
+            fields.get("resource").map(String::as_str),
+            Some(FIXED_API_CLAIM_RESOURCE)
+        );
+        assert!(!fields.contains_key("scope"));
+        assert!(
+            !fields
+                .values()
+                .any(|value| value.contains("offline_access"))
+        );
+        server.abort();
     }
 
     #[tokio::test]
@@ -1631,18 +1826,19 @@ mod tests {
     }
 
     #[test]
-    fn fixed_access_token_extracts_only_bounded_bearer_and_drops_refresh_response() {
+    fn fixed_access_token_extracts_bounded_access_and_refresh_tokens() {
         let response: rmcp::transport::auth::OAuthTokenResponse = serde_json::from_value(json!({
             "access_token": "bounded-test-token",
             "token_type": "Bearer",
             "expires_in": 300,
             "scope": "ops:write",
-            "refresh_token": "must-not-be-returned-or-persisted"
+            "refresh_token": "fixed-api-refresh-token"
         }))
         .expect("parse OAuth token response");
         let token = access_token_from_response(response, &[FIXED_API_CLAIM_SCOPE.to_string()])
-            .expect("extract the access token only");
+            .expect("extract bounded fixed API tokens");
         assert_eq!(token.access_token(), "bounded-test-token");
+        assert_eq!(token.refresh_token(), Some("fixed-api-refresh-token"));
         assert!(token.expires_at() > 0);
 
         let response = serde_json::from_value(json!({
