@@ -383,6 +383,7 @@ async fn tool_result_history_keeps_originating_model_across_switch_and_replay() 
         .await?;
     let mut raw_outputs = Vec::new();
     for call_id in ["call-a", "call-b"] {
+        eprintln!("diagnostic_phase=await_dynamic_tool_call_request");
         let call = wait_for_event_match(&test.codex, |event| match event {
             EventMsg::DynamicToolCallRequest(request) => Some(request.clone()),
             _ => None,
@@ -410,6 +411,7 @@ async fn tool_result_history_keeps_originating_model_across_switch_and_replay() 
                 response: response.clone(),
             })
             .await?;
+        eprintln!("diagnostic_phase=await_raw_function_call_output");
         raw_outputs.push(
             wait_for_event_match(&test.codex, |event| match event {
                 EventMsg::RawResponseItem(event)
@@ -422,6 +424,7 @@ async fn tool_result_history_keeps_originating_model_across_switch_and_replay() 
             .await,
         );
     }
+    eprintln!("diagnostic_phase=await_pause_request_user_input");
     let paused_request = wait_for_event_match(&test.codex, |event| match event {
         EventMsg::RequestUserInput(request) => Some(request.clone()),
         _ => None,

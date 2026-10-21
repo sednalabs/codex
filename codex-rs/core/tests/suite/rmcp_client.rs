@@ -3116,7 +3116,7 @@ async fn stdio_image_responses_resize_large_image() -> anyhow::Result<()> {
         .await?;
     let mut saw_tool_call_begin = false;
     let mut saw_tool_call_end = false;
-    wait_for_event(&fixture.codex, |ev| {
+    let completion = wait_for_event(&fixture.codex, |ev| {
         if matches!(ev, EventMsg::McpToolCallBegin(_)) && !saw_tool_call_begin {
             saw_tool_call_begin = true;
             eprintln!("diagnostic_phase=mcp_tool_call_begin");
@@ -3128,11 +3128,20 @@ async fn stdio_image_responses_resize_large_image() -> anyhow::Result<()> {
         if matches!(ev, EventMsg::TurnComplete(_)) {
             eprintln!("diagnostic_phase=turn_complete");
             true
+        } else if matches!(ev, EventMsg::Error(_)) {
+            eprintln!("diagnostic_phase=completion_error_event");
+            true
         } else {
             false
         }
     })
     .await;
+    if matches!(completion, EventMsg::Error(_)) {
+        anyhow::bail!(
+            "diagnostic_phase=completion_error_event final_mock_received_count={}",
+            final_mock.requests().len()
+        );
+    }
 
     let output_item = final_mock.single_request().function_call_output(call_id);
     assert_eq!(output_item["call_id"], call_id);
