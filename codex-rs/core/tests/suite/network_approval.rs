@@ -3247,14 +3247,9 @@ async fn agent_started_proxy_denies_brokered_provider_alias() -> Result<()> {
     let call_id = "exec-brokered-provider-alias";
     let mut args = network_exec_args(command);
     args["yield_time_ms"] = json!(30_000);
-    let responses = mount_exec_network_turn(
-        &server,
-        "resp-brokered-provider-alias",
-        call_id,
-        args,
-    )
-    .await
-    .map_err(|_| anyhow::anyhow!("stage=mount_turn_failed"))?;
+    let responses = mount_exec_network_turn(&server, "resp-brokered-provider-alias", call_id, args)
+        .await
+        .map_err(|_| anyhow::anyhow!("stage=mount_turn_failed"))?;
     test.codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
             text: "read the brokered credential".into(),
@@ -3270,7 +3265,10 @@ async fn agent_started_proxy_denies_brokered_provider_alias() -> Result<()> {
     {
         EventMsg::TurnComplete(_) => {}
         EventMsg::Error(error) => {
-            panic!("stage=turn_error codex_error_info={:?}", error.codex_error_info)
+            panic!(
+                "stage=turn_error codex_error_info={:?}",
+                error.codex_error_info
+            )
         }
         _ => unreachable!("event predicate only accepts error or turn completion"),
     }
