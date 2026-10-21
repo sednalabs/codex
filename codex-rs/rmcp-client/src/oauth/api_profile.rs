@@ -63,7 +63,7 @@ pub async fn perform_fixed_ops_api_access_token_with_refresh(
     read_callback_url: fn(&str) -> anyhow::Result<String>,
     use_manual_callback_input: bool,
 ) -> std::result::Result<OAuthAccessToken, FixedOAuthLoginError> {
-    let lock_home = codex_utils_home_dir::find_default_codex_home()
+    let lock_home = codex_utils_home_dir::find_default_codex_home_for_current_user()
         .map_err(|_| FixedOAuthLoginError::at(FixedOAuthLoginStage::CredentialStore))?;
     let _lock = RefreshCredentialLock::acquire_for_server_in(
         &lock_home,
@@ -156,7 +156,8 @@ fn persist_new_profile<K: KeyringStore>(
 
 /// Removes only the fixed runtime-proof API keyring entry for this user.
 pub async fn delete_fixed_ops_api_refresh_credential() -> Result<bool> {
-    let lock_home = codex_utils_home_dir::find_default_codex_home().map_err(anyhow::Error::from)?;
+    let lock_home = codex_utils_home_dir::find_default_codex_home_for_current_user()
+        .map_err(anyhow::Error::from)?;
     let _lock = RefreshCredentialLock::acquire_for_server_in(
         &lock_home,
         "codex-runtime-proof-api-claim",
