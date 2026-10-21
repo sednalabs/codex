@@ -3663,30 +3663,31 @@ def _action_descriptors_for_snapshot(snapshot):
 
     for action in action_list:
         if action == "diagnose_run_failure":
-            primary_job = _dict_or_empty(failed_jobs[0] if failed_jobs else {})
-            job_id = primary_job.get("id")
             run_status = str(run.get("status") or "")
             failure_phase = "terminal_failure" if run_status == "completed" else "in_progress_failed_job"
-            logs_available = any(
-                source.get("kind") == "failed_job_log" and (job_id is None or source.get("job_id") == job_id)
-                for source in log_sources
-                if isinstance(source, dict)
-            )
-            fingerprint_parts = [action, f"run:{run_id or 'unknown'}", f"phase:{failure_phase}"]
-            if job_id:
-                fingerprint_parts.append(f"job:{job_id}")
-            descriptors.append(
-                {
-                    "action": action,
-                    "fingerprint": ":".join(fingerprint_parts),
-                    "run_id": run_id,
-                    "run_url": run.get("url"),
-                    "job_id": job_id,
-                    "job_name": primary_job.get("name"),
-                    "failure_phase": failure_phase,
-                    "logs_available": bool(logs_available),
-                }
-            )
+            for failed_job_value in failed_jobs or [{}]:
+                failed_job = _dict_or_empty(failed_job_value)
+                job_id = failed_job.get("id")
+                logs_available = any(
+                    source.get("kind") == "failed_job_log" and (job_id is None or source.get("job_id") == job_id)
+                    for source in log_sources
+                    if isinstance(source, dict)
+                )
+                fingerprint_parts = [action, f"run:{run_id or 'unknown'}", f"phase:{failure_phase}"]
+                if job_id:
+                    fingerprint_parts.append(f"job:{job_id}")
+                descriptors.append(
+                    {
+                        "action": action,
+                        "fingerprint": ":".join(fingerprint_parts),
+                        "run_id": run_id,
+                        "run_url": run.get("url"),
+                        "job_id": job_id,
+                        "job_name": failed_job.get("name"),
+                        "failure_phase": failure_phase,
+                        "logs_available": bool(logs_available),
+                    }
+                )
             continue
         if action == "stop_run_appearance_timeout":
             descriptors.append(

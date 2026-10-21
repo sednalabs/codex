@@ -1668,6 +1668,82 @@ class GeminiWatcherTests(unittest.TestCase):
         self.assertEqual(snapshot["actions"], ["idle"])
         self.assertEqual(snapshot["suppressed_action_fingerprints"], [fingerprint])
 
+    def test_acknowledged_failed_job_does_not_hide_new_failed_job(self):
+        snapshot = {
+            "actions": ["diagnose_run_failure"],
+            "target": {"kind": MODULE.TARGET_KIND_RUN_ID, "run_id": 42},
+            "run": {"id": 42, "status": "in_progress"},
+            "failed_jobs": [{"id": 501, "name": "Tests — ubuntu"}],
+            "diagnostic_evidence": {"log_sources": []},
+        }
+        acknowledged_fingerprint = MODULE._action_descriptors_for_snapshot(snapshot)[0]["fingerprint"]
+
+        unchanged = MODULE._apply_acknowledged_actions(dict(snapshot), [acknowledged_fingerprint])
+        self.assertEqual(unchanged["actions"], ["idle"])
+        self.assertEqual(unchanged["suppressed_action_fingerprints"], [acknowledged_fingerprint])
+
+        with_new_failure = {
+            **snapshot,
+            "failed_jobs": [
+                {"id": 501, "name": "Tests — ubuntu"},
+                {"id": 502, "name": "Clippy — ubuntu"},
+            ],
+        }
+        surfaced = MODULE._apply_acknowledged_actions(with_new_failure, [acknowledged_fingerprint])
+        self.assertEqual(surfaced["actions"], ["diagnose_run_failure"])
+        self.assertEqual([trigger["job_id"] for trigger in surfaced["action_triggers"]], [502])
+        self.assertEqual(
+            surfaced["suppressed_action_fingerprints"],
+            [acknowledged_fingerprint],
+        )
+
+    def test_watch_until_terminal_returns_after_in_progress_failure_ack(self):
+        in_progress_snapshot = {
+            "actions": ["diagnose_run_failure"],
+            "target": {"kind": MODULE.TARGET_KIND_RUN_ID, "run_id": 42},
+            "run": {"id": 42, "status": "in_progress"},
+            "failed_jobs": [{"id": 501, "name": "Tests — ubuntu"}],
+            "diagnostic_evidence": {"log_sources": []},
+        }
+        acknowledged_fingerprint = MODULE._action_descriptors_for_snapshot(in_progress_snapshot)[0]["fingerprint"]
+        in_progress_payload = {
+            "targets": [MODULE._apply_acknowledged_actions(in_progress_snapshot, [acknowledged_fingerprint])],
+            "summary": {"targets_idle": 1},
+            "actions": ["idle"],
+        }
+        terminal_snapshot = {
+            **in_progress_snapshot,
+            "actions": ["diagnose_run_failure"],
+            "run": {"id": 42, "status": "completed"},
+        }
+        terminal_snapshot = MODULE._apply_acknowledged_actions(terminal_snapshot, [acknowledged_fingerprint])
+        terminal_payload = {
+            "targets": [terminal_snapshot],
+            "summary": {"targets_idle": 0},
+            "actions": terminal_snapshot["actions"],
+        }
+        args = types.SimpleNamespace(
+            require_terminal_run=True,
+            watch_until_terminal=True,
+            retry_settle_seconds=0,
+            wait_for="first_action",
+            poll_seconds=1,
+            ack_action=[acknowledged_fingerprint],
+            verbose_details=False,
+        )
+
+        with patch.object(MODULE, "build_targets", return_value=[{"kind": "dummy"}]), patch.object(
+            MODULE,
+            "resolve_snapshot",
+            side_effect=[in_progress_payload, terminal_payload],
+        ), patch.object(MODULE, "emit") as emit, patch.object(MODULE.time, "sleep", return_value=None) as sleep:
+            MODULE.watch_until_action(args, "sednalabs/codex")
+
+        emit.assert_called_once_with(terminal_payload)
+        self.assertEqual(terminal_payload["actions"], ["diagnose_run_failure"])
+        self.assertEqual(terminal_payload["targets"][0]["action_triggers"][0]["failure_phase"], "terminal_failure")
+        sleep.assert_called_once_with(1)
+
     def test_skipped_gemini_diagnosis_is_not_an_error_state(self):
         status = MODULE._build_diagnosis_status(
             actions=["diagnose_run_failure"],
