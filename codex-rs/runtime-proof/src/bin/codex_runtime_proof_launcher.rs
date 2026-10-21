@@ -21,14 +21,18 @@ fn main() {
                     == std::ffi::OsStr::new("__runtime-proof-api-profile-child")
                     && mode.as_os_str() == std::ffi::OsStr::new("browser") =>
             {
-                codex_runtime_proof::launcher::run_api_profile_child(false)
+                codex_runtime_proof::launcher::run_api_profile_child(
+                    /*use_manual_callback_input*/ false,
+                )
             }
             [argument, mode]
                 if argument.as_os_str()
                     == std::ffi::OsStr::new("__runtime-proof-api-profile-child")
                     && mode.as_os_str() == std::ffi::OsStr::new("callback-input") =>
             {
-                codex_runtime_proof::launcher::run_api_profile_child(true)
+                codex_runtime_proof::launcher::run_api_profile_child(
+                    /*use_manual_callback_input*/ true,
+                )
             }
             _ => Err(anyhow::anyhow!("unsupported fixed launcher mode")),
         }
