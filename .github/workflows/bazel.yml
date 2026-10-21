@@ -102,7 +102,7 @@ jobs:
           else
             shard_tmp_dir="$(mktemp -d)"
             trap 'rm -rf -- "${shard_tmp_dir}"' EXIT
-            bazel_test_query='(//... except //third_party/v8:all except //codex-rs/v8-poc:v8-poc-unit-tests except //bazel/rules/testing/wine:wine-test-support-unit-tests except //codex-rs/core/tests/remote_env_windows:smoke-test) except attr(tags, "[\[ ]manual[ ,\]]", //...)'
+            bazel_test_query='(//... except //third_party/v8:all except //codex-rs/v8-poc:v8-poc-unit-tests except //bazel/rules/testing/wine:wine-test-support-unit-tests except //codex-rs/core/tests/remote_env_windows:smoke-test) except attr(tags, "(\[|, )manual(,|\])", //...)'
             ./.github/scripts/run-bazel-query-ci.sh --output=label -- "${bazel_test_query}" \
               | LC_ALL=C sort > "${shard_tmp_dir}/targets.txt"
             : > "${shard_tmp_dir}/empty-durations.tsv"

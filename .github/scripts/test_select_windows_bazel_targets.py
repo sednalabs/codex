@@ -1,3 +1,4 @@
+import re
 import subprocess
 import sys
 import tempfile
@@ -10,6 +11,25 @@ from select_windows_bazel_targets import read_durations
 
 
 class SelectWindowsBazelTargetsTest(unittest.TestCase):
+    def test_linux_query_excludes_only_the_exact_manual_tag(self) -> None:
+        workflow = Path(__file__).parents[1] / "workflows" / "bazel.yml"
+        match = re.search(
+            r'attr\(tags, "([^"]+)", //\.\.\.\)', workflow.read_text(encoding="utf-8")
+        )
+        self.assertIsNotNone(match)
+        pattern = match.group(1)
+        for tags in ("[manual]", "[manual, integration]", "[integration, manual]"):
+            with self.subTest(tags=tags):
+                self.assertIsNotNone(re.search(pattern, tags))
+        for tags in (
+            "[]",
+            "[manual integration]",
+            "[integration manual]",
+            "[not-manual]",
+        ):
+            with self.subTest(tags=tags):
+                self.assertIsNone(re.search(pattern, tags))
+
     def test_partition_keeps_non_test_roots_and_test_labels_once(self) -> None:
         targets = [
             "//codex-rs/core:library",
