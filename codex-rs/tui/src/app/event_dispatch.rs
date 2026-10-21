@@ -3670,6 +3670,7 @@ impl App {
                 }
             }
         }
+        codex_browser_computer_use::shutdown_browser_sessions().await;
         match mode {
             ExitMode::ShutdownFirst | ExitMode::ShutdownAfterInterrupt => {
                 // Mark the thread we are explicitly shutting down for exit so

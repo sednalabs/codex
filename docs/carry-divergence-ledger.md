@@ -45,6 +45,20 @@ Browser routing. Remove this compatibility adapter when these historical
 session declarations are no longer supported, or upstream provides equivalent
 persisted-session normalization.
 
+## Browser same-page continuity
+
+The native Playwright provider retains one thread/profile actor instead of
+reopening a context from its URL on every request. Observe preserves unsaved
+page state; cancellation never replays an uncertain action. Thread close and
+frontend shutdown request cleanup, and a retry waits for confirmed release.
+Existing profiles require a compatible-binary cutover. Unknown, legacy or
+unconfirmed locks remain fail-closed; age alone never authorizes removing them.
+Known-owner graceful cleanup does not establish recovery after a crash or
+indefinite lock availability. Hosted synthetic Browser, Exec and TUI consumers
+cover continuity and lifecycle behavior, not live-profile acceptance. Remove
+this carry when upstream supplies equivalent profile ownership and lifecycle
+semantics without losing typed images or cancellation boundaries.
+
 ## Per-server MCP protocol preference
 
 The `mcp-per-server-protocol-selection` carry exposes `protocol_mode = "legacy"`
