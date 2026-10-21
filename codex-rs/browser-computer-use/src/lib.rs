@@ -955,7 +955,36 @@ exports.chromium = {
             json!({"action":"type","selector":"#note","text":"unsaved draft"}),
         )
         .await;
-        assert!(typed.success);
+        let typed_failure = typed
+            .content_items
+            .iter()
+            .find_map(|item| match item {
+                DynamicToolCallOutputContentItem::InputText { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .unwrap_or("Browser response omitted text content.");
+        let fixture_root = temp.path().to_string_lossy();
+        let typed_failure = typed_failure
+            .replace(fixture_root.as_ref(), "<fixture-root>")
+            .chars()
+            .take(500)
+            .collect::<String>();
+        assert!(typed.success, "typed Browser failure: {typed_failure}");
+
+        let clicked = call(
+            &manager,
+            &config,
+            "thread-a",
+            TOOL_BROWSER_STEP,
+            json!({
+                "action":"click",
+                "selector":"#note",
+                "click_count":2,
+                "delay_ms":0
+            }),
+        )
+        .await;
+        assert!(clicked.success);
 
         let continued = call(
             &manager,

@@ -892,6 +892,18 @@ function timeoutMs(request) {
   return numberOrDefault(request.arguments?.timeout_secs, 30) * 1000;
 }
 
+function nonNegativeIntegerOrUndefined(value) {
+  return Number.isFinite(value) && Number.isInteger(value) && value >= 0
+    ? value
+    : undefined;
+}
+
+function positiveIntegerOrUndefined(value) {
+  return Number.isFinite(value) && Number.isInteger(value) && value > 0
+    ? value
+    : undefined;
+}
+
 function requiredNumber(value, field) {
   if (typeof value[field] !== "number") {
     throw new Error(`${field} is required`);
