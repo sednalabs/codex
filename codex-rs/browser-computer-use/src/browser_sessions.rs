@@ -281,6 +281,13 @@ impl BrowserSessionManager {
                 }
                 slot_state.actor = Some(new_actor);
                 slot_state.config = Some(config.clone());
+                let actor = slot_state
+                    .actor
+                    .as_ref()
+                    .expect("actor created above")
+                    .clone();
+                drop(slot_state);
+                break actor;
             }
             let actor = slot_state
                 .actor
@@ -538,7 +545,6 @@ async fn spawn_actor(
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
-        .await
         .map_err(|err| format!("failed to start browser provider `{}`: {err}", config.node))?;
     let stdin = child
         .stdin
