@@ -590,7 +590,7 @@ fn open_authorization_url_as_invoking_user(authorization_url: &str) -> Result<()
             if already_invoking_user {
                 return Ok(());
             }
-            if unsafe { libc::geteuid() } != 0 {
+            if libc::geteuid() != 0 {
                 return Err(std::io::Error::from_raw_os_error(libc::EPERM));
             }
             if libc::setgroups(0, std::ptr::null()) != 0
