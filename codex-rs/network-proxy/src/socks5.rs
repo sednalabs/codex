@@ -964,10 +964,11 @@ mod tests {
             mitm: true,
             ..NetworkProxyConfig::default()
         };
-        settings.set_allowed_domains(vec!["example.com".to_string()]);
+        // Keep this MITM-selection fixture independent of ambient DNS behavior.
+        settings.set_allowed_domains(vec!["8.8.8.8".to_string()]);
         let state = state_for_settings(settings);
         let mut request =
-            TcpRequest::new(HostWithPort::try_from("example.com:443").expect("valid authority"));
+            TcpRequest::new(HostWithPort::try_from("8.8.8.8:443").expect("valid authority"));
         request.extensions_mut().insert(state.clone());
 
         let result = handle_socks5_tcp(
