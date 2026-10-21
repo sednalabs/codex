@@ -214,9 +214,7 @@ impl BrowserSessionManager {
             let action = {
                 let mut slot_state = slot.lock().await;
                 if slot_state.close_epoch != invocation_epoch {
-                    return Err(
-                        "Browser thread closed before its request could start.".to_string(),
-                    );
+                    return Err("Browser thread closed before its request could start.".to_string());
                 }
                 if slot_state.unavailable {
                     return Err(
