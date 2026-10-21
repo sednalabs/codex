@@ -4801,7 +4801,7 @@ mod tests {
             json!("Perform bounded browser actions, then return a fresh browser screenshot.");
         step["capability"]["mutationClass"] = json!("mutating");
         let mut value = serde_json::to_value(SessionMeta::default())?;
-        value["dynamic_tools"] = json!([observe.clone(), step]);
+        value["dynamic_tools"] = json!([observe, step]);
         let meta: SessionMeta = serde_json::from_value(value.clone())?;
         let tools = meta.dynamic_tools.as_ref().expect("browser tools");
         assert!(matches!(
