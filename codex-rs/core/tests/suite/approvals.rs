@@ -856,6 +856,28 @@ async fn wait_for_completion_without_approval(test: &TestCodex) {
     }
 }
 
+async fn wait_for_flat_shell_snapshot_completion(test: &TestCodex) {
+    eprintln!("stage=flat_shell_snapshot_completion_wait");
+    let event = wait_for_event(&test.codex, |event| {
+        matches!(
+            event,
+            EventMsg::Error(_) | EventMsg::ExecApprovalRequest(_) | EventMsg::TurnComplete(_)
+        )
+    })
+    .await;
+
+    match event {
+        EventMsg::TurnComplete(_) => {}
+        EventMsg::Error(error) => {
+            panic!("shell completion error: {:?}", error.codex_error_info)
+        }
+        EventMsg::ExecApprovalRequest(_) => {
+            panic!("unexpected approval request while waiting for shell completion")
+        }
+        _ => unreachable!("event predicate only accepts completion, error, or approval"),
+    }
+}
+
 async fn wait_for_completion(test: &TestCodex) {
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
@@ -3373,7 +3395,11 @@ GH_TOKEN = "{REAL_GITHUB_TOKEN}"
         approval_policy,
     )
     .await?;
-    wait_for_completion_without_approval(&test).await;
+    if matches!(mode, "flat_managed" | "flat_feature") {
+        wait_for_flat_shell_snapshot_completion(&test).await;
+    } else {
+        wait_for_completion_without_approval(&test).await;
+    }
 
     let output = responses.requests()[1].function_call_output(call_id);
     if matches!(mode, "disabled" | "failed") {

@@ -1607,7 +1607,11 @@ async fn denying_network_policy_amendment_persists_and_blocks_request() -> Resul
         .iter()
         .find_map(|request| request.function_call_output_text("network-deny-amendment"))
         .context("expected denied network tool output")?;
-    assert!(output.contains("rejected by user"));
+    assert!(
+        output.contains("rejected by user"),
+        "network_output_category={}",
+        network_output_category(output)
+    );
     Ok(())
 }
 
@@ -1660,7 +1664,11 @@ async fn failed_network_policy_amendment_denies_request_and_does_not_approve_hos
         .iter()
         .find_map(|request| request.function_call_output_text("network-failed-amendment-1"))
         .context("expected the failed policy amendment to reject the network request")?;
-    assert!(denied_output.contains("blocked by policy"));
+    assert!(
+        denied_output.contains("blocked by policy"),
+        "network_output_category={}",
+        network_output_category(denied_output)
+    );
     mount_exec_network_turn(
         &server,
         "resp-network-failed-amendment-2",
@@ -3239,20 +3247,46 @@ async fn agent_started_proxy_denies_brokered_provider_alias() -> Result<()> {
     let call_id = "exec-brokered-provider-alias";
     let mut args = network_exec_args(command);
     args["yield_time_ms"] = json!(30_000);
-    let responses =
-        mount_exec_network_turn(&server, "resp-brokered-provider-alias", call_id, args).await?;
-    test.submit_text_turn("read the brokered credential")
-        .await?;
+    let responses = mount_exec_network_turn(
+        &server,
+        "resp-brokered-provider-alias",
+        call_id,
+        args,
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("stage=mount_turn_failed"))?;
+    test.codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "read the brokered credential".into(),
+            text_elements: Vec::new(),
+        }]))
+        .await
+        .map_err(|_| anyhow::anyhow!("stage=start_turn_failed"))?;
+    eprintln!("stage=waiting_for_turn_complete");
+    match wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::Error(_) | EventMsg::TurnComplete(_))
+    })
+    .await
+    {
+        EventMsg::TurnComplete(_) => {}
+        EventMsg::Error(error) => {
+            panic!("stage=turn_error codex_error_info={:?}", error.codex_error_info)
+        }
+        _ => unreachable!("event predicate only accepts error or turn completion"),
+    }
     let output = responses
         .function_call_output_text(call_id)
-        .context("agent did not return command output")?;
-    assert!(output.contains("ACTIVE:1"), "{output}");
-    assert!(!output.contains(REAL_CREDENTIAL));
+        .context("stage=missing_command_output")?;
+    assert!(output.contains("ACTIVE:1"), "stage=broker_not_active");
+    assert!(
+        !output.contains(REAL_CREDENTIAL),
+        "stage=real_credential_leaked"
+    );
     let token = output
         .lines()
         .find_map(|line| line.strip_prefix("BROKERED:"))
-        .context("agent did not expose its brokered dummy")?;
-    assert!(token.starts_with("alias_"));
+        .context("stage=missing_brokered_token")?;
+    assert!(token.starts_with("alias_"), "stage=invalid_brokered_token");
 
     // Probe after the command exits so the denial cannot interrupt the tool call.
     let response = tokio::time::timeout(Duration::from_secs(/*secs*/ 5), async {
@@ -3272,10 +3306,20 @@ async fn agent_started_proxy_denies_brokered_provider_alias() -> Result<()> {
         Ok::<_, std::io::Error>(response)
     })
     .await
-    .context("alias denial did not finish")??;
-    assert!(response.starts_with("HTTP/1.1 403"), "{response}");
-    assert!(response.contains("blocked-by-mitm-hook"), "{response}");
-    assert!(!response.contains(REAL_CREDENTIAL));
+    .context("stage=proxy_probe_timeout")?
+    .map_err(|_| anyhow::anyhow!("stage=proxy_probe_io_error"))?;
+    assert!(
+        response.starts_with("HTTP/1.1 403"),
+        "stage=proxy_probe_not_forbidden"
+    );
+    assert!(
+        response.contains("blocked-by-mitm-hook"),
+        "stage=proxy_probe_wrong_denial"
+    );
+    assert!(
+        !response.contains(REAL_CREDENTIAL),
+        "stage=proxy_probe_real_credential_leaked"
+    );
     Ok(())
 }
 
@@ -3489,6 +3533,18 @@ fn request_body_contains(request: &wiremock::Request, text: &str) -> bool {
     decoded_request_body(request)
         .and_then(|body| String::from_utf8(body).ok())
         .is_some_and(|body| body.contains(text))
+}
+
+fn network_output_category(output: &str) -> &'static str {
+    if output.contains("rejected by user") {
+        "user_rejection"
+    } else if output.contains("blocked by policy") {
+        "policy_blocked"
+    } else if output.contains("Network request disconnected") {
+        "request_disconnected"
+    } else {
+        "other"
+    }
 }
 
 fn is_guardian_request(request: &wiremock::Request) -> bool {
