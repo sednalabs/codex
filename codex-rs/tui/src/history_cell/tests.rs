@@ -773,7 +773,7 @@ async fn session_info_availability_nux_tooltip_snapshot() {
     );
 
     let rendered = render_transcript(&cell).join("\n");
-    insta::assert_snapshot!(rendered);
+    insta::assert_snapshot!(rendered.replace(crate::version::CODEX_CLI_VERSION, "<VERSION>"));
 }
 
 #[tokio::test]

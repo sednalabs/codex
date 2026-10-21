@@ -719,6 +719,7 @@ async fn replay_reconciles_only_matching_voice_captions_one_for_one() {
     insta::assert_snapshot!(
         "voice_replay_reconciles_matching_captions",
         normalize_voice_snapshot_directory(&rendered, &app.config.cwd)
+            .replace(crate::version::CODEX_CLI_VERSION, "<VERSION>")
     );
 }
 

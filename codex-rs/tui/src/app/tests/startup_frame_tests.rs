@@ -63,7 +63,8 @@ async fn owned_startup_hides_tip_in_transcript() -> Result<()> {
     }
     insta::assert_snapshot!(
         "startup_tip_in_transcript",
-        normalize_snapshot_paths(normalize_agent_center_snapshot(snapshots.join("\n\n"))),
+        normalize_snapshot_paths(normalize_agent_center_snapshot(snapshots.join("\n\n")))
+            .replace(crate::version::CODEX_CLI_VERSION, "<VERSION>"),
     );
     // The source remains available to terminal scrollback in both presentation modes.
     for mode in [HistoryRenderMode::Rich, HistoryRenderMode::Raw] {

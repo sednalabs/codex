@@ -4,7 +4,9 @@ use super::*;
 
 #[test]
 fn owned_startup_keeps_the_live_bottom_geometry() {
-    let mut pump = crate::startup_draft::tests::quiet_startup_test_pump();
+    const FIXTURE_VERSION: &str = "0.0.0";
+    let mut pump =
+        crate::startup_draft::tests::quiet_startup_test_pump_with_version(FIXTURE_VERSION);
     pump.bottom_pane.set_status_line_enabled(/*enabled*/ true);
     pump.bottom_pane
         .set_composer_text("first line\nsecond line".into(), Vec::new(), Vec::new());
@@ -29,7 +31,7 @@ fn owned_startup_keeps_the_live_bottom_geometry() {
     insta::assert_snapshot!(
         "owned_startup_layout",
         format!("cursor={:?}\n{frame}", layout.cursor_pos(area))
-            .replace(crate::version::CODEX_CLI_VERSION, "<VERSION>")
+            .replace(FIXTURE_VERSION, "<VERSION>")
     );
 }
 

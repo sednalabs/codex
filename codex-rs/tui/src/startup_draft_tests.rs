@@ -59,6 +59,17 @@ pub(crate) fn quiet_startup_test_pump() -> StartupDraftPump {
     pump
 }
 
+pub(crate) fn quiet_startup_test_pump_with_version(version: &'static str) -> StartupDraftPump {
+    let mut pump = quiet_startup_test_pump();
+    pump.header = Box::new(crate::history_cell::SessionHeaderHistoryCell::new(
+        "loading".to_string(),
+        /*reasoning_effort*/ None,
+        std::path::PathBuf::from("loading"),
+        version,
+    ));
+    pump
+}
+
 pub(crate) fn startup_test_pump_with_input(text: &str) -> StartupDraftPump {
     let mut pump = startup_test_pump(std::iter::once(TuiEvent::Paste(text.to_string())));
     pump.events = Box::pin(pump.events.chain(futures::stream::pending()));

@@ -1,10 +1,10 @@
 ---
 source: tui/src/app/tests/startup_frame_tests.rs
-expression: "normalize_snapshot_paths(normalize_agent_center_snapshot(snapshots.join(\"\\n\\n\")))"
+expression: "normalize_snapshot_paths(normalize_agent_center_snapshot(snapshots.join(\"\\n\\n\"))).replace(crate::version::CODEX_CLI_VERSION, \"<VERSION>\")"
 ---
 80 columns
 
-  >_ OpenAI Codex (v0.0.0)
+  >_ OpenAI Codex (v<VERSION>)
      /tmp/project
 
 • Conversation continues here.
@@ -26,7 +26,7 @@ expression: "normalize_snapshot_paths(normalize_agent_center_snapshot(snapshots.
 
 32 columns
 
-  >_ OpenAI Codex (v0.0.0)
+  >_ OpenAI Codex (v<VERSION>)
      /tmp/project
 
 • Conversation continues here.
