@@ -592,10 +592,13 @@ fn packaged_daemon_launch(action: &str, initial: InitialDaemon) -> Result<()> {
     if initial == InitialDaemon::Missing {
         std::fs::remove_file(state.join("app-server.stderr.log"))?;
     }
-    std::fs::write(
-        state.join("settings.json"),
-        br#"{"shutdownGraceSeconds":0}"#,
-    )?;
+    // Keep the local-package bootstrap assertion independent of the release channel.
+    let settings: &[u8] = if action == "bootstrap" {
+        br#"{"shutdownGraceSeconds":0,"updater":{"autoUpdateEnabled":false}}"#
+    } else {
+        br#"{"shutdownGraceSeconds":0}"#
+    };
+    std::fs::write(state.join("settings.json"), settings)?;
     let cli_before = daemon.codex.canonicalize()?;
     let result = daemon
         .command()
