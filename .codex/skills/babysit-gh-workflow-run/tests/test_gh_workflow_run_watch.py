@@ -45,6 +45,109 @@ class GhProcessBoundaryTests(unittest.TestCase):
             self.assertEqual(run.call_args.args[0], ["gh", "api", "repos/owner/repo/actions/runs/42"])
             self.assertIs(run.call_args.kwargs["shell"], False)
 
+    def test_read_transport_recovery_keeps_exact_request_and_auth_context(self):
+        args = ["api", "repos/owner/repo/actions/runs/42"]
+        env = {"GH_TOKEN": "fixture-secret"}
+        failures = [
+            "error connecting to api.github.com\ncheck your internet connection or https://githubstatus.com",
+            'Get "https://api.github.com/repos/owner/repo/actions/runs/42": net/http: TLS handshake timeout',
+        ]
+        auth = Mock(source="fixture", _token="fixture-secret", deadline=None)
+        results = [subprocess.CalledProcessError(1, ["gh", *args], stderr=value) for value in failures]
+        results.append(types.SimpleNamespace(stdout='{"status":"queued","id":42}'))
+        with patch.dict(os.environ, {}, clear=True), patch.object(MODULE, "_GH_AUTH", auth), patch.object(
+            MODULE, "_prepare_gh_env", return_value=env
+        ), patch.object(MODULE.subprocess, "run", side_effect=results) as run, patch.object(
+            MODULE.time, "sleep"
+        ) as sleep:
+            self.assertEqual(MODULE.gh_json(args, repo="owner/repo"), {"status": "queued", "id": 42})
+        self.assertEqual([call.args[0] for call in run.call_args_list], [["gh", *args]] * 3)
+        self.assertEqual([call.kwargs for call in run.call_args_list], [
+            {"shell": False, "check": True, "capture_output": True, "text": True, "env": env}
+        ] * 3)
+        self.assertEqual([call.args for call in sleep.call_args_list], [(1,), (2,)])
+        auth.refresh.assert_not_called()
+
+    def test_persistent_transport_error_stops_after_three_attempts_and_redacts(self):
+        args = ["api", "repos/owner/repo/actions/runs/42"]
+        failure = subprocess.CalledProcessError(
+            1, ["gh", *args],
+            stderr='Get "https://api.github.com/repos/owner/repo/actions/runs/42?fixture=fixture-secret": net/http: TLS handshake timeout'
+        )
+        auth = Mock(source="fixture", _token="fixture-secret", deadline=None)
+        with patch.dict(os.environ, {}, clear=True), patch.object(MODULE, "_GH_AUTH", auth), patch.object(
+            MODULE, "_prepare_gh_env", return_value={}
+        ), patch.object(MODULE.subprocess, "run", side_effect=failure) as run, patch.object(
+            MODULE.time, "sleep"
+        ) as sleep, self.assertRaises(MODULE.GhCommandError) as raised:
+            MODULE.gh_text(args, repo="owner/repo")
+        self.assertEqual(run.call_count, 3)
+        self.assertEqual([call.args for call in sleep.call_args_list], [(1,), (2,)])
+        self.assertNotIn("fixture-secret", str(raised.exception))
+        self.assertIn("<redacted>", str(raised.exception))
+
+    def test_transport_retry_never_replays_writes_or_hard_errors(self):
+        read = ["api", "repos/owner/repo/actions/runs/42"]
+        transient = "error connecting to api.github.com"
+        cases = [
+            (read + ["--method", "POST"], transient),
+            (read + ["-f", "state=closed"], transient),
+            (["run", "rerun", "42"], transient),
+            (read, transient + "\nHTTP 403 forbidden"),
+            (read, transient + "\nx509: certificate signed by unknown authority"),
+            (read, transient + "\nunknown fatal error"),
+            (read, "HTTP 401 bad credentials"),
+            (read, "HTTP 404 Not Found"),
+            (read, "HTTP 503 Service Unavailable"),
+            (read, "HTTP 429 API rate limit exceeded"),
+            (read, 'Get "https://api.github.com/repos/owner/repo/actions/runs/42": x509: certificate is not trusted'),
+            (read, "unknown read error"),
+        ]
+        for args, stderr in cases:
+            with self.subTest(args=args, stderr=stderr):
+                auth = Mock(source="fixture", _token=None, deadline=None)
+                auth.refresh.return_value = False
+                failure = subprocess.CalledProcessError(1, ["gh", *args], stderr=stderr)
+                with patch.dict(os.environ, {}, clear=True), patch.object(MODULE, "_GH_AUTH", auth), patch.object(
+                    MODULE, "_prepare_gh_env", return_value={}
+                ), patch.object(MODULE, "wait_for_reset", return_value=False), patch.object(
+                    MODULE.subprocess, "run", side_effect=failure
+                ) as run, patch.object(MODULE.time, "sleep") as sleep, self.assertRaises(MODULE.GhCommandError):
+                    MODULE.gh_text(args, repo="owner/repo")
+                self.assertEqual(run.call_count, 1)
+                sleep.assert_not_called()
+
+    def test_transport_backoff_cannot_extend_an_existing_deadline(self):
+        args = ["api", "repos/owner/repo/actions/runs/42"]
+        auth = Mock(source="fixture", _token=None, deadline=100.5)
+        failure = subprocess.CalledProcessError(1, ["gh", *args], stderr="error connecting to api.github.com")
+        with patch.dict(os.environ, {}, clear=True), patch.object(MODULE, "_GH_AUTH", auth), patch.object(
+            MODULE, "_prepare_gh_env", return_value={}
+        ), patch.object(MODULE.subprocess, "run", side_effect=failure) as run, patch.object(
+            MODULE.time, "monotonic", return_value=100.0
+        ), patch.object(MODULE.time, "sleep") as sleep, self.assertRaises(MODULE.GhCommandError):
+            MODULE.gh_text(args, repo="owner/repo")
+        self.assertEqual(run.call_count, 1)
+        sleep.assert_not_called()
+
+    def test_transport_retry_cannot_start_after_backoff_crosses_deadline(self):
+        args = ["api", "repos/owner/repo/actions/runs/42"]
+        auth = Mock(source="fixture", _token=None, deadline=102.0)
+        failure = subprocess.CalledProcessError(1, ["gh", *args], stderr="error connecting to api.github.com")
+        clock = Mock(return_value=100.0)
+
+        def delayed_sleep(delay):
+            clock.return_value = 103.0
+
+        with patch.dict(os.environ, {}, clear=True), patch.object(MODULE, "_GH_AUTH", auth), patch.object(
+            MODULE, "_prepare_gh_env", return_value={}
+        ), patch.object(MODULE.subprocess, "run", side_effect=failure) as run, patch.object(
+            MODULE.time, "monotonic", clock
+        ), patch.object(MODULE.time, "sleep", side_effect=delayed_sleep) as sleep, self.assertRaises(MODULE.GhCommandError):
+            MODULE.gh_text(args, repo="owner/repo")
+        self.assertEqual(run.call_count, 1)
+        sleep.assert_called_once_with(1)
+
 
 class ProofIdentityTests(unittest.TestCase):
     def test_list_workflow_runs_matches_expected_head_sha_case_insensitively(self):
@@ -432,7 +535,7 @@ class ProofIdentityTests(unittest.TestCase):
             "2222222222222222222222222222222222222222",
         )
 
-    def test_view_run_falls_back_when_workflow_metadata_endpoint_is_unavailable(self):
+    def test_view_run_reads_plain_and_required_runs_without_workflow_metadata(self):
         api_run = {
             "id": 30440173012,
             "repository": {"full_name": "owner/repo"},
@@ -442,6 +545,7 @@ class ProofIdentityTests(unittest.TestCase):
             "head_sha": "a43e65e09e82773cc69647698dfcda3c963eb0bf",
             "name": "required-agent-ops",
             "run_number": 912,
+            "run_attempt": 3,
             "status": "in_progress",
             "conclusion": None,
             "html_url": "https://example.invalid/actions/runs/30440173012",
@@ -473,25 +577,44 @@ class ProofIdentityTests(unittest.TestCase):
                 }
             ]
         }
-        with patch.object(
-            MODULE,
-            "gh_json",
-            side_effect=[
-                MODULE.GhCommandError(
-                    "HTTP 404: repos/owner/repo/actions/workflows/322643164"
-                ),
-                api_run,
-                api_jobs,
-            ],
-        ):
-            result = MODULE.view_run("owner/repo", 30440173012)
-
-        self.assertEqual(result["databaseId"], 30440173012)
-        self.assertEqual(result["workflowName"], "required-agent-ops")
-        self.assertEqual(result["headSha"], api_run["head_sha"])
-        self.assertEqual(result["jobs"][0]["databaseId"], 99)
-        self.assertEqual(result["jobs"][0]["steps"][0]["name"], "Run")
-        self.assertEqual(result["retrievedVia"], "actions_api_fallback")
+        for event, head_branch in (("pull_request", api_run["head_branch"]), ("merge_group", None)):
+            with self.subTest(event=event, head_branch=head_branch):
+                api_run.update(event=event, head_branch=head_branch)
+                with patch.object(MODULE, "gh_json", side_effect=[api_run, api_jobs]) as read:
+                    result = MODULE.view_run("owner/repo", 30440173012)
+                self.assertEqual(result, {
+                    "databaseId": 30440173012,
+                    "displayTitle": "Required Agent Ops",
+                    "event": event,
+                    "headBranch": head_branch,
+                    "headSha": "a43e65e09e82773cc69647698dfcda3c963eb0bf",
+                    "attempt": 3,
+                    "name": "required-agent-ops",
+                    "number": 912,
+                    "status": "in_progress",
+                    "conclusion": None,
+                    "url": "https://example.invalid/actions/runs/30440173012",
+                    "workflowName": "required-agent-ops",
+                    "createdAt": "2026-07-29T09:00:00Z",
+                    "updatedAt": "2026-07-29T09:05:00Z",
+                    "jobs": [{
+                        "databaseId": 99, "name": "Required Agent Ops", "status": "in_progress",
+                        "conclusion": None, "url": "https://example.invalid/jobs/99",
+                        "createdAt": None, "startedAt": "2026-07-29T09:00:00Z", "completedAt": None,
+                        "steps": [{
+                            "name": "Run", "number": 1, "status": "in_progress", "conclusion": None,
+                            "startedAt": "2026-07-29T09:00:00Z", "completedAt": None
+                        }]
+                    }],
+                    "retrievedVia": "actions_api"
+                })
+                self.assertEqual([call.args for call in read.call_args_list], [
+                    (["api", "repos/owner/repo/actions/runs/30440173012"],),
+                    (["api", "/repos/owner/repo/actions/runs/30440173012/jobs?per_page=100&page=1"],)
+                ])
+                self.assertEqual([call.kwargs for call in read.call_args_list], [
+                    {"repo": "owner/repo"}, {"repo": "owner/repo"}
+                ])
 
     def test_assignment_enrichment_joins_authoritative_rest_job_fields(self):
         run_view = {

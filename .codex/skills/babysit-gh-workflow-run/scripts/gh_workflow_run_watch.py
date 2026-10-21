@@ -689,6 +689,23 @@ def gh_text(args, repo=None):
                     continue
             if attempt == 0 and is_retry_safe(args) and is_rate_limited(message) and wait_for_reset(_GH_AUTH, env, message, resource=rate_resource(args)):
                 continue
+            if (
+                attempt < 2 and is_retry_safe(args)
+                and not (is_auth_failure(message) or is_rate_limited(message))
+                and not re.search(r"\bHTTP\s+\d{3}\b", message, re.IGNORECASE)
+                and re.fullmatch(
+                    r'error connecting to api\.github\.com(?:\r?\ncheck your internet connection or https://githubstatus\.com)?|'
+                    r'Get "https://api\.github\.com/[^"\r\n]*": net/http: TLS handshake timeout',
+                    (err.stderr or "").strip(), re.IGNORECASE,
+                )
+            ):
+                delay = 2 ** attempt
+                if _GH_AUTH.deadline is not None and time.monotonic() + delay >= _GH_AUTH.deadline:
+                    raise GhCommandError(message) from err
+                time.sleep(delay)
+                if _GH_AUTH.deadline is not None and time.monotonic() >= _GH_AUTH.deadline:
+                    raise GhCommandError(message) from err
+                continue
             raise GhCommandError(message) from err
 
 
@@ -1460,21 +1477,7 @@ def _host_mismatch_recheck_interval_seconds(poll_seconds):
 def view_run(repo, run_id):
     if isinstance(run_id, bool) or not isinstance(run_id, int) or run_id <= 0:
         raise GhCommandError(f"Invalid GitHub Actions run id: {run_id!r}")
-    fields = "attempt,databaseId,displayTitle,event,headBranch,headSha,name,number,status,conclusion,url,workflowName,createdAt,updatedAt,jobs"
-    try:
-        data = gh_json(["run", "view", str(run_id), "--json", fields], repo=repo)
-    except GhCommandError as primary_error:
-        try:
-            return _view_run_via_actions_api(repo, run_id)
-        except GhCommandError as fallback_error:
-            raise GhCommandError(
-                "Unable to read exact workflow run through either GitHub CLI run view "
-                f"or the direct Actions API.\nPrimary error: {primary_error}\n"
-                f"Fallback error: {fallback_error}"
-            ) from fallback_error
-    if not isinstance(data, dict):
-        raise GhCommandError("Unexpected payload from `gh run view`")
-    return data
+    return _view_run_via_actions_api(repo, run_id)
 
 
 def _normalize_actions_api_step(step):
@@ -1617,7 +1620,7 @@ def _list_run_jobs_rest(repo, run_id):
     raise GhCommandError(f"GitHub REST jobs pagination exceeded 1000 pages for run {run_id}")
 
 def _view_run_via_actions_api(repo, run_id):
-    run = gh_json(["api", f"repos/{repo}/actions/runs/{run_id}"])
+    run = gh_json(["api", f"repos/{repo}/actions/runs/{run_id}"], repo=repo)
     if not isinstance(run, dict):
         raise GhCommandError(f"Malformed GitHub REST run {run_id}: expected object")
     context = f"run {run_id}"
@@ -1647,7 +1650,7 @@ def _view_run_via_actions_api(repo, run_id):
         "createdAt": _rest_optional_timestamp(run, "created_at", context),
         "updatedAt": _rest_optional_timestamp(run, "updated_at", context),
         "jobs": _list_run_jobs_rest(repo, run_id),
-        "retrievedVia": "actions_api_fallback",
+        "retrievedVia": "actions_api",
     }
 
 
