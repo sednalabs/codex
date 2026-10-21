@@ -1417,6 +1417,7 @@ mod tests {
     use codex_exec_server::RouteAwareHttpClient;
     use codex_http_client::HttpClientFactory;
     use codex_http_client::OutboundProxyPolicy;
+    use oauth2::TokenResponse;
     use pretty_assertions::assert_eq;
     use reqwest::Url;
     use reqwest::header::HeaderMap;
@@ -1837,7 +1838,7 @@ mod tests {
         assert_eq!(token.refresh_token(), Some("fixed-api-refresh-token"));
         assert!(token.expires_at() > 0);
 
-        let response = serde_json::from_value(json!({
+        let response: oauth2::basic::BasicTokenResponse = serde_json::from_value(json!({
             "access_token": "bounded-test-token",
             "token_type": "Bearer",
             "expires_in": 300,
@@ -1853,7 +1854,7 @@ mod tests {
     #[test]
     fn fixed_access_token_rejects_wrong_type_and_unbounded_lifetime() {
         for (token_type, expires_in) in [("MAC", 300), ("Bearer", 0), ("Bearer", 86_401)] {
-            let response = serde_json::from_value(json!({
+            let response: oauth2::basic::BasicTokenResponse = serde_json::from_value(json!({
                 "access_token": "bounded-test-token",
                 "token_type": token_type,
                 "expires_in": expires_in,

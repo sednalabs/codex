@@ -54,7 +54,7 @@ use zeroize::Zeroize as _;
 use zeroize::Zeroizing;
 
 const POLICY_PATH: &str = "/etc/codex/runtime-proof/claim-launch.json";
-const LAUNCHER_PATH: &str = "/usr/libexec/codex/codex-runtime-proof-launcher";
+pub(crate) const LAUNCHER_PATH: &str = "/usr/libexec/codex/codex-runtime-proof-launcher";
 const CREDENTIALS_DIRECTORY_ENV: &str = "CREDENTIALS_DIRECTORY";
 const ISSUER_SEED_CREDENTIAL: &str = "runtime-proof-issuer-seed";
 const PROVIDER_AUTH_CREDENTIAL: &str = "provider-auth.json";
@@ -333,7 +333,7 @@ fn matches_api_bearer_invocation(
     }
 }
 
-fn require_installed_launcher_image() -> Result<()> {
+pub(crate) fn require_installed_launcher_image() -> Result<()> {
     let expected_path = Path::new(LAUNCHER_PATH);
     let current_path =
         std::env::current_exe().context("resolve fixed runtime-proof launcher image")?;
@@ -1305,7 +1305,7 @@ fn set_owner_and_mode(path: &Path, uid: u32, gid: u32, mode: u32) -> Result<()> 
     Ok(())
 }
 
-fn seqpacket_pair() -> Result<(File, File)> {
+pub(crate) fn seqpacket_pair() -> Result<(File, File)> {
     let mut descriptors = [0; 2];
     if unsafe {
         libc::socketpair(

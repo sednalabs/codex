@@ -6,8 +6,11 @@
 //! volatile systemd credential source consumed by the fixed claim service.
 
 use crate::api_claim;
+use crate::launcher::LAUNCHER_PATH;
 use crate::launcher::ProvisioningStage;
 use crate::launcher::provisioning_failure;
+use crate::launcher::require_installed_launcher_image;
+use crate::launcher::seqpacket_pair;
 use anyhow::Result;
 use anyhow::bail;
 use codex_rmcp_client::FIXED_API_CLAIM_TIMEOUT_SECS;
