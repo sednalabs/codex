@@ -510,6 +510,14 @@ fn filesystem_probe_does_not_load_configuration() -> Result<()> {
 #[tokio::test]
 async fn interactive_tmux_startup_does_not_execute_workspace_helpers() -> Result<()> {
     let fixture = Fixture::new()?;
+    // Make the consent screen's untrusted-project precondition explicit.
+    let user_config_file = fixture.home.join("config.toml");
+    let user_config = std::fs::read_to_string(&user_config_file)?;
+    let project_key = toml::Value::String(project_trust_key(&fixture.workspace));
+    std::fs::write(
+        user_config_file,
+        format!("{user_config}\n[projects.{project_key}]\ntrust_level = \"untrusted\"\n"),
+    )?;
     std::fs::create_dir(fixture.workspace.join(".codex"))?;
     let command = fixture.command()?;
     let mut env: std::collections::HashMap<String, String> = std::env::vars().collect();
