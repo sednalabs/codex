@@ -159,7 +159,10 @@ async fn capacity_retry_is_visible_and_exhausts_the_configured_stream_budget() {
         )
         .await
         .expect_err("capacity must not extend the stream budget");
-        assert!(matches!(error.details(), CodexErrorDetails::ServerOverloaded));
+        assert!(matches!(
+            error.details(),
+            CodexErrorDetails::ServerOverloaded
+        ));
         assert_eq!(retry_state.retries, 2);
         assert_eq!(exhausted_at.elapsed(), Duration::ZERO);
         tokio::time::resume();

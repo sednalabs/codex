@@ -65,12 +65,12 @@ Typed temporary model overload and exhausted transient 500/502/503/504 requests
 reuse the native Responses retry loop, configured budgets and cancellation.
 Retained `Retry-After` deadlines take precedence; headerless classified overload
 uses jittered exponential backoff starting near 30 seconds and capped at 300
-seconds. Each actual capacity wait is visible. Semantic capacity and rate-limit
-errors do not reset the stream budget by switching transports. Quota, auth,
-policy and permanent input failures remain terminal, and unknown 429 responses
-require server advice. This does not substitute an account, model or provider,
-resume a goal, or add unlimited retries. Request and stream budgets remain
-separate layers, not a universal network-attempt or elapsed-time ceiling.
+seconds. Stream-level capacity waits are visible. Eligible typed-overload and
+exhausted-request retries do not reset the stream budget by switching transports.
+Quota, auth, policy and permanent input failures remain terminal, and unknown
+429 responses require server advice. This does not substitute an account, model
+or provider, resume a goal, or add unlimited retries. Request and stream budgets
+remain separate layers, not a universal network-attempt or elapsed-time ceiling.
 Remove this carry when upstream supplies equivalent same-turn recovery,
 timing, denial and cancellation behavior.
 

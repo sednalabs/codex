@@ -1025,8 +1025,14 @@ async fn compact_v2_overload_without_retry_after_exhausts_both_retry_budgets() -
             !request.inputs_of_type("compaction_trigger").is_empty(),
             "expected a remote compaction v2 request"
         );
-        assert_eq!(request.body_json()["model"], requests[1].body_json()["model"]);
-        assert_eq!(request.body_json()["input"], requests[1].body_json()["input"]);
+        assert_eq!(
+            request.body_json()["model"],
+            requests[1].body_json()["model"]
+        );
+        assert_eq!(
+            request.body_json()["input"],
+            requests[1].body_json()["input"]
+        );
     }
     assert_eq!(
         telemetry.events.try_recv(),
@@ -1311,8 +1317,14 @@ async fn sse_overload_uses_local_backoff_not_enclosing_retry_after() -> Result<(
     assert_eq!(messages, vec!["Recovered exactly once."]);
     let requests = response_mock.requests();
     assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0].body_json()["input"], requests[1].body_json()["input"]);
-    assert_eq!(requests[0].body_json()["model"], requests[1].body_json()["model"]);
+    assert_eq!(
+        requests[0].body_json()["input"],
+        requests[1].body_json()["input"]
+    );
+    assert_eq!(
+        requests[0].body_json()["model"],
+        requests[1].body_json()["model"]
+    );
     assert_eq!(
         telemetry.events.try_recv(),
         Err(mpsc::error::TryRecvError::Empty)
@@ -1488,12 +1500,24 @@ async fn headerless_capacity_wait_can_be_interrupted_without_another_request(
     } else {
         submit_user_input(&test, "cancel capacity without changing the model").await?;
     }
-    wait_for_event(&test.codex, |event| matches!(event, EventMsg::StreamError(_))).await;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::StreamError(_))
+    })
+    .await;
     test.codex.submit(Op::Interrupt).await?;
-    wait_for_event(&test.codex, |event| matches!(event, EventMsg::TurnAborted(_))).await;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnAborted(_))
+    })
+    .await;
     test.codex.submit(Op::Shutdown).await?;
-    wait_for_event(&test.codex, |event| matches!(event, EventMsg::ShutdownComplete)).await;
-    assert_eq!(response_mock.requests().len(), 1 + usize::from(manual_compaction));
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::ShutdownComplete)
+    })
+    .await;
+    assert_eq!(
+        response_mock.requests().len(),
+        1 + usize::from(manual_compaction)
+    );
     Ok(())
 }
 
@@ -2278,7 +2302,10 @@ async fn websocket_overload_without_retry_after_recovers_on_the_same_model() -> 
     // Compare complete logical input, not a compressed delta against a full replay.
     assert_eq!(original_body["previous_response_id"], json!("prewarm"));
     assert!(recovered_body["previous_response_id"].is_null());
-    let mut original_input = warmup_body["input"].as_array().expect("warmup input").clone();
+    let mut original_input = warmup_body["input"]
+        .as_array()
+        .expect("warmup input")
+        .clone();
     original_input.extend(
         original_body["input"]
             .as_array()

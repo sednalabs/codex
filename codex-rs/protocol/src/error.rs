@@ -456,8 +456,7 @@ impl CodexErr {
                 self.server_retry_delay()
             }
             CodexErrorDetails::UnexpectedStatus(err)
-                if err.status.is_client_error()
-                    && err.status != StatusCode::REQUEST_TIMEOUT =>
+                if err.status.is_client_error() && err.status != StatusCode::REQUEST_TIMEOUT =>
             {
                 None
             }

@@ -198,7 +198,12 @@ fn capacity_retry_does_not_retry_denials_even_with_server_advice() {
             message: "invalid".into(),
         }),
     ] {
-        assert_eq!(error.with_retry_after(advice).retry_delay(/*retry_count*/ 1), None);
+        assert_eq!(
+            error
+                .with_retry_after(advice)
+                .retry_delay(/*retry_count*/ 1),
+            None
+        );
     }
     for status in [
         StatusCode::UNAUTHORIZED,
@@ -216,7 +221,12 @@ fn capacity_retry_does_not_retry_denials_even_with_server_advice() {
             identity_authorization_error: None,
             identity_error_code: None,
         });
-        assert_eq!(error.with_retry_after(advice).retry_delay(/*retry_count*/ 1), None);
+        assert_eq!(
+            error
+                .with_retry_after(advice)
+                .retry_delay(/*retry_count*/ 1),
+            None
+        );
     }
 }
 
