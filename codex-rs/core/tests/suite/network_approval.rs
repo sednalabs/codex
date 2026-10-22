@@ -1664,10 +1664,10 @@ async fn failed_network_policy_amendment_denies_request_and_does_not_approve_hos
         .iter()
         .find_map(|request| request.function_call_output_text("network-failed-amendment-1"))
         .context("expected the failed policy amendment to reject the network request")?;
+    let output_category = failed_amendment_network_output_category(&denied_output);
     assert!(
-        denied_output.contains("blocked by policy"),
-        "network_output_category={}",
-        network_output_category(&denied_output)
+        matches!(output_category, "policy_denial" | "proxy_policy_denial"),
+        "network_output_category={output_category}"
     );
     mount_exec_network_turn(
         &server,
@@ -3604,6 +3604,34 @@ fn network_output_category(output: &str) -> &'static str {
         "policy_blocked"
     } else if output.contains("Network request disconnected") {
         "request_disconnected"
+    } else {
+        "other"
+    }
+}
+
+fn failed_amendment_network_output_category(output: &str) -> &'static str {
+    const POLICY_FALLBACK: &str =
+        "Network access to \"http://codex-network-test.invalid:80\" was blocked by policy.";
+    const PROXY_DENIAL_PREFIX: &str =
+        "Network access to \"codex-network-test.invalid\" was blocked: ";
+    const PROXY_DENIAL_DETAILS: [&str; 6] = [
+        "domain is explicitly denied by policy and cannot be approved from this prompt.",
+        "domain is not on the allowlist for the current sandbox mode.",
+        "local/private network addresses are blocked by the sandbox policy.",
+        "request method is blocked by the current network mode.",
+        "network proxy is disabled.",
+        "request is blocked by network policy.",
+    ];
+
+    if output == POLICY_FALLBACK {
+        "policy_denial"
+    } else if output
+        .strip_prefix(PROXY_DENIAL_PREFIX)
+        .is_some_and(|detail| PROXY_DENIAL_DETAILS.contains(&detail))
+    {
+        "proxy_policy_denial"
+    } else if output.starts_with("OK:") {
+        "synthetic_success"
     } else {
         "other"
     }
