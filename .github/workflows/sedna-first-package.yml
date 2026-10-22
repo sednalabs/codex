@@ -38,10 +38,16 @@ on:
         options:
           - prepare
           - package
+          - prepare-wait-schema
       source_sha:
         description: Exact source commit for a validation-host package run; leave empty for protected main.
         required: false
         type: string
+      expected_workflow_host_sha:
+        description: Exact one-shot schema-generation workflow host.
+        required: false
+        type: string
+        default: ""
 
 concurrency:
   group: sedna-first-package-${{ github.event.pull_request.number || github.ref }}-${{ inputs.operation || 'package' }}
@@ -51,8 +57,172 @@ permissions:
   contents: read
 
 jobs:
+  prepare-wait-schema:
+    name: Generate exact wait UI protocol contracts
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.operation == 'prepare-wait-schema' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      EXPECTED_SOURCE_SHA: abbdf31577720b28288faca5be84c169ec142d2b
+      EXPECTED_SOURCE_TREE: aed9eff51e10caa8dd2bd29ce543e338b9da2f5b
+      EXPECTED_SOURCE_PARENT: 2159fcddf466887c4797cd5dc01d1d70e48e2e23
+      EXPECTED_SCOPE_BASE: 365a836d955aec25a9f49bec8326961c6374d54a
+      EXPECTED_HOST_REF: refs/heads/validation/native-830-package-wait-schema-abbdf315
+      SOURCE_SHA_INPUT: ${{ inputs.source_sha }}
+      EXPECTED_HOST_SHA: ${{ inputs.expected_workflow_host_sha }}
+      RUST_MIN_STACK: "16777216"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bind the fixed source and direct workflow child
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REPOSITORY}" = sednalabs/codex
+          test "${GITHUB_REF}" = "${EXPECTED_HOST_REF}"
+          test "${SOURCE_SHA_INPUT}" = "${EXPECTED_SOURCE_SHA}"
+          [[ "${EXPECTED_HOST_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          test "${GITHUB_SHA}" = "${EXPECTED_HOST_SHA}"
+          test "$(git rev-parse HEAD)" = "${EXPECTED_HOST_SHA}"
+          test "$(git rev-parse HEAD^@)" = "${EXPECTED_SOURCE_SHA}"
+          test "$(git rev-parse "${EXPECTED_SOURCE_SHA}^{tree}")" = "${EXPECTED_SOURCE_TREE}"
+          test "$(git rev-parse "${EXPECTED_SOURCE_SHA}^@")" = "${EXPECTED_SOURCE_PARENT}"
+          git merge-base --is-ancestor "${EXPECTED_SCOPE_BASE}" "${EXPECTED_SOURCE_SHA}"
+          test "$(git diff --name-only "${EXPECTED_SOURCE_SHA}" HEAD)" = .github/workflows/sedna-first-package.yml
+          test -z "$(git status --porcelain --untracked-files=normal)"
+          git checkout --detach "${EXPECTED_SOURCE_SHA}"
+          test "$(git rev-parse HEAD)" = "${EXPECTED_SOURCE_SHA}"
+          test -z "$(git status --porcelain --untracked-files=normal)"
+
+      - name: Set up standard CI tools
+        uses: ./.github/actions/setup-bazel-ci
+        with:
+          target: x86_64-unknown-linux-gnu
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          components: rustfmt
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Install maintained Python generator tooling
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.3"
+
+      - name: Format source and generate maintained protocol fixtures
+        working-directory: codex-rs
+        shell: bash
+        env:
+          CODEX_APP_SERVER_SCHEMA_ROOT: ${{ github.workspace }}/codex-rs/app-server-protocol/schema
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${EXPECTED_SOURCE_SHA}"
+          test -z "$(git status --porcelain --untracked-files=normal)"
+          cargo fmt --all
+          CODEX_APP_SERVER_SCHEMA_EXPERIMENTAL=0 cargo test --locked -p codex-app-server-protocol --lib \
+            schema_fixtures_tests::write_schema_fixtures_from_env -- --exact --ignored
+          CODEX_APP_SERVER_SCHEMA_EXPERIMENTAL=1 cargo test --locked -p codex-app-server-protocol --lib \
+            schema_fixtures_tests::write_schema_fixtures_from_env -- --exact --ignored
+          uv run --project ../sdk/python --frozen --only-group test python \
+            ../sdk/python/scripts/update_sdk_artifacts.py generate-types \
+            --schema-dir app-server-protocol/schema/json
+          for selector in \
+            schema_fixtures_tests::typescript_schema_fixtures_match_generated \
+            schema_fixtures_tests::json_schema_fixtures_match_generated \
+            schema_fixtures_tests::stable_precomputed_exports_match_schema_fixtures \
+            schema_fixtures_tests::experimental_precomputed_exports_match_generated; do
+            cargo test --locked -p codex-app-server-protocol --lib "${selector}" -- --exact
+          done
+          cargo fmt --all -- --check
+
+      - name: Retain only scoped generated outputs and identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${EXPECTED_SOURCE_SHA}"
+          test -z "$(git diff --cached --name-only)"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import subprocess
+
+          def paths(*args):
+              return subprocess.check_output(["git", *args], text=True).splitlines()
+
+          rust_paths = {
+              path for path in paths("diff", "--name-only", os.environ["EXPECTED_SCOPE_BASE"], "HEAD")
+              if path.endswith(".rs")
+          }
+          sdk_paths = {
+              "sdk/python/src/openai_codex/generated/v2_all.py",
+              "sdk/python/src/openai_codex/generated/notification_registry.py",
+              "sdk/python/src/openai_codex/api.py",
+          }
+          def allowed(path):
+              return (
+                  path in rust_paths or path in sdk_paths
+                  or path.startswith("codex-rs/app-server-protocol/schema/typescript/")
+                  or path.startswith("codex-rs/app-server-protocol/schema/json/")
+                  or path in {
+                      "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-stable.json.zst",
+                      "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-experimental.json.zst",
+                  }
+              )
+
+          untracked = paths("ls-files", "--others", "--exclude-standard")
+          changed = paths("diff", "--name-only", "HEAD")
+          if any(not allowed(path) for path in changed + untracked):
+              raise SystemExit("Unexpected output outside fixed formatter/schema/SDK scope")
+          for path in changed + untracked:
+              if Path(path).is_symlink() or not Path(path).is_file():
+                  raise SystemExit("Generated output must be an ordinary file")
+          if untracked:
+              subprocess.run(["git", "add", "--intent-to-add", "--", *untracked], check=True)
+          PY
+          git diff --check HEAD
+          output_dir="${RUNNER_TEMP}/sedna-first-generated"
+          mkdir -p "${output_dir}"
+          git diff --binary HEAD > "${output_dir}/generated-outputs.patch"
+          git diff --name-only HEAD > "${output_dir}/generated-paths.txt"
+          git diff --stat HEAD > "${output_dir}/generated-stat.txt"
+          python3 - <<'PY' > "${output_dir}/generated-identity.json"
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+
+          output = Path(os.environ["RUNNER_TEMP"]) / "sedna-first-generated"
+          json.dump({
+              "sourceCommit": os.environ["EXPECTED_SOURCE_SHA"],
+              "sourceTree": os.environ["EXPECTED_SOURCE_TREE"],
+              "workflowHostCommit": os.environ["GITHUB_SHA"],
+              "workflowHostTree": subprocess.check_output(["git", "rev-parse", os.environ["GITHUB_SHA"] + "^{tree}"], text=True).strip(),
+              "workflowRunId": os.environ["GITHUB_RUN_ID"],
+              "workflowRunAttempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "generatedPaths": subprocess.check_output(["git", "diff", "--name-only", "HEAD"], text=True).splitlines(),
+              "patchSha256": hashlib.sha256((output / "generated-outputs.patch").read_bytes()).hexdigest(),
+              "schemaChecks": 4,
+          }, sys.stdout, indent=2)
+          sys.stdout.write("\n")
+          PY
+
+      - name: Upload bounded generated source intake
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: sedna-first-generated-wait-ui-abbdf315-${{ github.run_id }}
+          path: ${{ runner.temp }}/sedna-first-generated/*
+          if-no-files-found: error
+          retention-days: 3
+
   identity:
     name: Bind exact source and workflow host
+    if: ${{ inputs.operation != 'prepare-wait-schema' }}
     runs-on: ubuntu-24.04
     outputs:
       source_sha: ${{ steps.identity.outputs.source_sha }}
