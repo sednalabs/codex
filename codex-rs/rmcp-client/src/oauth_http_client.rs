@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -29,6 +30,97 @@ pub(crate) struct OAuthHttpClientAdapter {
     http_client: OAuthHttpClientBackend,
     default_headers: HeaderMap,
     timeout: OAuthDiscoveryTimeout,
+    fixed_api_exchange_observer: Option<FixedApiExchangeObserver>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FixedApiExchangeFailure {
+    Unknown,
+    Transport,
+    HttpResponse {
+        status: u16,
+        oauth_error: Option<&'static str>,
+    },
+}
+
+impl FixedApiExchangeFailure {
+    pub(crate) fn safe_detail(self) -> String {
+        match self {
+            Self::Unknown => "unknown".to_string(),
+            Self::Transport => "transport".to_string(),
+            Self::HttpResponse {
+                status,
+                oauth_error: Some(code),
+            } => format!("http_status_{status}_oauth_{code}"),
+            Self::HttpResponse {
+                status,
+                oauth_error: None,
+            } => format!("http_status_{status}"),
+        }
+    }
+}
+
+/// Captures only a closed classification from the fixed Ops API token request.
+#[derive(Clone, Default)]
+pub(crate) struct FixedApiExchangeObserver {
+    failure: Arc<Mutex<Option<FixedApiExchangeFailure>>>,
+}
+
+impl FixedApiExchangeObserver {
+    pub(crate) fn record_transport_failure(&self) {
+        self.record(FixedApiExchangeFailure::Transport);
+    }
+
+    pub(crate) fn record_response(&self, status: u16, body: &[u8]) {
+        self.record(FixedApiExchangeFailure::HttpResponse {
+            status,
+            oauth_error: if (200..300).contains(&status) {
+                None
+            } else {
+                oauth_error_code(body)
+            },
+        });
+    }
+
+    pub(crate) fn failure(&self) -> Option<FixedApiExchangeFailure> {
+        self.failure.lock().ok().and_then(|failure| *failure)
+    }
+
+    fn record_result(&self, response: &Result<HttpResponse, OAuthHttpClientError>) {
+        match response {
+            Ok(response) => self.record_response(response.status().as_u16(), response.body()),
+            Err(_) => self.record_transport_failure(),
+        }
+    }
+
+    fn record(&self, failure: FixedApiExchangeFailure) {
+        if let Ok(mut recorded) = self.failure.lock() {
+            if recorded.is_none() {
+                *recorded = Some(failure);
+            }
+        }
+    }
+}
+
+fn oauth_error_code(body: &[u8]) -> Option<&'static str> {
+    #[derive(serde::Deserialize)]
+    struct ErrorCodeResponse {
+        error: Option<String>,
+    }
+
+    // Unknown response fields, including token fields, are ignored by serde's
+    // struct visitor instead of being retained in a general JSON value.
+    let response = serde_json::from_slice::<ErrorCodeResponse>(body).ok()?;
+    let code = response.error?;
+    match code.as_str() {
+        "invalid_client" => Some("invalid_client"),
+        "invalid_grant" => Some("invalid_grant"),
+        "unauthorized_client" => Some("unauthorized_client"),
+        "access_denied" => Some("access_denied"),
+        "invalid_scope" => Some("invalid_scope"),
+        "invalid_request" => Some("invalid_request"),
+        _ => None,
+    }
 }
 
 #[derive(Clone)]
@@ -43,6 +135,7 @@ impl OAuthHttpClientAdapter {
             http_client: OAuthHttpClientBackend::ExecServer(http_client),
             default_headers,
             timeout: OAuthDiscoveryTimeout::Requested,
+            fixed_api_exchange_observer: None,
         }
     }
 
@@ -55,6 +148,7 @@ impl OAuthHttpClientAdapter {
             http_client: OAuthHttpClientBackend::ExecServer(http_client),
             default_headers,
             timeout: OAuthDiscoveryTimeout::Capped(max_timeout),
+            fixed_api_exchange_observer: None,
         }
     }
 
@@ -67,7 +161,17 @@ impl OAuthHttpClientAdapter {
             http_client: OAuthHttpClientBackend::Direct(http_client),
             default_headers,
             timeout: OAuthDiscoveryTimeout::Capped(max_timeout),
+            fixed_api_exchange_observer: None,
         }
+    }
+
+    /// Attaches the bounded observer used by the fixed Ops API login/refresh paths.
+    pub(crate) fn with_fixed_api_exchange_observer(
+        mut self,
+        observer: FixedApiExchangeObserver,
+    ) -> Self {
+        self.fixed_api_exchange_observer = Some(observer);
+        self
     }
 
     async fn execute_request(
@@ -202,7 +306,18 @@ fn append_bounded_body(body: &mut Vec<u8>, chunk: &[u8]) -> Result<(), OAuthHttp
 
 impl OAuthHttpClient for OAuthHttpClientAdapter {
     fn execute(&self, request: OAuthHttpRequest) -> OAuthHttpClientFuture<'_> {
-        Box::pin(self.execute_request(request.request, request.redirect_policy, request.timeout))
+        let is_post = request.request.method().as_str() == "POST";
+        let observer = self.fixed_api_exchange_observer.clone();
+        let response = self.execute_request(request.request, request.redirect_policy, request.timeout);
+        Box::pin(async move {
+            let response = response.await;
+            if is_post {
+                if let Some(observer) = observer {
+                    observer.record_result(&response);
+                }
+            }
+            response
+        })
     }
 }
 
@@ -211,14 +326,21 @@ impl<'client> oauth2::AsyncHttpClient<'client> for OAuthHttpClientAdapter {
     type Future = BoxFuture<'client, Result<HttpResponse, Self::Error>>;
 
     fn call(&'client self, request: HttpRequest) -> Self::Future {
+        let is_post = request.method().as_str() == "POST";
+        let observer = self.fixed_api_exchange_observer.clone();
         Box::pin(async move {
-            self.execute_request(
+            let response = self.execute_request(
                 request,
                 OAuthHttpRedirectPolicy::Stop,
                 Some(Duration::from_secs(10)),
             )
-            .await
-            .map_err(std::io::Error::other)
+            .await;
+            if is_post {
+                if let Some(observer) = observer {
+                    observer.record_result(&response);
+                }
+            }
+            response.map_err(std::io::Error::other)
         })
     }
 }

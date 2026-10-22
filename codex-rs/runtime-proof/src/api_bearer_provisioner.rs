@@ -217,7 +217,7 @@ pub(crate) fn run_api_profile_child(use_manual_callback_input: bool) -> Result<i
             ),
         )
     })
-    .map_err(|error| provisioning_failure(error.stage().into()))?;
+    .map_err(crate::launcher::provisioning_oauth_failure)?;
 
     send_api_token_frame(
         &channel,
