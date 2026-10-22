@@ -1629,16 +1629,73 @@ async fn failed_network_policy_amendment_denies_request_and_does_not_approve_hos
     let server = start_mock_server().await;
     let test = managed_network_unified_exec_test(&server).await?;
     let environments = vec![local(test.config.cwd.clone())];
-    let first_responses = mount_exec_network_turn(
+    let first_call_id = "network-failed-amendment-1";
+    let first_prompt = "reject an invalid network policy amendment";
+    let first_args = network_fetch_args(LOCAL_ENVIRONMENT_ID);
+    mount_sse_once_match(
         &server,
-        "resp-network-failed-amendment-1",
-        "network-failed-amendment-1",
-        network_fetch_args(LOCAL_ENVIRONMENT_ID),
+        move |request: &wiremock::Request| {
+            !is_guardian_request(request)
+                && request_body_contains(request, first_prompt)
+                && !request_body_contains(request, first_call_id)
+        },
+        sse(vec![
+            ev_response_created("resp-network-failed-amendment-1"),
+            ev_function_call(
+                first_call_id,
+                "exec_command",
+                &serde_json::to_string(&first_args)?,
+            ),
+            ev_completed("resp-network-failed-amendment-1"),
+        ]),
     )
-    .await?;
+    .await;
+    let (first_output_tx, first_output_rx) = std::sync::mpsc::channel();
+    let _parent = wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/v1/responses"))
+        .and(move |request: &wiremock::Request| {
+            !is_guardian_request(request) && request_body_contains(request, first_call_id)
+        })
+        .respond_with(move |request: &wiremock::Request| {
+            let body: Value = serde_json::from_slice(
+                &decoded_request_body(request).expect("decode parent request"),
+            )
+            .expect("parse parent request");
+            let input = body["input"].as_array().expect("parent input");
+            let output = input
+                .iter()
+                .rev()
+                .find(|item| item["type"] == "function_call_output")
+                .and_then(|item| item["output"].as_str())
+                .expect("network command or poll output");
+            let response_id = format!("{first_call_id}-{}", input.len());
+            let event = if let Some(session_id) = output
+                .lines()
+                .find_map(|line| line.strip_prefix("Process running with session ID "))
+            {
+                ev_function_call(
+                    &response_id,
+                    "write_stdin",
+                    &json!({
+                        "session_id": session_id.parse::<i32>().expect("session id"),
+                        "chars": "",
+                        "yield_time_ms": 1_000,
+                    })
+                    .to_string(),
+                )
+            } else {
+                first_output_tx
+                    .send(output.to_string())
+                    .expect("save final network output");
+                ev_assistant_message(&response_id, "done")
+            };
+            sse_response(sse(vec![event, ev_completed(&response_id)]))
+        })
+        .mount_as_scoped(&server)
+        .await;
     submit_managed_network_turn(
         &test,
-        "reject an invalid network policy amendment",
+        first_prompt,
         environments.clone(),
         ApprovalsReviewer::User,
         AskForApproval::OnRequest,
@@ -1659,10 +1716,8 @@ async fn failed_network_policy_amendment_denies_request_and_does_not_approve_hos
         .await?;
     wait_for_turn_complete(&test).await;
 
-    let denied_output = first_responses
-        .requests()
-        .iter()
-        .find_map(|request| request.function_call_output_text("network-failed-amendment-1"))
+    let denied_output = first_output_rx
+        .try_recv()
         .context("expected the failed policy amendment to reject the network request")?;
     let output_category = failed_amendment_network_output_category(&denied_output);
     assert!(
