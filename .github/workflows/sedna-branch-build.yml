@@ -177,7 +177,9 @@ jobs:
         install -Dm 0755 "target/x86_64-unknown-linux-gnu/release/codex-code-mode-host" "${stage_dir}/codex-code-mode-host"
         install -Dm 0755 "target/x86_64-unknown-linux-gnu/release/codex-responses-api-proxy" "${stage_dir}/codex-responses-api-proxy"
         install -Dm 0755 "target/x86_64-unknown-linux-gnu/release/codex-runtime-proof-launcher" "${stage_dir}/codex-runtime-proof-launcher"
+        install -Dm 0755 runtime-proof/install_runtime_proof_launcher "${stage_dir}/install_runtime_proof_launcher"
         install -Dm 0644 runtime-proof/systemd/codex-runtime-proof-claim.service "${stage_dir}/systemd/codex-runtime-proof-claim.service"
+        (cd "${stage_dir}" && sha256sum codex-runtime-proof-launcher > codex-runtime-proof-launcher.sha256)
 
         file "${stage_dir}/codex" | grep -F 'x86-64'
         readelf -l "${stage_dir}/codex" | grep -F '/lib64/ld-linux-x86-64.so.2'
@@ -194,6 +196,83 @@ jobs:
         "${stage_dir}/codex-responses-api-proxy" --help >/dev/null
         file "${stage_dir}/codex-runtime-proof-launcher" | grep -F 'x86-64'
         readelf -l "${stage_dir}/codex-runtime-proof-launcher" | grep -F '/lib64/ld-linux-x86-64.so.2'
+
+        smoke_target=/usr/libexec/codex
+        if sudo test -e "${smoke_target}" || sudo test -L "${smoke_target}"; then
+          echo "Refusing launcher install smoke because the fixed target already exists." >&2
+          exit 1
+        fi
+        smoke_target_created=0
+        smoke_package_dir=
+        smoke_unsafe_package_dir=
+        cleanup_installer_smoke() {
+          if (( smoke_target_created == 1 )); then
+            sudo rm -rf -- "${smoke_target}"
+          fi
+          if [[ -n "${smoke_package_dir}" ]]; then
+            sudo rm -rf -- "${smoke_package_dir}"
+          fi
+          if [[ -n "${smoke_unsafe_package_dir}" ]]; then
+            sudo rm -rf -- "${smoke_unsafe_package_dir}"
+          fi
+        }
+        trap cleanup_installer_smoke EXIT
+        sudo install -d -o root -g root -m 0700 -- "${smoke_target}"
+        smoke_target_created=1
+        if sudo "${stage_dir}/install_runtime_proof_launcher" >/dev/null 2>&1; then
+          echo "The runtime-proof installer accepted user-owned package staging." >&2
+          exit 1
+        fi
+        smoke_unsafe_package_dir="${stage_dir}/root-owned-installer-stage"
+        sudo install -d -o root -g root -m 0700 -- "${smoke_unsafe_package_dir}"
+        sudo install -o root -g root -m 0755 -- \
+          "${stage_dir}/install_runtime_proof_launcher" \
+          "${smoke_unsafe_package_dir}/install_runtime_proof_launcher"
+        sudo install -o root -g root -m 0755 -- \
+          "${stage_dir}/codex-runtime-proof-launcher" \
+          "${smoke_unsafe_package_dir}/codex-runtime-proof-launcher"
+        sudo install -o root -g root -m 0644 -- \
+          "${stage_dir}/codex-runtime-proof-launcher.sha256" \
+          "${smoke_unsafe_package_dir}/codex-runtime-proof-launcher.sha256"
+        if sudo "${smoke_unsafe_package_dir}/install_runtime_proof_launcher" >/dev/null 2>&1; then
+          echo "The runtime-proof installer accepted a root-owned stage under a user-controlled parent." >&2
+          exit 1
+        fi
+        sudo rm -rf -- "${smoke_unsafe_package_dir}"
+        smoke_unsafe_package_dir=
+        smoke_package_dir="$(sudo mktemp -d /run/codex-runtime-proof-installer.XXXXXX)"
+        sudo install -o root -g root -m 0755 -- \
+          "${stage_dir}/install_runtime_proof_launcher" \
+          "${smoke_package_dir}/install_runtime_proof_launcher"
+        sudo install -o root -g root -m 0755 -- \
+          "${stage_dir}/codex-runtime-proof-launcher" \
+          "${smoke_package_dir}/codex-runtime-proof-launcher"
+        sudo install -o root -g root -m 0644 -- \
+          "${stage_dir}/codex-runtime-proof-launcher.sha256" \
+          "${smoke_package_dir}/codex-runtime-proof-launcher.sha256"
+        printf '%s\n' 'preserved predecessor fixture' > "${RUNNER_TEMP}/runtime-proof-launcher-predecessor"
+        sudo install -o root -g root -m 0755 -- \
+          "${RUNNER_TEMP}/runtime-proof-launcher-predecessor" \
+          "${smoke_target}/codex-runtime-proof-launcher"
+        predecessor_sha256="$(sha256sum "${RUNNER_TEMP}/runtime-proof-launcher-predecessor" | cut -d' ' -f1)"
+        staged_launcher_sha256="$(sha256sum "${stage_dir}/codex-runtime-proof-launcher" | cut -d' ' -f1)"
+        sudo "${smoke_package_dir}/install_runtime_proof_launcher"
+        installed_launcher_sha256="$(sudo sha256sum "${smoke_target}/codex-runtime-proof-launcher" | cut -d' ' -f1)"
+        rollback_sha256="$(sudo sha256sum "${smoke_target}/.codex-runtime-proof-launcher.rollback-${predecessor_sha256}" | cut -d' ' -f1)"
+        [[ "${installed_launcher_sha256}" == "${staged_launcher_sha256}" ]]
+        [[ "${rollback_sha256}" == "${predecessor_sha256}" ]]
+        [[ "$(sudo stat -c '%u:%g:%a' -- "${smoke_target}")" == '0:0:711' ]]
+        [[ "$(sudo stat -c '%u:%g:%a' -- "${smoke_target}/codex-runtime-proof-launcher")" == '0:0:755' ]]
+        [[ "$(sudo stat -c '%u:%g:%a' -- "${smoke_target}/.codex-runtime-proof-launcher.rollback-${predecessor_sha256}")" == '0:0:600' ]]
+        sudo rm -rf -- "${smoke_target}"
+        smoke_target_created=0
+        sudo rm -rf -- "${smoke_package_dir}"
+        smoke_package_dir=
+        if [[ -n "${smoke_unsafe_package_dir}" ]]; then
+          sudo rm -rf -- "${smoke_unsafe_package_dir}"
+          smoke_unsafe_package_dir=
+        fi
+        trap - EXIT
 
         tar -czf "${GITHUB_WORKSPACE}/dist/${archive_base}.tar.gz" -C "${stage_dir}" .
 
@@ -221,6 +300,14 @@ jobs:
         )
         with open(launcher_path, "rb") as launcher_file:
             payload["runtimeProofLauncherSha256"] = hashlib.sha256(launcher_file.read()).hexdigest()
+        installer_path = os.path.join(
+            os.environ["RUNNER_TEMP"],
+            "sedna-branch/x86_64-unknown-linux-gnu/install_runtime_proof_launcher",
+        )
+        with open(installer_path, "rb") as installer_file:
+            payload["runtimeProofLauncherInstallerSha256"] = hashlib.sha256(
+                installer_file.read()
+            ).hexdigest()
         with tarfile.open(os.environ["ARCHIVE_PATH"], "r:gz") as archive:
             members = [
                 member
@@ -237,6 +324,41 @@ jobs:
                 archive_digest.update(block)
             if archive_digest.hexdigest() != payload["runtimeProofLauncherSha256"]:
                 raise SystemExit("preview archive runtime-proof launcher does not match its manifest")
+            installer_members = [
+                member
+                for member in archive.getmembers()
+                if member.name
+                in {"./install_runtime_proof_launcher", "install_runtime_proof_launcher"}
+            ]
+            checksum_members = [
+                member
+                for member in archive.getmembers()
+                if member.name
+                in {"./codex-runtime-proof-launcher.sha256", "codex-runtime-proof-launcher.sha256"}
+            ]
+            if (
+                len(installer_members) != 1
+                or not installer_members[0].isfile()
+                or installer_members[0].mode & 0o111 == 0
+            ):
+                raise SystemExit("preview archive is missing the runtime-proof installer")
+            if len(checksum_members) != 1 or not checksum_members[0].isfile():
+                raise SystemExit("preview archive is missing the runtime-proof launcher checksum")
+            packaged_installer = archive.extractfile(installer_members[0])
+            packaged_checksum = archive.extractfile(checksum_members[0])
+            if packaged_installer is None or packaged_checksum is None:
+                raise SystemExit("preview archive runtime-proof install inputs are unreadable")
+            installer_digest = hashlib.sha256()
+            for block in iter(lambda: packaged_installer.read(1024 * 1024), b""):
+                installer_digest.update(block)
+            if installer_digest.hexdigest() != payload["runtimeProofLauncherInstallerSha256"]:
+                raise SystemExit("preview archive runtime-proof installer does not match its manifest")
+            checksum_content = packaged_checksum.read().decode("ascii")
+            expected_checksum = (
+                f'{payload["runtimeProofLauncherSha256"]}  codex-runtime-proof-launcher\n'
+            )
+            if checksum_content != expected_checksum:
+                raise SystemExit("preview archive launcher checksum does not match its manifest")
         json.dump(payload, sys.stdout, indent=2)
         sys.stdout.write("\n")
         PY
@@ -276,7 +398,9 @@ jobs:
         install -Dm 0755 "target/aarch64-unknown-linux-gnu/release/codex-code-mode-host" "${stage_dir}/codex-code-mode-host"
         install -Dm 0755 "target/aarch64-unknown-linux-gnu/release/codex-responses-api-proxy" "${stage_dir}/codex-responses-api-proxy"
         install -Dm 0755 "target/aarch64-unknown-linux-gnu/release/codex-runtime-proof-launcher" "${stage_dir}/codex-runtime-proof-launcher"
+        install -Dm 0755 runtime-proof/install_runtime_proof_launcher "${stage_dir}/install_runtime_proof_launcher"
         install -Dm 0644 runtime-proof/systemd/codex-runtime-proof-claim.service "${stage_dir}/systemd/codex-runtime-proof-claim.service"
+        (cd "${stage_dir}" && sha256sum codex-runtime-proof-launcher > codex-runtime-proof-launcher.sha256)
 
         file "${stage_dir}/codex" | grep -F 'ARM aarch64'
         readelf -l "${stage_dir}/codex" | grep -F '/lib/ld-linux-aarch64.so.1'
@@ -296,12 +420,13 @@ jobs:
 
         tar -C "${stage_dir}" -czf "../dist/${archive_base}.tar.gz" .
 
-        python3 - <<'PY' > "../dist/${archive_base}.json"
+        ARCHIVE_PATH="../dist/${archive_base}.tar.gz" python3 - <<'PY' > "../dist/${archive_base}.json"
         import hashlib
         import json
         import os
         import subprocess
         import sys
+        import tarfile
 
         payload = {
             "repository": os.environ["GITHUB_REPOSITORY"],
@@ -320,6 +445,53 @@ jobs:
         )
         with open(launcher_path, "rb") as launcher_file:
             payload["runtimeProofLauncherSha256"] = hashlib.sha256(launcher_file.read()).hexdigest()
+        installer_path = os.path.join(
+            os.environ["RUNNER_TEMP"],
+            "sedna-branch/aarch64-unknown-linux-gnu/install_runtime_proof_launcher",
+        )
+        with open(installer_path, "rb") as installer_file:
+            payload["runtimeProofLauncherInstallerSha256"] = hashlib.sha256(
+                installer_file.read()
+            ).hexdigest()
+        archive_path = os.environ["ARCHIVE_PATH"]
+        with tarfile.open(archive_path, "r:gz") as archive:
+            for member_name, expected_digest in (
+                ("codex-runtime-proof-launcher", payload["runtimeProofLauncherSha256"]),
+                ("install_runtime_proof_launcher", payload["runtimeProofLauncherInstallerSha256"]),
+            ):
+                members = [
+                    member
+                    for member in archive.getmembers()
+                    if member.name in {f"./{member_name}", member_name}
+                ]
+                if (
+                    len(members) != 1
+                    or not members[0].isfile()
+                    or (member_name == "install_runtime_proof_launcher" and members[0].mode & 0o111 == 0)
+                ):
+                    raise SystemExit(f"preview archive is missing {member_name}")
+                packaged_file = archive.extractfile(members[0])
+                if packaged_file is None:
+                    raise SystemExit(f"preview archive {member_name} is unreadable")
+                digest = hashlib.sha256()
+                for block in iter(lambda: packaged_file.read(1024 * 1024), b""):
+                    digest.update(block)
+                if digest.hexdigest() != expected_digest:
+                    raise SystemExit(f"preview archive {member_name} does not match its manifest")
+            checksum_members = [
+                member
+                for member in archive.getmembers()
+                if member.name
+                in {"./codex-runtime-proof-launcher.sha256", "codex-runtime-proof-launcher.sha256"}
+            ]
+            if len(checksum_members) != 1 or not checksum_members[0].isfile():
+                raise SystemExit("preview archive is missing the runtime-proof launcher checksum")
+            packaged_checksum = archive.extractfile(checksum_members[0])
+            expected_checksum = (
+                f'{payload["runtimeProofLauncherSha256"]}  codex-runtime-proof-launcher\n'
+            )
+            if packaged_checksum is None or packaged_checksum.read().decode("ascii") != expected_checksum:
+                raise SystemExit("preview archive launcher checksum does not match its manifest")
         json.dump(payload, sys.stdout, indent=2)
         sys.stdout.write("\n")
         PY

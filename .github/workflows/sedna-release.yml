@@ -612,7 +612,9 @@ jobs:
           install -Dm 0755 "target/${TARGET}/release/codex" "${stage_dir}/codex"
           install -Dm 0755 "target/${TARGET}/release/codex-responses-api-proxy" "${stage_dir}/codex-responses-api-proxy"
           install -Dm 0755 "target/${TARGET}/release/codex-runtime-proof-launcher" "${stage_dir}/codex-runtime-proof-launcher"
+          install -Dm 0755 runtime-proof/install_runtime_proof_launcher "${stage_dir}/install_runtime_proof_launcher"
           install -Dm 0644 runtime-proof/systemd/codex-runtime-proof-claim.service "${stage_dir}/systemd/codex-runtime-proof-claim.service"
+          (cd "${stage_dir}" && sha256sum codex-runtime-proof-launcher > codex-runtime-proof-launcher.sha256)
 
           cp "target/${TARGET}/release/codex.sigstore" "${dist_dir}/${archive_base}-codex.sigstore"
           cp "target/${TARGET}/release/codex-responses-api-proxy.sigstore" "${dist_dir}/${archive_base}-codex-responses-api-proxy.sigstore"
@@ -620,6 +622,14 @@ jobs:
 
           tar -C "${stage_dir}" -czf "${dist_dir}/${archive_base}.tar.gz" .
           install -m 0644 Cargo.toml Cargo.lock "${stage_dir}/"
+          launcher_sha256="$(sha256sum "${stage_dir}/codex-runtime-proof-launcher" | cut -d' ' -f1)"
+          launcher_installer_sha256="$(sha256sum "${stage_dir}/install_runtime_proof_launcher" | cut -d' ' -f1)"
+          archive_launcher_sha256="$(tar -xOf "${dist_dir}/${archive_base}.tar.gz" ./codex-runtime-proof-launcher | sha256sum | cut -d' ' -f1)"
+          archive_installer_sha256="$(tar -xOf "${dist_dir}/${archive_base}.tar.gz" ./install_runtime_proof_launcher | sha256sum | cut -d' ' -f1)"
+          archive_launcher_checksum="$(tar -xOf "${dist_dir}/${archive_base}.tar.gz" ./codex-runtime-proof-launcher.sha256)"
+          [[ "${archive_launcher_sha256}" == "${launcher_sha256}" ]]
+          [[ "${archive_installer_sha256}" == "${launcher_installer_sha256}" ]]
+          [[ "${archive_launcher_checksum}" == "${launcher_sha256}  codex-runtime-proof-launcher" ]]
 
           cat > "${dist_dir}/${METADATA_TEXT_NAME}" <<EOF
           release_tag=${RELEASE_TAG}
@@ -641,9 +651,11 @@ jobs:
           repository=${REPOSITORY}
           target=${TARGET}
           git_describe=$(git describe --tags --always)
+          runtime_proof_launcher_sha256=${launcher_sha256}
+          runtime_proof_launcher_installer_sha256=${launcher_installer_sha256}
           EOF
 
-          python3 - <<'PY' > "${dist_dir}/${METADATA_JSON_NAME}"
+          LAUNCHER_SHA256="${launcher_sha256}" LAUNCHER_INSTALLER_SHA256="${launcher_installer_sha256}" python3 - <<'PY' > "${dist_dir}/${METADATA_JSON_NAME}"
           import json
           import os
 
@@ -667,6 +679,8 @@ jobs:
                   "workflow_sha": os.environ["WORKFLOW_SHA"],
                   "repository": os.environ["REPOSITORY"],
                   "target": os.environ["TARGET"],
+                  "runtime_proof_launcher_sha256": os.environ["LAUNCHER_SHA256"],
+                  "runtime_proof_launcher_installer_sha256": os.environ["LAUNCHER_INSTALLER_SHA256"],
               },
               fp=os.sys.stdout,
               indent=2,

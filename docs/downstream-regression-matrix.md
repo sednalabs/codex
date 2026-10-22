@@ -1188,11 +1188,22 @@ to the same raw-config admission used by the protected child, verify a
 certificate signature with the configured issuer pin, check the exact
 length-prefixed bootstrap packet, bound fixed-prompt delivery when the child
 pipe is backpressured, and reject unsafe project IDs or noncanonical issuer
-pins. Linux release and branch-preview packaging must
-include the launcher and its systemd unit template in x86_64 and Arm64 archives,
-verify the architecture and binary digest, and keep the template inert; source
-or package proof does not establish policy/credential provisioning, service
-installation, issuer appointment, or first use. Its runtime-home regression
+pins. Linux release and branch-preview packaging must include the launcher,
+fixed installer, launcher checksum and its systemd unit template in x86_64 and
+Arm64 archives, verify the architecture and launcher/installer digests, and
+keep the template inert. The installer may change only `/usr/libexec/codex`: it
+rejects inputs outside a root-owned, non-group/world-writable stage after the
+receiver verifies the selected archive. Its accepted stage is a direct child
+of root-owned `/run`, so a user-controlled ancestor cannot replace the checked
+directory. Hosted installation coverage rejects a user-owned stage and a
+root-owned stage under a user-controlled parent, then enforces root ownership
+and mode `0711`, verifies the staged launcher bytes, preserves the exact
+predecessor as a root-only digest-named rollback image, and uses atomic
+replacement without starting or reloading the unit. The installed-image
+regression requires invoking-user traversal through trusted parents and still
+rejects writable parents. Source or package proof does not establish
+policy/credential provisioning, service installation, issuer appointment, or
+first use. Its runtime-home regression
 checks that the child can write its private state and read its installation ID
 without changing generated configuration or adding CODEX_HOME settings.
 
@@ -1209,6 +1220,16 @@ policy consistency. The client-specific mapper adds `ops-api` while the
 existing optional `ops:write` scope contributes its established MCP audiences.
 Source and
 hosted package proof do not appoint the bearer or establish HTTP first use.
+
+If that claim POST has an uncertain result, the launcher retains its request
+UUID and performs one bounded `POST /v0/work-items/execution-receipt/read` with
+the same API bearer and exact Work reference/request UUID. A matching top-level
+Work reference and request UUID with non-null historical `generation` and
+`execution_instance_id` settles a committed claim; Ops validates full work,
+project, and request binding before projection. Null history remains
+unresolved, and a failed or absent read never authorizes replay. Hosted
+regressions must assert both historical recovery and the no-replay/unresolved
+path.
 
 The bounded `provision-api-bearer` mode reuses the existing Codex OAuth callback
 and PKCE path with the fixed API issuer, resource, client, loopback redirect, and
