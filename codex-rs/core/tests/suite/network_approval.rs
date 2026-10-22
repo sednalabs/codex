@@ -3683,14 +3683,23 @@ fn failed_amendment_network_output_shape(output: &str) -> &'static str {
         (output_header == "Output:").then_some(())
     })()
     .is_some();
-    let process_exited = output.lines().any(|line| {
-        line.strip_prefix(EXIT_CODE_PREFIX)
-            .is_some_and(|code| code.parse::<i32>().is_ok())
-    });
-    let process_running = output.lines().any(|line| {
-        line.strip_prefix(RUNNING_PREFIX)
-            .is_some_and(|process_id| !process_id.is_empty())
-    });
+    let process_exit_count = output
+        .lines()
+        .filter(|line| {
+            line.strip_prefix(EXIT_CODE_PREFIX)
+                .is_some_and(|code| code.parse::<i32>().is_ok())
+        })
+        .count();
+    let process_running_count = output
+        .lines()
+        .filter(|line| {
+            line.strip_prefix(RUNNING_PREFIX)
+                .is_some_and(|process_id| !process_id.is_empty())
+        })
+        .count();
+    if process_exit_count > 1 || process_running_count > 1 {
+        return "opaque";
+    }
     let bare_network_access = output.starts_with(NETWORK_ACCESS_PREFIX);
 
     let mut matched_shape = None;
@@ -3698,8 +3707,8 @@ fn failed_amendment_network_output_shape(output: &str) -> &'static str {
         (process_failed_wrapper, "exec_process_failed"),
         (other_exec_error, "exec_other_error"),
         (tool_output_header, "exec_output_header"),
-        (process_exited, "exec_output_exited"),
-        (process_running, "exec_output_running"),
+        (process_exit_count == 1, "exec_output_exited"),
+        (process_running_count == 1, "exec_output_running"),
         (bare_network_access, "bare_network_access"),
     ] {
         if matches_shape {
@@ -3809,6 +3818,12 @@ fn failed_amendment_network_output_shape_is_closed_and_payload_free() {
     assert_eq!(
         failed_amendment_network_output_shape(
             "Exit code: 0\nWall time: 0.1 seconds\nOutput:\nProcess exited with code 1"
+        ),
+        "opaque"
+    );
+    assert_eq!(
+        failed_amendment_network_output_shape(
+            "Process exited with code 1\nProcess exited with code 2"
         ),
         "opaque"
     );
