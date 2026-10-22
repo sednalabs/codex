@@ -890,7 +890,7 @@ mod tests {
             let item = ThreadItem::CollabAgentToolCall {
                 id: "wait-selected".into(),
                 tool: CollabAgentTool::Wait,
-                status,
+                status: status.clone(),
                 sender_thread_id: "caller".into(),
                 receiver_thread_ids: vec![first.to_string(), second.to_string()],
                 prompt: None,
