@@ -3670,6 +3670,8 @@ const FAILED_AMENDMENT_POLICY_FALLBACK: &str =
     "Network access to \"http://codex-network-test.invalid:80\" was blocked by policy.";
 const FAILED_AMENDMENT_PROXY_DENIAL_PREFIX: &str =
     "Network access to \"codex-network-test.invalid\" was blocked: ";
+const FAILED_AMENDMENT_WRITE_STDIN_PROCESS_FAILED_PREFIX: &str =
+    "write_stdin failed: Unified exec process failed: ";
 const FAILED_AMENDMENT_PROXY_DENIAL_DETAILS: [&str; 6] = [
     "domain is explicitly denied by policy and cannot be approved from this prompt.",
     "domain is not on the allowlist for the current sandbox mode.",
@@ -3682,6 +3684,7 @@ const FAILED_AMENDMENT_PROXY_DENIAL_DETAILS: [&str; 6] = [
 fn failed_amendment_output_matches_exact_message(output: &str, message: &str) -> bool {
     output == message
         || output == format!("exec_command failed: ProcessFailed {{ message: {message:?} }}")
+        || output == format!("{FAILED_AMENDMENT_WRITE_STDIN_PROCESS_FAILED_PREFIX}{message}")
 }
 
 fn failed_amendment_network_output_category(output: &str) -> &'static str {
@@ -3703,6 +3706,8 @@ fn failed_amendment_network_output_shape(output: &str) -> &'static str {
     const PROCESS_FAILED_PREFIX: &str = "exec_command failed: ProcessFailed { message: \"";
     const PROCESS_FAILED_SUFFIX: &str = "\" }";
     const EXEC_ERROR_PREFIX: &str = "exec_command failed:";
+    const WRITE_STDIN_PROCESS_FAILED_PREFIX: &str =
+        "write_stdin failed: Unified exec process failed: ";
     const NETWORK_ACCESS_PREFIX: &str = "Network access to \"";
     const EXIT_CODE_PREFIX: &str = "Process exited with code ";
     const RUNNING_PREFIX: &str = "Process running with session ID ";
@@ -3717,6 +3722,9 @@ fn failed_amendment_network_output_shape(output: &str) -> &'static str {
     let other_exec_error = output
         .strip_prefix(EXEC_ERROR_PREFIX)
         .is_some_and(|details| !details.trim().is_empty() && !process_failed_wrapper);
+    let write_stdin_process_failed_wrapper = output
+        .strip_prefix(WRITE_STDIN_PROCESS_FAILED_PREFIX)
+        .is_some_and(|message| !message.is_empty());
     let response_header = output.split_once("\nOutput:\n").map(|(header, _)| header);
     let tool_output_header = response_header.and_then(|header| {
         let mut lines = header.lines();
@@ -3788,6 +3796,7 @@ fn failed_amendment_network_output_shape(output: &str) -> &'static str {
     for (matches_shape, shape) in [
         (process_failed_wrapper, "exec_process_failed"),
         (other_exec_error, "exec_other_error"),
+        (write_stdin_process_failed_wrapper, "write_stdin_process_failed"),
         (tool_output_header.is_some(), "exec_output_header"),
         (
             context_output_header.is_some(),
@@ -3819,12 +3828,22 @@ fn failed_amendment_network_output_category_matches_only_exact_denials() {
             ),
             "policy_denial",
         ),
+        (
+            format!(
+                "{FAILED_AMENDMENT_WRITE_STDIN_PROCESS_FAILED_PREFIX}{FAILED_AMENDMENT_POLICY_FALLBACK}"
+            ),
+            "policy_denial",
+        ),
     ];
     for detail in FAILED_AMENDMENT_PROXY_DENIAL_DETAILS {
         let message = format!("{FAILED_AMENDMENT_PROXY_DENIAL_PREFIX}{detail}");
         positive_cases.push((message.clone(), "proxy_policy_denial"));
         positive_cases.push((
             format!("exec_command failed: ProcessFailed {{ message: {message:?} }}"),
+            "proxy_policy_denial",
+        ));
+        positive_cases.push((
+            format!("{FAILED_AMENDMENT_WRITE_STDIN_PROCESS_FAILED_PREFIX}{message}"),
             "proxy_policy_denial",
         ));
     }
@@ -3843,6 +3862,18 @@ fn failed_amendment_network_output_category_matches_only_exact_denials() {
             format!("{FAILED_AMENDMENT_POLICY_FALLBACK} extra")
         ),
         format!("{FAILED_AMENDMENT_PROXY_DENIAL_PREFIX}different host or detail"),
+        format!(
+            "write_stdin failed: OtherError: {FAILED_AMENDMENT_POLICY_FALLBACK}"
+        ),
+        format!(
+            "{FAILED_AMENDMENT_WRITE_STDIN_PROCESS_FAILED_PREFIX}Network access to \"wrong.invalid\" was blocked by policy."
+        ),
+        format!(
+            "{FAILED_AMENDMENT_WRITE_STDIN_PROCESS_FAILED_PREFIX}{FAILED_AMENDMENT_POLICY_FALLBACK} extra"
+        ),
+        format!(
+            "{FAILED_AMENDMENT_WRITE_STDIN_PROCESS_FAILED_PREFIX}{FAILED_AMENDMENT_PROXY_DENIAL_PREFIX}different host or detail"
+        ),
     ];
     for output in negative_cases {
         assert_eq!(failed_amendment_network_output_category(&output), "other");
@@ -3864,6 +3895,24 @@ fn failed_amendment_network_output_shape_is_closed_and_payload_free() {
     assert_eq!(
         failed_amendment_network_output_shape("exec_command failed: OtherError { message: ... }"),
         "exec_other_error"
+    );
+    assert_eq!(
+        failed_amendment_network_output_shape(&format!(
+            "{FAILED_AMENDMENT_WRITE_STDIN_PROCESS_FAILED_PREFIX}{FAILED_AMENDMENT_POLICY_FALLBACK}"
+        )),
+        "write_stdin_process_failed"
+    );
+    assert_eq!(
+        failed_amendment_network_output_shape(
+            "write_stdin failed: Unified exec process failed:"
+        ),
+        "opaque"
+    );
+    assert_eq!(
+        failed_amendment_network_output_shape(
+            "write_stdin failed: OtherError: private detail"
+        ),
+        "opaque"
     );
     assert_eq!(
         failed_amendment_network_output_shape("exec_command failed:"),
