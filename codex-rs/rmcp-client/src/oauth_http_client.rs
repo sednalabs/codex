@@ -308,7 +308,8 @@ impl OAuthHttpClient for OAuthHttpClientAdapter {
     fn execute(&self, request: OAuthHttpRequest) -> OAuthHttpClientFuture<'_> {
         let is_post = request.request.method().as_str() == "POST";
         let observer = self.fixed_api_exchange_observer.clone();
-        let response = self.execute_request(request.request, request.redirect_policy, request.timeout);
+        let response =
+            self.execute_request(request.request, request.redirect_policy, request.timeout);
         Box::pin(async move {
             let response = response.await;
             if is_post {
@@ -329,12 +330,13 @@ impl<'client> oauth2::AsyncHttpClient<'client> for OAuthHttpClientAdapter {
         let is_post = request.method().as_str() == "POST";
         let observer = self.fixed_api_exchange_observer.clone();
         Box::pin(async move {
-            let response = self.execute_request(
-                request,
-                OAuthHttpRedirectPolicy::Stop,
-                Some(Duration::from_secs(10)),
-            )
-            .await;
+            let response = self
+                .execute_request(
+                    request,
+                    OAuthHttpRedirectPolicy::Stop,
+                    Some(Duration::from_secs(10)),
+                )
+                .await;
             if is_post {
                 if let Some(observer) = observer {
                     observer.record_result(&response);

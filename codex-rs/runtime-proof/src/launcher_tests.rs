@@ -62,7 +62,6 @@ fn api_bearer_provisioning_failure_exposes_only_a_fixed_stage() {
         safe_provisioning_failure_detail(&anyhow::anyhow!("sensitive internal detail")),
         None
     );
-
 }
 
 #[test]

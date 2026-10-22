@@ -283,7 +283,11 @@ impl ProvisioningFailure {
 
 impl std::fmt::Display for ProvisioningFailure {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "API bearer provisioning failed at {}", self.stage.as_str())?;
+        write!(
+            formatter,
+            "API bearer provisioning failed at {}",
+            self.stage.as_str()
+        )?;
         if let Some(detail) = &self.exchange_detail {
             write!(formatter, " (exchange detail: {detail})")?;
         }

@@ -103,7 +103,8 @@ impl FixedOAuthLoginError {
 
     /// Returns a closed, non-sensitive classification for an OAuth token exchange failure.
     pub fn safe_exchange_detail(&self) -> Option<String> {
-        self.exchange_failure.map(FixedApiExchangeFailure::safe_detail)
+        self.exchange_failure
+            .map(FixedApiExchangeFailure::safe_detail)
     }
 }
 
@@ -423,13 +424,14 @@ async fn perform_oauth_access_token_login<'a>(
         .build_direct()
         .map_err(|_| FixedOAuthLoginError::at(FixedOAuthLoginStage::Discovery))?;
     let exchange_observer = FixedApiExchangeObserver::default();
-    let oauth_http_client: Arc<dyn OAuthHttpClient> =
-        Arc::new(OAuthHttpClientAdapter::new_direct_with_max_timeout(
+    let oauth_http_client: Arc<dyn OAuthHttpClient> = Arc::new(
+        OAuthHttpClientAdapter::new_direct_with_max_timeout(
             http_client,
             HeaderMap::new(),
             Duration::from_secs(10),
         )
-        .with_fixed_api_exchange_observer(exchange_observer.clone()));
+        .with_fixed_api_exchange_observer(exchange_observer.clone()),
+    );
 
     let (mut oauth_state, authorization_url) = start_fixed_oauth_authorization(
         issuer_url,
@@ -1457,10 +1459,10 @@ mod tests {
     use super::FIXED_API_CLAIM_ISSUER;
     use super::FIXED_API_CLAIM_RESOURCE;
     use super::FIXED_API_CLAIM_SCOPE;
-    use super::HttpClientBuilder;
-    use super::OAuthHttpClientAdapter;
     use super::FixedOAuthLoginError;
     use super::FixedOAuthLoginStage;
+    use super::HttpClientBuilder;
+    use super::OAuthHttpClientAdapter;
     use super::OAuthProviderError;
     use super::OauthCallbackResult;
     use super::access_token_from_response;
@@ -1506,7 +1508,10 @@ mod tests {
             br#"{"error":"provider_private_error","error_description":"secret-marker"}"#,
         );
         assert_eq!(
-            observer.failure().expect("record HTTP token failure").safe_detail(),
+            observer
+                .failure()
+                .expect("record HTTP token failure")
+                .safe_detail(),
             "http_status_400"
         );
 
@@ -1521,10 +1526,7 @@ mod tests {
         );
 
         let unknown = FixedOAuthLoginError::exchange(None);
-        assert_eq!(
-            unknown.safe_exchange_detail().as_deref(),
-            Some("unknown")
-        );
+        assert_eq!(unknown.safe_exchange_detail().as_deref(), Some("unknown"));
         assert!(!format!("{unknown:?}").contains("secret-marker"));
 
         let successful_status = super::FixedApiExchangeObserver::default();
