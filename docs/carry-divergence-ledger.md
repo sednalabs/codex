@@ -3776,7 +3776,7 @@ archive and binding and verifies them against the target's pinned checksum
 manifest. Use the host-only artifact only with companion binaries built from
 the same source commit.
 
-## Native per-execution proof for a protected MCP claim
+## Native per-execution proof for protected MCP and HTTP claims
 
 The Linux CLI accepts an optional protected bootstrap through one inherited
 anonymous descriptor before dispatching arguments or starting asynchronous
@@ -3959,12 +3959,32 @@ codes or closed SDK error categories; internal error strings, OAuth response
 details, and callback input remain suppressed.
 The installed-image guard checks the executable's parent directories through
 `/` separately from the executable's own regular-file, mode, owner, and inode
-checks; regressions cover a valid executable in trusted parents and a writable
-parent rejection.
+checks; regressions cover a valid executable in traversable trusted parents,
+and reject both writable and non-traversable parents.
 
-The unit template and binary are packaged for Linux x86_64 and Arm64; packaging
-does not create the host policy, credentials, service account, issuer
-appointment, service installation, or live execution authority.
+Linux release and branch-preview archives package the fixed installer with the
+launcher and its checksum for x86_64 and Arm64. The supported installation
+procedure uses the existing authenticated GitHub artifact API/download path:
+verify the repository, workflow run, source commit, artifact identity, and
+API-reported artifact digest against the accepted qualified build before
+extracting any package member. Then create a fresh root-owned mode `0700`
+directory directly under `/run` named
+`codex-runtime-proof-installer.XXXXXX`, copy only the installer, launcher, and
+checksum there as root-owned files with safe modes, and invoke the fixed
+installer from that directory. Do not use an untrusted extraction directory
+or treat the package's adjacent launcher checksum as provider provenance.
+The installer checks the root-owned `/run` parent, direct-child stage, regular
+no-follow inputs, package ownership, modes, and launcher bytes against the
+package checksum. This prevents an unprivileged parent from replacing a
+checked staging directory between input validation and use. The hosted smoke
+rejects both user-owned staging and a root-owned directory under a
+user-controlled parent. The installer changes only `/usr/libexec/codex` and
+atomically replaces the fixed root-owned executable after preserving the exact
+predecessor as a root-only digest-named rollback image. The directory is
+root-owned mode `0711` so invoking users can traverse the path without listing
+or writing it. Installation never starts or reloads the unit. Packaging does
+not create the host policy, credentials, service account, issuer appointment,
+or live execution authority.
 
 Curated plugin ZIP extraction applies Unix permissions only after masking to
 ordinary `0o777` bits. This keeps executable plugin files usable while making
