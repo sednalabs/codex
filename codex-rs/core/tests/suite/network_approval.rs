@@ -3644,8 +3644,7 @@ fn failed_amendment_network_output_category(output: &str) -> &'static str {
 }
 
 fn failed_amendment_network_output_shape(output: &str) -> &'static str {
-    const PROCESS_FAILED_PREFIX: &str =
-        "exec_command failed: ProcessFailed { message: \"";
+    const PROCESS_FAILED_PREFIX: &str = "exec_command failed: ProcessFailed { message: \"";
     const PROCESS_FAILED_SUFFIX: &str = "\" }";
     const EXEC_ERROR_PREFIX: &str = "exec_command failed:";
     const NETWORK_ACCESS_PREFIX: &str = "Network access to \"";
@@ -3734,7 +3733,10 @@ fn failed_amendment_network_output_shape(output: &str) -> &'static str {
         (process_failed_wrapper, "exec_process_failed"),
         (other_exec_error, "exec_other_error"),
         (tool_output_header.is_some(), "exec_output_header"),
-        (context_output_header.is_some(), context_output_header.unwrap_or("opaque")),
+        (
+            context_output_header.is_some(),
+            context_output_header.unwrap_or("opaque"),
+        ),
         (bare_network_access, "bare_network_access"),
     ] {
         if matches_shape {
@@ -3771,10 +3773,7 @@ fn failed_amendment_network_output_category_matches_only_exact_denials() {
         ));
     }
     for (output, expected) in positive_cases {
-        assert_eq!(
-            failed_amendment_network_output_category(&output),
-            expected
-        );
+        assert_eq!(failed_amendment_network_output_category(&output), expected);
     }
 
     let negative_cases = [
@@ -3793,10 +3792,7 @@ fn failed_amendment_network_output_category_matches_only_exact_denials() {
         ),
     ];
     for output in negative_cases {
-        assert_eq!(
-            failed_amendment_network_output_category(&output),
-            "other"
-        );
+        assert_eq!(failed_amendment_network_output_category(&output), "other");
     }
     assert_eq!(
         failed_amendment_network_output_category("OK: synthetic output"),
@@ -3844,7 +3840,10 @@ fn failed_amendment_network_output_shape_is_closed_and_payload_free() {
         "bare_network_access"
     );
     assert_eq!(failed_amendment_network_output_shape(""), "empty");
-    assert_eq!(failed_amendment_network_output_shape("unrecognized output"), "opaque");
+    assert_eq!(
+        failed_amendment_network_output_shape("unrecognized output"),
+        "opaque"
+    );
     assert_eq!(
         failed_amendment_network_output_shape(
             "Exit code: 0\nWall time: 0.1 seconds\nOutput:\nProcess exited with code 1"
