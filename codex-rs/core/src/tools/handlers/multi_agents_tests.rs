@@ -26,6 +26,7 @@ use crate::tools::handlers::multi_agents_v2::ListAgentsHandler as ListAgentsHand
 use crate::tools::handlers::multi_agents_v2::SendMessageHandler as SendMessageHandlerV2;
 use crate::tools::handlers::multi_agents_v2::SpawnAgentHandler as SpawnAgentHandlerV2;
 use crate::tools::handlers::multi_agents_v2::WaitAgentHandler as WaitAgentHandlerV2;
+use crate::tools::handlers::multi_agents_v2::wait::WaitWakeCause;
 use crate::turn_diff_tracker::TurnDiffTracker;
 use codex_extension_api::empty_extension_registry;
 use codex_features::Feature;
@@ -3054,6 +3055,7 @@ async fn multi_agent_v2_wait_agent_accepts_timeout_only_argument() {
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait completed.".to_string(),
             timed_out: false,
+            wake_cause: WaitWakeCause::LegacyMailbox,
         }
     );
     assert_eq!(success, None);
@@ -3101,6 +3103,7 @@ async fn multi_agent_v2_wait_agent_clamps_timeout_below_configured_min() {
                 "Wait timed out.\n\nRequested timeout of 1ms was clamped to the minimum of 50ms."
                     .to_string(),
             timed_out: true,
+            wake_cause: WaitWakeCause::TimedOut,
         }
     );
     assert_eq!(success, None);
@@ -3136,6 +3139,7 @@ async fn multi_agent_v2_wait_agent_accepts_explicit_timeout_at_configured_min() 
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait timed out.".to_string(),
             timed_out: true,
+            wake_cause: WaitWakeCause::TimedOut,
         }
     );
     assert_eq!(success, None);
@@ -3191,6 +3195,7 @@ async fn multi_agent_v2_wait_agent_uses_configured_default_timeout() {
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait timed out.".to_string(),
             timed_out: true,
+            wake_cause: WaitWakeCause::TimedOut,
         }
     );
     assert_eq!(success, None);
@@ -3231,6 +3236,7 @@ async fn multi_agent_v2_wait_agent_allows_zero_configured_timeout() {
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait timed out.".to_string(),
             timed_out: true,
+            wake_cause: WaitWakeCause::TimedOut,
         }
     );
     assert_eq!(success, None);
@@ -3296,6 +3302,7 @@ async fn multi_agent_v2_wait_agent_accepts_explicit_timeout_at_configured_max() 
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait timed out.".to_string(),
             timed_out: true,
+            wake_cause: WaitWakeCause::TimedOut,
         }
     );
     assert_eq!(success, None);
@@ -3554,6 +3561,7 @@ async fn multi_agent_v2_wait_agent_returns_summary_for_mailbox_activity() {
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait completed.".to_string(),
             timed_out: false,
+            wake_cause: WaitWakeCause::LegacyMailbox,
         }
     );
     assert_eq!(success, None);
@@ -3638,6 +3646,7 @@ async fn multi_agent_v2_wait_agent_returns_for_already_queued_mail() {
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait completed.".to_string(),
             timed_out: false,
+            wake_cause: WaitWakeCause::LegacyMailbox,
         }
     );
     assert_eq!(success, None);
@@ -3732,6 +3741,7 @@ async fn multi_agent_v2_wait_agent_wakes_on_any_mailbox_notification() {
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait completed.".to_string(),
             timed_out: false,
+            wake_cause: WaitWakeCause::LegacyMailbox,
         }
     );
     assert_eq!(success, None);
@@ -3823,6 +3833,7 @@ async fn multi_agent_v2_wait_agent_does_not_return_completed_content() {
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait completed.".to_string(),
             timed_out: false,
+            wake_cause: WaitWakeCause::LegacyMailbox,
         }
     );
     assert!(!content.contains("sensitive child output"));

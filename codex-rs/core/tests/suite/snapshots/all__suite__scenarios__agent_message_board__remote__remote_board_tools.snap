@@ -44,5 +44,5 @@ Scenario: Remote board tools and active-turn notifications share the existing se
 08:function_call/collaboration.post:{"new_channel_name":"design","text":"A remote decision."}
 09:function_call/collaboration.wait_agent:{}
 10:function_call_output:{"author":"/root","channel_name":"design","created_at":"2026-09-18T12:00:00Z","message_id":"<UUID 1>","thread_id":"<UUID 1>"}
-11:function_call_output:{"message":"Wait completed.","timed_out":false}
+11:function_call_output:{"message":"Wait completed.","timed_out":false,"wake_cause":"legacy_mailbox"}
 12:agent_message

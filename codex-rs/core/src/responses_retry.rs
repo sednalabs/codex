@@ -89,6 +89,10 @@ pub(crate) async fn handle_response_stream_error(
         return Err(err);
     };
     let retry_after = err.retry_after();
+    let semantic_overload = matches!(
+        err.details(),
+        CodexErrorDetails::ServerOverloaded | CodexErrorDetails::RetryLimit(_)
+    );
 
     if turn_context
         .config
@@ -117,7 +121,10 @@ pub(crate) async fn handle_response_stream_error(
         return Ok(());
     }
 
-    if retry_state.retries >= max_retries
+    // A different transport cannot repair semantic capacity/rate limits. Keep their
+    // configured stream budget rather than resetting it by switching transports.
+    if !semantic_overload
+        && retry_state.retries >= max_retries
         && client_session.try_switch_fallback_transport(
             &turn_context.session_telemetry,
             turn_context.model_info(),
@@ -142,9 +149,10 @@ pub(crate) async fn handle_response_stream_error(
         retry_state.retries = retry_count;
         log_retry(request, turn_context, &err, retry_count, max_retries, delay);
 
-        // In release builds, hide the first websocket retry notification to reduce noisy
-        // transient reconnect messages. In debug builds, keep full visibility for diagnosis.
-        let report_error = retry_count > 1
+        // Semantic overloads always explain the wait. For ordinary reconnects, release
+        // builds still hide the first websocket notification to reduce transient noise.
+        let report_error = semantic_overload
+            || retry_count > 1
             || cfg!(debug_assertions)
             || !sess.services.model_client.responses_websocket_enabled();
         if report_error {

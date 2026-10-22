@@ -216,11 +216,18 @@ pub fn create_send_message_tool() -> ToolSpec {
             ))
             .with_encrypted(),
         ),
+        (
+            "wake_wait".to_string(),
+            JsonSchema::boolean(Some(
+                "Set true for actionable mail that should end an active wait. Defaults to false; never starts an idle turn."
+                    .to_string(),
+            )),
+        ),
     ]);
 
     ToolSpec::Function(ResponsesApiTool {
         name: "send_message".to_string(),
-        description: "Send a message to an existing agent. The message will be delivered promptly. Does not trigger a new turn."
+        description: "Queue a message on an existing agent without starting a new turn. Ordinary progress is quiet by default; set wake_wait=true only when the recipient should act on it during an active wait."
             .to_string(),
         strict: false,
         defer_loading: None,
@@ -303,7 +310,7 @@ pub fn create_wait_agent_tool_v1(options: WaitAgentTimeoutOptions) -> ToolSpec {
 pub fn create_wait_agent_tool_v2(options: WaitAgentTimeoutOptions) -> ToolSpec {
     ToolSpec::Function(ResponsesApiTool {
         name: "wait_agent".to_string(),
-        description: "Wait for a mailbox update from any live agent, including queued messages and final-status notifications. The wait also ends early when new user input is steered into the active turn. Does not return the content; returns either a summary of which agents have updates (if any), an interruption summary for steered input, or a timeout summary if no activity arrives before the deadline."
+        description: "Wait for actionable mail or a final-status notification from any live agent. Ordinary informational mail stays queued without ending the wait; legacy mail without wake metadata remains eligible. The wait also ends for new steered user input or its original timeout. Returns a bounded wake cause and summary, not message content or attribution to every queued message."
             .to_string(),
         strict: false,
         defer_loading: None,
@@ -545,10 +552,15 @@ fn wait_output_schema_v2() -> Value {
             },
             "timed_out": {
                 "type": "boolean",
-                "description": "Whether the wait call returned because no mailbox update arrived before the timeout."
+                "description": "Whether the wait call returned because no eligible activity arrived before the timeout."
+            },
+            "wake_cause": {
+                "type": "string",
+                "enum": ["actionable_message", "completion", "legacy_mailbox", "mailbox_activity", "steered", "timed_out"],
+                "description": "Eligible retained-input category; mailbox_activity denotes mixed categories, not a particular sender or message."
             }
         },
-        "required": ["message", "timed_out"],
+        "required": ["message", "timed_out", "wake_cause"],
         "additionalProperties": false
     })
 }
