@@ -357,21 +357,14 @@ fn validate_claim_receipt(response_body: &[u8], expected_work_item_ref: &str) ->
 struct ExecutionReceiptReadResponse {
     work_item_ref: String,
     request_id: Uuid,
-    receipt: ExecutionReceiptRead,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ExecutionReceiptRead {
     historical: Option<HistoricalExecutionReceipt>,
-    current_claim: Option<Value>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct HistoricalExecutionReceipt {
-    historical: bool,
-    outcome: Value,
+    generation: i64,
+    execution_instance_id: Uuid,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -385,11 +378,6 @@ fn parse_execution_receipt(
     expected_work_item_ref: &str,
     expected_request_id: Uuid,
 ) -> Result<ExecutionReceiptResolution> {
-    let expected_work_item_id = expected_work_item_ref
-        .strip_prefix('w')
-        .and_then(|value| value.parse::<i64>().ok())
-        .filter(|work_item_id| *work_item_id > 0)
-        .ok_or_else(|| anyhow::anyhow!("fixed Ops API work reference is invalid"))?;
     let response: ExecutionReceiptReadResponse = serde_json::from_slice(response_body)
         .map_err(|_| anyhow::anyhow!("fixed Ops API execution receipt is invalid"))?;
     if response.work_item_ref != expected_work_item_ref
@@ -397,31 +385,14 @@ fn parse_execution_receipt(
     {
         bail!("fixed Ops API execution receipt does not match the requested operation");
     }
-    match response.receipt.historical {
-        Some(historical)
-            if historical.historical
-                && historical.outcome.get("historical") == Some(&Value::Bool(false))
-                && historical
-                    .outcome
-                    .get("work_item")
-                    .and_then(|work_item| work_item.get("id"))
-                    .and_then(Value::as_i64)
-                    == Some(expected_work_item_id)
-                && historical
-                    .outcome
-                    .get("execution_claim")
-                    .and_then(|claim| claim.get("work_item_id"))
-                    .and_then(Value::as_i64)
-                    == Some(expected_work_item_id) =>
-        {
+    match response.historical {
+        Some(historical) => {
+            // The authenticated Ops service validates the SQL receipt's work and project IDs
+            // before projecting this request-scoped claim identity to the public response.
+            let _claim_identity = (historical.generation, historical.execution_instance_id);
             Ok(ExecutionReceiptResolution::Recorded)
         }
-        Some(_) => bail!("fixed Ops API execution receipt is invalid"),
-        None => {
-            // Current claim state is supplemental and cannot attribute this request ID.
-            let _current_claim_is_present = response.receipt.current_claim.is_some();
-            Ok(ExecutionReceiptResolution::Unresolved)
-        }
+        None => Ok(ExecutionReceiptResolution::Unresolved),
     }
 }
 

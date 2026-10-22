@@ -357,10 +357,7 @@ fn uncertain_api_post_is_not_replayed_and_diagnostics_do_not_expose_bearer() {
         let receipt_body = serde_json::json!({
             "work_item_ref": "w12345",
             "request_id": request_id,
-            "receipt": {
-                "historical": null,
-                "current_claim": {"work_item_ref": "w12345"},
-            },
+            "historical": null,
         })
         .to_string();
         write!(
@@ -549,16 +546,9 @@ fn uncertain_api_post_recovers_only_from_matching_historical_receipt() {
         let receipt_body = serde_json::json!({
             "work_item_ref": "w12345",
             "request_id": request_id,
-            "receipt": {
-                "historical": {
-                    "historical": true,
-                    "outcome": {
-                        "historical": false,
-                        "work_item": {"id": 12345, "project_id": 1},
-                        "execution_claim": {"work_item_id": 12345},
-                    },
-                },
-                "current_claim": null,
+            "historical": {
+                "generation": 7,
+                "execution_instance_id": Uuid::from_u128(8),
             },
         })
         .to_string();
@@ -650,71 +640,84 @@ fn uncertain_api_post_recovers_only_from_matching_historical_receipt() {
 }
 
 #[test]
-fn execution_receipt_requires_matching_historical_claim_shape() {
+fn execution_receipt_requires_matching_historical_claim_identity() {
     let request_id = Uuid::from_u128(5);
-    let body = serde_json::json!({
+    let unresolved = serde_json::json!({
         "work_item_ref": "w12345",
         "request_id": request_id,
-        "receipt": {
-            "historical": null,
-            "current_claim": {"work_item_ref": "w12345"},
-        },
+        "historical": null,
     })
     .to_string();
     assert_eq!(
-        parse_execution_receipt(body.as_bytes(), "w12345", request_id)
+        parse_execution_receipt(unresolved.as_bytes(), "w12345", request_id)
             .expect("parse scoped unresolved receipt"),
         ExecutionReceiptResolution::Unresolved
     );
-    assert!(parse_execution_receipt(body.as_bytes(), "w12346", request_id).is_err());
-    assert!(parse_execution_receipt(body.as_bytes(), "w12345", Uuid::from_u128(6)).is_err());
+    assert!(parse_execution_receipt(unresolved.as_bytes(), "w12346", request_id).is_err());
+    assert!(parse_execution_receipt(unresolved.as_bytes(), "w12345", Uuid::from_u128(6)).is_err());
 
     let malformed_history = serde_json::json!({
         "work_item_ref": "w12345",
         "request_id": request_id,
-        "receipt": {
-            "historical": {"historical": true, "outcome": {}},
-            "current_claim": null,
-        },
+        "historical": {},
     })
     .to_string();
     assert!(parse_execution_receipt(malformed_history.as_bytes(), "w12345", request_id).is_err());
 
-    let mismatched_history = serde_json::json!({
+    let malformed_execution_instance = serde_json::json!({
         "work_item_ref": "w12345",
         "request_id": request_id,
-        "receipt": {
-            "historical": {
-                "historical": true,
-                "outcome": {
-                    "historical": false,
-                    "work_item": {"id": 12346, "project_id": 1},
-                    "execution_claim": {"work_item_id": 12345},
-                },
-            },
-            "current_claim": null,
+        "historical": {
+            "generation": 7,
+            "execution_instance_id": "not-a-uuid",
         },
     })
     .to_string();
-    assert!(parse_execution_receipt(mismatched_history.as_bytes(), "w12345", request_id).is_err());
+    assert!(
+        parse_execution_receipt(
+            malformed_execution_instance.as_bytes(),
+            "w12345",
+            request_id
+        )
+        .is_err()
+    );
 
-    let mismatched_claim_id = serde_json::json!({
+    let extra_claim_field = serde_json::json!({
         "work_item_ref": "w12345",
         "request_id": request_id,
-        "receipt": {
-            "historical": {
-                "historical": true,
-                "outcome": {
-                    "historical": false,
-                    "work_item": {"id": 12345, "project_id": 1},
-                    "execution_claim": {"work_item_id": 12346},
-                },
-            },
-            "current_claim": null,
+        "historical": {
+            "generation": 7,
+            "execution_instance_id": Uuid::from_u128(8),
+            "work_item_id": 12345,
         },
     })
     .to_string();
-    assert!(parse_execution_receipt(mismatched_claim_id.as_bytes(), "w12345", request_id).is_err());
+    assert!(parse_execution_receipt(extra_claim_field.as_bytes(), "w12345", request_id).is_err());
+
+    let old_wrapped_response = serde_json::json!({
+        "work_item_ref": "w12345",
+        "request_id": request_id,
+        "receipt": {"historical": null, "current_claim": null},
+    })
+    .to_string();
+    assert!(
+        parse_execution_receipt(old_wrapped_response.as_bytes(), "w12345", request_id).is_err()
+    );
+
+    let matching_history = serde_json::json!({
+        "work_item_ref": "w12345",
+        "request_id": request_id,
+        "historical": {
+            "generation": 7,
+            "execution_instance_id": Uuid::from_u128(8),
+        },
+    })
+    .to_string();
+    assert_eq!(
+        parse_execution_receipt(matching_history.as_bytes(), "w12345", request_id)
+            .expect("parse exact request-scoped historical claim identity"),
+        ExecutionReceiptResolution::Recorded
+    );
 }
 
 #[test]

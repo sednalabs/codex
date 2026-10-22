@@ -3906,12 +3906,12 @@ a claim policy, or establish HTTP first use.
 If the fixed HTTP claim POST has an uncertain result, the launcher keeps its
 request UUID and makes one bounded read through
 `POST /v0/work-items/execution-receipt/read` using the same API bearer and the
-exact Work reference and request UUID. Only a historical claim outcome whose
-nested Work reference also matches settles the claim as committed. A null
-historical receipt remains unresolved,
-even when a current claim is present, because current claim state is not tied
-to this request; neither that response nor a failed receipt read authorizes a
-claim replay.
+exact Work reference and request UUID. Only the exact top-level
+`work_item_ref`/`request_id` echo with a non-null `historical` object containing
+`generation` and `execution_instance_id` settles the claim as committed; Ops
+validates the full work, project, and request binding before projecting that
+identity. A null historical receipt remains unresolved, and a failed receipt
+read never authorizes a claim replay.
 
 The same measured launcher has a fixed `provision-api-bearer` mode for the
 HTTP profile. It requires interactive `sudo` through the installed root-owned
