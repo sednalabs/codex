@@ -84,6 +84,10 @@ native package does not acquire that provisioner by importing its history.
 The upstream fixed-API OAuth exchange-error classification belongs to that
 companion consumer and does not change the native MCP issuer or device-auth
 contract retained here.
+The companion's bounded execution-receipt read after an uncertain fixed API
+claim, and the installer/checksum carried by its Linux archives, remain on that
+consumer route. They do not add the privileged installer or fixed API claim
+behavior to the native package.
 
 The independently maintained companion source branch is
 `companion/runtime-proof`. Its initial source is commit
