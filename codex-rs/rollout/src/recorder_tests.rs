@@ -643,8 +643,10 @@ async fn recorder_preserves_typed_wait_metadata_in_both_history_modes() -> std::
                 "test_originator".into(),
                 BaseInstructions::default(),
                 Vec::new(),
-            ).with_history_mode(history_mode),
-        ).await?;
+            )
+            .with_history_mode(history_mode),
+        )
+        .await?;
         let call = CollabAgentToolCallItem {
             id: "wait-visible".into(),
             tool: CollabAgentTool::Wait,
@@ -673,15 +675,22 @@ async fn recorder_preserves_typed_wait_metadata_in_both_history_modes() -> std::
             call.wait_condition = None;
             call.wake_cause = None;
         }
-        assert_eq!(crate::persisted_rollout_item(&legacy, history_mode).is_some(), history_mode == ThreadHistoryMode::Paginated);
+        assert_eq!(
+            crate::persisted_rollout_item(&legacy, history_mode).is_some(),
+            history_mode == ThreadHistoryMode::Paginated
+        );
         let persisted = crate::persisted_rollout_items(std::slice::from_ref(&item), history_mode);
         assert_eq!(persisted.len(), 1);
         recorder.record_canonical_items(&persisted).await?;
         recorder.flush().await?;
-        let (items, loaded_thread_id, parse_errors) = RolloutRecorder::load_rollout_items(recorder.rollout_path()).await?;
+        let (items, loaded_thread_id, parse_errors) =
+            RolloutRecorder::load_rollout_items(recorder.rollout_path()).await?;
         assert_eq!(loaded_thread_id, Some(thread_id));
         assert_eq!(parse_errors, 0);
-        assert_eq!(serde_json::to_value(&items[1..])?, serde_json::to_value([item])?);
+        assert_eq!(
+            serde_json::to_value(&items[1..])?,
+            serde_json::to_value([item])?
+        );
         recorder.shutdown().await?;
     }
     Ok(())

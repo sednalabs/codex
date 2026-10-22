@@ -3215,7 +3215,12 @@ async fn multi_agent_v2_wait_items_report_condition_and_timeout_cause() {
         )
         .await;
     WaitAgentHandlerV2::default()
-        .handle(invocation(session, turn, "wait_agent", function_payload(json!({}))))
+        .handle(invocation(
+            session,
+            turn,
+            "wait_agent",
+            function_payload(json!({})),
+        ))
         .await
         .expect("zero-timeout wait succeeds");
 

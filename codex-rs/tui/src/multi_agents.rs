@@ -445,12 +445,18 @@ fn waiting_end(
             selected_wait_lines(receiver_thread_ids, agents_states, agent_metadata)
         }
         Some(CollabWaitCondition::Unknown) | None
-            if receiver_thread_ids.is_empty() && agents_states.is_empty() => Vec::new(),
+            if receiver_thread_ids.is_empty() && agents_states.is_empty() =>
+        {
+            Vec::new()
+        }
         Some(CollabWaitCondition::Unknown) | None => {
             wait_complete_lines(receiver_thread_ids, agents_states, agent_metadata)
         }
     };
-    collab_event(title_text(wait_end_title(wait_condition, wake_cause)), details)
+    collab_event(
+        title_text(wait_end_title(wait_condition, wake_cause)),
+        details,
+    )
 }
 
 pub(crate) fn wait_end_title(
@@ -805,14 +811,46 @@ mod tests {
     #[test]
     fn targetless_wait_renders_condition_and_each_finite_cause_without_targets() {
         for (status, cause, expected) in [
-            (CollabAgentToolCallStatus::InProgress, None, "Waiting for eligible mailbox activity or new input"),
-            (CollabAgentToolCallStatus::Completed, Some(CollabWaitWakeCause::ActionableMessage), "Wait ended: actionable mailbox message"),
-            (CollabAgentToolCallStatus::Completed, Some(CollabWaitWakeCause::Completion), "Wait ended: completion notification"),
-            (CollabAgentToolCallStatus::Completed, Some(CollabWaitWakeCause::LegacyMailbox), "Wait ended: legacy mailbox activity"),
-            (CollabAgentToolCallStatus::Completed, Some(CollabWaitWakeCause::MailboxActivity), "Wait ended: mailbox activity"),
-            (CollabAgentToolCallStatus::Completed, Some(CollabWaitWakeCause::Steered), "Wait ended: new input"),
-            (CollabAgentToolCallStatus::Completed, Some(CollabWaitWakeCause::TimedOut), "Wait ended: deadline reached"),
-            (CollabAgentToolCallStatus::Completed, Some(CollabWaitWakeCause::Unknown), "Finished waiting"),
+            (
+                CollabAgentToolCallStatus::InProgress,
+                None,
+                "Waiting for eligible mailbox activity or new input",
+            ),
+            (
+                CollabAgentToolCallStatus::Completed,
+                Some(CollabWaitWakeCause::ActionableMessage),
+                "Wait ended: actionable mailbox message",
+            ),
+            (
+                CollabAgentToolCallStatus::Completed,
+                Some(CollabWaitWakeCause::Completion),
+                "Wait ended: completion notification",
+            ),
+            (
+                CollabAgentToolCallStatus::Completed,
+                Some(CollabWaitWakeCause::LegacyMailbox),
+                "Wait ended: legacy mailbox activity",
+            ),
+            (
+                CollabAgentToolCallStatus::Completed,
+                Some(CollabWaitWakeCause::MailboxActivity),
+                "Wait ended: mailbox activity",
+            ),
+            (
+                CollabAgentToolCallStatus::Completed,
+                Some(CollabWaitWakeCause::Steered),
+                "Wait ended: new input",
+            ),
+            (
+                CollabAgentToolCallStatus::Completed,
+                Some(CollabWaitWakeCause::TimedOut),
+                "Wait ended: deadline reached",
+            ),
+            (
+                CollabAgentToolCallStatus::Completed,
+                Some(CollabWaitWakeCause::Unknown),
+                "Finished waiting",
+            ),
         ] {
             let item = ThreadItem::CollabAgentToolCall {
                 id: "wait-mailbox".into(),
@@ -829,7 +867,8 @@ mod tests {
             };
             let cell = tool_call_history_cell(&item, /*cached_spawn_request*/ None, |_| {
                 panic!("targetless wait must not resolve a target")
-            }).expect("wait item renders");
+            })
+            .expect("wait item renders");
             let rendered = cell_to_text(&cell);
             assert!(rendered.contains(expected), "{rendered}");
             assert!(!rendered.contains("No agents completed"));
@@ -840,9 +879,14 @@ mod tests {
 
     #[test]
     fn selected_wait_renders_actual_names_ids_and_available_statuses() {
-        let first = ThreadId::from_string("00000000-0000-0000-0000-000000000002").expect("first id");
-        let second = ThreadId::from_string("00000000-0000-0000-0000-000000000003").expect("second id");
-        for status in [CollabAgentToolCallStatus::InProgress, CollabAgentToolCallStatus::Completed] {
+        let first =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000002").expect("first id");
+        let second =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000003").expect("second id");
+        for status in [
+            CollabAgentToolCallStatus::InProgress,
+            CollabAgentToolCallStatus::Completed,
+        ] {
             let item = ThreadItem::CollabAgentToolCall {
                 id: "wait-selected".into(),
                 tool: CollabAgentTool::Wait,
@@ -853,16 +897,34 @@ mod tests {
                 model: None,
                 reasoning_effort: None,
                 wait_condition: Some(CollabWaitCondition::SelectedAgents),
-                wake_cause: (status == CollabAgentToolCallStatus::Completed).then_some(CollabWaitWakeCause::Completion),
+                wake_cause: (status == CollabAgentToolCallStatus::Completed)
+                    .then_some(CollabWaitWakeCause::Completion),
                 agents_states: HashMap::from([
-                    (first.to_string(), agent_state(CollabAgentStatus::Completed, /*message*/ None)),
-                    (second.to_string(), agent_state(CollabAgentStatus::Running, /*message*/ None)),
+                    (
+                        first.to_string(),
+                        agent_state(CollabAgentStatus::Completed, /*message*/ None),
+                    ),
+                    (
+                        second.to_string(),
+                        agent_state(CollabAgentStatus::Running, /*message*/ None),
+                    ),
                 ]),
             };
-            let cell = tool_call_history_cell(&item, /*cached_spawn_request*/ None, |id| metadata_for(id, first, second)).expect("selected wait renders");
+            let cell = tool_call_history_cell(
+                &item,
+                /*cached_spawn_request*/ None,
+                |id| metadata_for(id, first, second),
+            )
+            .expect("selected wait renders");
             let rendered = cell_to_text(&cell);
-            assert!(rendered.contains(&format!("Robie [explorer] ({first}): Completed")), "{rendered}");
-            assert!(rendered.contains(&format!("Bob [worker] ({second}): Running")), "{rendered}");
+            assert!(
+                rendered.contains(&format!("Robie [explorer] ({first}): Completed")),
+                "{rendered}"
+            );
+            assert!(
+                rendered.contains(&format!("Bob [worker] ({second}): Running")),
+                "{rendered}"
+            );
             assert!(!rendered.contains("caller"));
             assert!(!rendered.contains("mailbox"));
         }
@@ -873,8 +935,16 @@ mod tests {
         for condition in [None, Some(CollabWaitCondition::Unknown)] {
             for (status, cause, expected) in [
                 (CollabAgentToolCallStatus::InProgress, None, "Waiting"),
-                (CollabAgentToolCallStatus::Completed, None, "Finished waiting"),
-                (CollabAgentToolCallStatus::Completed, Some(CollabWaitWakeCause::Unknown), "Finished waiting"),
+                (
+                    CollabAgentToolCallStatus::Completed,
+                    None,
+                    "Finished waiting",
+                ),
+                (
+                    CollabAgentToolCallStatus::Completed,
+                    Some(CollabWaitWakeCause::Unknown),
+                    "Finished waiting",
+                ),
             ] {
                 let item = ThreadItem::CollabAgentToolCall {
                     id: "wait-old".into(),
@@ -889,7 +959,12 @@ mod tests {
                     wake_cause: cause,
                     agents_states: HashMap::new(),
                 };
-                let cell = tool_call_history_cell(&item, /*cached_spawn_request*/ None, |_| panic!("no recorded targets")).expect("legacy wait renders");
+                let cell = tool_call_history_cell(
+                    &item,
+                    /*cached_spawn_request*/ None,
+                    |_| panic!("no recorded targets"),
+                )
+                .expect("legacy wait renders");
                 let rendered = cell_to_text(&cell);
                 assert!(rendered.contains(expected));
                 assert!(!rendered.contains("mailbox"));

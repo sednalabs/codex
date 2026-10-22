@@ -9,9 +9,21 @@ fn wait_status_preview_distinguishes_active_condition_and_observed_end() {
     use codex_app_server_protocol::CollabWaitWakeCause;
 
     for (status, cause, expected) in [
-        (CollabAgentToolCallStatus::InProgress, None, "Waiting for eligible mailbox activity or new input"),
-        (CollabAgentToolCallStatus::Completed, Some(CollabWaitWakeCause::Completion), "Wait ended: completion notification"),
-        (CollabAgentToolCallStatus::Completed, Some(CollabWaitWakeCause::TimedOut), "Wait ended: deadline reached"),
+        (
+            CollabAgentToolCallStatus::InProgress,
+            None,
+            "Waiting for eligible mailbox activity or new input",
+        ),
+        (
+            CollabAgentToolCallStatus::Completed,
+            Some(CollabWaitWakeCause::Completion),
+            "Wait ended: completion notification",
+        ),
+        (
+            CollabAgentToolCallStatus::Completed,
+            Some(CollabWaitWakeCause::TimedOut),
+            "Wait ended: deadline reached",
+        ),
     ] {
         let item = ThreadItem::CollabAgentToolCall {
             id: "wait-1".into(),

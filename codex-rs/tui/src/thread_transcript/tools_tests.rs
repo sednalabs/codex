@@ -263,10 +263,30 @@ fn typed_wait_metadata_is_rendered_on_persisted_transcript_pages() {
     let cwd = test_path_buf("/workspace").abs();
     let selected_id = "00000000-0000-0000-0000-000000000002";
     for (condition, status, cause, expected) in [
-        (CollabWaitCondition::EligibleMailboxInput, CollabAgentToolCallStatus::InProgress, None, "Waiting for eligible mailbox activity or new input"),
-        (CollabWaitCondition::EligibleMailboxInput, CollabAgentToolCallStatus::Completed, Some(CollabWaitWakeCause::Completion), "Wait ended: completion notification"),
-        (CollabWaitCondition::SelectedAgents, CollabAgentToolCallStatus::InProgress, None, "Waiting for selected agents"),
-        (CollabWaitCondition::Unknown, CollabAgentToolCallStatus::Completed, Some(CollabWaitWakeCause::Unknown), "Finished waiting"),
+        (
+            CollabWaitCondition::EligibleMailboxInput,
+            CollabAgentToolCallStatus::InProgress,
+            None,
+            "Waiting for eligible mailbox activity or new input",
+        ),
+        (
+            CollabWaitCondition::EligibleMailboxInput,
+            CollabAgentToolCallStatus::Completed,
+            Some(CollabWaitWakeCause::Completion),
+            "Wait ended: completion notification",
+        ),
+        (
+            CollabWaitCondition::SelectedAgents,
+            CollabAgentToolCallStatus::InProgress,
+            None,
+            "Waiting for selected agents",
+        ),
+        (
+            CollabWaitCondition::Unknown,
+            CollabAgentToolCallStatus::Completed,
+            Some(CollabWaitWakeCause::Unknown),
+            "Finished waiting",
+        ),
     ] {
         let selected = condition == CollabWaitCondition::SelectedAgents;
         let item = ThreadItem::CollabAgentToolCall {
@@ -274,7 +294,11 @@ fn typed_wait_metadata_is_rendered_on_persisted_transcript_pages() {
             tool: CollabAgentTool::Wait,
             status,
             sender_thread_id: "caller-not-wake-sender".into(),
-            receiver_thread_ids: if selected { vec![selected_id.into()] } else { Vec::new() },
+            receiver_thread_ids: if selected {
+                vec![selected_id.into()]
+            } else {
+                Vec::new()
+            },
             prompt: None,
             model: None,
             reasoning_effort: None,
@@ -291,8 +315,12 @@ fn typed_wait_metadata_is_rendered_on_persisted_transcript_pages() {
         );
         assert_eq!(cells.len(), 1);
         assert_eq!(cells[0].transcript_animation_tick(), None);
-        let rendered = cells[0].transcript_lines(/*width*/ 120)
-            .iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+        let rendered = cells[0]
+            .transcript_lines(/*width*/ 120)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(rendered.contains(expected), "{rendered}");
         assert_eq!(rendered.contains(selected_id), selected);
         if selected {

@@ -546,91 +546,115 @@ async fn host_mailbox_notifies_waiting_agent_and_delivers_once() -> anyhow::Resu
 
     for (origin, cause) in [
         (None, CollabWaitWakeCause::LegacyMailbox),
-        (Some(AgentCommunicationOrigin::Actionable), CollabWaitWakeCause::ActionableMessage),
-        (Some(AgentCommunicationOrigin::Result), CollabWaitWakeCause::Completion),
+        (
+            Some(AgentCommunicationOrigin::Actionable),
+            CollabWaitWakeCause::ActionableMessage,
+        ),
+        (
+            Some(AgentCommunicationOrigin::Result),
+            CollabWaitWakeCause::Completion,
+        ),
     ] {
-    let server = responses::start_mock_server().await;
-    let (test, controller) = test_with_host_control(&server).await?;
-    responses::mount_sse_once(
-        &server,
-        responses::sse(vec![
-            responses::ev_response_created("waiting"),
-            responses::ev_function_call_with_namespace(
-                "wait-mail",
-                "collaboration",
-                "wait_agent",
-                r#"{"timeout_ms":10000}"#,
-            ),
-            responses::ev_completed("waiting"),
-        ]),
-    )
-    .await;
-    test.codex
-        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
-            text: "Wait for a colleague.".into(),
-            text_elements: Vec::new(),
-        }]))
-        .await?;
-    let started = wait_for_event(&test.codex, |event| matches!(event,
+        let server = responses::start_mock_server().await;
+        let (test, controller) = test_with_host_control(&server).await?;
+        responses::mount_sse_once(
+            &server,
+            responses::sse(vec![
+                responses::ev_response_created("waiting"),
+                responses::ev_function_call_with_namespace(
+                    "wait-mail",
+                    "collaboration",
+                    "wait_agent",
+                    r#"{"timeout_ms":10000}"#,
+                ),
+                responses::ev_completed("waiting"),
+            ]),
+        )
+        .await;
+        test.codex
+            .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+                text: "Wait for a colleague.".into(),
+                text_elements: Vec::new(),
+            }]))
+            .await?;
+        let started = wait_for_event(&test.codex, |event| matches!(event,
         EventMsg::ItemStarted(event) if matches!(&event.item,
             codex_protocol::items::TurnItem::CollabAgentToolCall(call) if call.id == "wait-mail")
     )).await;
-    let EventMsg::ItemStarted(started) = started else { unreachable!() };
-    let codex_protocol::items::TurnItem::CollabAgentToolCall(started) = started.item else { unreachable!() };
-    assert_eq!(started.wait_condition, Some(CollabWaitCondition::EligibleMailboxInput));
-    assert_eq!(started.wake_cause, None);
-    assert!(started.receiver_thread_ids.is_empty());
-    let next = responses::mount_sse_once(
-        &server,
-        responses::sse(vec![
-            responses::ev_response_created("done"),
-            responses::ev_assistant_message("done", "Received the note."),
-            responses::ev_completed("done"),
-        ]),
-    )
-    .await;
-    let mut communication = codex_protocol::protocol::InterAgentCommunication::new(
+        let EventMsg::ItemStarted(started) = started else {
+            unreachable!()
+        };
+        let codex_protocol::items::TurnItem::CollabAgentToolCall(started) = started.item else {
+            unreachable!()
+        };
+        assert_eq!(
+            started.wait_condition,
+            Some(CollabWaitCondition::EligibleMailboxInput)
+        );
+        assert_eq!(started.wake_cause, None);
+        assert!(started.receiver_thread_ids.is_empty());
+        let next = responses::mount_sse_once(
+            &server,
+            responses::sse(vec![
+                responses::ev_response_created("done"),
+                responses::ev_assistant_message("done", "Received the note."),
+                responses::ev_completed("done"),
+            ]),
+        )
+        .await;
+        let mut communication = codex_protocol::protocol::InterAgentCommunication::new(
             AgentPath::root().join("worker").expect("valid worker path"),
             AgentPath::root(),
             Vec::new(),
             "Note from the host mailbox".into(),
             /*trigger_turn*/ false,
         );
-    communication.origin = origin;
-    controller.mail.lock().expect("mail lock").push(communication);
-    controller.mailbox_state.send_replace(true);
-    let completed = wait_for_event(&test.codex, |event| matches!(event,
+        communication.origin = origin;
+        controller
+            .mail
+            .lock()
+            .expect("mail lock")
+            .push(communication);
+        controller.mailbox_state.send_replace(true);
+        let completed = wait_for_event(&test.codex, |event| matches!(event,
         EventMsg::ItemCompleted(event) if matches!(&event.item,
             codex_protocol::items::TurnItem::CollabAgentToolCall(call) if call.id == "wait-mail")
     )).await;
-    let EventMsg::ItemCompleted(completed) = completed else { unreachable!() };
-    let codex_protocol::items::TurnItem::CollabAgentToolCall(completed) = completed.item else { unreachable!() };
-    assert_eq!(completed.wait_condition, Some(CollabWaitCondition::EligibleMailboxInput));
-    assert_eq!(completed.wake_cause, Some(cause));
-    assert!(completed.receiver_thread_ids.is_empty());
-    assert!(completed.agents_states.is_empty());
-    wait_for_event(&test.codex, |event| {
-        matches!(event, EventMsg::TurnComplete(_))
-    })
-    .await;
-    let request = next.single_request();
-    let wait_output = request
-        .function_call_output_text("wait-mail")
-        .expect("wait_agent output");
-    assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&wait_output)?,
-        serde_json::json!({"message": "Wait completed.", "timed_out": false, "wake_cause": cause})
-    );
-    assert_eq!(
-        request
-            .inputs_of_type("agent_message")
-            .iter()
-            .filter(|item| item.to_string().contains("Note from the host mailbox"))
-            .count(),
-        1
-    );
-    assert!(controller.mail.lock().expect("mail lock").is_empty());
-    test.codex.shutdown_and_wait().await?;
+        let EventMsg::ItemCompleted(completed) = completed else {
+            unreachable!()
+        };
+        let codex_protocol::items::TurnItem::CollabAgentToolCall(completed) = completed.item else {
+            unreachable!()
+        };
+        assert_eq!(
+            completed.wait_condition,
+            Some(CollabWaitCondition::EligibleMailboxInput)
+        );
+        assert_eq!(completed.wake_cause, Some(cause));
+        assert!(completed.receiver_thread_ids.is_empty());
+        assert!(completed.agents_states.is_empty());
+        wait_for_event(&test.codex, |event| {
+            matches!(event, EventMsg::TurnComplete(_))
+        })
+        .await;
+        let request = next.single_request();
+        let wait_output = request
+            .function_call_output_text("wait-mail")
+            .expect("wait_agent output");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&wait_output)?,
+            serde_json::json!({"message": "Wait completed.", "timed_out": false, "wake_cause": cause})
+        );
+        assert_eq!(
+            request
+                .inputs_of_type("agent_message")
+                .iter()
+                .filter(|item| item.to_string().contains("Note from the host mailbox"))
+                .count(),
+            1
+        );
+        assert!(controller.mail.lock().expect("mail lock").is_empty());
+        test.codex.shutdown_and_wait().await?;
     }
     Ok(())
 }

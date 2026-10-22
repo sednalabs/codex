@@ -1108,18 +1108,21 @@ impl ThreadHistoryBuilder {
         &self,
         call_id: &str,
     ) -> (Option<CollabWaitCondition>, Option<CollabWaitWakeCause>) {
-        self.current_turn.as_ref().and_then(|turn| {
-            turn.items.iter().find_map(|item| match item {
-                ThreadItem::CollabAgentToolCall {
-                    id,
-                    tool: CollabAgentTool::Wait,
-                    wait_condition,
-                    wake_cause,
-                    ..
-                } if id == call_id => Some((*wait_condition, *wake_cause)),
-                _ => None,
+        self.current_turn
+            .as_ref()
+            .and_then(|turn| {
+                turn.items.iter().find_map(|item| match item {
+                    ThreadItem::CollabAgentToolCall {
+                        id,
+                        tool: CollabAgentTool::Wait,
+                        wait_condition,
+                        wake_cause,
+                        ..
+                    } if id == call_id => Some((*wait_condition, *wake_cause)),
+                    _ => None,
+                })
             })
-        }).unwrap_or((None, None))
+            .unwrap_or((None, None))
     }
 
     fn handle_collab_close_begin(
@@ -4698,7 +4701,9 @@ mod tests {
         }
         assert_eq!(
             builder.active_turn_snapshot().expect("active turn").items,
-            vec![ThreadItem::from(CoreTurnItem::CollabAgentToolCall(call.clone()))]
+            vec![ThreadItem::from(CoreTurnItem::CollabAgentToolCall(
+                call.clone()
+            ))]
         );
 
         call.status = codex_protocol::items::CollabAgentToolCallStatus::Completed;
@@ -4716,7 +4721,9 @@ mod tests {
         }
         assert_eq!(
             builder.active_turn_snapshot().expect("active turn").items,
-            vec![ThreadItem::from(CoreTurnItem::CollabAgentToolCall(call.clone()))]
+            vec![ThreadItem::from(CoreTurnItem::CollabAgentToolCall(
+                call.clone()
+            ))]
         );
 
         // A canonical update with unknown metadata is not a legacy projection.
@@ -4726,7 +4733,10 @@ mod tests {
             item: CoreTurnItem::CollabAgentToolCall(call.clone()),
             ..completed
         }));
-        assert_eq!(builder.finish()[0].items, vec![ThreadItem::from(CoreTurnItem::CollabAgentToolCall(call))]);
+        assert_eq!(
+            builder.finish()[0].items,
+            vec![ThreadItem::from(CoreTurnItem::CollabAgentToolCall(call))]
+        );
     }
 
     #[test]

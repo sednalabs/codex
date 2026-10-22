@@ -683,14 +683,29 @@ fn collab_wait_metadata_maps_to_public_item_and_preserves_legacy() {
     use codex_protocol::items::CollabWaitCondition as CoreWaitCondition;
     use codex_protocol::items::CollabWaitWakeCause as CoreWakeCause;
 
-    assert_eq!(CollabWaitCondition::from(CoreWaitCondition::SelectedAgents), CollabWaitCondition::SelectedAgents);
-    assert_eq!(CollabWaitCondition::from(CoreWaitCondition::Unknown), CollabWaitCondition::Unknown);
+    assert_eq!(
+        CollabWaitCondition::from(CoreWaitCondition::SelectedAgents),
+        CollabWaitCondition::SelectedAgents
+    );
+    assert_eq!(
+        CollabWaitCondition::from(CoreWaitCondition::Unknown),
+        CollabWaitCondition::Unknown
+    );
 
     for (core_cause, public_cause) in [
-        (CoreWakeCause::ActionableMessage, CollabWaitWakeCause::ActionableMessage),
+        (
+            CoreWakeCause::ActionableMessage,
+            CollabWaitWakeCause::ActionableMessage,
+        ),
         (CoreWakeCause::Completion, CollabWaitWakeCause::Completion),
-        (CoreWakeCause::LegacyMailbox, CollabWaitWakeCause::LegacyMailbox),
-        (CoreWakeCause::MailboxActivity, CollabWaitWakeCause::MailboxActivity),
+        (
+            CoreWakeCause::LegacyMailbox,
+            CollabWaitWakeCause::LegacyMailbox,
+        ),
+        (
+            CoreWakeCause::MailboxActivity,
+            CollabWaitWakeCause::MailboxActivity,
+        ),
         (CoreWakeCause::Steered, CollabWaitWakeCause::Steered),
         (CoreWakeCause::TimedOut, CollabWaitWakeCause::TimedOut),
         (CoreWakeCause::Unknown, CollabWaitWakeCause::Unknown),
@@ -728,16 +743,25 @@ fn collab_wait_metadata_maps_to_public_item_and_preserves_legacy() {
         "prompt": null, "model": null, "reasoningEffort": null, "agentsStates": {}
     });
     let item: ThreadItem = serde_json::from_value(legacy.clone()).expect("legacy public wait");
-    assert!(matches!(item, ThreadItem::CollabAgentToolCall {
-        wait_condition: None, wake_cause: None, ..
-    }));
+    assert!(matches!(
+        item,
+        ThreadItem::CollabAgentToolCall {
+            wait_condition: None,
+            wake_cause: None,
+            ..
+        }
+    ));
     legacy["waitCondition"] = json!("futureCondition");
     legacy["wakeCause"] = json!("futureCause");
     let item: ThreadItem = serde_json::from_value(legacy).expect("future public wait");
-    assert!(matches!(item, ThreadItem::CollabAgentToolCall {
-        wait_condition: Some(CollabWaitCondition::Unknown),
-        wake_cause: Some(CollabWaitWakeCause::Unknown), ..
-    }));
+    assert!(matches!(
+        item,
+        ThreadItem::CollabAgentToolCall {
+            wait_condition: Some(CollabWaitCondition::Unknown),
+            wake_cause: Some(CollabWaitWakeCause::Unknown),
+            ..
+        }
+    ));
 }
 
 #[test]

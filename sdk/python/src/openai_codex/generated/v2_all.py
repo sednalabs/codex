@@ -650,6 +650,22 @@ class CollabAgentToolCallStatus(Enum):
     interrupted = "interrupted"
 
 
+class CollabWaitCondition(Enum):
+    selected_agents = "selectedAgents"
+    eligible_mailbox_input = "eligibleMailboxInput"
+    unknown = "unknown"
+
+
+class CollabWaitWakeCause(Enum):
+    actionable_message = "actionableMessage"
+    completion = "completion"
+    legacy_mailbox = "legacyMailbox"
+    mailbox_activity = "mailboxActivity"
+    steered = "steered"
+    timed_out = "timedOut"
+    unknown = "unknown"
+
+
 class ListFilesCommandAction(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -10173,6 +10189,20 @@ class CollabAgentToolCallThreadItem(BaseModel):
     type: Annotated[
         Literal["collabAgentToolCall"], Field(title="CollabAgentToolCallThreadItemType")
     ]
+    wait_condition: Annotated[
+        CollabWaitCondition | None,
+        Field(
+            alias="waitCondition",
+            description="Explicit wait condition; absent from older records and other tools.",
+        ),
+    ] = None
+    wake_cause: Annotated[
+        CollabWaitWakeCause | None,
+        Field(
+            alias="wakeCause",
+            description="Observed wait outcome, without sender or message-body attribution.",
+        ),
+    ] = None
 
 
 class WebSearchThreadItem(BaseModel):

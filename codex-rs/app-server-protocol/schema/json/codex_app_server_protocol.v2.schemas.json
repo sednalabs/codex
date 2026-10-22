@@ -4516,6 +4516,26 @@
       ],
       "type": "string"
     },
+    "CollabWaitCondition": {
+      "enum": [
+        "selectedAgents",
+        "eligibleMailboxInput",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "CollabWaitWakeCause": {
+      "enum": [
+        "actionableMessage",
+        "completion",
+        "legacyMailbox",
+        "mailboxActivity",
+        "steered",
+        "timedOut",
+        "unknown"
+      ],
+      "type": "string"
+    },
     "CollaborationMode": {
       "description": "Collaboration mode for a Codex session.",
       "properties": {
@@ -20395,6 +20415,28 @@
               ],
               "title": "CollabAgentToolCallThreadItemType",
               "type": "string"
+            },
+            "waitCondition": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/CollabWaitCondition"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Explicit wait condition; absent from older records and other tools."
+            },
+            "wakeCause": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/CollabWaitWakeCause"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Observed wait outcome, without sender or message-body attribution."
             }
           },
           "required": [

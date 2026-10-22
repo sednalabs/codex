@@ -823,11 +823,14 @@ mod tests {
         typed["wake_cause"] = json!("completion");
         let item: CollabAgentToolCallItem =
             serde_json::from_value(typed.clone()).expect("typed wait item");
-        assert_eq!(item.wait_condition, Some(CollabWaitCondition::EligibleMailboxInput));
+        assert_eq!(
+            item.wait_condition,
+            Some(CollabWaitCondition::EligibleMailboxInput)
+        );
         assert_eq!(item.wake_cause, Some(CollabWaitWakeCause::Completion));
-        let round_trip: CollabAgentToolCallItem = serde_json::from_value(
-            serde_json::to_value(&item).expect("serialize typed wait"),
-        ).expect("deserialize typed wait");
+        let round_trip: CollabAgentToolCallItem =
+            serde_json::from_value(serde_json::to_value(&item).expect("serialize typed wait"))
+                .expect("deserialize typed wait");
         assert_eq!(round_trip, item);
 
         typed["wait_condition"] = json!("future_condition");

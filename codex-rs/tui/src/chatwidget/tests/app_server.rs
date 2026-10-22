@@ -1440,9 +1440,18 @@ async fn live_and_replayed_wait_items_render_typed_condition_and_cause() {
 
     for replay_kind in [None, Some(ReplayKind::ThreadSnapshot)] {
         for (cause, expected) in [
-            (CollabWaitWakeCause::Completion, "Wait ended: completion notification"),
-            (CollabWaitWakeCause::ActionableMessage, "Wait ended: actionable mailbox message"),
-            (CollabWaitWakeCause::TimedOut, "Wait ended: deadline reached"),
+            (
+                CollabWaitWakeCause::Completion,
+                "Wait ended: completion notification",
+            ),
+            (
+                CollabWaitWakeCause::ActionableMessage,
+                "Wait ended: actionable mailbox message",
+            ),
+            (
+                CollabWaitWakeCause::TimedOut,
+                "Wait ended: deadline reached",
+            ),
         ] {
             let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
             let mut call = CollabAgentToolCallItem {
@@ -1484,7 +1493,10 @@ async fn live_and_replayed_wait_items_render_typed_condition_and_cause() {
                 .map(|lines| lines_to_single_string(&lines))
                 .collect::<Vec<_>>()
                 .join("\n");
-            assert!(rendered.contains("Waiting for eligible mailbox activity or new input"), "{rendered}");
+            assert!(
+                rendered.contains("Waiting for eligible mailbox activity or new input"),
+                "{rendered}"
+            );
             assert!(rendered.contains(expected), "{rendered}");
             assert!(!rendered.contains("No agents completed"));
         }

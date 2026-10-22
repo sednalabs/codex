@@ -14,6 +14,8 @@ import type { AsyncUserInputQuestion } from "./AsyncUserInputQuestion";
 import type { CollabAgentState } from "./CollabAgentState";
 import type { CollabAgentTool } from "./CollabAgentTool";
 import type { CollabAgentToolCallStatus } from "./CollabAgentToolCallStatus";
+import type { CollabWaitCondition } from "./CollabWaitCondition";
+import type { CollabWaitWakeCause } from "./CollabWaitWakeCause";
 import type { CommandAction } from "./CommandAction";
 import type { CommandExecutionSource } from "./CommandExecutionSource";
 import type { CommandExecutionStatus } from "./CommandExecutionStatus";
@@ -119,6 +121,14 @@ model: string | null,
  * Reasoning effort requested for the spawned agent, when applicable.
  */
 reasoningEffort: ReasoningEffort | null,
+/**
+ * Explicit wait condition; absent from older records and other tools.
+ */
+waitCondition?: CollabWaitCondition,
+/**
+ * Observed wait outcome, without sender or message-body attribution.
+ */
+wakeCause?: CollabWaitWakeCause,
 /**
  * Last known status of the target agents, when available.
  */
