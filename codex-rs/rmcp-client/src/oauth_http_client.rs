@@ -94,10 +94,10 @@ impl FixedApiExchangeObserver {
     }
 
     fn record(&self, failure: FixedApiExchangeFailure) {
-        if let Ok(mut recorded) = self.failure.lock() {
-            if recorded.is_none() {
-                *recorded = Some(failure);
-            }
+        if let Ok(mut recorded) = self.failure.lock()
+            && recorded.is_none()
+        {
+            *recorded = Some(failure);
         }
     }
 }
@@ -312,10 +312,8 @@ impl OAuthHttpClient for OAuthHttpClientAdapter {
             self.execute_request(request.request, request.redirect_policy, request.timeout);
         Box::pin(async move {
             let response = response.await;
-            if is_post {
-                if let Some(observer) = observer {
-                    observer.record_result(&response);
-                }
+            if is_post && let Some(observer) = observer {
+                observer.record_result(&response);
             }
             response
         })
@@ -337,10 +335,8 @@ impl<'client> oauth2::AsyncHttpClient<'client> for OAuthHttpClientAdapter {
                     Some(Duration::from_secs(10)),
                 )
                 .await;
-            if is_post {
-                if let Some(observer) = observer {
-                    observer.record_result(&response);
-                }
+            if is_post && let Some(observer) = observer {
+                observer.record_result(&response);
             }
             response.map_err(std::io::Error::other)
         })
