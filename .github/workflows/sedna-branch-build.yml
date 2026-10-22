@@ -24,16 +24,263 @@ on:
         required: false
         default: false
         type: boolean
+      expected_workflow_host_sha:
+        description: Exact reviewed temporary consumer workflow commit
+        required: true
+        type: string
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref_name }}-${{ inputs.platform }}-${{ inputs.host_only }}
-  cancel-in-progress: true
+  group: companion-r3-artifact-consumer-8459ad23-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
 
 jobs:
+  consume-fixed-companion:
+    name: Consume the exact uploaded companion bundle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+    env:
+      SOURCE_SHA: 8459ad236d1b56e4dc2dd1c84b1d9b068d5e8c45
+      SOURCE_TREE: ea9098bbdafdb40c0886a7388d081e4a17577ae1
+      PRODUCER_RUN_ID: "39716581994"
+      PRODUCER_RUN_ATTEMPT: "1"
+      PRODUCER_RUN_NUMBER: "900"
+      PRODUCER_ARTIFACT_ID: "12401279216"
+      PRODUCER_ARTIFACT_NAME: sedna-branch-8459ad236d1b56e4dc2dd1c84b1d9b068d5e8c45-8459ad236-x86_64-unknown-linux-gnu
+      PRODUCER_ARTIFACT_DIGEST: sha256:3bdf8cba22c3771fffdd2ae961087e07e99b5e8fd4afa4899aa2f8dd64bad981
+      PRODUCER_ARTIFACT_SIZE: "337419237"
+      PREVIEW_VERSION: 0.146.0-alpha.8-sedna.10+upstream.8593.ci.900.g8459ad236
+      SOURCE_SHORT: 8459ad236
+      EXPECTED_CLI_VERSION: codex-cli 0.146.0-alpha.8-sedna.10+upstream.8593.ci.900.g8459ad236 (git:8459ad23)
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Verify the fixed consumer and source identities
+        shell: bash
+        env:
+          EXPECTED_HOST: ${{ inputs.expected_workflow_host_sha }}
+          REQUESTED_SOURCE: ${{ inputs.ref }}
+          REQUESTED_PLATFORM: ${{ inputs.platform }}
+          HOST_ONLY: ${{ inputs.host_only }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REPOSITORY}" = sednalabs/codex
+          test "${GITHUB_REF}" = refs/heads/validation/companion-r3-consumer-8459ad23
+          test "${GITHUB_EVENT_NAME}" = workflow_dispatch
+          test "${GITHUB_SHA}" = "${EXPECTED_HOST}"
+          test "$(git rev-parse HEAD)" = "${EXPECTED_HOST}"
+          test "$(git show -s --format=%P HEAD)" = "${SOURCE_SHA}"
+          test "$(git rev-parse "${SOURCE_SHA}^{tree}")" = "${SOURCE_TREE}"
+          test "$(git diff --name-only "${SOURCE_SHA}" HEAD)" = .github/workflows/sedna-branch-build.yml
+          test "$(git rev-parse "${SOURCE_SHA}:.github/workflows/sedna-branch-build.yml")" = d2045cc9754996f59126bedf82d52afba2245db5
+          test "${REQUESTED_SOURCE}" = "${SOURCE_SHA}"
+          test "${REQUESTED_PLATFORM}" = linux-x86_64
+          test "${HOST_ONLY}" = false
+          consumer_dir=$(mktemp -d "${RUNNER_TEMP}/companion-r3-consumer.XXXXXX")
+          echo "R3_CONSUMER_DIR=${consumer_dir}" >> "${GITHUB_ENV}"
+
+      - name: Download and verify only the fixed official artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/sednalabs/codex/actions/runs/${PRODUCER_RUN_ID}" > "${R3_CONSUMER_DIR}/producer-run.json"
+          gh api "repos/sednalabs/codex/actions/artifacts/${PRODUCER_ARTIFACT_ID}" > "${R3_CONSUMER_DIR}/artifact.json"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["R3_CONSUMER_DIR"])
+          run = json.loads((root / "producer-run.json").read_text())
+          artifact = json.loads((root / "artifact.json").read_text())
+          expected_run = {
+              "id": int(os.environ["PRODUCER_RUN_ID"]),
+              "run_attempt": int(os.environ["PRODUCER_RUN_ATTEMPT"]),
+              "run_number": int(os.environ["PRODUCER_RUN_NUMBER"]),
+              "head_sha": os.environ["SOURCE_SHA"],
+              "head_branch": "validation/companion-r3-8459ad23",
+              "event": "workflow_dispatch",
+              "path": ".github/workflows/sedna-branch-build.yml",
+              "status": "completed",
+              "conclusion": "success",
+          }
+          for key, value in expected_run.items():
+              if run.get(key) != value:
+                  raise SystemExit(f"Producer identity mismatch: {key}")
+          if run["repository"]["full_name"] != "sednalabs/codex":
+              raise SystemExit("Producer repository mismatch")
+          expected_artifact = {
+              "id": int(os.environ["PRODUCER_ARTIFACT_ID"]),
+              "name": os.environ["PRODUCER_ARTIFACT_NAME"],
+              "digest": os.environ["PRODUCER_ARTIFACT_DIGEST"],
+              "size_in_bytes": int(os.environ["PRODUCER_ARTIFACT_SIZE"]),
+              "expired": False,
+          }
+          for key, value in expected_artifact.items():
+              if artifact.get(key) != value:
+                  raise SystemExit(f"Artifact identity mismatch: {key}")
+          if artifact["workflow_run"]["id"] != run["id"] or artifact["workflow_run"]["head_sha"] != run["head_sha"]:
+              raise SystemExit("Artifact does not belong to the fixed producer")
+          PY
+          gh api "repos/sednalabs/codex/actions/artifacts/${PRODUCER_ARTIFACT_ID}/zip" > "${R3_CONSUMER_DIR}/artifact.zip"
+          test "$(stat -c %s "${R3_CONSUMER_DIR}/artifact.zip")" = "${PRODUCER_ARTIFACT_SIZE}"
+          printf '%s  %s\n' "${PRODUCER_ARTIFACT_DIGEST#sha256:}" "${R3_CONSUMER_DIR}/artifact.zip" | sha256sum --check --status
+
+      - name: Verify the companion archive and isolated binary consumers
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import shutil
+          import stat
+          import subprocess
+          import tarfile
+          import zipfile
+
+          root = Path(os.environ["R3_CONSUMER_DIR"])
+          source = os.environ["SOURCE_SHA"]
+          source_short = os.environ["SOURCE_SHORT"]
+          version = os.environ["PREVIEW_VERSION"]
+          run_number = os.environ["PRODUCER_RUN_NUMBER"]
+          if source_short != "8459ad236" or not source.startswith(source_short):
+              raise SystemExit("Fixed Git abbreviation is not bound to the source")
+          suffixes = (f".ci.{run_number}.g{source_short}", f"-ci.{run_number}+g{source_short}")
+          if version.count("+") != 1 or not version.endswith(suffixes):
+              raise SystemExit("Preview version is not bound to the fixed producer run/source")
+          expected_cli_version = f"codex-cli {version} (git:{source[:8]})"
+          if os.environ["EXPECTED_CLI_VERSION"] != expected_cli_version:
+              raise SystemExit("Frozen CLI oracle does not match the producer's source-derived display format")
+          base = f"codex-sedna-preview-{version.replace('+', '__')}-x86_64-unknown-linux-gnu"
+          outer_names = {f"{base}.tar.gz", f"{base}.json"}
+          with zipfile.ZipFile(root / "artifact.zip") as archive:
+              entries = archive.infolist()
+              if len(entries) != 2 or {entry.filename for entry in entries} != outer_names:
+                  raise SystemExit("Unexpected outer artifact members")
+              for entry in entries:
+                  kind = stat.S_IFMT(entry.external_attr >> 16)
+                  if entry.is_dir() or kind not in (0, stat.S_IFREG):
+                      raise SystemExit("Outer artifact member is not a regular file")
+                  maximum = 64 * 1024 if entry.filename.endswith(".json") else 2 * int(os.environ["PRODUCER_ARTIFACT_SIZE"])
+                  if entry.file_size > maximum:
+                      raise SystemExit("Outer artifact member exceeds the fixed consumer budget")
+                  with archive.open(entry) as incoming, (root / entry.filename).open("xb") as outgoing:
+                      shutil.copyfileobj(incoming, outgoing, 1024 * 1024)
+          manifest = json.loads((root / f"{base}.json").read_text())
+          expected = {
+              "repository": "sednalabs/codex",
+              "commit": source,
+              "ref": source,
+              "previewVersion": version,
+              "workflow": f"https://github.com/sednalabs/codex/actions/runs/{os.environ['PRODUCER_RUN_ID']}",
+          }
+          if set(manifest) != set(expected) | {"runtimeProofLauncherSha256"}:
+              raise SystemExit("Unexpected companion manifest fields")
+          for key, value in expected.items():
+              if manifest.get(key) != value:
+                  raise SystemExit(f"Companion manifest mismatch: {key}")
+          if not re.fullmatch(r"[0-9a-f]{64}", manifest["runtimeProofLauncherSha256"]):
+              raise SystemExit("Invalid launcher digest")
+          binaries = ("codex", "codex-code-mode-host", "codex-responses-api-proxy", "codex-runtime-proof-launcher")
+          service = "systemd/codex-runtime-proof-claim.service"
+          regular = {f"./{name}" for name in (*binaries, service)}
+          directories = {".", "./systemd"}
+          bundle = root / "bundle"
+          bundle.mkdir(mode=0o700)
+          (bundle / "systemd").mkdir(mode=0o700)
+          with tarfile.open(root / f"{base}.tar.gz", "r:gz") as archive:
+              entries = archive.getmembers()
+              if len(entries) != 7 or {entry.name for entry in entries} != regular | directories:
+                  raise SystemExit("Unexpected companion tar members")
+              if sum(entry.size for entry in entries) > 4 * 1024**3:
+                  raise SystemExit("Companion tar exceeds the fixed consumer budget")
+              for entry in entries:
+                  if entry.name in directories:
+                      if not entry.isdir():
+                          raise SystemExit("Expected companion directory")
+                      continue
+                  if not entry.isfile() or entry.issym() or entry.islnk():
+                      raise SystemExit("Companion member is not a regular file")
+                  incoming = archive.extractfile(entry)
+                  if incoming is None:
+                      raise SystemExit("Unreadable companion member")
+                  with incoming, (bundle / entry.name[2:]).open("xb") as outgoing:
+                      shutil.copyfileobj(incoming, outgoing, 1024 * 1024)
+          def digest(path):
+              value = hashlib.sha256()
+              with path.open("rb") as incoming:
+                  for block in iter(lambda: incoming.read(1024 * 1024), b""):
+                      value.update(block)
+              return value.hexdigest()
+          hashes = {name: digest(bundle / name) for name in binaries}
+          if hashes["codex-runtime-proof-launcher"] != manifest["runtimeProofLauncherSha256"]:
+              raise SystemExit("Packaged launcher does not match the source-bound manifest")
+          source_service = subprocess.check_output(["git", "show", f"{source}:codex-rs/runtime-proof/{service}"])
+          if digest(bundle / service) != hashlib.sha256(source_service).hexdigest():
+              raise SystemExit("Packaged service does not match the fixed source")
+          for name in binaries:
+              path = bundle / name
+              path.chmod(0o755)
+              description = subprocess.check_output(["file", "--brief", str(path)], text=True)
+              program_headers = subprocess.check_output(["readelf", "-l", str(path)], text=True)
+              if "x86-64" not in description or "/lib64/ld-linux-x86-64.so.2" not in program_headers:
+                  raise SystemExit("Packaged binary architecture or loader mismatch")
+          isolated_home = root / "empty-home"
+          isolated_home.mkdir(mode=0o700)
+          (isolated_home / ".codex").mkdir(mode=0o700)
+          child_env = {"PATH": "/usr/bin:/bin", "HOME": str(isolated_home), "CODEX_HOME": str(isolated_home / ".codex")}
+          actual_version = subprocess.check_output([str(bundle / "codex"), "--version"], env=child_env, timeout=20, text=True).strip()
+          if actual_version != os.environ["EXPECTED_CLI_VERSION"]:
+              raise SystemExit("Packaged CLI display version does not match source-derived producer provenance")
+          for name, arguments in (("codex", ["--help"]), ("codex", ["exec", "--help"]), ("codex", ["app-server", "--help"]), ("codex-code-mode-host", ["--help"]), ("codex-responses-api-proxy", ["--help"])):
+              subprocess.run([str(bundle / name), *arguments], env=child_env, timeout=20, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+          receipt = {
+              "sourceCommit": source,
+              "sourceTree": os.environ["SOURCE_TREE"],
+              "producerWorkflowCommit": source,
+              "producerRunId": os.environ["PRODUCER_RUN_ID"],
+              "producerRunAttempt": os.environ["PRODUCER_RUN_ATTEMPT"],
+              "producerRunNumber": run_number,
+              "artifactId": os.environ["PRODUCER_ARTIFACT_ID"],
+              "artifactName": os.environ["PRODUCER_ARTIFACT_NAME"],
+              "artifactDigest": os.environ["PRODUCER_ARTIFACT_DIGEST"],
+              "previewVersion": version,
+              "cliDisplayVersion": actual_version,
+              "consumerWorkflowCommit": os.environ["GITHUB_SHA"],
+              "consumerRunId": os.environ["GITHUB_RUN_ID"],
+              "consumerRunAttempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "binarySha256": hashes,
+              "checks": {"officialZipDigest": True, "outerMembers": 2, "tarMembers": 7, "regularBinaries": 4, "launcherManifestDigest": True, "sourceService": True, "elfAndLoader": True, "isolatedVersionAndHelp": True},
+              "outcome": "pass",
+          }
+          (root / "companion-artifact-consumer.json").write_text(json.dumps(receipt, indent=2) + "\n")
+          PY
+
+      - name: Upload only the compact companion consumer result
+        uses: actions/upload-artifact@v7
+        with:
+          name: companion-artifact-consumer-${{ github.run_id }}
+          path: ${{ env.R3_CONSUMER_DIR }}/companion-artifact-consumer.json
+          if-no-files-found: error
+          retention-days: 3
+
   metadata:
+    if: ${{ false }}
     name: Resolve preview metadata
     runs-on: ubuntu-24.04
     outputs:
@@ -87,7 +334,7 @@ jobs:
 
   build-linux-x86_64:
     needs: metadata
-    if: ${{ inputs.platform == 'linux-x86_64' }}
+    if: ${{ false }}
     uses: ./.github/workflows/_sedna-linux-rust.yml
     with:
       checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
@@ -243,7 +490,7 @@ jobs:
 
   build-linux-aarch64:
     needs: metadata
-    if: ${{ inputs.platform == 'linux-aarch64' }}
+    if: ${{ false }}
     uses: ./.github/workflows/_sedna-linux-rust.yml
     with:
       checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
@@ -327,7 +574,7 @@ jobs:
   build-macos:
     name: Build macOS preview - x86_64-apple-darwin
     needs: metadata
-    if: ${{ inputs.platform == 'macos' }}
+    if: ${{ false }}
     runs-on: macos-15-intel
     timeout-minutes: 210
     permissions:
