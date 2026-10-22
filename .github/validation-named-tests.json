@@ -114,6 +114,14 @@
       "execution_argv": ["cargo", "test", "--locked", "-p", "codex-protocol", "--lib", "--", "--test-threads=1"]
     },
     {
+      "package": "codex-runtime-proof",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal", "rust_integration"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-runtime-proof", "--lib", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-runtime-proof", "--lib", "--", "--test-threads=1"]
+    },
+    {
       "package": "codex-tui",
       "target_kind": "lib",
       "target": "",

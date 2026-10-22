@@ -3803,7 +3803,7 @@
         "api_body_rejects_invalid_fixed_preconditions_before_network_access",
         "uncertain_api_post_is_not_replayed_and_diagnostics_do_not_expose_bearer",
         "uncertain_api_post_recovers_only_from_matching_historical_receipt",
-        "execution_receipt_requires_matching_historical_claim_shape",
+        "execution_receipt_requires_matching_historical_claim_identity",
         "fixed_access_token_request_binds_client_resource_and_pkce_scope",
         "fixed_access_token_flow_rejects_unbounded_or_non_loopback_inputs",
         "fixed_access_token_flow_rejects_wrong_issuer_endpoint_or_missing_pkce",
