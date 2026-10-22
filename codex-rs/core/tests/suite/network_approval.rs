@@ -3699,27 +3699,27 @@ fn failed_amendment_network_output_shape(output: &str) -> &'static str {
             .ok()?;
 
         let mut process_shape = None;
-        if let Some(line) = lines.peek() {
-            if let Some(code) = line.strip_prefix(EXIT_CODE_PREFIX) {
-                code.parse::<i32>().ok()?;
-                process_shape = Some("exec_output_exited");
-                lines.next();
-            }
+        if let Some(line) = lines.peek()
+            && let Some(code) = line.strip_prefix(EXIT_CODE_PREFIX)
+        {
+            code.parse::<i32>().ok()?;
+            process_shape = Some("exec_output_exited");
+            lines.next();
         }
-        if let Some(line) = lines.peek() {
-            if let Some(process_id) = line.strip_prefix(RUNNING_PREFIX) {
-                if process_id.is_empty() || process_shape.is_some() {
-                    return None;
-                }
-                process_shape = Some("exec_output_running");
-                lines.next();
+        if let Some(line) = lines.peek()
+            && let Some(process_id) = line.strip_prefix(RUNNING_PREFIX)
+        {
+            if process_id.is_empty() || process_shape.is_some() {
+                return None;
             }
+            process_shape = Some("exec_output_running");
+            lines.next();
         }
-        if let Some(line) = lines.peek() {
-            if let Some(token_count) = line.strip_prefix(ORIGINAL_TOKEN_COUNT_PREFIX) {
-                token_count.parse::<usize>().ok()?;
-                lines.next();
-            }
+        if let Some(line) = lines.peek()
+            && let Some(token_count) = line.strip_prefix(ORIGINAL_TOKEN_COUNT_PREFIX)
+        {
+            token_count.parse::<usize>().ok()?;
+            lines.next();
         }
         if lines.next().is_some() {
             return None;
@@ -3786,10 +3786,7 @@ fn failed_amendment_network_output_category_matches_only_exact_denials() {
             "exec_command failed: ProcessFailed {{ message: {:?} }}",
             format!("{FAILED_AMENDMENT_POLICY_FALLBACK} extra")
         ),
-        format!(
-            "{}different host or detail",
-            FAILED_AMENDMENT_PROXY_DENIAL_PREFIX
-        ),
+        format!("{FAILED_AMENDMENT_PROXY_DENIAL_PREFIX}different host or detail"),
     ];
     for output in negative_cases {
         assert_eq!(failed_amendment_network_output_category(&output), "other");
@@ -3804,8 +3801,7 @@ fn failed_amendment_network_output_category_matches_only_exact_denials() {
 fn failed_amendment_network_output_shape_is_closed_and_payload_free() {
     assert_eq!(
         failed_amendment_network_output_shape(&format!(
-            "exec_command failed: ProcessFailed {{ message: {:?} }}",
-            FAILED_AMENDMENT_POLICY_FALLBACK
+            "exec_command failed: ProcessFailed {{ message: {FAILED_AMENDMENT_POLICY_FALLBACK:?} }}"
         )),
         "exec_process_failed"
     );
