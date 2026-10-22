@@ -5,6 +5,8 @@ use crate::session::MailboxWakeCause;
 use crate::session::WaitActivity;
 use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
 use crate::tools::handlers::multi_agents_spec::create_wait_agent_tool_v2;
+use codex_protocol::items::CollabWaitCondition;
+pub(crate) use codex_protocol::items::CollabWaitWakeCause as WaitWakeCause;
 use codex_tools::ToolSpec;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -89,6 +91,8 @@ impl Handler {
                     prompt: None,
                     model: None,
                     reasoning_effort: None,
+                    wait_condition: Some(CollabWaitCondition::EligibleMailboxInput),
+                    wake_cause: None,
                     agents_states: Default::default(),
                 }),
             )
@@ -133,6 +137,8 @@ impl Handler {
                     prompt: None,
                     model: None,
                     reasoning_effort: None,
+                    wait_condition: Some(CollabWaitCondition::EligibleMailboxInput),
+                    wake_cause: Some(result.wake_cause),
                     agents_states: HashMap::new(),
                 }),
             )
@@ -159,17 +165,6 @@ pub(crate) struct WaitAgentResult {
     pub(crate) message: String,
     pub(crate) timed_out: bool,
     pub(crate) wake_cause: WaitWakeCause,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum WaitWakeCause {
-    ActionableMessage,
-    Completion,
-    LegacyMailbox,
-    MailboxActivity,
-    Steered,
-    TimedOut,
 }
 
 impl WaitAgentResult {

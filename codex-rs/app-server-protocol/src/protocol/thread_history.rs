@@ -937,6 +937,8 @@ impl ThreadHistoryBuilder {
             prompt: Some(payload.prompt.clone()),
             model: Some(payload.model.clone()),
             reasoning_effort: Some(payload.reasoning_effort.clone()),
+            wait_condition: None,
+            wake_cause: None,
             agents_states: HashMap::new(),
         };
         self.upsert_item_in_current_turn(item);
@@ -972,6 +974,8 @@ impl ThreadHistoryBuilder {
             prompt: Some(payload.prompt.clone()),
             model: Some(payload.model.clone()),
             reasoning_effort: Some(payload.reasoning_effort.clone()),
+            wait_condition: None,
+            wake_cause: None,
             agents_states,
         });
     }
@@ -989,6 +993,8 @@ impl ThreadHistoryBuilder {
             prompt: Some(payload.prompt.clone()),
             model: None,
             reasoning_effort: None,
+            wait_condition: None,
+            wake_cause: None,
             agents_states: HashMap::new(),
         };
         self.upsert_item_in_current_turn(item);
@@ -1013,6 +1019,8 @@ impl ThreadHistoryBuilder {
             prompt: Some(payload.prompt.clone()),
             model: None,
             reasoning_effort: None,
+            wait_condition: None,
+            wake_cause: None,
             agents_states: [(receiver_id, received_status)].into_iter().collect(),
         });
     }
@@ -1048,6 +1056,8 @@ impl ThreadHistoryBuilder {
             prompt: None,
             model: None,
             reasoning_effort: None,
+            wait_condition: None,
+            wake_cause: None,
             agents_states: HashMap::new(),
         };
         self.upsert_item_in_current_turn(item);
@@ -1083,6 +1093,8 @@ impl ThreadHistoryBuilder {
             prompt: None,
             model: None,
             reasoning_effort: None,
+            wait_condition: None,
+            wake_cause: None,
             agents_states,
         });
     }
@@ -1100,6 +1112,8 @@ impl ThreadHistoryBuilder {
             prompt: None,
             model: None,
             reasoning_effort: None,
+            wait_condition: None,
+            wake_cause: None,
             agents_states: HashMap::new(),
         };
         self.upsert_item_in_current_turn(item);
@@ -1126,6 +1140,8 @@ impl ThreadHistoryBuilder {
             prompt: None,
             model: None,
             reasoning_effort: None,
+            wait_condition: None,
+            wake_cause: None,
             agents_states,
         });
     }
@@ -1143,6 +1159,8 @@ impl ThreadHistoryBuilder {
             prompt: None,
             model: None,
             reasoning_effort: None,
+            wait_condition: None,
+            wake_cause: None,
             agents_states: HashMap::new(),
         };
         self.upsert_item_in_current_turn(item);
@@ -1172,6 +1190,8 @@ impl ThreadHistoryBuilder {
             prompt: None,
             model: None,
             reasoning_effort: None,
+            wait_condition: None,
+            wake_cause: None,
             agents_states,
         });
     }
@@ -4613,6 +4633,39 @@ mod tests {
     }
 
     #[test]
+    fn canonical_wait_metadata_survives_history_reconstruction() {
+        use codex_protocol::items::CollabAgentToolCallItem;
+        use codex_protocol::items::CollabWaitCondition;
+        use codex_protocol::items::CollabWaitWakeCause;
+
+        let wait = CoreTurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+            id: "wait-mailbox".into(),
+            tool: codex_protocol::items::CollabAgentTool::Wait,
+            status: codex_protocol::items::CollabAgentToolCallStatus::Completed,
+            sender_thread_id: ThreadId::new(),
+            receiver_thread_ids: Vec::new(),
+            receiver_agents: Vec::new(),
+            prompt: None,
+            model: None,
+            reasoning_effort: None,
+            wait_condition: Some(CollabWaitCondition::EligibleMailboxInput),
+            wake_cause: Some(CollabWaitWakeCause::Completion),
+            agents_states: HashMap::new(),
+        });
+        let expected = ThreadItem::from(wait.clone());
+        let items = vec![RolloutItem::EventMsg(EventMsg::ItemCompleted(ItemCompletedEvent {
+            thread_id: ThreadId::new(),
+            turn_id: "turn-wait".into(),
+            item: wait,
+            started_at_ms: Some(0),
+            completed_at_ms: 1,
+        }))];
+        let turns = build_turns_from_rollout_items(&items);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].items, vec![expected]);
+    }
+
+    #[test]
     fn reconstructs_collab_resume_end_item() {
         let events = vec![
             EventMsg::UserMessage(UserMessageEvent {
@@ -4654,6 +4707,8 @@ mod tests {
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                wait_condition: None,
+                wake_cause: None,
                 agents_states: [(
                     "00000000-0000-0000-0000-000000000002".into(),
                     CollabAgentState {
@@ -4714,6 +4769,8 @@ mod tests {
                 prompt: Some("inspect the repo".into()),
                 model: Some("gpt-5.4-mini".into()),
                 reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+                wait_condition: None,
+                wake_cause: None,
                 agents_states: [(
                     "00000000-0000-0000-0000-000000000002".into(),
                     CollabAgentState {
@@ -4786,6 +4843,8 @@ mod tests {
                 prompt: Some("new task".into()),
                 model: None,
                 reasoning_effort: None,
+                wait_condition: None,
+                wake_cause: None,
                 agents_states: [(
                     receiver.to_string(),
                     CollabAgentState {

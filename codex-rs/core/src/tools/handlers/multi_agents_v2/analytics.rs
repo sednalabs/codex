@@ -31,6 +31,8 @@ impl ToolCallAnalytics {
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                wait_condition: None,
+                wake_cause: None,
                 agents_states: Default::default(),
             },
             started_at_ms: now_unix_timestamp_ms(),

@@ -12,6 +12,8 @@ use codex_app_server_protocol::CollabAgentState;
 use codex_app_server_protocol::CollabAgentStatus;
 use codex_app_server_protocol::CollabAgentTool;
 use codex_app_server_protocol::CollabAgentToolCallStatus;
+use codex_app_server_protocol::CollabWaitCondition;
+use codex_app_server_protocol::CollabWaitWakeCause;
 use codex_app_server_protocol::SubAgentActivityKind;
 use codex_app_server_protocol::ThreadItem;
 use codex_protocol::ThreadId;
@@ -211,6 +213,8 @@ pub(crate) fn tool_call_history_cell(
         status,
         receiver_thread_ids,
         prompt,
+        wait_condition,
+        wake_cause,
         agents_states,
         ..
     } = item
@@ -265,10 +269,17 @@ pub(crate) fn tool_call_history_cell(
         }),
         CollabAgentTool::Wait => {
             if matches!(status, CollabAgentToolCallStatus::InProgress) {
-                Some(waiting_begin(receiver_thread_ids, &mut agent_metadata))
+                Some(waiting_begin(
+                    receiver_thread_ids,
+                    *wait_condition,
+                    agents_states,
+                    &mut agent_metadata,
+                ))
             } else {
                 Some(waiting_end(
                     receiver_thread_ids,
+                    *wait_condition,
+                    *wake_cause,
                     agents_states,
                     &mut agent_metadata,
                 ))
@@ -374,8 +385,25 @@ fn interaction_end(
 
 fn waiting_begin(
     receiver_thread_ids: &[String],
+    wait_condition: Option<CollabWaitCondition>,
+    agents_states: &std::collections::HashMap<String, CollabAgentState>,
     agent_metadata: &mut impl FnMut(ThreadId) -> AgentMetadata,
 ) -> PlainHistoryCell {
+    match wait_condition {
+        Some(CollabWaitCondition::EligibleMailboxInput) => {
+            return collab_event(
+                title_text("Waiting for eligible mailbox activity or new input"),
+                Vec::new(),
+            );
+        }
+        Some(CollabWaitCondition::SelectedAgents) => {
+            return collab_event(
+                title_text("Waiting for selected agents"),
+                selected_wait_lines(receiver_thread_ids, agents_states, agent_metadata),
+            );
+        }
+        Some(CollabWaitCondition::Unknown) | None => {}
+    }
     let receiver_agents = receiver_thread_ids
         .iter()
         .filter_map(|thread_id| parse_thread_id(thread_id))
@@ -388,7 +416,7 @@ fn waiting_begin(
             agent_label(*thread_id, metadata),
             /*spawn_request*/ None,
         ),
-        [] => title_text("Waiting for agents"),
+        [] => title_text("Waiting"),
         _ => title_text(format!("Waiting for {} agents", receiver_agents.len())),
     };
 
@@ -406,11 +434,71 @@ fn waiting_begin(
 
 fn waiting_end(
     receiver_thread_ids: &[String],
+    wait_condition: Option<CollabWaitCondition>,
+    wake_cause: Option<CollabWaitWakeCause>,
     agents_states: &std::collections::HashMap<String, CollabAgentState>,
     agent_metadata: &mut impl FnMut(ThreadId) -> AgentMetadata,
 ) -> PlainHistoryCell {
-    let details = wait_complete_lines(receiver_thread_ids, agents_states, agent_metadata);
-    collab_event(title_text("Finished waiting"), details)
+    let details = match wait_condition {
+        Some(CollabWaitCondition::EligibleMailboxInput) => Vec::new(),
+        Some(CollabWaitCondition::SelectedAgents) => {
+            selected_wait_lines(receiver_thread_ids, agents_states, agent_metadata)
+        }
+        Some(CollabWaitCondition::Unknown) | None
+            if receiver_thread_ids.is_empty() && agents_states.is_empty() => Vec::new(),
+        Some(CollabWaitCondition::Unknown) | None => {
+            wait_complete_lines(receiver_thread_ids, agents_states, agent_metadata)
+        }
+    };
+    collab_event(title_text(wait_end_title(wait_condition, wake_cause)), details)
+}
+
+pub(crate) fn wait_end_title(
+    wait_condition: Option<CollabWaitCondition>,
+    wake_cause: Option<CollabWaitWakeCause>,
+) -> &'static str {
+    match wake_cause {
+        Some(CollabWaitWakeCause::ActionableMessage) => "Wait ended: actionable mailbox message",
+        Some(CollabWaitWakeCause::Completion)
+            if wait_condition == Some(CollabWaitCondition::SelectedAgents) =>
+        {
+            "Wait ended: selected agent reached a final state"
+        }
+        Some(CollabWaitWakeCause::Completion) => "Wait ended: completion notification",
+        Some(CollabWaitWakeCause::LegacyMailbox) => "Wait ended: legacy mailbox activity",
+        Some(CollabWaitWakeCause::MailboxActivity) => "Wait ended: mailbox activity",
+        Some(CollabWaitWakeCause::Steered) => "Wait ended: new input",
+        Some(CollabWaitWakeCause::TimedOut) => "Wait ended: deadline reached",
+        Some(CollabWaitWakeCause::Unknown) | None => "Finished waiting",
+    }
+}
+
+fn selected_wait_lines(
+    receiver_thread_ids: &[String],
+    agents_states: &std::collections::HashMap<String, CollabAgentState>,
+    agent_metadata: &mut impl FnMut(ThreadId) -> AgentMetadata,
+) -> Vec<Line<'static>> {
+    receiver_thread_ids
+        .iter()
+        .filter_map(|id| {
+            let thread_id = parse_thread_id(id)?;
+            let metadata = agent_metadata(thread_id);
+            let mut spans = agent_label_spans(agent_label(thread_id, &metadata));
+            if metadata
+                .agent_nickname
+                .as_deref()
+                .is_some_and(|name| !name.trim().is_empty())
+            {
+                spans.push(Span::from(format!(" ({thread_id})")).dim());
+            }
+            spans.push(Span::from(": ").dim());
+            match agents_states.get(id) {
+                Some(state) => spans.extend(status_summary_spans(state)),
+                None => spans.push(Span::from("Status unavailable").dim()),
+            }
+            Some(spans.into())
+        })
+        .collect()
 }
 
 fn close_end(
@@ -715,6 +803,103 @@ mod tests {
     }
 
     #[test]
+    fn targetless_wait_renders_condition_and_each_finite_cause_without_targets() {
+        for (status, cause, expected) in [
+            (CollabAgentToolCallStatus::InProgress, None, "Waiting for eligible mailbox activity or new input"),
+            (CollabAgentToolCallStatus::Completed, Some(CollabWaitWakeCause::ActionableMessage), "Wait ended: actionable mailbox message"),
+            (CollabAgentToolCallStatus::Completed, Some(CollabWaitWakeCause::Completion), "Wait ended: completion notification"),
+            (CollabAgentToolCallStatus::Completed, Some(CollabWaitWakeCause::LegacyMailbox), "Wait ended: legacy mailbox activity"),
+            (CollabAgentToolCallStatus::Completed, Some(CollabWaitWakeCause::MailboxActivity), "Wait ended: mailbox activity"),
+            (CollabAgentToolCallStatus::Completed, Some(CollabWaitWakeCause::Steered), "Wait ended: new input"),
+            (CollabAgentToolCallStatus::Completed, Some(CollabWaitWakeCause::TimedOut), "Wait ended: deadline reached"),
+            (CollabAgentToolCallStatus::Completed, Some(CollabWaitWakeCause::Unknown), "Finished waiting"),
+        ] {
+            let item = ThreadItem::CollabAgentToolCall {
+                id: "wait-mailbox".into(),
+                tool: CollabAgentTool::Wait,
+                status,
+                sender_thread_id: "waiting-caller-not-a-wake-sender".into(),
+                receiver_thread_ids: Vec::new(),
+                prompt: Some("not a wake description".into()),
+                model: None,
+                reasoning_effort: None,
+                wait_condition: Some(CollabWaitCondition::EligibleMailboxInput),
+                wake_cause: cause,
+                agents_states: HashMap::new(),
+            };
+            let cell = tool_call_history_cell(&item, /*cached_spawn_request*/ None, |_| {
+                panic!("targetless wait must not resolve a target")
+            }).expect("wait item renders");
+            let rendered = cell_to_text(&cell);
+            assert!(rendered.contains(expected), "{rendered}");
+            assert!(!rendered.contains("No agents completed"));
+            assert!(!rendered.contains("waiting-caller"));
+            assert!(!rendered.contains("not a wake description"));
+        }
+    }
+
+    #[test]
+    fn selected_wait_renders_actual_names_ids_and_available_statuses() {
+        let first = ThreadId::from_string("00000000-0000-0000-0000-000000000002").expect("first id");
+        let second = ThreadId::from_string("00000000-0000-0000-0000-000000000003").expect("second id");
+        for status in [CollabAgentToolCallStatus::InProgress, CollabAgentToolCallStatus::Completed] {
+            let item = ThreadItem::CollabAgentToolCall {
+                id: "wait-selected".into(),
+                tool: CollabAgentTool::Wait,
+                status,
+                sender_thread_id: "caller".into(),
+                receiver_thread_ids: vec![first.to_string(), second.to_string()],
+                prompt: None,
+                model: None,
+                reasoning_effort: None,
+                wait_condition: Some(CollabWaitCondition::SelectedAgents),
+                wake_cause: (status == CollabAgentToolCallStatus::Completed).then_some(CollabWaitWakeCause::Completion),
+                agents_states: HashMap::from([
+                    (first.to_string(), agent_state(CollabAgentStatus::Completed, /*message*/ None)),
+                    (second.to_string(), agent_state(CollabAgentStatus::Running, /*message*/ None)),
+                ]),
+            };
+            let cell = tool_call_history_cell(&item, /*cached_spawn_request*/ None, |id| metadata_for(id, first, second)).expect("selected wait renders");
+            let rendered = cell_to_text(&cell);
+            assert!(rendered.contains(&format!("Robie [explorer] ({first}): Completed")), "{rendered}");
+            assert!(rendered.contains(&format!("Bob [worker] ({second}): Running")), "{rendered}");
+            assert!(!rendered.contains("caller"));
+            assert!(!rendered.contains("mailbox"));
+        }
+    }
+
+    #[test]
+    fn legacy_and_unknown_wait_metadata_render_without_fabricated_cause() {
+        for condition in [None, Some(CollabWaitCondition::Unknown)] {
+            for (status, cause, expected) in [
+                (CollabAgentToolCallStatus::InProgress, None, "Waiting"),
+                (CollabAgentToolCallStatus::Completed, None, "Finished waiting"),
+                (CollabAgentToolCallStatus::Completed, Some(CollabWaitWakeCause::Unknown), "Finished waiting"),
+            ] {
+                let item = ThreadItem::CollabAgentToolCall {
+                    id: "wait-old".into(),
+                    tool: CollabAgentTool::Wait,
+                    status,
+                    sender_thread_id: "caller".into(),
+                    receiver_thread_ids: Vec::new(),
+                    prompt: None,
+                    model: None,
+                    reasoning_effort: None,
+                    wait_condition: condition,
+                    wake_cause: cause,
+                    agents_states: HashMap::new(),
+                };
+                let cell = tool_call_history_cell(&item, /*cached_spawn_request*/ None, |_| panic!("no recorded targets")).expect("legacy wait renders");
+                let rendered = cell_to_text(&cell);
+                assert!(rendered.contains(expected));
+                assert!(!rendered.contains("mailbox"));
+                assert!(!rendered.contains("agents"));
+                assert!(!rendered.contains("caller"));
+            }
+        }
+    }
+
+    #[test]
     fn collab_events_snapshot() {
         let sender_thread_id = ThreadId::from_string("00000000-0000-0000-0000-000000000001")
             .expect("valid sender thread id");
@@ -733,6 +918,8 @@ mod tests {
                 prompt: Some("Compute 11! and reply with just the integer result.".to_string()),
                 model: Some("gpt-5".to_string()),
                 reasoning_effort: Some(ReasoningEffortConfig::High),
+                wait_condition: None,
+                wake_cause: None,
                 agents_states: HashMap::from([(
                     robie_id.to_string(),
                     agent_state(CollabAgentStatus::PendingInit, /*message*/ None),
@@ -753,6 +940,8 @@ mod tests {
                 prompt: Some("Please continue and return the answer only.".to_string()),
                 model: None,
                 reasoning_effort: None,
+                wait_condition: None,
+                wake_cause: None,
                 agents_states: HashMap::from([(
                     robie_id.to_string(),
                     agent_state(CollabAgentStatus::Running, /*message*/ None),
@@ -773,6 +962,8 @@ mod tests {
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                wait_condition: None,
+                wake_cause: None,
                 agents_states: HashMap::new(),
             },
             /*cached_spawn_request*/ None,
@@ -790,6 +981,8 @@ mod tests {
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                wait_condition: None,
+                wake_cause: None,
                 agents_states: HashMap::from([
                     (
                         robie_id.to_string(),
@@ -816,6 +1009,8 @@ mod tests {
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                wait_condition: None,
+                wake_cause: None,
                 agents_states: HashMap::from([(
                     robie_id.to_string(),
                     agent_state(CollabAgentStatus::Completed, Some("39916800")),
@@ -900,6 +1095,8 @@ mod tests {
                 prompt: Some(String::new()),
                 model: Some("gpt-5".to_string()),
                 reasoning_effort: Some(ReasoningEffortConfig::High),
+                wait_condition: None,
+                wake_cause: None,
                 agents_states: HashMap::from([(
                     robie_id.to_string(),
                     agent_state(CollabAgentStatus::PendingInit, /*message*/ None),
@@ -939,6 +1136,8 @@ mod tests {
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                wait_condition: None,
+                wake_cause: None,
                 agents_states: HashMap::from([(
                     robie_id.to_string(),
                     agent_state(CollabAgentStatus::Interrupted, /*message*/ None),

@@ -80,6 +80,8 @@ impl ToolExecutor<ToolInvocation> for Handler {
                     model: agent_snapshot.map(|snapshot| snapshot.model.clone()),
                     reasoning_effort: agent_snapshot
                         .and_then(|snapshot| snapshot.reasoning_effort.clone()),
+                    wait_condition: None,
+                    wake_cause: None,
                     agents_states,
                 },
                 started_at_ms,

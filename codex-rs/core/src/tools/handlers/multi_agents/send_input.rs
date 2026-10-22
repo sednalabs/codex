@@ -90,6 +90,8 @@ impl Handler {
                     prompt: Some(prompt.clone()),
                     model: None,
                     reasoning_effort: None,
+                    wait_condition: None,
+                    wake_cause: None,
                     agents_states: Default::default(),
                 }),
             )
@@ -127,6 +129,8 @@ impl Handler {
                     prompt: Some(prompt),
                     model: None,
                     reasoning_effort: None,
+                    wait_condition: None,
+                    wake_cause: None,
                     agents_states: [(receiver_thread_id, status)].into_iter().collect(),
                 }),
             )

@@ -747,6 +747,8 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
                 prompt: Some("Explore the repo".to_string()),
                 model: Some("gpt-5".to_string()),
                 reasoning_effort: Some(ReasoningEffortConfig::High),
+                wait_condition: None,
+                wake_cause: None,
                 agents_states: HashMap::new(),
             },
         }),
@@ -766,6 +768,8 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
                 prompt: Some("Explore the repo".to_string()),
                 model: None,
                 reasoning_effort: None,
+                wait_condition: None,
+                wake_cause: None,
                 agents_states: HashMap::from([(
                     spawned_thread_id.to_string(),
                     AppServerCollabAgentState {
@@ -1426,6 +1430,68 @@ async fn live_app_server_sub_agent_activity_renders_once() {
 }
 
 #[tokio::test]
+async fn live_and_replayed_wait_items_render_typed_condition_and_cause() {
+    use codex_protocol::items::CollabAgentTool;
+    use codex_protocol::items::CollabAgentToolCallItem;
+    use codex_protocol::items::CollabAgentToolCallStatus;
+    use codex_protocol::items::CollabWaitCondition;
+    use codex_protocol::items::CollabWaitWakeCause;
+    use codex_protocol::items::TurnItem;
+
+    for replay_kind in [None, Some(ReplayKind::ThreadSnapshot)] {
+        for (cause, expected) in [
+            (CollabWaitWakeCause::Completion, "Wait ended: completion notification"),
+            (CollabWaitWakeCause::ActionableMessage, "Wait ended: actionable mailbox message"),
+            (CollabWaitWakeCause::TimedOut, "Wait ended: deadline reached"),
+        ] {
+            let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+            let mut call = CollabAgentToolCallItem {
+                id: "wait-visible".into(),
+                tool: CollabAgentTool::Wait,
+                status: CollabAgentToolCallStatus::InProgress,
+                sender_thread_id: ThreadId::new(),
+                receiver_thread_ids: Vec::new(),
+                receiver_agents: Vec::new(),
+                prompt: None,
+                model: None,
+                reasoning_effort: None,
+                wait_condition: Some(CollabWaitCondition::EligibleMailboxInput),
+                wake_cause: None,
+                agents_states: HashMap::new(),
+            };
+            chat.handle_server_notification(
+                ServerNotification::ItemStarted(ItemStartedNotification {
+                    thread_id: "thread-1".into(),
+                    turn_id: "turn-1".into(),
+                    started_at_ms: 0,
+                    item: AppServerThreadItem::from(TurnItem::CollabAgentToolCall(call.clone())),
+                }),
+                replay_kind,
+            );
+            call.status = CollabAgentToolCallStatus::Completed;
+            call.wake_cause = Some(cause);
+            chat.handle_server_notification(
+                ServerNotification::ItemCompleted(ItemCompletedNotification {
+                    thread_id: "thread-1".into(),
+                    turn_id: "turn-1".into(),
+                    completed_at_ms: 1,
+                    item: AppServerThreadItem::from(TurnItem::CollabAgentToolCall(call)),
+                }),
+                replay_kind,
+            );
+            let rendered = drain_insert_history(&mut rx)
+                .into_iter()
+                .map(|lines| lines_to_single_string(&lines))
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(rendered.contains("Waiting for eligible mailbox activity or new input"), "{rendered}");
+            assert!(rendered.contains(expected), "{rendered}");
+            assert!(!rendered.contains("No agents completed"));
+        }
+    }
+}
+
+#[tokio::test]
 async fn live_app_server_collab_wait_items_render_history() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     let sender_thread_id =
@@ -1462,6 +1528,8 @@ async fn live_app_server_collab_wait_items_render_history() {
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                wait_condition: None,
+                wake_cause: None,
                 agents_states: HashMap::new(),
             },
         }),
@@ -1485,6 +1553,8 @@ async fn live_app_server_collab_wait_items_render_history() {
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                wait_condition: None,
+                wake_cause: None,
                 agents_states: HashMap::from([
                     (
                         receiver_thread_id.to_string(),
@@ -1536,6 +1606,8 @@ async fn live_app_server_collab_spawn_completed_renders_requested_model_and_effo
                 prompt: Some("Explore the repo".to_string()),
                 model: Some("gpt-5".to_string()),
                 reasoning_effort: Some(ReasoningEffortConfig::High),
+                wait_condition: None,
+                wake_cause: None,
                 agents_states: HashMap::new(),
             },
         }),
@@ -1556,6 +1628,8 @@ async fn live_app_server_collab_spawn_completed_renders_requested_model_and_effo
                 prompt: Some("Explore the repo".to_string()),
                 model: Some("gpt-5".to_string()),
                 reasoning_effort: Some(ReasoningEffortConfig::High),
+                wait_condition: None,
+                wake_cause: None,
                 agents_states: HashMap::from([(
                     spawned_thread_id.to_string(),
                     AppServerCollabAgentState {

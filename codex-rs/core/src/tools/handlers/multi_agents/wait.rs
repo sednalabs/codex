@@ -6,6 +6,8 @@ use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
 use crate::tools::handlers::multi_agents_spec::create_wait_agent_tool_v1;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::CodexErrorDetails;
+use codex_protocol::items::CollabWaitCondition;
+use codex_protocol::items::CollabWaitWakeCause;
 use codex_tools::ToolSpec;
 use futures::FutureExt;
 use futures::StreamExt;
@@ -115,6 +117,8 @@ impl Handler {
                     prompt: None,
                     model: None,
                     reasoning_effort: None,
+                    wait_condition: Some(CollabWaitCondition::SelectedAgents),
+                    wake_cause: None,
                     agents_states: Default::default(),
                 }),
             )
@@ -160,6 +164,8 @@ impl Handler {
                                 prompt: None,
                                 model: None,
                                 reasoning_effort: None,
+                                wait_condition: Some(CollabWaitCondition::SelectedAgents),
+                                wake_cause: None,
                                 agents_states: statuses,
                             }),
                         )
@@ -231,6 +237,12 @@ impl Handler {
                     prompt: None,
                     model: None,
                     reasoning_effort: None,
+                    wait_condition: Some(CollabWaitCondition::SelectedAgents),
+                    wake_cause: Some(if timed_out {
+                        CollabWaitWakeCause::TimedOut
+                    } else {
+                        CollabWaitWakeCause::Completion
+                    }),
                     agents_states: statuses_by_id,
                 }),
             )

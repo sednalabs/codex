@@ -256,6 +256,54 @@ fn historical_command_fallbacks_preserve_status_output_and_group_boundaries() {
 }
 
 #[test]
+fn typed_wait_metadata_is_rendered_on_persisted_transcript_pages() {
+    use codex_app_server_protocol::CollabWaitCondition;
+    use codex_app_server_protocol::CollabWaitWakeCause;
+
+    let cwd = test_path_buf("/workspace").abs();
+    let selected_id = "00000000-0000-0000-0000-000000000002";
+    for (condition, status, cause, expected) in [
+        (CollabWaitCondition::EligibleMailboxInput, CollabAgentToolCallStatus::InProgress, None, "Waiting for eligible mailbox activity or new input"),
+        (CollabWaitCondition::EligibleMailboxInput, CollabAgentToolCallStatus::Completed, Some(CollabWaitWakeCause::Completion), "Wait ended: completion notification"),
+        (CollabWaitCondition::SelectedAgents, CollabAgentToolCallStatus::InProgress, None, "Waiting for selected agents"),
+        (CollabWaitCondition::Unknown, CollabAgentToolCallStatus::Completed, Some(CollabWaitWakeCause::Unknown), "Finished waiting"),
+    ] {
+        let selected = condition == CollabWaitCondition::SelectedAgents;
+        let item = ThreadItem::CollabAgentToolCall {
+            id: "wait-visible".into(),
+            tool: CollabAgentTool::Wait,
+            status,
+            sender_thread_id: "caller-not-wake-sender".into(),
+            receiver_thread_ids: if selected { vec![selected_id.into()] } else { Vec::new() },
+            prompt: None,
+            model: None,
+            reasoning_effort: None,
+            wait_condition: Some(condition),
+            wake_cause: cause,
+            agents_states: Default::default(),
+        };
+        let cells = thread_items_to_transcript_cells(
+            /*thread_id*/ None,
+            &cwd,
+            [item],
+            RawReasoningVisibility::Hidden,
+            /*config*/ None,
+        );
+        assert_eq!(cells.len(), 1);
+        assert_eq!(cells[0].transcript_animation_tick(), None);
+        let rendered = cells[0].transcript_lines(/*width*/ 120)
+            .iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+        assert!(rendered.contains(expected), "{rendered}");
+        assert_eq!(rendered.contains(selected_id), selected);
+        if selected {
+            assert!(rendered.contains("Status unavailable"));
+        }
+        assert!(!rendered.contains("caller-not-wake-sender"));
+        assert!(!rendered.contains("No agents completed"));
+    }
+}
+
+#[test]
 fn agent_tool_fallbacks_preserve_status_without_duplicating_v2_activity() {
     let cwd = test_path_buf("/workspace").abs();
     let mut snapshots = Vec::new();
@@ -314,6 +362,8 @@ fn agent_tool_fallbacks_preserve_status_without_duplicating_v2_activity() {
             prompt: Some("Inspect the parser".to_string()),
             model: None,
             reasoning_effort: None,
+            wait_condition: None,
+            wake_cause: None,
             agents_states: Default::default(),
         };
         let cells = thread_items_to_transcript_cells(

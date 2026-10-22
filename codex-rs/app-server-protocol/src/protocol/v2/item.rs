@@ -29,6 +29,8 @@ pub use codex_protocol::items::AgentMessageDelivery;
 pub use codex_protocol::items::AsyncUserInputQuestion;
 use codex_protocol::items::CollabAgentTool as CoreCollabAgentTool;
 use codex_protocol::items::CollabAgentToolCallStatus as CoreCollabAgentToolCallStatus;
+use codex_protocol::items::CollabWaitCondition as CoreCollabWaitCondition;
+use codex_protocol::items::CollabWaitWakeCause as CoreCollabWaitWakeCause;
 use codex_protocol::items::CommandExecutionStatus as CoreCommandExecutionStatus;
 use codex_protocol::items::DynamicToolCallStatus as CoreDynamicToolCallStatus;
 pub use codex_protocol::items::McpAppDisplayMode;
@@ -389,6 +391,14 @@ pub enum ThreadItem {
         model: Option<String>,
         /// Reasoning effort requested for the spawned agent, when applicable.
         reasoning_effort: Option<ReasoningEffort>,
+        /// Explicit wait condition; absent from older records and other tools.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        wait_condition: Option<CollabWaitCondition>,
+        /// Observed wait outcome, without sender or message-body attribution.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        wake_cause: Option<CollabWaitWakeCause>,
         /// Last known status of the target agents, when available.
         agents_states: HashMap<String, CollabAgentState>,
     },
@@ -975,6 +985,8 @@ impl From<CoreTurnItem> for ThreadItem {
                 prompt: call.prompt,
                 model: call.model,
                 reasoning_effort: call.reasoning_effort,
+                wait_condition: call.wait_condition.map(Into::into),
+                wake_cause: call.wake_cause.map(Into::into),
                 agents_states: call
                     .agents_states
                     .into_iter()
@@ -1231,6 +1243,54 @@ pub enum CollabAgentToolCallStatus {
     Completed,
     Failed,
     Interrupted,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub enum CollabWaitCondition {
+    SelectedAgents,
+    EligibleMailboxInput,
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub enum CollabWaitWakeCause {
+    ActionableMessage,
+    Completion,
+    LegacyMailbox,
+    MailboxActivity,
+    Steered,
+    TimedOut,
+    #[serde(other)]
+    Unknown,
+}
+
+impl From<CoreCollabWaitCondition> for CollabWaitCondition {
+    fn from(value: CoreCollabWaitCondition) -> Self {
+        match value {
+            CoreCollabWaitCondition::SelectedAgents => Self::SelectedAgents,
+            CoreCollabWaitCondition::EligibleMailboxInput => Self::EligibleMailboxInput,
+            CoreCollabWaitCondition::Unknown => Self::Unknown,
+        }
+    }
+}
+
+impl From<CoreCollabWaitWakeCause> for CollabWaitWakeCause {
+    fn from(value: CoreCollabWaitWakeCause) -> Self {
+        match value {
+            CoreCollabWaitWakeCause::ActionableMessage => Self::ActionableMessage,
+            CoreCollabWaitWakeCause::Completion => Self::Completion,
+            CoreCollabWaitWakeCause::LegacyMailbox => Self::LegacyMailbox,
+            CoreCollabWaitWakeCause::MailboxActivity => Self::MailboxActivity,
+            CoreCollabWaitWakeCause::Steered => Self::Steered,
+            CoreCollabWaitWakeCause::TimedOut => Self::TimedOut,
+            CoreCollabWaitWakeCause::Unknown => Self::Unknown,
+        }
+    }
 }
 
 impl From<CoreCollabAgentTool> for CollabAgentTool {

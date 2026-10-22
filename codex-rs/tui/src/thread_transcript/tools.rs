@@ -89,6 +89,12 @@ pub(crate) fn historical_tool_fallback(item: &ThreadItem) -> Option<PlainHistory
             vec![format!("mcp tool: {server}/{tool} · {status}").dim().into()]
         }
         ThreadItem::CollabAgentToolCall {
+            tool: CollabAgentTool::Wait,
+            wait_condition,
+            wake_cause,
+            ..
+        } if wait_condition.is_some() || wake_cause.is_some() => return None,
+        ThreadItem::CollabAgentToolCall {
             tool:
                 tool @ (CollabAgentTool::SpawnAgent
                 | CollabAgentTool::SendInput

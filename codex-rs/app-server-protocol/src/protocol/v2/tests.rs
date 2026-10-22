@@ -679,6 +679,68 @@ fn collab_agent_state_maps_interrupted_status() {
 }
 
 #[test]
+fn collab_wait_metadata_maps_to_public_item_and_preserves_legacy() {
+    use codex_protocol::items::CollabWaitCondition as CoreWaitCondition;
+    use codex_protocol::items::CollabWaitWakeCause as CoreWakeCause;
+
+    assert_eq!(CollabWaitCondition::from(CoreWaitCondition::SelectedAgents), CollabWaitCondition::SelectedAgents);
+    assert_eq!(CollabWaitCondition::from(CoreWaitCondition::Unknown), CollabWaitCondition::Unknown);
+
+    for (core_cause, public_cause) in [
+        (CoreWakeCause::ActionableMessage, CollabWaitWakeCause::ActionableMessage),
+        (CoreWakeCause::Completion, CollabWaitWakeCause::Completion),
+        (CoreWakeCause::LegacyMailbox, CollabWaitWakeCause::LegacyMailbox),
+        (CoreWakeCause::MailboxActivity, CollabWaitWakeCause::MailboxActivity),
+        (CoreWakeCause::Steered, CollabWaitWakeCause::Steered),
+        (CoreWakeCause::TimedOut, CollabWaitWakeCause::TimedOut),
+        (CoreWakeCause::Unknown, CollabWaitWakeCause::Unknown),
+    ] {
+        let core = CollabAgentToolCallItem {
+            id: "wait-1".into(),
+            tool: CoreCollabAgentTool::Wait,
+            status: CoreCollabAgentToolCallStatus::Completed,
+            sender_thread_id: codex_protocol::ThreadId::new(),
+            receiver_thread_ids: Vec::new(),
+            receiver_agents: Vec::new(),
+            prompt: None,
+            model: None,
+            reasoning_effort: None,
+            wait_condition: Some(CoreWaitCondition::EligibleMailboxInput),
+            wake_cause: Some(core_cause),
+            agents_states: HashMap::new(),
+        };
+        let item = ThreadItem::from(TurnItem::CollabAgentToolCall(core));
+        assert!(matches!(&item, ThreadItem::CollabAgentToolCall {
+            wait_condition: Some(CollabWaitCondition::EligibleMailboxInput),
+            wake_cause: Some(cause),
+            receiver_thread_ids,
+            ..
+        } if *cause == public_cause && receiver_thread_ids.is_empty()));
+        let encoded = serde_json::to_value(&item).expect("serialize public wait");
+        assert_eq!(encoded["waitCondition"], json!("eligibleMailboxInput"));
+        let decoded: ThreadItem = serde_json::from_value(encoded).expect("public wait round trip");
+        assert_eq!(decoded, item);
+    }
+
+    let mut legacy = json!({
+        "type": "collabAgentToolCall", "id": "wait-old", "tool": "wait",
+        "status": "completed", "senderThreadId": "caller", "receiverThreadIds": [],
+        "prompt": null, "model": null, "reasoningEffort": null, "agentsStates": {}
+    });
+    let item: ThreadItem = serde_json::from_value(legacy.clone()).expect("legacy public wait");
+    assert!(matches!(item, ThreadItem::CollabAgentToolCall {
+        wait_condition: None, wake_cause: None, ..
+    }));
+    legacy["waitCondition"] = json!("futureCondition");
+    legacy["wakeCause"] = json!("futureCause");
+    let item: ThreadItem = serde_json::from_value(legacy).expect("future public wait");
+    assert!(matches!(item, ThreadItem::CollabAgentToolCall {
+        wait_condition: Some(CollabWaitCondition::Unknown),
+        wake_cause: Some(CollabWaitWakeCause::Unknown), ..
+    }));
+}
+
+#[test]
 fn external_agent_config_plugins_details_round_trip() {
     let item: ExternalAgentConfigMigrationItem = serde_json::from_value(json!({
         "itemType": "PLUGINS",
@@ -3418,6 +3480,8 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         prompt: Some("continue".to_string()),
         model: None,
         reasoning_effort: None,
+        wait_condition: None,
+        wake_cause: None,
         agents_states: [(receiver_thread_id, CoreAgentStatus::Completed(None))]
             .into_iter()
             .collect(),
@@ -3434,6 +3498,8 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             prompt: Some("continue".to_string()),
             model: None,
             reasoning_effort: None,
+            wait_condition: None,
+            wake_cause: None,
             agents_states: [(
                 receiver_thread_id.to_string(),
                 CollabAgentState {

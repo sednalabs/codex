@@ -85,6 +85,8 @@ pub fn item_event_to_server_notification(
                 prompt: Some(begin_event.prompt),
                 model: Some(begin_event.model),
                 reasoning_effort: Some(begin_event.reasoning_effort),
+                wait_condition: None,
+                wake_cause: None,
                 agents_states: HashMap::new(),
             };
             ServerNotification::ItemStarted(ItemStartedNotification {
@@ -124,6 +126,8 @@ pub fn item_event_to_server_notification(
                 prompt: Some(end_event.prompt),
                 model: Some(end_event.model),
                 reasoning_effort: Some(end_event.reasoning_effort),
+                wait_condition: None,
+                wake_cause: None,
                 agents_states,
             };
             ServerNotification::ItemCompleted(ItemCompletedNotification {
@@ -144,6 +148,8 @@ pub fn item_event_to_server_notification(
                 prompt: Some(begin_event.prompt),
                 model: None,
                 reasoning_effort: None,
+                wait_condition: None,
+                wake_cause: None,
                 agents_states: HashMap::new(),
             };
             ServerNotification::ItemStarted(ItemStartedNotification {
@@ -172,6 +178,8 @@ pub fn item_event_to_server_notification(
                 prompt: Some(end_event.prompt),
                 model: None,
                 reasoning_effort: None,
+                wait_condition: None,
+                wake_cause: None,
                 agents_states: [(receiver_id, received_status)].into_iter().collect(),
             };
             ServerNotification::ItemCompleted(ItemCompletedNotification {
@@ -212,6 +220,8 @@ pub fn item_event_to_server_notification(
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                wait_condition: None,
+                wake_cause: None,
                 agents_states: HashMap::new(),
             };
             ServerNotification::ItemStarted(ItemStartedNotification {
@@ -248,6 +258,8 @@ pub fn item_event_to_server_notification(
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                wait_condition: None,
+                wake_cause: None,
                 agents_states,
             };
             ServerNotification::ItemCompleted(ItemCompletedNotification {
@@ -267,6 +279,8 @@ pub fn item_event_to_server_notification(
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                wait_condition: None,
+                wake_cause: None,
                 agents_states: HashMap::new(),
             };
             ServerNotification::ItemStarted(ItemStartedNotification {
@@ -300,6 +314,8 @@ pub fn item_event_to_server_notification(
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                wait_condition: None,
+                wake_cause: None,
                 agents_states,
             };
             ServerNotification::ItemCompleted(ItemCompletedNotification {
@@ -319,6 +335,8 @@ pub fn item_event_to_server_notification(
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                wait_condition: None,
+                wake_cause: None,
                 agents_states: HashMap::new(),
             };
             ServerNotification::ItemStarted(ItemStartedNotification {
@@ -352,6 +370,8 @@ pub fn item_event_to_server_notification(
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                wait_condition: None,
+                wake_cause: None,
                 agents_states,
             };
             ServerNotification::ItemCompleted(ItemCompletedNotification {
@@ -541,6 +561,8 @@ mod tests {
                     prompt: None,
                     model: None,
                     reasoning_effort: None,
+                    wait_condition: None,
+                    wake_cause: None,
                     agents_states: HashMap::new(),
                 },
             },
@@ -580,6 +602,8 @@ mod tests {
                     prompt: None,
                     model: None,
                     reasoning_effort: None,
+                    wait_condition: None,
+                    wake_cause: None,
                     agents_states: [(
                         receiver_id,
                         CollabAgentState::from(codex_protocol::protocol::AgentStatus::NotFound),

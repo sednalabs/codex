@@ -251,6 +251,8 @@ async fn buffered_tool_events_preserve_attribution_or_drop_it_on_queue_overflow(
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                wait_condition: None,
+                wake_cause: None,
                 agents_states: Default::default(),
             },
         };

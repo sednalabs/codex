@@ -334,6 +334,30 @@ pub enum CollabAgentToolCallStatus {
     Interrupted,
 }
 
+/// The condition a wait observes, independently of the event that ends it.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CollabWaitCondition {
+    SelectedAgents,
+    EligibleMailboxInput,
+    #[serde(other)]
+    Unknown,
+}
+
+/// A bounded observed wait outcome, not the identity of a waking sender.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CollabWaitWakeCause {
+    ActionableMessage,
+    Completion,
+    LegacyMailbox,
+    MailboxActivity,
+    Steered,
+    TimedOut,
+    #[serde(other)]
+    Unknown,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq)]
 pub struct CollabAgentToolCallItem {
     pub id: String,
@@ -353,6 +377,12 @@ pub struct CollabAgentToolCallItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub reasoning_effort: Option<ReasoningEffortConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub wait_condition: Option<CollabWaitCondition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub wake_cause: Option<CollabWaitWakeCause>,
     #[serde(default)]
     pub agents_states: HashMap<ThreadId, AgentStatus>,
 }
@@ -771,6 +801,42 @@ mod tests {
     use codex_extension_items::sleep::SleepItem;
     use pretty_assertions::assert_eq;
     use serde_json::json;
+
+    #[test]
+    fn collab_wait_metadata_is_optional_and_forward_compatible() {
+        let legacy = json!({
+            "id": "wait-1",
+            "tool": "wait",
+            "status": "completed",
+            "sender_thread_id": "00000000-0000-0000-0000-000000000001"
+        });
+        let item: CollabAgentToolCallItem =
+            serde_json::from_value(legacy.clone()).expect("legacy wait item");
+        assert_eq!(item.wait_condition, None);
+        assert_eq!(item.wake_cause, None);
+        let serialized = serde_json::to_value(&item).expect("serialize legacy wait");
+        assert!(serialized.get("wait_condition").is_none());
+        assert!(serialized.get("wake_cause").is_none());
+
+        let mut typed = legacy;
+        typed["wait_condition"] = json!("eligible_mailbox_input");
+        typed["wake_cause"] = json!("completion");
+        let item: CollabAgentToolCallItem =
+            serde_json::from_value(typed.clone()).expect("typed wait item");
+        assert_eq!(item.wait_condition, Some(CollabWaitCondition::EligibleMailboxInput));
+        assert_eq!(item.wake_cause, Some(CollabWaitWakeCause::Completion));
+        let round_trip: CollabAgentToolCallItem = serde_json::from_value(
+            serde_json::to_value(&item).expect("serialize typed wait"),
+        ).expect("deserialize typed wait");
+        assert_eq!(round_trip, item);
+
+        typed["wait_condition"] = json!("future_condition");
+        typed["wake_cause"] = json!("future_cause");
+        let unknown: CollabAgentToolCallItem =
+            serde_json::from_value(typed).expect("future wait metadata");
+        assert_eq!(unknown.wait_condition, Some(CollabWaitCondition::Unknown));
+        assert_eq!(unknown.wake_cause, Some(CollabWaitWakeCause::Unknown));
+    }
 
     #[test]
     fn sleep_extension_item_preserves_type_and_kind() {

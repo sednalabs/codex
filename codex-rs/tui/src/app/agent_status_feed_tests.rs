@@ -5,6 +5,32 @@ use codex_app_server_protocol::ItemCompletedNotification;
 use codex_utils_absolute_path::AbsolutePathBuf;
 
 #[test]
+fn wait_status_preview_distinguishes_active_condition_and_observed_end() {
+    use codex_app_server_protocol::CollabWaitWakeCause;
+
+    for (status, cause, expected) in [
+        (CollabAgentToolCallStatus::InProgress, None, "Waiting for eligible mailbox activity or new input"),
+        (CollabAgentToolCallStatus::Completed, Some(CollabWaitWakeCause::Completion), "Wait ended: completion notification"),
+        (CollabAgentToolCallStatus::Completed, Some(CollabWaitWakeCause::TimedOut), "Wait ended: deadline reached"),
+    ] {
+        let item = ThreadItem::CollabAgentToolCall {
+            id: "wait-1".into(),
+            tool: CollabAgentTool::Wait,
+            status,
+            sender_thread_id: "caller".into(),
+            receiver_thread_ids: Vec::new(),
+            prompt: None,
+            model: None,
+            reasoning_effort: None,
+            wait_condition: Some(CollabWaitCondition::EligibleMailboxInput),
+            wake_cause: cause,
+            agents_states: Default::default(),
+        };
+        assert_eq!(activity_summary(&item).as_deref(), Some(expected));
+    }
+}
+
+#[test]
 fn agent_status_uses_bounded_buffered_activity() {
     let mut store = ThreadEventStore::new(/*capacity*/ 8);
     store.push_notification(ServerNotification::ItemCompleted(

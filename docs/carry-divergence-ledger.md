@@ -170,8 +170,17 @@ unchanged. Eligible queued categories, not message bodies or every flushed
 sender, determine the bounded reported wake cause. Informational notifications
 do not reset the original deadline, and cancellation retains queued mail.
 
+Optional canonical wait metadata carries that condition and observed finite
+cause through the public app-server item to live and replayed TUI rows. A
+targetless wait names eligible mailbox activity or new input, without inventing
+targets or attributing the wake to the caller. Targeted waits render recorded
+receiver IDs, available names and statuses; unavailable statuses remain explicit.
+Older or unknown metadata remains neutral. No message bodies or inferred sender
+identities are added, and wait eligibility, idle-turn policy and timing are unchanged.
+
 Remove this carry when upstream provides equivalent independent idle-turn and
-wait-wake semantics with compatible legacy, terminal, and retained-mail behavior.
+wait-wake semantics and rendered condition/cause visibility with compatible
+legacy, terminal, and retained-mail behavior.
 
 Pin the upstream revision being considered, then compare it against current
 downstream `main` and its accepted capabilities. First look for equivalent

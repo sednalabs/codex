@@ -3202,6 +3202,55 @@ async fn multi_agent_v2_wait_agent_uses_configured_default_timeout() {
 }
 
 #[tokio::test]
+async fn multi_agent_v2_wait_items_report_condition_and_timeout_cause() {
+    let (session, turn, rx) =
+        crate::session::tests::make_session_and_context_with_auth_and_config_and_rx(
+            CodexAuth::from_api_key("Test API Key"),
+            Vec::new(),
+            |config| {
+                config.multi_agent_v2.min_wait_timeout_ms = 0;
+                config.multi_agent_v2.max_wait_timeout_ms = 0;
+                config.multi_agent_v2.default_wait_timeout_ms = 0;
+            },
+        )
+        .await;
+    WaitAgentHandlerV2::default()
+        .handle(invocation(session, turn, "wait_agent", function_payload(json!({}))))
+        .await
+        .expect("zero-timeout wait succeeds");
+
+    let mut waits = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        let item = match event.msg {
+            EventMsg::ItemStarted(event) => Some(event.item),
+            EventMsg::ItemCompleted(event) => Some(event.item),
+            _ => None,
+        };
+        if let Some(TurnItem::CollabAgentToolCall(call)) = item {
+            assert!(call.receiver_thread_ids.is_empty());
+            assert!(call.receiver_agents.is_empty());
+            assert!(call.agents_states.is_empty());
+            waits.push((call.status, call.wait_condition, call.wake_cause));
+        }
+    }
+    assert_eq!(
+        waits,
+        vec![
+            (
+                codex_protocol::items::CollabAgentToolCallStatus::InProgress,
+                Some(codex_protocol::items::CollabWaitCondition::EligibleMailboxInput),
+                None,
+            ),
+            (
+                codex_protocol::items::CollabAgentToolCallStatus::Completed,
+                Some(codex_protocol::items::CollabWaitCondition::EligibleMailboxInput),
+                Some(WaitWakeCause::TimedOut),
+            ),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn multi_agent_v2_wait_agent_allows_zero_configured_timeout() {
     let (session, mut turn) = make_session_and_context().await;
     let mut config = (*turn.config).clone();

@@ -7,6 +7,8 @@ use crate::history_cell::plain_lines;
 use crate::style::accent_color;
 use crate::text_formatting::truncate_text;
 use codex_app_server_protocol::CollabAgentTool;
+use codex_app_server_protocol::CollabAgentToolCallStatus;
+use codex_app_server_protocol::CollabWaitCondition;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::SubAgentActivityKind;
 use codex_app_server_protocol::ThreadItem;
@@ -161,7 +163,13 @@ fn activity_summary(item: &ThreadItem) -> Option<String> {
                 .unwrap_or_else(|| tool.clone());
             return bounded_summary(&format!("Tool {tool}"));
         }
-        ThreadItem::CollabAgentToolCall { tool, .. } => {
+        ThreadItem::CollabAgentToolCall {
+            tool,
+            status,
+            wait_condition,
+            wake_cause,
+            ..
+        } => {
             let action = match tool {
                 CollabAgentTool::SendMessage
                 | CollabAgentTool::FollowupTask
@@ -170,6 +178,21 @@ fn activity_summary(item: &ThreadItem) -> Option<String> {
                 CollabAgentTool::SpawnAgent => "Spawned an agent",
                 CollabAgentTool::SendInput => "Sent input to an agent",
                 CollabAgentTool::ResumeAgent => "Resumed an agent",
+                CollabAgentTool::Wait
+                    if *status == CollabAgentToolCallStatus::InProgress
+                        && wait_condition.is_some() =>
+                {
+                    match wait_condition {
+                        Some(CollabWaitCondition::EligibleMailboxInput) => {
+                            "Waiting for eligible mailbox activity or new input"
+                        }
+                        Some(CollabWaitCondition::SelectedAgents) => "Waiting for selected agents",
+                        Some(CollabWaitCondition::Unknown) | None => "Waiting",
+                    }
+                }
+                CollabAgentTool::Wait if wait_condition.is_some() || wake_cause.is_some() => {
+                    crate::multi_agents::wait_end_title(*wait_condition, *wake_cause)
+                }
                 CollabAgentTool::Wait => "Waited for an agent",
                 CollabAgentTool::CloseAgent => "Closed an agent",
             };
