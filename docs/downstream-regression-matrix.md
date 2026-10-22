@@ -1221,6 +1221,14 @@ existing optional `ops:write` scope contributes its established MCP audiences.
 Source and
 hosted package proof do not appoint the bearer or establish HTTP first use.
 
+If that claim POST has an uncertain result, the launcher retains its request
+UUID and performs one bounded `POST /v0/work-items/execution-receipt/read` with
+the same API bearer and exact Work reference/request UUID. A historical claim
+outcome with the same nested Work reference settles a committed claim. Null history remains unresolved
+even when a current claim exists; a failed or absent read never authorizes
+replaying the claim. Hosted regressions must assert both historical recovery
+and the no-replay/unresolved path.
+
 The bounded `provision-api-bearer` mode reuses the existing Codex OAuth callback
 and PKCE path with the fixed API issuer, resource, client, loopback redirect, and
 `ops:write` scope. The fixed `--no-browser` form accepts a complete callback URL
