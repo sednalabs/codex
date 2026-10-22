@@ -1667,7 +1667,8 @@ async fn failed_network_policy_amendment_denies_request_and_does_not_approve_hos
     let output_category = failed_amendment_network_output_category(&denied_output);
     assert!(
         matches!(output_category, "policy_denial" | "proxy_policy_denial"),
-        "network_output_category={output_category}"
+        "network_output_category={output_category}; network_output_shape={}",
+        failed_amendment_network_output_shape(&denied_output)
     );
     mount_exec_network_turn(
         &server,
@@ -3642,6 +3643,76 @@ fn failed_amendment_network_output_category(output: &str) -> &'static str {
     }
 }
 
+fn failed_amendment_network_output_shape(output: &str) -> &'static str {
+    const PROCESS_FAILED_PREFIX: &str =
+        "exec_command failed: ProcessFailed { message: \"";
+    const PROCESS_FAILED_SUFFIX: &str = "\" }";
+    const EXEC_ERROR_PREFIX: &str = "exec_command failed:";
+    const NETWORK_ACCESS_PREFIX: &str = "Network access to \"";
+    const EXIT_CODE_PREFIX: &str = "Process exited with code ";
+    const RUNNING_PREFIX: &str = "Process running with session ID ";
+
+    if output.is_empty() {
+        return "empty";
+    }
+
+    let process_failed_wrapper =
+        output.starts_with(PROCESS_FAILED_PREFIX) && output.ends_with(PROCESS_FAILED_SUFFIX);
+    let other_exec_error = output.starts_with(EXEC_ERROR_PREFIX) && !process_failed_wrapper;
+    let tool_output_header = (|| {
+        let mut lines = output.lines();
+        lines
+            .next()?
+            .strip_prefix("Exit code: ")?
+            .parse::<i32>()
+            .ok()?;
+        lines
+            .next()?
+            .strip_prefix("Wall time: ")?
+            .strip_suffix(" seconds")?
+            .parse::<f64>()
+            .ok()?;
+        let output_header = lines.next()?;
+        let output_header =
+            if let Some(total_lines) = output_header.strip_prefix("Total output lines: ") {
+                total_lines.parse::<usize>().ok()?;
+                lines.next()?
+            } else {
+                output_header
+            };
+        (output_header == "Output:").then_some(())
+    })()
+    .is_some();
+    let process_exited = output.lines().any(|line| {
+        line.strip_prefix(EXIT_CODE_PREFIX)
+            .is_some_and(|code| code.parse::<i32>().is_ok())
+    });
+    let process_running = output.lines().any(|line| {
+        line.strip_prefix(RUNNING_PREFIX)
+            .is_some_and(|process_id| !process_id.is_empty())
+    });
+    let bare_network_access = output.starts_with(NETWORK_ACCESS_PREFIX);
+
+    let mut matched_shape = None;
+    for (matches_shape, shape) in [
+        (process_failed_wrapper, "exec_process_failed"),
+        (other_exec_error, "exec_other_error"),
+        (tool_output_header, "exec_output_header"),
+        (process_exited, "exec_output_exited"),
+        (process_running, "exec_output_running"),
+        (bare_network_access, "bare_network_access"),
+    ] {
+        if matches_shape {
+            if matched_shape.is_some() {
+                return "opaque";
+            }
+            matched_shape = Some(shape);
+        }
+    }
+
+    matched_shape.unwrap_or("opaque")
+}
+
 #[test]
 fn failed_amendment_network_output_category_matches_only_exact_denials() {
     let mut positive_cases = vec![
@@ -3695,6 +3766,55 @@ fn failed_amendment_network_output_category_matches_only_exact_denials() {
     assert_eq!(
         failed_amendment_network_output_category("OK: synthetic output"),
         "synthetic_success"
+    );
+}
+
+#[test]
+fn failed_amendment_network_output_shape_is_closed_and_payload_free() {
+    assert_eq!(
+        failed_amendment_network_output_shape(&format!(
+            "exec_command failed: ProcessFailed {{ message: {:?} }}",
+            FAILED_AMENDMENT_POLICY_FALLBACK
+        )),
+        "exec_process_failed"
+    );
+    assert_eq!(
+        failed_amendment_network_output_shape("exec_command failed: OtherError { message: ... }"),
+        "exec_other_error"
+    );
+    assert_eq!(
+        failed_amendment_network_output_shape(
+            "Exit code: 1\nWall time: 0.1 seconds\nOutput:\nprivate output"
+        ),
+        "exec_output_header"
+    );
+    assert_eq!(
+        failed_amendment_network_output_shape(
+            "Chunk ID: id\nWall time: 0.1 seconds\nProcess exited with code 1\nOutput:\nprivate output"
+        ),
+        "exec_output_exited"
+    );
+    assert_eq!(
+        failed_amendment_network_output_shape(
+            "Chunk ID: id\nWall time: 0.1 seconds\nProcess running with session ID token"
+        ),
+        "exec_output_running"
+    );
+    assert_eq!(
+        failed_amendment_network_output_shape(FAILED_AMENDMENT_POLICY_FALLBACK),
+        "bare_network_access"
+    );
+    assert_eq!(failed_amendment_network_output_shape(""), "empty");
+    assert_eq!(failed_amendment_network_output_shape("unrecognized output"), "opaque");
+    assert_eq!(
+        failed_amendment_network_output_shape(
+            "Exit code: 0\nWall time: 0.1 seconds\nOutput:\nProcess exited with code 1"
+        ),
+        "opaque"
+    );
+    assert_eq!(
+        failed_amendment_network_output_shape("OK: synthetic output"),
+        "opaque"
     );
 }
 
