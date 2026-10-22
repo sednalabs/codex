@@ -1483,7 +1483,7 @@ mod tests {
     fn fixed_api_exchange_failure_exposes_only_allowlisted_diagnostics() {
         let observer = super::FixedApiExchangeObserver::default();
         observer.record_response(
-            401,
+            /*status*/ 401,
             br#"{"error":"invalid_client","error_description":"sensitive-provider-detail"}"#,
         );
         let failure = observer.failure().expect("record HTTP token failure");
@@ -1504,7 +1504,7 @@ mod tests {
     fn fixed_api_exchange_failure_redacts_unknown_errors_and_transport_details() {
         let observer = super::FixedApiExchangeObserver::default();
         observer.record_response(
-            400,
+            /*status*/ 400,
             br#"{"error":"provider_private_error","error_description":"secret-marker"}"#,
         );
         assert_eq!(
@@ -1525,13 +1525,13 @@ mod tests {
             "transport"
         );
 
-        let unknown = FixedOAuthLoginError::exchange(None);
+        let unknown = FixedOAuthLoginError::exchange(/*failure*/ None);
         assert_eq!(unknown.safe_exchange_detail().as_deref(), Some("unknown"));
         assert!(!format!("{unknown:?}").contains("secret-marker"));
 
         let successful_status = super::FixedApiExchangeObserver::default();
         successful_status.record_response(
-            200,
+            /*status*/ 200,
             br#"{"error":"invalid_client","access_token":"secret-marker"}"#,
         );
         assert_eq!(
