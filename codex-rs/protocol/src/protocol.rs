@@ -904,6 +904,15 @@ impl FromStr for ThreadHistoryMode {
     }
 }
 
+/// Why a message was sent, independently of whether it may start an idle turn.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentCommunicationOrigin {
+    Informational,
+    Actionable,
+    Result,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema, TS)]
 pub struct InterAgentCommunication {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -921,6 +930,10 @@ pub struct InterAgentCommunication {
     #[ts(optional)]
     pub internal_chat_message_metadata_passthrough: Option<InternalChatMessageMetadataPassthrough>,
     pub trigger_turn: bool,
+    /// Omission preserves the broad wait eligibility of legacy messages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub origin: Option<AgentCommunicationOrigin>,
 }
 
 impl InterAgentCommunication {
@@ -940,6 +953,7 @@ impl InterAgentCommunication {
             encrypted_content: None,
             internal_chat_message_metadata_passthrough: None,
             trigger_turn,
+            origin: None,
         }
     }
 
@@ -959,6 +973,7 @@ impl InterAgentCommunication {
             encrypted_content: Some(encrypted_content),
             internal_chat_message_metadata_passthrough: None,
             trigger_turn,
+            origin: None,
         }
     }
 
@@ -4901,6 +4916,38 @@ mod tests {
     }
 
     #[test]
+    fn inter_agent_origin_round_trips_without_reclassifying_legacy_mail() {
+        let mut communication = InterAgentCommunication::new_encrypted(
+            AgentPath::root(),
+            AgentPath::root(),
+            Vec::new(),
+            "opaque".to_string(),
+            /*trigger_turn*/ false,
+        );
+        let legacy = serde_json::to_value(&communication).unwrap();
+        assert!(legacy.get("origin").is_none());
+        assert_eq!(
+            serde_json::from_value::<InterAgentCommunication>(legacy)
+                .unwrap()
+                .origin,
+            None
+        );
+        for origin in [
+            AgentCommunicationOrigin::Informational,
+            AgentCommunicationOrigin::Actionable,
+            AgentCommunicationOrigin::Result,
+        ] {
+            communication.origin = Some(origin);
+            let value = serde_json::to_value(&communication).unwrap();
+            assert_eq!(
+                serde_json::from_value::<InterAgentCommunication>(value).unwrap(),
+                communication
+            );
+            assert!(!communication.trigger_turn);
+        }
+    }
+
+    #[test]
     fn inter_agent_communication_response_input_item_preserves_commentary_phase() {
         let mut communication = InterAgentCommunication {
             id: Some(ResponseItemId::with_suffix("amsg", "1")),
@@ -4911,6 +4958,7 @@ mod tests {
             encrypted_content: None,
             internal_chat_message_metadata_passthrough: None,
             trigger_turn: true,
+            origin: None,
         };
         communication.set_turn_id_if_missing("turn-1");
         let mut serialized_communication = communication.clone();

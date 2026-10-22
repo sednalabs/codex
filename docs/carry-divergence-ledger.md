@@ -143,6 +143,21 @@ an explicit support decision and qualification of its security and consumers.
 
 ## Upgrading and retiring carries
 
+### Mailbox wait eligibility
+
+Queued progress must not repeatedly end an active V2 wait merely because it is
+delivered. Message origin distinguishes informational mail, explicitly actionable
+mail, and terminal results independently of permission to start an idle turn.
+`send_message` defaults to quiet delivery; `wake_wait=true` opts into ending an
+active wait without starting an idle turn. Completion and legacy unclassified
+mail remain eligible. V1 targeted waits and shared sleep notifications are
+unchanged. Eligible queued categories, not message bodies or every flushed
+sender, determine the bounded reported wake cause. Informational notifications
+do not reset the original deadline, and cancellation retains queued mail.
+
+Remove this carry when upstream provides equivalent independent idle-turn and
+wait-wake semantics with compatible legacy, terminal, and retained-mail behavior.
+
 Pin the upstream revision being considered, then compare it against current
 downstream `main` and its accepted capabilities. First look for equivalent
 upstream behavior or a documented native interface; assess each remaining

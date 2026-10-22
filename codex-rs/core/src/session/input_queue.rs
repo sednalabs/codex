@@ -7,6 +7,7 @@ use codex_diagnostics::GaugeGuard;
 use codex_history::ResponseItemEnvelope;
 use codex_protocol::ThreadId;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::AgentCommunicationOrigin;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::turn_input::TurnStartOptions;
 use codex_protocol::user_input::UserInput;
@@ -82,6 +83,42 @@ mod turn_input_response_item {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum InputQueueActivity {
     Mailbox,
+    Steer,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MailboxWakeCause {
+    ActionableMessage,
+    Completion,
+    LegacyMailbox,
+    MailboxActivity,
+}
+
+impl MailboxWakeCause {
+    fn for_communication(communication: &InterAgentCommunication) -> Option<Self> {
+        if communication.trigger_turn {
+            return Some(Self::ActionableMessage);
+        }
+        match communication.origin {
+            Some(AgentCommunicationOrigin::Informational) => None,
+            Some(AgentCommunicationOrigin::Actionable) => Some(Self::ActionableMessage),
+            Some(AgentCommunicationOrigin::Result) => Some(Self::Completion),
+            None => Some(Self::LegacyMailbox),
+        }
+    }
+
+    fn merge(left: Option<Self>, right: Option<Self>) -> Option<Self> {
+        match (left, right) {
+            (None, cause) | (cause, None) => cause,
+            (Some(left), Some(right)) if left == right => Some(left),
+            (Some(_), Some(_)) => Some(Self::MailboxActivity),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WaitActivity {
+    Mailbox(MailboxWakeCause),
     Steer,
 }
 
@@ -168,6 +205,45 @@ impl InputQueue {
             None
         };
         (activity_rx, pending_activity)
+    }
+
+    /// Inspect retained inputs for V2 wait eligibility without consuming their delivery.
+    /// Shared mailbox notifications remain broad for other consumers, including sleep.
+    pub(crate) async fn pending_wait_activity(
+        &self,
+        turn_state: Option<&Mutex<TurnState>>,
+    ) -> Option<WaitActivity> {
+        let turn_cause = if let Some(turn_state) = turn_state {
+            let turn_state = turn_state.lock().await;
+            if turn_state.pending_input.pending_activity() == Some(InputQueueActivity::Steer) {
+                return Some(WaitActivity::Steer);
+            }
+            turn_state
+                .pending_input
+                .items
+                .iter()
+                .fold(None, |cause, input| {
+                    let next = match input {
+                        TurnInput::InterAgentCommunication(communication) => {
+                            MailboxWakeCause::for_communication(communication)
+                        }
+                        _ => None,
+                    };
+                    MailboxWakeCause::merge(cause, next)
+                })
+        } else {
+            None
+        };
+        let mut pending = self.mailbox_pending_mails.lock().await;
+        // Retained unloaded mail moves into the existing queue, preserving its order and lifetime.
+        self.read_mailbox(&mut pending);
+        let cause = pending.iter().fold(turn_cause, |cause, mail| {
+            MailboxWakeCause::merge(
+                cause,
+                MailboxWakeCause::for_communication(&mail.communication),
+            )
+        });
+        cause.map(WaitActivity::Mailbox)
     }
 
     #[expect(
@@ -563,6 +639,54 @@ mod tests {
             content.to_string(),
             trigger_turn,
         )
+    }
+
+    #[tokio::test]
+    async fn active_turn_wait_filters_only_informational_mail() {
+        let input_queue = InputQueue::new();
+        let turn_state = Mutex::new(TurnState::default());
+        let mut progress = make_mail(
+            AgentPath::root(),
+            AgentPath::root(),
+            "progress",
+            /*trigger_turn*/ false,
+        );
+        progress.origin = Some(AgentCommunicationOrigin::Informational);
+        input_queue
+            .extend_pending_input_for_turn_state(
+                &turn_state,
+                vec![TurnInput::InterAgentCommunication(progress.clone())],
+            )
+            .await;
+        assert_eq!(
+            input_queue.pending_wait_activity(Some(&turn_state)).await,
+            None
+        );
+        assert_eq!(
+            input_queue.subscribe_activity(Some(&turn_state)).await.1,
+            Some(InputQueueActivity::Mailbox)
+        );
+        let mut completion = progress.clone();
+        completion.origin = Some(AgentCommunicationOrigin::Result);
+        input_queue
+            .extend_pending_input_for_turn_state(
+                &turn_state,
+                vec![TurnInput::InterAgentCommunication(completion.clone())],
+            )
+            .await;
+        assert_eq!(
+            input_queue.pending_wait_activity(Some(&turn_state)).await,
+            Some(WaitActivity::Mailbox(MailboxWakeCause::Completion))
+        );
+        assert_eq!(
+            input_queue
+                .take_pending_input_for_turn_state(&turn_state)
+                .await,
+            vec![
+                TurnInput::InterAgentCommunication(progress),
+                TurnInput::InterAgentCommunication(completion),
+            ]
+        );
     }
 
     #[tokio::test]

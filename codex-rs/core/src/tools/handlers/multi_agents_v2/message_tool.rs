@@ -1,7 +1,6 @@
 //! Shared argument parsing and dispatch for the v2 agent messaging tools.
 //!
-//! `send_message` and `followup_task` share the same submission path and differ only in whether the
-//! resulting `InterAgentCommunication` should wake the target immediately.
+//! Wait eligibility and permission to start an idle turn are independent delivery choices.
 
 use super::analytics::ToolCallAnalytics;
 use super::*;
@@ -19,6 +18,8 @@ use crate::tools::context::FunctionToolOutput;
 pub(crate) struct SendMessageArgs {
     pub(crate) target: String,
     pub(crate) message: String,
+    #[serde(default)]
+    pub(crate) wake_wait: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -27,6 +28,27 @@ pub(crate) struct SendMessageArgs {
 pub(crate) struct FollowupTaskArgs {
     pub(crate) target: String,
     pub(crate) message: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn send_message_wait_wake_is_explicit_and_defaults_to_quiet() {
+        let quiet: SendMessageArgs =
+            serde_json::from_str(r#"{"target":"/root","message":"progress"}"#).unwrap();
+        assert!(!quiet.wake_wait);
+        let actionable: SendMessageArgs = serde_json::from_str(
+            r#"{"target":"/root","message":"decision needed","wake_wait":true}"#,
+        )
+        .unwrap();
+        assert!(actionable.wake_wait);
+        assert!(serde_json::from_str::<SendMessageArgs>(
+            r#"{"target":"/root","message":"progress","unknown":true}"#
+        )
+        .is_err());
+    }
 }
 
 pub(super) fn message_content(message: String) -> Result<String, FunctionCallError> {

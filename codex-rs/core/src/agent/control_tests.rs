@@ -1196,16 +1196,15 @@ async fn cancelled_v2_send_finishes_reload_registration() {
             _ => None,
         })
         .collect();
-    assert_eq!(
-        messages,
-        vec![InterAgentCommunication::new(
-            AgentPath::root(),
-            child.metadata.agent_path.unwrap(),
-            Vec::new(),
-            "Message Type: NEW_TASK\nTask name: /root/worker\nSender: /root\nPayload:\nfollow-up after cancellation".to_string(),
-            /*trigger_turn*/ true,
-        )],
+    let mut expected = InterAgentCommunication::new(
+        AgentPath::root(),
+        child.metadata.agent_path.unwrap(),
+        Vec::new(),
+        "Message Type: NEW_TASK\nTask name: /root/worker\nSender: /root\nPayload:\nfollow-up after cancellation".to_string(),
+        /*trigger_turn*/ true,
     );
+    expected.origin = Some(codex_protocol::protocol::AgentCommunicationOrigin::Actionable);
+    assert_eq!(messages, vec![expected]);
 }
 
 #[derive(Clone, Copy)]
@@ -4503,6 +4502,109 @@ async fn multi_agent_v2_completion_ignores_dead_direct_parent() {
 }
 
 #[tokio::test]
+async fn wake_wait_mail_to_root_does_not_start_an_idle_turn() {
+    let harness = AgentControlHarness::new().await;
+    let (root_id, root) = harness.start_thread().await;
+    harness
+        .control
+        .resolve(root_id, None, &root.session_source, "/root")
+        .await
+        .unwrap();
+    let turn = root.session.new_default_turn().await;
+    harness
+        .control
+        .send(SendRequest {
+            caller: root_id,
+            target: AgentTarget::Id(root_id),
+            resume_config: crate::agent::child_config::build_agent_resume_config(&turn).unwrap(),
+            input: AgentInput::Message {
+                message: AgentMessage::Plaintext("decision needed".to_string()),
+                mode: MessageDeliveryMode::WakeWait,
+            },
+            start_options: TurnStartOptions {
+                parent_turn_id: Some("not-a-new-turn".to_string()),
+                ..Default::default()
+            },
+        })
+        .await
+        .unwrap();
+    timeout(Duration::from_secs(/*secs*/ 5), async {
+        loop {
+            if root.session.input_queue.has_pending_mailbox_items().await {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(root.session.active_turn.lock().await.is_none());
+    assert!(
+        !root
+            .session
+            .input_queue
+            .has_trigger_turn_mailbox_items()
+            .await
+    );
+    assert_eq!(
+        root.session.input_queue.pending_wait_activity(None).await,
+        Some(crate::session::WaitActivity::Mailbox(
+            crate::session::MailboxWakeCause::ActionableMessage
+        ))
+    );
+    let (items, options) = root.session.input_queue.drain_mailbox_input_items().await;
+    assert_eq!(items.len(), 1);
+    assert_eq!(options.parent_turn_id, None);
+    root.shutdown_and_wait().await.unwrap();
+}
+
+#[tokio::test]
+async fn retained_unloaded_mail_keeps_wake_metadata_and_delivery_order() {
+    use codex_protocol::protocol::AgentCommunicationOrigin;
+
+    let control = LocalAgentControl::default();
+    let recipient = ThreadId::new();
+    let queue = crate::session::InputQueue::with_controller(recipient, Arc::new(control.clone()));
+    let mut progress = InterAgentCommunication::new_encrypted(
+        AgentPath::root(),
+        AgentPath::root(),
+        Vec::new(),
+        "opaque".to_string(),
+        /*trigger_turn*/ false,
+    );
+    progress.origin = Some(AgentCommunicationOrigin::Informational);
+    control
+        .runtime
+        .mailboxes
+        .enqueue(recipient, None, vec![progress.clone()])
+        .unwrap();
+    assert_eq!(queue.pending_wait_activity(None).await, None);
+    assert!(queue.has_pending_mailbox_items().await);
+    let mut completion = progress.clone();
+    completion.origin = Some(AgentCommunicationOrigin::Result);
+    control
+        .runtime
+        .mailboxes
+        .enqueue(recipient, None, vec![completion.clone()])
+        .unwrap();
+    assert_eq!(
+        queue.pending_wait_activity(None).await,
+        Some(crate::session::WaitActivity::Mailbox(
+            crate::session::MailboxWakeCause::Completion
+        ))
+    );
+    assert!(!queue.has_trigger_turn_mailbox_items().await);
+    assert_eq!(
+        queue.drain_mailbox_input_items().await.0,
+        vec![
+            crate::session::TurnInput::InterAgentCommunication(progress),
+            crate::session::TurnInput::InterAgentCommunication(completion),
+        ]
+    );
+    assert!(!queue.has_pending_mailbox_items().await);
+}
+
+#[tokio::test]
 async fn multi_agent_v2_completion_queues_message_for_direct_parent() {
     let harness = AgentControlHarness::new().await;
     let (_root_thread_id, root_thread) = harness.start_thread().await;
@@ -4558,16 +4660,18 @@ async fn multi_agent_v2_completion_queues_message_for_direct_parent() {
         &AgentStatus::Completed(Some("done".to_string())),
     )
     .expect("completed status should render");
+    let mut expected_communication = InterAgentCommunication::new(
+        tester_path.clone(),
+        worker_path.clone(),
+        Vec::new(),
+        expected_message.clone(),
+        /*trigger_turn*/ false,
+    );
+    expected_communication.origin = Some(codex_protocol::protocol::AgentCommunicationOrigin::Result);
     let expected = (
         worker_thread_id,
         Op::InterAgentCommunication {
-            communication: InterAgentCommunication::new(
-                tester_path.clone(),
-                worker_path.clone(),
-                Vec::new(),
-                expected_message.clone(),
-                /*trigger_turn*/ false,
-            ),
+            communication: expected_communication,
             start_options: Default::default(),
         },
     );
