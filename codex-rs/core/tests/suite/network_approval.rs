@@ -1725,6 +1725,7 @@ async fn failed_network_policy_amendment_denies_request_and_does_not_approve_hos
         "network_output_category={output_category}; network_output_shape={}",
         failed_amendment_network_output_shape(&denied_output)
     );
+    drop(_parent);
     mount_exec_network_turn(
         &server,
         "resp-network-failed-amendment-2",
