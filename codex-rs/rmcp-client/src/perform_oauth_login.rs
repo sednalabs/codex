@@ -36,6 +36,8 @@ use urlencoding::decode;
 use crate::StoredOAuthTokens;
 use crate::WrappedOAuthTokenResponse;
 use crate::oauth::compute_expires_at_millis;
+use crate::oauth_http_client::FixedApiExchangeFailure;
+use crate::oauth_http_client::FixedApiExchangeObserver;
 use crate::oauth_http_client::OAuthHttpClientAdapter;
 use crate::save_oauth_tokens_locked;
 use crate::utils::build_default_headers;
@@ -77,15 +79,32 @@ impl FixedOAuthLoginStage {
 #[derive(Debug)]
 pub struct FixedOAuthLoginError {
     stage: FixedOAuthLoginStage,
+    exchange_failure: Option<FixedApiExchangeFailure>,
 }
 
 impl FixedOAuthLoginError {
     pub(crate) fn at(stage: FixedOAuthLoginStage) -> Self {
-        Self { stage }
+        Self {
+            stage,
+            exchange_failure: None,
+        }
+    }
+
+    fn exchange(failure: Option<FixedApiExchangeFailure>) -> Self {
+        Self {
+            stage: FixedOAuthLoginStage::Exchange,
+            exchange_failure: Some(failure.unwrap_or(FixedApiExchangeFailure::Unknown)),
+        }
     }
 
     pub fn stage(&self) -> FixedOAuthLoginStage {
         self.stage
+    }
+
+    /// Returns a closed, non-sensitive classification for an OAuth token exchange failure.
+    pub fn safe_exchange_detail(&self) -> Option<String> {
+        self.exchange_failure
+            .map(FixedApiExchangeFailure::safe_detail)
     }
 }
 
@@ -255,11 +274,13 @@ pub(crate) async fn perform_fixed_ops_api_access_token_refresh(
         .connect_timeout(Duration::from_secs(3))
         .build_direct()
         .map_err(|_| FixedOAuthLoginError::at(FixedOAuthLoginStage::Discovery))?;
+    let exchange_observer = FixedApiExchangeObserver::default();
     let oauth_http_client = OAuthHttpClientAdapter::new_direct_with_max_timeout(
         http_client,
         HeaderMap::new(),
         Duration::from_secs(10),
-    );
+    )
+    .with_fixed_api_exchange_observer(exchange_observer.clone());
     let discovery_manager = AuthorizationManager::new_with_oauth_http_client(
         FIXED_API_CLAIM_ISSUER,
         Arc::new(oauth_http_client.clone()),
@@ -277,7 +298,8 @@ pub(crate) async fn perform_fixed_ops_api_access_token_refresh(
         refresh_token,
         &oauth_http_client,
     )
-    .await?;
+    .await
+    .map_err(|_| FixedOAuthLoginError::exchange(exchange_observer.failure()))?;
     let rotated_refresh_token = response
         .refresh_token()
         .map(|token| zeroize::Zeroizing::new(token.secret().to_string()));
@@ -401,12 +423,15 @@ async fn perform_oauth_access_token_login<'a>(
         .connect_timeout(Duration::from_secs(3))
         .build_direct()
         .map_err(|_| FixedOAuthLoginError::at(FixedOAuthLoginStage::Discovery))?;
-    let oauth_http_client: Arc<dyn OAuthHttpClient> =
-        Arc::new(OAuthHttpClientAdapter::new_direct_with_max_timeout(
+    let exchange_observer = FixedApiExchangeObserver::default();
+    let oauth_http_client: Arc<dyn OAuthHttpClient> = Arc::new(
+        OAuthHttpClientAdapter::new_direct_with_max_timeout(
             http_client,
             HeaderMap::new(),
             Duration::from_secs(10),
-        ));
+        )
+        .with_fixed_api_exchange_observer(exchange_observer.clone()),
+    );
 
     let (mut oauth_state, authorization_url) = start_fixed_oauth_authorization(
         issuer_url,
@@ -459,10 +484,13 @@ async fn perform_oauth_access_token_login<'a>(
         }
     };
 
-    oauth_state
+    if oauth_state
         .handle_callback_with_issuer(&code, &csrf_state, issuer.as_deref())
         .await
-        .map_err(|_| FixedOAuthLoginError::at(FixedOAuthLoginStage::Exchange))?;
+        .is_err()
+    {
+        return Err(FixedOAuthLoginError::exchange(exchange_observer.failure()));
+    }
     let (_, credentials) = oauth_state
         .get_credentials()
         .await
@@ -1431,6 +1459,8 @@ mod tests {
     use super::FIXED_API_CLAIM_ISSUER;
     use super::FIXED_API_CLAIM_RESOURCE;
     use super::FIXED_API_CLAIM_SCOPE;
+    use super::FixedOAuthLoginError;
+    use super::FixedOAuthLoginStage;
     use super::HttpClientBuilder;
     use super::OAuthHttpClientAdapter;
     use super::OAuthProviderError;
@@ -1448,6 +1478,70 @@ mod tests {
     use super::validate_canonical_https_origin;
     use super::validate_fixed_oauth_inputs;
     use super::validate_fixed_oauth_metadata;
+
+    #[test]
+    fn fixed_api_exchange_failure_exposes_only_allowlisted_diagnostics() {
+        let observer = super::FixedApiExchangeObserver::default();
+        observer.record_response(
+            /*status*/ 401,
+            br#"{"error":"invalid_client","error_description":"sensitive-provider-detail"}"#,
+        );
+        let failure = observer.failure().expect("record HTTP token failure");
+        assert_eq!(
+            failure.safe_detail(),
+            "http_status_401_oauth_invalid_client"
+        );
+        let login_error = FixedOAuthLoginError::exchange(Some(failure));
+        assert_eq!(login_error.stage(), FixedOAuthLoginStage::Exchange);
+        assert_eq!(
+            login_error.safe_exchange_detail().as_deref(),
+            Some("http_status_401_oauth_invalid_client")
+        );
+        assert!(!format!("{login_error:?}").contains("sensitive-provider-detail"));
+    }
+
+    #[test]
+    fn fixed_api_exchange_failure_redacts_unknown_errors_and_transport_details() {
+        let observer = super::FixedApiExchangeObserver::default();
+        observer.record_response(
+            /*status*/ 400,
+            br#"{"error":"provider_private_error","error_description":"secret-marker"}"#,
+        );
+        assert_eq!(
+            observer
+                .failure()
+                .expect("record HTTP token failure")
+                .safe_detail(),
+            "http_status_400"
+        );
+
+        let transport = super::FixedApiExchangeObserver::default();
+        transport.record_transport_failure();
+        assert_eq!(
+            transport
+                .failure()
+                .expect("record token transport failure")
+                .safe_detail(),
+            "transport"
+        );
+
+        let unknown = FixedOAuthLoginError::exchange(/*failure*/ None);
+        assert_eq!(unknown.safe_exchange_detail().as_deref(), Some("unknown"));
+        assert!(!format!("{unknown:?}").contains("secret-marker"));
+
+        let successful_status = super::FixedApiExchangeObserver::default();
+        successful_status.record_response(
+            /*status*/ 200,
+            br#"{"error":"invalid_client","access_token":"secret-marker"}"#,
+        );
+        assert_eq!(
+            successful_status
+                .failure()
+                .expect("record successful HTTP response")
+                .safe_detail(),
+            "http_status_200"
+        );
+    }
 
     async fn spawn_oauth_metadata_server() -> String {
         let listener = TcpListener::bind("127.0.0.1:0")

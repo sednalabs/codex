@@ -269,11 +269,15 @@ impl From<codex_rmcp_client::FixedOAuthLoginStage> for ProvisioningStage {
 #[derive(Debug)]
 pub(crate) struct ProvisioningFailure {
     stage: ProvisioningStage,
+    exchange_detail: Option<String>,
 }
 
 impl ProvisioningFailure {
     pub(crate) fn new(stage: ProvisioningStage) -> Self {
-        Self { stage }
+        Self {
+            stage,
+            exchange_detail: None,
+        }
     }
 }
 
@@ -283,7 +287,11 @@ impl std::fmt::Display for ProvisioningFailure {
             formatter,
             "API bearer provisioning failed at {}",
             self.stage.as_str()
-        )
+        )?;
+        if let Some(detail) = &self.exchange_detail {
+            write!(formatter, " (exchange detail: {detail})")?;
+        }
+        Ok(())
     }
 }
 
@@ -293,11 +301,27 @@ pub(crate) fn provisioning_failure(stage: ProvisioningStage) -> anyhow::Error {
     anyhow::Error::new(ProvisioningFailure::new(stage))
 }
 
+pub(crate) fn provisioning_oauth_failure(
+    error: codex_rmcp_client::FixedOAuthLoginError,
+) -> anyhow::Error {
+    anyhow::Error::new(ProvisioningFailure {
+        stage: error.stage().into(),
+        exchange_detail: error.safe_exchange_detail(),
+    })
+}
+
 /// Returns only a closed, non-sensitive phase label for an API bearer error.
 pub fn safe_provisioning_failure_stage(error: &anyhow::Error) -> Option<&'static str> {
     error
         .downcast_ref::<ProvisioningFailure>()
         .map(|failure| failure.stage.as_str())
+}
+
+/// Returns only a closed OAuth-exchange classification from a fixed failure.
+pub fn safe_provisioning_failure_detail(error: &anyhow::Error) -> Option<&str> {
+    error
+        .downcast_ref::<ProvisioningFailure>()
+        .and_then(|failure| failure.exchange_detail.as_deref())
 }
 
 fn provision_api_bearer_with_mode(mode: ApiBearerProvisioningMode) -> Result<i32> {

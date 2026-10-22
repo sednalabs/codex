@@ -44,7 +44,15 @@ fn main() {
             if let Some(stage) =
                 codex_runtime_proof::launcher::safe_provisioning_failure_stage(&error)
             {
-                eprintln!("runtime-proof launcher failed closed (stage: {stage})");
+                if let Some(detail) =
+                    codex_runtime_proof::launcher::safe_provisioning_failure_detail(&error)
+                {
+                    eprintln!(
+                        "runtime-proof launcher failed closed (stage: {stage}; detail: {detail})"
+                    );
+                } else {
+                    eprintln!("runtime-proof launcher failed closed (stage: {stage})");
+                }
             } else {
                 eprintln!("runtime-proof launcher failed closed");
             }
