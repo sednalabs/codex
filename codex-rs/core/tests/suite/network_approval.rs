@@ -3609,32 +3609,93 @@ fn network_output_category(output: &str) -> &'static str {
     }
 }
 
-fn failed_amendment_network_output_category(output: &str) -> &'static str {
-    const POLICY_FALLBACK: &str =
-        "Network access to \"http://codex-network-test.invalid:80\" was blocked by policy.";
-    const PROXY_DENIAL_PREFIX: &str =
-        "Network access to \"codex-network-test.invalid\" was blocked: ";
-    const PROXY_DENIAL_DETAILS: [&str; 6] = [
-        "domain is explicitly denied by policy and cannot be approved from this prompt.",
-        "domain is not on the allowlist for the current sandbox mode.",
-        "local/private network addresses are blocked by the sandbox policy.",
-        "request method is blocked by the current network mode.",
-        "network proxy is disabled.",
-        "request is blocked by network policy.",
-    ];
+const FAILED_AMENDMENT_POLICY_FALLBACK: &str =
+    "Network access to \"http://codex-network-test.invalid:80\" was blocked by policy.";
+const FAILED_AMENDMENT_PROXY_DENIAL_PREFIX: &str =
+    "Network access to \"codex-network-test.invalid\" was blocked: ";
+const FAILED_AMENDMENT_PROXY_DENIAL_DETAILS: [&str; 6] = [
+    "domain is explicitly denied by policy and cannot be approved from this prompt.",
+    "domain is not on the allowlist for the current sandbox mode.",
+    "local/private network addresses are blocked by the sandbox policy.",
+    "request method is blocked by the current network mode.",
+    "network proxy is disabled.",
+    "request is blocked by network policy.",
+];
 
-    if output == POLICY_FALLBACK {
+fn failed_amendment_output_matches_exact_message(output: &str, message: &str) -> bool {
+    output == message
+        || output == format!("exec_command failed: ProcessFailed {{ message: {message:?} }}")
+}
+
+fn failed_amendment_network_output_category(output: &str) -> &'static str {
+    if failed_amendment_output_matches_exact_message(output, FAILED_AMENDMENT_POLICY_FALLBACK) {
         "policy_denial"
-    } else if output
-        .strip_prefix(PROXY_DENIAL_PREFIX)
-        .is_some_and(|detail| PROXY_DENIAL_DETAILS.contains(&detail))
-    {
+    } else if FAILED_AMENDMENT_PROXY_DENIAL_DETAILS.iter().any(|detail| {
+        let message = format!("{FAILED_AMENDMENT_PROXY_DENIAL_PREFIX}{detail}");
+        failed_amendment_output_matches_exact_message(output, &message)
+    }) {
         "proxy_policy_denial"
     } else if output.starts_with("OK:") {
         "synthetic_success"
     } else {
         "other"
     }
+}
+
+#[test]
+fn failed_amendment_network_output_category_matches_only_exact_denials() {
+    let mut positive_cases = vec![
+        (
+            FAILED_AMENDMENT_POLICY_FALLBACK.to_string(),
+            "policy_denial",
+        ),
+        (
+            format!(
+                "exec_command failed: ProcessFailed {{ message: {FAILED_AMENDMENT_POLICY_FALLBACK:?} }}"
+            ),
+            "policy_denial",
+        ),
+    ];
+    for detail in FAILED_AMENDMENT_PROXY_DENIAL_DETAILS {
+        let message = format!("{FAILED_AMENDMENT_PROXY_DENIAL_PREFIX}{detail}");
+        positive_cases.push((message.clone(), "proxy_policy_denial"));
+        positive_cases.push((
+            format!("exec_command failed: ProcessFailed {{ message: {message:?} }}"),
+            "proxy_policy_denial",
+        ));
+    }
+    for (output, expected) in positive_cases {
+        assert_eq!(
+            failed_amendment_network_output_category(&output),
+            expected
+        );
+    }
+
+    let negative_cases = [
+        format!("prefix {FAILED_AMENDMENT_POLICY_FALLBACK}"),
+        format!("{FAILED_AMENDMENT_POLICY_FALLBACK} extra"),
+        format!(
+            "exec_command failed: CreateProcess {{ message: {FAILED_AMENDMENT_POLICY_FALLBACK:?} }}"
+        ),
+        format!(
+            "exec_command failed: ProcessFailed {{ message: {:?} }}",
+            format!("{FAILED_AMENDMENT_POLICY_FALLBACK} extra")
+        ),
+        format!(
+            "{}different host or detail",
+            FAILED_AMENDMENT_PROXY_DENIAL_PREFIX
+        ),
+    ];
+    for output in negative_cases {
+        assert_eq!(
+            failed_amendment_network_output_category(&output),
+            "other"
+        );
+    }
+    assert_eq!(
+        failed_amendment_network_output_category("OK: synthetic output"),
+        "synthetic_success"
+    );
 }
 
 fn is_guardian_request(request: &wiremock::Request) -> bool {
