@@ -3914,7 +3914,7 @@ local callback listener; it displays the generated authorization URL for the
 fixed client on the invoking terminal and accepts the complete callback URL
 there. The callback parser binds scheme, loopback host, port, exact registered
 path, unique state, and unambiguous response parameters before the same PKCE
-exchange and token checks. Manual input disables terminal echo and restores the
+exchange and token checks. OAuth exchange failures expose only allowlisted HTTP status/OAuth codes or a closed SDK error category, never provider text. Manual input disables terminal echo and restores the
 original terminal settings on success, error, or a handled cancellation signal.
 Both forms use the API resource and only
 `ops:write`; neither writes the persistent MCP credential store. The invoking
@@ -3944,8 +3944,9 @@ entry and never touches the MCP profile or the volatile systemd input. The unit
 remains inactive while the root claim policy is absent.
 The mode accepts no caller-selected path, URL, client, scope, or command option
 beyond the fixed `--no-browser` switch and sends no claim.
-Provisioning failures expose only a fixed phase label; internal error text,
-OAuth response details, and callback input remain suppressed.
+Provisioning failures expose a fixed phase and only allowlisted HTTP status/OAuth
+codes or closed SDK error categories; internal error strings, OAuth response
+details, and callback input remain suppressed.
 The installed-image guard checks the executable's parent directories through
 `/` separately from the executable's own regular-file, mode, owner, and inode
 checks; regressions cover a valid executable in trusted parents and a writable

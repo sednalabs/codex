@@ -20,6 +20,7 @@ use reqwest::Url;
 use reqwest::header::HeaderMap;
 use rmcp::transport::AuthorizationManager;
 use rmcp::transport::AuthorizationSession;
+use rmcp::transport::auth::AuthError;
 use rmcp::transport::auth::AuthorizationMetadata;
 use rmcp::transport::auth::AuthorizationRequest;
 use rmcp::transport::auth::OAuthClientConfig;
@@ -79,21 +80,48 @@ impl FixedOAuthLoginStage {
 #[derive(Debug)]
 pub struct FixedOAuthLoginError {
     stage: FixedOAuthLoginStage,
-    exchange_failure: Option<FixedApiExchangeFailure>,
+    exchange_detail: Option<String>,
 }
 
 impl FixedOAuthLoginError {
     pub(crate) fn at(stage: FixedOAuthLoginStage) -> Self {
         Self {
             stage,
-            exchange_failure: None,
+            exchange_detail: None,
         }
     }
 
     fn exchange(failure: Option<FixedApiExchangeFailure>) -> Self {
         Self {
             stage: FixedOAuthLoginStage::Exchange,
-            exchange_failure: Some(failure.unwrap_or(FixedApiExchangeFailure::Unknown)),
+            exchange_detail: Some(
+                failure
+                    .unwrap_or(FixedApiExchangeFailure::Unknown)
+                    .safe_detail(),
+            ),
+        }
+    }
+
+    fn exchange_with_auth_error(
+        failure: Option<FixedApiExchangeFailure>,
+        error: &AuthError,
+    ) -> Self {
+        let sdk_error = safe_auth_error_kind(error);
+        let detail = match failure {
+            Some(FixedApiExchangeFailure::Transport) => "transport".to_string(),
+            Some(FixedApiExchangeFailure::HttpResponse {
+                status,
+                oauth_error: Some(code),
+            }) => format!("http_status_{status}_oauth_{code}"),
+            Some(FixedApiExchangeFailure::HttpResponse {
+                status,
+                oauth_error: None,
+            }) => format!("http_status_{status}_sdk_{sdk_error}"),
+            Some(FixedApiExchangeFailure::Unknown) | None => format!("sdk_{sdk_error}"),
+        };
+        Self {
+            stage: FixedOAuthLoginStage::Exchange,
+            exchange_detail: Some(detail),
         }
     }
 
@@ -103,8 +131,7 @@ impl FixedOAuthLoginError {
 
     /// Returns a closed, non-sensitive classification for an OAuth token exchange failure.
     pub fn safe_exchange_detail(&self) -> Option<String> {
-        self.exchange_failure
-            .map(FixedApiExchangeFailure::safe_detail)
+        self.exchange_detail.clone()
     }
 }
 
@@ -119,6 +146,18 @@ impl std::fmt::Display for FixedOAuthLoginError {
 }
 
 impl std::error::Error for FixedOAuthLoginError {}
+
+fn safe_auth_error_kind(error: &AuthError) -> &'static str {
+    match error {
+        AuthError::AuthorizationServerMismatch { .. } => "issuer_mismatch",
+        AuthError::AuthorizationServerMissingIssuer { .. } => "issuer_missing",
+        AuthError::TokenExchangeFailed(_) => "token_exchange",
+        AuthError::HttpError(_) => "http_client",
+        AuthError::OAuthError(_) => "oauth_protocol",
+        AuthError::InternalError(_) => "sdk_internal",
+        _ => "sdk_other",
+    }
+}
 
 struct OAuthHttpContext {
     http_headers: Option<HashMap<String, String>>,
@@ -484,12 +523,14 @@ async fn perform_oauth_access_token_login<'a>(
         }
     };
 
-    if oauth_state
+    if let Err(error) = oauth_state
         .handle_callback_with_issuer(&code, &csrf_state, issuer.as_deref())
         .await
-        .is_err()
     {
-        return Err(FixedOAuthLoginError::exchange(exchange_observer.failure()));
+        return Err(FixedOAuthLoginError::exchange_with_auth_error(
+            exchange_observer.failure(),
+            &error,
+        ));
     }
     let (_, credentials) = oauth_state
         .get_credentials()
@@ -1498,6 +1539,39 @@ mod tests {
             Some("http_status_401_oauth_invalid_client")
         );
         assert!(!format!("{login_error:?}").contains("sensitive-provider-detail"));
+    }
+
+    #[test]
+    fn fixed_api_exchange_failure_classifies_typed_sdk_errors_without_details() {
+        let issuer_error = rmcp::transport::auth::AuthError::AuthorizationServerMismatch {
+            expected_issuer: "private-expected-issuer".to_string(),
+            received_issuer: "private-received-issuer".to_string(),
+        };
+        let issuer_failure =
+            FixedOAuthLoginError::exchange_with_auth_error(/*failure*/ None, &issuer_error);
+        assert_eq!(
+            issuer_failure.safe_exchange_detail().as_deref(),
+            Some("sdk_issuer_mismatch")
+        );
+        let issuer_failure_debug = format!("{issuer_failure:?}");
+        assert!(!issuer_failure_debug.contains("private-expected-issuer"));
+        assert!(!issuer_failure_debug.contains("private-received-issuer"));
+
+        let response_error = rmcp::transport::auth::AuthError::TokenExchangeFailed(
+            "private-provider-response".to_string(),
+        );
+        let response_failure = FixedOAuthLoginError::exchange_with_auth_error(
+            Some(super::FixedApiExchangeFailure::HttpResponse {
+                status: 200,
+                oauth_error: None,
+            }),
+            &response_error,
+        );
+        assert_eq!(
+            response_failure.safe_exchange_detail().as_deref(),
+            Some("http_status_200_sdk_token_exchange")
+        );
+        assert!(!format!("{response_failure:?}").contains("private-provider-response"));
     }
 
     #[test]
