@@ -177,6 +177,8 @@ targets or attributing the wake to the caller. Targeted waits render recorded
 receiver IDs, available names and statuses; unavailable statuses remain explicit.
 Older or unknown metadata remains neutral. No message bodies or inferred sender
 identities are added, and wait eligibility, idle-turn policy and timing are unchanged.
+Metadata-bearing wait completions remain canonical in both history modes, and
+following legacy wait projections cannot erase their observed condition or cause.
 
 Remove this carry when upstream provides equivalent independent idle-turn and
 wait-wake semantics and rendered condition/cause visibility with compatible

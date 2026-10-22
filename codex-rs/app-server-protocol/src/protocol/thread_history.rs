@@ -8,6 +8,8 @@ use crate::protocol::item_builders::review_output_text;
 use crate::protocol::v2::CollabAgentState;
 use crate::protocol::v2::CollabAgentTool;
 use crate::protocol::v2::CollabAgentToolCallStatus;
+use crate::protocol::v2::CollabWaitCondition;
+use crate::protocol::v2::CollabWaitWakeCause;
 use crate::protocol::v2::CommandExecutionStatus;
 use crate::protocol::v2::DynamicToolCallOutputContentItem;
 use crate::protocol::v2::DynamicToolCallStatus;
@@ -1043,6 +1045,7 @@ impl ThreadHistoryBuilder {
         &mut self,
         payload: &codex_protocol::protocol::CollabWaitingBeginEvent,
     ) {
+        let (wait_condition, wake_cause) = self.legacy_wait_metadata(&payload.call_id);
         let item = ThreadItem::CollabAgentToolCall {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::Wait,
@@ -1056,8 +1059,8 @@ impl ThreadHistoryBuilder {
             prompt: None,
             model: None,
             reasoning_effort: None,
-            wait_condition: None,
-            wake_cause: None,
+            wait_condition,
+            wake_cause,
             agents_states: HashMap::new(),
         };
         self.upsert_item_in_current_turn(item);
@@ -1067,6 +1070,7 @@ impl ThreadHistoryBuilder {
         &mut self,
         payload: &codex_protocol::protocol::CollabWaitingEndEvent,
     ) {
+        let (wait_condition, wake_cause) = self.legacy_wait_metadata(&payload.call_id);
         let status = if payload
             .statuses
             .values()
@@ -1093,10 +1097,29 @@ impl ThreadHistoryBuilder {
             prompt: None,
             model: None,
             reasoning_effort: None,
-            wait_condition: None,
-            wake_cause: None,
+            wait_condition,
+            wake_cause,
             agents_states,
         });
+    }
+
+    // Legacy projections cannot represent these fields; canonical updates still replace them.
+    fn legacy_wait_metadata(
+        &self,
+        call_id: &str,
+    ) -> (Option<CollabWaitCondition>, Option<CollabWaitWakeCause>) {
+        self.current_turn.as_ref().and_then(|turn| {
+            turn.items.iter().find_map(|item| match item {
+                ThreadItem::CollabAgentToolCall {
+                    id,
+                    tool: CollabAgentTool::Wait,
+                    wait_condition,
+                    wake_cause,
+                    ..
+                } if id == call_id => Some((*wait_condition, *wake_cause)),
+                _ => None,
+            })
+        }).unwrap_or((None, None))
     }
 
     fn handle_collab_close_begin(
@@ -4637,11 +4660,12 @@ mod tests {
         use codex_protocol::items::CollabAgentToolCallItem;
         use codex_protocol::items::CollabWaitCondition;
         use codex_protocol::items::CollabWaitWakeCause;
+        use codex_protocol::protocol::HasLegacyEvent;
 
-        let wait = CoreTurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+        let mut call = CollabAgentToolCallItem {
             id: "wait-mailbox".into(),
             tool: codex_protocol::items::CollabAgentTool::Wait,
-            status: codex_protocol::items::CollabAgentToolCallStatus::Completed,
+            status: codex_protocol::items::CollabAgentToolCallStatus::InProgress,
             sender_thread_id: ThreadId::new(),
             receiver_thread_ids: Vec::new(),
             receiver_agents: Vec::new(),
@@ -4649,20 +4673,60 @@ mod tests {
             model: None,
             reasoning_effort: None,
             wait_condition: Some(CollabWaitCondition::EligibleMailboxInput),
-            wake_cause: Some(CollabWaitWakeCause::Completion),
+            wake_cause: None,
             agents_states: HashMap::new(),
-        });
-        let expected = ThreadItem::from(wait.clone());
-        let items = vec![RolloutItem::EventMsg(EventMsg::ItemCompleted(ItemCompletedEvent {
-            thread_id: ThreadId::new(),
+        };
+        let mut builder = ThreadHistoryBuilder::new();
+        builder.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
+            turn_attribution: None,
             turn_id: "turn-wait".into(),
-            item: wait,
+            root_turn_id: None,
+            trace_id: None,
+            started_at: None,
+            model_context_window: None,
+            collaboration_mode_kind: Default::default(),
+        }));
+        let started = ItemStartedEvent {
+            thread_id: call.sender_thread_id,
+            turn_id: "turn-wait".into(),
+            item: CoreTurnItem::CollabAgentToolCall(call.clone()),
+            started_at_ms: 0,
+        };
+        builder.handle_event(&EventMsg::ItemStarted(started.clone()));
+        for legacy in started.as_legacy_events(/*show_raw_agent_reasoning*/ false) {
+            builder.handle_event(&legacy);
+        }
+        assert_eq!(
+            builder.active_turn_snapshot().expect("active turn").items,
+            vec![ThreadItem::from(CoreTurnItem::CollabAgentToolCall(call.clone()))]
+        );
+
+        call.status = codex_protocol::items::CollabAgentToolCallStatus::Completed;
+        call.wake_cause = Some(CollabWaitWakeCause::Completion);
+        let completed = ItemCompletedEvent {
+            thread_id: call.sender_thread_id,
+            turn_id: "turn-wait".into(),
+            item: CoreTurnItem::CollabAgentToolCall(call.clone()),
             started_at_ms: Some(0),
             completed_at_ms: 1,
-        }))];
-        let turns = build_turns_from_rollout_items(&items);
-        assert_eq!(turns.len(), 1);
-        assert_eq!(turns[0].items, vec![expected]);
+        };
+        builder.handle_event(&EventMsg::ItemCompleted(completed.clone()));
+        for legacy in completed.as_legacy_events(/*show_raw_agent_reasoning*/ false) {
+            builder.handle_event(&legacy);
+        }
+        assert_eq!(
+            builder.active_turn_snapshot().expect("active turn").items,
+            vec![ThreadItem::from(CoreTurnItem::CollabAgentToolCall(call.clone()))]
+        );
+
+        // A canonical update with unknown metadata is not a legacy projection.
+        call.wait_condition = None;
+        call.wake_cause = None;
+        builder.handle_event(&EventMsg::ItemCompleted(ItemCompletedEvent {
+            item: CoreTurnItem::CollabAgentToolCall(call.clone()),
+            ..completed
+        }));
+        assert_eq!(builder.finish()[0].items, vec![ThreadItem::from(CoreTurnItem::CollabAgentToolCall(call))]);
     }
 
     #[test]

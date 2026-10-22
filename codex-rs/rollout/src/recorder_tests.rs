@@ -619,6 +619,75 @@ fn strip_legacy_ghost_snapshot_keeps_checkpoint_metadata_aligned() {
 }
 
 #[tokio::test]
+async fn recorder_preserves_typed_wait_metadata_in_both_history_modes() -> std::io::Result<()> {
+    use codex_protocol::items::CollabAgentTool;
+    use codex_protocol::items::CollabAgentToolCallItem;
+    use codex_protocol::items::CollabAgentToolCallStatus;
+    use codex_protocol::items::CollabWaitCondition;
+    use codex_protocol::items::CollabWaitWakeCause;
+    use codex_protocol::items::TurnItem;
+    use codex_protocol::protocol::ItemCompletedEvent;
+
+    for history_mode in [ThreadHistoryMode::Legacy, ThreadHistoryMode::Paginated] {
+        let home = TempDir::new().expect("temp dir");
+        let config = test_config(home.path());
+        let thread_id = ThreadId::new();
+        let recorder = RolloutRecorder::new(
+            &config,
+            RolloutRecorderParams::new(
+                thread_id,
+                /*forked_from_id*/ None,
+                /*parent_thread_id*/ None,
+                SessionSource::Exec,
+                /*thread_source*/ None,
+                "test_originator".into(),
+                BaseInstructions::default(),
+                Vec::new(),
+            ).with_history_mode(history_mode),
+        ).await?;
+        let call = CollabAgentToolCallItem {
+            id: "wait-visible".into(),
+            tool: CollabAgentTool::Wait,
+            status: CollabAgentToolCallStatus::Completed,
+            sender_thread_id: thread_id,
+            receiver_thread_ids: Vec::new(),
+            receiver_agents: Vec::new(),
+            prompt: None,
+            model: None,
+            reasoning_effort: None,
+            wait_condition: Some(CollabWaitCondition::EligibleMailboxInput),
+            wake_cause: Some(CollabWaitWakeCause::Completion),
+            agents_states: Default::default(),
+        };
+        let item = RolloutItem::EventMsg(EventMsg::ItemCompleted(ItemCompletedEvent {
+            thread_id,
+            turn_id: "turn-wait".into(),
+            item: TurnItem::CollabAgentToolCall(call.clone()),
+            started_at_ms: Some(0),
+            completed_at_ms: 1,
+        }));
+        let mut legacy = item.clone();
+        if let RolloutItem::EventMsg(EventMsg::ItemCompleted(event)) = &mut legacy
+            && let TurnItem::CollabAgentToolCall(call) = &mut event.item
+        {
+            call.wait_condition = None;
+            call.wake_cause = None;
+        }
+        assert_eq!(crate::persisted_rollout_item(&legacy, history_mode).is_some(), history_mode == ThreadHistoryMode::Paginated);
+        let persisted = crate::persisted_rollout_items(std::slice::from_ref(&item), history_mode);
+        assert_eq!(persisted.len(), 1);
+        recorder.record_canonical_items(&persisted).await?;
+        recorder.flush().await?;
+        let (items, loaded_thread_id, parse_errors) = RolloutRecorder::load_rollout_items(recorder.rollout_path()).await?;
+        assert_eq!(loaded_thread_id, Some(thread_id));
+        assert_eq!(parse_errors, 0);
+        assert_eq!(serde_json::to_value(&items[1..])?, serde_json::to_value([item])?);
+        recorder.shutdown().await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn recorder_preserves_additional_tools_in_both_history_modes() -> std::io::Result<()> {
     for history_mode in [ThreadHistoryMode::Legacy, ThreadHistoryMode::Paginated] {
         let home = TempDir::new().expect("temp dir");

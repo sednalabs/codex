@@ -3,6 +3,7 @@ use std::borrow::Cow;
 use crate::RolloutItem;
 use crate::protocol::EventMsg;
 use codex_extension_items::ExtensionItem;
+use codex_protocol::items::CollabAgentTool;
 use codex_protocol::items::CommandExecutionItem;
 use codex_protocol::items::McpToolCallItem;
 use codex_protocol::items::TurnItem;
@@ -244,6 +245,11 @@ fn persisted_item_completed_event<'a>(
                 &event.item,
                 TurnItem::SubAgentActivity(item)
                     if item.kind == SubAgentActivityKind::Completed
+            ) || matches!(
+                &event.item,
+                TurnItem::CollabAgentToolCall(item)
+                    if item.tool == CollabAgentTool::Wait
+                        && (item.wait_condition.is_some() || item.wake_cause.is_some())
             ))
             .then_some(Cow::Borrowed(ev))
         }
