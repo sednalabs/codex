@@ -3906,8 +3906,9 @@ a claim policy, or establish HTTP first use.
 If the fixed HTTP claim POST has an uncertain result, the launcher keeps its
 request UUID and makes one bounded read through
 `POST /v0/work-items/execution-receipt/read` using the same API bearer and the
-exact Work reference and request UUID. Only a matching historical receipt
-settles the claim as committed. A null historical receipt remains unresolved,
+exact Work reference and request UUID. Only a historical claim outcome whose
+nested Work reference also matches settles the claim as committed. A null
+historical receipt remains unresolved,
 even when a current claim is present, because current claim state is not tied
 to this request; neither that response nor a failed receipt read authorizes a
 claim replay.

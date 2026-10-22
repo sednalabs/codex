@@ -399,7 +399,9 @@ fn parse_execution_receipt(
                 && historical
                     .outcome
                     .get("work_item")
-                    .is_some_and(Value::is_object)
+                    .and_then(|work_item| work_item.get("work_item_ref"))
+                    .and_then(Value::as_str)
+                    == Some(expected_work_item_ref)
                 && historical
                     .outcome
                     .get("execution_claim")

@@ -1212,8 +1212,8 @@ hosted package proof do not appoint the bearer or establish HTTP first use.
 
 If that claim POST has an uncertain result, the launcher retains its request
 UUID and performs one bounded `POST /v0/work-items/execution-receipt/read` with
-the same API bearer and exact Work reference/request UUID. A matching
-historical receipt settles a committed claim. Null history remains unresolved
+the same API bearer and exact Work reference/request UUID. A historical claim
+outcome with the same nested Work reference settles a committed claim. Null history remains unresolved
 even when a current claim exists; a failed or absent read never authorizes
 replaying the claim. Hosted regressions must assert both historical recovery
 and the no-replay/unresolved path.

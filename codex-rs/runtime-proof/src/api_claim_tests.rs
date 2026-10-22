@@ -679,6 +679,24 @@ fn execution_receipt_requires_matching_historical_claim_shape() {
     })
     .to_string();
     assert!(parse_execution_receipt(malformed_history.as_bytes(), "w12345", request_id).is_err());
+
+    let mismatched_history = serde_json::json!({
+        "work_item_ref": "w12345",
+        "request_id": request_id,
+        "receipt": {
+            "historical": {
+                "historical": true,
+                "outcome": {
+                    "historical": false,
+                    "work_item": {"work_item_ref": "w12346"},
+                    "execution_claim": {},
+                },
+            },
+            "current_claim": null,
+        },
+    })
+    .to_string();
+    assert!(parse_execution_receipt(mismatched_history.as_bytes(), "w12345", request_id).is_err());
 }
 
 #[test]
