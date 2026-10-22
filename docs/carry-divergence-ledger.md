@@ -3954,13 +3954,20 @@ and reject both writable and non-traversable parents.
 
 Linux release and branch-preview archives package the fixed installer with the
 launcher and its checksum for x86_64 and Arm64. It verifies the staged launcher
-bytes against that package checksum, changes only `/usr/libexec/codex`, and
-atomically replaces the fixed root-owned executable after preserving the exact
-predecessor as a root-only digest-named rollback image. The directory is
-root-owned mode `0711` so invoking users can traverse the path without listing
-or writing it. Installation never starts or reloads the unit. Packaging does
-not create the host policy, credentials, service account, issuer appointment,
-or live execution authority.
+bytes against that package checksum, but the checksum alone is not artifact
+provenance. The existing artifact receiver must verify the selected qualified
+archive, then place its installer, launcher, and checksum in a root-owned,
+non-group/world-writable staging directory before invoking the installer. The
+installer accepts only a direct child of root-owned `/run`; this prevents an
+unprivileged parent from replacing a checked staging directory between input
+validation and use. The hosted smoke rejects both user-owned staging and a
+root-owned directory under a user-controlled parent. The installer changes
+only `/usr/libexec/codex` and atomically replaces the fixed root-owned
+executable after preserving the exact predecessor as a root-only digest-named
+rollback image. The directory is root-owned mode `0711` so invoking users can
+traverse the path without listing or writing it. Installation never starts or
+reloads the unit. Packaging does not create the host policy, credentials,
+service account, issuer appointment, or live execution authority.
 
 Curated plugin ZIP extraction applies Unix permissions only after masking to
 ordinary `0o777` bits. This keeps executable plugin files usable while making

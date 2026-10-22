@@ -53,10 +53,36 @@ fi
 script_path=${BASH_SOURCE[0]}
 [[ ! -L "${script_path}" && -f "${script_path}" ]] || fail 'The package installer must be a regular file.'
 package_dir=$(cd -- "$(dirname -- "${script_path}")" && pwd -P)
+package_dir_parent=$(dirname -- "${package_dir}")
+package_dir_name=$(basename -- "${package_dir}")
+if [[ "${package_dir_parent}" != /run || "${package_dir_name}" != codex-runtime-proof-installer.* ]]; then
+  fail 'The verified package is outside the fixed root-owned staging path.'
+fi
+[[ -d /run && ! -L /run ]] || fail 'The fixed package staging parent is missing or unsafe.'
+IFS=: read -r owner group staging_parent_mode < <(stat -c '%u:%g:%a' -- /run)
+[[ "${owner}" == 0 && "${group}" == 0 ]] || fail 'The fixed package staging parent is not root-owned.'
+mode_value=$((8#${staging_parent_mode}))
+(( (mode_value & 07022) == 0 && (mode_value & 0001) != 0 )) || fail 'The fixed package staging parent is writable or not traversable.'
+IFS=: read -r owner group package_mode < <(stat -c '%u:%g:%a' -- "${package_dir}")
+[[ "${owner}" == 0 && "${group}" == 0 ]] || fail 'The verified package staging directory is not root-owned.'
+mode_value=$((8#${package_mode}))
+(( (mode_value & 07022) == 0 )) || fail 'The verified package staging directory is writable or has special permission bits.'
+
+IFS=: read -r owner group installer_mode < <(stat -c '%u:%g:%a' -- "${script_path}")
+[[ "${owner}" == 0 && "${group}" == 0 ]] || fail 'The package installer is not root-owned.'
+mode_value=$((8#${installer_mode}))
+(( (mode_value & 07022) == 0 && (mode_value & 0111) != 0 )) || fail 'The package installer permissions are unsafe.'
+
 launcher_path="${package_dir}/${launcher_name}"
 checksum_path="${package_dir}/${launcher_name}.sha256"
 [[ -f "${launcher_path}" && ! -L "${launcher_path}" && -x "${launcher_path}" ]] || fail 'The packaged launcher is not a regular executable.'
 [[ -f "${checksum_path}" && ! -L "${checksum_path}" ]] || fail 'The package launcher checksum is missing.'
+for package_file in "${launcher_path}" "${checksum_path}"; do
+  IFS=: read -r owner group package_file_mode < <(stat -c '%u:%g:%a' -- "${package_file}")
+  [[ "${owner}" == 0 && "${group}" == 0 ]] || fail 'A package input is not root-owned.'
+  mode_value=$((8#${package_file_mode}))
+  (( (mode_value & 07022) == 0 )) || fail 'A package input is writable or has special permission bits.'
+done
 checksum_size=$(stat -c '%s' -- "${checksum_path}")
 (( checksum_size <= 128 )) || fail 'The package launcher checksum is too large.'
 
