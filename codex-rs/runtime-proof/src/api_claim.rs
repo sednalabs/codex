@@ -374,7 +374,7 @@ struct HistoricalExecutionReceipt {
     outcome: Value,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ExecutionReceiptResolution {
     Recorded,
     Unresolved,
