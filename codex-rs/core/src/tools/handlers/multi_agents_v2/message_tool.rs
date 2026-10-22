@@ -44,10 +44,12 @@ mod tests {
         )
         .unwrap();
         assert!(actionable.wake_wait);
-        assert!(serde_json::from_str::<SendMessageArgs>(
-            r#"{"target":"/root","message":"progress","unknown":true}"#
-        )
-        .is_err());
+        assert!(
+            serde_json::from_str::<SendMessageArgs>(
+                r#"{"target":"/root","message":"progress","unknown":true}"#
+            )
+            .is_err()
+        );
     }
 }
 

@@ -4507,7 +4507,7 @@ async fn wake_wait_mail_to_root_does_not_start_an_idle_turn() {
     let (root_id, root) = harness.start_thread().await;
     harness
         .control
-        .resolve(root_id, None, &root.session_source, "/root")
+        .resolve(root_id, /*parent*/ None, &root.session_source, "/root")
         .await
         .unwrap();
     let turn = root.session.new_default_turn().await;
@@ -4547,7 +4547,10 @@ async fn wake_wait_mail_to_root_does_not_start_an_idle_turn() {
             .await
     );
     assert_eq!(
-        root.session.input_queue.pending_wait_activity(None).await,
+        root.session
+            .input_queue
+            .pending_wait_activity(/*turn_state*/ None)
+            .await,
         Some(crate::session::WaitActivity::Mailbox(
             crate::session::MailboxWakeCause::ActionableMessage
         ))
@@ -4576,19 +4579,19 @@ async fn retained_unloaded_mail_keeps_wake_metadata_and_delivery_order() {
     control
         .runtime
         .mailboxes
-        .enqueue(recipient, None, vec![progress.clone()])
+        .enqueue(recipient, /*id*/ None, vec![progress.clone()])
         .unwrap();
-    assert_eq!(queue.pending_wait_activity(None).await, None);
+    assert_eq!(queue.pending_wait_activity(/*turn_state*/ None).await, None);
     assert!(queue.has_pending_mailbox_items().await);
     let mut completion = progress.clone();
     completion.origin = Some(AgentCommunicationOrigin::Result);
     control
         .runtime
         .mailboxes
-        .enqueue(recipient, None, vec![completion.clone()])
+        .enqueue(recipient, /*id*/ None, vec![completion.clone()])
         .unwrap();
     assert_eq!(
-        queue.pending_wait_activity(None).await,
+        queue.pending_wait_activity(/*turn_state*/ None).await,
         Some(crate::session::WaitActivity::Mailbox(
             crate::session::MailboxWakeCause::Completion
         ))
@@ -4667,7 +4670,8 @@ async fn multi_agent_v2_completion_queues_message_for_direct_parent() {
         expected_message.clone(),
         /*trigger_turn*/ false,
     );
-    expected_communication.origin = Some(codex_protocol::protocol::AgentCommunicationOrigin::Result);
+    expected_communication.origin =
+        Some(codex_protocol::protocol::AgentCommunicationOrigin::Result);
     let expected = (
         worker_thread_id,
         Op::InterAgentCommunication {

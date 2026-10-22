@@ -3665,10 +3665,7 @@ fn failed_amendment_network_output_category_matches_only_exact_denials() {
         ));
     }
     for (output, expected) in positive_cases {
-        assert_eq!(
-            failed_amendment_network_output_category(&output),
-            expected
-        );
+        assert_eq!(failed_amendment_network_output_category(&output), expected);
     }
 
     let negative_cases = [
@@ -3687,10 +3684,7 @@ fn failed_amendment_network_output_category_matches_only_exact_denials() {
         ),
     ];
     for output in negative_cases {
-        assert_eq!(
-            failed_amendment_network_output_category(&output),
-            "other"
-        );
+        assert_eq!(failed_amendment_network_output_category(&output), "other");
     }
     assert_eq!(
         failed_amendment_network_output_category("OK: synthetic output"),

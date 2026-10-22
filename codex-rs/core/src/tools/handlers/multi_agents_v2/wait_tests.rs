@@ -38,10 +38,10 @@ async fn informational_mail_stays_quiet_and_ordered_until_completion() {
         queue
             .enqueue_mailbox_communication(first.clone(), Default::default())
             .await;
-        let (mut activity, pending) = queue.subscribe_activity(None).await;
+        let (mut activity, pending) = queue.subscribe_activity(/*turn_state*/ None).await;
         let waiting = wait_for_activity(
             &queue,
-            None,
+            /*turn_state*/ None,
             &mut activity,
             pending,
             Instant::now() + Duration::from_secs(/*secs*/ 5),
@@ -90,9 +90,16 @@ async fn actionable_completion_and_legacy_mail_wake_without_idle_permission() {
             queue
                 .enqueue_mailbox_communication(mail(origin, encrypted), Default::default())
                 .await;
-            let (mut activity, pending) = queue.subscribe_activity(None).await;
+            let (mut activity, pending) = queue.subscribe_activity(/*turn_state*/ None).await;
             assert_eq!(
-                wait_for_activity(&queue, None, &mut activity, pending, Instant::now()).await,
+                wait_for_activity(
+                    &queue,
+                    /*turn_state*/ None,
+                    &mut activity,
+                    pending,
+                    Instant::now()
+                )
+                .await,
                 WaitOutcome::MailboxActivity(cause)
             );
             assert!(!queue.has_trigger_turn_mailbox_items().await);
@@ -104,11 +111,11 @@ async fn actionable_completion_and_legacy_mail_wake_without_idle_permission() {
 async fn informational_notifications_do_not_extend_the_original_deadline() {
     tokio::time::pause();
     let queue = InputQueue::new();
-    let (mut activity, pending) = queue.subscribe_activity(None).await;
+    let (mut activity, pending) = queue.subscribe_activity(/*turn_state*/ None).await;
     let started = Instant::now();
     let waiting = wait_for_activity(
         &queue,
-        None,
+        /*turn_state*/ None,
         &mut activity,
         pending,
         started + Duration::from_secs(/*secs*/ 10),
@@ -166,7 +173,14 @@ async fn coalesced_mailbox_hint_preserves_steer_priority() {
         )
         .await;
     assert_eq!(
-        wait_for_activity(&queue, Some(&turn_state), &mut activity, pending, Instant::now()).await,
+        wait_for_activity(
+            &queue,
+            Some(&turn_state),
+            &mut activity,
+            pending,
+            Instant::now()
+        )
+        .await,
         WaitOutcome::Steered
     );
     assert_eq!(queue.drain_mailbox().await.len(), 1);
@@ -175,11 +189,11 @@ async fn coalesced_mailbox_hint_preserves_steer_priority() {
 #[tokio::test]
 async fn dropping_a_quiet_wait_preserves_mail_and_shared_sleep_notification() {
     let queue = InputQueue::new();
-    let (mut activity, pending) = queue.subscribe_activity(None).await;
-    let (mut shared_activity, _) = queue.subscribe_activity(None).await;
+    let (mut activity, pending) = queue.subscribe_activity(/*turn_state*/ None).await;
+    let (mut shared_activity, _) = queue.subscribe_activity(/*turn_state*/ None).await;
     let mut waiting = Box::pin(wait_for_activity(
         &queue,
-        None,
+        /*turn_state*/ None,
         &mut activity,
         pending,
         Instant::now() + Duration::from_secs(/*secs*/ 5),
@@ -218,9 +232,20 @@ async fn mixed_eligible_causes_are_reported_without_sender_attribution() {
             )
             .await;
     }
-    let (mut activity, pending) = queue.subscribe_activity(None).await;
-    let outcome = wait_for_activity(&queue, None, &mut activity, pending, Instant::now()).await;
-    let result = WaitAgentResult::from_outcome(outcome, None, /*timeout_ms*/ 0);
+    let (mut activity, pending) = queue.subscribe_activity(/*turn_state*/ None).await;
+    let outcome = wait_for_activity(
+        &queue,
+        /*turn_state*/ None,
+        &mut activity,
+        pending,
+        Instant::now(),
+    )
+    .await;
+    let result = WaitAgentResult::from_outcome(
+        outcome,
+        /*requested_timeout_ms*/ None,
+        /*timeout_ms*/ 0,
+    );
     assert_eq!(result.wake_cause, WaitWakeCause::MailboxActivity);
     assert!(!result.timed_out);
     assert_eq!(queue.drain_mailbox().await.len(), 2);
