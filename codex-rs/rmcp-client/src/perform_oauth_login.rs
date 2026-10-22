@@ -1547,7 +1547,8 @@ mod tests {
             expected_issuer: "private-expected-issuer".to_string(),
             received_issuer: "private-received-issuer".to_string(),
         };
-        let issuer_failure = FixedOAuthLoginError::exchange_with_auth_error(None, &issuer_error);
+        let issuer_failure =
+            FixedOAuthLoginError::exchange_with_auth_error(/*failure*/ None, &issuer_error);
         assert_eq!(
             issuer_failure.safe_exchange_detail().as_deref(),
             Some("sdk_issuer_mismatch")
