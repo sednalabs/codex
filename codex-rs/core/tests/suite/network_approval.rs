@@ -3651,6 +3651,7 @@ fn failed_amendment_network_output_shape(output: &str) -> &'static str {
     const NETWORK_ACCESS_PREFIX: &str = "Network access to \"";
     const EXIT_CODE_PREFIX: &str = "Process exited with code ";
     const RUNNING_PREFIX: &str = "Process running with session ID ";
+    const ORIGINAL_TOKEN_COUNT_PREFIX: &str = "Original token count: ";
 
     if output.is_empty() {
         return "empty";
@@ -3658,9 +3659,12 @@ fn failed_amendment_network_output_shape(output: &str) -> &'static str {
 
     let process_failed_wrapper =
         output.starts_with(PROCESS_FAILED_PREFIX) && output.ends_with(PROCESS_FAILED_SUFFIX);
-    let other_exec_error = output.starts_with(EXEC_ERROR_PREFIX) && !process_failed_wrapper;
-    let tool_output_header = (|| {
-        let mut lines = output.lines();
+    let other_exec_error = output
+        .strip_prefix(EXEC_ERROR_PREFIX)
+        .is_some_and(|details| !details.trim().is_empty() && !process_failed_wrapper);
+    let response_header = output.split_once("\nOutput:\n").map(|(header, _)| header);
+    let tool_output_header = response_header.and_then(|header| {
+        let mut lines = header.lines();
         lines
             .next()?
             .strip_prefix("Exit code: ")?
@@ -3672,43 +3676,65 @@ fn failed_amendment_network_output_shape(output: &str) -> &'static str {
             .strip_suffix(" seconds")?
             .parse::<f64>()
             .ok()?;
-        let output_header = lines.next()?;
-        let output_header =
-            if let Some(total_lines) = output_header.strip_prefix("Total output lines: ") {
-                total_lines.parse::<usize>().ok()?;
-                lines.next()?
-            } else {
-                output_header
-            };
-        (output_header == "Output:").then_some(())
-    })()
-    .is_some();
-    let process_exit_count = output
-        .lines()
-        .filter(|line| {
-            line.strip_prefix(EXIT_CODE_PREFIX)
-                .is_some_and(|code| code.parse::<i32>().is_ok())
-        })
-        .count();
-    let process_running_count = output
-        .lines()
-        .filter(|line| {
-            line.strip_prefix(RUNNING_PREFIX)
-                .is_some_and(|process_id| !process_id.is_empty())
-        })
-        .count();
-    if process_exit_count > 1 || process_running_count > 1 {
-        return "opaque";
-    }
+        if let Some(total_lines) = lines.next() {
+            total_lines
+                .strip_prefix("Total output lines: ")?
+                .parse::<usize>()
+                .ok()?;
+        }
+        lines.next().is_none().then_some("exec_output_header")
+    });
+    let context_output_header = response_header.and_then(|header| {
+        let mut lines = header.lines().peekable();
+        if lines.peek().is_some_and(|line| {
+            line.strip_prefix("Chunk ID: ")
+                .is_some_and(|chunk_id| !chunk_id.is_empty())
+        }) {
+            lines.next();
+        }
+        lines
+            .next()?
+            .strip_prefix("Wall time: ")?
+            .strip_suffix(" seconds")?
+            .parse::<f64>()
+            .ok()?;
+
+        let mut process_shape = None;
+        if let Some(line) = lines.peek() {
+            if let Some(code) = line.strip_prefix(EXIT_CODE_PREFIX) {
+                code.parse::<i32>().ok()?;
+                process_shape = Some("exec_output_exited");
+                lines.next();
+            }
+        }
+        if let Some(line) = lines.peek() {
+            if let Some(process_id) = line.strip_prefix(RUNNING_PREFIX) {
+                if process_id.is_empty() || process_shape.is_some() {
+                    return None;
+                }
+                process_shape = Some("exec_output_running");
+                lines.next();
+            }
+        }
+        if let Some(line) = lines.peek() {
+            if let Some(token_count) = line.strip_prefix(ORIGINAL_TOKEN_COUNT_PREFIX) {
+                token_count.parse::<usize>().ok()?;
+                lines.next();
+            }
+        }
+        if lines.next().is_some() {
+            return None;
+        }
+        Some(process_shape.unwrap_or("exec_output_header"))
+    });
     let bare_network_access = output.starts_with(NETWORK_ACCESS_PREFIX);
 
     let mut matched_shape = None;
     for (matches_shape, shape) in [
         (process_failed_wrapper, "exec_process_failed"),
         (other_exec_error, "exec_other_error"),
-        (tool_output_header, "exec_output_header"),
-        (process_exit_count == 1, "exec_output_exited"),
-        (process_running_count == 1, "exec_output_running"),
+        (tool_output_header.is_some(), "exec_output_header"),
+        (context_output_header.is_some(), context_output_header.unwrap_or("opaque")),
         (bare_network_access, "bare_network_access"),
     ] {
         if matches_shape {
@@ -3792,6 +3818,10 @@ fn failed_amendment_network_output_shape_is_closed_and_payload_free() {
         "exec_other_error"
     );
     assert_eq!(
+        failed_amendment_network_output_shape("exec_command failed:"),
+        "opaque"
+    );
+    assert_eq!(
         failed_amendment_network_output_shape(
             "Exit code: 1\nWall time: 0.1 seconds\nOutput:\nprivate output"
         ),
@@ -3805,7 +3835,7 @@ fn failed_amendment_network_output_shape_is_closed_and_payload_free() {
     );
     assert_eq!(
         failed_amendment_network_output_shape(
-            "Chunk ID: id\nWall time: 0.1 seconds\nProcess running with session ID token"
+            "Chunk ID: id\nWall time: 0.1 seconds\nProcess running with session ID token\nOutput:\nprivate output"
         ),
         "exec_output_running"
     );
@@ -3818,6 +3848,24 @@ fn failed_amendment_network_output_shape_is_closed_and_payload_free() {
     assert_eq!(
         failed_amendment_network_output_shape(
             "Exit code: 0\nWall time: 0.1 seconds\nOutput:\nProcess exited with code 1"
+        ),
+        "exec_output_header"
+    );
+    assert_eq!(
+        failed_amendment_network_output_shape(
+            "Chunk ID: id\nWall time: 0.1 seconds\nOutput:\nProcess exited with code 1\nProcess running with session ID token"
+        ),
+        "exec_output_header"
+    );
+    assert_eq!(
+        failed_amendment_network_output_shape(
+            "Chunk ID: id\nWall time: 0.1 seconds\nProcess exited with code 1\nProcess running with session ID token\nOutput:\nprivate output"
+        ),
+        "opaque"
+    );
+    assert_eq!(
+        failed_amendment_network_output_shape(
+            "Chunk ID: id\nWall time: malformed seconds\nProcess exited with code 1\nOutput:\nprivate output"
         ),
         "opaque"
     );
