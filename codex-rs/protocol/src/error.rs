@@ -161,7 +161,7 @@ pub enum CodexErrorDetails {
     InvalidImageRequest(),
     #[error("{0}")]
     UsageLimitReached(UsageLimitReachedError),
-    #[error("Selected model is at capacity. Please try a different model.")]
+    #[error("Selected model is at capacity. Please try again later.")]
     ServerOverloaded,
     #[error("Flex capacity unavailable.")]
     FlexUnavailable,
@@ -435,8 +435,30 @@ impl CodexErr {
             | CodexErrorDetails::CyberPolicy { .. }
             | CodexErrorDetails::BioPolicy { .. }
             | CodexErrorDetails::MisalignmentPolicyViolation { .. } => None,
-            CodexErrorDetails::ServerOverloaded | CodexErrorDetails::RetryLimit(_) => {
+            CodexErrorDetails::ServerOverloaded => Some(
                 self.server_retry_delay()
+                    .unwrap_or_else(|| capacity_retry_delay(retry_count)),
+            ),
+            CodexErrorDetails::RetryLimit(err) => match err.status {
+                StatusCode::INTERNAL_SERVER_ERROR
+                | StatusCode::BAD_GATEWAY
+                | StatusCode::SERVICE_UNAVAILABLE
+                | StatusCode::GATEWAY_TIMEOUT => Some(
+                    self.server_retry_delay()
+                        .unwrap_or_else(|| capacity_retry_delay(retry_count)),
+                ),
+                StatusCode::TOO_MANY_REQUESTS => self.server_retry_delay(),
+                _ => None,
+            },
+            CodexErrorDetails::UnexpectedStatus(err)
+                if err.status == StatusCode::TOO_MANY_REQUESTS =>
+            {
+                self.server_retry_delay()
+            }
+            CodexErrorDetails::UnexpectedStatus(err)
+                if err.status.is_client_error() && err.status != StatusCode::REQUEST_TIMEOUT =>
+            {
+                None
             }
             CodexErrorDetails::Stream(..)
             | CodexErrorDetails::ContentFilter
@@ -554,6 +576,14 @@ impl CodexErr {
         };
         http_status_code.as_ref().map(StatusCode::as_u16)
     }
+}
+
+fn capacity_retry_delay(retry_count: u64) -> Duration {
+    // Scale the shared jittered 200 ms base to 30 s, doubling up to a 300 s cap.
+    // Clamp the attempt before computing backoff, including for saturated counters.
+    backoff(retry_count.min(5))
+        .saturating_mul(150)
+        .min(Duration::from_secs(300))
 }
 
 #[derive(Debug)]

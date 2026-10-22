@@ -153,7 +153,7 @@ impl AgentControl for LocalAgentControl {
                     };
                     let communication = message.into_communication(author, receiver_path, mode);
                     let kind = match mode {
-                        MessageDeliveryMode::QueueOnly => {
+                        MessageDeliveryMode::QueueOnly | MessageDeliveryMode::WakeWait => {
                             start_options.parent_turn_id = None;
                             AgentCommunicationKind::Message
                         }

@@ -185,7 +185,7 @@ Scenario: A parent spawns a child before the selected environment is configured.
 06:function_call/collaboration.spawn_agent:{"fork_turns":"none","message":"Wait for the shared workspace to become ready.","task_name":"worker"}
 07:function_call_output:{"task_name":"/root/worker"}
 08:function_call/collaboration.wait_agent:{"timeout_ms":10000}
-09:function_call_output:{"message":"Wait completed.","timed_out":false}
+09:function_call_output:{"message":"Wait completed.","timed_out":false,"wake_cause":"completion"}
 10:agent_message
 11:message/user:
     <environment_context>

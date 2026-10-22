@@ -1,5 +1,8 @@
 use super::*;
+use crate::session::InputQueue;
 use crate::session::InputQueueActivity;
+use crate::session::MailboxWakeCause;
+use crate::session::WaitActivity;
 use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
 use crate::tools::handlers::multi_agents_spec::create_wait_agent_tool_v2;
 use codex_tools::ToolSpec;
@@ -93,7 +96,14 @@ impl Handler {
 
         let wait_started = Instant::now();
         let deadline = wait_started + Duration::from_millis(timeout_ms as u64);
-        let outcome = wait_for_activity(&mut activity_rx, pending_activity, deadline).await;
+        let outcome = wait_for_activity(
+            &session.input_queue,
+            turn_state.as_deref(),
+            &mut activity_rx,
+            pending_activity,
+            deadline,
+        )
+        .await;
         // A completed wait may wake for a message, user input, or its timeout.
         // Dropped waits do not have an observed outcome and are not included.
         turn.session_telemetry.record_duration(
@@ -102,7 +112,7 @@ impl Handler {
             &[(
                 "outcome",
                 match outcome {
-                    WaitOutcome::MailboxActivity => "mailbox",
+                    WaitOutcome::MailboxActivity(_) => "mailbox",
                     WaitOutcome::Steered => "steered",
                     WaitOutcome::TimedOut => "timed_out",
                 },
@@ -148,6 +158,18 @@ struct WaitArgs {
 pub(crate) struct WaitAgentResult {
     pub(crate) message: String,
     pub(crate) timed_out: bool,
+    pub(crate) wake_cause: WaitWakeCause,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum WaitWakeCause {
+    ActionableMessage,
+    Completion,
+    LegacyMailbox,
+    MailboxActivity,
+    Steered,
+    TimedOut,
 }
 
 impl WaitAgentResult {
@@ -157,7 +179,7 @@ impl WaitAgentResult {
         timeout_ms: i64,
     ) -> Self {
         let message = match outcome {
-            WaitOutcome::MailboxActivity => "Wait completed.",
+            WaitOutcome::MailboxActivity(_) => "Wait completed.",
             WaitOutcome::Steered => "Wait interrupted by new input.",
             WaitOutcome::TimedOut => "Wait timed out.",
         };
@@ -170,6 +192,16 @@ impl WaitAgentResult {
         Self {
             message,
             timed_out: outcome == WaitOutcome::TimedOut,
+            wake_cause: match outcome {
+                WaitOutcome::MailboxActivity(cause) => match cause {
+                    MailboxWakeCause::ActionableMessage => WaitWakeCause::ActionableMessage,
+                    MailboxWakeCause::Completion => WaitWakeCause::Completion,
+                    MailboxWakeCause::LegacyMailbox => WaitWakeCause::LegacyMailbox,
+                    MailboxWakeCause::MailboxActivity => WaitWakeCause::MailboxActivity,
+                },
+                WaitOutcome::Steered => WaitWakeCause::Steered,
+                WaitOutcome::TimedOut => WaitWakeCause::TimedOut,
+            },
         }
     }
 }
@@ -194,27 +226,43 @@ impl ToolOutput for WaitAgentResult {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum WaitOutcome {
-    MailboxActivity,
+    MailboxActivity(MailboxWakeCause),
     Steered,
     TimedOut,
 }
 
 async fn wait_for_activity(
+    input_queue: &InputQueue,
+    turn_state: Option<&tokio::sync::Mutex<crate::state::TurnState>>,
     activity_rx: &mut tokio::sync::watch::Receiver<InputQueueActivity>,
     pending_activity: Option<InputQueueActivity>,
     deadline: Instant,
 ) -> WaitOutcome {
-    if let Some(activity) = pending_activity {
-        return match activity {
-            InputQueueActivity::Mailbox => WaitOutcome::MailboxActivity,
-            InputQueueActivity::Steer => WaitOutcome::Steered,
-        };
+    if pending_activity == Some(InputQueueActivity::Steer) {
+        return WaitOutcome::Steered;
     }
-    match timeout_at(deadline, activity_rx.changed()).await {
-        Ok(Ok(())) => match *activity_rx.borrow_and_update() {
-            InputQueueActivity::Mailbox => WaitOutcome::MailboxActivity,
-            InputQueueActivity::Steer => WaitOutcome::Steered,
-        },
-        Ok(Err(_)) | Err(_) => WaitOutcome::TimedOut,
+    loop {
+        if let Some(activity) = input_queue.pending_wait_activity(turn_state).await {
+            return match activity {
+                WaitActivity::Mailbox(cause) => WaitOutcome::MailboxActivity(cause),
+                WaitActivity::Steer => WaitOutcome::Steered,
+            };
+        }
+        if Instant::now() >= deadline {
+            return WaitOutcome::TimedOut;
+        }
+        match timeout_at(deadline, activity_rx.changed()).await {
+            Ok(Ok(())) => {
+                if *activity_rx.borrow_and_update() == InputQueueActivity::Steer {
+                    return WaitOutcome::Steered;
+                }
+                // A notification is a hint, not proof that queued progress can wake this wait.
+            }
+            Ok(Err(_)) | Err(_) => return WaitOutcome::TimedOut,
+        }
     }
 }
+
+#[cfg(test)]
+#[path = "wait_tests.rs"]
+mod tests;

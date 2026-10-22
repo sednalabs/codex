@@ -59,6 +59,21 @@ cover continuity and lifecycle behavior, not live-profile acceptance. Remove
 this carry when upstream supplies equivalent profile ownership and lifecycle
 semantics without losing typed images or cancellation boundaries.
 
+## Bounded same-model capacity retries
+
+Typed temporary model overload and exhausted transient 500/502/503/504 requests
+reuse the native Responses retry loop, configured budgets and cancellation.
+Retained `Retry-After` deadlines take precedence; headerless classified overload
+uses jittered exponential backoff starting near 30 seconds and capped at 300
+seconds. Stream-level capacity waits are visible. Eligible typed-overload and
+exhausted-request retries do not reset the stream budget by switching transports.
+Quota, auth, policy and permanent input failures remain terminal, and unknown
+429 responses require server advice. This does not substitute an account, model
+or provider, resume a goal, or add unlimited retries. Request and stream budgets
+remain separate layers, not a universal network-attempt or elapsed-time ceiling.
+Remove this carry when upstream supplies equivalent same-turn recovery,
+timing, denial and cancellation behavior.
+
 ## Per-server MCP protocol preference
 
 The `mcp-per-server-protocol-selection` carry exposes `protocol_mode = "legacy"`
@@ -142,6 +157,21 @@ not a security fix or a passing result. Reintroducing native Windows requires
 an explicit support decision and qualification of its security and consumers.
 
 ## Upgrading and retiring carries
+
+### Mailbox wait eligibility
+
+Queued progress must not repeatedly end an active V2 wait merely because it is
+delivered. Message origin distinguishes informational mail, explicitly actionable
+mail, and terminal results independently of permission to start an idle turn.
+`send_message` defaults to quiet delivery; `wake_wait=true` opts into ending an
+active wait without starting an idle turn. Completion and legacy unclassified
+mail remain eligible. V1 targeted waits and shared sleep notifications are
+unchanged. Eligible queued categories, not message bodies or every flushed
+sender, determine the bounded reported wake cause. Informational notifications
+do not reset the original deadline, and cancellation retains queued mail.
+
+Remove this carry when upstream provides equivalent independent idle-turn and
+wait-wake semantics with compatible legacy, terminal, and retained-mail behavior.
 
 Pin the upstream revision being considered, then compare it against current
 downstream `main` and its accepted capabilities. First look for equivalent

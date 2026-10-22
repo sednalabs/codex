@@ -40,7 +40,11 @@ impl Handler {
         let args: SendMessageArgs = parse_arguments(&arguments)?;
         handle_message_string_tool(
             invocation,
-            MessageDeliveryMode::QueueOnly,
+            if args.wake_wait {
+                MessageDeliveryMode::WakeWait
+            } else {
+                MessageDeliveryMode::QueueOnly
+            },
             args.target,
             args.message,
             analytics,

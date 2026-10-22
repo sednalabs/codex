@@ -5,12 +5,17 @@ use super::log_retry;
 use crate::realtime_history::RealtimeHistoryState;
 use crate::session::step_context::StepContext;
 use crate::session::tests::make_session_and_context;
+use crate::session::tests::make_session_and_context_with_rx;
+use codex_async_utils::OrCancelExt;
 use codex_http_client::RetryAfter;
 use codex_protocol::error::CodexErr;
+use codex_protocol::error::CodexErrorDetails;
+use codex_protocol::protocol::EventMsg;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
 use tracing_test::internal::MockWriter;
 
 #[tokio::test]
@@ -76,7 +81,7 @@ async fn stream_retry_preserves_deadline_across_delayed_notification() {
     let retry = handle_response_stream_error(
         &mut retry_state,
         /*max_retries*/ 2,
-        CodexErr::InternalServerError.with_retry_after(advice),
+        CodexErr::ServerOverloaded.with_retry_after(advice),
         &mut client_session,
         &session,
         &step_context,
@@ -97,4 +102,95 @@ async fn stream_retry_preserves_deadline_across_delayed_notification() {
         (advice.deadline()..=advice.deadline() + Duration::from_millis(1)).contains(&resumed_at),
         "retry resumed at {resumed_at:?}, expected {advice:?}"
     );
+}
+
+#[tokio::test]
+async fn capacity_retry_is_visible_and_exhausts_the_configured_stream_budget() {
+    for request in [
+        ResponsesStreamRequest::Sampling,
+        ResponsesStreamRequest::RemoteCompactionV2,
+    ] {
+        let (session, turn_context, rx) = make_session_and_context_with_rx().await;
+        let step_context = StepContext::for_test(turn_context);
+        let mut client_session = session.services.model_client.new_session();
+        let mut retry_state = ResponsesStreamRetryState::default();
+        tokio::time::pause();
+
+        for attempt in 1..=2 {
+            let started = Instant::now();
+            let retry = handle_response_stream_error(
+                &mut retry_state,
+                /*max_retries*/ 2,
+                CodexErr::ServerOverloaded,
+                &mut client_session,
+                &session,
+                &step_context,
+                request,
+            );
+            tokio::pin!(retry);
+            loop {
+                tokio::select! {
+                    event = rx.recv() => {
+                        if let EventMsg::StreamError(error) = event.expect("retry event").msg {
+                            assert_eq!(error.message, format!("Reconnecting... {attempt}/2"));
+                            break;
+                        }
+                    }
+                    result = &mut retry => {
+                        panic!("retry completed before notification: {result:?}")
+                    }
+                }
+            }
+            assert!(futures::poll!(&mut retry).is_pending());
+            retry.await.expect("retry remains within budget");
+            let minimum = Duration::from_secs(if attempt == 1 { 27 } else { 54 });
+            let maximum = Duration::from_secs(if attempt == 1 { 33 } else { 66 });
+            assert!((minimum..=maximum).contains(&started.elapsed()));
+        }
+        let exhausted_at = Instant::now();
+        let error = handle_response_stream_error(
+            &mut retry_state,
+            /*max_retries*/ 2,
+            CodexErr::ServerOverloaded,
+            &mut client_session,
+            &session,
+            &step_context,
+            request,
+        )
+        .await
+        .expect_err("capacity must not extend the stream budget");
+        assert!(matches!(
+            error.details(),
+            CodexErrorDetails::ServerOverloaded
+        ));
+        assert_eq!(retry_state.retries, 2);
+        assert_eq!(exhausted_at.elapsed(), Duration::ZERO);
+        tokio::time::resume();
+    }
+}
+
+#[tokio::test]
+async fn capacity_retry_wait_is_cancelable_by_the_sampling_caller() {
+    let (session, turn_context) = make_session_and_context().await;
+    let step_context = StepContext::for_test(Arc::new(turn_context));
+    let mut client_session = session.services.model_client.new_session();
+    let mut retry_state = ResponsesStreamRetryState::default();
+    let cancellation = CancellationToken::new();
+    tokio::time::pause();
+    let started = Instant::now();
+    let retry = handle_response_stream_error(
+        &mut retry_state,
+        /*max_retries*/ 2,
+        CodexErr::ServerOverloaded,
+        &mut client_session,
+        &session,
+        &step_context,
+        ResponsesStreamRequest::Sampling,
+    )
+    .or_cancel(&cancellation);
+    tokio::pin!(retry);
+    assert!(futures::poll!(&mut retry).is_pending());
+    cancellation.cancel();
+    assert!(retry.await.is_err());
+    assert_eq!(started.elapsed(), Duration::ZERO);
 }

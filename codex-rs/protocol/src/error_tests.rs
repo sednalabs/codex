@@ -39,7 +39,7 @@ async fn codex_err_debug_preserves_legacy_shape() {
 #[test]
 fn retryability_preserves_error_details_distinctions() {
     let errors = [
-        (CodexErr::ServerOverloaded, false),
+        (CodexErr::ServerOverloaded, true),
         (CodexErr::new(CodexErrorDetails::ContentFilter), true),
         (
             CodexErr::new(CodexErrorDetails::RateLimitExceeded("retry later".into())),
@@ -63,7 +63,7 @@ fn retryability_preserves_error_details_distinctions() {
                 identity_authorization_error: None,
                 identity_error_code: None,
             }),
-            true,
+            false,
         ),
         (
             CodexErrorDetails::ToolCollision("functions.update_plan".to_string()).into(),
@@ -112,6 +112,122 @@ fn retry_delay_distinguishes_server_advice_backoff_and_terminal_errors() {
         ),
         (None, Some(advice)),
     );
+}
+
+#[test]
+fn capacity_retry_backoff_is_jittered_and_capped() {
+    for (attempt, minimum, maximum) in [
+        (0, 27_000, 33_000),
+        (1, 27_000, 33_000),
+        (2, 54_000, 66_000),
+        (3, 108_000, 132_000),
+        (4, 216_000, 264_000),
+        (5, 300_000, 300_000),
+        (u64::MAX, 300_000, 300_000),
+    ] {
+        let delay = CodexErr::ServerOverloaded
+            .retry_delay(attempt)
+            .expect("capacity is retryable");
+        assert!((minimum..=maximum).contains(&delay.as_millis()));
+    }
+}
+
+#[test]
+fn exhausted_request_retries_only_back_off_for_transient_service_statuses() {
+    for status in [
+        StatusCode::INTERNAL_SERVER_ERROR,
+        StatusCode::BAD_GATEWAY,
+        StatusCode::SERVICE_UNAVAILABLE,
+        StatusCode::GATEWAY_TIMEOUT,
+        StatusCode::TOO_MANY_REQUESTS,
+        StatusCode::UNAUTHORIZED,
+        StatusCode::FORBIDDEN,
+        StatusCode::BAD_REQUEST,
+    ] {
+        let error = CodexErr::RetryLimit(RetryLimitReachedError {
+            status,
+            request_id: None,
+        });
+        assert_eq!(
+            error.retry_delay(/*retry_count*/ 1).is_some(),
+            status.is_server_error(),
+            "unexpected headerless retry for {status}"
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn capacity_retry_preserves_original_and_expired_server_deadlines() {
+    for error in [
+        CodexErr::ServerOverloaded,
+        CodexErr::RetryLimit(RetryLimitReachedError {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            request_id: None,
+        }),
+    ] {
+        let advice = RetryAfter::from_delay(Duration::from_secs(10)).expect("retry deadline");
+        let error = error.with_retry_after(advice);
+        tokio::time::advance(Duration::from_secs(4)).await;
+        assert_eq!(error.retry_delay(u64::MAX), Some(Duration::from_secs(6)));
+        assert_eq!(
+            error.retry_after().expect("retained deadline").deadline(),
+            advice.deadline()
+        );
+        tokio::time::advance(Duration::from_secs(6)).await;
+        assert_eq!(error.retry_delay(/*retry_count*/ 1), Some(Duration::ZERO));
+    }
+}
+
+#[test]
+fn capacity_retry_does_not_retry_denials_even_with_server_advice() {
+    let advice = RetryAfter::from_delay(Duration::from_secs(300)).expect("retry deadline");
+    for error in [
+        CodexErr::QuotaExceeded,
+        CodexErr::RefreshTokenFailed(RefreshTokenFailedError::new(
+            RefreshTokenFailedReason::Revoked,
+            "revoked",
+        )),
+        CodexErr::new(CodexErrorDetails::CyberPolicy {
+            message: "denied".into(),
+        }),
+        CodexErr::new(CodexErrorDetails::BioPolicy {
+            message: "denied".into(),
+        }),
+        CodexErr::InvalidRequest("invalid".into()),
+        CodexErr::new(CodexErrorDetails::InvalidPrompt {
+            message: "invalid".into(),
+        }),
+    ] {
+        assert_eq!(
+            error
+                .with_retry_after(advice)
+                .retry_delay(/*retry_count*/ 1),
+            None
+        );
+    }
+    for status in [
+        StatusCode::UNAUTHORIZED,
+        StatusCode::FORBIDDEN,
+        StatusCode::NOT_FOUND,
+        StatusCode::UNPROCESSABLE_ENTITY,
+    ] {
+        let error = CodexErr::UnexpectedStatus(UnexpectedResponseError {
+            status,
+            body: String::new(),
+            user_message: None,
+            url: None,
+            cf_ray: None,
+            request_id: None,
+            identity_authorization_error: None,
+            identity_error_code: None,
+        });
+        assert_eq!(
+            error
+                .with_retry_after(advice)
+                .retry_delay(/*retry_count*/ 1),
+            None
+        );
+    }
 }
 
 fn rate_limit_snapshot() -> RateLimitSnapshot {

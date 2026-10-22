@@ -755,6 +755,7 @@ async fn steer_interrupts_wait_agent_and_is_sent_in_follow_up_request() {
         json!({
             "message": "Wait interrupted by new input.",
             "timed_out": false,
+            "wake_cause": "steered",
         })
     );
 
