@@ -128,7 +128,13 @@ async fn informational_notifications_do_not_extend_the_original_deadline() {
             .await;
     }
     assert_eq!(waiting.await, WaitOutcome::TimedOut);
-    assert_eq!(started.elapsed(), Duration::from_secs(/*secs*/ 10));
+    // Match the native wait tests' millisecond timer resolution, not a reset deadline.
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed >= Duration::from_secs(/*secs*/ 10)
+            && elapsed <= Duration::from_millis(/*millis*/ 10_001),
+        "informational mail must not reset the original deadline: {elapsed:?}"
+    );
     assert_eq!(queue.drain_mailbox().await.len(), 3);
 }
 
