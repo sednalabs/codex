@@ -242,9 +242,7 @@ async fn mixed_eligible_causes_are_reported_without_sender_attribution() {
     )
     .await;
     let result = WaitAgentResult::from_outcome(
-        outcome,
-        /*requested_timeout_ms*/ None,
-        /*timeout_ms*/ 0,
+        outcome, /*requested_timeout_ms*/ None, /*timeout_ms*/ 0,
     );
     assert_eq!(result.wake_cause, WaitWakeCause::MailboxActivity);
     assert!(!result.timed_out);
