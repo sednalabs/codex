@@ -1,376 +1,266 @@
-name: Bazel
-
-# Note this workflow was originally derived from:
-# https://github.com/cerisier/toolchains_llvm_bootstrapped/blob/main/.github/workflows/ci.yaml
+name: Native network denial selector (validation host)
 
 on:
-  workflow_call:
   workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact native candidate commit to validate
+        required: true
+        type: string
+      expected_workflow_host_sha:
+        description: Exact commit containing this validation workflow
+        required: true
+        type: string
+
+permissions:
+  contents: read
 
 concurrency:
-  # Cancel previous actions from the same PR or branch except 'main' branch.
-  # See https://docs.github.com/en/actions/using-jobs/using-concurrency and https://docs.github.com/en/actions/learn-github-actions/contexts for more info.
-  group: concurrency-group::${{ github.workflow }}::${{ github.event.pull_request.number > 0 && format('pr-{0}', github.event.pull_request.number) || github.ref_name }}${{ github.ref_name == 'main' && format('::{0}', github.run_id) || ''}}
-  cancel-in-progress: ${{ github.ref_name != 'main' }}
+  group: native-830-policy-denial-${{ inputs.source_sha }}
+  cancel-in-progress: false
 
 jobs:
-  test:
-    # Code-mode unit tests run on every supported Bazel target. Split the
-    # inventory into deterministic target shards to keep standard-hosted jobs
-    # within their existing limits without dropping coverage.
-    timeout-minutes: ${{ startsWith(matrix.os, 'macos-') && 180 || 90 }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # macOS
-          - os: macos-15
-            target: aarch64-apple-darwin
-            shard: 1
-            shard_count: 2
-          - os: macos-15
-            target: aarch64-apple-darwin
-            shard: 2
-            shard_count: 2
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
-            shard: 1
-            shard_count: 2
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
-            shard: 2
-            shard_count: 2
-
-          # Linux
-          - os: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-            shard: 1
-            shard_count: 4
-          - os: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-            shard: 2
-            shard_count: 4
-          - os: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-            shard: 3
-            shard_count: 4
-          - os: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-            shard: 4
-            shard_count: 4
-          - os: ubuntu-24.04
-            target: x86_64-unknown-linux-musl
-            shard: 1
-            shard_count: 4
-          - os: ubuntu-24.04
-            target: x86_64-unknown-linux-musl
-            shard: 2
-            shard_count: 4
-          - os: ubuntu-24.04
-            target: x86_64-unknown-linux-musl
-            shard: 3
-            shard_count: 4
-          - os: ubuntu-24.04
-            target: x86_64-unknown-linux-musl
-            shard: 4
-            shard_count: 4
-          # 2026-02-27 Bazel tests have been flaky on arm in CI.
-          # Disable until we can investigate and stabilize them.
-          # - os: ubuntu-24.04-arm
-          #   target: aarch64-unknown-linux-musl
-          # - os: ubuntu-24.04-arm
-          #   target: aarch64-unknown-linux-gnu
-
-    runs-on: ${{ matrix.os }}
-
-    # Configure a human readable name for each job
-    name: Bazel test on ${{ matrix.os }} for ${{ matrix.target }}${{ matrix.shard && format(' shard {0}/{1}', matrix.shard, matrix.shard_count) || '' }}
-    environment:
-      name: bazel
-      deployment: false
-
+  focused-denial:
+    name: GNU native network denial contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      BUILDBUDDY_API_KEY: ''
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-
-      - name: Prepare Bazel CI
-        id: prepare_bazel
-        uses: ./.github/actions/prepare-bazel-ci
-        with:
-          target: ${{ matrix.target }}
-          cache-scope: ${{ matrix.shard && format('bazel-{0}-{1}-shard-{2}-of-{3}', github.job, matrix.target, matrix.shard, matrix.shard_count) || format('bazel-{0}', github.job) }}
-
-      - name: Check rusty_v8 MODULE.bazel checksums
-        if: matrix.os == 'ubuntu-24.04' && matrix.target == 'x86_64-unknown-linux-gnu' && matrix.shard == 1
-        shell: bash
-        run: |
-          python3 .github/scripts/rusty_v8_bazel.py check-module-bazel
-          just test-github-scripts
-
-      - name: Check MODULE.bazel.lock is up to date
-        if: matrix.os == 'ubuntu-24.04' && matrix.target == 'x86_64-unknown-linux-gnu' && matrix.shard == 1
-        shell: bash
-        run: ./scripts/check-module-bazel-lock.sh
-
-      - name: ${{ matrix.shard && format('bazel test shard {0}/{1}', matrix.shard, matrix.shard_count) || 'bazel test //...' }}
+      - name: Verify fixed validation-host identity
         shell: bash
         env:
-          BAZEL_TEST_SHARD: ${{ matrix.shard }}
-          BAZEL_TEST_SHARD_COUNT: ${{ matrix.shard_count }}
+          EXPECTED_HOST_SHA: ${{ inputs.expected_workflow_host_sha }}
         run: |
-          bazel_targets=()
-          if [[ -z "${BAZEL_TEST_SHARD:-}" ]]; then
-            bazel_targets=(
-              //...
-              # Keep standalone V8 library targets out of the ordinary Bazel CI
-              # path. V8 consumers under `//codex-rs/...` still participate
-              # transitively through `//...`.
-              -//third_party/v8:all
-              -//codex-rs/v8-poc:v8-poc-unit-tests
-              # Retain retired Windows-under-Wine fixtures for explicit use, not
-              # as supported Linux/macOS product qualification.
-              -//bazel/rules/testing/wine:wine-test-support-unit-tests
-              -//codex-rs/core/tests/remote_env_windows:smoke-test
-            )
-          else
-            shard_tmp_dir="$(mktemp -d)"
-            trap 'rm -rf -- "${shard_tmp_dir}"' EXIT
-            bazel_test_query='(//... except //third_party/v8:all except //codex-rs/v8-poc:v8-poc-unit-tests except //bazel/rules/testing/wine:wine-test-support-unit-tests except //codex-rs/core/tests/remote_env_windows:smoke-test) except attr(tags, "(\[|, )manual(,|\])", //...)'
-            ./.github/scripts/run-bazel-query-ci.sh --output=label -- "${bazel_test_query}" \
-              | LC_ALL=C sort > "${shard_tmp_dir}/targets.txt"
-            : > "${shard_tmp_dir}/empty-durations.tsv"
-            all_shard_files=()
-            for ((shard = 1; shard <= BAZEL_TEST_SHARD_COUNT; shard++)); do
-              python3 .github/scripts/select_windows_bazel_targets.py \
-                --shard "${shard}" \
-                --shard-count "${BAZEL_TEST_SHARD_COUNT}" \
-                --durations "${shard_tmp_dir}/empty-durations.tsv" \
-                < "${shard_tmp_dir}/targets.txt" \
-                > "${shard_tmp_dir}/shard-${shard}.txt"
-              all_shard_files+=("${shard_tmp_dir}/shard-${shard}.txt")
-            done
-            cat "${all_shard_files[@]}" | LC_ALL=C sort > "${shard_tmp_dir}/all-selected.txt"
-            if ! diff -u "${shard_tmp_dir}/targets.txt" "${shard_tmp_dir}/all-selected.txt"; then
-              echo "Bazel shard assignment does not cover the exact target inventory" >&2
-              exit 1
-            fi
-            while IFS= read -r target; do
-              bazel_targets+=("${target}")
-            done < "${shard_tmp_dir}/shard-${BAZEL_TEST_SHARD}.txt"
+          set -euo pipefail
+          expected_ref='validation/host-830-policy-denial-fc001f84'
+          if [[ "${GITHUB_EVENT_NAME}" != workflow_dispatch ||
+                "${GITHUB_REPOSITORY}" != sednalabs/codex ||
+                "${GITHUB_REF_NAME}" != "${expected_ref}" ||
+                "${GITHUB_SHA}" != "${EXPECTED_HOST_SHA}" ]]; then
+            echo 'Dispatch does not match the fixed host ref and requested host SHA.' >&2
+            exit 1
           fi
 
-          bazel_wrapper_args=(
-            --print-failed-action-summary
-            --print-failed-test-logs
-          )
-          bazel_test_args=(
-            test
-            --test_tag_filters=-argument-comment-lint
-            --test_verbose_timeout_warnings
-            --build_metadata=COMMIT_SHA=${GITHUB_SHA}
-          )
-          if [[ -n "${BAZEL_TEST_SHARD:-}" ]]; then
-            # Explicit query results must retain wildcard handling of targets
-            # incompatible with this GNU or musl platform.
-            bazel_test_args+=(--skip_incompatible_explicit_targets)
-          fi
-          ./.github/scripts/run-bazel-ci.sh \
-            "${bazel_wrapper_args[@]}" \
-            -- \
-            "${bazel_test_args[@]}" \
-            -- \
-            "${bazel_targets[@]}"
-
-      - name: Upload Bazel execution logs
-        if: always() && !cancelled()
-        continue-on-error: true
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+      - name: Check out exact native candidate
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          name: bazel-execution-logs-test-${{ matrix.target }}${{ matrix.shard && format('-shard-{0}-of-{1}', matrix.shard, matrix.shard_count) || '' }}
-          path: ${{ runner.temp }}/bazel-execution-logs
-          if-no-files-found: ignore
-
-      # Save the job-scoped Bazel repository cache after cache misses. Keep the
-      # upload non-fatal so cache service issues never fail the job itself.
-      - name: Save bazel repository cache
-        if: always() && !cancelled() && steps.prepare_bazel.outputs.repository-cache-hit != 'true'
-        continue-on-error: true
-        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-        with:
-          path: ${{ steps.prepare_bazel.outputs.repository-cache-path }}
-          key: ${{ steps.prepare_bazel.outputs.repository-cache-key }}
-
-      - name: Check for a clean worktree
-        if: always() && !cancelled()
-        uses: ./.github/actions/check-clean-worktree
-
-  clippy:
-    timeout-minutes: ${{ startsWith(matrix.os, 'macos-') && 180 || 90 }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # Keep Linux lint coverage on x64 and the arm64 macOS path exercised
-          # by the Bazel test job.
-          - os: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-          - os: macos-15
-            target: aarch64-apple-darwin
-    runs-on: ${{ matrix.os }}
-    name: Bazel clippy on ${{ matrix.os }} for ${{ matrix.target }}
-    environment:
-      name: bazel
-      deployment: false
-
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
           persist-credentials: false
+
+      - name: Verify source, host-parent, base, and target identity
+        shell: bash
+        env:
+          EXPECTED_HOST_SHA: ${{ inputs.expected_workflow_host_sha }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          expected_source_sha='fc001f843aff842b36e885e43f33b5b59a86ce24'
+          expected_source_tree='377d3f49b5beae54ca241626fabf1c68c9bc04b6'
+          expected_source_parent='3f3075d8095aec8e04352f478fd3591c15d0ad82'
+          expected_source_ref='validation/native-830-policy-denial-fc001f84'
+          expected_host_ref='validation/host-830-policy-denial-fc001f84'
+          expected_main_base='f53268d170818054547ac19197223c220a75be1a'
+          expected_native_base='83086188ae0614bd882818ff1aa23f3194962012'
+
+          [[ "${SOURCE_SHA}" == "${expected_source_sha}" ]]
+          [[ "$(git rev-parse HEAD)" == "${expected_source_sha}" ]]
+          [[ "$(git rev-parse HEAD^{tree})" == "${expected_source_tree}" ]]
+          [[ "$(git rev-parse HEAD^)" == "${expected_source_parent}" ]]
+          git cat-file -e "${EXPECTED_HOST_SHA}^{commit}"
+          [[ "$(git rev-parse "${EXPECTED_HOST_SHA}^")" == "${expected_source_sha}" ]]
+          git merge-base --is-ancestor "${expected_main_base}" "${expected_source_sha}"
+          git merge-base --is-ancestor "${expected_native_base}" "${expected_source_sha}"
+          git show-ref --verify --quiet "refs/remotes/origin/${expected_source_ref}"
+          [[ "$(git rev-parse "refs/remotes/origin/${expected_source_ref}")" == "${expected_source_sha}" ]]
+          [[ "$(git rev-parse "${EXPECTED_HOST_SHA}")" == "${GITHUB_SHA}" ]]
+          [[ "${GITHUB_REF_NAME}" == "${expected_host_ref}" ]]
 
       - name: Prepare Bazel CI
         id: prepare_bazel
         uses: ./.github/actions/prepare-bazel-ci
         with:
-          target: ${{ matrix.target }}
-          cache-scope: bazel-${{ github.job }}
+          target: x86_64-unknown-linux-gnu
+          cache-scope: native-830-policy-denial-${{ inputs.source_sha }}
 
-      - name: bazel build --config=clippy lint targets
+      - name: Run exact network denial contract
+        id: run_selector
         shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          HOST_SHA: ${{ inputs.expected_workflow_host_sha }}
         run: |
-          bazel_clippy_args=(
-            --config=clippy
-            --build_metadata=COMMIT_SHA=${GITHUB_SHA}
-            --build_metadata=TAG_job=clippy
-          )
-          bazel_target_lines="$(./scripts/list-bazel-clippy-targets.sh)"
-          bazel_targets=()
-          while IFS= read -r target; do
-            bazel_targets+=("${target}")
-          done <<< "${bazel_target_lines}"
+          set -euo pipefail
+          unset BUILDBUDDY_API_KEY
 
+          selector='suite::network_approval::failed_network_policy_amendment_denies_request_and_does_not_approve_host'
+          log="${RUNNER_TEMP}/network-denial-selector.log"
+          outcomes="${RUNNER_TEMP}/network-denial-selector.tsv"
+          : > "${outcomes}"
+
+          set +e
           ./.github/scripts/run-bazel-ci.sh \
             --print-failed-action-summary \
+            --print-failed-test-logs \
             -- \
-            build \
-            "${bazel_clippy_args[@]}" \
+            test \
+            --test_sharding_strategy=disabled \
+            --nocache_test_results \
+            --test_output=all \
+            --test_arg=--exact \
+            "--test_arg=${selector}" \
             -- \
-            "${bazel_targets[@]}"
+            //codex-rs/core:core-all-test 2>&1 | tee "${log}" >/dev/null
+          statuses=("${PIPESTATUS[@]}")
+          set -e
 
-      - name: Upload Bazel execution logs
-        if: always() && !cancelled()
-        continue-on-error: true
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: bazel-execution-logs-clippy-${{ matrix.target }}
-          path: ${{ runner.temp }}/bazel-execution-logs
-          if-no-files-found: ignore
+          exact_ok="$(grep -Fxc "test ${selector} ... ok" "${log}" || true)"
+          exact_failed="$(grep -Fxc "test ${selector} ... FAILED" "${log}" || true)"
+          summary_line="$(grep -E '^test result: (ok|FAILED)\. [0-9]+ passed; [0-9]+ failed; [0-9]+ ignored;' "${log}" | tail -n 1 || true)"
+          passed_count='null'
+          failed_count='null'
+          ignored_count='null'
+          summary_ok=0
+          if [[ -n "${summary_line}" ]]; then
+            passed_count="$(sed -E 's/^test result: (ok|FAILED)\. ([0-9]+) passed;.*/\2/' <<< "${summary_line}")"
+            failed_count="$(sed -E 's/^test result: (ok|FAILED)\. [0-9]+ passed; ([0-9]+) failed;.*/\2/' <<< "${summary_line}")"
+            ignored_count="$(sed -E 's/^test result: (ok|FAILED)\. [0-9]+ passed; [0-9]+ failed; ([0-9]+) ignored;.*/\2/' <<< "${summary_line}")"
+            summary_ok=1
+          fi
 
-      # Save the job-scoped Bazel repository cache after cache misses. Keep the
-      # upload non-fatal so cache service issues never fail the job itself.
-      - name: Save bazel repository cache
-        if: always() && !cancelled() && steps.prepare_bazel.outputs.repository-cache-hit != 'true'
-        continue-on-error: true
-        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-        with:
-          path: ${{ steps.prepare_bazel.outputs.repository-cache-path }}
-          key: ${{ steps.prepare_bazel.outputs.repository-cache-key }}
+          network_skip_seen=0
+          if grep -Fq 'Skipping test because it cannot execute when network is disabled in a Codex sandbox.' "${log}"; then
+            network_skip_seen=1
+          fi
+          sandbox_skip_seen=0
+          if grep -Fq " is set to 'seatbelt', skipping test." "${log}"; then
+            sandbox_skip_seen=1
+          fi
 
-      - name: Check for a clean worktree
-        if: always() && !cancelled()
-        uses: ./.github/actions/check-clean-worktree
+          exact_test_observed=0
+          if [[ "${exact_ok}" != 0 || "${exact_failed}" != 0 ]]; then
+            exact_test_observed=1
+          fi
 
-  verify-release-build:
-    timeout-minutes: ${{ startsWith(matrix.os, 'macos-') && 180 || 90 }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-          - os: macos-15
-            target: aarch64-apple-darwin
-    runs-on: ${{ matrix.os }}
-    name: Verify release build on ${{ matrix.os }} for ${{ matrix.target }}
-    environment:
-      name: bazel
-      deployment: false
+          selector_status='failed/unreconciled'
+          failure_category='summary_unreconciled'
+          if [[ "${exact_failed}" -eq 1 && "${summary_ok}" -eq 1 ]]; then
+            failure_category='executed_test_failure'
+          elif [[ "${network_skip_seen}" -eq 1 || "${sandbox_skip_seen}" -eq 1 ]]; then
+            failure_category='environment_guard_skip'
+          elif [[ "${statuses[0]}" -ne 0 && "${exact_test_observed}" -eq 0 ]]; then
+            failure_category='build_or_harness_failure'
+          fi
 
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
+          if [[ "${statuses[0]}" -eq 0 &&
+                "${statuses[1]}" -eq 0 &&
+                "${exact_ok}" -eq 1 &&
+                "${exact_failed}" -eq 0 &&
+                "${summary_ok}" -eq 1 &&
+                "${passed_count}" -eq 1 &&
+                "${failed_count}" -eq 0 &&
+                "${ignored_count}" -eq 0 &&
+                "${network_skip_seen}" -eq 0 &&
+                "${sandbox_skip_seen}" -eq 0 ]]; then
+            selector_status='executed-pass'
+            failure_category='none'
+          fi
 
-      - name: Prepare Bazel CI
-        id: prepare_bazel
-        uses: ./.github/actions/prepare-bazel-ci
-        with:
-          target: ${{ matrix.target }}
-          cache-scope: bazel-${{ github.job }}
+          printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+            "${selector}" "${statuses[0]}" "${statuses[1]}" \
+            "${selector_status}" "${exact_test_observed}" \
+            "${passed_count}" "${failed_count}" "${ignored_count}" \
+            "${network_skip_seen}" "${sandbox_skip_seen}" "${failure_category}" \
+            "${SOURCE_SHA}" >> "${outcomes}"
 
-      - name: bazel build verify-release-build targets
-        shell: bash
-        run: |
-          # This job exists to compile Rust code behind
-          # `cfg(not(debug_assertions))` so PR CI catches failures that would
-          # otherwise show up only in a release build. We do not need the full
-          # optimizer and debug-info work that normally comes with a release
-          # build to get that signal, so keep Bazel in `fastbuild` and disable
-          # Rust debug assertions explicitly.
-          bazel_build_args=(
-            --compilation_mode=fastbuild
-            --@rules_rust//rust/settings:extra_rustc_flag=-Cdebug-assertions=no
-            --@rules_rust//rust/settings:extra_exec_rustc_flag=-Cdebug-assertions=no
-            --build_metadata=COMMIT_SHA=${GITHUB_SHA}
-            --build_metadata=TAG_job=verify-release-build
-            --build_metadata=TAG_rust_debug_assertions=off
+          source_worktree_clean=1
+          if [[ -n "$(git status --porcelain)" ]]; then
+            source_worktree_clean=0
+          fi
+
+          receipt="${RUNNER_TEMP}/network-denial-selector-receipt.json"
+          python3 - "${receipt}" "${outcomes}" "${HOST_SHA}" "${SOURCE_SHA}" "${GITHUB_RUN_ID}" "${GITHUB_RUN_ATTEMPT}" "${source_worktree_clean}" <<'PY'
+          import json
+          import sys
+
+          path, outcomes_path, host_sha, source_sha, run_id, run_attempt, source_clean = sys.argv[1:]
+          rows = []
+          with open(outcomes_path, encoding="utf-8") as outcomes_file:
+              for line in outcomes_file:
+                  (
+                      name,
+                      bazel_exit,
+                      tee_exit,
+                      status,
+                      exact_test_observed,
+                      passed,
+                      failed,
+                      ignored,
+                      network_skip_seen,
+                      sandbox_skip_seen,
+                      failure_category,
+                      recorded_source_sha,
+                  ) = line.rstrip("\n").split("\t")
+                  rows.append(
+                      {
+                          "selector": name,
+                          "bazel_exit": int(bazel_exit),
+                          "tee_exit": int(tee_exit),
+                          "status": status,
+                          "exact_test_observed": exact_test_observed == "1",
+                          "passed": None if passed == "null" else int(passed),
+                          "failed": None if failed == "null" else int(failed),
+                          "ignored": None if ignored == "null" else int(ignored),
+                          "network_skip_marker_seen": network_skip_seen == "1",
+                          "sandbox_skip_marker_seen": sandbox_skip_seen == "1",
+                          "failure_category": None if failure_category == "none" else failure_category,
+                          "source_sha": recorded_source_sha,
+                      }
+                  )
+          if len(rows) != 1:
+              raise SystemExit(f"expected 1 selector outcome, found {len(rows)}")
+          row = rows[0]
+          source_worktree_clean = source_clean == "1"
+          passed = (
+              row["status"] == "executed-pass"
+              and row["passed"] == 1
+              and row["failed"] == 0
+              and row["ignored"] == 0
+              and row["bazel_exit"] == 0
+              and row["tee_exit"] == 0
+              and row["exact_test_observed"]
+              and not row["network_skip_marker_seen"]
+              and not row["sandbox_skip_marker_seen"]
+              and row["source_sha"] == source_sha
+              and source_worktree_clean
           )
-          bazel_target_lines="$(bash ./scripts/list-bazel-release-targets.sh)"
-          bazel_targets=()
-          while IFS= read -r target; do
-            bazel_targets+=("${target}")
-          done <<< "${bazel_target_lines}"
+          receipt = {
+              "host_sha": host_sha,
+              "source_sha": source_sha,
+              "source_tree": "377d3f49b5beae54ca241626fabf1c68c9bc04b6",
+              "source_parent": "3f3075d8095aec8e04352f478fd3591c15d0ad82",
+              "pr_base_sha": "f53268d170818054547ac19197223c220a75be1a",
+              "native_base_sha": "83086188ae0614bd882818ff1aa23f3194962012",
+              "run_id": run_id,
+              "run_attempt": int(run_attempt),
+              "execution_mode": "standard-hosted-ubuntu24-local-gnu",
+              "target": "//codex-rs/core:core-all-test",
+              "source_worktree_clean": source_worktree_clean,
+              "selector_result": row,
+              "overall_status": "passed" if passed else "failed",
+          }
+          with open(path, "w", encoding="utf-8") as receipt_file:
+              json.dump(receipt, receipt_file, separators=(",", ":"))
+          print(json.dumps(receipt, separators=(",", ":")))
+          if not passed:
+              raise SystemExit(1)
+          PY
 
-          ./.github/scripts/run-bazel-ci.sh \
-            -- \
-            build \
-            "${bazel_build_args[@]}" \
-            -- \
-            "${bazel_targets[@]}"
-
-      - name: Verify Bazel builds bwrap
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          ./.github/scripts/run-bazel-ci.sh \
-            --remote-download-toplevel \
-            --print-failed-action-summary \
-            -- \
-            build \
-            --build_metadata=COMMIT_SHA=${GITHUB_SHA} \
-            --build_metadata=TAG_job=verify-bwrap \
-            -- \
-            //codex-rs/bwrap:bwrap
-
-      - name: Upload Bazel execution logs
-        if: always() && !cancelled()
-        continue-on-error: true
+      - name: Upload compact selector receipt
+        if: always() && !cancelled() && steps.run_selector.outcome != 'skipped'
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: bazel-execution-logs-verify-release-build-${{ matrix.target }}
-          path: ${{ runner.temp }}/bazel-execution-logs
-          if-no-files-found: ignore
-
-      # Save the job-scoped Bazel repository cache after cache misses. Keep the
-      # upload non-fatal so cache service issues never fail the job itself.
-      - name: Save bazel repository cache
-        if: always() && !cancelled() && steps.prepare_bazel.outputs.repository-cache-hit != 'true'
-        continue-on-error: true
-        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-        with:
-          path: ${{ steps.prepare_bazel.outputs.repository-cache-path }}
-          key: ${{ steps.prepare_bazel.outputs.repository-cache-key }}
-
-      - name: Check for a clean worktree
-        if: always() && !cancelled()
-        uses: ./.github/actions/check-clean-worktree
+          name: native-network-denial-receipt-${{ inputs.source_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/network-denial-selector-receipt.json
+          if-no-files-found: error
