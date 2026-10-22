@@ -138,7 +138,7 @@ async fn coalesced_mailbox_hint_preserves_steer_priority() {
     let turn_state = Mutex::new(TurnState::default());
     let (mut activity, pending) = queue.subscribe_activity(Some(&turn_state)).await;
     queue
-        .extend_pending_input_and_accept_mailbox_delivery_for_turn_state(
+        .extend_pending_input_for_turn_state(
             &turn_state,
             vec![TurnInput::UserInput {
                 content: vec![UserInput::Text {
