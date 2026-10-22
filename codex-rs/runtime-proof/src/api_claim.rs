@@ -378,11 +378,6 @@ fn parse_execution_receipt(
     expected_work_item_ref: &str,
     expected_request_id: Uuid,
 ) -> Result<ExecutionReceiptResolution> {
-    let _expected_work_item_id = expected_work_item_ref
-        .strip_prefix('w')
-        .and_then(|value| value.parse::<i64>().ok())
-        .filter(|work_item_id| *work_item_id > 0)
-        .ok_or_else(|| anyhow::anyhow!("fixed Ops API work reference is invalid"))?;
     let response: ExecutionReceiptReadResponse = serde_json::from_slice(response_body)
         .map_err(|_| anyhow::anyhow!("fixed Ops API execution receipt is invalid"))?;
     if response.work_item_ref != expected_work_item_ref
