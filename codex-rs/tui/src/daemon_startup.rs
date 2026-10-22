@@ -253,7 +253,7 @@ pub(super) async fn compatibility_warning(
     .await;
     match check {
         Ok(()) => Ok(None),
-        Err(reason) if *allow_embedded_fallback => Ok(Some(format!(
+        Err(reason) if *allow_embedded_fallback && restart_features.is_none() => Ok(Some(format!(
             "Running without the shared background server: {reason}."
         ))),
         Err(reason) => Err(CompatibilityError {
