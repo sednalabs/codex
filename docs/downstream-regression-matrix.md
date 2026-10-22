@@ -1216,7 +1216,9 @@ and PKCE path with the fixed API issuer, resource, client, loopback redirect, an
 on the invoking TTY without opening a browser or binding a local callback
 listener; it validates the exact redirect and single-use state before the same
 PKCE exchange while suppressing and restoring TTY input echo, including when a
-handled cancellation signal interrupts input. Its regressions check the exact
+handled cancellation signal interrupts input. OAuth exchange failures expose only
+allowlisted HTTP status/OAuth codes or a closed SDK error category, never provider
+text. Its regressions check the exact
 client/resource/scope and S256 request, reject unsafe or ambiguous callback
 input, issuer metadata, token types, and lifetimes, and prevent scope
 expansion. They verify atomic replacement of only one root-owned credential
