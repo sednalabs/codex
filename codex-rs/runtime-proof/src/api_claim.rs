@@ -514,22 +514,26 @@ async fn send_claim_to_async(
             } else {
                 let mut receipt_body = Zeroizing::new(Vec::with_capacity(1024));
                 let mut complete = true;
-                while let Some(chunk) = match response.chunk().await {
-                    Ok(chunk) => chunk,
-                    Err(_) => {
-                        complete = false;
-                        break;
+                loop {
+                    match response.chunk().await {
+                        Ok(Some(chunk)) => {
+                            let Some(next_length) = receipt_body.len().checked_add(chunk.len())
+                            else {
+                                complete = false;
+                                break;
+                            };
+                            if next_length > MAX_CLAIM_RESPONSE_BYTES {
+                                complete = false;
+                                break;
+                            }
+                            receipt_body.extend_from_slice(&chunk);
+                        }
+                        Ok(None) => break,
+                        Err(_) => {
+                            complete = false;
+                            break;
+                        }
                     }
-                } {
-                    let Some(next_length) = receipt_body.len().checked_add(chunk.len()) else {
-                        complete = false;
-                        break;
-                    };
-                    if next_length > MAX_CLAIM_RESPONSE_BYTES {
-                        complete = false;
-                        break;
-                    }
-                    receipt_body.extend_from_slice(&chunk);
                 }
                 complete && validate_claim_receipt(&receipt_body, expected_work_item_ref).is_ok()
             }
