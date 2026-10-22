@@ -1188,11 +1188,17 @@ to the same raw-config admission used by the protected child, verify a
 certificate signature with the configured issuer pin, check the exact
 length-prefixed bootstrap packet, bound fixed-prompt delivery when the child
 pipe is backpressured, and reject unsafe project IDs or noncanonical issuer
-pins. Linux release and branch-preview packaging must
-include the launcher and its systemd unit template in x86_64 and Arm64 archives,
-verify the architecture and binary digest, and keep the template inert; source
-or package proof does not establish policy/credential provisioning, service
-installation, issuer appointment, or first use. Its runtime-home regression
+pins. Linux release and branch-preview packaging must include the launcher,
+fixed installer, launcher checksum and its systemd unit template in x86_64 and
+Arm64 archives, verify the architecture and launcher/installer digests, and
+keep the template inert. The installer may change only `/usr/libexec/codex`: it
+enforces root ownership and mode `0711`, verifies the staged launcher bytes,
+preserves the exact predecessor as a root-only digest-named rollback image, and
+uses atomic replacement without starting or reloading the unit. The
+installed-image regression requires invoking-user traversal through trusted
+parents and still rejects writable parents. Source or package proof does not
+establish policy/credential provisioning, service installation, issuer
+appointment, or first use. Its runtime-home regression
 checks that the child can write its private state and read its installation ID
 without changing generated configuration or adding CODEX_HOME settings.
 

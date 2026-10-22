@@ -3776,7 +3776,7 @@ archive and binding and verifies them against the target's pinned checksum
 manifest. Use the host-only artifact only with companion binaries built from
 the same source commit.
 
-## Native per-execution proof for a protected MCP claim
+## Native per-execution proof for protected MCP and HTTP claims
 
 The Linux CLI accepts an optional protected bootstrap through one inherited
 anonymous descriptor before dispatching arguments or starting asynchronous
@@ -3949,12 +3949,18 @@ codes or closed SDK error categories; internal error strings, OAuth response
 details, and callback input remain suppressed.
 The installed-image guard checks the executable's parent directories through
 `/` separately from the executable's own regular-file, mode, owner, and inode
-checks; regressions cover a valid executable in trusted parents and a writable
-parent rejection.
+checks; regressions cover a valid executable in traversable trusted parents,
+and reject both writable and non-traversable parents.
 
-The unit template and binary are packaged for Linux x86_64 and Arm64; packaging
-does not create the host policy, credentials, service account, issuer
-appointment, service installation, or live execution authority.
+Linux release and branch-preview archives package the fixed installer with the
+launcher and its checksum for x86_64 and Arm64. It verifies the staged launcher
+bytes against that package checksum, changes only `/usr/libexec/codex`, and
+atomically replaces the fixed root-owned executable after preserving the exact
+predecessor as a root-only digest-named rollback image. The directory is
+root-owned mode `0711` so invoking users can traverse the path without listing
+or writing it. Installation never starts or reloads the unit. Packaging does
+not create the host policy, credentials, service account, issuer appointment,
+or live execution authority.
 
 Curated plugin ZIP extraction applies Unix permissions only after masking to
 ordinary `0o777` bits. This keeps executable plugin files usable while making

@@ -129,8 +129,28 @@ fn installed_launcher_parent_validation_rejects_a_group_writable_parent() {
     let launcher_parent = launcher_path
         .parent()
         .expect("launcher fixture has a parent directory");
-    fs::set_permissions(launcher_parent, fs::Permissions::from_mode(0o770))
+    fs::set_permissions(launcher_parent, fs::Permissions::from_mode(0o771))
         .expect("make launcher fixture parent group writable");
+
+    assert!(
+        require_controlled_parent_directories(&launcher_path, &trust_boundary, expected_uid)
+            .is_err()
+    );
+
+    fs::remove_dir_all(trust_boundary).expect("remove unsafe launcher fixture");
+}
+
+#[test]
+fn installed_launcher_parent_validation_rejects_a_parent_without_invoker_traverse() {
+    let (trust_boundary, launcher_path) = launcher_path_fixture();
+    let expected_uid = fs::metadata(&trust_boundary)
+        .expect("read trusted fixture directory metadata")
+        .uid();
+    let launcher_parent = launcher_path
+        .parent()
+        .expect("launcher fixture has a parent directory");
+    fs::set_permissions(launcher_parent, fs::Permissions::from_mode(0o700))
+        .expect("remove invoking-user traversal from launcher fixture parent");
 
     assert!(
         require_controlled_parent_directories(&launcher_path, &trust_boundary, expected_uid)
@@ -146,13 +166,13 @@ fn launcher_path_fixture() -> (PathBuf, PathBuf) {
         Uuid::new_v4()
     ));
     fs::create_dir(&trust_boundary).expect("create trusted launcher fixture directory");
-    fs::set_permissions(&trust_boundary, fs::Permissions::from_mode(0o700))
-        .expect("restrict trusted launcher fixture directory");
+    fs::set_permissions(&trust_boundary, fs::Permissions::from_mode(0o711))
+        .expect("make trusted launcher fixture traversable without listing or writes");
 
     let launcher_parent = trust_boundary.join("libexec");
     fs::create_dir(&launcher_parent).expect("create launcher parent fixture");
-    fs::set_permissions(&launcher_parent, fs::Permissions::from_mode(0o700))
-        .expect("restrict launcher parent fixture");
+    fs::set_permissions(&launcher_parent, fs::Permissions::from_mode(0o711))
+        .expect("make launcher parent fixture traversable without listing or writes");
 
     let launcher_path = launcher_parent.join("codex-runtime-proof-launcher");
     fs::write(&launcher_path, b"fixture").expect("create regular launcher file fixture");
