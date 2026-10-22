@@ -81,6 +81,9 @@ separate companion consumer, not an interchangeable MCP login path. Its
 callback validation, privileged credential envelope and current artifact
 qualification remain independent of a native source-ancestry merge. The
 native package does not acquire that provisioner by importing its history.
+The upstream fixed-API OAuth exchange-error classification belongs to that
+companion consumer and does not change the native MCP issuer or device-auth
+contract retained here.
 
 The independently maintained companion source branch is
 `companion/runtime-proof`. Its initial source is commit
