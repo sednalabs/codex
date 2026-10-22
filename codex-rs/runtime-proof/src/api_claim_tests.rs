@@ -321,26 +321,56 @@ fn uncertain_api_post_is_not_replayed_and_diagnostics_do_not_expose_bearer() {
     let address = listener.local_addr().expect("local address");
     let (request_tx, request_rx) = mpsc::channel();
     let server = thread::spawn(move || {
-        let accept_deadline = Instant::now() + Duration::from_secs(5);
-        let mut stream = loop {
-            match listener.accept() {
-                Ok((stream, _)) => break stream,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    assert!(
-                        Instant::now() < accept_deadline,
-                        "fixed API client did not make its one request"
-                    );
-                    thread::sleep(Duration::from_millis(5));
+        let accept_request = |description: &str| {
+            let accept_deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                match listener.accept() {
+                    Ok((stream, _)) => return stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < accept_deadline, "{description}");
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("accept API request: {error}"),
                 }
-                Err(error) => panic!("accept first API request: {error}"),
             }
         };
+        let mut stream = accept_request("fixed API client did not make its claim request");
         stream
             .set_read_timeout(Some(Duration::from_secs(2)))
             .expect("bound request read");
-        let request = read_http_request(&mut stream).expect("read full API request");
-        request_tx.send(request).expect("deliver captured request");
+        let claim_request = read_http_request(&mut stream).expect("read full API claim request");
+        request_tx
+            .send(claim_request)
+            .expect("deliver captured claim request");
         drop(stream);
+
+        let mut receipt_stream = accept_request("fixed API client did not read execution receipt");
+        receipt_stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("bound receipt read");
+        let receipt_request =
+            read_http_request(&mut receipt_stream).expect("read execution receipt request");
+        request_tx
+            .send(receipt_request)
+            .expect("deliver captured receipt request");
+        let request_id = Uuid::from_u128(5);
+        let receipt_body = serde_json::json!({
+            "work_item_ref": "w12345",
+            "request_id": request_id,
+            "receipt": {
+                "historical": null,
+                "current_claim": {"work_item_ref": "w12345"},
+            },
+        })
+        .to_string();
+        write!(
+            receipt_stream,
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            receipt_body.len(),
+            receipt_body
+        )
+        .expect("return unresolved execution receipt");
+        drop(receipt_stream);
 
         let deadline = Instant::now() + Duration::from_millis(350);
         loop {
@@ -388,19 +418,22 @@ fn uncertain_api_post_is_not_replayed_and_diagnostics_do_not_expose_bearer() {
         "{:#}",
         result.expect_err("closed response has unknown outcome")
     );
-    assert!(error.contains("unknown; do not replay"));
+    assert!(error.contains("unresolved; do not replay"));
     assert!(!error.contains(&bearer.0));
 
-    let request = request_rx
+    let claim_request = request_rx
         .recv_timeout(Duration::from_secs(2))
-        .expect("single protected request reached the test server");
-    assert!(request.starts_with("POST /v0/work-items/claim HTTP/1.1\r\n"));
+        .expect("one protected claim request reached the test server");
+    let receipt_request = request_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("one execution receipt request reached the test server");
+    assert!(claim_request.starts_with("POST /v0/work-items/claim HTTP/1.1\r\n"));
     assert!(
-        request
+        claim_request
             .to_ascii_lowercase()
             .contains("authorization: bearer synthetic-test-bearer-never-log")
     );
-    let proof_header = request
+    let proof_header = claim_request
         .lines()
         .find_map(|line| {
             let (name, value) = line.split_once(':')?;
@@ -437,16 +470,215 @@ fn uncertain_api_post_is_not_replayed_and_diagnostics_do_not_expose_bearer() {
     assert!(segments.next().is_some(), "invocation signature is present");
     assert!(segments.next().is_none());
     assert!(
-        request
+        claim_request
             .to_ascii_lowercase()
             .contains(&format!("x-ops-request-id: {request_id}"))
     );
-    assert!(request.contains(&body.to_string()));
+    assert!(claim_request.contains(&body.to_string()));
+    assert!(receipt_request.starts_with("POST /v0/work-items/execution-receipt/read HTTP/1.1\r\n"));
+    assert!(
+        receipt_request
+            .to_ascii_lowercase()
+            .contains("authorization: bearer synthetic-test-bearer-never-log")
+    );
+    assert!(
+        !receipt_request
+            .to_ascii_lowercase()
+            .contains("x-ops-runtime-proof:")
+    );
+    let receipt_body = receipt_request
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body)
+        .expect("execution receipt request body");
+    let receipt_body: Value = serde_json::from_str(receipt_body).expect("parse receipt body");
+    assert_eq!(
+        receipt_body,
+        serde_json::json!({
+            "work_item_ref": "w12345",
+            "request_id": request_id,
+        })
+    );
     assert!(
         !server
             .join()
-            .expect("server completes bounded replay check")
+            .expect("server completes bounded no-replay check")
     );
+}
+
+#[test]
+fn uncertain_api_post_recovers_only_from_matching_historical_receipt() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback test endpoint");
+    let listener = listener;
+    listener
+        .set_nonblocking(true)
+        .expect("make extra-connection check bounded");
+    let address = listener.local_addr().expect("local address");
+    let request_id = Uuid::from_u128(5);
+    let (request_tx, request_rx) = mpsc::channel();
+    let server = thread::spawn(move || {
+        let accept_request = |description: &str| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                match listener.accept() {
+                    Ok((stream, _)) => return stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline, "{description}");
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("accept API request: {error}"),
+                }
+            }
+        };
+
+        let mut claim_stream = accept_request("claim request was not sent");
+        claim_stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("bound claim request read");
+        request_tx
+            .send(read_http_request(&mut claim_stream).expect("read claim request"))
+            .expect("capture claim request");
+        drop(claim_stream);
+
+        let mut receipt_stream = accept_request("receipt read was not sent");
+        receipt_stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("bound receipt request read");
+        request_tx
+            .send(read_http_request(&mut receipt_stream).expect("read receipt request"))
+            .expect("capture receipt request");
+        let receipt_body = serde_json::json!({
+            "work_item_ref": "w12345",
+            "request_id": request_id,
+            "receipt": {
+                "historical": {
+                    "historical": true,
+                    "outcome": {
+                        "historical": false,
+                        "work_item": {"work_item_ref": "w12345"},
+                        "execution_claim": {"execution_instance_id": "claim-instance"},
+                    },
+                },
+                "current_claim": null,
+            },
+        })
+        .to_string();
+        write!(
+            receipt_stream,
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            receipt_body.len(),
+            receipt_body
+        )
+        .expect("return matching historical receipt");
+        drop(receipt_stream);
+
+        let deadline = Instant::now() + Duration::from_millis(350);
+        loop {
+            match listener.accept() {
+                Ok(_) => return true,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if Instant::now() >= deadline {
+                        return false;
+                    }
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("check for replayed claim: {error}"),
+            }
+        }
+    });
+
+    let client = api_http_client().expect("direct no-retry API client");
+    let body = test_body(request_id);
+    let runtime_seed = [17_u8; 32];
+    let runtime_incarnation = Uuid::from_u128(2);
+    let certificate = signed_api_certificate(&runtime_seed, runtime_incarnation);
+    let proof = create_proof(
+        &certificate,
+        &runtime_seed,
+        runtime_incarnation,
+        Uuid::from_u128(3),
+        &body,
+        /*now*/ 100,
+        /*certificate_expires_at*/ 140,
+    )
+    .expect("sign exact API claim");
+    send_claim_to(
+        &client,
+        &format!("http://{address}"),
+        &SecretString("synthetic-test-bearer".to_string()),
+        request_id,
+        &certificate,
+        &proof,
+        &body,
+    )
+    .expect("matching stored history settles the unknown POST");
+
+    let claim_request = request_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("captured single claim request");
+    let receipt_request = request_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("captured single receipt read");
+    assert!(claim_request.starts_with("POST /v0/work-items/claim HTTP/1.1\r\n"));
+    assert!(receipt_request.starts_with("POST /v0/work-items/execution-receipt/read HTTP/1.1\r\n"));
+    assert!(
+        receipt_request
+            .to_ascii_lowercase()
+            .contains("authorization: bearer synthetic-test-bearer")
+    );
+    assert!(
+        !receipt_request
+            .to_ascii_lowercase()
+            .contains("x-ops-runtime-proof:")
+    );
+    let receipt_body = receipt_request
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body)
+        .expect("execution receipt request body");
+    let receipt_body: Value = serde_json::from_str(receipt_body).expect("parse receipt body");
+    assert_eq!(
+        receipt_body,
+        serde_json::json!({
+            "work_item_ref": "w12345",
+            "request_id": request_id,
+        })
+    );
+    assert!(
+        !server
+            .join()
+            .expect("server completes bounded no-replay check")
+    );
+}
+
+#[test]
+fn execution_receipt_requires_matching_historical_claim_shape() {
+    let request_id = Uuid::from_u128(5);
+    let body = serde_json::json!({
+        "work_item_ref": "w12345",
+        "request_id": request_id,
+        "receipt": {
+            "historical": null,
+            "current_claim": {"work_item_ref": "w12345"},
+        },
+    })
+    .to_string();
+    assert_eq!(
+        parse_execution_receipt(body.as_bytes(), "w12345", request_id)
+            .expect("parse scoped unresolved receipt"),
+        ExecutionReceiptResolution::Unresolved
+    );
+    assert!(parse_execution_receipt(body.as_bytes(), "w12346", request_id).is_err());
+    assert!(parse_execution_receipt(body.as_bytes(), "w12345", Uuid::from_u128(6)).is_err());
+
+    let malformed_history = serde_json::json!({
+        "work_item_ref": "w12345",
+        "request_id": request_id,
+        "receipt": {
+            "historical": {"historical": true, "outcome": {}},
+            "current_claim": null,
+        },
+    })
+    .to_string();
+    assert!(parse_execution_receipt(malformed_history.as_bytes(), "w12345", request_id).is_err());
 }
 
 #[test]

@@ -22,6 +22,7 @@ use zeroize::Zeroizing;
 
 pub(crate) const API_RECIPIENT: &str = "https://ops-api.grantmatler.com";
 const API_ROUTE: &str = "/v0/work-items/claim";
+const API_EXECUTION_RECEIPT_ROUTE: &str = "/v0/work-items/execution-receipt/read";
 pub(crate) const API_PROVIDER: &str = "agent-ops-api-claim-client";
 const API_ISSUER: &str = "https://auth.grantmatler.com/realms/agent-ops";
 const API_AUDIENCE: &str = "ops-api";
@@ -351,6 +352,124 @@ fn validate_claim_receipt(response_body: &[u8], expected_work_item_ref: &str) ->
     Ok(())
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExecutionReceiptReadResponse {
+    work_item_ref: String,
+    request_id: Uuid,
+    receipt: ExecutionReceiptRead,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExecutionReceiptRead {
+    historical: Option<HistoricalExecutionReceipt>,
+    current_claim: Option<Value>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HistoricalExecutionReceipt {
+    historical: bool,
+    outcome: Value,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ExecutionReceiptResolution {
+    Recorded,
+    Unresolved,
+}
+
+fn parse_execution_receipt(
+    response_body: &[u8],
+    expected_work_item_ref: &str,
+    expected_request_id: Uuid,
+) -> Result<ExecutionReceiptResolution> {
+    let response: ExecutionReceiptReadResponse = serde_json::from_slice(response_body)
+        .map_err(|_| anyhow::anyhow!("fixed Ops API execution receipt is invalid"))?;
+    if response.work_item_ref != expected_work_item_ref
+        || response.request_id != expected_request_id
+    {
+        bail!("fixed Ops API execution receipt does not match the requested operation");
+    }
+    match response.receipt.historical {
+        Some(historical)
+            if historical.historical
+                && historical.outcome.get("historical") == Some(&Value::Bool(false))
+                && historical
+                    .outcome
+                    .get("work_item")
+                    .is_some_and(Value::is_object)
+                && historical
+                    .outcome
+                    .get("execution_claim")
+                    .is_some_and(Value::is_object) =>
+        {
+            Ok(ExecutionReceiptResolution::Recorded)
+        }
+        Some(_) => bail!("fixed Ops API execution receipt is invalid"),
+        None => {
+            // Current claim state is supplemental and cannot attribute this request ID.
+            let _current_claim_is_present = response.receipt.current_claim.is_some();
+            Ok(ExecutionReceiptResolution::Unresolved)
+        }
+    }
+}
+
+async fn read_execution_receipt_async(
+    client: &HttpClient,
+    recipient: &str,
+    bearer: &SecretString,
+    expected_work_item_ref: &str,
+    request_id: Uuid,
+) -> Result<ExecutionReceiptResolution> {
+    let body = Zeroizing::new(serde_json::to_vec(&serde_json::json!({
+        "work_item_ref": expected_work_item_ref,
+        "request_id": request_id,
+    }))?);
+    if body.len() > MAX_REQUEST_BYTES {
+        bail!("fixed Ops API execution receipt request exceeds its size limit");
+    }
+    let mut authorization = Zeroizing::new(String::with_capacity(bearer.0.len() + 7));
+    authorization.push_str("Bearer ");
+    authorization.push_str(&bearer.0);
+    let response = client
+        .post(format!("{recipient}{API_EXECUTION_RECEIPT_ROUTE}"))
+        .header("authorization", authorization.as_str())
+        .header("content-type", "application/json")
+        .body(body.as_slice().to_vec())
+        .timeout(REQUEST_TIMEOUT)
+        .send()
+        .await
+        .map_err(|_| anyhow::anyhow!("fixed Ops API execution receipt request failed"))?;
+    if response.status().as_u16() != 200 {
+        bail!("fixed Ops API execution receipt returned a non-success status");
+    }
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_CLAIM_RESPONSE_BYTES as u64)
+    {
+        bail!("fixed Ops API execution receipt exceeds its size limit");
+    }
+    let mut response = response;
+    let mut response_body = Zeroizing::new(Vec::with_capacity(1024));
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| anyhow::anyhow!("read fixed Ops API execution receipt failed"))?
+    {
+        let next_length = response_body
+            .len()
+            .checked_add(chunk.len())
+            .ok_or_else(|| anyhow::anyhow!("fixed Ops API execution receipt size overflowed"))?;
+        if next_length > MAX_CLAIM_RESPONSE_BYTES {
+            bail!("fixed Ops API execution receipt exceeds its size limit");
+        }
+        response_body.extend_from_slice(&chunk);
+    }
+    parse_execution_receipt(&response_body, expected_work_item_ref, request_id)
+}
+
 async fn send_claim_to_async(
     client: &HttpClient,
     recipient: &str,
@@ -382,37 +501,59 @@ async fn send_claim_to_async(
         .header("x-ops-runtime-proof", proof_envelope)
         .header("x-ops-request-id", request_id.to_string())
         .body(body.as_slice().to_vec())
-        .timeout(REQUEST_TIMEOUT)
-        .send()
-        .await
-        .map_err(|_| anyhow::anyhow!("fixed Ops API claim outcome is unknown; do not replay"))?;
-    if request.status().as_u16() != 200 {
-        bail!("fixed Ops API claim returned a non-success status; do not replay");
-    }
-    if request
-        .content_length()
-        .is_some_and(|length| length > MAX_CLAIM_RESPONSE_BYTES as u64)
-    {
-        bail!("fixed Ops API claim receipt exceeds its size limit; outcome unknown; do not replay");
-    }
-    let mut request = request;
-    let mut receipt_body = Zeroizing::new(Vec::with_capacity(1024));
-    while let Some(chunk) = request.chunk().await.map_err(|_| {
-        anyhow::anyhow!("read fixed Ops API claim receipt; outcome unknown; do not replay")
-    })? {
-        let next_length = receipt_body.len().checked_add(chunk.len()).ok_or_else(|| {
-            anyhow::anyhow!(
-                "fixed Ops API claim receipt size overflowed; outcome unknown; do not replay"
-            )
-        })?;
-        if next_length > MAX_CLAIM_RESPONSE_BYTES {
-            bail!(
-                "fixed Ops API claim receipt exceeds its size limit; outcome unknown; do not replay"
-            );
+        .timeout(REQUEST_TIMEOUT);
+    let claim_recorded = match request.send().await {
+        Ok(mut response) if response.status().as_u16() == 200 => {
+            if response
+                .content_length()
+                .is_some_and(|length| length > MAX_CLAIM_RESPONSE_BYTES as u64)
+            {
+                false
+            } else {
+                let mut receipt_body = Zeroizing::new(Vec::with_capacity(1024));
+                let mut complete = true;
+                while let Some(chunk) = match response.chunk().await {
+                    Ok(chunk) => chunk,
+                    Err(_) => {
+                        complete = false;
+                        break;
+                    }
+                } {
+                    let Some(next_length) = receipt_body.len().checked_add(chunk.len()) else {
+                        complete = false;
+                        break;
+                    };
+                    if next_length > MAX_CLAIM_RESPONSE_BYTES {
+                        complete = false;
+                        break;
+                    }
+                    receipt_body.extend_from_slice(&chunk);
+                }
+                complete && validate_claim_receipt(&receipt_body, expected_work_item_ref).is_ok()
+            }
         }
-        receipt_body.extend_from_slice(&chunk);
+        Ok(_) | Err(_) => false,
+    };
+    if claim_recorded {
+        return Ok(());
     }
-    validate_claim_receipt(&receipt_body, expected_work_item_ref)
+    match read_execution_receipt_async(
+        client,
+        recipient,
+        bearer,
+        expected_work_item_ref,
+        request_id,
+    )
+    .await
+    {
+        Ok(ExecutionReceiptResolution::Recorded) => Ok(()),
+        Ok(ExecutionReceiptResolution::Unresolved) => {
+            bail!("fixed Ops API claim outcome remains unresolved; do not replay")
+        }
+        Err(_) => {
+            bail!("fixed Ops API claim outcome is unknown; receipt read failed; do not replay")
+        }
+    }
 }
 
 fn send_claim_to(

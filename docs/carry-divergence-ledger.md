@@ -3903,6 +3903,15 @@ retry. The MCP policy and existing MCP child path remain separate. Source or
 package acceptance alone does not appoint or install the API bearer, authorize
 a claim policy, or establish HTTP first use.
 
+If the fixed HTTP claim POST has an uncertain result, the launcher keeps its
+request UUID and makes one bounded read through
+`POST /v0/work-items/execution-receipt/read` using the same API bearer and the
+exact Work reference and request UUID. Only a matching historical receipt
+settles the claim as committed. A null historical receipt remains unresolved,
+even when a current claim is present, because current claim state is not tied
+to this request; neither that response nor a failed receipt read authorizes a
+claim replay.
+
 The same measured launcher has a fixed `provision-api-bearer` mode for the
 HTTP profile. It requires interactive `sudo` through the installed root-owned
 launcher path; `SUDO_UID` is used only to run the fixed browser opener as the
