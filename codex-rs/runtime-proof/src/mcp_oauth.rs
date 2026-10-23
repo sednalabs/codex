@@ -279,11 +279,8 @@ fn validate_token_response(
                 .is_some_and(|value| value.trim() == policy.client_id.as_str())
         })
     });
-    let audience_matches = claim_audiences(&claims).is_some_and(|audiences| {
-        audiences
-            .iter()
-            .any(|audience| *audience == policy.audience.as_str())
-    });
+    let audience_matches = claim_audiences(&claims)
+        .is_some_and(|audiences| audiences.contains(&policy.audience.as_str()));
     let scopes_match =
         claim_scopes(&claims).is_some_and(|scopes| scopes.as_slice() == [REQUIRED_SCOPE]);
     let token_project = claim_project_id(&claims);
