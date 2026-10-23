@@ -1475,9 +1475,7 @@ impl Session {
                     let TurnItem::CollabAgentToolCall(call) = &event.item else {
                         continue;
                     };
-                    if call.tool != CollabAgentTool::Wait
-                        || call.mailbox_wait_report.is_none()
-                    {
+                    if call.tool != CollabAgentTool::Wait || call.mailbox_wait_report.is_none() {
                         continue;
                     }
                     saw_interrupted_terminal |= call
@@ -1496,9 +1494,7 @@ impl Session {
                     let TurnItem::CollabAgentToolCall(call) = &event.item else {
                         continue;
                     };
-                    if call.tool != CollabAgentTool::Wait
-                        || call.mailbox_wait_report.is_none()
-                    {
+                    if call.tool != CollabAgentTool::Wait || call.mailbox_wait_report.is_none() {
                         continue;
                     }
                     let key = (event.turn_id.clone(), call.id.clone());
@@ -1507,15 +1503,15 @@ impl Session {
                     }
                     wait_states.insert(key, (call.clone(), completed));
                 }
-                RolloutItem::ResponseItem(ResponseItem::FunctionCall {
-                    call_id,
-                    name,
-                    ..
-                }) if name == "wait_agent" => {
+                RolloutItem::ResponseItem(ResponseItem::FunctionCall { call_id, name, .. })
+                    if name == "wait_agent" =>
+                {
                     wait_call_ids.insert(call_id.clone());
                 }
                 RolloutItem::ResponseItem(ResponseItem::FunctionCallOutput {
-                    call_id, output, ..
+                    call_id,
+                    output,
+                    ..
                 }) => {
                     if let Some(text) = output.body.to_text() {
                         wait_outputs.insert(call_id.clone(), text);
@@ -1556,13 +1552,12 @@ impl Session {
                         ));
                     }
                     if !already_completed {
-                        call.status = if report.completion_reason
-                            == Some(MailboxWakeCause::Interrupted)
-                        {
-                            CollabAgentToolCallStatus::Failed
-                        } else {
-                            CollabAgentToolCallStatus::Completed
-                        };
+                        call.status =
+                            if report.completion_reason == Some(MailboxWakeCause::Interrupted) {
+                                CollabAgentToolCallStatus::Failed
+                            } else {
+                                CollabAgentToolCallStatus::Completed
+                            };
                     }
                     report
                 }
@@ -1602,9 +1597,8 @@ impl Session {
                     ))
                 })?;
                 let mut output = FunctionCallOutputPayload::from_text(output_text);
-                output.success = Some(
-                    report.completion_reason != Some(MailboxWakeCause::Interrupted),
-                );
+                output.success =
+                    Some(report.completion_reason != Some(MailboxWakeCause::Interrupted));
                 let mut output_item = ResponseItem::FunctionCallOutput {
                     id: Some(ResponseItemId::with_suffix(
                         "fco",
@@ -2416,41 +2410,49 @@ impl Session {
             let _ = store.publish_turn_complete(&token, event.last_agent_message.clone());
         }
 
+        let mut mailbox_captured = false;
         if mailbox_enabled {
             let completion = Self::child_completion_communication(child_agent_path, &status);
-            let goal_snapshot = self
+            let goal = self
                 .services
                 .thread_extension_data
                 .get::<crate::agent::goal_notifications::GoalNotificationStore>()
-                .and_then(|store| store.snapshot());
-            if let Err(error) = self
+                .and_then(|store| {
+                    store
+                        .snapshot()
+                        .map(|snapshot| (store.incarnation(), snapshot))
+                });
+            match self
                 .services
                 .agent_control
                 .mailbox_record_terminal(
                     self.thread_id,
                     &turn_context.sub_id,
                     status.clone(),
-                    goal_snapshot,
+                    goal,
                     completion,
                 )
                 .await
             {
-                warn!(
-                    thread_id = %self.thread_id,
-                    turn_id = %turn_context.sub_id,
-                    error = %error,
-                    "failed to durably record mailbox turn outcome"
-                );
-                return Some(AgentStatus::Errored(format!(
-                    "Mailbox turn outcome could not be durably recorded: {error}"
-                )));
+                Ok(captured) => mailbox_captured = captured,
+                Err(error) => {
+                    warn!(
+                        thread_id = %self.thread_id,
+                        turn_id = %turn_context.sub_id,
+                        error = %error,
+                        "failed to durably record mailbox turn outcome"
+                    );
+                    return Some(AgentStatus::Errored(format!(
+                        "Mailbox turn outcome could not be durably recorded: {error}"
+                    )));
+                }
             }
         }
 
         // An interrupted turn is terminal for mailbox accounting but not for native agent
         // residency, so record it above and leave the existing native completion behavior alone.
         if !is_final(&status) {
-            return mailbox_enabled.then_some(status);
+            return mailbox_captured.then_some(status);
         }
 
         // Only a normal, error-free TurnComplete may be deferred. Aborts and
@@ -2469,15 +2471,15 @@ impl Session {
                 })
                 == Some(false)
         {
-            if mailbox_enabled {
+            if mailbox_captured {
                 return Some(status);
             }
             return None;
         }
 
-        // The mailbox adapter owns result delivery to every exact issuer. If its persistence
-        // fails, report the error above and do not publish a success-shaped native fallback.
-        if mailbox_enabled {
+        // Only a captured mailbox work item owns result delivery. A shared initialized
+        // mailbox is not enough to suppress the existing native completion path.
+        if mailbox_captured {
             return Some(status);
         }
 
@@ -2485,10 +2487,10 @@ impl Session {
             turn_context,
             *parent_thread_id,
             child_agent_path,
-            status,
+            status.clone(),
         )
         .await;
-        None
+        mailbox_enabled.then_some(status)
     }
 
     /// Sends the standard completion envelope from a spawned MultiAgentV2 child to its parent.
@@ -3603,7 +3605,8 @@ impl Session {
                     );
                 }
                 RolloutItem::Compacted(compacted) => {
-                    for response_item in compacted.replacement_history.as_deref().unwrap_or_default()
+                    for response_item in
+                        compacted.replacement_history.as_deref().unwrap_or_default()
                     {
                         Self::record_interrupted_wait_response_item(
                             response_item,
@@ -3632,7 +3635,9 @@ impl Session {
             ResponseItem::FunctionCall { call_id, name, .. } if name == "wait_agent" => {
                 wait_call_ids.insert(call_id.clone());
             }
-            ResponseItem::FunctionCallOutput { call_id, output, .. } => {
+            ResponseItem::FunctionCallOutput {
+                call_id, output, ..
+            } => {
                 let Some(report) = output
                     .body
                     .to_text()
@@ -3661,10 +3666,7 @@ impl Session {
     }
 
     /// Rebuilds the in-memory same-call guard from canonical rollout history.
-    pub(crate) async fn refresh_mailbox_interrupted_wait_receipts(
-        &self,
-        items: &[RolloutItem],
-    ) {
+    pub(crate) async fn refresh_mailbox_interrupted_wait_receipts(&self, items: &[RolloutItem]) {
         *self.mailbox_interrupted_wait_receipts.lock().await =
             Self::mailbox_interrupted_wait_receipts_from_items(items);
     }
@@ -3844,10 +3846,7 @@ impl Session {
                 // must not duplicate the body in in-memory history or emit it a second time.
                 self.services
                     .agent_control
-                    .mailbox_mark_canonical(
-                        self.thread_id,
-                        std::slice::from_ref(&response_item_id),
-                    )
+                    .mailbox_mark_canonical(self.thread_id, std::slice::from_ref(&response_item_id))
                     .await?;
                 drop(canonical_ids);
                 drop(custody_gate);
@@ -4011,7 +4010,11 @@ impl Session {
                 )
                 .into());
             }
-            let canonical_ids = self.mailbox_canonical_response_item_ids.lock().await.clone();
+            let canonical_ids = self
+                .mailbox_canonical_response_item_ids
+                .lock()
+                .await
+                .clone();
             self.services
                 .agent_control
                 .mailbox_reconcile_canonical_ids(self.thread_id, &canonical_ids)

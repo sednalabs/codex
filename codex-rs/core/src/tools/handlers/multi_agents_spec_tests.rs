@@ -794,13 +794,29 @@ fn mailbox_wait_agent_tool_has_no_native_capability_prerequisite() {
             .is_some()
     );
     assert!(output_schema["properties"].get("quietCount").is_some());
-    assert!(output_schema["properties"].get("completionReason").is_some());
-    assert!(output_schema["properties"].get("requestedTargets").is_some());
-    assert!(output_schema["properties"].get("requestedRepliesTo").is_some());
+    assert!(
+        output_schema["properties"]
+            .get("completionReason")
+            .is_some()
+    );
+    assert!(
+        output_schema["properties"]
+            .get("requestedTargets")
+            .is_some()
+    );
+    assert!(
+        output_schema["properties"]
+            .get("requestedRepliesTo")
+            .is_some()
+    );
     assert!(output_schema["properties"].get("returnWhen").is_some());
     assert!(output_schema["properties"].get("wakeSender").is_some());
     assert!(output_schema["properties"].get("wakeRef").is_some());
-    assert!(output_schema["properties"].get("condition_satisfied").is_none());
+    assert!(
+        output_schema["properties"]
+            .get("condition_satisfied")
+            .is_none()
+    );
     assert!(output_schema["properties"].get("quiet_count").is_none());
     assert_eq!(
         output_schema["properties"]["completed"]["items"]["type"],

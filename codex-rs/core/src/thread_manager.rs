@@ -1,6 +1,7 @@
 use crate::CodexAppsToolsCache;
 use crate::SkillsService;
 use crate::agent::AgentControl;
+use crate::agent::goal_notifications::GoalNotificationStore;
 use crate::agent::goal_notifications::GoalNotificationSnapshot;
 use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
@@ -1405,18 +1406,43 @@ impl ThreadManager {
         };
         if let Ok(child_thread) = self.get_thread(child_thread_id).await {
             let child_agent_control = child_thread.session.services.agent_control.clone();
-            if child_agent_control.mailbox_enabled() {
-                child_agent_control
+            let child_config = child_thread.config().await;
+            let mailbox_configured = child_thread.multi_agent_version()
+                == Some(MultiAgentVersion::V2)
+                && child_config.multi_agent_version_from_features() == MultiAgentVersion::V2
+                && child_config.features.enabled(Feature::AgentMailbox)
+                && child_agent_control.mailbox_enabled();
+            if mailbox_configured {
+                let goal = match goal {
+                    Some(snapshot) => {
+                        let Some(store) = child_thread
+                            .session
+                            .services
+                            .thread_extension_data
+                            .get::<GoalNotificationStore>()
+                        else {
+                            return Err(
+                                "mailbox goal handback lacks the loaded child's native goal incarnation"
+                                    .to_string(),
+                            );
+                        };
+                        Some((store.incarnation(), snapshot))
+                    }
+                    None => None,
+                };
+                let captured = child_agent_control
                     .mailbox_record_terminal(
                         child_thread_id,
                         source_turn_id,
                         status,
                         goal,
-                        communication,
+                        communication.clone(),
                     )
                     .await
                     .map_err(|err| err.to_string())?;
-                return Ok(true);
+                if captured {
+                    return Ok(true);
+                }
             }
         }
 

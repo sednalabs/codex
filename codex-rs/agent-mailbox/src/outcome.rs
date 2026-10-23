@@ -455,15 +455,23 @@ fn validate_binding_for_agent(binding: &GoalBinding, agent: ThreadId) -> Mailbox
     if binding.child_thread_id != agent {
         return Err(MailboxError::WrongRecipient);
     }
-    validate_key(&binding.source_turn_id)
+    validate_native_binding(binding)
+}
+
+fn validate_native_binding(binding: &GoalBinding) -> MailboxResult<()> {
+    if binding.incarnation.is_none() {
+        return Err(MailboxError::InvalidInput(
+            "native goal incarnation is required".into(),
+        ));
+    }
+    validate_key(&binding.goal_id)
 }
 
 fn validate_binding_for_work(binding: &GoalBinding, work_ref: &WorkRef) -> MailboxResult<()> {
     if binding.parent_thread_id != work_ref.issuer || binding.child_thread_id != work_ref.agent {
         return Err(MailboxError::WrongRecipient);
     }
-    validate_key(&binding.goal_id)?;
-    validate_key(&binding.source_turn_id)
+    validate_native_binding(binding)
 }
 
 fn validate_key(key: &str) -> MailboxResult<()> {

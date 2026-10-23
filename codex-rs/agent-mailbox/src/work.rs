@@ -1,7 +1,11 @@
 use crate::error::{MailboxError, MailboxResult};
 use crate::messages::decrement_pending_count;
+use crate::outcome_store::MAX_CONTINUATIONS_PER_WORK;
 use crate::store::Mailbox;
-use crate::types::{AdmissionReceipt, DispatchDecision, DispatchState, NativeWork, WorkRef};
+use crate::types::{
+    AdmissionReceipt, DispatchDecision, DispatchState, GoalBinding, NativeWork, RecoveryEvidence,
+    WorkRef,
+};
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::InterAgentCommunication;
 use sqlx::{Row, Sqlite, Transaction};
@@ -287,12 +291,55 @@ impl Mailbox {
     }
 
     /// Record adapter-confirmed stale in-flight custody for this exact work.
-    pub async fn mark_recovery_needed(&self, work_ref: &WorkRef) -> MailboxResult<()> {
+    /// Returns whether this call changed the dispatch state.
+    pub async fn mark_recovery_needed(
+        &self,
+        work_ref: &WorkRef,
+        evidence: RecoveryEvidence,
+    ) -> MailboxResult<bool> {
         let mut transaction = self.pool.begin().await?;
         let row = exact_work_tx(&mut transaction, work_ref).await?;
         let state = parse_dispatch_state(row.try_get::<String, _>("dispatch_state")?.as_str())?;
-        match state {
-            DispatchState::Dispatching | DispatchState::Dispatched => {
+        if state == DispatchState::Accepted {
+            return Err(MailboxError::ReferenceMismatch);
+        }
+
+        let matching_binding_json = match &evidence {
+            RecoveryEvidence::DeliveryUnavailable => None,
+            RecoveryEvidence::ContinuationUnowned { binding } => {
+                if binding.parent_thread_id != work_ref.issuer
+                    || binding.child_thread_id != work_ref.agent
+                {
+                    return Err(MailboxError::WrongRecipient);
+                }
+                validate_key(&binding.goal_id, "goal id")?;
+                let rows = sqlx::query(
+                    "SELECT binding_json FROM mailbox_continuations
+                     WHERE work_id = ? AND state IN ('pending_goal_binding', 'deferred')
+                     ORDER BY binding_json LIMIT ?",
+                )
+                .bind(&work_ref.id)
+                .bind((MAX_CONTINUATIONS_PER_WORK + 1) as i64)
+                .fetch_all(&mut *transaction)
+                .await?;
+                if rows.len() > MAX_CONTINUATIONS_PER_WORK as usize {
+                    return Err(MailboxError::Backpressure("work continuation count"));
+                }
+                let mut matched = None;
+                for row in rows {
+                    let stored_json: String = row.try_get("binding_json")?;
+                    let stored: GoalBinding = serde_json::from_str(&stored_json)?;
+                    if stored == *binding {
+                        matched = Some(stored_json);
+                        break;
+                    }
+                }
+                matched
+            }
+        };
+
+        let update = match (&evidence, matching_binding_json) {
+            (RecoveryEvidence::DeliveryUnavailable, _) => {
                 sqlx::query(
                     "UPDATE mailbox_work SET dispatch_state = 'recovery_needed'
                      WHERE id = ? AND dispatch_state IN ('dispatching', 'dispatched')
@@ -305,16 +352,36 @@ impl Mailbox {
                 )
                 .bind(&work_ref.id)
                 .execute(&mut *transaction)
-                .await?;
+                .await?
             }
-            DispatchState::RecoveryNeeded => {}
-            DispatchState::Accepted => {
-                return Err(MailboxError::ReferenceMismatch);
+            (RecoveryEvidence::ContinuationUnowned { .. }, Some(binding_json)) => {
+                sqlx::query(
+                    "UPDATE mailbox_work SET dispatch_state = 'recovery_needed'
+                     WHERE id = ? AND dispatch_state IN ('dispatching', 'dispatched')
+                       AND outcome_json IS NULL
+                       AND EXISTS (
+                         SELECT 1 FROM mailbox_continuations AS continuation
+                         WHERE continuation.work_id = mailbox_work.id
+                           AND continuation.binding_json = ?
+                           AND continuation.state IN ('pending_goal_binding', 'deferred')
+                       )",
+                )
+                .bind(&work_ref.id)
+                .bind(binding_json)
+                .execute(&mut *transaction)
+                .await?
             }
-        }
+            (RecoveryEvidence::ContinuationUnowned { .. }, None) => {
+                transaction.commit().await?;
+                return Ok(false);
+            }
+        };
+        let changed = update.rows_affected() == 1;
         transaction.commit().await?;
-        self.notify_changed();
-        Ok(())
+        if changed {
+            self.notify_changed();
+        }
+        Ok(changed)
     }
 
     pub async fn mark_dispatched(&self, work_ref: &WorkRef) -> MailboxResult<()> {

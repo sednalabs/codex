@@ -12,13 +12,16 @@ use crate::agent_communication::AgentCommunicationKind;
 use crate::config::Config;
 use codex_agent_mailbox::ActivationDisposition;
 use codex_agent_mailbox::Continuation;
+use codex_agent_mailbox::ContinuationState;
 use codex_agent_mailbox::DispatchDecision;
 use codex_agent_mailbox::Envelope;
 use codex_agent_mailbox::GoalBinding;
 use codex_agent_mailbox::Mailbox;
 use codex_agent_mailbox::NativeWork;
 use codex_agent_mailbox::Outcome;
+use codex_agent_mailbox::RecoveryEvidence;
 use codex_agent_mailbox::WorkRef;
+use codex_agent_mailbox::WorkSnapshot;
 use codex_features::Feature;
 use codex_protocol::ResponseItemId;
 use codex_protocol::ThreadId;
@@ -35,6 +38,18 @@ fn storage_error(error: impl std::fmt::Display) -> CodexErr {
     // The store does not log payloads. Keep its typed diagnostic in the error chain presented
     // to the native caller rather than treating failed acceptance as successful delivery.
     CodexErr::Fatal(format!("agent mailbox storage failed: {error}"))
+}
+
+fn goal_binding_matches_native(
+    binding: &GoalBinding,
+    incarnation: ThreadId,
+    snapshot: &GoalNotificationSnapshot,
+) -> bool {
+    binding.incarnation == Some(incarnation)
+        && binding.goal_id == snapshot.binding.goal_id
+        && binding.parent_thread_id == snapshot.binding.parent_thread_id
+        && binding.child_thread_id == snapshot.binding.child_thread_id
+        && binding.control_generation == snapshot.binding.control_generation
 }
 
 impl AgentControl {
@@ -118,9 +133,9 @@ impl AgentControl {
             return Ok(None);
         };
         if let Some(existing) = mailbox
-                .work_for_native_key(context.sender_thread_id, native_key)
-                .await
-                .map_err(storage_error)?
+            .work_for_native_key(context.sender_thread_id, native_key)
+            .await
+            .map_err(storage_error)?
         {
             *submission_id = existing.submission_id;
         }
@@ -299,31 +314,54 @@ impl AgentControl {
             .collect())
     }
 
-    pub(crate) async fn mailbox_reconcile_pending_work(&self, work: &WorkRef) -> CodexResult<bool> {
+    pub(crate) async fn mailbox_reconcile_pending_work(&self, work: &WorkSnapshot) -> CodexResult<bool> {
         let Some(mailbox) = self.mailbox() else {
             return Ok(false);
         };
         let state = self.upgrade()?;
-        let can_proceed = match state.get_thread(work.agent).await {
-            Ok(thread) => {
+        let (can_proceed, goal_owner) = match state.get_thread(work.work_ref.agent).await {
+            Ok(thread) if thread.is_running() => {
                 let active = { thread.session.active_turn.lock().await.is_some() };
-                active
+                let can_proceed = active
                     || thread.session.input_queue.has_pending_mailbox_items().await
                     || thread.session.input_queue.has_pending_terminal_finalizers()
-                    || thread.session.has_outstanding_durable_sleep()
+                    || thread.session.has_outstanding_durable_sleep();
+                let goal_owner = thread.session.services.thread_extension_data
+                    .get::<crate::agent::goal_notifications::GoalNotificationStore>()
+                    .and_then(|store| store.snapshot().map(|snapshot| (store.incarnation(), snapshot)));
+                (can_proceed, goal_owner)
             }
-            Err(_) => false,
+            Ok(_) | Err(_) => (false, None),
         };
-        if can_proceed {
+        let unresolved = work.continuations.iter().find(|continuation| {
+            matches!(continuation.state, ContinuationState::PendingGoalBinding | ContinuationState::Deferred)
+        });
+        let evidence = if let Some(continuation) = unresolved {
+            if goal_owner.as_ref().is_some_and(|(incarnation, snapshot)| {
+                goal_binding_matches_native(&continuation.binding, *incarnation, snapshot)
+                    && ((snapshot.status == ThreadGoalStatus::Active
+                        && matches!(snapshot.phase, GoalNotificationPhase::Running
+                        | GoalNotificationPhase::ContinuationPending
+                        | GoalNotificationPhase::DeferredWithOwner))
+                        || (snapshot.phase == GoalNotificationPhase::ResultReady && can_proceed))
+            }) {
+                return Ok(false);
+            }
+            // A cold, restarted, replaced, or action-required producer cannot prove custody
+            // of this exact old logical continuation. Keep its binding and original refs;
+            // return recovery-needed instead of waiting for a producer that cannot advance it.
+            RecoveryEvidence::ContinuationUnowned { binding: continuation.binding.clone() }
+        } else if can_proceed {
             return Ok(false);
-        }
+        } else {
+            RecoveryEvidence::DeliveryUnavailable
+        };
         // This only changes recovery disposition, never replays input or invents a result.
         // The store rechecks terminal/continuation custody atomically against this native read.
         mailbox
-            .mark_recovery_needed(work)
+            .mark_recovery_needed(&work.work_ref, evidence)
             .await
-            .map_err(storage_error)?;
-        Ok(true)
+            .map_err(storage_error)
     }
 
     pub(crate) async fn mailbox_record_admission(
@@ -359,11 +397,11 @@ impl AgentControl {
         recipient: ThreadId,
         source_turn_id: &str,
         status: AgentStatus,
-        goal: Option<GoalNotificationSnapshot>,
+        goal: Option<(ThreadId, GoalNotificationSnapshot)>,
         mut completion: Option<InterAgentCommunication>,
-    ) -> CodexResult<()> {
+    ) -> CodexResult<bool> {
         let Some(mailbox) = self.mailbox() else {
-            return Ok(());
+            return Ok(false);
         };
         if let Some(communication) = completion.as_mut()
             && communication.encrypted_content.is_none()
@@ -387,14 +425,13 @@ impl AgentControl {
             }
         };
         let continuation = match goal {
-            Some(snapshot) => {
+            Some((incarnation, snapshot)) => {
                 let binding = GoalBinding {
                     goal_id: snapshot.binding.goal_id,
                     parent_thread_id: snapshot.binding.parent_thread_id,
                     child_thread_id: snapshot.binding.child_thread_id,
                     control_generation: snapshot.binding.control_generation,
-                    revision: snapshot.revision,
-                    source_turn_id: source_turn_id.to_string(),
+                    incarnation: Some(incarnation),
                 };
                 if matches!(outcome, Outcome::Failed | Outcome::Cancelled) {
                     Continuation::Terminal(binding)
@@ -415,14 +452,17 @@ impl AgentControl {
             }
             None => Continuation::None,
         };
-        if let Err(error) = mailbox
+        let receipt = match mailbox
             .record_turn_outcome(recipient, source_turn_id, outcome, completion, continuation)
             .await
         {
-            mailbox.notify_runtime_fault(recipient);
-            return Err(storage_error(error));
-        }
-        Ok(())
+            Ok(receipt) => receipt,
+            Err(error) => {
+                mailbox.notify_runtime_fault(recipient);
+                return Err(storage_error(error));
+            }
+        };
+        Ok(!receipt.no_matching_work)
     }
 }
 

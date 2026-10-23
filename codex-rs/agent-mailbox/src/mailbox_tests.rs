@@ -2,8 +2,9 @@ use crate::{
     ActivationDecision, ActivationDisposition, AdmissionReceipt, Continuation, ContinuationState,
     Dependency, DependencyMode, DispatchDecision, DispatchState, Envelope, GoalBinding, Mailbox,
     MailboxError, MessageDraft, MessageKind, NativeWork, ObservationTarget, Outcome,
-    RequestDisposition, RequestSnapshot, ReturnWhen, Selection, Selector, Snapshot, SnapshotItem,
-    SnapshotState, TurnOutcomeReceipt, WorkRef, WorkSnapshot, is_provably_closed_peer_cycle,
+    RecoveryEvidence, RequestDisposition, RequestSnapshot, ReturnWhen, Selection, Selector,
+    Snapshot, SnapshotItem, SnapshotState, TurnOutcomeReceipt, WorkRef, WorkSnapshot,
+    is_provably_closed_peer_cycle,
 };
 use codex_protocol::{AgentPath, ThreadId, protocol::InterAgentCommunication};
 use codex_state::SqliteConfig;
@@ -178,16 +179,55 @@ fn goal_binding(
     parent: ThreadId,
     child: ThreadId,
     generation: u64,
-    source_turn: &str,
+    incarnation: ThreadId,
 ) -> GoalBinding {
     GoalBinding {
         goal_id: "goal-1".to_string(),
         parent_thread_id: parent,
         child_thread_id: child,
         control_generation: generation,
-        revision: 1,
-        source_turn_id: source_turn.to_string(),
+        incarnation: Some(incarnation),
     }
+}
+
+#[tokio::test]
+async fn new_continuation_binding_requires_native_incarnation() {
+    let fixture = test_mailbox().await;
+    let (issuer, agent) = (thread_id(40), thread_id(41));
+    let (work, input) =
+        accept_work(&fixture.mailbox, issuer, agent, "missing-incarnation", "input").await;
+    assert_eq!(
+        fixture.mailbox.begin_dispatch(&work).await.unwrap(),
+        DispatchDecision::Dispatch
+    );
+    fixture.mailbox.mark_dispatched(&work).await.unwrap();
+    admit(&fixture.mailbox, agent, "missing-incarnation-turn", &[input]).await;
+
+    let mut legacy_binding = goal_binding(issuer, agent, 3, thread_id(42));
+    legacy_binding.incarnation = None;
+    let result = fixture
+        .mailbox
+        .record_turn_outcome(
+            agent,
+            "missing-incarnation-turn",
+            Outcome::Completed,
+            None,
+            Continuation::PendingGoalBinding(legacy_binding),
+        )
+        .await;
+    assert!(matches!(result, Err(MailboxError::InvalidInput(_))));
+
+    let snapshot = take_snapshot(
+        &fixture.mailbox,
+        issuer,
+        Some(agent),
+        vec![Selector::Work(work.id.clone())],
+        ReturnWhen::Any,
+    )
+    .await;
+    let item = work_item(&snapshot, &work.id);
+    assert!(item.outcome.is_none());
+    assert!(item.continuations.is_empty());
 }
 
 fn dependency(owner: &str, peers: &[&str], mode: DependencyMode) -> Dependency {
@@ -464,8 +504,8 @@ async fn pending_deferred_and_terminal_continuations_bind_to_exact_generation() 
     let (a, id_a) = accept_work(&fixture.mailbox, issuer, agent, "pending", "A").await;
     let (b, id_b) = accept_work(&fixture.mailbox, issuer, agent, "deferred", "B").await;
     let bindings = [
-        goal_binding(issuer, agent, 4, "turn-p"),
-        goal_binding(issuer, agent, 5, "turn-d"),
+        goal_binding(issuer, agent, 4, thread_id(44)),
+        goal_binding(issuer, agent, 5, thread_id(45)),
     ];
     for (work, id, turn, continuation, state) in [
         (
@@ -506,6 +546,7 @@ async fn pending_deferred_and_terminal_continuations_bind_to_exact_generation() 
         let item = work_item(&snapshot, &work.id);
         assert!(item.outcome.is_none());
         assert_eq!(item.continuations[0].state, state);
+        assert_eq!(item.continuations[0].source_turn_id, turn);
     }
     let mut stale = bindings[0].clone();
     stale.control_generation += 1;
@@ -530,6 +571,39 @@ async fn pending_deferred_and_terminal_continuations_bind_to_exact_generation() 
     )
     .await;
     assert!(work_item(&still_deferred, &a.id).outcome.is_none());
+
+    let mut stale_incarnation = bindings[0].clone();
+    stale_incarnation.incarnation = Some(thread_id(99));
+    assert!(
+        finish(
+            &fixture.mailbox,
+            agent,
+            "stale-incarnation",
+            Outcome::Completed,
+            None,
+            Continuation::Terminal(stale_incarnation)
+        )
+        .await
+        .no_matching_work
+    );
+    let still_pending = take_snapshot(
+        &fixture.mailbox,
+        issuer,
+        Some(agent),
+        vec![Selector::Work(a.id.clone())],
+        ReturnWhen::Any,
+    )
+    .await;
+    assert!(work_item(&still_pending, &a.id).outcome.is_none());
+
+    let mut legacy_value = serde_json::to_value(&bindings[0]).unwrap();
+    let legacy_fields = legacy_value.as_object_mut().unwrap();
+    legacy_fields.remove("incarnation");
+    legacy_fields.insert("revision".into(), serde_json::json!(8));
+    legacy_fields.insert("source_turn_id".into(), serde_json::json!("old-turn"));
+    let legacy_binding: GoalBinding = serde_json::from_value(legacy_value).unwrap();
+    assert_eq!(legacy_binding.incarnation, None);
+    assert_ne!(legacy_binding, bindings[0]);
 
     for (work, binding, turn) in [
         (&a, bindings[0].clone(), "terminal-p"),
@@ -562,6 +636,290 @@ async fn pending_deferred_and_terminal_continuations_bind_to_exact_generation() 
             Continuation::Terminal(binding)
         );
     }
+}
+
+#[tokio::test]
+async fn continuation_binding_survives_deferred_phase_and_later_source_turn() {
+    let fixture = test_mailbox().await;
+    let (issuer, agent) = (thread_id(46), thread_id(47));
+    let binding = goal_binding(issuer, agent, 6, thread_id(48));
+    let (original, original_input) =
+        accept_work(&fixture.mailbox, issuer, agent, "continuation-origin", "origin").await;
+    assert_eq!(
+        fixture.mailbox.begin_dispatch(&original).await.unwrap(),
+        DispatchDecision::Dispatch
+    );
+    fixture.mailbox.mark_dispatched(&original).await.unwrap();
+    admit(
+        &fixture.mailbox,
+        agent,
+        "source-origin",
+        &[original_input],
+    )
+    .await;
+    finish(
+        &fixture.mailbox,
+        agent,
+        "source-origin",
+        Outcome::Completed,
+        None,
+        Continuation::PendingGoalBinding(binding.clone()),
+    )
+    .await;
+    finish(
+        &fixture.mailbox,
+        agent,
+        "source-origin",
+        Outcome::Completed,
+        None,
+        Continuation::Deferred(binding.clone()),
+    )
+    .await;
+
+    let deferred_snapshot = take_snapshot(
+        &fixture.mailbox,
+        issuer,
+        Some(agent),
+        vec![Selector::Work(original.id.clone())],
+        ReturnWhen::Any,
+    )
+    .await;
+    let deferred = work_item(&deferred_snapshot, &original.id);
+    assert!(deferred.outcome.is_none());
+    assert_eq!(deferred.continuations[0].binding, binding);
+    assert_eq!(deferred.continuations[0].state, ContinuationState::Deferred);
+    assert_eq!(deferred.continuations[0].source_turn_id, "source-origin");
+
+    let (later_work, later_input) = accept_work(
+        &fixture.mailbox,
+        issuer,
+        agent,
+        "continuation-terminal",
+        "later continuation turn",
+    )
+    .await;
+    assert_eq!(
+        fixture.mailbox.begin_dispatch(&later_work).await.unwrap(),
+        DispatchDecision::Dispatch
+    );
+    fixture.mailbox.mark_dispatched(&later_work).await.unwrap();
+    admit(
+        &fixture.mailbox,
+        agent,
+        "source-terminal",
+        &[later_input],
+    )
+    .await;
+    let terminal = finish(
+        &fixture.mailbox,
+        agent,
+        "source-terminal",
+        Outcome::Completed,
+        None,
+        Continuation::Terminal(binding.clone()),
+    )
+    .await;
+    assert!(
+        terminal
+            .outcomes
+            .iter()
+            .any(|receipt| receipt.work_ref == original)
+    );
+
+    let terminal_snapshot = take_snapshot(
+        &fixture.mailbox,
+        issuer,
+        Some(agent),
+        vec![Selector::Work(original.id.clone())],
+        ReturnWhen::Any,
+    )
+    .await;
+    let settled = work_item(&terminal_snapshot, &original.id);
+    assert!(settled.outcome.is_some());
+    assert_eq!(settled.continuations[0].binding, binding);
+    assert_eq!(settled.continuations[0].state, ContinuationState::Terminal);
+    assert_eq!(settled.continuations[0].source_turn_id, "source-origin");
+}
+
+#[tokio::test]
+async fn unowned_continuation_recovery_retains_binding_until_exact_incarnation_terminal() {
+    let fixture = test_mailbox().await;
+    let (issuer, agent) = (thread_id(50), thread_id(51));
+    let binding = goal_binding(issuer, agent, 7, thread_id(52));
+    let (original, original_input) =
+        accept_work(&fixture.mailbox, issuer, agent, "pending-continuation", "original").await;
+    assert_eq!(
+        fixture.mailbox.begin_dispatch(&original).await.unwrap(),
+        DispatchDecision::Dispatch
+    );
+    fixture.mailbox.mark_dispatched(&original).await.unwrap();
+    admit(
+        &fixture.mailbox,
+        agent,
+        "source-pending",
+        &[original_input],
+    )
+    .await;
+    let pending = finish(
+        &fixture.mailbox,
+        agent,
+        "source-pending",
+        Outcome::Completed,
+        None,
+        Continuation::PendingGoalBinding(binding.clone()),
+    )
+    .await;
+    assert_eq!(pending.continuation_work, vec![original.clone()]);
+
+    assert!(
+        !fixture
+            .mailbox
+            .mark_recovery_needed(&original, RecoveryEvidence::DeliveryUnavailable)
+            .await
+            .unwrap()
+    );
+    let mut different_incarnation = binding.clone();
+    different_incarnation.incarnation = Some(thread_id(53));
+    assert!(
+        !fixture
+            .mailbox
+            .mark_recovery_needed(
+                &original,
+                RecoveryEvidence::ContinuationUnowned {
+                    binding: different_incarnation.clone(),
+                },
+            )
+            .await
+            .unwrap()
+    );
+    assert!(
+        fixture
+            .mailbox
+            .mark_recovery_needed(
+                &original,
+                RecoveryEvidence::ContinuationUnowned {
+                    binding: binding.clone(),
+                },
+            )
+            .await
+            .unwrap()
+    );
+
+    let pending_snapshot = take_snapshot(
+        &fixture.mailbox,
+        issuer,
+        Some(agent),
+        vec![Selector::Work(original.id.clone())],
+        ReturnWhen::Any,
+    )
+    .await;
+    let retained = work_item(&pending_snapshot, &original.id);
+    assert_eq!(retained.dispatch_state, DispatchState::RecoveryNeeded);
+    assert!(retained.outcome.is_none());
+    assert_eq!(retained.continuations.len(), 1);
+    assert_eq!(retained.continuations[0].binding, binding);
+    assert_eq!(
+        retained.continuations[0].state,
+        ContinuationState::PendingGoalBinding
+    );
+
+    let (wrong_terminal, wrong_input) = accept_work(
+        &fixture.mailbox,
+        issuer,
+        agent,
+        "wrong-incarnation-terminal",
+        "wrong incarnation",
+    )
+    .await;
+    assert_eq!(
+        fixture
+            .mailbox
+            .begin_dispatch(&wrong_terminal)
+            .await
+            .unwrap(),
+        DispatchDecision::Dispatch
+    );
+    fixture.mailbox.mark_dispatched(&wrong_terminal).await.unwrap();
+    admit(
+        &fixture.mailbox,
+        agent,
+        "source-wrong-terminal",
+        &[wrong_input],
+    )
+    .await;
+    finish(
+        &fixture.mailbox,
+        agent,
+        "source-wrong-terminal",
+        Outcome::Completed,
+        None,
+        Continuation::Terminal(different_incarnation),
+    )
+    .await;
+
+    let still_recovery_needed = take_snapshot(
+        &fixture.mailbox,
+        issuer,
+        Some(agent),
+        vec![Selector::Work(original.id.clone())],
+        ReturnWhen::Any,
+    )
+    .await;
+    assert_eq!(
+        work_item(&still_recovery_needed, &original.id).dispatch_state,
+        DispatchState::RecoveryNeeded
+    );
+    assert!(work_item(&still_recovery_needed, &original.id).outcome.is_none());
+
+    let (exact_terminal, exact_input) = accept_work(
+        &fixture.mailbox,
+        issuer,
+        agent,
+        "exact-incarnation-terminal",
+        "exact incarnation",
+    )
+    .await;
+    assert_eq!(
+        fixture
+            .mailbox
+            .begin_dispatch(&exact_terminal)
+            .await
+            .unwrap(),
+        DispatchDecision::Dispatch
+    );
+    fixture.mailbox.mark_dispatched(&exact_terminal).await.unwrap();
+    admit(
+        &fixture.mailbox,
+        agent,
+        "source-exact-terminal",
+        &[exact_input],
+    )
+    .await;
+    let terminal = finish(
+        &fixture.mailbox,
+        agent,
+        "source-exact-terminal",
+        Outcome::Completed,
+        None,
+        Continuation::Terminal(binding.clone()),
+    )
+    .await;
+    assert!(terminal.outcomes.iter().any(|receipt| receipt.work_ref == original));
+
+    let settled = take_snapshot(
+        &fixture.mailbox,
+        issuer,
+        Some(agent),
+        vec![Selector::Work(original.id.clone())],
+        ReturnWhen::Any,
+    )
+    .await;
+    let settled_original = work_item(&settled, &original.id);
+    assert_eq!(settled_original.dispatch_state, DispatchState::Dispatched);
+    assert!(settled_original.outcome.is_some());
+    assert_eq!(settled_original.continuations[0].binding, binding);
+    assert_eq!(settled_original.continuations[0].state, ContinuationState::Terminal);
+    assert_eq!(settled_original.continuations[0].source_turn_id, "source-pending");
 }
 
 #[tokio::test]
@@ -1338,7 +1696,11 @@ async fn confirmed_execution_and_terminal_capture_supersede_stale_dispatch_recov
         DispatchDecision::Dispatch
     );
     fixture.mailbox.mark_dispatched(&work).await.unwrap();
-    fixture.mailbox.mark_recovery_needed(&work).await.unwrap();
+    assert!(fixture
+        .mailbox
+        .mark_recovery_needed(&work, RecoveryEvidence::DeliveryUnavailable)
+        .await
+        .unwrap());
     assert_eq!(
         fixture.mailbox.dispatch_state(&work).await.unwrap(),
         DispatchState::RecoveryNeeded
@@ -1358,7 +1720,11 @@ async fn confirmed_execution_and_terminal_capture_supersede_stale_dispatch_recov
     )
     .await;
     assert_eq!(terminal.outcomes[0].work_ref, work);
-    fixture.mailbox.mark_recovery_needed(&work).await.unwrap();
+    assert!(!fixture
+        .mailbox
+        .mark_recovery_needed(&work, RecoveryEvidence::DeliveryUnavailable)
+        .await
+        .unwrap());
     assert_eq!(
         fixture.mailbox.dispatch_state(&work).await.unwrap(),
         DispatchState::Dispatched

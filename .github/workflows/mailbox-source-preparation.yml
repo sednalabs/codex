@@ -15,13 +15,16 @@ jobs:
     env:
       CARGO_INCREMENTAL: "0"
       RUST_MIN_STACK: "8388608"
-      PREPARATION_ATTEMPT: "6"
+      PREPARATION_ATTEMPT: "7"
+      SCCACHE_CACHE_SIZE: 2G
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Isolate workflow caches from source provenance
+        run: bash .github/scripts/isolate_workflow_paths_from_provenance.sh "$GITHUB_WORKSPACE"
       - uses: ./.github/actions/setup-bazel-ci
         with:
           target: x86_64-unknown-linux-gnu
@@ -29,6 +32,46 @@ jobs:
         with:
           toolchain: 1.96.0
           components: rustfmt, clippy
+      - name: Compute dependency cache identity
+        id: lockhash
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "hash=$(sha256sum codex-rs/Cargo.lock | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "toolchain_hash=$(sha256sum codex-rs/rust-toolchain.toml | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - name: Restore cargo home cache
+        id: cache_cargo_home_restore
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/.rusty_v8/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: cargo-home-linux-rust-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+      - name: Install sccache
+        uses: taiki-e/install-action@7b8d4719ee4aaa279bdf55df38dacb9ebfe12a6c
+        with:
+          tool: sccache
+      - name: Configure the existing restore-only cache policy
+        id: sccache_backend
+        run: bash .github/scripts/configure_sccache_backend.sh restore-only
+      - name: Enable sccache wrapper
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "RUSTC_WRAPPER=$(command -v sccache)" >> "$GITHUB_ENV"
+          sccache --start-server || true
+          sccache --zero-stats || true
+      - name: Restore sccache cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ github.workspace }}/.sccache/
+          key: sccache-linux-rust-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
+          restore-keys: |
+            sccache-linux-rust-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-
+            sccache-linux-rust-${{ steps.lockhash.outputs.hash }}-
       - uses: ./.github/actions/setup-rusty-v8
         with:
           target: x86_64-unknown-linux-gnu
@@ -56,30 +99,46 @@ jobs:
         working-directory: codex-rs
         run: cargo test --locked -p codex-agent-mailbox --lib -- --test-threads=1
       - name: Verify canonical mailbox lifecycle retention
+        id: rollout
+        continue-on-error: true
         working-directory: codex-rs
         run: cargo test --locked -p codex-rollout --lib mailbox -- --test-threads=1
       - name: Generate the affected native schemas
         run: |
           just write-config-schema
           just write-app-server-schema
-      - name: Compile focused core mailbox and schema consumers
-        working-directory: codex-rs
-        run: cargo test --locked -p codex-core --lib mailbox -- --test-threads=1
-      - name: Run real native mailbox adapter contracts
-        working-directory: codex-rs
-        run: |
-          cargo test --locked -p codex-core --test all suite::agent_mailbox:: -- --test-threads=1
       - name: Compile focused UI mailbox consumers
+        id: ui
+        continue-on-error: true
         working-directory: codex-rs
         env:
           INSTA_UPDATE: new
         run: cargo test --locked -p codex-tui --lib mailbox -- --test-threads=1
       - name: Verify interrupted mailbox wait history replay
+        id: protocol
+        continue-on-error: true
         working-directory: codex-rs
         run: cargo test --locked -p codex-app-server-protocol --lib mailbox -- --test-threads=1
-      - name: Retain the library contract result
+      - name: Compile focused core mailbox and schema consumers
+        id: core
+        continue-on-error: true
+        working-directory: codex-rs
+        run: cargo test --locked -p codex-core --lib mailbox -- --test-threads=1
+      - name: Run real native mailbox adapter contracts
+        id: adapter
+        continue-on-error: true
+        working-directory: codex-rs
+        run: |
+          cargo test --locked -p codex-core --test all suite::agent_mailbox:: -- --test-threads=1
+      - name: Retain the focused contract results
         if: always()
-        run: test '${{ steps.library.outcome }}' = success
+        run: |
+          test '${{ steps.library.outcome }}' = success
+          test '${{ steps.rollout.outcome }}' = success
+          test '${{ steps.ui.outcome }}' = success
+          test '${{ steps.protocol.outcome }}' = success
+          test '${{ steps.core.outcome }}' = success
+          test '${{ steps.adapter.outcome }}' = success
       - name: Capture the exact generated source delta
         if: always()
         shell: bash
@@ -106,3 +165,28 @@ jobs:
           name: mailbox-source-preparation-${{ github.sha }}
           path: ${{ runner.temp }}/mailbox-source-preparation/
           retention-days: 3
+      - name: Check post-lane cache-save disk headroom
+        if: ${{ always() && !cancelled() }}
+        id: disk_guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          save_floor_bytes=$((8 * 1024 * 1024 * 1024))
+          available_bytes="$(df --block-size=1 --output=avail "$GITHUB_WORKSPACE" | tail -n 1 | tr -d '[:space:]')"
+          if [[ "$available_bytes" -lt "$save_floor_bytes" ]]; then
+            echo "skip_cache_save=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip_cache_save=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Save cargo home cache after success or failure
+        if: ${{ always() && !cancelled() && steps.lockhash.outputs.hash != '' && steps.cache_cargo_home_restore.outputs.cache-hit != 'true' && steps.disk_guard.outputs.skip_cache_save == 'false' }}
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/.rusty_v8/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: cargo-home-linux-rust-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}

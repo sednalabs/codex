@@ -493,6 +493,12 @@
           "default": null,
           "description": "Optional feature toggles scoped to this profile.",
           "properties": {
+            "agent_mailbox": {
+              "type": "boolean"
+            },
+            "agent_mailbox_idle_activation": {
+              "type": "boolean"
+            },
             "apply_patch_freeform": {
               "type": "boolean"
             },
@@ -6414,6 +6420,12 @@
       "default": null,
       "description": "Centralized feature flags (new). Prefer this over individual toggles.",
       "properties": {
+        "agent_mailbox": {
+          "type": "boolean"
+        },
+        "agent_mailbox_idle_activation": {
+          "type": "boolean"
+        },
         "apply_patch_freeform": {
           "type": "boolean"
         },

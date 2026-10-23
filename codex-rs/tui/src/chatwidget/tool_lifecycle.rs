@@ -171,7 +171,7 @@ impl ChatWidget {
             && matches!(status, CollabAgentToolCallStatus::InProgress)
             && let Some(report) = mailbox_wait_report.as_ref()
         {
-            if let Some(progress) = self.active_mailbox_waits.get(id) {
+            if let Some(progress) = self.active_mailbox_waits.get(id).cloned() {
                 progress.update(report.clone(), /*in_progress*/ true);
                 let wait_cell_is_active = self
                     .transcript

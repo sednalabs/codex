@@ -318,8 +318,7 @@ pub fn create_mailbox_read_tool() -> ToolSpec {
         (
             "limit".to_string(),
             JsonSchema::integer(Some(
-                "Maximum messages to return. Defaults to 20 and is capped at 100."
-                    .to_string(),
+                "Maximum messages to return. Defaults to 20 and is capped at 100.".to_string(),
             )),
         ),
     ]);

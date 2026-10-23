@@ -183,9 +183,8 @@ async fn handle_wait(invocation: ToolInvocation) -> Result<Box<dyn ToolOutput>, 
             if let SnapshotItem::Work(work) = item
                 && work.dispatch_state == DispatchState::Dispatched
                 && work.outcome.is_none()
-                && work.continuations.is_empty()
             {
-                match session.services.agent_control.mailbox_reconcile_pending_work(&work.work_ref).await {
+                match session.services.agent_control.mailbox_reconcile_pending_work(work).await {
                     Ok(changed) => recovery_changed |= changed,
                     Err(_) => { recovery_fault = true; break; }
                 }

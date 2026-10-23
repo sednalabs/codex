@@ -27,7 +27,8 @@ pub use types::{
     ActivationDecision, ActivationDisposition, AdmissionReceipt, Attention, CanonicalConfirmation,
     Continuation, ContinuationReceipt, ContinuationState, Dependency, DependencyMode,
     DispatchDecision, DispatchState, Envelope, GoalBinding, MessageDraft, MessageKind, NativeWork,
-    ObservationTarget, Outcome, OutcomeReceipt, PendingPage, RequestDisposition, RequestSnapshot,
+    ObservationTarget, Outcome, OutcomeReceipt, PendingPage, RecoveryEvidence, RequestDisposition,
+    RequestSnapshot,
     ReturnWhen, Selection, Selector, Snapshot, SnapshotItem, SnapshotRequest, SnapshotState,
     TurnOutcomeReceipt, WorkRef, WorkSnapshot,
 };

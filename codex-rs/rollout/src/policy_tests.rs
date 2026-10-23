@@ -8,8 +8,8 @@ use codex_protocol::items::MailboxWaitReport;
 use codex_protocol::items::TurnItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ItemStartedEvent;
-use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::RolloutItem;
+use codex_protocol::protocol::ThreadHistoryMode;
 
 use crate::policy::is_persisted_rollout_item;
 
@@ -43,7 +43,10 @@ fn started_call(
     }))
 }
 
-fn started_wait(status: CollabAgentToolCallStatus, report: Option<MailboxWaitReport>) -> RolloutItem {
+fn started_wait(
+    status: CollabAgentToolCallStatus,
+    report: Option<MailboxWaitReport>,
+) -> RolloutItem {
     started_call(CollabAgentTool::Wait, status, report)
 }
 
@@ -64,9 +67,15 @@ fn in_progress_report() -> MailboxWaitReport {
 
 #[test]
 fn only_typed_in_progress_mailbox_wait_starts_are_persisted() {
-    let valid = started_wait(CollabAgentToolCallStatus::InProgress, Some(in_progress_report()));
+    let valid = started_wait(
+        CollabAgentToolCallStatus::InProgress,
+        Some(in_progress_report()),
+    );
     let no_report = started_wait(CollabAgentToolCallStatus::InProgress, None);
-    let terminal = started_wait(CollabAgentToolCallStatus::Completed, Some(in_progress_report()));
+    let terminal = started_wait(
+        CollabAgentToolCallStatus::Completed,
+        Some(in_progress_report()),
+    );
     let other_tool = started_call(
         CollabAgentTool::SendInput,
         CollabAgentToolCallStatus::InProgress,

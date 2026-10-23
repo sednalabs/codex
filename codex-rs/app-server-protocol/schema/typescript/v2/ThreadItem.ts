@@ -4,6 +4,7 @@
 import type { CollabWaitingCompletionReason } from "../CollabWaitingCompletionReason";
 import type { ImageGenerationItem } from "../ImageGenerationItem";
 import type { LegacyAppPathString } from "../LegacyAppPathString";
+import type { MailboxWaitReport } from "../MailboxWaitReport";
 import type { MessagePhase } from "../MessagePhase";
 import type { ReasoningEffort } from "../ReasoningEffort";
 import type { SleepItem } from "../SleepItem";
@@ -160,7 +161,11 @@ agentsStates: { [key in string]: CollabAgentState },
 /**
  * Safe mailbox notifications observed by a native wait.
  */
-wakeNotifications: Array<AgentNotificationSummary> | null, completionReason: CollabWaitingCompletionReason | null, wakeCause?: AgentWakeCause, } | { "type": "subAgentActivity", id: string, kind: SubAgentActivityKind, agentThreadId: string, agentPath: string,
+wakeNotifications: Array<AgentNotificationSummary> | null, completionReason: CollabWaitingCompletionReason | null, wakeCause?: AgentWakeCause,
+/**
+ * Selection-aware mailbox wait state/result, when reported by the producer.
+ */
+mailboxWaitReport?: MailboxWaitReport, } | { "type": "subAgentActivity", id: string, kind: SubAgentActivityKind, agentThreadId: string, agentPath: string,
 /**
  * Effective model selected for the affected child, when known.
  */

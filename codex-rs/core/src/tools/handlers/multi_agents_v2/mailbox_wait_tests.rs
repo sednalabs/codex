@@ -8,6 +8,10 @@ use codex_agent_mailbox::MessageKind;
 use codex_agent_mailbox::NativeWork;
 use codex_agent_mailbox::WorkRef;
 use codex_features::Feature;
+use codex_protocol::items::CollabAgentTool;
+use codex_protocol::items::CollabAgentToolCallItem;
+use codex_protocol::items::CollabAgentToolCallStatus;
+use codex_protocol::items::TurnItem;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseInputItem;
@@ -16,7 +20,6 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::RolloutItem;
-use codex_protocol::protocol::TurnItem;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -226,25 +229,24 @@ async fn seed_interrupted_wait_receipt(
 ) {
     // This exact call/output/terminal-event trio is the canonical history shape consumed by
     // resume recovery; refresh the same derived receipt cache used by that path.
-    let terminal_item =
-        TurnItem::CollabAgentToolCall(codex_protocol::protocol::CollabAgentToolCallItem {
-            id: call_id.to_string(),
-            tool: codex_protocol::protocol::CollabAgentTool::Wait,
-            status: codex_protocol::protocol::CollabAgentToolCallStatus::Failed,
-            sender_thread_id: session.thread_id,
-            receiver_thread_ids: Vec::new(),
-            receiver_agents: Vec::new(),
-            prompt: None,
-            model: None,
-            reasoning_effort: None,
-            requested_model: None,
-            requested_reasoning_effort: None,
-            agents_states: Default::default(),
-            wake_notifications: None,
-            completion_reason: None,
-            wake_cause: None,
-            mailbox_wait_report: Some(report.clone()),
-        });
+    let terminal_item = TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+        id: call_id.to_string(),
+        tool: CollabAgentTool::Wait,
+        status: CollabAgentToolCallStatus::Failed,
+        sender_thread_id: session.thread_id,
+        receiver_thread_ids: Vec::new(),
+        receiver_agents: Vec::new(),
+        prompt: None,
+        model: None,
+        reasoning_effort: None,
+        requested_model: None,
+        requested_reasoning_effort: None,
+        agents_states: Default::default(),
+        wake_notifications: None,
+        completion_reason: None,
+        wake_cause: None,
+        mailbox_wait_report: Some(report.clone()),
+    });
     let items = [
         RolloutItem::ResponseItem(ResponseItem::FunctionCall {
             id: None,
@@ -257,6 +259,7 @@ async fn seed_interrupted_wait_receipt(
         RolloutItem::ResponseItem(ResponseItem::FunctionCallOutput {
             id: None,
             call_id: call_id.to_string(),
+            internal_chat_message_metadata_passthrough: None,
             output: FunctionCallOutputPayload {
                 body: FunctionCallOutputBody::Text(serde_json::to_string(&report).unwrap()),
                 success: Some(false),

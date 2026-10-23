@@ -105,8 +105,10 @@ pub struct GoalBinding {
     pub parent_thread_id: ThreadId,
     pub child_thread_id: ThreadId,
     pub control_generation: u64,
-    pub revision: u64,
-    pub source_turn_id: String,
+    /// Process-local native goal-store identity. Older persisted bindings omit
+    /// this field and remain readable, but cannot match a new native producer.
+    #[serde(default)]
+    pub incarnation: Option<ThreadId>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -116,6 +118,16 @@ pub enum DispatchState {
     Dispatching,
     Dispatched,
     RecoveryNeeded,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RecoveryEvidence {
+    /// The adapter proved there is no native delivery/continuation custody.
+    /// This is valid only when no pending or deferred goal binding remains.
+    DeliveryUnavailable,
+    /// The adapter proved this exact native goal binding has no owner.
+    /// The durable continuation itself is retained for later exact settlement.
+    ContinuationUnowned { binding: GoalBinding },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
