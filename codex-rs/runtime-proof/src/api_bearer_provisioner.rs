@@ -1053,7 +1053,7 @@ fn validate_credential_store_directory(
 }
 
 fn lock_credential_store(directory: &File, expected_owner: libc::uid_t) -> Result<File> {
-    lock_credential_store_until(directory, expected_owner, None)
+    lock_credential_store_until(directory, expected_owner, /*timeout*/ None)
 }
 
 fn lock_credential_store_with_timeout(
