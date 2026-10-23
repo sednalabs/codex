@@ -91,6 +91,110 @@ fn function_call_response(
     ]))
 }
 
+#[derive(Clone)]
+struct UnadmittedWorkResponder;
+
+impl Respond for UnadmittedWorkResponder {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let body: Value = serde_json::from_slice(&request.body).unwrap();
+        if has_function_output(&body, "unadmitted-wait") {
+            return sse_response(sse(vec![
+                ev_response_created("unadmitted-final"),
+                ev_assistant_message("unadmitted-final-message", "recovery required"),
+                ev_completed("unadmitted-final"),
+            ]));
+        }
+        if has_function_output(&body, "unadmitted-spawn") {
+            let spawn: Value = serde_json::from_str(function_output_text(&body, "unadmitted-spawn").unwrap()).unwrap();
+            return function_call_response("unadmitted-wait-response", "unadmitted-wait", "wait_agent", json!({
+                "targets": [spawn["work_ref"]],
+                "return_when": "all",
+            }));
+        }
+        function_call_response("unadmitted-spawn-response", "unadmitted-spawn", "spawn_agent", json!({
+            "task_name": "unadmitted-worker",
+            "message": "fail before provider acceptance of this work",
+        }))
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mailbox_event_only_wait_wakes_when_producer_fails_before_input_admission() -> Result<()> {
+    use codex_agent_mailbox::DispatchState;
+    use codex_agent_mailbox::ReturnWhen;
+    use codex_agent_mailbox::Selection;
+    use codex_agent_mailbox::Selector;
+    use codex_agent_mailbox::SnapshotItem;
+    use codex_protocol::items::CollabAgentToolCallStatus;
+    use codex_protocol::items::TurnItem;
+    use codex_protocol::protocol::ThreadSettingsOverrides;
+    use codex_protocol::user_input::UserInput;
+
+    let server = start_mock_server().await;
+    let mut builder = test_codex().with_model("koffing").with_config(|config| {
+        for feature in [Feature::Collab, Feature::MultiAgentV2, Feature::AgentMailbox] {
+            config.features.enable(feature).unwrap();
+        }
+        config.multi_agent_v2.tool_namespace = Some(NAMESPACE.to_string());
+        config.model_provider.supports_websockets = false;
+        config.model_provider.stream_max_retries = Some(0);
+        config.model_provider.request_max_retries = Some(0);
+    });
+    let test = builder.build_with_auto_env(&server).await?;
+    let root_id = test.session_configured.thread_id;
+    Mock::given(method("POST"))
+        .and(path_regex(".*/responses$"))
+        .and(RootThreadMatcher { thread_id: root_id.to_string() })
+        .respond_with(UnadmittedWorkResponder)
+        .up_to_n_times(3)
+        .mount(&server).await;
+    Mock::given(method("POST"))
+        .and(path_regex(".*/responses$"))
+        .and(ChildThreadMatcher { root_thread_id: root_id.to_string(), task: "fail before provider acceptance of this work".to_string() })
+        // No response-created event: this child never admits its accepted input.
+        .respond_with(sse_response(String::new()).set_delay(Duration::from_secs(2)))
+        .up_to_n_times(1)
+        .mount(&server).await;
+    test.codex.submit(Op::UserInput {
+        items: vec![UserInput::Text { text: "join the accepted work without a timeout".to_string(), text_elements: Vec::new() }],
+        final_output_json_schema: None,
+        responsesapi_client_metadata: None,
+        additional_context: Default::default(),
+        thread_settings: ThreadSettingsOverrides::default(),
+    }).await?;
+    // Prove the selected wait was sleeping while native custody still existed,
+    // rather than only testing an already-cold initial snapshot.
+    wait_for_event(&test.codex, |event| matches!(event,
+        EventMsg::ItemStarted(event) if matches!(&event.item,
+            TurnItem::CollabAgentToolCall(call) if call.id == "unadmitted-wait"
+                && call.status == CollabAgentToolCallStatus::InProgress
+                && call.mailbox_wait_report.as_ref().is_some_and(|report| report.pending.iter().any(|item| item.status == "pending"))
+        )
+    )).await;
+    let terminal = wait_for_event(&test.codex, |event| matches!(event,
+        EventMsg::ItemCompleted(event) if matches!(&event.item,
+            TurnItem::CollabAgentToolCall(call) if call.id == "unadmitted-wait"
+        )
+    )).await;
+    let EventMsg::ItemCompleted(terminal) = terminal else { unreachable!() };
+    let TurnItem::CollabAgentToolCall(call) = terminal.item else { unreachable!() };
+    let report = call.mailbox_wait_report.unwrap();
+    assert_eq!(report.completion_reason, Some(codex_protocol::items::MailboxWakeCause::NeedsAttention));
+    assert!(!report.condition_satisfied);
+    assert_eq!(report.pending.len(), 1);
+    assert_eq!(report.pending[0].status, "recovery_needed");
+    wait_for_event(&test.codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+
+    let mailbox = Mailbox::open(test.config.sqlite_config()).await?;
+    let snapshot = mailbox.snapshot(&Selection { caller: root_id, agent: None, selectors: vec![Selector::Work(report.pending[0].work_ref.clone().unwrap())], return_when: ReturnWhen::All, limit: 1 }).await?;
+    let SnapshotItem::Work(work) = &snapshot.items[0] else { unreachable!() };
+    assert_eq!(work.dispatch_state, DispatchState::RecoveryNeeded);
+    assert!(work.outcome.is_none());
+    let input_id = work.input.id.as_ref().unwrap().to_string();
+    assert_eq!(mailbox.unadmitted_input_ids(work.work_ref.agent, &[input_id.clone()]).await?, vec![input_id]);
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mailbox_provider_schema_is_opt_in_and_exposes_the_v2_contract() -> Result<()> {
     let server = start_mock_server().await;

@@ -40,7 +40,7 @@ fn communication(content: &str) -> InterAgentCommunication {
         AgentPath::root(),
         Vec::new(),
         content.to_string(),
-        false,
+        /*trigger_turn*/ false,
     )
 }
 

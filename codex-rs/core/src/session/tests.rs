@@ -12594,3 +12594,66 @@ async fn session_start_hooks_require_project_trust_without_config_toml() -> std:
 
     Ok(())
 }
+
+#[test]
+fn mailbox_terminal_goal_requires_successful_publication_for_exact_turn() {
+    use crate::agent::goal_notifications::GoalNotificationBinding;
+    use crate::agent::goal_notifications::GoalNotificationPhase;
+    use crate::agent::goal_notifications::GoalNotificationProjection;
+    use crate::agent::goal_notifications::GoalNotificationStore;
+    use crate::agent::goal_notifications::GoalNotificationTurnToken;
+
+    let parent_thread_id = ThreadId::new();
+    let child_thread_id = ThreadId::new();
+    let binding = GoalNotificationBinding {
+        parent_thread_id,
+        child_thread_id,
+        goal_id: "goal-a".to_string(),
+        control_generation: 7,
+    };
+    let store = GoalNotificationStore::default();
+    let mut projection = GoalNotificationProjection::new(
+        binding.clone(),
+        codex_protocol::protocol::ThreadGoalStatus::Active,
+    );
+    assert!(projection.opt_in(&binding));
+    store.install_authoritative(projection);
+    store.set_source_turn("turn-a");
+    let token = GoalNotificationTurnToken {
+        incarnation: store.incarnation(),
+        binding: binding.clone(),
+        source_turn_id: "turn-a".to_string(),
+        generation: binding.control_generation,
+    };
+
+    let (incarnation, snapshot) = mailbox_goal_for_terminal_turn(
+        &store,
+        &token,
+        /*publishes_completion*/ true,
+        Some("result".to_string()),
+    )
+    .expect("matching native completion should be capturable");
+    assert_eq!(incarnation, token.incarnation);
+    assert_eq!(snapshot.binding, token.binding);
+    assert_eq!(snapshot.last_completed_source_turn.as_deref(), Some("turn-a"));
+    assert_eq!(snapshot.phase, GoalNotificationPhase::ContinuationPending);
+
+    let mut replacement = binding;
+    replacement.goal_id = "goal-b".to_string();
+    replacement.control_generation += 1;
+    let mut replacement_projection = GoalNotificationProjection::new(
+        replacement.clone(),
+        codex_protocol::protocol::ThreadGoalStatus::Active,
+    );
+    assert!(replacement_projection.opt_in(&replacement));
+    store.install_authoritative(replacement_projection);
+    store.set_source_turn("turn-a");
+    assert!(mailbox_goal_for_terminal_turn(
+        &store,
+        &token,
+        /*publishes_completion*/ true,
+        Some("stale result".to_string()),
+    )
+    .is_err());
+    assert_eq!(store.snapshot().unwrap().binding, replacement);
+}

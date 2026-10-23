@@ -69,6 +69,11 @@ Its native cancellation slice includes
 The notification visibility lane also runs protocol/app-server-protocol/TUI
 `mailbox` tests so the same structured report is exercised in live and replay
 consumers, including interrupted-wait recovery with pending references retained.
+The native goal adapter also exercises
+`mailbox_goal_terminal_matches_logical_binding_across_native_revisions_and_turns`
+and `mailbox_cold_goal_continuation_returns_recovery_needed_without_losing_custody`:
+later logical progress may settle exact original work, but a replacement native
+goal incarnation cannot, and an unowned deferred continuation must not hang.
 
 Without the opt-in mailbox feature, exact-target V2 `wait_agent` ignores queue-only (`trigger_turn=false`) mailbox
 activity while preserving durable FIFO delivery and notification summaries;

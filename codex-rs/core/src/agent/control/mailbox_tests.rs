@@ -23,7 +23,7 @@ async fn mailbox_shared_control_does_not_capture_stock_invocations() {
         AgentPath::from_string("/root/worker".to_string()).unwrap(),
         Vec::new(),
         "native input".to_string(),
-        true,
+        /*trigger_turn*/ true,
     );
     let original = communication.clone();
     let mut submission_id = "stock-submission".to_string();
@@ -100,7 +100,7 @@ async fn accepted_goal_work(mailbox: &Mailbox, issuer: ThreadId, agent: ThreadId
             AgentPath::from_string("/root/worker".to_string()).unwrap(),
             Vec::new(),
             "complete the accepted work".to_string(),
-            true,
+            /*trigger_turn*/ true,
         ),
     }).await.unwrap();
     assert_eq!(mailbox.begin_dispatch(&work).await.unwrap(), DispatchDecision::Dispatch);
@@ -167,10 +167,15 @@ async fn mailbox_goal_terminal_matches_logical_binding_across_native_revisions_a
 
 #[tokio::test]
 async fn mailbox_cold_goal_continuation_returns_recovery_needed_without_losing_custody() {
-    let (session, turn) = crate::session::tests::make_session_and_context().await;
+    let (mut session, turn) = crate::session::tests::make_session_and_context().await;
     let mut config = (*turn.config).clone();
     config.features.enable(Feature::MultiAgentV2).unwrap();
     config.features.enable(Feature::AgentMailbox).unwrap();
+    let manager = crate::ThreadManager::with_models_provider_for_tests(
+        codex_login::CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+    );
+    session.services.agent_control = manager.agent_control();
     let control = &session.services.agent_control;
     control.mailbox_initialize(&config).await.unwrap();
     let mailbox = control.mailbox().unwrap();
@@ -198,4 +203,46 @@ async fn mailbox_cold_goal_continuation_returns_recovery_needed_without_losing_c
     goal.classification = GoalNotificationClassification::Result;
     assert!(control.mailbox_record_terminal(agent, "recovered-turn", AgentStatus::Completed(None), Some((incarnation, goal)), None).await.unwrap());
     assert_eq!(exact_work_snapshot(&mailbox, &work).await.outcome.unwrap().outcome, Outcome::Completed);
+}
+
+#[tokio::test]
+async fn mailbox_cold_deferred_handback_uses_loaded_parents_shared_store() {
+    let (_session, turn) = crate::session::tests::make_session_and_context().await;
+    let mut config = (*turn.config).clone();
+    config.features.enable(Feature::MultiAgentV2).unwrap();
+    config.features.enable(Feature::AgentMailbox).unwrap();
+    let manager = crate::ThreadManager::with_models_provider_for_tests(
+        codex_login::CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+    );
+    let parent = manager.start_thread(crate::thread_manager::StartThreadOptions::new(config.clone())).await.unwrap();
+    let control = &parent.thread.session.services.agent_control;
+    control.mailbox_initialize(&config).await.unwrap();
+    let mailbox = control.mailbox().unwrap();
+    let agent = ThreadId::new();
+    let incarnation = ThreadId::new();
+    let work = accepted_goal_work(&mailbox, parent.thread_id, agent).await;
+    let mut goal = goal_snapshot(parent.thread_id, agent);
+    assert!(control.mailbox_record_terminal(agent, "accepted-turn", AgentStatus::Completed(None), Some((incarnation, goal.clone())), None).await.unwrap());
+    assert!(manager.get_thread(agent).await.is_err());
+    assert!(!parent.thread.session.input_queue.has_pending_mailbox_items().await);
+
+    goal.phase = GoalNotificationPhase::ResultReady;
+    goal.status = ThreadGoalStatus::Complete;
+    goal.revision += 1;
+    goal.classification = GoalNotificationClassification::Result;
+    assert!(manager.notify_v2_child_completion(
+        agent,
+        parent.thread_id,
+        AgentPath::from_string("/root/worker".to_string()).unwrap(),
+        "accepted-turn",
+        AgentStatus::Completed(Some("durable goal result".to_string())),
+        Some((incarnation, goal)),
+    ).await.unwrap());
+    let settled = exact_work_snapshot(&mailbox, &work).await;
+    assert_eq!(settled.work_ref, work);
+    assert_eq!(settled.outcome.unwrap().outcome, Outcome::Completed);
+    assert_eq!(settled.continuations[0].state, ContinuationState::Terminal);
+    assert!(manager.get_thread(agent).await.is_err());
+    assert!(!parent.thread.session.input_queue.has_pending_mailbox_items().await);
 }

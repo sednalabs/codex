@@ -882,6 +882,15 @@ impl Session {
         if cleared_active_turn {
             self.maybe_start_turn_for_pending_work().await;
         }
+        if turn_context.multi_agent_version == codex_protocol::protocol::MultiAgentVersion::V2
+            && turn_context.config.features.enabled(Feature::AgentMailbox)
+            && let Some(mailbox) = self.services.agent_control.mailbox()
+        {
+            // This follows active-turn release and the native pending-work decision.
+            // A pre-admission producer failure has no terminal mailbox result, but an
+            // event-only issuer wait must still rescan exact native custody.
+            mailbox.notify_native_custody_changed();
+        }
     }
 
     async fn take_active_turn(&self) -> Option<ActiveTurn> {

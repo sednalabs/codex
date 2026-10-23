@@ -124,7 +124,7 @@ pub(crate) fn ensure_terminal_responses(
             group.recipient.clone(),
             Vec::new(),
             content,
-            false,
+            /*trigger_turn*/ false,
         );
         communication.origin = Some(AgentCommunicationOrigin::Result);
         group.response = Some(communication);

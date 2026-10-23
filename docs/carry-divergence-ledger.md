@@ -70,6 +70,20 @@ its pending references intact, rather than restarting its old deadline. Reusing
 that interrupted call ID cannot start a new wait. Unconfirmed accepted/dispatching
 work from that exact resumed issuer is marked recovery-needed in bounded indexed
 batches, without resending its input or creating a replacement child.
+The in-progress typed wait itself is appended and flushed before the wait sleeps,
+so interruption recovery does not depend on a UI-only start event. Goal
+continuations retain their accepted source-turn provenance but correlate by the
+logical goal, exact parent/child and control generation, and native goal-store
+incarnation. Revision or later-turn progress does not break that correlation;
+a cold or replaced producer yields recovery-needed without deleting the original
+binding or inventing completion. Native result delivery is suppressed only when
+the mailbox actually captured the accepted work.
+Deferred handback carries the original native token incarnation end-to-end; it
+cannot be relabelled with a replacement loaded child's identity. A cold producer
+can settle through its loaded parent's same-tree store, otherwise handback
+retains retry custody. Native finalizer/turn release emits an advisory rescan so
+a producer failure before input admission cannot leave an event-only wait asleep
+without an outcome or a producer able to advance it.
 
 Both `agent_mailbox` and recipient `agent_mailbox_idle_activation` are off by
 default. Disabled mailbox handling preserves pending records and cannot drain,
@@ -80,6 +94,24 @@ business effects. Cross-root mail, subscriptions, shadow membership, watchdogs,
 new scheduling, and provider/auth changes remain outside this carry. Future
 upstream syncs retain the same semantic suite and retire equivalent mechanisms
 and dependencies together, rather than restoring donor framework code.
+
+To explicitly select this experimental surface for a new session, enable both
+`multi_agent_v2` and `agent_mailbox`, for example:
+
+```toml
+[features]
+multi_agent_v2 = true
+agent_mailbox = true
+agent_mailbox_idle_activation = false
+```
+
+The equivalent one-session CLI selection is
+`codex --enable multi_agent_v2 --enable agent_mailbox`. This does not grant
+idle activation: that requires the recipient's separate
+`agent_mailbox_idle_activation` permission and still obeys native root,
+approval, pause, budget, and cancellation controls. A default-off binary startup
+is not evidence that the mailbox tool contract is active. Installing a preview,
+restarting a session, and opting in remain explicit operator actions.
 
 - Without the opt-in mailbox feature, downstream V2 `wait_agent` keeps queue-only inter-agent mail durable and
   visible in later notification summaries, but an exact-target wait wakes only

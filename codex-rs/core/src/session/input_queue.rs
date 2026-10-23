@@ -132,6 +132,12 @@ impl InputQueue {
     pub(crate) fn finish_terminal_finalizer(&self) {
         self.pending_terminal_finalizers
             .fetch_sub(1, Ordering::AcqRel);
+        if let Some(mailbox) = self.durable_mailbox.get() {
+            // A turn can fail before provider admission, so it has no mailbox
+            // outcome to publish. Wake only after native finalizer custody ends;
+            // selected waits then reconcile the still-unadmitted exact work.
+            mailbox.notify_native_custody_changed();
+        }
     }
 
     pub(crate) fn has_pending_terminal_finalizers(&self) -> bool {
@@ -917,6 +923,30 @@ mod tests {
             coalesced_exited: 0,
             coalesced_failed: 0,
         }
+    }
+
+    #[tokio::test]
+    async fn durable_mailbox_finalizer_release_wakes_rescan_without_fabricating_input() {
+        use codex_utils_absolute_path::test_support::PathExt;
+
+        let home = tempfile::tempdir().unwrap();
+        let mailbox = Arc::new(
+            Mailbox::open(&codex_state::SqliteConfig::new_for_testing(home.path().abs()))
+                .await
+                .unwrap(),
+        );
+        let queue = InputQueue::new();
+        queue.bind_durable_mailbox(Arc::clone(&mailbox));
+        queue.register_terminal_finalizer();
+        let mut changes = mailbox.subscribe();
+        let input_generation = mailbox.wait_input_generation();
+        queue.finish_terminal_finalizer();
+
+        assert!(changes.has_changed().unwrap());
+        changes.borrow_and_update();
+        assert!(!queue.has_pending_terminal_finalizers());
+        assert!(!queue.has_pending_mailbox_items().await);
+        assert_eq!(mailbox.wait_input_generation(), input_generation);
     }
 
     #[tokio::test]

@@ -41,6 +41,12 @@ impl Mailbox {
         self.change_tx.subscribe()
     }
 
+    /// Advisory wake after native producer custody changes. Consumers must rescan
+    /// native eligibility and durable records; this is not a result or an ack.
+    pub fn notify_native_custody_changed(&self) {
+        self.notify_changed();
+    }
+
     pub(crate) fn notify_changed(&self) {
         self.change_tx.send_modify(|generation| {
             *generation = generation.wrapping_add(1);

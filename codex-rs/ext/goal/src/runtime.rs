@@ -340,7 +340,7 @@ impl GoalRuntimeHandle {
                 child_agent_path,
                 &token.source_turn_id,
                 codex_protocol::protocol::AgentStatus::Completed(result),
-                Some(goal_snapshot),
+                Some((token.incarnation, goal_snapshot)),
             )
             .await;
         match delivery {

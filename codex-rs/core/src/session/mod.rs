@@ -2396,32 +2396,50 @@ impl Session {
             }
         };
 
-        if let EventMsg::TurnComplete(event) = msg
-            && matches!(status, AgentStatus::Completed(_))
-            && let Some(token) = turn_context
-                .extension_data
-                .get::<crate::agent::goal_notifications::GoalNotificationTurnToken>(
-            )
-            && let Some(store) = self
-                .services
-                .thread_extension_data
-                .get::<crate::agent::goal_notifications::GoalNotificationStore>()
-        {
-            let _ = store.publish_turn_complete(&token, event.last_agent_message.clone());
-        }
-
         let mut mailbox_captured = false;
         if mailbox_enabled {
             let completion = Self::child_completion_communication(child_agent_path, &status);
-            let goal = self
-                .services
-                .thread_extension_data
-                .get::<crate::agent::goal_notifications::GoalNotificationStore>()
-                .and_then(|store| {
-                    store
-                        .snapshot()
-                        .map(|snapshot| (store.incarnation(), snapshot))
-                });
+            let goal = match turn_context
+                .extension_data
+                .get::<crate::agent::goal_notifications::GoalNotificationTurnToken>()
+            {
+                Some(token) => {
+                    let Some(store) = self
+                        .services
+                        .thread_extension_data
+                        .get::<crate::agent::goal_notifications::GoalNotificationStore>()
+                    else {
+                        self.notify_mailbox_terminal_correlation_fault();
+                        return Some(AgentStatus::Errored(
+                            "Mailbox turn outcome could not be correlated: native goal store is unavailable"
+                                .to_string(),
+                        ));
+                    };
+                    let publishes_completion = matches!(msg, EventMsg::TurnComplete(_))
+                        && matches!(status, AgentStatus::Completed(_));
+                    let result = match msg {
+                        EventMsg::TurnComplete(event) if publishes_completion => {
+                            event.last_agent_message.clone()
+                        }
+                        _ => None,
+                    };
+                    match mailbox_goal_for_terminal_turn(
+                        store.as_ref(),
+                        &token,
+                        publishes_completion,
+                        result,
+                    ) {
+                        Ok(goal) => Some(goal),
+                        Err(error) => {
+                            self.notify_mailbox_terminal_correlation_fault();
+                            return Some(AgentStatus::Errored(format!(
+                                "Mailbox turn outcome could not be correlated: {error}"
+                            )));
+                        }
+                    }
+                }
+                None => None,
+            };
             match self
                 .services
                 .agent_control
@@ -2447,6 +2465,19 @@ impl Session {
                     )));
                 }
             }
+        } else if let EventMsg::TurnComplete(event) = msg
+            && matches!(status, AgentStatus::Completed(_))
+            && let Some(token) = turn_context
+                .extension_data
+                .get::<crate::agent::goal_notifications::GoalNotificationTurnToken>(
+            )
+            && let Some(store) = self
+                .services
+                .thread_extension_data
+                .get::<crate::agent::goal_notifications::GoalNotificationStore>()
+        {
+            // Preserve native goal notifications when mailbox custody is disabled.
+            let _ = store.publish_turn_complete(&token, event.last_agent_message.clone());
         }
 
         // An interrupted turn is terminal for mailbox accounting but not for native agent
@@ -2491,6 +2522,12 @@ impl Session {
         )
         .await;
         mailbox_enabled.then_some(status)
+    }
+
+    fn notify_mailbox_terminal_correlation_fault(&self) {
+        if let Some(mailbox) = self.services.agent_control.mailbox() {
+            mailbox.notify_runtime_fault(self.thread_id);
+        }
     }
 
     /// Sends the standard completion envelope from a spawned MultiAgentV2 child to its parent.
@@ -5074,6 +5111,41 @@ async fn build_hooks_for_config(
         shell_program: hook_shell_program,
         shell_args: hook_shell_argv,
     })
+}
+
+fn mailbox_goal_for_terminal_turn(
+    store: &crate::agent::goal_notifications::GoalNotificationStore,
+    token: &crate::agent::goal_notifications::GoalNotificationTurnToken,
+    publishes_completion: bool,
+    result: Option<String>,
+) -> Result<(
+    ThreadId,
+    crate::agent::goal_notifications::GoalNotificationSnapshot,
+), String> {
+    if store.incarnation() != token.incarnation {
+        return Err("native goal store incarnation changed".into());
+    }
+    if publishes_completion {
+        if !store.publish_turn_complete(token, result) {
+            return Err("native goal completion publication rejected the turn token".into());
+        }
+    } else if store
+        .terminal_turn_is_wake_eligible_for_token(token)
+        .is_none()
+    {
+        return Err("native goal store no longer recognizes the turn token".into());
+    }
+
+    let snapshot = store
+        .snapshot()
+        .filter(|snapshot| snapshot.binding == token.binding)
+        .ok_or_else(|| "native goal snapshot no longer matches the turn binding".to_string())?;
+    if publishes_completion
+        && snapshot.last_completed_source_turn.as_deref() != Some(token.source_turn_id.as_str())
+    {
+        return Err("native goal snapshot does not record the captured source turn".into());
+    }
+    Ok((token.incarnation, snapshot))
 }
 
 #[cfg(test)]
