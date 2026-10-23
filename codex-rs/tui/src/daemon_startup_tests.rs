@@ -254,7 +254,8 @@ async fn daemon_feature_compatibility_respects_required_and_optional_attachment(
                 "unsupported RPC" => "Experimental feature request failed",
                 _ => unreachable!(),
             };
-            if allow_embedded_fallback {
+            let restartable = scenario != "unsupported RPC";
+            if allow_embedded_fallback && !restartable {
                 assert_eq!(
                     result?,
                     Some(format!(
@@ -262,7 +263,9 @@ async fn daemon_feature_compatibility_respects_required_and_optional_attachment(
                     ))
                 );
             } else {
-                let error = result.unwrap_err().to_string();
+                let error = result.unwrap_err();
+                assert_eq!(error.restart_features.is_some(), restartable);
+                let error = error.to_string();
                 assert_eq!(
                     error,
                     format!(
