@@ -490,6 +490,7 @@ async fn send_claim_to_async(
         .post(format!("{recipient}{API_ROUTE}"))
         .header("authorization", authorization.as_str())
         .header("content-type", "application/json")
+        .header("x-ops-project-id", submission.project_id.to_string())
         .header("x-ops-runtime-proof", proof_envelope)
         .header("x-ops-request-id", submission.request_id.to_string())
         .body(body.as_slice().to_vec())

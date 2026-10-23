@@ -474,6 +474,11 @@ fn uncertain_api_post_is_not_replayed_and_diagnostics_do_not_expose_bearer() {
             .to_ascii_lowercase()
             .contains(&format!("x-ops-request-id: {request_id}"))
     );
+    assert!(
+        claim_request
+            .to_ascii_lowercase()
+            .contains("x-ops-project-id: 7")
+    );
     assert!(claim_request.contains(&body.to_string()));
     assert!(receipt_request.starts_with("POST /v0/work-items/execution-receipt/read HTTP/1.1\r\n"));
     assert!(
@@ -620,6 +625,11 @@ fn uncertain_api_post_recovers_only_from_matching_historical_receipt() {
         .recv_timeout(Duration::from_secs(2))
         .expect("captured single receipt read");
     assert!(claim_request.starts_with("POST /v0/work-items/claim HTTP/1.1\r\n"));
+    assert!(
+        claim_request
+            .to_ascii_lowercase()
+            .contains("x-ops-project-id: 7")
+    );
     assert!(receipt_request.starts_with("POST /v0/work-items/execution-receipt/read HTTP/1.1\r\n"));
     assert!(
         receipt_request
