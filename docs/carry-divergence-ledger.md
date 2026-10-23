@@ -110,6 +110,12 @@ each updated companion source before consumer adoption. Building or retaining
 this source does not authorize bearer provisioning, credential installation or
 live use.
 
+Upstream's `sedna_branch_build_installer_smoke_noexec_run_stage` additionally
+qualifies the companion installer from a noexec `/run` stage, including its
+execute-mode rejection and rollback behavior. Keep that installer and producer
+qualification on `companion/runtime-proof`; neither is part of the native
+package or native-ref workflow.
+
 ## OAuth login refresh capability
 
 Ordinary OAuth login preserves legacy issuer-less access-token-only grants, but
