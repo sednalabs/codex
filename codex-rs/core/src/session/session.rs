@@ -61,6 +61,9 @@ pub(crate) struct Session {
     pub(crate) services: SessionServices,
     /// Stable IDs of canonical native agent messages, retained even if model history is compacted.
     pub(super) mailbox_canonical_response_item_ids: Mutex<HashSet<ResponseItemId>>,
+    /// Terminal interrupted wait receipts, derived from canonical history and retained through
+    /// model-history compaction so re-emitting an old call ID cannot re-arm its deadline.
+    pub(super) mailbox_interrupted_wait_receipts: Mutex<HashMap<String, MailboxWaitReport>>,
     /// IDs whose append/flush had an indeterminate persistence result. They are never acked or
     /// retried in-place, because the canonical writer may have committed a partial append.
     pub(super) mailbox_unsettled_response_item_ids: Mutex<HashSet<ResponseItemId>>,
@@ -589,6 +592,8 @@ impl Session {
         if let InitialHistory::Forked(items) = &mut initial_history {
             Self::assign_missing_rollout_response_item_ids(items);
         }
+        let mailbox_interrupted_wait_receipts =
+            Session::mailbox_interrupted_wait_receipts(&initial_history);
         let multi_agent_version = multi_agent_version.map(OnceLock::from).unwrap_or_default();
         let initial_multi_agent_version = multi_agent_version.get().copied();
 
@@ -627,6 +632,14 @@ impl Session {
                 .unwrap_or(usize::MAX),
         );
         agent_control.mailbox_initialize(&config).await?;
+        if config.multi_agent_version_from_features() == MultiAgentVersion::V2
+            && config.features.enabled(Feature::AgentMailbox)
+            && matches!(&initial_history, InitialHistory::Resumed(_))
+        {
+            agent_control
+                .mailbox_interrupt_resumed_dispatches(thread_id)
+                .await?;
+        }
         let mailbox_canonical_response_item_ids = if agent_control.mailbox_enabled() {
             Session::canonical_agent_message_ids(&initial_history)
         } else {
@@ -1242,6 +1255,9 @@ impl Session {
                 mailbox_canonical_response_item_ids: Mutex::new(
                     mailbox_canonical_response_item_ids,
                 ),
+                mailbox_interrupted_wait_receipts: Mutex::new(
+                    mailbox_interrupted_wait_receipts,
+                ),
                 mailbox_unsettled_response_item_ids: Mutex::new(HashSet::new()),
                 mailbox_custody_gate: Mutex::new(()),
                 git_enrichment_policy,
@@ -1340,6 +1356,10 @@ impl Session {
                 InitialHistory::Cleared => codex_hooks::SessionStartSource::Clear,
             };
 
+            // A resumed mailbox wait has no surviving subscription/deadline. Repair its exact
+            // canonical call before rebuilding model history or exposing the session as ready.
+            let initial_history =
+                Box::pin(sess.repair_interrupted_mailbox_waits(initial_history)).await?;
             // record_initial_history can emit events. We record only after the SessionConfiguredEvent is emitted.
             Box::pin(sess.record_initial_history(initial_history)).await;
             if matches!(&sess.fork_persistence, ForkPersistence::Referenced { .. }) {

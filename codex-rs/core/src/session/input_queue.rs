@@ -3,11 +3,11 @@ use crate::context::TerminalCompletionNotification;
 use crate::state::ActiveTurn;
 use crate::state::MailboxDeliveryPhase;
 use crate::state::TurnState;
+use codex_agent_mailbox::InputArrival;
+use codex_agent_mailbox::Mailbox;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::user_input::UserInput;
-use codex_agent_mailbox::InputArrival;
-use codex_agent_mailbox::Mailbox;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -104,7 +104,9 @@ impl InputQueue {
     }
 
     fn reserve_mailbox_input(&self) -> Option<InputArrival> {
-        self.durable_mailbox.get().map(|mailbox| mailbox.begin_input_arrival())
+        self.durable_mailbox
+            .get()
+            .map(|mailbox| mailbox.begin_input_arrival())
     }
 
     pub(crate) async fn begin_residency_activity(&self) -> OwnedMutexGuard<()> {
@@ -704,7 +706,11 @@ impl InputQueue {
         turn_state: &Mutex<TurnState>,
         input: Vec<TurnInput>,
     ) {
-        let _input_arrival = if input.is_empty() { None } else { self.reserve_mailbox_input() };
+        let _input_arrival = if input.is_empty() {
+            None
+        } else {
+            self.reserve_mailbox_input()
+        };
         let activity = if input
             .iter()
             .any(|input| matches!(input, TurnInput::UserInput { .. }))
@@ -731,7 +737,11 @@ impl InputQueue {
         turn_state: &Mutex<TurnState>,
         input: Vec<TurnInput>,
     ) {
-        let _input_arrival = if input.is_empty() { None } else { self.reserve_mailbox_input() };
+        let _input_arrival = if input.is_empty() {
+            None
+        } else {
+            self.reserve_mailbox_input()
+        };
         turn_state.lock().await.pending_input.items.extend(input);
     }
 
@@ -917,18 +927,52 @@ mod tests {
         use codex_utils_absolute_path::test_support::PathExt;
 
         let home = tempfile::tempdir().unwrap();
-        let mailbox = Arc::new(Mailbox::open(&codex_state::SqliteConfig::new_for_testing(home.path().abs())).await.unwrap());
+        let mailbox = Arc::new(
+            Mailbox::open(&codex_state::SqliteConfig::new_for_testing(
+                home.path().abs(),
+            ))
+            .await
+            .unwrap(),
+        );
         let queue = InputQueue::new();
         queue.bind_durable_mailbox(Arc::clone(&mailbox));
         let (a, b) = (ThreadId::new(), ThreadId::new());
         let generation = mailbox.wait_input_generation();
-        let _old = mailbox.begin_wait_at("old-a".into(), a, vec![b], ReturnWhen::Any, false, generation).unwrap();
-        queue.enqueue_mailbox_communication(make_mail(AgentPath::root(), AgentPath::root(), "native input", true)).await;
+        let _old = mailbox
+            .begin_wait_at(
+                "old-a".into(),
+                a,
+                vec![b],
+                ReturnWhen::Any,
+                false,
+                generation,
+            )
+            .unwrap();
+        queue
+            .enqueue_mailbox_communication(make_mail(
+                AgentPath::root(),
+                AgentPath::root(),
+                "native input",
+                true,
+            ))
+            .await;
         assert!(queue.has_pending_mailbox_items().await);
-        assert!(matches!(mailbox.begin_wait_at("stale-b".into(), b, vec![a], ReturnWhen::All, false, generation), Err(MailboxError::StaleWaitSnapshot)));
+        assert!(matches!(
+            mailbox.begin_wait_at(
+                "stale-b".into(),
+                b,
+                vec![a],
+                ReturnWhen::All,
+                false,
+                generation
+            ),
+            Err(MailboxError::StaleWaitSnapshot)
+        ));
         // Native input invalidated the older edge before publication, so a peer cannot
         // incorrectly prove that both owners remain blocked on one another.
-        let _peer = mailbox.begin_wait("peer-b".into(), b, vec![a], ReturnWhen::All, false).unwrap();
+        let _peer = mailbox
+            .begin_wait("peer-b".into(), b, vec![a], ReturnWhen::All, false)
+            .unwrap();
     }
 
     #[tokio::test]

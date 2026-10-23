@@ -639,13 +639,22 @@ impl Session {
                     )
                     .await;
                 } else {
-                    record_pending_input(
+                    if let Err(error) = record_pending_input(
                         self,
                         &turn_context,
                         pending_input_item,
                         hook_outcome.additional_contexts,
                     )
-                    .await;
+                    .await
+                    {
+                        // Finalization is not execution admission. Accepted mailbox input
+                        // retains its durable custody when canonical history cannot take it.
+                        if let Some(mailbox) = self.services.agent_control.mailbox() {
+                            mailbox.notify_runtime_fault(self.thread_id);
+                        }
+                        let error_event = error.to_error_event(/*message_prefix*/ None);
+                        self.send_event(&turn_context, EventMsg::Error(error_event)).await;
+                    }
                 }
             }
         }

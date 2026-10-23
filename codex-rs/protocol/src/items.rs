@@ -372,6 +372,7 @@ pub enum MailboxWakeCause {
     Tool,
     Deadline,
     Cancel,
+    Interrupted,
     SubscriptionLoss,
     RuntimeFault,
     NoMatchingWork,

@@ -1,9 +1,9 @@
 use crate::error::MailboxResult;
+use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex};
-use sqlx::SqlitePool;
 use tokio::sync::watch;
 
 #[derive(Clone)]

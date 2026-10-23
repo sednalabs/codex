@@ -243,6 +243,42 @@ impl Mailbox {
         Ok(DispatchDecision::Dispatch)
     }
 
+    /// The native host calls this only while resuming this exact issuer, before it can
+    /// accept another invocation. A previous acceptance/dispatch claim cannot be retried
+    /// by guessing whether its side effect happened. Retain its input and identity, but
+    /// expose recovery-needed instead of leaving an ownerless join pending forever.
+    pub async fn interrupt_issuer_dispatches(
+        &self,
+        issuer: ThreadId,
+        limit: usize,
+    ) -> MailboxResult<usize> {
+        if limit == 0 || limit > 100 {
+            return Err(MailboxError::InvalidInput(
+                "dispatch recovery limit must be between 1 and 100".into(),
+            ));
+        }
+        let _arrival = self.begin_input_arrival();
+        let result = sqlx::query(
+            "UPDATE mailbox_work SET dispatch_state = 'recovery_needed'
+             WHERE id IN (
+               SELECT id FROM mailbox_work
+               WHERE issuer = ? AND dispatch_state IN ('accepted', 'dispatching')
+                 AND outcome_json IS NULL
+                 AND NOT EXISTS (
+                   SELECT 1 FROM mailbox_continuations AS continuation
+                   WHERE continuation.work_id = mailbox_work.id
+                     AND continuation.state IN ('pending_goal_binding', 'deferred')
+                 )
+               LIMIT ?
+             )",
+        )
+        .bind(issuer.to_string())
+        .bind(limit as i64)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() as usize)
+    }
+
     /// Record adapter-confirmed stale in-flight custody for this exact work.
     pub async fn mark_recovery_needed(&self, work_ref: &WorkRef) -> MailboxResult<()> {
         let mut transaction = self.pool.begin().await?;

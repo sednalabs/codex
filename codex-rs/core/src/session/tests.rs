@@ -2074,6 +2074,240 @@ async fn record_initial_history_reconstructs_resumed_transcript() {
 }
 
 #[tokio::test]
+async fn resumed_mailbox_wait_is_durably_interrupted_and_idempotent() {
+    let (mut session, _turn_context, rx) = make_session_and_context_with_rx().await;
+    let fault_store = Arc::new(FaultInjectingThreadStore::new(Arc::clone(
+        &session.services.thread_store,
+    )));
+    Arc::get_mut(&mut session)
+        .expect("session should be uniquely owned")
+        .services
+        .thread_store = fault_store.clone();
+    let rollout_path = attach_thread_persistence(
+        Arc::get_mut(&mut session).expect("session should be uniquely owned"),
+    )
+    .await;
+    let turn_id = "turn-with-interrupted-mailbox-wait".to_string();
+    let call_id = "wait-call-interrupted".to_string();
+    let pending = codex_protocol::items::MailboxWaitSelectionItem {
+        work_ref: Some("work_exact-42".to_string()),
+        message_id: None,
+        agent: Some("worker".to_string()),
+        status: "running".to_string(),
+    };
+    let report = codex_protocol::items::MailboxWaitReport {
+        requested_targets: vec!["work_exact-42".to_string()],
+        requested_replies_to: Vec::new(),
+        return_when: codex_protocol::items::MailboxWaitReturnWhen::All,
+        completed: Vec::new(),
+        pending: vec![pending.clone()],
+        completion_reason: None,
+        condition_satisfied: false,
+        quiet_count: 2,
+        wake_sender: None,
+        wake_ref: None,
+    };
+    let started_item = TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+        id: call_id.clone(),
+        tool: CollabAgentTool::Wait,
+        status: CollabAgentToolCallStatus::InProgress,
+        sender_thread_id: session.thread_id,
+        receiver_thread_ids: Vec::new(),
+        receiver_agents: Vec::new(),
+        prompt: None,
+        model: None,
+        reasoning_effort: None,
+        requested_model: None,
+        requested_reasoning_effort: None,
+        agents_states: HashMap::new(),
+        wake_notifications: None,
+        completion_reason: None,
+        wake_cause: None,
+        mailbox_wait_report: Some(report),
+    });
+    let initial_items = vec![
+        RolloutItem::ResponseItem(ResponseItem::FunctionCall {
+            id: None,
+            name: "wait_agent".to_string(),
+            namespace: None,
+            arguments: "{}".to_string(),
+            call_id: call_id.clone(),
+            internal_chat_message_metadata_passthrough: None,
+        }),
+        RolloutItem::EventMsg(EventMsg::ItemStarted(ItemStartedEvent {
+            thread_id: session.thread_id,
+            turn_id: turn_id.clone(),
+            item: started_item,
+            started_at_ms: 10,
+        })),
+    ];
+    session
+        .try_persist_rollout_items(&initial_items)
+        .await
+        .expect("initial wait history should append");
+    session.flush_rollout().await.expect("initial wait history should flush");
+
+    let InitialHistory::Resumed(resumed) = RolloutRecorder::get_rollout_history(&rollout_path)
+        .await
+        .expect("read initial rollout history")
+    else {
+        panic!("expected resumed history");
+    };
+    fault_store
+        .fail_flush_once
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        session
+            .repair_interrupted_mailbox_waits(InitialHistory::Resumed(resumed))
+            .await
+            .is_err(),
+        "repair must propagate a failed durability barrier"
+    );
+    assert!(
+        rx.try_recv().is_err(),
+        "an interrupted completion must not be published before its flush"
+    );
+
+    let InitialHistory::Resumed(resumed_after_failed_flush) =
+        RolloutRecorder::get_rollout_history(&rollout_path)
+            .await
+            .expect("reload history after failed durability barrier")
+    else {
+        panic!("expected resumed history after failed durability barrier");
+    };
+    session
+        .repair_interrupted_mailbox_waits(InitialHistory::Resumed(resumed_after_failed_flush))
+        .await
+        .expect("retry should finish or reconcile a partially persisted repair");
+    let InitialHistory::Resumed(persisted_repair) =
+        RolloutRecorder::get_rollout_history(&rollout_path)
+            .await
+            .expect("read repaired rollout history")
+    else {
+        panic!("expected resumed history after successful repair");
+    };
+    let repaired = InitialHistory::Resumed(persisted_repair);
+    let InitialHistory::Resumed(repaired_history) = &repaired else {
+        panic!("repair should preserve resumed history");
+    };
+    let repaired_event = repaired_history
+        .history
+        .iter()
+        .find_map(|item| match item {
+            RolloutItem::EventMsg(EventMsg::ItemCompleted(event))
+                if event.item.id() == call_id =>
+            {
+                Some(event)
+            }
+            _ => None,
+        })
+        .expect("interrupted wait should have a terminal item event");
+    let TurnItem::CollabAgentToolCall(repaired_call) = &repaired_event.item else {
+        panic!("expected a collaboration wait item");
+    };
+    assert_eq!(repaired_call.status, CollabAgentToolCallStatus::Failed);
+    let repaired_report = repaired_call
+        .mailbox_wait_report
+        .as_ref()
+        .expect("terminal wait should keep its structured report");
+    assert_eq!(
+        repaired_report.completion_reason,
+        Some(codex_protocol::items::MailboxWakeCause::Interrupted)
+    );
+    assert!(!repaired_report.condition_satisfied);
+    assert_eq!(repaired_report.pending, vec![pending.clone()]);
+
+    let repaired_output_count = repaired_history
+        .history
+        .iter()
+        .filter(|item| {
+            matches!(
+                item,
+                RolloutItem::ResponseItem(ResponseItem::FunctionCallOutput {
+                    call_id: output_call_id,
+                    ..
+                }) if output_call_id == &call_id
+            )
+        })
+        .count();
+    assert_eq!(repaired_output_count, 1, "same call must have one durable result");
+    let output_text = repaired_history
+        .history
+        .iter()
+        .find_map(|item| match item {
+            RolloutItem::ResponseItem(ResponseItem::FunctionCallOutput {
+                call_id: output_call_id,
+                output,
+                ..
+            }) if output_call_id == &call_id => output.body.to_text(),
+            _ => None,
+        })
+        .expect("same provider call should have a durable result");
+    let output_report = serde_json::from_str::<codex_protocol::items::MailboxWaitReport>(
+        &output_text,
+    )
+    .expect("durable provider result should preserve the structured wait report");
+    assert_eq!(
+        output_report.completion_reason,
+        Some(codex_protocol::items::MailboxWakeCause::Interrupted)
+    );
+    assert!(!output_report.condition_satisfied);
+    assert_eq!(output_report.pending, vec![pending.clone()]);
+
+    let replayed = session
+        .repair_interrupted_mailbox_waits(repaired.clone())
+        .await
+        .expect("replaying repaired history should be a no-op");
+    session.record_initial_history(replayed.clone()).await;
+    let InitialHistory::Resumed(replayed_history) = replayed else {
+        panic!("replay should preserve resumed history");
+    };
+    let terminal_events = replayed_history
+        .history
+        .iter()
+        .filter(|item| {
+            matches!(
+                item,
+                RolloutItem::EventMsg(EventMsg::ItemCompleted(event))
+                    if event.item.id() == call_id
+            )
+        })
+        .count();
+    let durable_outputs = replayed_history
+        .history
+        .iter()
+        .filter(|item| {
+            matches!(
+                item,
+                RolloutItem::ResponseItem(ResponseItem::FunctionCallOutput {
+                    call_id: output_call_id,
+                    ..
+                }) if output_call_id == &call_id
+            )
+        })
+        .count();
+    assert_eq!(terminal_events, 1);
+    assert_eq!(durable_outputs, 1);
+
+    let model_history = session.clone_history().await;
+    assert_eq!(
+        model_history
+            .raw_items()
+            .iter()
+            .filter(|item| {
+                matches!(
+                    item,
+                    ResponseItem::FunctionCallOutput { call_id: output_call_id, .. }
+                        if output_call_id == &call_id
+                )
+            })
+            .count(),
+        1,
+        "resume model history must not replay the same wait call"
+    );
+}
+
+#[tokio::test]
 async fn record_conversation_items_stamps_missing_turn_id_and_preserves_existing_turn_id() {
     let (session, turn_context) = make_session_and_context().await;
     let mut fresh_item = user_message("fresh");
@@ -2502,7 +2736,10 @@ async fn canonical_append_and_flush_failures_do_not_acknowledge_mailbox_messages
     let fault_store = Arc::new(FaultInjectingThreadStore::new(Arc::clone(
         &session.services.thread_store,
     )));
-    session.services.thread_store = fault_store.clone();
+    Arc::get_mut(&mut session)
+        .expect("session should be uniquely owned")
+        .services
+        .thread_store = fault_store.clone();
     attach_thread_persistence(Arc::get_mut(&mut session).expect("unique session")).await;
 
     let append_communication = accept_mailbox_note(
@@ -2604,7 +2841,10 @@ async fn disabled_turn_does_not_settle_shared_mailbox_state() {
             },
         )
         .await;
-    disabled_session.services.agent_control = shared_control;
+    Arc::get_mut(&mut disabled_session)
+        .expect("disabled session should be uniquely owned")
+        .services
+        .agent_control = shared_control;
     let communication = accept_mailbox_note(
         mailbox.as_ref(),
         ThreadId::new(),
@@ -5094,7 +5334,7 @@ async fn open_thread_persistence(session: &mut Session) -> PathBuf {
         .expect("thread should have rollout path")
 }
 
-async fn attach_thread_persistence(session: &mut Session) -> PathBuf {
+pub(crate) async fn attach_thread_persistence(session: &mut Session) -> PathBuf {
     let rollout_path = open_thread_persistence(session).await;
     session.ensure_rollout_materialized().await;
     session
@@ -6405,6 +6645,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         guardian_review_session: crate::guardian::GuardianReviewSessionManager::default(),
         services,
         mailbox_canonical_response_item_ids: Mutex::new(HashSet::new()),
+        mailbox_interrupted_wait_receipts: Mutex::new(HashMap::new()),
         mailbox_unsettled_response_item_ids: Mutex::new(HashSet::new()),
         mailbox_custody_gate: Mutex::new(()),
         git_enrichment_policy: GitEnrichmentPolicy::Fresh,
@@ -8645,6 +8886,7 @@ where
         guardian_review_session: crate::guardian::GuardianReviewSessionManager::default(),
         services,
         mailbox_canonical_response_item_ids: Mutex::new(HashSet::new()),
+        mailbox_interrupted_wait_receipts: Mutex::new(HashMap::new()),
         mailbox_unsettled_response_item_ids: Mutex::new(HashSet::new()),
         mailbox_custody_gate: Mutex::new(()),
         git_enrichment_policy: GitEnrichmentPolicy::Fresh,

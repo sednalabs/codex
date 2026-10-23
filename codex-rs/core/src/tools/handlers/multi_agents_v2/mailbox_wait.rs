@@ -73,6 +73,12 @@ impl CoreToolRuntime for Handler {
 
 async fn handle_wait(invocation: ToolInvocation) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
     let ToolInvocation { session, turn, payload, call_id, cancellation_token, .. } = invocation;
+    if let Some(report) = session.mailbox_interrupted_wait_receipt(&call_id).await {
+        return Ok(boxed_tool_output(FunctionToolOutput::from_text(
+            tool_output_json_text(&report, "wait_agent"),
+            Some(false),
+        )));
+    }
     let args: WaitArgs = parse_arguments(&function_arguments(payload)?)?;
     let _compatibility_only = args.native_event_wait;
     let mailbox = mailbox_for(&session)?;

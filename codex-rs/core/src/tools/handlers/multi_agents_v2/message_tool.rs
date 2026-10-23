@@ -250,6 +250,7 @@ async fn handle_message_submission_inner(
         ..
     } = invocation;
     let _ = payload;
+    let mailbox_enabled = turn.config.features.enabled(codex_features::Feature::AgentMailbox);
     let receiver_thread_id = resolve_agent_target(&session, &turn, &target).await?;
     let receiver_agent = session
         .services
@@ -269,7 +270,7 @@ async fn handle_message_submission_inner(
     let receiver_agent_path = receiver_agent.agent_path.clone().ok_or_else(|| {
         FunctionCallError::RespondToModel("target agent is missing an agent_path".to_string())
     })?;
-    if mode == MessageDeliveryMode::TriggerTurn
+    if mailbox_enabled && mode == MessageDeliveryMode::TriggerTurn
         && let Some(work) = session
             .services
             .agent_control
@@ -390,8 +391,10 @@ async fn handle_message_submission_inner(
         MessageDeliveryMode::QueueOnly => AgentCommunicationKind::Message,
         MessageDeliveryMode::TriggerTurn => AgentCommunicationKind::Followup,
     };
-    let context =
-        AgentCommunicationContext::new(kind, session.thread_id).with_native_key(call_id.clone());
+    let mut context = AgentCommunicationContext::new(kind, session.thread_id);
+    if mailbox_enabled {
+        context = context.with_native_key(call_id.clone());
+    }
     let result = delivery
         .send(mode.apply(communication), context, interrupt)
         .await
@@ -411,6 +414,19 @@ async fn handle_message_submission_inner(
     )
     .await;
 
+    let accepted_work = if mailbox_enabled && mode == MessageDeliveryMode::TriggerTurn {
+        session.services.agent_control.mailbox_work_for_key(session.thread_id, &call_id)
+            .await.map_err(|err| collab_agent_error(receiver_thread_id, err))?
+    } else {
+        None
+    };
+    let dispatch_state = if let Some(work) = accepted_work.as_ref()
+        && let Some(mailbox) = session.services.agent_control.mailbox()
+    {
+        Some(mailbox.dispatch_state(work).await.map_err(super::mailbox_message::mailbox_error)?)
+    } else {
+        None
+    };
     let output = match mode {
         MessageDeliveryMode::QueueOnly => {
             let receipt = SendMessageReceipt {
@@ -441,18 +457,8 @@ async fn handle_message_submission_inner(
                 &FollowupTaskResult {
                     task_name: receiver_agent_path.to_string(),
                     recipient_task_name: receiver_agent_path.to_string(),
-                    work_ref: session
-                        .services
-                        .agent_control
-                        .mailbox_work_for_key(session.thread_id, &call_id)
-                        .await
-                        .map_err(|err| collab_agent_error(receiver_thread_id, err))?
-                        .map(|work| work.id),
-                    dispatch_state: session
-                        .services
-                        .agent_control
-                        .mailbox_enabled()
-                        .then_some(codex_agent_mailbox::DispatchState::Dispatched),
+                    work_ref: accepted_work.map(|work| work.id),
+                    dispatch_state,
                     effective_identity_scope: "recipient",
                     effective_model: Some(receiver_config.model),
                     effective_model_provider_id: Some(receiver_config.model_provider_id),

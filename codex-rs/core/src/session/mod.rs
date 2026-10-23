@@ -103,12 +103,18 @@ use codex_protocol::config_types::Settings;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::dynamic_tools::DynamicToolResponse;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
+use codex_protocol::items::CollabAgentTool;
+use codex_protocol::items::CollabAgentToolCallItem;
+use codex_protocol::items::CollabAgentToolCallStatus;
 use codex_protocol::items::EnteredReviewModeItem;
+use codex_protocol::items::MailboxWaitReport;
+use codex_protocol::items::MailboxWakeCause;
 use codex_protocol::items::TurnItem;
 use codex_protocol::items::UserMessageItem;
 use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::models::AdditionalPermissionProfile;
 use codex_protocol::models::BaseInstructions;
+use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::SandboxEnforcement;
 use codex_protocol::models::format_allow_prefixes;
@@ -1437,6 +1443,209 @@ impl Session {
     pub(crate) async fn clear_connector_selection(&self) {
         let mut state = self.state.lock().await;
         state.clear_connector_selection();
+    }
+
+    async fn repair_interrupted_mailbox_waits(
+        &self,
+        conversation_history: InitialHistory,
+    ) -> CodexResult<InitialHistory> {
+        let mut resumed_history = match conversation_history {
+            InitialHistory::Resumed(resumed_history) => resumed_history,
+            other => return Ok(other),
+        };
+        if resumed_history.conversation_id != self.thread_id {
+            return Err(CodexErr::Fatal(
+                "resumed mailbox-wait repair targeted a different thread".to_string(),
+            ));
+        }
+
+        // Reconcile only lifecycle items already present in this exact resumed history. A
+        // mailbox wait has no durable timer or subscription to re-arm; its original provider
+        // call is closed with a tool result so it cannot be replayed as the same call.
+        let mut rollout_items = Arc::unwrap_or_clone(resumed_history.history);
+        let mut wait_states = HashMap::<(String, String), (CollabAgentToolCallItem, bool)>::new();
+        let mut wait_order = Vec::new();
+        let mut wait_call_ids = HashSet::<String>::new();
+        let mut wait_outputs = HashMap::<String, String>::new();
+        let mut saw_interrupted_terminal = false;
+        for rollout_item in &rollout_items {
+            match rollout_item {
+                RolloutItem::EventMsg(EventMsg::ItemStarted(event)) => {
+                    let completed = false;
+                    let TurnItem::CollabAgentToolCall(call) = &event.item else {
+                        continue;
+                    };
+                    if call.tool != CollabAgentTool::Wait
+                        || call.mailbox_wait_report.is_none()
+                    {
+                        continue;
+                    }
+                    saw_interrupted_terminal |= call
+                        .mailbox_wait_report
+                        .as_ref()
+                        .and_then(|report| report.completion_reason)
+                        == Some(MailboxWakeCause::Interrupted);
+                    let key = (event.turn_id.clone(), call.id.clone());
+                    if !wait_states.contains_key(&key) {
+                        wait_order.push(key.clone());
+                    }
+                    wait_states.insert(key, (call.clone(), completed));
+                }
+                RolloutItem::EventMsg(EventMsg::ItemCompleted(event)) => {
+                    let completed = true;
+                    let TurnItem::CollabAgentToolCall(call) = &event.item else {
+                        continue;
+                    };
+                    if call.tool != CollabAgentTool::Wait
+                        || call.mailbox_wait_report.is_none()
+                    {
+                        continue;
+                    }
+                    let key = (event.turn_id.clone(), call.id.clone());
+                    if !wait_states.contains_key(&key) {
+                        wait_order.push(key.clone());
+                    }
+                    wait_states.insert(key, (call.clone(), completed));
+                }
+                RolloutItem::ResponseItem(ResponseItem::FunctionCall {
+                    call_id,
+                    name,
+                    ..
+                }) if name == "wait_agent" => {
+                    wait_call_ids.insert(call_id.clone());
+                }
+                RolloutItem::ResponseItem(ResponseItem::FunctionCallOutput {
+                    call_id, output, ..
+                }) => {
+                    if let Some(text) = output.body.to_text() {
+                        wait_outputs.insert(call_id.clone(), text);
+                    }
+                }
+                _ => {}
+            }
+        }
+        saw_interrupted_terminal |= wait_call_ids.iter().any(|call_id| {
+            wait_outputs
+                .get(call_id)
+                .and_then(|output| serde_json::from_str::<MailboxWaitReport>(output).ok())
+                .and_then(|report| report.completion_reason)
+                == Some(MailboxWakeCause::Interrupted)
+        });
+
+        let mut repair_items = Vec::new();
+        let mut repair_events = Vec::new();
+        for (turn_id, call_id) in wait_order {
+            let Some((mut call, already_completed)) =
+                wait_states.remove(&(turn_id.clone(), call_id.clone()))
+            else {
+                continue;
+            };
+
+            let report = match wait_outputs.get(&call_id) {
+                Some(output) => {
+                    let report = serde_json::from_str::<MailboxWaitReport>(output).map_err(|_| {
+                        CodexErr::Fatal(
+                            "cannot reconcile an unfinished mailbox wait with its stored tool result"
+                                .to_string(),
+                        )
+                    })?;
+                    if report.completion_reason.is_none() {
+                        return Err(CodexErr::Fatal(
+                            "stored mailbox wait tool result has no terminal completion reason"
+                                .to_string(),
+                        ));
+                    }
+                    if !already_completed {
+                        call.status = if report.completion_reason
+                            == Some(MailboxWakeCause::Interrupted)
+                        {
+                            CollabAgentToolCallStatus::Failed
+                        } else {
+                            CollabAgentToolCallStatus::Completed
+                        };
+                    }
+                    report
+                }
+                None => {
+                    let mut report = call
+                        .mailbox_wait_report
+                        .clone()
+                        .expect("mailbox wait states always carry their report");
+                    if !already_completed {
+                        report.completion_reason = Some(MailboxWakeCause::Interrupted);
+                        report.condition_satisfied = false;
+                        call.status = CollabAgentToolCallStatus::Failed;
+                    } else if report.completion_reason.is_none() {
+                        return Err(CodexErr::Fatal(
+                            "completed mailbox wait has no terminal completion reason".to_string(),
+                        ));
+                    }
+                    report
+                }
+            };
+            if !already_completed {
+                call.mailbox_wait_report = Some(report.clone());
+                let completed_event = EventMsg::ItemCompleted(ItemCompletedEvent {
+                    thread_id: self.thread_id,
+                    turn_id: turn_id.clone(),
+                    item: TurnItem::CollabAgentToolCall(call),
+                    completed_at_ms: now_unix_timestamp_ms(),
+                });
+                repair_events.push((turn_id, completed_event.clone()));
+                repair_items.push(RolloutItem::EventMsg(completed_event));
+            }
+
+            if !wait_outputs.contains_key(&call_id) && wait_call_ids.contains(&call_id) {
+                let output_text = serde_json::to_string(&report).map_err(|error| {
+                    CodexErr::Fatal(format!(
+                        "failed to serialize recovered mailbox wait result: {error}"
+                    ))
+                })?;
+                let mut output = FunctionCallOutputPayload::from_text(output_text);
+                output.success = Some(
+                    report.completion_reason != Some(MailboxWakeCause::Interrupted),
+                );
+                let mut output_item = ResponseItem::FunctionCallOutput {
+                    id: Some(ResponseItemId::with_suffix(
+                        "fco",
+                        format!("mailbox-interrupted:{call_id}"),
+                    )),
+                    call_id,
+                    output,
+                    internal_chat_message_metadata_passthrough: None,
+                };
+                output_item.set_turn_id_if_missing(&turn_id);
+                repair_items.push(RolloutItem::ResponseItem(output_item));
+            }
+        }
+
+        if !repair_items.is_empty() || saw_interrupted_terminal {
+            if self.live_thread().is_none() {
+                return Err(CodexErr::Fatal(
+                    "cannot durably repair an interrupted mailbox wait without thread persistence"
+                        .to_string(),
+                ));
+            }
+            if !repair_items.is_empty() {
+                self.try_persist_rollout_items(&repair_items).await?;
+            }
+            self.flush_rollout().await?;
+            for (turn_id, msg) in repair_events {
+                self.send_event_raw_with_persistence(
+                    Event { id: turn_id, msg },
+                    /*persist*/ false,
+                )
+                .await;
+            }
+            if !repair_items.is_empty() {
+                rollout_items.extend(repair_items);
+            }
+        }
+
+        self.refresh_mailbox_interrupted_wait_receipts(&rollout_items)
+            .await;
+        resumed_history.history = Arc::new(rollout_items);
+        Ok(InitialHistory::Resumed(resumed_history))
     }
 
     async fn record_initial_history(&self, conversation_history: InitialHistory) {
@@ -3281,6 +3490,108 @@ impl Session {
             }));
         }
         ids
+    }
+
+    pub(super) fn mailbox_interrupted_wait_receipts(
+        initial_history: &InitialHistory,
+    ) -> HashMap<String, MailboxWaitReport> {
+        let items: &[RolloutItem] = match initial_history {
+            InitialHistory::New | InitialHistory::Cleared => return HashMap::new(),
+            InitialHistory::Resumed(resumed) => resumed.history.as_slice(),
+            InitialHistory::Forked(items) => items,
+        };
+        Self::mailbox_interrupted_wait_receipts_from_items(items)
+    }
+
+    fn mailbox_interrupted_wait_receipts_from_items(
+        items: &[RolloutItem],
+    ) -> HashMap<String, MailboxWaitReport> {
+        let mut wait_call_ids = HashSet::new();
+        let mut output_receipts = HashMap::new();
+        let mut receipts = HashMap::new();
+        for item in items {
+            match item {
+                RolloutItem::EventMsg(EventMsg::ItemCompleted(event)) => {
+                    if let TurnItem::CollabAgentToolCall(call) = &event.item
+                        && call.tool == CollabAgentTool::Wait
+                        && let Some(report) = call.mailbox_wait_report.as_ref()
+                        && report.completion_reason == Some(MailboxWakeCause::Interrupted)
+                    {
+                        receipts.insert(call.id.clone(), report.clone());
+                    }
+                }
+                RolloutItem::ResponseItem(response_item) => {
+                    Self::record_interrupted_wait_response_item(
+                        response_item,
+                        &mut wait_call_ids,
+                        &mut output_receipts,
+                    );
+                }
+                RolloutItem::Compacted(compacted) => {
+                    for response_item in compacted.replacement_history.as_deref().unwrap_or_default()
+                    {
+                        Self::record_interrupted_wait_response_item(
+                            response_item,
+                            &mut wait_call_ids,
+                            &mut output_receipts,
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+        for call_id in wait_call_ids {
+            if let Some(report) = output_receipts.remove(&call_id) {
+                receipts.insert(call_id, report);
+            }
+        }
+        receipts
+    }
+
+    fn record_interrupted_wait_response_item(
+        item: &ResponseItem,
+        wait_call_ids: &mut HashSet<String>,
+        output_receipts: &mut HashMap<String, MailboxWaitReport>,
+    ) {
+        match item {
+            ResponseItem::FunctionCall { call_id, name, .. } if name == "wait_agent" => {
+                wait_call_ids.insert(call_id.clone());
+            }
+            ResponseItem::FunctionCallOutput { call_id, output, .. } => {
+                let Some(report) = output
+                    .body
+                    .to_text()
+                    .and_then(|text| serde_json::from_str::<MailboxWaitReport>(&text).ok())
+                    .filter(|report| {
+                        report.completion_reason == Some(MailboxWakeCause::Interrupted)
+                    })
+                else {
+                    return;
+                };
+                output_receipts.insert(call_id.clone(), report);
+            }
+            _ => {}
+        }
+    }
+
+    pub(crate) async fn mailbox_interrupted_wait_receipt(
+        &self,
+        call_id: &str,
+    ) -> Option<MailboxWaitReport> {
+        self.mailbox_interrupted_wait_receipts
+            .lock()
+            .await
+            .get(call_id)
+            .cloned()
+    }
+
+    /// Rebuilds the in-memory same-call guard from canonical rollout history.
+    pub(crate) async fn refresh_mailbox_interrupted_wait_receipts(
+        &self,
+        items: &[RolloutItem],
+    ) {
+        *self.mailbox_interrupted_wait_receipts.lock().await =
+            Self::mailbox_interrupted_wait_receipts_from_items(items);
     }
 
     pub(crate) fn response_item_from_user_input(&self, input: Vec<UserInput>) -> ResponseItem {

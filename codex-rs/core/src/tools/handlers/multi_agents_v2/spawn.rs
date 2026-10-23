@@ -118,8 +118,11 @@ async fn handle_spawn_agent(
         .get_agent_path()
         .unwrap_or_else(AgentPath::root);
     let communication = communication_from_tool_message(author, new_agent_path.clone(), message);
-    let context = AgentCommunicationContext::new(AgentCommunicationKind::Spawn, session.thread_id)
-        .with_native_key(call_id.clone());
+    let mailbox_enabled = turn.config.features.enabled(codex_features::Feature::AgentMailbox);
+    let mut context = AgentCommunicationContext::new(AgentCommunicationKind::Spawn, session.thread_id);
+    if mailbox_enabled {
+        context = context.with_native_key(call_id.clone());
+    }
     let spawned_agent = Box::pin(
         session
             .services
@@ -141,13 +144,13 @@ async fn handle_spawn_agent(
     .await
     .map_err(collab_spawn_error)?;
     let new_thread_id = spawned_agent.thread_id;
-    let work_ref = session
+    let work_ref = if mailbox_enabled { session
         .services
         .agent_control
         .mailbox_work_for_key(session.thread_id, &call_id)
         .await
         .map_err(collab_spawn_error)?
-        .map(|work| work.id);
+        .map(|work| work.id) } else { None };
     let agent_snapshot = session
         .services
         .agent_control

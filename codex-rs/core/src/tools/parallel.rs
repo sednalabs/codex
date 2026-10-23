@@ -1253,7 +1253,7 @@ mod tests {
         };
         let cancellation_token = CancellationToken::new();
         let mut response_task = tokio::spawn(
-            runtime.handle_tool_call(spawn_call(), cancellation_token.clone()),
+            runtime.clone().handle_tool_call(spawn_call(), cancellation_token.clone()),
         );
 
         let child_thread_id =

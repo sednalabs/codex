@@ -66,10 +66,11 @@ and `suite::agent_mailbox`, including
 `unadmitted_canonical_message_survives_precreated_failure_and_manual_compaction`.
 Its native cancellation slice includes
 `configured_v2_mailbox_spawn_fast_completion_cancellation_retry_reuses_native_work`.
-The notification visibility lane also runs protocol/TUI `mailbox` tests so the
-same structured report is exercised in live and replay consumers.
+The notification visibility lane also runs protocol/app-server-protocol/TUI
+`mailbox` tests so the same structured report is exercised in live and replay
+consumers, including interrupted-wait recovery with pending references retained.
 
-Exact-target V2 `wait_agent` ignores queue-only (`trigger_turn=false`) mailbox
+Without the opt-in mailbox feature, exact-target V2 `wait_agent` ignores queue-only (`trigger_turn=false`) mailbox
 activity while preserving durable FIFO delivery and notification summaries;
 targetless waits retain broad mailbox wake behavior. The focused guardrail is
 `codex.core-multi-agent-orchestration-targeted`, covering

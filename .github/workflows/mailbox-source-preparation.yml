@@ -15,7 +15,7 @@ jobs:
     env:
       CARGO_INCREMENTAL: "0"
       RUST_MIN_STACK: "8388608"
-      PREPARATION_ATTEMPT: "4"
+      PREPARATION_ATTEMPT: "5"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -71,6 +71,9 @@ jobs:
         env:
           INSTA_UPDATE: always
         run: cargo test --locked -p codex-tui --lib mailbox -- --test-threads=1
+      - name: Verify interrupted mailbox wait history replay
+        working-directory: codex-rs
+        run: cargo test --locked -p codex-app-server-protocol --lib mailbox -- --test-threads=1
       - name: Retain the library contract result
         if: always()
         run: test '${{ steps.library.outcome }}' = success
@@ -80,6 +83,12 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/mailbox-source-preparation"
+          for generated_type in MailboxWaitReport MailboxWaitReturnWhen MailboxWaitSelectionItem MailboxWakeCause; do
+            generated_path="codex-rs/app-server-protocol/schema/typescript/${generated_type}.ts"
+            if [[ -f "$generated_path" ]]; then
+              git add --intent-to-add -- "$generated_path"
+            fi
+          done
           git diff --binary > "$RUNNER_TEMP/mailbox-source-preparation/source.patch"
           git rev-parse HEAD > "$RUNNER_TEMP/mailbox-source-preparation/source-sha.txt"
           git status --short > "$RUNNER_TEMP/mailbox-source-preparation/status.txt"

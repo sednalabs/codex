@@ -1,6 +1,6 @@
 use crate::error::{MailboxError, MailboxResult};
 use crate::message_delivery::envelope_from_row;
-use crate::message_rules::{validate_reply_tx, validate_replacement_tx};
+use crate::message_rules::{validate_replacement_tx, validate_reply_tx};
 use crate::store::Mailbox;
 use crate::types::{Envelope, MessageDraft, MessageKind, WorkRef};
 use crate::work::exact_work;
@@ -52,7 +52,6 @@ impl Mailbox {
         self.notify_changed();
         Ok(envelope)
     }
-
 }
 
 pub(crate) async fn insert_message_tx(
@@ -89,7 +88,11 @@ pub(crate) async fn insert_message_tx(
     })?;
     let communication_json = serde_json::to_string(&draft.communication)?;
     let body_bytes = draft.communication.content.len()
-        + draft.communication.encrypted_content.as_ref().map_or(0, String::len);
+        + draft
+            .communication
+            .encrypted_content
+            .as_ref()
+            .map_or(0, String::len);
     if body_bytes > MAX_MESSAGE_BYTES
         || request_json.len() > MAX_RECORD_BYTES
         || communication_json.len() > MAX_RECORD_BYTES
@@ -136,7 +139,8 @@ pub(crate) async fn insert_message_tx(
         validate_replacement_tx(transaction, supersedes, &draft).await?;
     }
 
-    if draft.supersedes.is_none() && draft.kind == MessageKind::Progress && !draft.activate_if_idle {
+    if draft.supersedes.is_none() && draft.kind == MessageKind::Progress && !draft.activate_if_idle
+    {
         if let Some(work_ref) = draft.work_ref.as_ref() {
             if let Some(existing) = sqlx::query(
                 "SELECT * FROM mailbox_messages
@@ -167,24 +171,24 @@ pub(crate) async fn insert_message_tx(
         }
     }
 
-    let collision: Option<String> = sqlx::query_scalar(
-        "SELECT id FROM mailbox_messages WHERE id = ? LIMIT 1",
-    )
-    .bind(&id)
-    .fetch_optional(&mut **transaction)
-    .await?;
+    let collision: Option<String> =
+        sqlx::query_scalar("SELECT id FROM mailbox_messages WHERE id = ? LIMIT 1")
+            .bind(&id)
+            .fetch_optional(&mut **transaction)
+            .await?;
     if collision.is_some() {
         return Err(MailboxError::IdempotencyConflict);
     }
     let pending_count = pending_count_tx(transaction, &draft.recipient.to_string()).await?;
     if pending_count >= crate::messages::MAX_PENDING_PER_RECIPIENT {
-        return Err(MailboxError::Backpressure("recipient pending-message count"));
+        return Err(MailboxError::Backpressure(
+            "recipient pending-message count",
+        ));
     }
-    let total_count: i64 = sqlx::query_scalar(
-        "SELECT item_count FROM mailbox_counts WHERE name = 'message'",
-    )
-        .fetch_one(&mut **transaction)
-        .await?;
+    let total_count: i64 =
+        sqlx::query_scalar("SELECT item_count FROM mailbox_counts WHERE name = 'message'")
+            .fetch_one(&mut **transaction)
+            .await?;
     if total_count >= MAX_TOTAL_MESSAGES {
         return Err(MailboxError::Backpressure("retained message count"));
     }
@@ -206,7 +210,13 @@ pub(crate) async fn insert_message_tx(
     .bind(serde_json::to_string(&draft.communication.recipient)?)
     .bind(&communication_json)
     .bind(kind_json)
-    .bind(draft.work_ref.as_ref().map(serde_json::to_string).transpose()?)
+    .bind(
+        draft
+            .work_ref
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?,
+    )
     .bind(draft.work_ref.as_ref().map(|work_ref| work_ref.id.as_str()))
     .bind(&draft.reply_to)
     .bind(&draft.supersedes)
@@ -220,8 +230,16 @@ pub(crate) async fn insert_message_tx(
     )
     .bind(&id)
     .bind(draft.sender.to_string())
-    .bind(if draft.activate_if_idle { "pending" } else { "decided" })
-    .bind(if draft.activate_if_idle { None } else { Some("not_requested") })
+    .bind(if draft.activate_if_idle {
+        "pending"
+    } else {
+        "decided"
+    })
+    .bind(if draft.activate_if_idle {
+        None
+    } else {
+        Some("not_requested")
+    })
     .execute(&mut **transaction)
     .await?;
     add_invocation_tx(transaction, &draft.invocation_key, &request_json, &id).await?;
@@ -241,10 +259,10 @@ pub(crate) async fn insert_message_tx(
             "UPDATE mailbox_messages SET superseded_by = ?
              WHERE id = ? AND superseded_by IS NULL AND withdrawn = 0",
         )
-            .bind(&id)
-            .bind(old_id)
-            .execute(&mut **transaction)
-            .await?;
+        .bind(&id)
+        .bind(old_id)
+        .execute(&mut **transaction)
+        .await?;
         if replaced.rows_affected() == 1 {
             if let Some(old) = old {
                 let unread = old.try_get::<i64, _>("canonical")? == 0
@@ -314,13 +332,13 @@ async fn pending_count_tx(
     transaction: &mut Transaction<'_, Sqlite>,
     recipient: &str,
 ) -> MailboxResult<i64> {
-    Ok(sqlx::query_scalar(
-        "SELECT item_count FROM mailbox_pending_counts WHERE recipient = ?",
+    Ok(
+        sqlx::query_scalar("SELECT item_count FROM mailbox_pending_counts WHERE recipient = ?")
+            .bind(recipient)
+            .fetch_optional(&mut **transaction)
+            .await?
+            .unwrap_or(0),
     )
-    .bind(recipient)
-    .fetch_optional(&mut **transaction)
-    .await?
-    .unwrap_or(0))
 }
 
 async fn increment_pending_count(
@@ -380,7 +398,9 @@ fn validate_id(id: &str) -> MailboxResult<()> {
     if id.starts_with("amsg_") && id.len() > 5 && id.len() <= 256 {
         Ok(())
     } else {
-        Err(MailboxError::InvalidInput("expected stable amsg_* ID".into()))
+        Err(MailboxError::InvalidInput(
+            "expected stable amsg_* ID".into(),
+        ))
     }
 }
 

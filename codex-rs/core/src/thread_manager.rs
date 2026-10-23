@@ -1420,7 +1420,7 @@ impl ThreadManager {
             }
         }
 
-        let Some(parent_agent_path) = parent_agent_path else {
+        let Some(_parent_agent_path) = parent_agent_path else {
             return Ok(true);
         };
         let Some(communication) = communication else {

@@ -251,6 +251,7 @@ fn mailbox_wake_label(reason: MailboxWakeCause) -> &'static str {
         MailboxWakeCause::Tool => "tool",
         MailboxWakeCause::Deadline => "deadline",
         MailboxWakeCause::Cancel => "cancel",
+        MailboxWakeCause::Interrupted => "interrupted",
         MailboxWakeCause::SubscriptionLoss => "subscription loss",
         MailboxWakeCause::RuntimeFault => "runtime fault",
         MailboxWakeCause::NoMatchingWork => "no matching work",

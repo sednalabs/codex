@@ -28,11 +28,11 @@ use codex_protocol::items::AgentNotificationContent as CoreAgentNotificationCont
 use codex_protocol::items::AgentNotificationOrigin as CoreAgentNotificationOrigin;
 use codex_protocol::items::AgentNotificationSummary as CoreAgentNotificationSummary;
 use codex_protocol::items::AgentWakeCause as CoreAgentWakeCause;
-use codex_protocol::items::MailboxWaitReport as CoreMailboxWaitReport;
 use codex_protocol::items::CollabAgentTool as CoreCollabAgentTool;
 use codex_protocol::items::CollabAgentToolCallStatus as CoreCollabAgentToolCallStatus;
 use codex_protocol::items::CommandExecutionStatus as CoreCommandExecutionStatus;
 use codex_protocol::items::DynamicToolCallStatus as CoreDynamicToolCallStatus;
+use codex_protocol::items::MailboxWaitReport as CoreMailboxWaitReport;
 use codex_protocol::items::McpToolCallStatus as CoreMcpToolCallStatus;
 use codex_protocol::items::TurnItem as CoreTurnItem;
 use codex_protocol::memory_citation::MemoryCitation as CoreMemoryCitation;

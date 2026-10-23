@@ -304,14 +304,18 @@ pub(crate) async fn run_turn(
                 .record_step_world_state_if_changed(&world_state, step_context.as_ref())
                 .await;
 
-            let mailbox_enabled_for_turn = turn_context.multi_agent_version == MultiAgentVersion::V2
+            let mailbox_enabled_for_turn = turn_context.multi_agent_version
+                == MultiAgentVersion::V2
                 && turn_context.config.features.enabled(Feature::AgentMailbox);
             if mailbox_enabled_for_turn {
-                for communication in sess.services.agent_control
+                for communication in sess
+                    .services
+                    .agent_control
                     .mailbox_automatic_inputs(sess.thread_id, &turn_context.sub_id)
                     .await?
                 {
-                    sess.record_inter_agent_communication(&turn_context, communication).await?;
+                    sess.record_inter_agent_communication(&turn_context, communication)
+                        .await?;
                 }
             }
 

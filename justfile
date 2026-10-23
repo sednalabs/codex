@@ -210,6 +210,7 @@ core-subagent-notification-contract-targeted:
 # tui_app_server -> tui cutover.
 core-subagent-notification-visibility-targeted:
     cargo test --locked -p codex-protocol mailbox --lib -- --test-threads=1
+    cargo test --locked -p codex-app-server-protocol mailbox --lib -- --test-threads=1
     cargo test --locked -p codex-tui mailbox --lib -- --test-threads=1
     cargo test -p codex-protocol parse_subagent_notification_response_item_ --lib -- --test-threads=1
     cargo test -p codex-tui raw_response_subagent_notification_renders_history -- --exact --test-threads=1

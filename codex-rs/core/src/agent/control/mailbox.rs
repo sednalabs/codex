@@ -63,6 +63,24 @@ impl AgentControl {
         self.mailbox.get().cloned()
     }
 
+    pub(crate) async fn mailbox_interrupt_resumed_dispatches(
+        &self,
+        issuer: ThreadId,
+    ) -> CodexResult<()> {
+        let Some(mailbox) = self.mailbox() else {
+            return Ok(());
+        };
+        // Indexed bounded batches, scoped to the exact native session being resumed.
+        // Other loaded issuers and producer continuation custody are untouched.
+        while mailbox
+            .interrupt_issuer_dispatches(issuer, 100)
+            .await
+            .map_err(storage_error)?
+            != 0
+        {}
+        Ok(())
+    }
+
     pub(crate) async fn mailbox_work_for_key(
         &self,
         issuer: ThreadId,
@@ -93,8 +111,13 @@ impl AgentControl {
         ) {
             return Ok(None);
         }
-        if let Some(native_key) = context.native_key.as_deref()
-            && let Some(existing) = mailbox
+        // Only a mailbox-enabled invocation supplies this frozen native identity. A shared
+        // tree may contain a feature-disabled session; opening the store elsewhere does not
+        // opt its stock tools into mailbox capture.
+        let Some(native_key) = context.native_key.as_deref() else {
+            return Ok(None);
+        };
+        if let Some(existing) = mailbox
                 .work_for_native_key(context.sender_thread_id, native_key)
                 .await
                 .map_err(storage_error)?
@@ -103,10 +126,7 @@ impl AgentControl {
         }
         let work = mailbox
             .accept_work(NativeWork {
-                native_key: context
-                    .native_key
-                    .clone()
-                    .unwrap_or_else(|| submission_id.clone()),
+                native_key: native_key.to_string(),
                 issuer: context.sender_thread_id,
                 agent,
                 submission_id: submission_id.clone(),
@@ -398,5 +418,44 @@ impl AgentControl {
             return Err(storage_error(error));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codex_protocol::AgentPath;
+
+    #[tokio::test]
+    async fn mailbox_shared_control_does_not_capture_stock_invocations() {
+        let (session, turn) = crate::session::tests::make_session_and_context().await;
+        let mut config = (*turn.config).clone();
+        config.features.enable(Feature::MultiAgentV2).unwrap();
+        config.features.enable(Feature::AgentMailbox).unwrap();
+        let control = &session.services.agent_control;
+        control.mailbox_initialize(&config).await.unwrap();
+        let recipient = ThreadId::new();
+        let mut communication = InterAgentCommunication::new(
+            AgentPath::root(),
+            AgentPath::from_string("/root/worker".to_string()).unwrap(),
+            Vec::new(),
+            "native input".to_string(),
+            true,
+        );
+        let original = communication.clone();
+        let mut submission_id = "stock-submission".to_string();
+        let context = AgentCommunicationContext::new(AgentCommunicationKind::Followup, session.thread_id);
+        assert!(control.mailbox_accept_native_submission(recipient, &context, &mut communication, &mut submission_id).await.unwrap().is_none());
+        assert_eq!(communication, original);
+        assert_eq!(submission_id, "stock-submission");
+        let mailbox = control.mailbox().unwrap();
+        assert!(mailbox.issued_work_refs(session.thread_id, None, 100).await.unwrap().is_empty());
+
+        let enabled_context = context.with_native_key("enabled-call".to_string());
+        let (accepted, decision) = control.mailbox_accept_native_submission(recipient, &enabled_context, &mut communication, &mut submission_id).await.unwrap().unwrap();
+        assert_eq!(decision, DispatchDecision::Dispatch);
+        assert_eq!(accepted.issuer, session.thread_id);
+        assert_eq!(mailbox.accepted_input(&accepted).await.unwrap(), communication);
+        assert!(communication.id.unwrap().as_str().starts_with("amsg_"));
     }
 }

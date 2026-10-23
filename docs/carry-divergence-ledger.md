@@ -65,6 +65,11 @@ leave the original IDs pending through compaction. Reading a native result body
 observes only the exact work it covers; an observed failure remains non-success
 on subsequent exact or mixed any/all joins. Input publication invalidates stale
 cycle snapshots before a closed-peer claim can be made.
+Ordinary resume durably closes an unfinished typed wait as `interrupted`, with
+its pending references intact, rather than restarting its old deadline. Reusing
+that interrupted call ID cannot start a new wait. Unconfirmed accepted/dispatching
+work from that exact resumed issuer is marked recovery-needed in bounded indexed
+batches, without resending its input or creating a replacement child.
 
 Both `agent_mailbox` and recipient `agent_mailbox_idle_activation` are off by
 default. Disabled mailbox handling preserves pending records and cannot drain,
@@ -76,7 +81,7 @@ new scheduling, and provider/auth changes remain outside this carry. Future
 upstream syncs retain the same semantic suite and retire equivalent mechanisms
 and dependencies together, rather than restoring donor framework code.
 
-- Downstream V2 `wait_agent` keeps queue-only inter-agent mail durable and
+- Without the opt-in mailbox feature, downstream V2 `wait_agent` keeps queue-only inter-agent mail durable and
   visible in later notification summaries, but an exact-target wait wakes only
   for terminal target state, actionable (`trigger_turn`) mail, user steer,
   terminal completion input, cancellation, or subscription loss. Targetless

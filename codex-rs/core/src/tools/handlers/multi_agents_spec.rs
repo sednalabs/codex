@@ -1131,7 +1131,7 @@ fn mailbox_wait_output_schema() -> Value {
             },
             "completion_reason": {
                 "type": "string",
-                "enum": ["result", "reply", "request", "human", "tool", "deadline", "cancel", "subscription_loss", "runtime_fault", "no_matching_work", "already_satisfied", "cycle", "needs_attention"],
+                "enum": ["result", "reply", "request", "human", "tool", "deadline", "cancel", "interrupted", "subscription_loss", "runtime_fault", "no_matching_work", "already_satisfied", "cycle", "needs_attention"],
                 "description": "Actual reason the wait returned. Attention and interruption do not themselves satisfy an outstanding join."
             },
             "condition_satisfied": {

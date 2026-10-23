@@ -75,9 +75,7 @@ pub(crate) async fn persist_continuation(
         }
         return Ok(());
     }
-    let count_rows = sqlx::query(
-        "SELECT 1 FROM mailbox_continuations WHERE work_id = ? LIMIT ?",
-    )
+    let count_rows = sqlx::query("SELECT 1 FROM mailbox_continuations WHERE work_id = ? LIMIT ?")
         .bind(&work_ref.id)
         .bind((MAX_CONTINUATIONS_PER_WORK + 1) as i64)
         .fetch_all(&mut **transaction)
@@ -149,7 +147,11 @@ pub(crate) async fn outcome_receipt_for(
         .ok_or(MailboxError::ReferenceMismatch)?;
     let mut data: OutcomeData = serde_json::from_str(&stored)?;
     let response_message_id = if has_response {
-        output_id.or_else(|| row.try_get::<Option<String>, _>("outcome_id").ok().flatten())
+        output_id.or_else(|| {
+            row.try_get::<Option<String>, _>("outcome_id")
+                .ok()
+                .flatten()
+        })
     } else {
         None
     };
@@ -173,11 +175,10 @@ pub(crate) async fn stored_outcome_receipt_for(
     work_ref: WorkRef,
 ) -> MailboxResult<OutcomeReceipt> {
     let row = exact_work(pool, &work_ref).await?;
-    let has_response = serde_json::from_str::<OutcomeData>(
-        &row.try_get::<String, _>("outcome_json")?,
-    )?
-    .response
-    .is_some();
+    let has_response =
+        serde_json::from_str::<OutcomeData>(&row.try_get::<String, _>("outcome_json")?)?
+            .response
+            .is_some();
     outcome_receipt_for(pool, work_ref, None, has_response).await
 }
 
@@ -204,7 +205,11 @@ pub(crate) async fn continuation_receipts_for(
                 "pending_goal_binding" => ContinuationState::PendingGoalBinding,
                 "deferred" => ContinuationState::Deferred,
                 "terminal" => ContinuationState::Terminal,
-                _ => return Err(MailboxError::InvalidInput("stored continuation state".into())),
+                _ => {
+                    return Err(MailboxError::InvalidInput(
+                        "stored continuation state".into(),
+                    ));
+                }
             };
             Ok(ContinuationReceipt {
                 binding: serde_json::from_str(&row.try_get::<String, _>("binding_json")?)?,
@@ -232,6 +237,8 @@ fn parse_outcome(value: &str) -> MailboxResult<Outcome> {
         "failed" => Ok(Outcome::Failed),
         "cancelled" => Ok(Outcome::Cancelled),
         "needs_attention" => Ok(Outcome::NeedsAttention),
-        _ => Err(MailboxError::InvalidInput("stored continuation outcome".into())),
+        _ => Err(MailboxError::InvalidInput(
+            "stored continuation outcome".into(),
+        )),
     }
 }

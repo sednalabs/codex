@@ -5747,6 +5747,121 @@ mod tests {
         }
     }
 
+    #[test]
+    fn interrupted_mailbox_wait_replays_as_terminal_with_pending_refs() {
+        let sender = ThreadId::new();
+        let turn_id = "turn-interrupted-mailbox-wait";
+        let pending = codex_protocol::items::MailboxWaitSelectionItem {
+            work_ref: Some("work_exact-42".to_string()),
+            message_id: None,
+            agent: Some("worker".to_string()),
+            status: "running".to_string(),
+        };
+        let active_report = codex_protocol::items::MailboxWaitReport {
+            requested_targets: vec!["work_exact-42".to_string()],
+            requested_replies_to: Vec::new(),
+            return_when: codex_protocol::items::MailboxWaitReturnWhen::All,
+            completed: Vec::new(),
+            pending: vec![pending.clone()],
+            completion_reason: None,
+            condition_satisfied: false,
+            quiet_count: 1,
+            wake_sender: None,
+            wake_ref: None,
+        };
+        let interrupted_report = codex_protocol::items::MailboxWaitReport {
+            completion_reason: Some(codex_protocol::items::MailboxWakeCause::Interrupted),
+            ..active_report.clone()
+        };
+        let turns = build_turns_from_rollout_items(&[
+            RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: turn_id.to_string(),
+                trace_id: None,
+                started_at: None,
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+            })),
+            canonical_collab_lifecycle_item(
+                sender,
+                turn_id,
+                CoreCollabAgentToolCallItem {
+                    id: "wait-interrupted".to_string(),
+                    tool: CoreCollabAgentTool::Wait,
+                    status: CoreCollabAgentToolCallStatus::InProgress,
+                    sender_thread_id: sender,
+                    receiver_thread_ids: Vec::new(),
+                    receiver_agents: Vec::new(),
+                    prompt: None,
+                    model: None,
+                    reasoning_effort: None,
+                    requested_model: None,
+                    requested_reasoning_effort: None,
+                    agents_states: HashMap::new(),
+                    wake_notifications: None,
+                    completion_reason: None,
+                    wake_cause: None,
+                    mailbox_wait_report: Some(active_report),
+                },
+                /*started*/ true,
+            ),
+            canonical_collab_lifecycle_item(
+                sender,
+                turn_id,
+                CoreCollabAgentToolCallItem {
+                    id: "wait-interrupted".to_string(),
+                    tool: CoreCollabAgentTool::Wait,
+                    status: CoreCollabAgentToolCallStatus::Failed,
+                    sender_thread_id: sender,
+                    receiver_thread_ids: Vec::new(),
+                    receiver_agents: Vec::new(),
+                    prompt: None,
+                    model: None,
+                    reasoning_effort: None,
+                    requested_model: None,
+                    requested_reasoning_effort: None,
+                    agents_states: HashMap::new(),
+                    wake_notifications: None,
+                    completion_reason: None,
+                    wake_cause: None,
+                    mailbox_wait_report: Some(interrupted_report.clone()),
+                },
+                /*started*/ false,
+            ),
+        ]);
+
+        let wait = turns[0]
+            .items
+            .iter()
+            .find(|item| {
+                matches!(
+                    item,
+                    ThreadItem::CollabAgentToolCall {
+                        id,
+                        tool: CollabAgentTool::Wait,
+                        ..
+                    } if id == "wait-interrupted"
+                )
+            })
+            .expect("replay should materialize the interrupted mailbox wait");
+        let ThreadItem::CollabAgentToolCall {
+            status,
+            mailbox_wait_report,
+            ..
+        } = wait
+        else {
+            unreachable!("wait lookup must return the collaboration wait item");
+        };
+        assert_eq!(*status, CollabAgentToolCallStatus::Failed);
+        assert_eq!(mailbox_wait_report.as_ref(), Some(&interrupted_report));
+        assert_eq!(
+            mailbox_wait_report
+                .as_ref()
+                .expect("interrupted wait report")
+                .pending,
+            vec![pending]
+        );
+    }
+
     fn replay_v1_spawn_terminal_compatibility(
         canonical_effective_model: Option<&str>,
         canonical_effective_reasoning_effort: Option<
