@@ -346,7 +346,7 @@ impl AgentControl {
         if metadata
             .agent_path
             .as_ref()
-            .is_none_or(|path| path.is_root())
+            .is_none_or(codex_protocol::AgentPath::is_root)
         {
             return Ok(denied("root_activation_is_not_allowed"));
         }

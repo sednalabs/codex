@@ -1565,7 +1565,11 @@ impl Session {
                     let mut report = call
                         .mailbox_wait_report
                         .clone()
-                        .expect("mailbox wait states always carry their report");
+                        .ok_or_else(|| {
+                            CodexErr::Fatal(
+                                "stored mailbox wait has no structured report".to_string(),
+                            )
+                        })?;
                     if !already_completed {
                         report.completion_reason = Some(MailboxWakeCause::Interrupted);
                         report.condition_satisfied = false;
@@ -2388,12 +2392,7 @@ impl Session {
                 }
                 status
             }
-            None => {
-                let Some(status) = agent_status_from_event(msg) else {
-                    return None;
-                };
-                status
-            }
+            None => agent_status_from_event(msg)?,
         };
 
         let mut mailbox_captured = false;
@@ -3843,7 +3842,7 @@ impl Session {
         let response_item_id = response_item
             .id()
             .cloned()
-            .expect("prepared agent message should have a stable ID");
+            .ok_or_else(|| std::io::Error::other("prepared agent message has no stable ID"))?;
         let rollout_items = [
             RolloutItem::InterAgentCommunicationMetadata {
                 trigger_turn: communication.trigger_turn,
@@ -3853,6 +3852,8 @@ impl Session {
         let mailbox_enabled = self.services.agent_control.mailbox_enabled()
             && turn_context.multi_agent_version == MultiAgentVersion::V2
             && turn_context.config.features.enabled(Feature::AgentMailbox);
+        // Serialize append, successful flush, and per-item acknowledgement with compaction.
+        // The short-lived canonical-ID locks below never span persistence awaits.
         let custody_gate = if mailbox_enabled {
             Some(self.mailbox_custody_gate.lock().await)
         } else {
@@ -3875,8 +3876,11 @@ impl Session {
                 )
                 .into());
             }
-            let mut canonical_ids = self.mailbox_canonical_response_item_ids.lock().await;
-            let already_canonical = canonical_ids.contains(&response_item_id);
+            let already_canonical = self
+                .mailbox_canonical_response_item_ids
+                .lock()
+                .await
+                .contains(&response_item_id);
             if already_canonical {
                 // InitialHistory and this set are the canonical source across compaction. Flush
                 // before acknowledging even when the exact message was already present.
@@ -3887,7 +3891,6 @@ impl Session {
                     .agent_control
                     .mailbox_mark_canonical(self.thread_id, std::slice::from_ref(&response_item_id))
                     .await?;
-                drop(canonical_ids);
                 drop(custody_gate);
                 return Ok(response_item_id);
             }
@@ -3917,12 +3920,14 @@ impl Session {
                     turn_context.model_info.truncation_policy.into(),
                 );
             }
-            canonical_ids.insert(response_item_id.clone());
+            self.mailbox_canonical_response_item_ids
+                .lock()
+                .await
+                .insert(response_item_id.clone());
             self.services
                 .agent_control
                 .mailbox_mark_canonical(self.thread_id, std::slice::from_ref(&response_item_id))
                 .await?;
-            drop(canonical_ids);
         } else {
             self.persist_rollout_items(&rollout_items).await;
             let mut state = self.state.lock().await;
@@ -4007,6 +4012,10 @@ impl Session {
         state.replace_history(items, reference_context_item);
     }
 
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "mailbox compaction must retain exclusive custody through canonical append and flush"
+    )]
     pub(crate) async fn replace_compacted_history(
         &self,
         items: Vec<ResponseItem>,

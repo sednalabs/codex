@@ -966,7 +966,7 @@ mod tests {
             "quiet_count": 2
         });
         let report: MailboxWaitReport =
-            serde_json::from_value(value.clone()).expect("decode mailbox wait report");
+            serde_json::from_value(value).expect("decode mailbox wait report");
         assert_eq!(report.return_when, MailboxWaitReturnWhen::Any);
         assert_eq!(report.completion_reason, None);
         assert_eq!(

@@ -1627,6 +1627,14 @@ class RouteSelectionTests(unittest.TestCase):
             step for step in windows_steps if step.get("name") == "bazel test shard"
         ).get("run") or ""
         self.assertIn("--local_test_jobs=1", windows_test_run)
+        self.assertIn(
+            '[[ "${GITHUB_REPOSITORY:-}" == "sednalabs/codex" '
+            '&& -z "${BUILDBUDDY_API_KEY:-}" ]]',
+            windows_test_run,
+        )
+        self.assertIn(
+            "bazel_test_args+=(--host_platform=//:local_windows)", windows_test_run
+        )
 
     def test_bazel_windows_native_main_uses_gnullvm_proc_macro_toolchain(self) -> None:
         bazel = load_workflow_payload(REPO_ROOT / ".github/workflows/bazel.yml")

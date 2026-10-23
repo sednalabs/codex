@@ -53,9 +53,4 @@ impl Mailbox {
             *generation = generation.wrapping_add(1);
         });
     }
-
-    #[cfg(test)]
-    pub(crate) fn pool(&self) -> &SqlitePool {
-        &self.pool
-    }
 }

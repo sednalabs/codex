@@ -405,18 +405,18 @@ async fn admission_is_incremental_but_outcomes_and_snapshots_stay_exactly_scoped
     let (b, id_b) = accept_work(&fixture.mailbox, issuer, agent, "b", "B").await;
     let (c, _id_c) = accept_work(&fixture.mailbox, issuer, agent, "c", "C").await;
     assert_eq!(
-        admit(&fixture.mailbox, agent, "turn", &[id_a.clone()])
+        admit(&fixture.mailbox, agent, "turn", std::slice::from_ref(&id_a))
             .await
             .work_refs,
         vec![a.clone()]
     );
     assert!(
-        admit(&fixture.mailbox, agent, "turn", &[id_a.clone()])
+        admit(&fixture.mailbox, agent, "turn", std::slice::from_ref(&id_a))
             .await
             .already_recorded
     );
     assert_eq!(
-        admit(&fixture.mailbox, agent, "turn", &[id_b.clone()])
+        admit(&fixture.mailbox, agent, "turn", std::slice::from_ref(&id_b))
             .await
             .work_refs,
         vec![b.clone()]
@@ -424,7 +424,7 @@ async fn admission_is_incremental_but_outcomes_and_snapshots_stay_exactly_scoped
     assert!(matches!(
         fixture
             .mailbox
-            .record_admission(agent, "other-turn", &[id_a.clone()])
+            .record_admission(agent, "other-turn", std::slice::from_ref(&id_a))
             .await,
         Err(MailboxError::IdempotencyConflict)
     ));

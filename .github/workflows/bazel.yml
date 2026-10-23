@@ -369,6 +369,10 @@ jobs:
             --build_metadata=COMMIT_SHA=${GITHUB_SHA}
             --build_metadata=TAG_windows_test_shard=${BAZEL_TEST_SHARD}
           )
+          if [[ "${GITHUB_REPOSITORY:-}" == "sednalabs/codex" && -z "${BUILDBUDDY_API_KEY:-}" ]]; then
+            # Use the same native gnullvm host platform as fork clippy.
+            bazel_test_args+=(--host_platform=//:local_windows)
+          fi
 
           ./.github/scripts/run-bazel-ci.sh \
             --print-failed-action-summary \

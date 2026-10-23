@@ -466,15 +466,14 @@ async fn handle_wait(invocation: ToolInvocation) -> Result<Box<dyn ToolOutput>, 
         report.completion_reason = Some(MailboxWakeCause::RuntimeFault);
         report.condition_satisfied = false;
     }
-    if let Some(id) = attention_to_observe {
-        if mailbox
+    if let Some(id) = attention_to_observe
+        && mailbox
             .acknowledge_observed(session.thread_id, &[ObservationTarget::Attention(id)])
             .await
             .is_err()
-        {
-            report.completion_reason = Some(MailboxWakeCause::RuntimeFault);
-            report.condition_satisfied = false;
-        }
+    {
+        report.completion_reason = Some(MailboxWakeCause::RuntimeFault);
+        report.condition_satisfied = false;
     }
     emit_report(
         &session,

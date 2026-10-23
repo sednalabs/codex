@@ -4166,7 +4166,7 @@ mod tests {
                     wake_notifications: None,
                     completion_reason: None,
                     wake_cause: None,
-                    mailbox_wait_report: Some(active_wait_report.clone()),
+                    mailbox_wait_report: Some(active_wait_report),
                 },
                 /*started*/ true,
             ),

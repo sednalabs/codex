@@ -109,7 +109,8 @@ fn typed_mailbox_wait_lifecycle_is_persisted_across_history_modes() {
         CollabAgentToolCallStatus::InProgress,
         Some(in_progress_report()),
     );
-    let start_without_report = started_wait(CollabAgentToolCallStatus::InProgress, None);
+    let start_without_report =
+        started_wait(CollabAgentToolCallStatus::InProgress, /*report*/ None);
     let non_in_progress_start = started_wait(
         CollabAgentToolCallStatus::Completed,
         Some(in_progress_report()),
@@ -121,17 +122,24 @@ fn typed_mailbox_wait_lifecycle_is_persisted_across_history_modes() {
     );
     let completed = completed_wait(
         CollabAgentToolCallStatus::Completed,
-        Some(terminal_report(MailboxWakeCause::Result, true)),
+        Some(terminal_report(
+            MailboxWakeCause::Result,
+            /*condition_satisfied*/ true,
+        )),
     );
     let failed = completed_wait(
         CollabAgentToolCallStatus::Failed,
-        Some(terminal_report(MailboxWakeCause::Interrupted, false)),
+        Some(terminal_report(
+            MailboxWakeCause::Interrupted,
+            /*condition_satisfied*/ false,
+        )),
     );
     let nonterminal_completion = completed_wait(
         CollabAgentToolCallStatus::InProgress,
         Some(in_progress_report()),
     );
-    let terminal_without_report = completed_wait(CollabAgentToolCallStatus::Failed, None);
+    let terminal_without_report =
+        completed_wait(CollabAgentToolCallStatus::Failed, /*report*/ None);
     let other_tool_terminal = completed_call(
         CollabAgentTool::SendInput,
         CollabAgentToolCallStatus::Failed,
