@@ -47,12 +47,18 @@ use sse_stream::SseStream;
 
 mod www_authenticate;
 
+#[cfg(test)]
+#[path = "http_client_adapter_tests.rs"]
+mod tests;
+
 use self::www_authenticate::insufficient_scope_challenge;
 
 const EVENT_STREAM_MIME_TYPE: &str = "text/event-stream";
 const JSON_MIME_TYPE: &str = "application/json";
 const HEADER_SESSION_ID: &str = "Mcp-Session-Id";
 const NON_JSON_RESPONSE_BODY_PREVIEW_BYTES: usize = 8_192;
+const HEADER_CF_RAY: &str = "cf-ray";
+const HEADER_VIA: &str = "via";
 
 #[derive(Clone)]
 pub(crate) struct StreamableHttpClientAdapter {
@@ -69,12 +75,39 @@ pub(crate) enum StreamableHttpClientAdapterError {
     HttpRequest(#[from] ExecServerError),
     #[error("invalid HTTP header: {0}")]
     Header(String),
-    #[error("HTTP {status}: {body}")]
+    #[error("HTTP {status}: {body}{diagnostics}")]
     HttpStatus {
         status: u16,
         body: String,
         retry_after: Option<Duration>,
+        diagnostics: SafeHttpResponseDiagnostics,
     },
+}
+
+/// Strictly allowlisted transport details safe to include in a surfaced HTTP
+/// failure. Header names alone are not trusted: values must pass validation.
+#[derive(Debug, Default)]
+pub(crate) struct SafeHttpResponseDiagnostics {
+    cloudflare_ray: Option<String>,
+    via_present: bool,
+}
+
+impl std::fmt::Display for SafeHttpResponseDiagnostics {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match (&self.cloudflare_ray, self.via_present) {
+            (Some(ray), true) => {
+                write!(
+                    formatter,
+                    " [transport: provider=cloudflare cf-ray={ray}; via-present]"
+                )
+            }
+            (Some(ray), false) => {
+                write!(formatter, " [transport: provider=cloudflare cf-ray={ray}]")
+            }
+            (None, true) => formatter.write_str(" [transport: via-present]"),
+            (None, false) => Ok(()),
+        }
+    }
 }
 
 impl StreamableHttpClientAdapter {
@@ -216,6 +249,7 @@ impl StreamableHttpClient for StreamableHttpClientAdapter {
                     retry_after: response_header(&response.headers, RETRY_AFTER)
                         .as_deref()
                         .and_then(parse_retry_after),
+                    diagnostics: safe_http_response_diagnostics(&response.headers),
                 },
             ));
         }
@@ -515,6 +549,29 @@ fn response_header(headers: &[HttpHeader], name: impl AsRef<str>) -> Option<Stri
         .iter()
         .find(|header| header.name.eq_ignore_ascii_case(name))
         .map(|header| header.value.clone())
+}
+
+fn safe_http_response_diagnostics(headers: &[HttpHeader]) -> SafeHttpResponseDiagnostics {
+    let mut diagnostics = SafeHttpResponseDiagnostics {
+        via_present: headers
+            .iter()
+            .any(|header| header.name.eq_ignore_ascii_case(HEADER_VIA)),
+        ..SafeHttpResponseDiagnostics::default()
+    };
+    diagnostics.cloudflare_ray = headers
+        .iter()
+        .filter(|header| header.name.eq_ignore_ascii_case(HEADER_CF_RAY))
+        .find_map(|header| validate_cloudflare_ray(&header.value));
+    diagnostics
+}
+
+fn validate_cloudflare_ray(value: &str) -> Option<String> {
+    let (ray_id, colo) = value.split_once('-')?;
+    (ray_id.len() == 16
+        && ray_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && colo.len() == 3
+        && colo.bytes().all(|byte| byte.is_ascii_uppercase()))
+    .then(|| value.to_string())
 }
 
 fn parse_retry_after(value: &str) -> Option<Duration> {
