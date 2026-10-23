@@ -59,7 +59,8 @@ jobs:
   sdks:
     if: ${{ inputs.run_typescript }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # The fork builds Codex locally on the standard hosted runner before SDK tests.
+    timeout-minutes: ${{ github.repository == 'sednalabs/codex' && 120 || 30 }}
     environment:
       name: bazel
       deployment: false

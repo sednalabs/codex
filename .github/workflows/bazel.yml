@@ -417,7 +417,9 @@ jobs:
   clippy:
     needs: plan
     if: ${{ needs.plan.outputs.run_bazel == 'true' }}
-    timeout-minutes: 30
+    # Cold hosted-local V8/toolchain builds need the full Bazel-test budget.
+    # Preserve upstream's remote-enabled budget outside this fork.
+    timeout-minutes: ${{ github.repository == 'sednalabs/codex' && 120 || 30 }}
     strategy:
       fail-fast: false
       matrix:
