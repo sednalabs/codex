@@ -17,6 +17,7 @@ use codex_rmcp_client::FixedOAuthCallbackInputError;
 use std::ffi::CStr;
 use std::fs;
 use std::fs::File;
+use std::io::Read as _;
 use std::io::Write as _;
 use std::mem::MaybeUninit;
 use std::os::fd::AsRawFd as _;
@@ -32,6 +33,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
 const BEARER_SOURCE_PATH: &str = "/run/credstore/ops-api-bearer";
 const BEARER_LOCK_NAME: &str = ".codex-runtime-proof-api-bearer.lock";
