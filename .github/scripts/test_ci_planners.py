@@ -1012,7 +1012,7 @@ class RouteSelectionTests(unittest.TestCase):
             ]
         )
         self.assertEqual(recipe.count("cargo nextest run"), 4)
-        self.assertEqual(recipe.count("RUST_MIN_STACK="), 4)
+        self.assertEqual(recipe.count("RUST_MIN_STACK="), 6)
         self.assertEqual(recipe.count("--no-tests=fail"), 4)
         for test_name in (
             "agent::control::residency::tests::"
@@ -5598,7 +5598,7 @@ git() {
         multi_agent_recipe = "\n".join(
             recipes["core-multi-agent-orchestration-targeted"]
         )
-        self.assertEqual(multi_agent_recipe.count("RUST_MIN_STACK="), 4)
+        self.assertEqual(multi_agent_recipe.count("RUST_MIN_STACK="), 6)
 
         blocking_waits_core_recipe = "\n".join(
             recipes["blocking-waits-core-targeted"]
