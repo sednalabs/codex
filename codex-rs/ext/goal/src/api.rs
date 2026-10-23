@@ -322,7 +322,9 @@ impl GoalService {
             })?;
         let cleared = cleared_goal.is_some();
         if let Some(runtime) = runtime.as_ref()
-            && let Err(err) = runtime.finalize_pending_goal_notification(None).await
+            && let Err(err) = runtime
+                .finalize_pending_goal_notification(/*external_goal*/ None)
+                .await
         {
             return Err(GoalServiceError::Internal(format!(
                 "goal cleared but deferred completion settlement failed: {err}"
