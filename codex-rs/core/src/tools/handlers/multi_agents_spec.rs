@@ -702,6 +702,11 @@ fn followup_task_output_schema() -> Value {
                 "type": "string",
                 "description": "Immutable accepted work reference assigned to the follow-up."
             },
+            "dispatch_state": {
+                "type": "string",
+                "enum": ["accepted", "dispatching", "dispatched", "recovery_needed"],
+                "description": "Native dispatch custody for the original work. Uncertain dispatch is not resent."
+            },
             "recipient_task_name": {
                 "type": "string",
                 "description": "Explicit canonical task name of the recipient; the effective_* fields below describe this recipient, not the sending agent."
@@ -770,12 +775,16 @@ fn mailbox_send_message_output_schema() -> Value {
             },
             "activation_disposition": {
                 "type": "string",
-                "enum": ["not_requested", "already_active", "activated", "denied"],
-                "description": "Disposition of the separately requested idle-target activation. Durable message acceptance is unaffected by a denied activation."
+                "enum": ["not_requested", "already_active", "activated", "denied", "unknown"],
+                "description": "Disposition of separately requested idle activation. Message acceptance is durable even when activation is denied or unknown; do not resend the message."
             },
             "activation_reason": {
                 "type": ["string", "null"],
-                "description": "Safe reason when activation was denied, such as native pause, budget, cancellation, or root protection."
+                "description": "Safe reason when activation was denied or its result could not be established."
+            },
+            "recipient_task_name": {
+                "type": "string",
+                "description": "Canonical native task name addressed by the accepted message."
             }
         },
         "required": ["message_id", "durable_state", "activation_disposition"],
@@ -1131,7 +1140,7 @@ fn mailbox_wait_output_schema() -> Value {
             },
             "quiet_count": {
                 "type": "integer",
-                "description": "Count of messages safely quieted for this wait, if applicable."
+                "description": "Global retained quiet-message backlog for this recipient, not a per-wait filtered count. This metadata does not consume hidden message bodies."
             },
             "wake_sender": {
                 "type": ["string", "null"],

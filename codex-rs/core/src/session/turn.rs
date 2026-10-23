@@ -106,6 +106,7 @@ use codex_protocol::protocol::AgentReasoningSectionBreakEvent;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::PlanDeltaEvent;
 use codex_protocol::protocol::RawResponseCompletedEvent;
 use codex_protocol::protocol::ReasoningContentDeltaEvent;
@@ -303,11 +304,15 @@ pub(crate) async fn run_turn(
                 .record_step_world_state_if_changed(&world_state, step_context.as_ref())
                 .await;
 
-            for communication in sess.services.agent_control
-                .mailbox_automatic_inputs(sess.thread_id, &turn_context.sub_id)
-                .await?
-            {
-                sess.record_inter_agent_communication(&turn_context, communication).await?;
+            let mailbox_enabled_for_turn = turn_context.multi_agent_version == MultiAgentVersion::V2
+                && turn_context.config.features.enabled(Feature::AgentMailbox);
+            if mailbox_enabled_for_turn {
+                for communication in sess.services.agent_control
+                    .mailbox_automatic_inputs(sess.thread_id, &turn_context.sub_id)
+                    .await?
+                {
+                    sess.record_inter_agent_communication(&turn_context, communication).await?;
+                }
             }
 
             // Construct the input that we will send to the model.
@@ -318,28 +323,6 @@ pub(crate) async fn run_turn(
             }
             .instrument(trace_span!("run_turn.prepare_sampling_request_input"))
             .await;
-
-            let mailbox_message_ids = sampling_request_input
-                .iter()
-                .filter_map(|item| match item {
-                    ResponseItem::AgentMessage { id: Some(id), .. } if !id.is_empty() => {
-                        Some(id.clone())
-                    }
-                    _ => None,
-                })
-                .collect::<HashSet<_>>()
-                .into_iter()
-                .collect::<Vec<_>>();
-            if !mailbox_message_ids.is_empty() {
-                sess.services
-                    .agent_control
-                    .mailbox_record_admission(
-                        sess.thread_id,
-                        &turn_context.sub_id,
-                        &mailbox_message_ids,
-                    )
-                    .await?;
-            }
 
             let responses_metadata = turn_context.turn_metadata_state.to_responses_metadata(
                 sess.installation_id.clone(),
@@ -2256,7 +2239,40 @@ async fn try_run_sampling_request(
         record_turn_ttft_metric(&turn_context, &event).await;
 
         match event {
-            ResponseEvent::Created => {}
+            ResponseEvent::Created => {
+                // ResponseEvent::Created is the provider's accepted-response boundary. In
+                // particular, WebSocket stream construction only queues a send task; marking
+                // admission earlier would let compaction drop mail when setup/send is rejected.
+                if turn_context.multi_agent_version == MultiAgentVersion::V2
+                    && turn_context.config.features.enabled(Feature::AgentMailbox)
+                {
+                    let mailbox_message_ids = prompt
+                        .input
+                        .iter()
+                        .filter_map(|item| match item {
+                            ResponseItem::AgentMessage { id: Some(id), .. } if !id.is_empty() => {
+                                Some(id.clone())
+                            }
+                            _ => None,
+                        })
+                        .collect::<HashSet<_>>()
+                        .into_iter()
+                        .collect::<Vec<_>>();
+                    if !mailbox_message_ids.is_empty()
+                        && let Err(error) = sess
+                            .services
+                            .agent_control
+                            .mailbox_record_admission(
+                                sess.thread_id,
+                                &turn_context.sub_id,
+                                &mailbox_message_ids,
+                            )
+                            .await
+                    {
+                        break Err(error);
+                    }
+                }
+            }
             ResponseEvent::OutputItemDone(mut item) => {
                 assign_missing_streamed_response_item_id(&mut item, active_item.as_ref());
                 if let Some((_, mut consumer)) = active_tool_argument_diff_consumer.take()

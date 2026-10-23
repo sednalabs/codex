@@ -236,7 +236,14 @@ impl Mailbox {
         match state {
             DispatchState::Dispatching => {
                 sqlx::query(
-                    "UPDATE mailbox_work SET dispatch_state = 'recovery_needed' WHERE id = ?",
+                    "UPDATE mailbox_work SET dispatch_state = 'recovery_needed'
+                     WHERE id = ? AND dispatch_state = 'dispatching'
+                       AND outcome_json IS NULL
+                       AND NOT EXISTS (
+                         SELECT 1 FROM mailbox_continuations AS continuation
+                         WHERE continuation.work_id = mailbox_work.id
+                           AND continuation.state IN ('pending_goal_binding', 'deferred')
+                       )",
                 )
                 .bind(&work_ref.id)
                 .execute(&mut *transaction)
@@ -360,7 +367,10 @@ impl Mailbox {
             }
 
             let message = sqlx::query(
-                "SELECT canonical, input_admitted, legacy_attention, superseded_by, withdrawn
+                "SELECT canonical, input_admitted, legacy_attention, superseded_by, withdrawn,
+                        CASE WHEN kind IN ('\"note\"', '\"progress\"')
+                              AND (kind = '\"progress\"' OR legacy_attention = 0)
+                             THEN 1 ELSE 0 END AS quiet
                  FROM mailbox_messages WHERE id = ? AND recipient = ? LIMIT 1",
             )
             .bind(input_id)
@@ -374,7 +384,7 @@ impl Mailbox {
             let canonical = message.try_get::<i64, _>("canonical")? != 0;
             let active = message.try_get::<Option<String>, _>("superseded_by")?.is_none()
                 && message.try_get::<i64, _>("withdrawn")? == 0;
-            let quiet = message.try_get::<i64, _>("legacy_attention")? == 0;
+            let quiet = message.try_get::<i64, _>("quiet")? != 0;
             sqlx::query(
                 "UPDATE mailbox_messages SET input_admitted = 1
                  WHERE id = ? AND recipient = ? AND input_admitted = 0",

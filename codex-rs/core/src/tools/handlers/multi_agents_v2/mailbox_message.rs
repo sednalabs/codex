@@ -155,27 +155,30 @@ impl ToolExecutor<ToolInvocation> for SendHandler {
                 activate_if_idle: args.activate_if_idle,
             }).await.map_err(mailbox_error)?;
             let (activation_disposition, activation_reason) = if args.activate_if_idle {
-                match mailbox.begin_activation(session.thread_id, &envelope.id).await.map_err(mailbox_error)? {
-                    ActivationDecision::Activate => {
+                match mailbox.begin_activation(session.thread_id, &envelope.id).await {
+                    Ok(ActivationDecision::Activate) => {
                         let result = session.services.agent_control
                             .mailbox_activate_if_idle(recipient, &envelope).await;
                         let (disposition, reason) = match result {
                             Ok(result) => result,
-                            Err(_) => (ActivationDisposition::Denied, Some("native_activation_not_accepted".to_string())),
+                            Err(_) => (ActivationDisposition::Unknown, Some("activation_outcome_unknown_original_message_retained".to_string())),
                         };
-                        mailbox.record_activation(session.thread_id, &envelope.id, disposition)
-                            .await.map_err(mailbox_error)?;
-                        (disposition, reason)
+                        if mailbox.record_activation(session.thread_id, &envelope.id, disposition).await.is_err() {
+                            (ActivationDisposition::Unknown, Some("activation_receipt_not_persisted_original_message_retained".to_string()))
+                        } else {
+                            (disposition, reason)
+                        }
                     }
-                    ActivationDecision::AlreadyDecided(disposition) => (disposition, None),
-                    ActivationDecision::RecoveryNeeded => (
-                        ActivationDisposition::Denied,
+                    Ok(ActivationDecision::AlreadyDecided(disposition)) => (disposition, None),
+                    Ok(ActivationDecision::RecoveryNeeded) | Err(_) => (
+                        ActivationDisposition::Unknown,
                         Some("activation_outcome_unknown_original_message_retained".to_string()),
                     ),
                 }
             } else {
-                mailbox.record_activation(session.thread_id, &envelope.id, ActivationDisposition::NotRequested)
-                    .await.map_err(mailbox_error)?;
+                // The envelope is already committed. Optional activation bookkeeping must
+                // never hide acceptance or invite the caller to create a duplicate message.
+                let _ = mailbox.record_activation(session.thread_id, &envelope.id, ActivationDisposition::NotRequested).await;
                 (ActivationDisposition::NotRequested, None)
             };
             Ok(boxed_tool_output(FunctionToolOutput::from_text(
@@ -214,7 +217,13 @@ impl ToolExecutor<ToolInvocation> for ReadHandler {
             let cursor = args.cursor.as_deref().map(str::parse::<i64>).transpose()
                 .map_err(|_| mailbox_error("cursor must be a returned mailbox cursor"))?;
             let mailbox = mailbox_for(&session)?;
-            let page = mailbox.pending_page(session.thread_id, cursor, args.limit.unwrap_or(20))
+            let requested_limit = args.limit.unwrap_or(20);
+            if !(1..=100).contains(&requested_limit) {
+                return Err(mailbox_error("limit must be between 1 and 100"));
+            }
+            // An encrypted body cannot be safely truncated. Every accepted body is capped
+            // at 8KiB; admit at most two per call and retain the rest behind the page cursor.
+            let page = mailbox.pending_page(session.thread_id, cursor, requested_limit.min(2))
                 .await.map_err(mailbox_error)?;
             let mut messages = Vec::with_capacity(page.items.len());
             for envelope in &page.items {
@@ -227,6 +236,12 @@ impl ToolExecutor<ToolInvocation> for ReadHandler {
                 }
                 if envelope.reply_to.is_some() {
                     observations.push(ObservationTarget::Reply(envelope.id.clone()));
+                }
+                if envelope.communication.origin == Some(codex_protocol::protocol::AgentCommunicationOrigin::Result)
+                    && let Some(work) = envelope.work_ref.as_ref()
+                    && work.issuer == session.thread_id
+                {
+                    observations.push(ObservationTarget::Work(work.clone()));
                 }
                 // Reading a body can observe its own attention/reply only; it never observes
                 // unrelated work outcomes or unresolved request obligations.

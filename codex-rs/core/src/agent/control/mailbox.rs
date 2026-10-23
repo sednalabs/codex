@@ -238,6 +238,29 @@ impl AgentControl {
             .map(|envelope| envelope.communication).collect())
     }
 
+    pub(crate) async fn mailbox_reconcile_pending_work(&self, work: &WorkRef) -> CodexResult<bool> {
+        let Some(mailbox) = self.mailbox() else {
+            return Ok(false);
+        };
+        let state = self.upgrade()?;
+        let can_proceed = match state.get_thread(work.agent).await {
+            Ok(thread) => {
+                let active = { thread.session.active_turn.lock().await.is_some() };
+                active || thread.session.input_queue.has_pending_mailbox_items().await
+                    || thread.session.input_queue.has_pending_terminal_finalizers()
+                    || thread.session.has_outstanding_durable_sleep()
+            }
+            Err(_) => false,
+        };
+        if can_proceed {
+            return Ok(false);
+        }
+        // This only changes recovery disposition, never replays input or invents a result.
+        // The store rechecks terminal/continuation custody atomically against this native read.
+        mailbox.mark_recovery_needed(work).await.map_err(storage_error)?;
+        Ok(true)
+    }
+
     pub(crate) async fn mailbox_record_admission(
         &self,
         recipient: ThreadId,
@@ -301,7 +324,9 @@ impl AgentControl {
                     revision: snapshot.revision,
                     source_turn_id: source_turn_id.to_string(),
                 };
-                match snapshot.phase {
+                if matches!(outcome, Outcome::Failed | Outcome::Cancelled) {
+                    Continuation::Terminal(binding)
+                } else { match snapshot.phase {
                     GoalNotificationPhase::Running | GoalNotificationPhase::ContinuationPending => {
                         Continuation::PendingGoalBinding(binding)
                     }
@@ -311,7 +336,7 @@ impl AgentControl {
                         Continuation::Deferred(binding)
                     }
                     GoalNotificationPhase::ResultReady => Continuation::Terminal(binding),
-                }
+                } }
             }
             None => Continuation::None,
         };

@@ -1,9 +1,10 @@
 use crate::error::{MailboxError, MailboxResult};
 use crate::messages::insert_message_tx;
-use crate::types::{MessageDraft, MessageKind, Outcome, WorkRef};
+use crate::types::{Continuation, MessageDraft, MessageKind, Outcome, WorkRef};
 use crate::work::exact_work_tx;
-use codex_protocol::protocol::InterAgentCommunication;
+use codex_protocol::protocol::{AgentCommunicationOrigin, InterAgentCommunication};
 use codex_protocol::{AgentPath, ThreadId};
+use serde::Serialize;
 use sqlx::{Row, Sqlite, Transaction};
 
 const MAX_AUTO_RESPONSE_BYTES: usize = 16_384;
@@ -74,6 +75,55 @@ pub(crate) fn validate_auto_response_size(groups: &[ResponseGroup]) -> MailboxRe
     }
     if total > MAX_AUTO_RESPONSE_BYTES {
         return Err(MailboxError::Backpressure("automatic response aggregate byte limit"));
+    }
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct NativeOutcomeRecord<'a> {
+    work_refs: Vec<&'a str>,
+    outcome: Outcome,
+    continuation: &'a Continuation,
+    source_ref: &'a str,
+}
+
+/// Ensure every terminal work outcome has a canonical, typed native envelope
+/// even when the caller supplied no prose response. Nonterminal goal linkage
+/// is deliberately excluded by the caller.
+pub(crate) fn ensure_terminal_responses(
+    groups: &mut [ResponseGroup],
+    refs: &[WorkRef],
+    outcome: Outcome,
+    continuation: &Continuation,
+    source_ref: &str,
+) -> MailboxResult<()> {
+    for group in groups.iter_mut().filter(|group| group.response.is_none()) {
+        let work_refs = refs
+            .iter()
+            .filter(|work_ref| work_ref.issuer == group.issuer)
+            .map(|work_ref| work_ref.id.as_str())
+            .collect::<Vec<_>>();
+        if work_refs.is_empty() {
+            return Err(MailboxError::ReferenceMismatch);
+        }
+        let content = serde_json::to_string(&NativeOutcomeRecord {
+            work_refs,
+            outcome,
+            continuation,
+            source_ref,
+        })?;
+        if content.len() > MAX_RESPONSE_BYTES {
+            return Err(MailboxError::Backpressure("typed outcome envelope byte limit"));
+        }
+        let mut communication = InterAgentCommunication::new(
+            group.author.clone(),
+            group.recipient.clone(),
+            Vec::new(),
+            content,
+            false,
+        );
+        communication.origin = Some(AgentCommunicationOrigin::Result);
+        group.response = Some(communication);
     }
     Ok(())
 }

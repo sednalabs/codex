@@ -6,8 +6,7 @@ use crate::{
     Selector, Snapshot, SnapshotItem, SnapshotState, TurnOutcomeReceipt, WorkRef, WorkSnapshot,
 };
 use codex_protocol::{
-    protocol::{AgentPath, InterAgentCommunication},
-    ThreadId,
+    protocol::InterAgentCommunication, AgentPath, ThreadId,
 };
 use codex_state::SqliteConfig;
 use codex_utils_absolute_path::test_support::PathExt;
@@ -181,12 +180,62 @@ async fn native_retry_dispatch_reopen_and_capture_backpressure_are_safe() {
 }
 
 #[tokio::test]
+async fn native_accept_retry_after_pre_dispatch_handle_drop_reuses_original_identity() {
+    let TestMailbox { _home, config, mailbox } = test_mailbox().await;
+    let (issuer, agent) = (thread_id(22), thread_id(23));
+    let original = native_work(issuer, agent, "pre-dispatch-drop", "preserve this accepted input");
+    let accepted = mailbox.accept_work(original.clone()).await.unwrap();
+    let accepted_input_id = mailbox
+        .accepted_input(&accepted)
+        .await
+        .unwrap()
+        .id
+        .unwrap()
+        .to_string();
+    assert!(accepted_input_id.starts_with("amsg_"));
+
+    // The durable accept has happened, but the caller drops the handle before dispatch begins.
+    drop(mailbox);
+    let retried_mailbox = Mailbox::open(&config).await.unwrap();
+    let retried = retried_mailbox.accept_work(original).await.unwrap();
+    assert_eq!(retried, accepted);
+    assert_eq!(
+        retried_mailbox.work_for_native_key(issuer, "pre-dispatch-drop").await.unwrap(),
+        Some(accepted.clone())
+    );
+    assert_eq!(
+        retried_mailbox
+            .accepted_input(&retried)
+            .await
+            .unwrap()
+            .id
+            .unwrap()
+            .to_string(),
+        accepted_input_id
+    );
+
+    assert_eq!(
+        retried_mailbox.begin_dispatch(&retried).await.unwrap(),
+        DispatchDecision::Dispatch
+    );
+    assert_eq!(
+        retried_mailbox.begin_dispatch(&retried).await.unwrap(),
+        DispatchDecision::RecoveryNeeded
+    );
+    retried_mailbox.mark_dispatched(&retried).await.unwrap();
+    assert_eq!(
+        retried_mailbox.begin_dispatch(&retried).await.unwrap(),
+        DispatchDecision::AlreadyDispatched
+    );
+}
+
+#[tokio::test]
 async fn admission_is_incremental_but_outcomes_and_snapshots_stay_exactly_scoped() {
     let fixture = test_mailbox().await;
     let (issuer, other_issuer, agent) = (thread_id(3), thread_id(4), thread_id(5));
     let (a, id_a) = accept_work(&fixture.mailbox, issuer, agent, "a", "A").await;
     let (b, id_b) = accept_work(&fixture.mailbox, issuer, agent, "b", "B").await;
-    let (c, id_c) = accept_work(&fixture.mailbox, issuer, agent, "c", "C").await;
+    let (c, _id_c) = accept_work(&fixture.mailbox, issuer, agent, "c", "C").await;
     assert_eq!(
         admit(&fixture.mailbox, agent, "turn", &[id_a.clone()]).await.work_refs,
         vec![a.clone()]
@@ -490,9 +539,123 @@ async fn message_kinds_default_to_quiet_delivery_with_legacy_attention_separate(
     let pending = fixture.mailbox.pending(recipient, 20).await.unwrap();
     assert_eq!(pending.len(), 8);
     for kind in kinds { assert_eq!(pending.iter().filter(|m| m.kind == kind).count(), 2); }
-    assert_eq!(pending.iter().filter(|m| m.legacy_attention).count(), 4);
-    assert_eq!(fixture.mailbox.quiet_count(recipient).await.unwrap(), 4);
-    assert_eq!(fixture.mailbox.attention(recipient, 20).await.unwrap().len(), 4);
+    assert_eq!(pending.iter().filter(|m| m.legacy_attention).count(), 1);
+    assert_eq!(fixture.mailbox.quiet_count(recipient).await.unwrap(), 3);
+    assert_eq!(fixture.mailbox.attention(recipient, 20).await.unwrap().len(), 5);
+}
+
+#[tokio::test]
+async fn explicit_attention_is_one_shot_after_canonical_read_without_settling_request() {
+    let fixture = test_mailbox().await;
+    let (sender, recipient) = (thread_id(24), thread_id(25));
+    let request = send(
+        &fixture.mailbox,
+        draft("attention-request", sender, recipient, MessageKind::Request, "please decide", false),
+    )
+    .await;
+    let alert = send(
+        &fixture.mailbox,
+        draft("attention-alert", sender, recipient, MessageKind::Alert, "needs attention", false),
+    )
+    .await;
+    let note = send(
+        &fixture.mailbox,
+        draft("quiet-note", sender, recipient, MessageKind::Note, "quiet note", false),
+    )
+    .await;
+    let progress = send(
+        &fixture.mailbox,
+        draft("quiet-progress", sender, recipient, MessageKind::Progress, "quiet progress", false),
+    )
+    .await;
+
+    let legacy_draft = draft(
+        "legacy-attention-once", sender, recipient, MessageKind::Note, "legacy wake", true,
+    );
+    let legacy = send(&fixture.mailbox, legacy_draft.clone()).await;
+    assert_eq!(send(&fixture.mailbox, legacy_draft).await.id, legacy.id);
+
+    let uncanonical = fixture.mailbox.pending_page(recipient, None, 20).await.unwrap();
+    let uncanonical_ids = uncanonical.items.iter().map(|item| item.id.as_str()).collect::<Vec<_>>();
+    for message in [&request, &alert, &note, &progress, &legacy] {
+        assert!(uncanonical_ids.contains(&message.id.as_str()));
+        fixture.mailbox.mark_canonical(recipient, &message.id).await.unwrap();
+    }
+    let canonical = fixture.mailbox.read_page(recipient, None, 20).await.unwrap();
+    assert!(canonical.items.iter().any(|message| message.id == request.id));
+    assert!(canonical.items.iter().any(|message| message.id == alert.id));
+
+    let mut attention_ids = fixture
+        .mailbox
+        .attention(recipient, 20)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|attention| attention.id)
+        .collect::<Vec<_>>();
+    attention_ids.sort();
+    let mut expected_attention_ids = vec![
+        format!("attention:{}", request.id),
+        format!("attention:{}", alert.id),
+        format!("attention:{}", legacy.id),
+    ];
+    expected_attention_ids.sort();
+    assert_eq!(attention_ids, expected_attention_ids);
+
+    let observations = attention_ids
+        .iter()
+        .cloned()
+        .map(ObservationTarget::Attention)
+        .collect::<Vec<_>>();
+    fixture
+        .mailbox
+        .acknowledge_observed(recipient, &observations)
+        .await
+        .unwrap();
+    assert!(fixture.mailbox.attention(recipient, 20).await.unwrap().is_empty());
+
+    let old_request = take_snapshot(
+        &fixture.mailbox,
+        sender,
+        Some(recipient),
+        vec![Selector::Reply(request.id.clone())],
+        ReturnWhen::Any,
+    )
+    .await;
+    assert_eq!(old_request.state, SnapshotState::Pending);
+    assert_eq!(request_item(&old_request, &request.id).disposition, RequestDisposition::Open);
+
+    let new_request = send(
+        &fixture.mailbox,
+        draft(
+            "new-attention-request",
+            sender,
+            recipient,
+            MessageKind::Request,
+            "new request",
+            false,
+        ),
+    )
+    .await;
+    fixture.mailbox.mark_canonical(recipient, &new_request.id).await.unwrap();
+    let new_attention = fixture.mailbox.attention(recipient, 20).await.unwrap();
+    let new_attention_ids = new_attention
+        .iter()
+        .map(|attention| attention.id.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        new_attention_ids,
+        vec![format!("attention:{}", new_request.id)]
+    );
+    fixture
+        .mailbox
+        .acknowledge_observed(
+            recipient,
+            &[ObservationTarget::Attention(format!("attention:{}", new_request.id))],
+        )
+        .await
+        .unwrap();
+    assert!(fixture.mailbox.attention(recipient, 20).await.unwrap().is_empty());
 }
 
 #[tokio::test]

@@ -81,7 +81,11 @@ impl Mailbox {
     pub async fn withdraw_message(&self, sender: ThreadId, id: &str) -> MailboxResult<()> {
         let mut transaction = self.pool.begin().await?;
         let row = sqlx::query(
-            "SELECT sender, kind, canonical, input_admitted, legacy_attention, superseded_by, withdrawn
+            "SELECT sender, kind, canonical, input_admitted, legacy_attention,
+                    CASE WHEN kind IN ('\"note\"', '\"progress\"')
+                          AND (kind = '\"progress\"' OR legacy_attention = 0)
+                         THEN 1 ELSE 0 END AS quiet,
+                    superseded_by, withdrawn
              FROM mailbox_messages WHERE id = ?",
         )
         .bind(id)
@@ -113,7 +117,7 @@ impl Mailbox {
         }
         let canonical = row.try_get::<i64, _>("canonical")? != 0;
         let input_admitted = row.try_get::<i64, _>("input_admitted")? != 0;
-        let quiet = row.try_get::<i64, _>("legacy_attention")? == 0;
+        let quiet = row.try_get::<i64, _>("quiet")? != 0;
         let updated = sqlx::query(
             "UPDATE mailbox_messages SET withdrawn = 1
              WHERE id = ? AND sender = ? AND withdrawn = 0",
@@ -310,7 +314,11 @@ impl Mailbox {
     pub async fn mark_canonical(&self, recipient: ThreadId, id: &str) -> MailboxResult<()> {
         let mut transaction = self.pool.begin().await?;
         let current = sqlx::query(
-            "SELECT canonical, input_admitted, legacy_attention, superseded_by, withdrawn FROM mailbox_messages
+            "SELECT canonical, input_admitted, legacy_attention, superseded_by, withdrawn,
+                    CASE WHEN kind IN ('\"note\"', '\"progress\"')
+                          AND (kind = '\"progress\"' OR legacy_attention = 0)
+                         THEN 1 ELSE 0 END AS quiet
+             FROM mailbox_messages
              WHERE id = ? AND recipient = ?",
         )
         .bind(id)
@@ -320,7 +328,7 @@ impl Mailbox {
         .ok_or(MailboxError::WrongRecipient)?;
         let was_canonical = current.try_get::<i64, _>("canonical")? != 0;
         let input_admitted = current.try_get::<i64, _>("input_admitted")? != 0;
-        let quiet = current.try_get::<i64, _>("legacy_attention")? == 0;
+        let quiet = current.try_get::<i64, _>("quiet")? != 0;
         let is_current = current.try_get::<Option<String>, _>("superseded_by")?.is_none()
             && current.try_get::<i64, _>("withdrawn")? == 0;
         let result = sqlx::query(

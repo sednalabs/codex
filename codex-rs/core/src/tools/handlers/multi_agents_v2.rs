@@ -27,6 +27,7 @@ use serde::Serialize;
 use serde_json::Value as JsonValue;
 
 pub(crate) use followup_task::Handler as FollowupTaskHandler;
+pub(crate) use followup_task::MailboxHandler as MailboxFollowupTaskHandler;
 pub(crate) use interrupt_agent::Handler as InterruptAgentHandler;
 pub(crate) use list_agents::Handler as ListAgentsHandler;
 pub(crate) use mailbox_message::ReadHandler as MailboxReadHandler;

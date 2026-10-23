@@ -4,6 +4,7 @@ use crate::types::ReturnWhen;
 use codex_protocol::ThreadId;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, Weak};
+use std::sync::atomic::Ordering;
 
 const MAX_ACTIVE_WAITS: usize = 4_096;
 const MAX_PEERS_PER_WAIT: usize = 100;
@@ -15,12 +16,14 @@ pub(crate) struct ActiveWait {
     peers: Vec<String>,
     mode: ReturnWhen,
     has_escape: bool,
+    generation: u64,
 }
 
 /// RAII handle for one transient wait dependency. Dropping it removes only the
 /// exact registration; restarting the process never re-arms persisted waits.
 pub struct WaitRegistration {
     wait_id: String,
+    generation: u64,
     waits: Weak<Mutex<HashMap<String, ActiveWait>>>,
 }
 
@@ -34,12 +37,25 @@ impl Drop for WaitRegistration {
     fn drop(&mut self) {
         if let Some(waits) = self.waits.upgrade() {
             let mut waits = lock(&waits);
-            waits.remove(&self.wait_id);
+            if waits
+                .get(&self.wait_id)
+                .is_some_and(|wait| wait.generation == self.generation)
+            {
+                waits.remove(&self.wait_id);
+            }
         }
     }
 }
 
 impl Mailbox {
+    /// Invalidate active dependency edges for an owner when eligible input is
+    /// about to become available. Stale RAII handles cannot remove replacements.
+    pub fn invalidate_waits(&self, owner: ThreadId) {
+        let owner = owner.to_string();
+        let mut waits = lock(&self.waits);
+        waits.retain(|_, wait| wait.owner != owner);
+    }
+
     /// Register only currently active peer dependencies. The caller sets
     /// `has_escape` for a finite deadline or any already-eligible input.
     /// A new registration is rejected only when the graph proves it closed.
@@ -71,6 +87,7 @@ impl Mailbox {
         if waits.len() >= MAX_ACTIVE_WAITS {
             return Err(MailboxError::Backpressure("active wait registration count"));
         }
+        let generation = self.wait_generation.fetch_add(1, Ordering::Relaxed);
         waits.insert(
             wait_id.clone(),
             ActiveWait {
@@ -78,6 +95,7 @@ impl Mailbox {
                 peers,
                 mode,
                 has_escape,
+                generation,
             },
         );
         if is_closed_owner(&waits, &owner.to_string()) {
@@ -86,6 +104,7 @@ impl Mailbox {
         }
         Ok(WaitRegistration {
             wait_id,
+            generation,
             waits: Arc::downgrade(&self.waits),
         })
     }

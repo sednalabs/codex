@@ -108,6 +108,7 @@ fn activation_disposition_string(disposition: ActivationDisposition) -> &'static
         ActivationDisposition::AlreadyActive => "already_active",
         ActivationDisposition::Activated => "activated",
         ActivationDisposition::Denied => "denied",
+        ActivationDisposition::Unknown => "unknown",
     }
 }
 
@@ -117,6 +118,7 @@ fn parse_activation_disposition(value: &str) -> MailboxResult<ActivationDisposit
         "already_active" => Ok(ActivationDisposition::AlreadyActive),
         "activated" => Ok(ActivationDisposition::Activated),
         "denied" => Ok(ActivationDisposition::Denied),
+        "unknown" => Ok(ActivationDisposition::Unknown),
         _ => Err(MailboxError::InvalidInput("stored activation disposition".into())),
     }
 }

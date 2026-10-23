@@ -35,6 +35,7 @@ pub enum ActivationDisposition {
     AlreadyActive,
     Activated,
     Denied,
+    Unknown,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -2016,6 +2016,7 @@ impl Session {
         }
         let mailbox_terminal_before_publish = self.services.agent_control.mailbox_enabled()
             && turn_context.multi_agent_version == MultiAgentVersion::V2
+            && turn_context.config.features.enabled(Feature::AgentMailbox)
             && matches!(
                 &legacy_source,
                 EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_)
@@ -2097,7 +2098,9 @@ impl Session {
             return None;
         };
 
-        let mailbox_enabled = self.services.agent_control.mailbox_enabled();
+        let mailbox_enabled = self.services.agent_control.mailbox_enabled()
+            && turn_context.multi_agent_version == MultiAgentVersion::V2
+            && turn_context.config.features.enabled(Feature::AgentMailbox);
         let terminal_error = turn_context.terminal_error.lock().await.take();
         let status = match terminal_error.as_ref() {
             Some(error) => {
@@ -3420,7 +3423,9 @@ impl Session {
             },
             RolloutItem::ResponseItem(response_item),
         ];
-        let mailbox_enabled = self.services.agent_control.mailbox_enabled();
+        let mailbox_enabled = self.services.agent_control.mailbox_enabled()
+            && turn_context.multi_agent_version == MultiAgentVersion::V2
+            && turn_context.config.features.enabled(Feature::AgentMailbox);
         let custody_gate = if mailbox_enabled {
             Some(self.mailbox_custody_gate.lock().await)
         } else {
@@ -3599,7 +3604,10 @@ impl Session {
         };
         // Compaction starts a new history window, so its WorldState baseline must be full.
         let mut world_state_item = None;
-        if self.services.agent_control.mailbox_enabled() {
+        if self.services.agent_control.mailbox_enabled()
+            && self.features.enabled(Feature::AgentMailbox)
+            && self.multi_agent_version() == Some(MultiAgentVersion::V2)
+        {
             let _custody_gate = self.mailbox_custody_gate.lock().await;
             self.live_thread().ok_or_else(|| {
                 std::io::Error::other(

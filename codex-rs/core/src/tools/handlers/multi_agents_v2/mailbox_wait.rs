@@ -121,6 +121,12 @@ async fn handle_wait(invocation: ToolInvocation) -> Result<Box<dyn ToolOutput>, 
         wake_sender: None,
         wake_ref: None,
     };
+    report.pending = selectors.iter().map(|selector| MailboxWaitSelectionItem {
+        work_ref: match selector { Selector::Work(id) => Some(id.clone()), Selector::Reply(_) => None },
+        message_id: match selector { Selector::Reply(id) => Some(id.clone()), Selector::Work(_) => None },
+        agent: None,
+        status: "pending".to_string(),
+    }).collect();
     let mut selected = Vec::new();
     let mut attention_to_observe = None;
     let mut started = false;
@@ -129,20 +135,30 @@ async fn handle_wait(invocation: ToolInvocation) -> Result<Box<dyn ToolOutput>, 
     loop {
         drop(registration.take());
         if targetless {
-            selectors = mailbox.issued_work_refs(session.thread_id, None, 100)
-                .await.map_err(mailbox_error)?.into_iter()
-                .map(|work| Selector::Work(work.id)).collect();
+            match mailbox.issued_work_refs(session.thread_id, None, 100).await {
+                Ok(work) => selectors = work.into_iter().map(|work| Selector::Work(work.id)).collect(),
+                Err(_) => {
+                    report.completion_reason = Some(MailboxWakeCause::RuntimeFault);
+                    break;
+                }
+            }
         }
         selected = if selectors.is_empty() {
             Vec::new()
         } else {
-            mailbox.snapshot(&Selection {
+            match mailbox.snapshot(&Selection {
                 caller: session.thread_id,
                 agent: None,
                 selectors: selectors.clone(),
                 return_when,
                 limit: 100,
-            }).await.map_err(mailbox_error)?.items
+            }).await {
+                Ok(snapshot) => snapshot.items,
+                Err(_) => {
+                    report.completion_reason = Some(MailboxWakeCause::RuntimeFault);
+                    break;
+                }
+            }
         };
         for item in &selected {
             if let SnapshotItem::Work(work) = item {
@@ -152,8 +168,28 @@ async fn handle_wait(invocation: ToolInvocation) -> Result<Box<dyn ToolOutput>, 
                 }
             }
         }
+        let mut recovery_changed = false;
+        for item in &selected {
+            if let SnapshotItem::Work(work) = item
+                && work.dispatch_state == DispatchState::Dispatched
+                && work.outcome.is_none()
+                && work.continuations.is_empty()
+            {
+                recovery_changed |= session.services.agent_control
+                    .mailbox_reconcile_pending_work(&work.work_ref).await.map_err(mailbox_error)?;
+            }
+        }
+        if recovery_changed {
+            continue;
+        }
         update_report(&session, &mut report, &selected);
-        report.quiet_count = mailbox.quiet_count(session.thread_id).await.map_err(mailbox_error)?;
+        match mailbox.quiet_count(session.thread_id).await {
+            Ok(count) => report.quiet_count = count,
+            Err(_) => {
+                report.completion_reason = Some(MailboxWakeCause::RuntimeFault);
+                break;
+            }
+        }
         let ready = report.completed.len();
         let early_attention = selected.iter().any(needs_attention);
         let satisfied = !selected.is_empty() && match return_when {
@@ -181,13 +217,13 @@ async fn handle_wait(invocation: ToolInvocation) -> Result<Box<dyn ToolOutput>, 
             report.completion_reason = Some(MailboxWakeCause::NoMatchingWork);
             break;
         }
+        if early_attention {
+            report.completion_reason = Some(MailboxWakeCause::NeedsAttention);
+            break;
+        }
         if all_observed {
             report.condition_satisfied = true;
             report.completion_reason = Some(MailboxWakeCause::AlreadySatisfied);
-            break;
-        }
-        if early_attention {
-            report.completion_reason = Some(MailboxWakeCause::NeedsAttention);
             break;
         }
         if satisfied {
@@ -203,10 +239,20 @@ async fn handle_wait(invocation: ToolInvocation) -> Result<Box<dyn ToolOutput>, 
         }
         // An addressed request/alert interrupts a join but never satisfies it. Its body is
         // admitted before its one-shot notification is observed; unanswered obligation remains.
-        for attention in mailbox.attention(session.thread_id, 100).await.map_err(mailbox_error)? {
+        let attention = match mailbox.attention(session.thread_id, 100).await {
+            Ok(attention) => attention,
+            Err(_) => {
+                report.completion_reason = Some(MailboxWakeCause::RuntimeFault);
+                break;
+            }
+        };
+        for attention in attention {
             let Some(message_id) = attention.id.strip_prefix("attention:amsg_").map(|suffix| format!("amsg_{suffix}")) else { continue; };
             if let Some(envelope) = mailbox.get_message(session.thread_id, &message_id).await.map_err(mailbox_error)? {
-                deliver_envelope(&session, &turn, &envelope).await?;
+                if deliver_envelope(&session, &turn, &envelope).await.is_err() {
+                    report.completion_reason = Some(MailboxWakeCause::RuntimeFault);
+                    break;
+                }
                 report.wake_sender = Some(envelope.communication.author.to_string());
                 report.wake_ref = Some(envelope.id);
                 report.completion_reason = Some(MailboxWakeCause::Request);
@@ -234,14 +280,18 @@ async fn handle_wait(invocation: ToolInvocation) -> Result<Box<dyn ToolOutput>, 
             SnapshotItem::Work(work) if work.outcome.is_none() && !work.observed => Some(work.work_ref.agent),
             SnapshotItem::Request(request) if request.reply.is_none() && !request.observed => Some(request.request.recipient),
             SnapshotItem::Work(_) | SnapshotItem::Request(_) => None,
-        }).collect();
-        match mailbox.begin_wait(call_id.clone(), session.thread_id, peers, return_when, deadline.is_some()) {
+        }).collect::<HashSet<_>>().into_iter().collect();
+        let wait_id = format!("{}:{call_id}", session.thread_id);
+        match mailbox.begin_wait(wait_id, session.thread_id, peers, return_when, deadline.is_some()) {
             Ok(guard) => registration = Some(guard),
             Err(codex_agent_mailbox::MailboxError::ClosedPeerCycle) => {
                 report.completion_reason = Some(MailboxWakeCause::Cycle);
                 break;
             }
-            Err(error) => return Err(mailbox_error(error)),
+            Err(_) => {
+                report.completion_reason = Some(MailboxWakeCause::RuntimeFault);
+                break;
+            }
         }
         let deadline_wait = async {
             match deadline {
@@ -274,10 +324,21 @@ async fn handle_wait(invocation: ToolInvocation) -> Result<Box<dyn ToolOutput>, 
         }
     }
     drop(registration);
-    admit_selected(&session, &turn, &mailbox, &selected).await?;
+    // Every accepted body is at most 8KiB. Bound each wait result to two bodies,
+    // including an interrupting attention message. Metadata is non-consuming;
+    // omitted bodies retain their per-item observation state and retrieval IDs.
+    let body_limit = if attention_to_observe.is_some() { 1 } else { 2 };
+    if admit_selected(&session, &turn, &mailbox, &selected, body_limit).await.is_err() {
+        report.completion_reason = Some(MailboxWakeCause::RuntimeFault);
+        report.condition_satisfied = false;
+    }
     if let Some(id) = attention_to_observe {
-        mailbox.acknowledge_observed(session.thread_id, &[ObservationTarget::Attention(id)])
-            .await.map_err(mailbox_error)?;
+        if mailbox.acknowledge_observed(session.thread_id, &[ObservationTarget::Attention(id)])
+            .await.is_err()
+        {
+            report.completion_reason = Some(MailboxWakeCause::RuntimeFault);
+            report.condition_satisfied = false;
+        }
     }
     emit_report(&session, &turn, &call_id, &agents, &report, CollabAgentToolCallStatus::Completed).await;
     Ok(boxed_tool_output(FunctionToolOutput::from_text(
@@ -304,11 +365,10 @@ fn reject_reverse_completion_join(session: &Session, turn: &TurnContext, agent: 
 
 fn needs_attention(item: &SnapshotItem) -> bool {
     match item {
-        SnapshotItem::Work(work) => !work.observed && (work.dispatch_state == DispatchState::RecoveryNeeded
+        SnapshotItem::Work(work) => work.dispatch_state == DispatchState::RecoveryNeeded
             || work.outcome.as_ref().is_some_and(|result| result.outcome != Outcome::Completed)
-            || work.continuations.iter().any(|continuation| continuation.outcome == Outcome::NeedsAttention)),
-        SnapshotItem::Request(request) => !request.observed
-            && matches!(request.disposition, RequestDisposition::Superseded | RequestDisposition::Withdrawn),
+            || work.continuations.iter().any(|continuation| continuation.outcome == Outcome::NeedsAttention),
+        SnapshotItem::Request(request) => matches!(request.disposition, RequestDisposition::Superseded | RequestDisposition::Withdrawn),
     }
 }
 
@@ -327,6 +387,8 @@ fn update_report(session: &Session, report: &mut MailboxWaitReport, selected: &[
             SnapshotItem::Work(work) => {
                 let status = if work.dispatch_state == DispatchState::RecoveryNeeded {
                     "recovery_needed".to_string()
+                } else if work.continuations.iter().any(|continuation| continuation.outcome == Outcome::NeedsAttention) {
+                    "needs_attention".to_string()
                 } else {
                     work.outcome.as_ref().map_or_else(|| "pending".to_string(), |outcome| match outcome.outcome {
                         Outcome::Completed => "completed",
@@ -359,12 +421,16 @@ fn update_report(session: &Session, report: &mut MailboxWaitReport, selected: &[
     }
 }
 
-async fn admit_selected(session: &Session, turn: &TurnContext, mailbox: &Mailbox, selected: &[SnapshotItem]) -> Result<(), FunctionCallError> {
+async fn admit_selected(session: &Session, turn: &TurnContext, mailbox: &Mailbox, selected: &[SnapshotItem], body_limit: usize) -> Result<(), FunctionCallError> {
     let mut observations = Vec::new();
+    let mut delivered = HashSet::new();
     for item in selected {
         match item {
             SnapshotItem::Work(work) if !work.observed => {
                 if let Some(outcome) = &work.outcome {
+                    if !delivered.contains(&outcome.id) && delivered.len() >= body_limit {
+                        continue;
+                    }
                     let communication = outcome.response.clone().unwrap_or_else(|| {
                         let mut communication = InterAgentCommunication::new(
                             work.input.recipient.clone(), work.input.author.clone(), Vec::new(),
@@ -377,12 +443,17 @@ async fn admit_selected(session: &Session, turn: &TurnContext, mailbox: &Mailbox
                     });
                     session.record_inter_agent_communication(turn, communication).await.map_err(mailbox_error)?;
                     mailbox.mark_outcome_canonical(session.thread_id, &outcome.id).await.map_err(mailbox_error)?;
+                    delivered.insert(outcome.id.clone());
                     observations.push(ObservationTarget::Work(work.work_ref.clone()));
                 }
             }
             SnapshotItem::Request(request) if !request.observed => {
                 if let Some(reply) = &request.reply {
+                    if !delivered.contains(&reply.id) && delivered.len() >= body_limit {
+                        continue;
+                    }
                     deliver_envelope(session, turn, reply).await?;
+                    delivered.insert(reply.id.clone());
                     observations.push(ObservationTarget::Reply(reply.id.clone()));
                 }
             }

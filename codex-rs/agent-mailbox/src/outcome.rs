@@ -1,6 +1,7 @@
 use crate::error::{MailboxError, MailboxResult};
 use crate::outcome_messages::{
-    insert_response_group, response_groups, validate_auto_response_size, ResponseGroup,
+    ensure_terminal_responses, insert_response_group, response_groups,
+    validate_auto_response_size,
 };
 use crate::outcome_store::{
     outcome_receipt_for, persist_continuation, save_outcome_tx, OutcomeData,
@@ -182,6 +183,11 @@ impl Mailbox {
                 .await?;
             }
             transaction.commit().await?;
+            for group in &groups {
+                if group.response.is_some() {
+                    self.invalidate_waits(group.issuer);
+                }
+            }
             self.notify_changed();
             return Ok(TurnOutcomeReceipt {
                 outcomes: Vec::new(),
@@ -190,6 +196,15 @@ impl Mailbox {
                 already_recorded: false,
             });
         }
+
+        ensure_terminal_responses(
+            &mut groups,
+            &refs,
+            outcome,
+            &continuation,
+            source_turn_id,
+        )?;
+        validate_auto_response_size(&groups)?;
 
         let binding_json = match &continuation {
             Continuation::Terminal(binding) => Some(serde_json::to_string(binding)?),
@@ -288,6 +303,11 @@ impl Mailbox {
             }
         }
         transaction.commit().await?;
+        for group in &groups {
+            if group.response.is_some() {
+                self.invalidate_waits(group.issuer);
+            }
+        }
         if !already_recorded || binding_json.is_some() {
             self.notify_changed();
         }
@@ -297,13 +317,12 @@ impl Mailbox {
                 .iter()
                 .find(|group| group.issuer == work_ref.issuer)
                 .and_then(|group| group.output_id.clone());
-            let response_id = groups
+            let has_response = groups
                 .iter()
                 .find(|group| group.issuer == work_ref.issuer)
-                .and_then(|group| group.response.as_ref().map(|_| group.output_id.clone()))
-                .flatten();
+                .is_some_and(|group| group.response.is_some());
             receipts.push(
-                outcome_receipt_for(&self.pool, work_ref, group_id, response_id).await?,
+                outcome_receipt_for(&self.pool, work_ref, group_id, has_response).await?,
             );
         }
         Ok(TurnOutcomeReceipt {
@@ -333,8 +352,18 @@ impl Mailbox {
         }
         let mut transaction = self.pool.begin().await?;
         let mut groups = response_groups(&mut transaction, &[work_ref.clone()], response.as_ref()).await?;
+        let group = groups.pop().ok_or(MailboxError::ReferenceMismatch)?;
+        let mut groups = vec![group];
+        ensure_terminal_responses(
+            &mut groups,
+            std::slice::from_ref(work_ref),
+            outcome,
+            &continuation,
+            &work_ref.id,
+        )?;
         let mut group = groups.pop().ok_or(MailboxError::ReferenceMismatch)?;
         validate_auto_response_size(std::slice::from_ref(&group))?;
+        let has_response = group.response.is_some();
         let data = OutcomeData::new(outcome, continuation.clone(), group.response.clone());
         let payload = serde_json::to_string(&data)?;
         let row = exact_work_tx(&mut transaction, work_ref).await?;
@@ -344,7 +373,7 @@ impl Mailbox {
             }
             let id: String = row.try_get("outcome_id")?;
             transaction.commit().await?;
-            return outcome_receipt_for(&self.pool, work_ref.clone(), Some(id), response.is_some()).await;
+            return outcome_receipt_for(&self.pool, work_ref.clone(), Some(id), has_response).await;
         }
         if let Continuation::Terminal(binding) = &continuation {
             let binding_json = serde_json::to_string(binding)?;
@@ -366,14 +395,14 @@ impl Mailbox {
         }
         group.output_id = insert_response_group(
             &mut transaction,
-            &group,
+            &mut group,
             format!("work-outcome:{}", work_ref.id),
             outcome,
         )
         .await?;
-        let output_id = group.output_id.as_deref().unwrap_or_else(|| new_mailbox_id());
-        ensure_mailbox_id(output_id)?;
-        save_outcome_tx(&mut transaction, work_ref, &payload, output_id, outcome).await?;
+        let output_id = group.output_id.clone().unwrap_or_else(new_mailbox_id);
+        ensure_mailbox_id(&output_id)?;
+        save_outcome_tx(&mut transaction, work_ref, &payload, &output_id, outcome).await?;
         if let Continuation::Terminal(binding) = &continuation {
             sqlx::query(
                 "UPDATE mailbox_continuations SET state = 'terminal'
@@ -386,8 +415,9 @@ impl Mailbox {
             .await?;
         }
         transaction.commit().await?;
+        self.invalidate_waits(group.issuer);
         self.notify_changed();
-        outcome_receipt_for(&self.pool, work_ref.clone(), Some(output_id.to_string()), response.is_some()).await
+        outcome_receipt_for(&self.pool, work_ref.clone(), Some(output_id), has_response).await
     }
 }
 

@@ -1,7 +1,8 @@
 use crate::error::{MailboxError, MailboxResult};
+use crate::message_delivery::envelope_from_row;
+use crate::message_rules::{validate_reply_tx, validate_replacement_tx};
 use crate::store::Mailbox;
 use crate::types::{Envelope, MessageDraft, MessageKind, WorkRef};
-use crate::message_rules::{validate_reply_tx, validate_replacement_tx};
 use crate::work::exact_work;
 use codex_protocol::{ResponseItemId, ThreadId};
 use serde::Serialize;
@@ -46,6 +47,7 @@ impl Mailbox {
             transaction.commit().await?;
             envelope
         };
+        self.invalidate_waits(envelope.recipient);
         self.notify_changed();
         Ok(envelope)
     }
@@ -58,6 +60,7 @@ pub(crate) async fn insert_message_tx(
     explicit_id: Option<String>,
 ) -> MailboxResult<Envelope> {
     validate_key(&draft.invocation_key)?;
+    draft.legacy_attention &= draft.kind == MessageKind::Note;
     if draft.kind == MessageKind::Progress && draft.reply_to.is_some() {
         return Err(MailboxError::InvalidInput(
             "progress messages cannot be replies".into(),
@@ -73,8 +76,8 @@ pub(crate) async fn insert_message_tx(
     fingerprint.communication.id = None;
     let request_json = serde_json::to_string(&DraftRequest {
         invocation_key: &fingerprint.invocation_key,
-        sender: &fingerprint.sender,
-        recipient: &fingerprint.recipient,
+        sender: fingerprint.sender,
+        recipient: fingerprint.recipient,
         communication: &fingerprint.communication,
         kind: fingerprint.kind,
         activate_if_idle: fingerprint.activate_if_idle,
@@ -168,7 +171,7 @@ pub(crate) async fn insert_message_tx(
                 )
                 .await?;
                 add_invocation_tx(transaction, &draft.invocation_key, &request_json, &existing_id).await?;
-                if draft.legacy_attention {
+                if has_attention(&draft) {
                     insert_attention_tx(transaction, &existing_id, draft.recipient.to_string().as_str()).await?;
                 }
                 let row = sqlx::query("SELECT * FROM mailbox_messages WHERE id = ?")
@@ -240,7 +243,10 @@ pub(crate) async fn insert_message_tx(
     add_invocation_tx(transaction, &draft.invocation_key, &request_json, &id).await?;
     if let Some(old_id) = draft.supersedes.as_deref() {
         let old = sqlx::query(
-            "SELECT recipient, canonical, input_admitted, legacy_attention
+            "SELECT recipient, canonical, input_admitted, legacy_attention,
+                    CASE WHEN kind IN ('\"note\"', '\"progress\"')
+                          AND (kind = '\"progress\"' OR legacy_attention = 0)
+                         THEN 1 ELSE 0 END AS quiet
              FROM mailbox_messages
              WHERE id = ? AND superseded_by IS NULL AND withdrawn = 0",
         )
@@ -261,7 +267,7 @@ pub(crate) async fn insert_message_tx(
                     || old.try_get::<i64, _>("input_admitted")? == 0;
                 if unread {
                     let recipient: String = old.try_get("recipient")?;
-                    let quiet = old.try_get::<i64, _>("legacy_attention")? == 0;
+                    let quiet = old.try_get::<i64, _>("quiet")? != 0;
                     decrement_pending_count(transaction, &recipient, quiet).await?;
                 }
             }
@@ -273,10 +279,10 @@ pub(crate) async fn insert_message_tx(
     increment_pending_count(
         transaction,
         &draft.recipient.to_string(),
-        !draft.legacy_attention,
+        is_quiet_kind(draft.kind, draft.legacy_attention),
     )
     .await?;
-    if draft.legacy_attention {
+    if has_attention(&draft) {
         insert_attention_tx(transaction, &id, draft.recipient.to_string().as_str()).await?;
     }
     let row = sqlx::query("SELECT * FROM mailbox_messages WHERE id = ?")
@@ -403,6 +409,15 @@ fn validate_key(key: &str) -> MailboxResult<()> {
         return Err(MailboxError::InvalidInput("invalid invocation key".into()));
     }
     Ok(())
+}
+
+pub(crate) fn is_quiet_kind(kind: MessageKind, legacy_attention: bool) -> bool {
+    matches!(kind, MessageKind::Note | MessageKind::Progress)
+        && !(kind == MessageKind::Note && legacy_attention)
+}
+
+fn has_attention(draft: &MessageDraft) -> bool {
+    draft.legacy_attention || matches!(draft.kind, MessageKind::Request | MessageKind::Alert)
 }
 
 fn validate_id(id: &str) -> MailboxResult<()> {

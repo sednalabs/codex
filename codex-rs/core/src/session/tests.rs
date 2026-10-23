@@ -2297,6 +2297,482 @@ async fn record_inter_agent_communication_preserves_item_id_in_rollout_and_resum
     );
 }
 
+struct FaultInjectingThreadStore {
+    inner: Arc<dyn codex_thread_store::ThreadStore>,
+    fail_append_once: std::sync::atomic::AtomicBool,
+    fail_flush_once: std::sync::atomic::AtomicBool,
+}
+
+impl FaultInjectingThreadStore {
+    fn new(inner: Arc<dyn codex_thread_store::ThreadStore>) -> Self {
+        Self {
+            inner,
+            fail_append_once: std::sync::atomic::AtomicBool::new(false),
+            fail_flush_once: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+}
+
+impl codex_thread_store::ThreadStore for FaultInjectingThreadStore {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self.inner.as_any()
+    }
+
+    fn create_thread(
+        &self,
+        params: codex_thread_store::CreateThreadParams,
+    ) -> codex_thread_store::ThreadStoreFuture<'_, ()> {
+        codex_thread_store::ThreadStore::create_thread(self.inner.as_ref(), params)
+    }
+
+    fn resume_thread(
+        &self,
+        params: codex_thread_store::ResumeThreadParams,
+    ) -> codex_thread_store::ThreadStoreFuture<'_, ()> {
+        codex_thread_store::ThreadStore::resume_thread(self.inner.as_ref(), params)
+    }
+
+    fn append_items(
+        &self,
+        params: codex_thread_store::AppendThreadItemsParams,
+    ) -> codex_thread_store::ThreadStoreFuture<'_, ()> {
+        if self
+            .fail_append_once
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Box::pin(async {
+                Err(codex_thread_store::ThreadStoreError::Internal {
+                    message: "scripted mailbox append failure".to_string(),
+                })
+            });
+        }
+        codex_thread_store::ThreadStore::append_items(self.inner.as_ref(), params)
+    }
+
+    fn persist_thread(
+        &self,
+        thread_id: ThreadId,
+    ) -> codex_thread_store::ThreadStoreFuture<'_, ()> {
+        codex_thread_store::ThreadStore::persist_thread(self.inner.as_ref(), thread_id)
+    }
+
+    fn flush_thread(
+        &self,
+        thread_id: ThreadId,
+    ) -> codex_thread_store::ThreadStoreFuture<'_, ()> {
+        if self
+            .fail_flush_once
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Box::pin(async {
+                Err(codex_thread_store::ThreadStoreError::Internal {
+                    message: "scripted mailbox flush failure".to_string(),
+                })
+            });
+        }
+        codex_thread_store::ThreadStore::flush_thread(self.inner.as_ref(), thread_id)
+    }
+
+    fn shutdown_thread(
+        &self,
+        thread_id: ThreadId,
+    ) -> codex_thread_store::ThreadStoreFuture<'_, ()> {
+        codex_thread_store::ThreadStore::shutdown_thread(self.inner.as_ref(), thread_id)
+    }
+
+    fn discard_thread(
+        &self,
+        thread_id: ThreadId,
+    ) -> codex_thread_store::ThreadStoreFuture<'_, ()> {
+        codex_thread_store::ThreadStore::discard_thread(self.inner.as_ref(), thread_id)
+    }
+
+    fn load_history(
+        &self,
+        params: codex_thread_store::LoadThreadHistoryParams,
+    ) -> codex_thread_store::ThreadStoreFuture<'_, codex_thread_store::StoredThreadHistory> {
+        codex_thread_store::ThreadStore::load_history(self.inner.as_ref(), params)
+    }
+
+    fn read_thread(
+        &self,
+        params: codex_thread_store::ReadThreadParams,
+    ) -> codex_thread_store::ThreadStoreFuture<'_, codex_thread_store::StoredThread> {
+        codex_thread_store::ThreadStore::read_thread(self.inner.as_ref(), params)
+    }
+
+    fn read_thread_by_rollout_path(
+        &self,
+        params: codex_thread_store::ReadThreadByRolloutPathParams,
+    ) -> codex_thread_store::ThreadStoreFuture<'_, codex_thread_store::StoredThread> {
+        codex_thread_store::ThreadStore::read_thread_by_rollout_path(self.inner.as_ref(), params)
+    }
+
+    fn list_threads(
+        &self,
+        params: codex_thread_store::ListThreadsParams,
+    ) -> codex_thread_store::ThreadStoreFuture<'_, codex_thread_store::ThreadPage> {
+        codex_thread_store::ThreadStore::list_threads(self.inner.as_ref(), params)
+    }
+
+    fn update_thread_metadata(
+        &self,
+        params: codex_thread_store::UpdateThreadMetadataParams,
+    ) -> codex_thread_store::ThreadStoreFuture<'_, codex_thread_store::StoredThread> {
+        codex_thread_store::ThreadStore::update_thread_metadata(self.inner.as_ref(), params)
+    }
+
+    fn archive_thread(
+        &self,
+        params: codex_thread_store::ArchiveThreadParams,
+    ) -> codex_thread_store::ThreadStoreFuture<'_, ()> {
+        codex_thread_store::ThreadStore::archive_thread(self.inner.as_ref(), params)
+    }
+
+    fn unarchive_thread(
+        &self,
+        params: codex_thread_store::ArchiveThreadParams,
+    ) -> codex_thread_store::ThreadStoreFuture<'_, codex_thread_store::StoredThread> {
+        codex_thread_store::ThreadStore::unarchive_thread(self.inner.as_ref(), params)
+    }
+
+    fn delete_thread(
+        &self,
+        params: codex_thread_store::DeleteThreadParams,
+    ) -> codex_thread_store::ThreadStoreFuture<'_, ()> {
+        codex_thread_store::ThreadStore::delete_thread(self.inner.as_ref(), params)
+    }
+}
+
+async fn accept_mailbox_note(
+    mailbox: &codex_agent_mailbox::Mailbox,
+    sender: ThreadId,
+    recipient: ThreadId,
+    invocation_key: &str,
+    body: &str,
+) -> InterAgentCommunication {
+    mailbox
+        .accept_message(codex_agent_mailbox::MessageDraft {
+            invocation_key: invocation_key.to_string(),
+            sender,
+            recipient,
+            communication: InterAgentCommunication::new(
+                AgentPath::root(),
+                AgentPath::root(),
+                Vec::new(),
+                body.to_string(),
+                /*trigger_turn*/ false,
+            ),
+            kind: codex_agent_mailbox::MessageKind::Note,
+            activate_if_idle: false,
+            work_ref: None,
+            reply_to: None,
+            supersedes: None,
+            legacy_attention: false,
+        })
+        .await
+        .expect("mailbox note should be accepted")
+        .communication
+}
+
+#[tokio::test]
+async fn canonical_append_and_flush_failures_do_not_acknowledge_mailbox_messages() {
+    let codex_home = tempfile::tempdir().expect("create temp directory");
+    let (mut session, turn_context, _rx) = make_session_and_context_with_auth_config_home_and_rx(
+        CodexAuth::from_api_key("Test API Key"),
+        Vec::new(),
+        codex_home.path(),
+        |config| {
+            let _ = config.features.enable(Feature::MultiAgentV2);
+            let _ = config.features.enable(Feature::AgentMailbox);
+        },
+    )
+    .await;
+    session
+        .services
+        .agent_control
+        .mailbox_initialize(&turn_context.config)
+        .await
+        .expect("mailbox should initialize");
+    let mailbox = session
+        .services
+        .agent_control
+        .mailbox()
+        .expect("mailbox should be enabled");
+    let fault_store = Arc::new(FaultInjectingThreadStore::new(Arc::clone(
+        &session.services.thread_store,
+    )));
+    session.services.thread_store = fault_store.clone();
+    attach_thread_persistence(Arc::get_mut(&mut session).expect("unique session")).await;
+
+    let append_communication = accept_mailbox_note(
+        mailbox.as_ref(),
+        ThreadId::new(),
+        session.thread_id,
+        "append-failure",
+        "append body",
+    )
+    .await;
+    let append_id = append_communication
+        .id
+        .as_ref()
+        .expect("accepted input should have a stable ID")
+        .clone();
+    fault_store
+        .fail_append_once
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        session
+            .record_inter_agent_communication(&turn_context, append_communication)
+            .await
+            .is_err()
+    );
+    assert!(
+        !mailbox
+            .get_message(session.thread_id, append_id.as_str())
+            .await
+            .expect("message lookup should work")
+            .expect("accepted message should remain stored")
+            .canonical
+    );
+
+    let flush_communication = accept_mailbox_note(
+        mailbox.as_ref(),
+        ThreadId::new(),
+        session.thread_id,
+        "flush-failure",
+        "flush body",
+    )
+    .await;
+    let flush_id = flush_communication
+        .id
+        .as_ref()
+        .expect("accepted input should have a stable ID")
+        .clone();
+    fault_store
+        .fail_flush_once
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        session
+            .record_inter_agent_communication(&turn_context, flush_communication)
+            .await
+            .is_err()
+    );
+    assert!(
+        !mailbox
+            .get_message(session.thread_id, flush_id.as_str())
+            .await
+            .expect("message lookup should work")
+            .expect("accepted message should remain stored")
+            .canonical
+    );
+}
+
+#[tokio::test]
+async fn disabled_turn_does_not_settle_shared_mailbox_state() {
+    let codex_home = tempfile::tempdir().expect("create temp directory");
+    let (enabled_session, enabled_turn_context, _rx) =
+        make_session_and_context_with_auth_config_home_and_rx(
+            CodexAuth::from_api_key("Test API Key"),
+            Vec::new(),
+            codex_home.path(),
+            |config| {
+                let _ = config.features.enable(Feature::MultiAgentV2);
+                let _ = config.features.enable(Feature::AgentMailbox);
+            },
+        )
+        .await;
+    enabled_session
+        .services
+        .agent_control
+        .mailbox_initialize(&enabled_turn_context.config)
+        .await
+        .expect("mailbox should initialize");
+    let shared_control = enabled_session.services.agent_control.clone();
+    let mailbox = shared_control
+        .mailbox()
+        .expect("enabled session should initialize mailbox");
+
+    let (mut disabled_session, disabled_turn_context, _rx) =
+        make_session_and_context_with_auth_config_home_and_rx(
+            CodexAuth::from_api_key("Test API Key"),
+            Vec::new(),
+            codex_home.path(),
+            |config| {
+                let _ = config.features.enable(Feature::MultiAgentV2);
+                let _ = config.features.disable(Feature::AgentMailbox);
+            },
+        )
+        .await;
+    disabled_session.services.agent_control = shared_control;
+    let communication = accept_mailbox_note(
+        mailbox.as_ref(),
+        ThreadId::new(),
+        disabled_session.thread_id,
+        "disabled-turn",
+        "must remain unacknowledged",
+    )
+    .await;
+    let id = communication
+        .id
+        .as_ref()
+        .expect("accepted input should have a stable ID")
+        .clone();
+    attach_thread_persistence(Arc::get_mut(&mut disabled_session).expect("unique session")).await;
+
+    disabled_session
+        .record_inter_agent_communication(&disabled_turn_context, communication)
+        .await
+        .expect("native V2 history recording should continue when mailbox is disabled");
+
+    assert!(
+        !mailbox
+            .get_message(disabled_session.thread_id, id.as_str())
+            .await
+            .expect("message lookup should work")
+            .expect("accepted message should remain stored")
+            .canonical
+    );
+}
+
+#[tokio::test]
+async fn stable_mailbox_message_retry_and_resumed_history_do_not_duplicate_body() {
+    let codex_home = tempfile::tempdir().expect("create temp directory");
+    let configure = |config: &mut crate::config::Config| {
+        let _ = config.features.enable(Feature::MultiAgentV2);
+        let _ = config.features.enable(Feature::AgentMailbox);
+    };
+    let (mut session, turn_context, _rx) = make_session_and_context_with_auth_config_home_and_rx(
+        CodexAuth::from_api_key("Test API Key"),
+        Vec::new(),
+        codex_home.path(),
+        configure,
+    )
+    .await;
+    session
+        .services
+        .agent_control
+        .mailbox_initialize(&turn_context.config)
+        .await
+        .expect("mailbox should initialize");
+    let mailbox = session
+        .services
+        .agent_control
+        .mailbox()
+        .expect("mailbox should be enabled");
+    let communication = accept_mailbox_note(
+        mailbox.as_ref(),
+        ThreadId::new(),
+        session.thread_id,
+        "stable-id-retry",
+        "one canonical body",
+    )
+    .await;
+    let id = communication
+        .id
+        .as_ref()
+        .expect("accepted input should have a stable ID")
+        .clone();
+    let rollout_path =
+        attach_thread_persistence(Arc::get_mut(&mut session).expect("unique session")).await;
+    session
+        .record_inter_agent_communication(&turn_context, communication.clone())
+        .await
+        .expect("first canonical append should succeed");
+    session
+        .replace_compacted_history(
+            Vec::new(),
+            None,
+            None,
+            crate::compact::CompactedHistoryMetadata {
+                message: "test checkpoint".to_string(),
+                window_number: 1,
+                window_ids: crate::state::AutoCompactWindowIds::new_initial(),
+            },
+        )
+        .await
+        .expect("checkpoint should preserve canonical but unadmitted mailbox body");
+    let compacted_history = session.clone_history().await;
+    assert_eq!(
+        compacted_history
+            .raw_items()
+            .iter()
+            .filter(|item| item.id() == Some(&id))
+            .count(),
+        1
+    );
+    session
+        .record_inter_agent_communication(&turn_context, communication.clone())
+        .await
+        .expect("stable-ID retry should reconcile without a duplicate append");
+
+    let InitialHistory::Resumed(resumed) = RolloutRecorder::get_rollout_history(&rollout_path)
+        .await
+        .expect("read canonical rollout")
+    else {
+        panic!("expected resumed rollout history");
+    };
+    let initial_history = InitialHistory::Resumed(resumed);
+    let restored_ids = Session::canonical_agent_message_ids(&initial_history);
+    assert!(restored_ids.contains(&id));
+
+    let (mut resumed_session, resumed_turn_context, _rx) =
+        make_session_and_context_with_auth_config_home_and_rx(
+            CodexAuth::from_api_key("Test API Key"),
+            Vec::new(),
+            codex_home.path(),
+            configure,
+        )
+        .await;
+    resumed_session
+        .services
+        .agent_control
+        .mailbox_initialize(&resumed_turn_context.config)
+        .await
+        .expect("resumed mailbox should initialize");
+    let shared_control = session.services.agent_control.clone();
+    let shared_store = Arc::clone(&session.services.thread_store);
+    let shared_live_thread = session
+        .services
+        .live_thread
+        .as_ref()
+        .expect("source rollout should remain open")
+        .clone();
+    let resumed_session = Arc::get_mut(&mut resumed_session).expect("unique resumed session");
+    resumed_session.services.agent_control = shared_control;
+    resumed_session.services.thread_store = shared_store;
+    resumed_session.services.live_thread = Some(shared_live_thread);
+    resumed_session
+        .mailbox_canonical_response_item_ids
+        .lock()
+        .await
+        .extend(restored_ids);
+    resumed_session
+        .record_initial_history(initial_history)
+        .await;
+    resumed_session
+        .record_inter_agent_communication(&resumed_turn_context, communication)
+        .await
+        .expect("resumed stable-ID retry should reconcile without a duplicate append");
+
+    let matching_items = resumed_session
+        .clone_history()
+        .await
+        .raw_items()
+        .iter()
+        .filter(|item| item.id() == Some(&id))
+        .count();
+    assert_eq!(matching_items, 1);
+    assert!(
+        mailbox
+            .get_message(session.thread_id, id.as_str())
+            .await
+            .expect("message lookup should work")
+            .expect("accepted message should remain stored")
+            .canonical
+    );
+}
+
 #[tokio::test]
 async fn prepares_image_failures_before_history_insertion() {
     let (session, turn_context, _rx) = make_session_and_context_with_auth_and_config_and_rx(

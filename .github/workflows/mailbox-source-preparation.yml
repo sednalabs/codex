@@ -15,7 +15,7 @@ jobs:
     env:
       CARGO_INCREMENTAL: "0"
       RUST_MIN_STACK: "8388608"
-      PREPARATION_ATTEMPT: "1"
+      PREPARATION_ATTEMPT: "2"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -60,6 +60,9 @@ jobs:
       - name: Compile focused core mailbox and schema consumers
         working-directory: codex-rs
         run: cargo test --locked -p codex-core --lib mailbox -- --test-threads=1
+      - name: Run real native mailbox adapter contracts
+        working-directory: codex-rs
+        run: cargo test --locked -p codex-core --test all suite::agent_mailbox:: -- --test-threads=1
       - name: Compile focused UI mailbox consumers
         working-directory: codex-rs
         env:

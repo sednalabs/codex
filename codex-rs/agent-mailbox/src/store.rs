@@ -1,6 +1,6 @@
 use crate::error::MailboxResult;
-use crate::schema;
 use std::collections::HashMap;
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 use sqlx::SqlitePool;
 use tokio::sync::watch;
@@ -10,6 +10,7 @@ pub struct Mailbox {
     pub(crate) pool: SqlitePool,
     change_tx: watch::Sender<u64>,
     pub(crate) waits: Arc<Mutex<HashMap<String, crate::wait_graph::ActiveWait>>>,
+    pub(crate) wait_generation: Arc<AtomicU64>,
     pub(crate) runtime_faults: Arc<Mutex<crate::runtime_fault::RuntimeFaults>>,
 }
 
@@ -24,6 +25,7 @@ impl Mailbox {
             pool,
             change_tx,
             waits: Arc::new(Mutex::new(HashMap::new())),
+            wait_generation: Arc::new(AtomicU64::new(1)),
             runtime_faults: Arc::new(Mutex::new(crate::runtime_fault::RuntimeFaults::default())),
         })
     }

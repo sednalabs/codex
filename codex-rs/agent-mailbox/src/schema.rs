@@ -132,14 +132,16 @@ pub(crate) async fn initialize(pool: &SqlitePool) -> MailboxResult<()> {
     )
     .execute(&mut *transaction)
     .await?;
-    sqlx::query(
-        "INSERT OR IGNORE INTO mailbox_input_admissions(
-             recipient, source_turn_id, input_message_id, work_id
-         ) SELECT recipient, source_turn_id, input_message_id, work_id
-           FROM mailbox_admissions",
-    )
-    .execute(&mut *transaction)
-    .await?;
+    if version.is_some_and(|version| version < SCHEMA_VERSION) {
+        sqlx::query(
+            "INSERT OR IGNORE INTO mailbox_input_admissions(
+                 recipient, source_turn_id, input_message_id, work_id
+             ) SELECT recipient, source_turn_id, input_message_id, work_id
+               FROM mailbox_admissions",
+        )
+        .execute(&mut *transaction)
+        .await?;
+    }
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS mailbox_input_admissions_turn
          ON mailbox_input_admissions(recipient, source_turn_id, input_message_id)",
@@ -265,7 +267,9 @@ pub(crate) async fn initialize(pool: &SqlitePool) -> MailboxResult<()> {
                  WHERE message.recipient = mailbox_pending_counts.recipient
                    AND (message.canonical = 0 OR message.input_admitted = 0)
                    AND message.superseded_by IS NULL
-                   AND message.withdrawn = 0 AND message.legacy_attention = 0
+                   AND message.withdrawn = 0
+                   AND message.kind IN ('\"note\"', '\"progress\"')
+                   AND (message.kind = '\"progress\"' OR message.legacy_attention = 0)
                )",
         )
         .execute(&mut *transaction)

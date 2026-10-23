@@ -14,12 +14,15 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 pub(crate) fn begin(report: &MailboxWaitReport) -> PlainHistoryCell {
-    let selection_count = report.requested_targets.len() + report.requested_replies_to.len();
-    let title = if selection_count == 0 {
+    let selection_count = report.completed.len() + report.pending.len();
+    let targetless = report.requested_targets.is_empty() && report.requested_replies_to.is_empty();
+    let title = if targetless && selection_count == 0 {
         format!(
             "Waiting for mailbox attention ({})",
             return_when_label(report.return_when)
         )
+    } else if targetless {
+        format!("Waiting for mailbox attention or {} of {selection_count} work outcomes", return_when_label(report.return_when))
     } else {
         format!(
             "Waiting for {} of {selection_count} selected conditions",
