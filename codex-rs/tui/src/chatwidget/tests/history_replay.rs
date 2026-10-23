@@ -150,7 +150,7 @@ async fn replayed_mailbox_wait_report_preserves_active_join_selection() {
         requested_replies_to: report.requested_replies_to.clone(),
         return_when: report.return_when,
         completed: Vec::new(),
-        pending: report.pending.clone(),
+        pending: report.pending,
         completion_reason: Some(codex_protocol::items::MailboxWakeCause::Interrupted),
         condition_satisfied: false,
         quiet_count: 5,
