@@ -283,9 +283,10 @@ pub(crate) fn validate_raw_config(config: &[u8], server: &str, recipient: &str) 
                 "work_item_release",
             ];
             tools.len() == expected.len()
-                && expected.iter().enumerate().all(|(index, tool)| {
-                    tools[index].as_str() == Some(*tool)
-                })
+                && expected
+                    .iter()
+                    .enumerate()
+                    .all(|(index, tool)| tools[index].as_str() == Some(*tool))
         });
     let fixed_claim_profile = server == "ops"
         && mcp_servers.len() == 1
@@ -448,7 +449,10 @@ pub fn is_protected_mcp_read_tool(server: &str, recipient: &str, tool: &str) -> 
 }
 
 fn is_proofless_read_tool_name(tool: &str) -> bool {
-    matches!(tool, "work_item_current_work" | "work_item_execution_receipt_read")
+    matches!(
+        tool,
+        "work_item_current_work" | "work_item_execution_receipt_read"
+    )
 }
 
 pub fn protected_mcp_target() -> Result<Option<(String, String)>> {

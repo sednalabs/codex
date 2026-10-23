@@ -357,14 +357,17 @@ impl<'a, W: Write> Projector<'a, W> {
             return;
         };
         if value.get("work_item_ref").and_then(Value::as_str) != Some(self.work_item_ref)
-            || value.get("request_id").and_then(Value::as_str)
-                != pending.request_id.as_deref()
+            || value.get("request_id").and_then(Value::as_str) != pending.request_id.as_deref()
         {
             self.emit_outcome(pending, "unresolved", None);
             return;
         }
         if value.is_null() {
-            self.emit_outcome(pending, "unresolved", Some(serde_json::json!({"receipt": null})));
+            self.emit_outcome(
+                pending,
+                "unresolved",
+                Some(serde_json::json!({"receipt": null})),
+            );
             return;
         }
         let historical = value.get("historical");
@@ -425,8 +428,8 @@ impl<'a, W: Write> Projector<'a, W> {
                     .is_some_and(|object| object.len() == 1)
                     .then_some(None);
             }
-            let request_matches = value.get("request_id").and_then(Value::as_str)
-                == pending.request_id.as_deref();
+            let request_matches =
+                value.get("request_id").and_then(Value::as_str) == pending.request_id.as_deref();
             let outcome_matches = value.get("outcome").and_then(Value::as_str) == Some(expected);
             if !request_matches || !outcome_matches {
                 return None;
@@ -452,7 +455,11 @@ impl<'a, W: Write> Projector<'a, W> {
         });
         self.emit_outcome(
             pending,
-            if result.is_some() { expected } else { "unresolved" },
+            if result.is_some() {
+                expected
+            } else {
+                "unresolved"
+            },
             result.flatten(),
         );
     }
@@ -525,9 +532,9 @@ fn is_safe_identifier(value: &str, max_len: usize) -> bool {
 fn is_safe_work_ref(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 128
-        && value.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b':' | b'.')
-        })
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b':' | b'.'))
 }
 
 #[cfg(test)]

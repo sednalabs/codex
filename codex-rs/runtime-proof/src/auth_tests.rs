@@ -18,7 +18,9 @@ use zeroize::Zeroizing;
 #[test]
 fn only_current_work_and_exact_receipt_reads_are_proofless() {
     assert!(is_proofless_read_tool_name("work_item_current_work"));
-    assert!(is_proofless_read_tool_name("work_item_execution_receipt_read"));
+    assert!(is_proofless_read_tool_name(
+        "work_item_execution_receipt_read"
+    ));
     assert!(!is_proofless_read_tool_name("work_item_claim"));
     assert!(!is_proofless_read_tool_name("work_item_release"));
     assert!(!is_proofless_read_tool_name("work_item_update"));

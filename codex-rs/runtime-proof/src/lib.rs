@@ -8,9 +8,9 @@ mod auth;
 #[cfg(target_os = "linux")]
 pub mod launcher;
 #[cfg(target_os = "linux")]
-mod outcome_projection;
-#[cfg(target_os = "linux")]
 mod mcp_oauth;
+#[cfg(target_os = "linux")]
+mod outcome_projection;
 mod provider_auth;
 mod signer;
 pub mod startup;

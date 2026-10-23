@@ -442,8 +442,7 @@ fn run_mcp(
                 principal,
                 &mut writer,
             );
-        })
-    {
+        }) {
         Ok(reader) => reader,
         Err(error) => {
             terminate_child_group(&mut child);

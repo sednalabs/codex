@@ -143,11 +143,10 @@ impl RuntimeProofSigner {
     ) -> Result<bool> {
         let server_matches = Some(server) == self.claims.mcp_server.as_deref();
         let recipient_matches = transport_url == Some(self.claims.recipient.as_str());
-        let selected_tool = self
-            .claims
-            .operations
-            .as_ref()
-            .is_some_and(|operations| operations.iter().any(|operation| operation.tool == tool));
+        let selected_tool =
+            self.claims.operations.as_ref().is_some_and(|operations| {
+                operations.iter().any(|operation| operation.tool == tool)
+            });
         if !server_matches && !recipient_matches {
             return Ok(false);
         }
@@ -261,8 +260,8 @@ fn validate_work_execution_precondition(parameters: &Value) -> Result<()> {
         .get("request_id")
         .and_then(Value::as_str)
         .context("protected operation request id is missing")?;
-    let request_uuid = Uuid::parse_str(request_id)
-        .context("protected operation request id is not a UUID")?;
+    let request_uuid =
+        Uuid::parse_str(request_id).context("protected operation request id is not a UUID")?;
     if request_uuid.to_string() != request_id {
         bail!("protected operation request id is not canonical");
     }

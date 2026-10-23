@@ -25,7 +25,10 @@ fn item_event(kind: &str, item: Value) -> Value {
 #[test]
 fn primary_claim_and_current_snapshot_are_projected_without_result_text() {
     let mut input = Vec::new();
-    line(serde_json::json!({"type":"thread.started","thread_id":THREAD}), &mut input);
+    line(
+        serde_json::json!({"type":"thread.started","thread_id":THREAD}),
+        &mut input,
+    );
     line(
         item_event(
             "item.started",
@@ -124,14 +127,20 @@ fn primary_claim_and_current_snapshot_are_projected_without_result_text() {
     assert_eq!(records[0]["outcome"], "unknown");
     assert_eq!(records[1]["outcome"], "claimed");
     assert_eq!(records[2]["current_claim"]["generation"], 1);
-    assert_eq!(records[2]["current_claim"]["execution_instance_id"], INSTANCE);
+    assert_eq!(
+        records[2]["current_claim"]["execution_instance_id"],
+        INSTANCE
+    );
     assert_eq!(records[2]["current_claim"]["principal_matches"], true);
 }
 
 #[test]
 fn exact_holder_conflict_is_classified_but_other_errors_are_closed() {
     let mut input = Vec::new();
-    line(serde_json::json!({"type":"thread.started","thread_id":THREAD}), &mut input);
+    line(
+        serde_json::json!({"type":"thread.started","thread_id":THREAD}),
+        &mut input,
+    );
     for (id, error) in [
         (
             "item_0",
@@ -196,7 +205,10 @@ fn exact_holder_conflict_is_classified_but_other_errors_are_closed() {
 #[test]
 fn release_result_projects_only_its_compact_receipt_fields() {
     let mut input = Vec::new();
-    line(serde_json::json!({"type":"thread.started","thread_id":THREAD}), &mut input);
+    line(
+        serde_json::json!({"type":"thread.started","thread_id":THREAD}),
+        &mut input,
+    );
     line(
         item_event(
             "item.started",
@@ -264,7 +276,10 @@ fn release_result_projects_only_its_compact_receipt_fields() {
 #[test]
 fn exact_receipt_recovery_is_correlated_and_null_stays_unresolved() {
     let mut input = Vec::new();
-    line(serde_json::json!({"type":"thread.started","thread_id":THREAD}), &mut input);
+    line(
+        serde_json::json!({"type":"thread.started","thread_id":THREAD}),
+        &mut input,
+    );
     for (id, response) in [
         (
             "item_0",
@@ -342,7 +357,10 @@ fn exact_receipt_recovery_is_correlated_and_null_stays_unresolved() {
 fn child_events_are_ignored_and_overlong_lines_are_drained() {
     let mut input = vec![b'x'; MAX_LINE_BYTES + 8];
     input.push(b'\n');
-    line(serde_json::json!({"type":"thread.started","thread_id":THREAD}), &mut input);
+    line(
+        serde_json::json!({"type":"thread.started","thread_id":THREAD}),
+        &mut input,
+    );
     line(
         serde_json::json!({
             "type":"item.started",
