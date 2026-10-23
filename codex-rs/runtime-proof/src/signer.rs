@@ -87,7 +87,7 @@ pub(crate) fn certificate_for_auth() -> Result<(wire::CertificateClaims, String)
     ))
 }
 
-pub fn sign_claim_proof(
+pub fn sign_protected_mcp_proof(
     execution_nonce: &ExecutionNonce,
     provider_thread_id: &str,
     server: &str,
@@ -116,10 +116,25 @@ pub fn sign_claim_proof(
     let SignerState::Ready(signer) = &*state else {
         bail!("runtime proof signer authority was erased");
     };
-    signer.create_claim_proof(execution_nonce, provider_thread_id, parameters)
+    signer.create_protected_mcp_proof(execution_nonce, provider_thread_id, tool, parameters)
 }
 
 impl RuntimeProofSigner {
+    #[cfg(test)]
+    fn create_claim_proof(
+        &self,
+        execution_nonce: &ExecutionNonce,
+        provider_thread_id: &str,
+        parameters: &Value,
+    ) -> Result<Option<Value>> {
+        self.create_protected_mcp_proof(
+            execution_nonce,
+            provider_thread_id,
+            "work_item_claim",
+            parameters,
+        )
+    }
+
     fn matches_target(
         &self,
         server: &str,
@@ -128,7 +143,11 @@ impl RuntimeProofSigner {
     ) -> Result<bool> {
         let server_matches = Some(server) == self.claims.mcp_server.as_deref();
         let recipient_matches = transport_url == Some(self.claims.recipient.as_str());
-        let selected_tool = Some(tool) == self.claims.tool.as_deref();
+        let selected_tool = self
+            .claims
+            .operations
+            .as_ref()
+            .is_some_and(|operations| operations.iter().any(|operation| operation.tool == tool));
         if !server_matches && !recipient_matches {
             return Ok(false);
         }
@@ -141,18 +160,19 @@ impl RuntimeProofSigner {
         Ok(selected_tool)
     }
 
-    fn create_claim_proof(
+    fn create_protected_mcp_proof(
         &self,
         execution_nonce: &ExecutionNonce,
         provider_thread_id: &str,
+        tool: &str,
         parameters: &Value,
     ) -> Result<Option<Value>> {
         let now = unix_seconds()?;
         if now < self.claims.iat || now >= self.claims.exp {
             bail!("runtime proof certificate is outside its validity period");
         }
-        if self.claims.method != "tools/call" || self.claims.purpose != "work-claim" {
-            bail!("runtime proof certificate is outside the claim operation scope");
+        if self.claims.method != "tools/call" {
+            bail!("runtime proof certificate is outside the MCP operation scope");
         }
         if provider_thread_id.is_empty() || provider_thread_id.len() > 256 {
             bail!("native provider thread evidence is invalid");
@@ -162,16 +182,19 @@ impl RuntimeProofSigner {
             .and_then(|parameters| parameters.get("work_item_ref"))
             .and_then(Value::as_str);
         if work_item_ref != Some(self.claims.work_item_ref.as_str()) {
-            bail!("protected claim target does not match the signed work item");
+            bail!("protected MCP target does not match the signed work item");
         }
-        validate_claim_precondition(parameters)?;
-
-        let tool = self
+        let operation_scope = self
             .claims
-            .tool
-            .as_deref()
-            .context("protected MCP claim tool is missing")?;
-        let operation = wire::canonical_operation(tool, parameters)?;
+            .operations
+            .as_ref()
+            .and_then(|operations| operations.iter().find(|operation| operation.tool == tool))
+            .context("protected MCP tool is outside the certificate operation scope")?;
+        if !matches!(tool, "work_item_claim" | "work_item_release") {
+            bail!("protected MCP tool is outside the fixed operation scope");
+        }
+        validate_work_execution_precondition(parameters)?;
+        let canonical = wire::canonical_operation(tool, parameters)?;
         let proof_claims = wire::RequestClaims {
             version: 1,
             certificate_sha256: wire::certificate_digest(self.certificate.as_bytes()),
@@ -181,8 +204,8 @@ impl RuntimeProofSigner {
             recipient: self.claims.recipient.clone(),
             method: self.claims.method.clone(),
             tool: Some(tool.to_string()),
-            purpose: self.claims.purpose.clone(),
-            operation_sha256: wire::digest(&operation),
+            purpose: operation_scope.purpose.clone(),
+            operation_sha256: wire::digest(&canonical),
             nonce: Uuid::new_v4(),
             iat: now,
             exp: now
@@ -215,30 +238,34 @@ impl RuntimeProofSigner {
     }
 }
 
-fn validate_claim_precondition(parameters: &Value) -> Result<()> {
+fn validate_work_execution_precondition(parameters: &Value) -> Result<()> {
     let precondition = parameters
         .as_object()
         .and_then(|parameters| parameters.get("claim_precondition"))
         .and_then(Value::as_object)
-        .context("protected claim requires a complete claim_precondition")?;
+        .context("protected operation requires a complete claim_precondition")?;
     let generation = precondition
         .get("expected_generation")
         .and_then(Value::as_u64)
-        .context("protected claim generation must be a nonnegative safe integer")?;
+        .context("protected operation generation must be a nonnegative safe integer")?;
     if generation > ((1_u64 << 53) - 1) {
-        bail!("protected claim generation is outside the exact IEEE-754 range");
+        bail!("protected operation generation is outside the exact IEEE-754 range");
     }
     let updated_at = precondition
         .get("expected_updated_at")
         .and_then(Value::as_str)
-        .context("protected claim revision timestamp is missing")?;
+        .context("protected operation revision timestamp is missing")?;
     chrono::DateTime::parse_from_rfc3339(updated_at)
-        .context("protected claim revision timestamp is not RFC3339")?;
+        .context("protected operation revision timestamp is not RFC3339")?;
     let request_id = precondition
         .get("request_id")
         .and_then(Value::as_str)
-        .context("protected claim request id is missing")?;
-    Uuid::parse_str(request_id).context("protected claim request id is not a UUID")?;
+        .context("protected operation request id is missing")?;
+    let request_uuid = Uuid::parse_str(request_id)
+        .context("protected operation request id is not a UUID")?;
+    if request_uuid.to_string() != request_id {
+        bail!("protected operation request id is not canonical");
+    }
     Ok(())
 }
 
@@ -263,7 +290,7 @@ fn validate_certificate(
         || header.typ != "runtime-certificate+jwt"
         || header.kid.is_empty()
         || header.kid.len() > 128
-        || claims.version != 1
+        || claims.version != 2
         || claims.runtime_public_key != public_key
         || claims.runtime_incarnation.is_nil()
         || claims.provider != "codex-native-runtime"
@@ -281,8 +308,21 @@ fn validate_certificate(
             .as_deref()
             .is_none_or(|server| server.is_empty() || server.len() > 128)
         || claims.method != "tools/call"
-        || claims.tool.as_deref() != Some("work_item_claim")
-        || claims.purpose != "work-claim"
+        || claims.tool.is_some()
+        || claims.purpose.is_some()
+        || claims.operations.as_ref().is_none_or(|operations| {
+            operations.len() != 2
+                || operations[0]
+                    != (wire::ProtectedOperation {
+                        tool: "work_item_claim".to_string(),
+                        purpose: "work-claim".to_string(),
+                    })
+                || operations[1]
+                    != (wire::ProtectedOperation {
+                        tool: "work_item_release".to_string(),
+                        purpose: "work-release".to_string(),
+                    })
+        })
         || claims.iat > now
         || claims.exp <= now
         || claims.exp <= claims.iat

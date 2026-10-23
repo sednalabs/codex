@@ -129,7 +129,7 @@ fn acknowledgement_failure_erases_the_installed_signer() {
         .unwrap()
         .as_secs() as i64;
     let claims = crate::wire::CertificateClaims {
-        version: 1,
+        version: 2,
         runtime_public_key: URL_SAFE_NO_PAD.encode(signing_key.verifying_key().as_bytes()),
         runtime_incarnation: uuid::Uuid::new_v4(),
         provider: "codex-native-runtime".to_string(),
@@ -141,8 +141,18 @@ fn acknowledgement_failure_erases_the_installed_signer() {
         recipient: "https://ops.example/mcp".to_string(),
         mcp_server: Some("ops".to_string()),
         method: "tools/call".to_string(),
-        tool: Some("work_item_claim".to_string()),
-        purpose: "work-claim".to_string(),
+        tool: None,
+        purpose: None,
+        operations: Some(vec![
+            crate::wire::ProtectedOperation {
+                tool: "work_item_claim".to_string(),
+                purpose: "work-claim".to_string(),
+            },
+            crate::wire::ProtectedOperation {
+                tool: "work_item_release".to_string(),
+                purpose: "work-release".to_string(),
+            },
+        ]),
         iat: now,
         exp: now + 300,
     };
@@ -158,7 +168,7 @@ fn acknowledgement_failure_erases_the_installed_signer() {
     drop(launcher);
     assert!(complete_bootstrap_ack(&runtime).is_err());
     assert_eq!(
-        crate::signer::sign_claim_proof(
+        crate::signer::sign_protected_mcp_proof(
             &uuid::Uuid::new_v4(),
             "thread-evidence",
             "ops",

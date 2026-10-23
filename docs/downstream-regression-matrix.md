@@ -48,6 +48,17 @@ legacy peer; installed configuration therefore does not prove the negotiated
 wire lifecycle. Source and hosted checks must pass before configuring a live
 server, and natural first use must verify the actual request path.
 
+## Protected native work-item lifecycle
+
+`codex.runtime-proof` verifies the exact version-2 MCP mutation pairs for
+claim/release, keeps current-work and exact-request receipt reads on ordinary
+bearer authorization, and projects only bounded canonical primary-thread
+outcomes to the launcher's existing journal path. Its focused regressions cover
+closed tool configuration, claim/release proof binding, exact holder-conflict
+classification, payload redaction, child-event exclusion, and overlong-line
+draining. Protected package installation and natural first use remain separate
+acceptance steps.
+
 ## Core default path
 
 Exact-target V2 `wait_agent` ignores queue-only (`trigger_turn=false`) mailbox

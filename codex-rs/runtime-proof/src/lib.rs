@@ -1,4 +1,4 @@
-//! Host-held, per-execution MCP proof for the protected claim cohort.
+//! Host-held, per-execution MCP proof for protected work-item claim and release.
 
 #[cfg(target_os = "linux")]
 mod api_bearer_provisioner;
@@ -7,6 +7,8 @@ mod api_claim;
 mod auth;
 #[cfg(target_os = "linux")]
 pub mod launcher;
+#[cfg(target_os = "linux")]
+mod outcome_projection;
 #[cfg(target_os = "linux")]
 mod mcp_oauth;
 mod provider_auth;
@@ -19,7 +21,7 @@ mod tests;
 
 pub use auth::McpRedactionContext;
 pub use signer::ExecutionNonce;
-pub use signer::sign_claim_proof;
+pub use signer::sign_protected_mcp_proof;
 pub use wire::RESERVED_META_KEY;
 
 pub fn bearer_for_mcp(
@@ -31,6 +33,14 @@ pub fn bearer_for_mcp(
 
 pub fn is_protected_mcp_target(server: &str, recipient: &str) -> anyhow::Result<bool> {
     auth::is_protected_mcp_target(server, recipient)
+}
+
+pub fn is_protected_mcp_read_tool(
+    server: &str,
+    recipient: &str,
+    tool: &str,
+) -> anyhow::Result<bool> {
+    auth::is_protected_mcp_read_tool(server, recipient, tool)
 }
 
 pub fn protected_mcp_target() -> anyhow::Result<Option<(String, String)>> {

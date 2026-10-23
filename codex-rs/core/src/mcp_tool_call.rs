@@ -456,7 +456,7 @@ async fn handle_approved_mcp_tool_call(
                 }
                 let empty_arguments = JsonValue::Null;
                 let proof_parameters = rewritten_arguments.as_ref().unwrap_or(&empty_arguments);
-                let proof = codex_runtime_proof::sign_claim_proof(
+                let proof = codex_runtime_proof::sign_protected_mcp_proof(
                     &sess.execution_nonce,
                     &sess.thread_id.to_string(),
                     &server,
@@ -464,7 +464,17 @@ async fn handle_approved_mcp_tool_call(
                     &tool_name,
                     proof_parameters,
                 )?;
-                if protected_call && proof.is_none() {
+                let protected_read_without_proof = if protected_call {
+                    codex_runtime_proof::is_protected_mcp_read_tool(
+                        &server,
+                        transport_url.as_deref().unwrap_or_default(),
+                        &tool_name,
+                    )
+                    .map_err(anyhow::Error::msg)?
+                } else {
+                    false
+                };
+                if protected_call && proof.is_none() && !protected_read_without_proof {
                     anyhow::bail!(
                         "protected MCP operation is outside its issuer-bound claim scope"
                     );

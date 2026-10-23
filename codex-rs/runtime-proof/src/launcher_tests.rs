@@ -249,7 +249,7 @@ fn api_bearer_provisioning_binds_only_an_installed_http_policy_subject() {
 
 fn fixed_claims() -> wire::CertificateClaims {
     wire::CertificateClaims {
-        version: 1,
+        version: 2,
         runtime_public_key: URL_SAFE_NO_PAD.encode([4_u8; 32]),
         runtime_incarnation: Uuid::from_u128(2),
         provider: "codex-native-runtime".to_string(),
@@ -261,8 +261,18 @@ fn fixed_claims() -> wire::CertificateClaims {
         recipient: "https://mcp.example/".to_string(),
         mcp_server: Some(MCP_SERVER.to_string()),
         method: "tools/call".to_string(),
-        tool: Some(MCP_TOOL.to_string()),
-        purpose: "work-claim".to_string(),
+        tool: None,
+        purpose: None,
+        operations: Some(vec![
+            wire::ProtectedOperation {
+                tool: "work_item_claim".to_string(),
+                purpose: "work-claim".to_string(),
+            },
+            wire::ProtectedOperation {
+                tool: "work_item_release".to_string(),
+                purpose: "work-release".to_string(),
+            },
+        ]),
         iat: 1_800_000_000,
         exp: 1_800_000_060,
     }

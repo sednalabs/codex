@@ -13,7 +13,7 @@ fn signer() -> RuntimeProofSigner {
     RuntimeProofSigner {
         certificate: "test-certificate".to_string(),
         claims: wire::CertificateClaims {
-            version: 1,
+            version: 2,
             runtime_public_key: public_key,
             runtime_incarnation: Uuid::new_v4(),
             provider: "codex-native-runtime".to_string(),
@@ -25,13 +25,27 @@ fn signer() -> RuntimeProofSigner {
             recipient: "https://ops.example/mcp".to_string(),
             mcp_server: Some("ops".to_string()),
             method: "tools/call".to_string(),
-            tool: Some("work_item_claim".to_string()),
-            purpose: "work-claim".to_string(),
+            tool: None,
+            purpose: None,
+            operations: Some(native_operations()),
             iat: unix_seconds().unwrap() - 5,
             exp: unix_seconds().unwrap() + 300,
         },
         seed,
     }
+}
+
+fn native_operations() -> Vec<wire::ProtectedOperation> {
+    vec![
+        wire::ProtectedOperation {
+            tool: "work_item_claim".to_string(),
+            purpose: "work-claim".to_string(),
+        },
+        wire::ProtectedOperation {
+            tool: "work_item_release".to_string(),
+            purpose: "work-release".to_string(),
+        },
+    ]
 }
 
 #[test]
@@ -62,6 +76,26 @@ fn certificate_validation_binds_key_artifact_and_fixed_execution_lease() {
             &unbounded_lease,
             &signer.seed,
             &unbounded_lease.artifact_sha256,
+            now,
+        )
+        .is_err()
+    );
+
+    let mut expanded_operations = signer.claims.clone();
+    expanded_operations
+        .operations
+        .as_mut()
+        .unwrap()
+        .push(wire::ProtectedOperation {
+            tool: "work_item_current_work".to_string(),
+            purpose: "work-read".to_string(),
+        });
+    assert!(
+        validate_certificate(
+            &header,
+            &expanded_operations,
+            &signer.seed,
+            &expanded_operations.artifact_sha256,
             now,
         )
         .is_err()
@@ -111,6 +145,42 @@ fn parameters(note: &str) -> Value {
             "request_id": "8f14e45f-ea42-4d73-9ca9-9a8b35d1c05a",
         },
     })
+}
+
+#[test]
+fn v2_certificate_signs_only_the_exact_claim_and_release_pairs() {
+    let signer = signer();
+    let parameters = serde_json::json!({
+        "work_item_ref": "example-work-item",
+        "claim_precondition": {
+            "expected_generation": 1,
+            "expected_updated_at": "2026-10-04T05:00:00Z",
+            "request_id": "8f14e45f-ea42-4d73-9ca9-9a8b35d1c05a"
+        }
+    });
+    let proof = signer
+        .create_protected_mcp_proof(
+            &Uuid::new_v4(),
+            "native-thread",
+            "work_item_release",
+            &parameters,
+        )
+        .unwrap()
+        .unwrap();
+    let (_, claims, _) = decode_proof(proof["proof"].as_str().unwrap());
+    assert_eq!(claims.tool.as_deref(), Some("work_item_release"));
+    assert_eq!(claims.purpose, "work-release");
+
+    assert!(
+        signer
+            .create_protected_mcp_proof(
+                &Uuid::new_v4(),
+                "native-thread",
+                "work_item_execution_receipt_read",
+                &parameters,
+            )
+            .is_err()
+    );
 }
 
 #[derive(Deserialize)]
@@ -266,7 +336,7 @@ fn issuer_certificate_and_native_invocation_use_one_positive_wire_vector() {
     let principal = Uuid::parse_str("22222222-2222-4222-8222-222222222222").unwrap();
     let now = unix_seconds().unwrap();
     let claims = wire::CertificateClaims {
-        version: 1,
+        version: 2,
         runtime_public_key: URL_SAFE_NO_PAD.encode(runtime_key.verifying_key().as_bytes()),
         runtime_incarnation,
         provider: "codex-native-runtime".to_string(),
@@ -278,8 +348,9 @@ fn issuer_certificate_and_native_invocation_use_one_positive_wire_vector() {
         recipient: "https://ops.example/mcp".to_string(),
         mcp_server: Some("ops".to_string()),
         method: "tools/call".to_string(),
-        tool: Some("work_item_claim".to_string()),
-        purpose: "work-claim".to_string(),
+        tool: None,
+        purpose: None,
+        operations: Some(native_operations()),
         iat: now,
         exp: now + 300,
     };
@@ -306,8 +377,7 @@ fn issuer_certificate_and_native_invocation_use_one_positive_wire_vector() {
         "recipient": claims.recipient,
         "mcp_server": claims.mcp_server,
         "method": claims.method,
-        "tool": claims.tool,
-        "purpose": claims.purpose,
+        "operations": claims.operations,
         "iat": claims.iat,
         "exp": claims.exp,
     });

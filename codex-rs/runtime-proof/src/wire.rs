@@ -40,9 +40,19 @@ pub(crate) struct CertificateClaims {
     pub method: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool: Option<String>,
-    pub purpose: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operations: Option<Vec<ProtectedOperation>>,
     pub iat: i64,
     pub exp: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProtectedOperation {
+    pub tool: String,
+    pub purpose: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -111,7 +121,7 @@ pub(crate) fn canonical_operation(tool: &str, parameters: &Value) -> Result<Vec<
     validate_numbers(&operation)?;
     let mut canonical = Vec::new();
     serde_json_canonicalizer::to_writer(&operation, &mut canonical)
-        .context("canonicalize protected MCP claim operation")?;
+        .context("canonicalize protected MCP operation")?;
     Ok(canonical)
 }
 

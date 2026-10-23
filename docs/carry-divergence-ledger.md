@@ -3787,13 +3787,28 @@ seed/frame storage. A missing descriptor keeps ordinary CLI use unconfigured;
 an invalid protected frame fails startup closed.
 
 Every native session, including a delegated session using the parent's shared
-MCP manager, has its own execution nonce. For one pinned claim tool and
-recipient, the final rewritten parameters and native execution evidence are
-signed into short-lived MCP request metadata. Complete claim preconditions are
-required. The proof does not come from model arguments or a bare thread ID,
-and the request path does not retry without proof after a protected-scope
-failure. Proof material is excluded from the rollout request trace and
-redacted from echoed result surfaces.
+MCP manager, has its own execution nonce. The version-2 MCP certificate admits
+only the exact `work_item_claim`/`work-claim` and
+`work_item_release`/`work-release` operation pairs. Each final rewritten
+mutation request is signed with its own exact tool, purpose, canonical
+arguments digest, and native execution evidence. Complete claim preconditions
+and canonical request UUIDs are required. The proof does not come from model
+arguments or a bare thread ID, and the request path does not retry without
+proof after a protected-scope failure. `work_item_current_work` and the exact
+same-actor `work_item_execution_receipt_read` are ordinary bearer reads outside
+the signed mutation set. Proof material is excluded from the rollout request
+trace and redacted from echoed result surfaces.
+
+The fixed launcher enables only those two mutations and those two read tools.
+It consumes the primary `codex exec --json` stream with a bounded line buffer
+and projects validated Work references, request UUIDs, current generation and
+execution-instance identifiers, and closed outcomes to its existing stderr /
+journal path. It never forwards raw events, model output, arguments, proof
+metadata, or server error text. A started mutation remains `unknown` if its
+completion is lost; the logged canonical request UUID supports the same-actor
+MCP receipt read, where a missing receipt remains unresolved. Only the exact
+Ops active-holder discriminator is presented as `holder_conflict`; other
+failures remain closed as rejected or unresolved.
 
 The hosted external-unload residency case remains the exact core reproducer,
 with `session_end_flushes_transcript_and_ignores_control_output` and
