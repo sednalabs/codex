@@ -177,7 +177,7 @@ impl Mailbox {
                         return Err(MailboxError::WrongRecipient);
                     }
                     let row = sqlx::query(
-                        "SELECT outcome_canonical, outcome_json FROM mailbox_work
+                        "SELECT outcome_canonical, outcome_json, outcome_id FROM mailbox_work
                          WHERE id = ? AND issuer = ? AND agent = ? AND submission_id = ?",
                     )
                     .bind(&work_ref.id)
@@ -201,6 +201,17 @@ impl Mailbox {
                     .bind(recipient.to_string())
                     .bind(work_ref.agent.to_string())
                     .bind(&work_ref.submission_id)
+                    .execute(&mut *transaction)
+                    .await?;
+                    // This notification describes the same exact admitted result body,
+                    // not a separate request or an inference of business acceptance.
+                    sqlx::query(
+                        "UPDATE mailbox_attention SET observed = 1
+                         WHERE recipient = ? AND canonical = 1 AND id IN (?, ?)",
+                    )
+                    .bind(recipient.to_string())
+                    .bind(format!("attention:{}", work_ref.id))
+                    .bind(format!("attention:{}", row.try_get::<String, _>("outcome_id")?))
                     .execute(&mut *transaction)
                     .await?;
                 }

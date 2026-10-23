@@ -451,11 +451,16 @@ async fn progress_coalesces_exact_unadmitted_scope_and_closes_at_terminal_outcom
     let mut update_draft = draft("p2", author, agent, MessageKind::Progress, "latest", false);
     update_draft.work_ref = Some(work_a.clone());
     let update = send(&fixture.mailbox, update_draft).await;
-    assert_eq!(update.id, first.id);
-    assert_eq!(
-        fixture.mailbox.get_message(agent, &first.id).await.unwrap().unwrap().communication.content,
-        "latest"
-    );
+    assert_ne!(update.id, first.id);
+    assert_eq!(update.supersedes.as_deref(), Some(first.id.as_str()));
+    let original = fixture.mailbox.get_message(agent, &first.id).await.unwrap().unwrap();
+    assert_eq!(original.communication.content, "first");
+    let latest = fixture.mailbox.get_message(agent, &update.id).await.unwrap().unwrap();
+    assert_eq!(latest.communication.content, "latest");
+    assert_eq!(latest.supersedes.as_deref(), Some(first.id.as_str()));
+    let pending = fixture.mailbox.pending(agent, 20).await.unwrap();
+    assert!(pending.iter().any(|envelope| envelope.id == update.id));
+    assert!(!pending.iter().any(|envelope| envelope.id == first.id));
 
     let mut other_author = draft("p3", author, agent, MessageKind::Progress, "other path", false);
     other_author.work_ref = Some(work_a.clone());
@@ -491,7 +496,7 @@ async fn canonical_outcomes_are_observed_per_item_without_cursor_loss() {
         let outcome = finish(
             &fixture.mailbox, agent, turn, Outcome::Completed, None, Continuation::None,
         ).await;
-        fixture.mailbox.mark_outcome_canonical(agent, &outcome.outcomes[0].id).await.unwrap();
+        fixture.mailbox.mark_outcome_canonical(issuer, &outcome.outcomes[0].id).await.unwrap();
         assert_eq!(&outcome.outcomes[0].work_ref, work);
     }
     fixture.mailbox.acknowledge_observed(
@@ -503,7 +508,7 @@ async fn canonical_outcomes_are_observed_per_item_without_cursor_loss() {
         ReturnWhen::All,
     );
     let partial = fixture.mailbox.snapshot(&selection).await.unwrap();
-    assert_eq!(partial.state, SnapshotState::Pending);
+    assert_eq!(partial.state, SnapshotState::AlreadySatisfied);
     assert!(!work_item(&partial, &a.id).observed);
     assert!(work_item(&partial, &b.id).observed);
     assert!(
@@ -662,19 +667,23 @@ async fn explicit_attention_is_one_shot_after_canonical_read_without_settling_re
 async fn activation_claim_is_single_use_across_a_lost_result() {
     let fixture = test_mailbox().await;
     let (sender, recipient) = (thread_id(20), thread_id(21));
-    let message = send(
-        &fixture.mailbox,
-        draft("activation", sender, recipient, MessageKind::Alert, "activate", false),
-    ).await;
-    assert_eq!(fixture.mailbox.begin_activation(sender, &message.id).await.unwrap(),
+    let mut message_draft = draft(
+        "activation", sender, recipient, MessageKind::Alert, "activate", false,
+    );
+    message_draft.activate_if_idle = true;
+    let message = send(&fixture.mailbox, message_draft).await;
+    assert_eq!(
+        fixture.mailbox.begin_activation(sender, &message.id).await.unwrap(),
         ActivationDecision::Activate);
-    assert_eq!(fixture.mailbox.begin_activation(sender, &message.id).await.unwrap(),
+    assert_eq!(
+        fixture.mailbox.begin_activation(sender, &message.id).await.unwrap(),
         ActivationDecision::RecoveryNeeded);
     for _ in 0..2 {
         fixture.mailbox.record_activation(sender, &message.id, ActivationDisposition::Activated)
             .await.unwrap();
     }
-    assert_eq!(fixture.mailbox.begin_activation(sender, &message.id).await.unwrap(),
+    assert_eq!(
+        fixture.mailbox.begin_activation(sender, &message.id).await.unwrap(),
         ActivationDecision::AlreadyDecided(ActivationDisposition::Activated));
     assert!(matches!(
         fixture.mailbox.record_activation(sender, &message.id, ActivationDisposition::Denied).await,
@@ -699,9 +708,14 @@ fn only_closed_any_and_all_peer_cycles_are_provable() {
         dependency("b", &["a"], DependencyMode::All),
     ];
     assert!(!is_provably_closed_peer_cycle("a", &open));
-    let open_all = [
+    let closed_all = [
         dependency("x", &["y", "outside"], DependencyMode::All),
         dependency("y", &["x"], DependencyMode::Any),
+    ];
+    assert!(is_provably_closed_peer_cycle("x", &closed_all));
+    let open_all = [
+        dependency("x", &["y"], DependencyMode::All),
+        dependency("y", &["x", "outside"], DependencyMode::Any),
     ];
     assert!(!is_provably_closed_peer_cycle("x", &open_all));
 }
@@ -731,4 +745,62 @@ async fn wait_cycle_rejects_only_the_new_registration_and_drop_is_exact() {
     assert!(fixture.mailbox.begin_wait(
         "open-b".to_string(), owner_b, vec![owner_a], ReturnWhen::All, false,
     ).is_ok());
+}
+
+#[tokio::test]
+async fn input_publication_invalidates_stale_waits_and_defers_cycle_claims_until_rescan() {
+    let fixture = test_mailbox().await;
+    let (a, b) = (thread_id(28), thread_id(29));
+    let before = fixture.mailbox.wait_input_generation();
+    let old = fixture.mailbox.begin_wait_at(
+        "a".into(), a, vec![b], ReturnWhen::Any, false, before,
+    ).unwrap();
+    let arrival = fixture.mailbox.begin_input_arrival();
+    assert!(matches!(fixture.mailbox.begin_wait_at(
+        "stale".into(), b, vec![a], ReturnWhen::All, false, before,
+    ), Err(MailboxError::StaleWaitSnapshot)));
+    let during = fixture.mailbox.wait_input_generation();
+    let provisional_a = fixture.mailbox.begin_wait_at(
+        "a".into(), a, vec![b], ReturnWhen::Any, false, during,
+    ).unwrap();
+    // A stale RAII handle must not remove a replacement registration.
+    drop(old);
+    let provisional_b = fixture.mailbox.begin_wait_at(
+        "b".into(), b, vec![a], ReturnWhen::All, false, during,
+    ).unwrap();
+    drop(arrival);
+    assert!(matches!(fixture.mailbox.begin_wait_at(
+        "needs-rescan".into(), b, vec![a], ReturnWhen::All, false, during,
+    ), Err(MailboxError::StaleWaitSnapshot)));
+    drop(provisional_a);
+    drop(provisional_b);
+    let current = fixture.mailbox.wait_input_generation();
+    let _waiting_a = fixture.mailbox.begin_wait_at(
+        "fresh-a".into(), a, vec![b], ReturnWhen::Any, false, current,
+    ).unwrap();
+    assert!(matches!(fixture.mailbox.begin_wait_at(
+        "fresh-b".into(), b, vec![a], ReturnWhen::All, false, current,
+    ), Err(MailboxError::ClosedPeerCycle)));
+}
+
+#[tokio::test]
+async fn canonical_result_body_resolves_only_its_exact_covered_work_and_attention() {
+    let fixture = test_mailbox().await;
+    let (issuer, agent) = (thread_id(30), thread_id(31));
+    let (covered, input) = accept_work(&fixture.mailbox, issuer, agent, "covered", "A").await;
+    let (unrelated, _) = accept_work(&fixture.mailbox, issuer, agent, "unrelated", "B").await;
+    admit(&fixture.mailbox, agent, "covered-turn", &[input]).await;
+    let terminal = finish(&fixture.mailbox, agent, "covered-turn", Outcome::NeedsAttention, None, Continuation::None).await;
+    let outcome = &terminal.outcomes[0];
+    let envelope = fixture.mailbox.get_message(issuer, &outcome.id).await.unwrap().unwrap();
+    assert_eq!(envelope.communication.id.as_ref().unwrap().as_str(), outcome.id);
+    assert!(!fixture.mailbox.attention(issuer, 100).await.unwrap().is_empty());
+    fixture.mailbox.mark_canonical(issuer, &outcome.id).await.unwrap();
+    let exact = fixture.mailbox.work_for_outcome(issuer, &outcome.id).await.unwrap();
+    assert_eq!(exact, vec![covered.clone()]);
+    fixture.mailbox.acknowledge_observed(issuer, &[ObservationTarget::Work(covered.clone())]).await.unwrap();
+    assert!(fixture.mailbox.attention(issuer, 100).await.unwrap().is_empty());
+    let snapshot = take_snapshot(&fixture.mailbox, issuer, Some(agent), vec![Selector::Work(covered.id.clone()), Selector::Work(unrelated.id.clone())], ReturnWhen::All).await;
+    assert!(work_item(&snapshot, &covered.id).observed);
+    assert!(!work_item(&snapshot, &unrelated.id).observed);
 }

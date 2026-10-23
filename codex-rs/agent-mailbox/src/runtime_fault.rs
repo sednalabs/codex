@@ -15,6 +15,7 @@ impl Mailbox {
     /// Signal an in-memory observation that terminal custody could not settle.
     /// This does not create or fabricate a durable work outcome.
     pub fn notify_runtime_fault(&self, agent: ThreadId) {
+        let _input_arrival = self.begin_input_arrival();
         let mut faults = lock(&self.runtime_faults);
         let agent = agent.to_string();
         let changed = if faults.agents.contains(&agent) {

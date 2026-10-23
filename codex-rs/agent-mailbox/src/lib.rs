@@ -24,6 +24,7 @@ pub use error::{MailboxError, MailboxResult};
 pub use store::Mailbox;
 pub use snapshot::is_provably_closed_peer_cycle;
 pub use wait_graph::WaitRegistration;
+pub use wait_graph::InputArrival;
 pub use types::{
     ActivationDecision, ActivationDisposition, AdmissionReceipt, Attention,
     CanonicalConfirmation, Continuation, ContinuationReceipt, ContinuationState, Dependency,

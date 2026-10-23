@@ -237,17 +237,18 @@ impl ToolExecutor<ToolInvocation> for ReadHandler {
                 if envelope.reply_to.is_some() {
                     observations.push(ObservationTarget::Reply(envelope.id.clone()));
                 }
-                if envelope.communication.origin == Some(codex_protocol::protocol::AgentCommunicationOrigin::Result)
-                    && let Some(work) = envelope.work_ref.as_ref()
-                    && work.issuer == session.thread_id
-                {
-                    observations.push(ObservationTarget::Work(work.clone()));
+                if envelope.communication.origin == Some(codex_protocol::protocol::AgentCommunicationOrigin::Result) {
+                    // A native terminal result can cover several admitted inputs. Resolve
+                    // the bounded exact body relation rather than infer from agent history.
+                    observations.extend(mailbox.work_for_outcome(session.thread_id, &envelope.id)
+                        .await.map_err(mailbox_error)?.into_iter().map(ObservationTarget::Work));
                 }
                 // Reading a body can observe its own attention/reply only; it never observes
                 // unrelated work outcomes or unresolved request obligations.
                 if !observations.is_empty() {
-                    mailbox.acknowledge_observed(session.thread_id, &observations)
-                        .await.map_err(mailbox_error)?;
+                    for batch in observations.chunks(100) {
+                        mailbox.acknowledge_observed(session.thread_id, batch).await.map_err(mailbox_error)?;
+                    }
                 }
             }
             let quiet_count = mailbox.quiet_count(session.thread_id).await.map_err(mailbox_error)?;

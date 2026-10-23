@@ -1248,6 +1248,12 @@ impl Session {
                 fork_persistence,
                 next_internal_sub_id: AtomicU64::new(0),
             });
+            if config.multi_agent_version_from_features() == MultiAgentVersion::V2
+                && config.features.enabled(Feature::AgentMailbox)
+                && let Some(mailbox) = sess.services.agent_control.mailbox()
+            {
+                sess.input_queue.bind_durable_mailbox(mailbox);
+            }
             if let Some(network_policy_decider_session) = network_policy_decider_session {
                 let mut guard = network_policy_decider_session.write().await;
                 *guard = Arc::downgrade(&sess);

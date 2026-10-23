@@ -15,7 +15,7 @@ jobs:
     env:
       CARGO_INCREMENTAL: "0"
       RUST_MIN_STACK: "8388608"
-      PREPARATION_ATTEMPT: "2"
+      PREPARATION_ATTEMPT: "3"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -51,6 +51,8 @@ jobs:
       - name: Refresh the Bazel dependency lock
         run: just bazel-lock-update
       - name: Run the owned library contracts
+        id: library
+        continue-on-error: true
         working-directory: codex-rs
         run: cargo test --locked -p codex-agent-mailbox --lib -- --test-threads=1
       - name: Generate the affected native schemas
@@ -69,6 +71,9 @@ jobs:
         env:
           INSTA_UPDATE: always
         run: cargo test --locked -p codex-tui --lib mailbox -- --test-threads=1
+      - name: Retain the library contract result
+        if: always()
+        run: test '${{ steps.library.outcome }}' = success
       - name: Capture the exact generated source delta
         if: always()
         shell: bash

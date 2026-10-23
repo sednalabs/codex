@@ -1,5 +1,9 @@
 use anyhow::Result;
+use codex_agent_mailbox::Mailbox;
 use codex_features::Feature;
+use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::Op;
+use codex_protocol::ThreadId;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_function_call_with_namespace;
@@ -9,6 +13,7 @@ use core_test_support::responses::sse;
 use core_test_support::responses::sse_response;
 use core_test_support::responses::start_mock_server;
 use core_test_support::test_codex::test_codex;
+use core_test_support::wait_for_event;
 use serde_json::json;
 use serde_json::Value;
 use std::sync::Arc;
@@ -57,6 +62,17 @@ fn function_output_text<'a>(request: &'a Value, call_id: &str) -> Option<&'a str
         })?
         .get("output")?
         .as_str()
+}
+
+fn agent_message_input<'a>(request: &'a Value, message_id: &str) -> Option<&'a Value> {
+    request
+        .get("input")?
+        .as_array()?
+        .iter()
+        .find(|item| {
+            item.get("type").and_then(Value::as_str) == Some("agent_message")
+                && item.get("id").and_then(Value::as_str) == Some(message_id)
+        })
 }
 
 fn has_function_output(request: &Value, call_id: &str) -> bool {
@@ -411,6 +427,11 @@ const UNRELATED_CHILD_TASK: &str = "complete without being selected by the paren
 const QUIET_NOTE_BODY: &str = "non-attention note while the parent waits";
 const QUIET_PROGRESS_BODY: &str = "non-attention progress while the parent waits";
 const ADDRESSED_REQUEST_BODY: &str = "please inspect this request";
+const CUSTODY_PROMPT: &str = "read and preserve an unadmitted mailbox request";
+const RECOVERY_PROMPT: &str = "recover the still-pending mailbox request after compaction";
+const COMPACTION_PROMPT: &str = "summarize the current mailbox conversation";
+const COMPACTION_SUMMARY: &str = "the mailbox request remains pending for recovery";
+const CUSTODY_BODY: &str = "canonical request body that must survive compaction";
 
 #[derive(Clone)]
 struct WaitProbeResponder {
@@ -734,6 +755,223 @@ async fn quiet_events_keep_deadline_fixed_then_request_wakes_event_only_wait() -
         .expect("wait should admit the addressed request into canonical history");
     assert_eq!(canonical_request["content"][1]["type"], "encrypted_content");
     assert_eq!(canonical_request["content"][1]["encrypted_content"], ADDRESSED_REQUEST_BODY);
+
+    Ok(())
+}
+
+#[derive(Clone)]
+struct MailboxCustodyResponder {
+    root_thread_id: String,
+    requests: Arc<Mutex<Vec<Value>>>,
+}
+
+impl Respond for MailboxCustodyResponder {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let body: Value = serde_json::from_slice(&request.body)
+            .expect("provider request should contain JSON");
+        self.requests
+            .lock()
+            .expect("request capture lock should not be poisoned")
+            .push(body.clone());
+
+        if body.to_string().contains(COMPACTION_PROMPT) {
+            return sse_response(sse(vec![
+                ev_response_created("mailbox-custody-compaction"),
+                ev_assistant_message("mailbox-custody-summary", COMPACTION_SUMMARY),
+                ev_completed("mailbox-custody-compaction"),
+            ]));
+        }
+
+        if has_function_output(&body, "recovery-read-call") {
+            return sse_response(sse(vec![
+                ev_response_created("mailbox-custody-recovered"),
+                ev_assistant_message("mailbox-custody-recovered-message", "recovered"),
+                ev_completed("mailbox-custody-recovered"),
+            ]));
+        }
+
+        if has_function_output(&body, "initial-read-call") {
+            // A successful HTTP stream with no response.created event models setup ending
+            // before provider acceptance. Admission must remain unsettled for this input.
+            return sse_response(sse(Vec::new()));
+        }
+
+        if has_function_output(&body, "send-request-call") {
+            return function_call_response(
+                "mailbox-custody-initial-read-response",
+                "initial-read-call",
+                "mailbox_read",
+                json!({}),
+            );
+        }
+
+        if body.to_string().contains(RECOVERY_PROMPT) {
+            return function_call_response(
+                "mailbox-custody-recovery-read-response",
+                "recovery-read-call",
+                "mailbox_read",
+                json!({}),
+            );
+        }
+
+        function_call_response(
+            "mailbox-custody-send-response",
+            "send-request-call",
+            "send_message",
+            json!({
+                "target": self.root_thread_id,
+                "kind": "request",
+                "message": CUSTODY_BODY,
+            }),
+        )
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unadmitted_canonical_message_survives_precreated_failure_and_manual_compaction()
+-> Result<()> {
+    let server = start_mock_server().await;
+    let mut builder = test_codex().with_model("koffing").with_config(|config| {
+        for feature in [Feature::Collab, Feature::MultiAgentV2, Feature::AgentMailbox] {
+            config
+                .features
+                .enable(feature)
+                .expect("test config should allow feature update");
+        }
+        config.multi_agent_v2.tool_namespace = Some(NAMESPACE.to_string());
+        config.model_provider.supports_websockets = false;
+        config.model_provider.stream_max_retries = Some(0);
+        config.model_provider.request_max_retries = Some(0);
+        config.compact_prompt = Some(COMPACTION_PROMPT.to_string());
+    });
+    let test = builder.build_with_auto_env(&server).await?;
+    let root_thread_id: ThreadId = test.session_configured.thread_id.clone();
+    let root_thread_id_text = root_thread_id.to_string();
+    let captured = Arc::new(Mutex::new(Vec::new()));
+
+    Mock::given(method("POST"))
+        .and(path_regex(".*/responses$"))
+        .and(RootThreadMatcher {
+            thread_id: root_thread_id_text.clone(),
+        })
+        .respond_with(MailboxCustodyResponder {
+            root_thread_id: root_thread_id_text,
+            requests: Arc::clone(&captured),
+        })
+        .up_to_n_times(8)
+        .mount(&server)
+        .await;
+
+    test.submit_turn(CUSTODY_PROMPT).await?;
+
+    let requests = captured
+        .lock()
+        .expect("request capture lock should not be poisoned")
+        .clone();
+    assert_eq!(requests.len(), 3, "the pre-created failure should not retry");
+    let send_receipt: Value = serde_json::from_str(
+        function_output_text(&requests[1], "send-request-call")
+            .expect("accepted request receipt should remain in provider history"),
+    )?;
+    let message_id = send_receipt["message_id"]
+        .as_str()
+        .expect("send receipt should include a native message ID");
+    assert!(message_id.starts_with("amsg_"), "unexpected native ID: {message_id}");
+
+    let failed_read_receipt: Value = serde_json::from_str(
+        function_output_text(&requests[2], "initial-read-call")
+            .expect("mailbox_read receipt should be in the failed provider request"),
+    )?;
+    assert_eq!(failed_read_receipt["messages"][0]["message_id"], message_id);
+    let failed_request_item = agent_message_input(&requests[2], message_id)
+        .expect("the failed-before-created request must contain the canonical body");
+    assert_eq!(failed_request_item["content"][1]["type"], "encrypted_content");
+    assert_eq!(
+        failed_request_item["content"][1]["encrypted_content"],
+        CUSTODY_BODY
+    );
+
+    let mailbox = Mailbox::open(test.config.sqlite_config()).await?;
+    let message_id_owned = message_id.to_string();
+    assert_eq!(
+        mailbox
+            .unadmitted_input_ids(root_thread_id.clone(), std::slice::from_ref(&message_id_owned))
+            .await?,
+        vec![message_id_owned.clone()],
+        "a stream that ended before response.created must not admit the body"
+    );
+    let envelope = mailbox
+        .get_message(root_thread_id.clone(), message_id)
+        .await?
+        .expect("accepted canonical body should remain retrievable");
+    assert!(envelope.canonical);
+    assert_eq!(
+        envelope.communication.encrypted_content.as_deref(),
+        Some(CUSTODY_BODY)
+    );
+    assert!(mailbox
+        .pending(root_thread_id.clone(), 10)
+        .await?
+        .iter()
+        .any(|pending| pending.id.as_str() == message_id));
+
+    test.codex.submit(Op::Compact).await?;
+    let compact_terminal = wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    assert!(matches!(compact_terminal, EventMsg::TurnComplete(_)));
+
+    let requests = captured
+        .lock()
+        .expect("request capture lock should not be poisoned")
+        .clone();
+    assert_eq!(requests.len(), 4, "manual compaction should use one provider call");
+    assert!(requests[3].to_string().contains(COMPACTION_PROMPT));
+    let compaction_item = agent_message_input(&requests[3], message_id)
+        .expect("compaction should receive the canonical message as source history");
+    assert_eq!(compaction_item["content"][1]["encrypted_content"], CUSTODY_BODY);
+    assert_eq!(
+        mailbox
+            .unadmitted_input_ids(root_thread_id.clone(), std::slice::from_ref(&message_id_owned))
+            .await?,
+        vec![message_id_owned.clone()],
+        "compaction is not execution admission for a pending mailbox obligation"
+    );
+    assert!(mailbox
+        .pending(root_thread_id.clone(), 10)
+        .await?
+        .iter()
+        .any(|pending| pending.id.as_str() == message_id));
+    let retained = mailbox
+        .get_message(root_thread_id.clone(), message_id)
+        .await?
+        .expect("compaction must not delete the canonical body from mailbox custody");
+    assert_eq!(
+        retained.communication.encrypted_content.as_deref(),
+        Some(CUSTODY_BODY)
+    );
+
+    test.submit_turn(RECOVERY_PROMPT).await?;
+
+    let requests = captured
+        .lock()
+        .expect("request capture lock should not be poisoned")
+        .clone();
+    assert_eq!(requests.len(), 6, "recovery should read the request then execute once");
+    let recovery_read_receipt: Value = serde_json::from_str(
+        function_output_text(&requests[5], "recovery-read-call")
+            .expect("recovery mailbox_read receipt should remain in provider history"),
+    )?;
+    assert_eq!(recovery_read_receipt["messages"][0]["message_id"], message_id);
+    let recovered_item = agent_message_input(&requests[5], message_id)
+        .expect("recovery read must restore the exact canonical body to execution input");
+    assert_eq!(recovered_item["content"][1]["type"], "encrypted_content");
+    assert_eq!(recovered_item["content"][1]["encrypted_content"], CUSTODY_BODY);
+    assert!(mailbox
+        .unadmitted_input_ids(root_thread_id, &[message_id_owned])
+        .await?
+        .is_empty());
 
     Ok(())
 }

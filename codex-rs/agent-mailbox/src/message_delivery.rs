@@ -79,6 +79,7 @@ impl Mailbox {
     /// Withdraw an unresolved request authored by this exact native thread.
     /// Withdrawal is durable and idempotent; replies cannot target it afterward.
     pub async fn withdraw_message(&self, sender: ThreadId, id: &str) -> MailboxResult<()> {
+        let _input_arrival = self.begin_input_arrival();
         let mut transaction = self.pool.begin().await?;
         let row = sqlx::query(
             "SELECT sender, kind, canonical, input_admitted, legacy_attention,
@@ -350,6 +351,16 @@ impl Mailbox {
             "UPDATE mailbox_work SET outcome_canonical = 1
              WHERE outcome_id = ? AND issuer = ?",
         )
+        .bind(id)
+        .bind(recipient.to_string())
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "UPDATE mailbox_attention SET canonical = 1 WHERE recipient = ? AND id IN (
+               SELECT 'attention:' || id FROM mailbox_work WHERE outcome_id = ? AND issuer = ?
+             )",
+        )
+        .bind(recipient.to_string())
         .bind(id)
         .bind(recipient.to_string())
         .execute(&mut *transaction)

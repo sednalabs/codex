@@ -15,6 +15,21 @@ const MAX_KEY_BYTES: usize = 256;
 const MAX_TURN_INPUTS: usize = 100;
 
 impl Mailbox {
+    /// Resolve only the work covered by this exact canonical result body.
+    pub async fn work_for_outcome(&self, issuer: ThreadId, outcome_id: &str) -> MailboxResult<Vec<WorkRef>> {
+        let rows = sqlx::query(
+            "SELECT * FROM mailbox_work WHERE issuer = ? AND outcome_id = ? ORDER BY seq LIMIT 101",
+        )
+        .bind(issuer.to_string())
+        .bind(outcome_id)
+        .fetch_all(&self.pool)
+        .await?;
+        if rows.len() > 100 {
+            return Err(MailboxError::Backpressure("outcome work reference count"));
+        }
+        rows.iter().map(work_ref_from_row).collect()
+    }
+
     /// Capture accepted native work and its input before the adapter activates it.
     /// Retries of the exact issuer-scoped native key return the same immutable ref.
     pub async fn accept_work(&self, mut work: NativeWork) -> MailboxResult<WorkRef> {

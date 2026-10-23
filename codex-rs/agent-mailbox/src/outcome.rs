@@ -32,6 +32,7 @@ impl Mailbox {
         response: Option<InterAgentCommunication>,
         continuation: Continuation,
     ) -> MailboxResult<TurnOutcomeReceipt> {
+        let _input_arrival = self.begin_input_arrival();
         validate_key(source_turn_id)?;
         let mut transaction = self.pool.begin().await?;
         let admitted_rows = sqlx::query(
@@ -342,6 +343,7 @@ impl Mailbox {
         response: Option<InterAgentCommunication>,
         continuation: Continuation,
     ) -> MailboxResult<OutcomeReceipt> {
+        let _input_arrival = self.begin_input_arrival();
         if is_nonterminal(&continuation) {
             return Err(MailboxError::InvalidInput(
                 "pending continuation requires admitted turn linkage".into(),

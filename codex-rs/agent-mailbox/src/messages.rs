@@ -31,6 +31,7 @@ impl Mailbox {
     /// Durably accept a message intent. Retries with the same invocation key
     /// return its stable ID; reusing a key for a different request is rejected.
     pub async fn accept_message(&self, draft: MessageDraft) -> MailboxResult<Envelope> {
+        let _input_arrival = self.begin_input_arrival();
         let id = match draft.communication.id.as_ref() {
             Some(id) if id.as_str().starts_with("amsg_") => id.to_string(),
             Some(_) => {

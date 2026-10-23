@@ -27,6 +27,23 @@ pub struct WaitRegistration {
     waits: Weak<Mutex<HashMap<String, ActiveWait>>>,
 }
 
+/// Short-lived custody of an input publication, not a scheduler or durable queue.
+/// While an input transaction can make an old dependency stale, closed-cycle
+/// claims are conservatively suspended. The adapter holds no mutex across await.
+pub struct InputArrival {
+    mailbox: Mailbox,
+}
+
+impl Drop for InputArrival {
+    fn drop(&mut self) {
+        let waits = lock(&self.mailbox.waits);
+        self.mailbox.wait_input_generation.fetch_add(1, Ordering::AcqRel);
+        self.mailbox.pending_input_arrivals.fetch_sub(1, Ordering::AcqRel);
+        drop(waits);
+        self.mailbox.notify_changed();
+    }
+}
+
 impl WaitRegistration {
     pub fn wait_id(&self) -> &str {
         &self.wait_id
@@ -48,6 +65,22 @@ impl Drop for WaitRegistration {
 }
 
 impl Mailbox {
+    /// Bracket an existing native enqueue or mailbox transaction before it can
+    /// make input eligible. A scalar in-flight count avoids a shadow agent registry.
+    pub fn begin_input_arrival(&self) -> InputArrival {
+        let mut waits = lock(&self.waits);
+        waits.clear();
+        self.wait_input_generation.fetch_add(1, Ordering::AcqRel);
+        self.pending_input_arrivals.fetch_add(1, Ordering::AcqRel);
+        drop(waits);
+        InputArrival { mailbox: self.clone() }
+    }
+
+    /// Capture before the authoritative selection/input rescan.
+    pub fn wait_input_generation(&self) -> u64 {
+        self.wait_input_generation.load(Ordering::Acquire)
+    }
+
     /// Invalidate active dependency edges for an owner when eligible input is
     /// about to become available. Stale RAII handles cannot remove replacements.
     pub fn invalidate_waits(&self, owner: ThreadId) {
@@ -67,6 +100,31 @@ impl Mailbox {
         mode: ReturnWhen,
         has_escape: bool,
     ) -> MailboxResult<WaitRegistration> {
+        self.begin_wait_inner(wait_id, owner, peers, mode, has_escape, None)
+    }
+
+    /// Register only if no eligible-input publication raced the caller's rescan.
+    pub fn begin_wait_at(
+        &self,
+        wait_id: String,
+        owner: ThreadId,
+        peers: Vec<ThreadId>,
+        mode: ReturnWhen,
+        has_escape: bool,
+        input_generation: u64,
+    ) -> MailboxResult<WaitRegistration> {
+        self.begin_wait_inner(wait_id, owner, peers, mode, has_escape, Some(input_generation))
+    }
+
+    fn begin_wait_inner(
+        &self,
+        wait_id: String,
+        owner: ThreadId,
+        peers: Vec<ThreadId>,
+        mode: ReturnWhen,
+        has_escape: bool,
+        input_generation: Option<u64>,
+    ) -> MailboxResult<WaitRegistration> {
         if wait_id.is_empty() || wait_id.len() > MAX_WAIT_ID_BYTES {
             return Err(MailboxError::InvalidInput("invalid wait registration ID".into()));
         }
@@ -81,6 +139,10 @@ impl Mailbox {
             return Err(MailboxError::InvalidInput("duplicate wait dependency".into()));
         }
         let mut waits = lock(&self.waits);
+        if input_generation.is_some_and(|generation| generation != self.wait_input_generation.load(Ordering::Acquire)) {
+            return Err(MailboxError::StaleWaitSnapshot);
+        }
+        let has_escape = has_escape || self.pending_input_arrivals.load(Ordering::Acquire) != 0;
         if waits.contains_key(&wait_id) {
             return Err(MailboxError::IdempotencyConflict);
         }

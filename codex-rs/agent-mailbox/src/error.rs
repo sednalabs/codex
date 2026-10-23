@@ -32,4 +32,6 @@ pub enum MailboxError {
     InvalidCursor,
     #[error("wait depends on a provably closed peer cycle")]
     ClosedPeerCycle,
+    #[error("eligible input changed while the wait condition was being selected")]
+    StaleWaitSnapshot,
 }

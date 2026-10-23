@@ -18,19 +18,21 @@ use codex_agent_mailbox::ReturnWhen;
 use codex_agent_mailbox::Selection;
 use codex_agent_mailbox::Selector;
 use codex_agent_mailbox::SnapshotItem;
-use codex_protocol::ResponseItemId;
 use codex_protocol::ThreadId;
 use codex_protocol::items::MailboxWaitReport;
 use codex_protocol::items::MailboxWaitReturnWhen;
 use codex_protocol::items::MailboxWaitSelectionItem;
 use codex_protocol::items::MailboxWakeCause;
-use codex_protocol::protocol::AgentCommunicationOrigin;
 use codex_tools::ToolSpec;
 use std::collections::HashSet;
 use std::time::Duration;
 use tokio::time::Instant;
 
 pub(crate) struct Handler;
+
+#[cfg(test)]
+#[path = "mailbox_wait_tests.rs"]
+mod tests;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -134,6 +136,7 @@ async fn handle_wait(invocation: ToolInvocation) -> Result<Box<dyn ToolOutput>, 
     let mut registration = None;
     loop {
         drop(registration.take());
+        let input_generation = mailbox.wait_input_generation();
         if targetless {
             match mailbox.issued_work_refs(session.thread_id, None, 100).await {
                 Ok(work) => selectors = work.into_iter().map(|work| Selector::Work(work.id)).collect(),
@@ -276,14 +279,23 @@ async fn handle_wait(invocation: ToolInvocation) -> Result<Box<dyn ToolOutput>, 
                 InputQueueActivity::TerminalCompletion => {}
             }
         }
+        if cancellation_token.is_cancelled() {
+            report.completion_reason = Some(MailboxWakeCause::Cancel);
+            break;
+        }
+        if deadline.is_some_and(|at| Instant::now() >= at) {
+            report.completion_reason = Some(MailboxWakeCause::Deadline);
+            break;
+        }
         let peers = selected.iter().filter_map(|item| match item {
             SnapshotItem::Work(work) if work.outcome.is_none() && !work.observed => Some(work.work_ref.agent),
             SnapshotItem::Request(request) if request.reply.is_none() && !request.observed => Some(request.request.recipient),
             SnapshotItem::Work(_) | SnapshotItem::Request(_) => None,
         }).collect::<HashSet<_>>().into_iter().collect();
         let wait_id = format!("{}:{call_id}", session.thread_id);
-        match mailbox.begin_wait(wait_id, session.thread_id, peers, return_when, deadline.is_some()) {
+        match mailbox.begin_wait_at(wait_id, session.thread_id, peers, return_when, deadline.is_some(), input_generation) {
             Ok(guard) => registration = Some(guard),
+            Err(codex_agent_mailbox::MailboxError::StaleWaitSnapshot) => continue,
             Err(codex_agent_mailbox::MailboxError::ClosedPeerCycle) => {
                 report.completion_reason = Some(MailboxWakeCause::Cycle);
                 break;
@@ -431,18 +443,11 @@ async fn admit_selected(session: &Session, turn: &TurnContext, mailbox: &Mailbox
                     if !delivered.contains(&outcome.id) && delivered.len() >= body_limit {
                         continue;
                     }
-                    let communication = outcome.response.clone().unwrap_or_else(|| {
-                        let mut communication = InterAgentCommunication::new(
-                            work.input.recipient.clone(), work.input.author.clone(), Vec::new(),
-                            serde_json::json!({"work_ref":work.work_ref.id,"outcome":outcome.outcome,"continuation":outcome.continuation}).to_string(),
-                            /*trigger_turn*/ false,
-                        );
-                        communication.id = Some(ResponseItemId::from_server(outcome.id.clone()));
-                        communication.origin = Some(AgentCommunicationOrigin::Result);
-                        communication
-                    });
-                    session.record_inter_agent_communication(turn, communication).await.map_err(mailbox_error)?;
-                    mailbox.mark_outcome_canonical(session.thread_id, &outcome.id).await.map_err(mailbox_error)?;
+                    let envelope = mailbox.get_message(session.thread_id, &outcome.id).await
+                        .map_err(mailbox_error)?.ok_or_else(|| mailbox_error("terminal result body requires compatible recovery"))?;
+                    // Session owns append + successful flush + exact canonical acknowledgement
+                    // under one custody gate, including synthetic typed terminal envelopes.
+                    deliver_envelope(session, turn, &envelope).await?;
                     delivered.insert(outcome.id.clone());
                     observations.push(ObservationTarget::Work(work.work_ref.clone()));
                 }

@@ -108,6 +108,13 @@ pub(crate) async fn initialize(pool: &SqlitePool) -> MailboxResult<()> {
     )
     .execute(&mut *transaction)
     .await?;
+    for index in [
+        "CREATE INDEX IF NOT EXISTS mailbox_work_unobserved ON mailbox_work(issuer, outcome_observed, seq)",
+        "CREATE INDEX IF NOT EXISTS mailbox_work_agent_unobserved ON mailbox_work(issuer, agent, outcome_observed, seq)",
+        "CREATE INDEX IF NOT EXISTS mailbox_work_outcome ON mailbox_work(issuer, outcome_id, seq)",
+    ] {
+        sqlx::query(index).execute(&mut *transaction).await?;
+    }
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS mailbox_admissions (
             recipient TEXT NOT NULL,
