@@ -11,6 +11,7 @@ use crate::state::ActiveTurn;
 use crate::test_support::models_manager_with_provider;
 use crate::tools::hook_names::HookToolName;
 use crate::turn_metadata::McpTurnMetadataContext;
+use anyhow::Context;
 use codex_config::CONFIG_TOML_FILE;
 use codex_config::config_toml::ConfigToml;
 use codex_config::types::AppConfig;
@@ -46,7 +47,6 @@ use tracing::Instrument;
 use tracing::Level;
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_test::internal::MockWriter;
-use anyhow::Context;
 
 #[test]
 fn protected_error_projection_preserves_only_exact_ops_holder_conflict() {

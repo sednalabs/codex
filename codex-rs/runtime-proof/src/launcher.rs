@@ -475,10 +475,7 @@ fn run_mcp(
     if result.is_err() {
         terminate_child_group(&mut child);
     }
-    if output_finished_rx
-        .recv_timeout(OUTPUT_DRAIN_GRACE)
-        .is_ok()
-    {
+    if output_finished_rx.recv_timeout(OUTPUT_DRAIN_GRACE).is_ok() {
         let _ = output_reader.join();
     } else {
         // A blocked journal write or inherited stdout descriptor cannot delay

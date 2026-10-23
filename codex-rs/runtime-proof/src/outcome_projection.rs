@@ -444,9 +444,7 @@ impl<'a, W: Write> Projector<'a, W> {
                 return None;
             }
             let generation = value.get("generation").and_then(Value::as_u64)?;
-            if generation > ((1_u64 << 53) - 1)
-                || Some(generation) != pending.expected_generation
-            {
+            if generation > ((1_u64 << 53) - 1) || Some(generation) != pending.expected_generation {
                 return None;
             }
             let instance_id = value
