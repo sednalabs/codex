@@ -632,7 +632,10 @@ async fn mailbox_rejects_incompatible_spawn_and_followup_before_capture() {
         .expect("start mailbox-enabled V2 root");
     let control = manager.agent_control();
     let mut disabled_config = config.clone();
-    disabled_config.features.disable(Feature::AgentMailbox).unwrap();
+    disabled_config
+        .features
+        .disable(Feature::AgentMailbox)
+        .unwrap();
 
     let disabled_spawn_source = Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
         parent_thread_id: root.thread_id,
@@ -652,8 +655,8 @@ async fn mailbox_rejects_incompatible_spawn_and_followup_before_capture() {
             SpawnAgentOptions::default(),
         )
         .await;
-    let rejected_spawn_error = rejected_spawn
-        .expect_err("incompatible tracked spawn must fail before child creation");
+    let rejected_spawn_error =
+        rejected_spawn.expect_err("incompatible tracked spawn must fail before child creation");
     assert!(rejected_spawn_error.to_string().contains("disabled_spawn"));
     assert!(
         rejected_spawn_error
@@ -684,11 +687,9 @@ async fn mailbox_rejects_incompatible_spawn_and_followup_before_capture() {
     }));
     let accepted_communication =
         test_communication("accepted spawn input", /*trigger_turn*/ false);
-    let accepted_context = AgentCommunicationContext::new(
-        AgentCommunicationKind::Spawn,
-        root.thread_id,
-    )
-    .with_native_key("accepted-spawn-call".to_string());
+    let accepted_context =
+        AgentCommunicationContext::new(AgentCommunicationKind::Spawn, root.thread_id)
+            .with_native_key("accepted-spawn-call".to_string());
     let accepted_spawn = control
         .spawn_agent_with_communication(
             config.clone(),

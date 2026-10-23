@@ -15,7 +15,7 @@ jobs:
     env:
       CARGO_INCREMENTAL: "0"
       RUST_MIN_STACK: "8388608"
-      PREPARATION_ATTEMPT: "9"
+      PREPARATION_ATTEMPT: "10"
       SCCACHE_CACHE_SIZE: 2G
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1

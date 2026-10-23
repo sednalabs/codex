@@ -464,7 +464,7 @@ impl AgentControl {
             let recipient = session_source
                 .as_ref()
                 .and_then(SessionSource::get_agent_path)
-                .map(ToString::to_string)
+                .map(|path| path.to_string())
                 .unwrap_or_else(|| format!("new child of {}", context.sender_thread_id));
             return Err(Self::mailbox_config_incompatibility_error(
                 &recipient,

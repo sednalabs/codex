@@ -2185,47 +2185,57 @@ fn mailbox_deferred_goal_handoff_rejects_replaced_native_incarnation() {
     let store = GoalNotificationStore::default();
     let exact_goal = (store.incarnation(), snapshot.clone());
 
-    assert!(validate_deferred_goal_identity(
-        child_thread_id,
-        parent_thread_id,
-        "turn-a",
-        Some(&exact_goal),
-        Some(&store),
-    )
-    .is_ok());
-    assert!(validate_deferred_goal_identity(
-        child_thread_id,
-        parent_thread_id,
-        "turn-b",
-        Some(&exact_goal),
-        Some(&store),
-    )
-    .is_err());
-    assert!(validate_deferred_goal_identity(
-        child_thread_id,
-        parent_thread_id,
-        "turn-a",
-        Some(&(ThreadId::new(), snapshot.clone())),
-        Some(&store),
-    )
-    .is_err());
-    assert!(validate_deferred_goal_identity(
-        ThreadId::new(),
-        parent_thread_id,
-        "turn-a",
-        Some(&exact_goal),
-        Some(&store),
-    )
-    .is_err());
+    assert!(
+        validate_deferred_goal_identity(
+            child_thread_id,
+            parent_thread_id,
+            "turn-a",
+            Some(&exact_goal),
+            Some(&store),
+        )
+        .is_ok()
+    );
+    assert!(
+        validate_deferred_goal_identity(
+            child_thread_id,
+            parent_thread_id,
+            "turn-b",
+            Some(&exact_goal),
+            Some(&store),
+        )
+        .is_err()
+    );
+    assert!(
+        validate_deferred_goal_identity(
+            child_thread_id,
+            parent_thread_id,
+            "turn-a",
+            Some(&(ThreadId::new(), snapshot.clone())),
+            Some(&store),
+        )
+        .is_err()
+    );
+    assert!(
+        validate_deferred_goal_identity(
+            ThreadId::new(),
+            parent_thread_id,
+            "turn-a",
+            Some(&exact_goal),
+            Some(&store),
+        )
+        .is_err()
+    );
 
     // An unloaded child has no current native store to compare against. Its exact
     // incarnation is carried from the original runtime token and binding checked.
-    assert!(validate_deferred_goal_identity(
-        child_thread_id,
-        parent_thread_id,
-        "turn-a",
-        Some(&exact_goal),
-        None,
-    )
-    .is_ok());
+    assert!(
+        validate_deferred_goal_identity(
+            child_thread_id,
+            parent_thread_id,
+            "turn-a",
+            Some(&exact_goal),
+            None,
+        )
+        .is_ok()
+    );
 }

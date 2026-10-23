@@ -242,7 +242,13 @@ fn assert_mailbox_namespace_schema(plan: &ToolPlanProbe, namespace_name: &str) {
     );
     assert_eq!(
         send_output["properties"]["activation_disposition"]["enum"],
-        json!(["not_requested", "already_active", "activated", "denied", "unknown"])
+        json!([
+            "not_requested",
+            "already_active",
+            "activated",
+            "denied",
+            "unknown"
+        ])
     );
     assert!(
         send_output["properties"]["durable_state"]["description"]

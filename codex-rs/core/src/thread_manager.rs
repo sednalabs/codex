@@ -1,8 +1,8 @@
 use crate::CodexAppsToolsCache;
 use crate::SkillsService;
 use crate::agent::AgentControl;
-use crate::agent::goal_notifications::GoalNotificationStore;
 use crate::agent::goal_notifications::GoalNotificationSnapshot;
+use crate::agent::goal_notifications::GoalNotificationStore;
 use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
 use crate::attestation::AttestationProvider;
@@ -2656,7 +2656,9 @@ fn validate_deferred_goal_identity(
     if snapshot.binding.child_thread_id != child_thread_id
         || snapshot.binding.parent_thread_id != parent_thread_id
     {
-        return Err("deferred goal handback does not match its captured child/parent binding".into());
+        return Err(
+            "deferred goal handback does not match its captured child/parent binding".into(),
+        );
     }
     if snapshot.last_completed_source_turn.as_deref() != Some(source_turn_id) {
         return Err("deferred goal handback does not match its captured source turn".into());

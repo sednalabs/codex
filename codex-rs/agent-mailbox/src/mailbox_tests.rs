@@ -1804,11 +1804,13 @@ async fn recipient_incompatibility_recovers_accepted_work_without_losing_or_rese
     )
     .await;
 
-    assert!(fixture
-        .mailbox
-        .mark_recovery_needed(&work, RecoveryEvidence::RecipientIncompatible)
-        .await
-        .unwrap());
+    assert!(
+        fixture
+            .mailbox
+            .mark_recovery_needed(&work, RecoveryEvidence::RecipientIncompatible)
+            .await
+            .unwrap()
+    );
     assert_eq!(
         fixture.mailbox.dispatch_state(&work).await.unwrap(),
         DispatchState::RecoveryNeeded
@@ -1817,11 +1819,13 @@ async fn recipient_incompatibility_recovers_accepted_work_without_losing_or_rese
         fixture.mailbox.begin_dispatch(&work).await.unwrap(),
         DispatchDecision::RecoveryNeeded
     );
-    assert!(!fixture
-        .mailbox
-        .mark_recovery_needed(&work, RecoveryEvidence::RecipientIncompatible)
-        .await
-        .unwrap());
+    assert!(
+        !fixture
+            .mailbox
+            .mark_recovery_needed(&work, RecoveryEvidence::RecipientIncompatible)
+            .await
+            .unwrap()
+    );
 
     assert_eq!(
         fixture

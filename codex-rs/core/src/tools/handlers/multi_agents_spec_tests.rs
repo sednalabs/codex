@@ -968,7 +968,13 @@ fn mailbox_send_message_tool_declares_durable_receipt_without_claiming_comprehen
     );
     assert_eq!(
         output_schema["properties"]["activation_disposition"]["enum"],
-        json!(["not_requested", "already_active", "activated", "denied", "unknown"])
+        json!([
+            "not_requested",
+            "already_active",
+            "activated",
+            "denied",
+            "unknown"
+        ])
     );
     assert!(
         output_schema["properties"]["durable_state"]["description"]

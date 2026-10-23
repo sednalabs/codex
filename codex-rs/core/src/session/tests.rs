@@ -12645,7 +12645,10 @@ fn mailbox_terminal_goal_requires_successful_publication_for_exact_turn() {
     .expect("matching native completion should be capturable");
     assert_eq!(incarnation, token.incarnation);
     assert_eq!(snapshot.binding, token.binding);
-    assert_eq!(snapshot.last_completed_source_turn.as_deref(), Some("turn-a"));
+    assert_eq!(
+        snapshot.last_completed_source_turn.as_deref(),
+        Some("turn-a")
+    );
     assert_eq!(snapshot.phase, GoalNotificationPhase::ContinuationPending);
 
     let mut replacement = binding;
@@ -12658,12 +12661,14 @@ fn mailbox_terminal_goal_requires_successful_publication_for_exact_turn() {
     assert!(replacement_projection.opt_in(&replacement));
     store.install_authoritative(replacement_projection);
     store.set_source_turn("turn-a");
-    assert!(mailbox_goal_for_terminal_turn(
-        &store,
-        &token,
-        /*publishes_completion*/ true,
-        Some("stale result".to_string()),
-    )
-    .is_err());
+    assert!(
+        mailbox_goal_for_terminal_turn(
+            &store,
+            &token,
+            /*publishes_completion*/ true,
+            Some("stale result".to_string()),
+        )
+        .is_err()
+    );
     assert_eq!(store.snapshot().unwrap().binding, replacement);
 }

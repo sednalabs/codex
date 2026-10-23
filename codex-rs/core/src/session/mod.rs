@@ -2404,10 +2404,10 @@ impl Session {
                 .get::<crate::agent::goal_notifications::GoalNotificationTurnToken>()
             {
                 Some(token) => {
-                    let Some(store) = self
-                        .services
-                        .thread_extension_data
-                        .get::<crate::agent::goal_notifications::GoalNotificationStore>()
+                    let Some(store) =
+                        self.services
+                            .thread_extension_data
+                            .get::<crate::agent::goal_notifications::GoalNotificationStore>()
                     else {
                         self.notify_mailbox_terminal_correlation_fault();
                         return Some(AgentStatus::Errored(
@@ -5118,10 +5118,13 @@ fn mailbox_goal_for_terminal_turn(
     token: &crate::agent::goal_notifications::GoalNotificationTurnToken,
     publishes_completion: bool,
     result: Option<String>,
-) -> Result<(
-    ThreadId,
-    crate::agent::goal_notifications::GoalNotificationSnapshot,
-), String> {
+) -> Result<
+    (
+        ThreadId,
+        crate::agent::goal_notifications::GoalNotificationSnapshot,
+    ),
+    String,
+> {
     if store.incarnation() != token.incarnation {
         return Err("native goal store incarnation changed".into());
     }

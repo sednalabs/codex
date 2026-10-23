@@ -233,12 +233,12 @@ impl PreparedV2AgentDelivery {
         let accepted = if let Some(recipient_config) = recipient_config {
             self.control
                 .mailbox_accept_native_submission(
-                self.agent_id,
-                context,
-                communication,
-                &mut submission_id,
-                recipient_config,
-            )
+                    self.agent_id,
+                    context,
+                    communication,
+                    &mut submission_id,
+                    recipient_config,
+                )
                 .await?
         } else if context.native_key.is_some() {
             return Err(CodexErr::UnsupportedOperation(format!(

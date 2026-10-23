@@ -931,9 +931,11 @@ mod tests {
 
         let home = tempfile::tempdir().unwrap();
         let mailbox = Arc::new(
-            Mailbox::open(&codex_state::SqliteConfig::new_for_testing(home.path().abs()))
-                .await
-                .unwrap(),
+            Mailbox::open(&codex_state::SqliteConfig::new_for_testing(
+                home.path().abs(),
+            ))
+            .await
+            .unwrap(),
         );
         let queue = InputQueue::new();
         queue.bind_durable_mailbox(Arc::clone(&mailbox));
