@@ -344,7 +344,8 @@ impl OAuthAccessToken {
 /// fixed in source. The flow requires the exact Keycloak realm endpoints,
 /// authorization-code plus PKCE S256, a loopback callback, and a bounded
 /// Bearer token lifetime. The refresh token is returned only to the fixed
-/// API-profile store so it can be persisted in the invoking user's keyring.
+/// API-profile store so its privileged caller can persist it in the protected
+/// service credential store.
 pub async fn perform_fixed_ops_api_access_token_login(
     open_authorization_url: impl FnOnce(&str) -> Result<()>,
 ) -> std::result::Result<OAuthAccessToken, FixedOAuthLoginError> {

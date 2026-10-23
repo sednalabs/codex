@@ -6,11 +6,9 @@
 //! volatile systemd credential source consumed by the fixed claim service.
 
 use crate::api_claim;
-use crate::launcher::LAUNCHER_PATH;
 use crate::launcher::ProvisioningStage;
 use crate::launcher::provisioning_failure;
 use crate::launcher::require_installed_launcher_image;
-use crate::launcher::seqpacket_pair;
 use anyhow::Result;
 use anyhow::bail;
 use codex_rmcp_client::FIXED_API_CLAIM_TIMEOUT_SECS;
@@ -19,6 +17,7 @@ use codex_rmcp_client::FixedOAuthCallbackInputError;
 use std::ffi::CStr;
 use std::fs;
 use std::fs::File;
+use std::io::Read as _;
 use std::io::Write as _;
 use std::mem::MaybeUninit;
 use std::os::fd::AsRawFd as _;
@@ -34,19 +33,25 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
 const BEARER_SOURCE_PATH: &str = "/run/credstore/ops-api-bearer";
 const BEARER_LOCK_NAME: &str = ".codex-runtime-proof-api-bearer.lock";
 const XDG_OPEN_PATH: &str = "/usr/bin/xdg-open";
+const SYSTEMD_CREDS_PATH: &str = "/usr/bin/systemd-creds";
+const API_PROFILE_DIRECTORY: &str = "/etc/credstore.encrypted";
+const API_PROFILE_PATH: &str = "/etc/credstore.encrypted/codex-runtime-proof-api-refresh";
+const API_PROFILE_NAME: &str = "codex-runtime-proof-api-refresh";
+const SYSTEMD_CREDENTIAL_SECRET_PATH: &str = "/var/lib/systemd/credential.secret";
+const APPORT_EXECUTABLE_PATH: &str = "/usr/share/apport/apport";
+const APPORT_REPORT_IGNORE_DIRECTORY: &str = "/etc/apport/report-ignore";
+const APPORT_SYSTEMD_CREDS_IGNORE_PATH: &str =
+    "/etc/apport/report-ignore/codex-runtime-proof-systemd-creds";
 const MAX_PASSWD_BUFFER: usize = 64 * 1024;
 const MAX_CALLBACK_URL_BYTES: usize = 64 * 1024;
-const API_PROFILE_CHILD_ACTION: &str = "__runtime-proof-api-profile-child";
-const API_PROFILE_CHANNEL_FD: libc::c_int = 3;
-const API_TOKEN_FRAME_MAGIC: &[u8; 4] = b"R3A1";
-const MAX_API_TOKEN_FRAME_BYTES: usize = 12 * 1024 + 12;
-// Covers the fixed 300-second PKCE callback, existing 60-second credential
-// lock, and bounded discovery/token requests with a small scheduling margin.
-const API_PROFILE_CHILD_TIMEOUT: Duration = Duration::from_secs(400);
+const MAX_API_PROFILE_CIPHERTEXT_BYTES: usize = 64 * 1024;
+const SYSTEMD_CREDS_TIMEOUT: Duration = Duration::from_secs(10);
+const API_CREDENTIAL_LOCK_TIMEOUT: Duration = Duration::from_secs(60);
 static CALLBACK_INPUT_INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
 type CallbackInputResult<T> = std::result::Result<T, FixedOAuthCallbackInputError>;
@@ -175,325 +180,88 @@ fn run_with_interaction(interaction: ProvisioningInteraction) -> Result<i32> {
     validate_fixed_parent(bearer_parent)
         .map_err(|_| provisioning_failure(ProvisioningStage::Precondition))?;
 
-    let access_token = obtain_access_token_as_invoking_user(interaction)?;
+    set_nondumpable_root_process()
+        .map_err(|_| provisioning_failure(ProvisioningStage::Precondition))?;
+    let bearer_parent = open_fixed_directory(bearer_parent)
+        .map_err(|_| provisioning_failure(ProvisioningStage::Precondition))?;
+    validate_credential_store_directory(&bearer_parent, /*expected_owner*/ 0)
+        .map_err(|_| provisioning_failure(ProvisioningStage::Precondition))?;
+    let _credential_lock = lock_credential_store_with_timeout(
+        &bearer_parent,
+        /*expected_owner*/ 0,
+        API_CREDENTIAL_LOCK_TIMEOUT,
+    )
+    .map_err(|_| provisioning_failure(ProvisioningStage::CredentialStore))?;
 
+    let access_token = obtain_access_token(interaction)?;
     let now = api_claim::unix_seconds()
         .map_err(|_| provisioning_failure(ProvisioningStage::TokenValidation))?;
-    let bearer = api_claim::validate_bearer_for_provisioning(access_token.value.to_string(), now)
-        .map_err(|_| provisioning_failure(ProvisioningStage::TokenValidation))?;
+    let bearer =
+        api_claim::validate_bearer_for_provisioning(access_token.access_token().to_string(), now)
+            .map_err(|_| provisioning_failure(ProvisioningStage::TokenValidation))?;
     let expected_principal = crate::launcher::expected_http_principal_if_configured()
         .map_err(|_| provisioning_failure(ProvisioningStage::TokenValidation))?;
     if bearer.expires_at <= now
-        || bearer.expires_at > access_token.expires_at
+        || bearer.expires_at > access_token.expires_at()
         || expected_principal.is_some_and(|principal| principal != bearer.principal)
     {
         return Err(provisioning_failure(ProvisioningStage::TokenValidation));
     }
     let credential = api_claim::encode_bearer_credential(&bearer.value)
         .map_err(|_| provisioning_failure(ProvisioningStage::TokenValidation))?;
-    replace_bearer_source(Path::new(BEARER_SOURCE_PATH), &credential)
+    let bearer_name = std::ffi::CString::new("ops-api-bearer")
         .map_err(|_| provisioning_failure(ProvisioningStage::CredentialWrite))?;
+    atomic_replace_credential_at(
+        &bearer_parent,
+        &bearer_name,
+        &credential,
+        /*expected_owner*/ 0,
+    )
+    .map_err(|_| provisioning_failure(ProvisioningStage::CredentialWrite))?;
     Ok(0)
 }
 
-/// Entry point for the fixed unprivileged child. It requires an inherited
-/// root-created seqpacket channel and writes only a bounded short-lived access
-/// token frame; the refresh token remains in this user's OS keyring.
-pub(crate) fn run_api_profile_child(use_manual_callback_input: bool) -> Result<i32> {
-    let channel = inherited_api_profile_channel()
-        .map_err(|_| provisioning_failure(ProvisioningStage::Precondition))?;
-    verify_api_profile_parent(&channel)?;
-    require_installed_launcher_image()
-        .map_err(|_| provisioning_failure(ProvisioningStage::Precondition))?;
-    let (uid, _, _) = invoking_user_identity()
-        .map_err(|_| provisioning_failure(ProvisioningStage::Precondition))?;
-    if uid == 0 || unsafe { libc::geteuid() } != uid {
-        return Err(provisioning_failure(ProvisioningStage::Precondition));
+fn set_nondumpable_root_process() -> Result<()> {
+    if unsafe { libc::geteuid() } != 0
+        || unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) } != 0
+    {
+        bail!("fixed API provisioning requires a non-dumpable root process");
     }
+    Ok(())
+}
 
+fn obtain_access_token(
+    interaction: ProvisioningInteraction,
+) -> Result<codex_rmcp_client::OAuthAccessToken> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|_| provisioning_failure(ProvisioningStage::Runtime))?;
     let oauth_dispatch = tracing::Dispatch::none();
-    let access_token = tracing::dispatcher::with_default(&oauth_dispatch, || {
+    let (open_authorization_url, read_callback_url, manual) = match interaction {
+        ProvisioningInteraction::Browser => (
+            open_authorization_url_as_invoking_user as fn(&str) -> Result<()>,
+            read_callback_url_for_oauth as fn(&str) -> Result<String>,
+            false,
+        ),
+        ProvisioningInteraction::ManualCallbackInput => (
+            open_authorization_url_as_invoking_user as fn(&str) -> Result<()>,
+            read_callback_url_for_oauth as fn(&str) -> Result<String>,
+            true,
+        ),
+    };
+    tracing::dispatcher::with_default(&oauth_dispatch, || {
         runtime.block_on(
             codex_rmcp_client::perform_fixed_ops_api_access_token_with_refresh(
-                open_authorization_url_as_invoking_user,
-                |authorization_url| {
-                    read_callback_url_from_invoking_terminal(authorization_url)
-                        .map_err(anyhow::Error::new)
-                },
-                use_manual_callback_input,
+                open_authorization_url,
+                read_callback_url,
+                manual,
+                load_api_refresh_profile,
+                save_api_refresh_profile,
             ),
         )
     })
-    .map_err(crate::launcher::provisioning_oauth_failure)?;
-
-    send_api_token_frame(
-        &channel,
-        access_token.access_token(),
-        access_token.expires_at(),
-    )?;
-    Ok(0)
-}
-
-fn inherited_api_profile_channel() -> Result<File> {
-    if unsafe { libc::fcntl(API_PROFILE_CHANNEL_FD, libc::F_GETFD) } < 0 {
-        bail!("fixed API credential child has no inherited channel");
-    }
-    Ok(unsafe { File::from_raw_fd(API_PROFILE_CHANNEL_FD) })
-}
-
-fn obtain_access_token_as_invoking_user(
-    interaction: ProvisioningInteraction,
-) -> Result<TransferredAccessToken> {
-    let (uid, gid, home) = invoking_user_identity()
-        .map_err(|_| provisioning_failure(ProvisioningStage::Precondition))?;
-    let (parent_socket, child_socket) =
-        seqpacket_pair().map_err(|_| provisioning_failure(ProvisioningStage::Runtime))?;
-    let child_fd = child_socket.as_raw_fd();
-    let parent_pid = unsafe { libc::getpid() };
-    let mut command = Command::new(LAUNCHER_PATH);
-    command
-        .arg(API_PROFILE_CHILD_ACTION)
-        .arg(match interaction {
-            ProvisioningInteraction::Browser => "browser",
-            ProvisioningInteraction::ManualCallbackInput => "callback-input",
-        })
-        .env_clear()
-        .env("HOME", &home)
-        .env("PATH", "/usr/bin:/bin")
-        .env("SUDO_UID", uid.to_string())
-        // The API refresh profile is global to this user's OS keyring. Keep
-        // its existing OAuth lock in one stable per-user Codex home instead
-        // of allowing different CODEX_HOME values to race the same keyring
-        // refresh token.
-        .env_remove("CODEX_HOME")
-        .current_dir(&home)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
-    for name in [
-        "DISPLAY",
-        "WAYLAND_DISPLAY",
-        "XAUTHORITY",
-        "XDG_CURRENT_DESKTOP",
-        "XDG_SESSION_TYPE",
-    ] {
-        if let Some(value) = std::env::var_os(name) {
-            let value_bytes = value.as_os_str().as_bytes();
-            if value_bytes.len() <= 4096 && !value_bytes.iter().any(u8::is_ascii_control) {
-                command.env(name, value);
-            }
-        }
-    }
-    if let Some((runtime_directory, bus_address)) = fixed_user_bus(uid) {
-        command
-            .env("XDG_RUNTIME_DIR", runtime_directory)
-            .env("DBUS_SESSION_BUS_ADDRESS", bus_address);
-    }
-
-    unsafe {
-        command.pre_exec(move || {
-            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) != 0
-                || libc::getppid() != parent_pid
-                || libc::dup2(child_fd, API_PROFILE_CHANNEL_FD) < 0
-                || libc::fcntl(API_PROFILE_CHANNEL_FD, libc::F_SETFD, 0) < 0
-                || libc::setgroups(0, std::ptr::null()) != 0
-                || libc::setresgid(gid, gid, gid) != 0
-                || libc::setresuid(uid, uid, uid) != 0
-                || libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0
-                || libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) != 0
-            {
-                return Err(std::io::Error::last_os_error());
-            }
-            if libc::syscall(
-                libc::SYS_close_range,
-                (API_PROFILE_CHANNEL_FD + 1) as u32,
-                u32::MAX,
-                libc::CLOSE_RANGE_CLOEXEC,
-            ) < 0
-            {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-    let mut child = command
-        .spawn()
-        .map_err(|_| provisioning_failure(ProvisioningStage::Runtime))?;
-    drop(child_socket);
-
-    let packet = receive_api_token_frame(&parent_socket);
-    if packet.is_err() {
-        // A bounded handoff timeout must not be followed by an unbounded wait
-        // for an OAuth/keyring child that failed to produce its one result.
-        let _ = child.kill();
-    }
-    let status = child
-        .wait()
-        .map_err(|_| provisioning_failure(ProvisioningStage::Runtime))?;
-    if !status.success() {
-        return Err(provisioning_failure(ProvisioningStage::OAuthExchange));
-    }
-    packet.map_err(|_| provisioning_failure(ProvisioningStage::OAuthExchange))
-}
-
-struct TransferredAccessToken {
-    value: zeroize::Zeroizing<String>,
-    expires_at: i64,
-}
-
-fn send_api_token_frame(channel: &File, token: &str, expires_at: i64) -> Result<()> {
-    if token.is_empty() || token.len() > 12 * 1024 {
-        bail!("fixed API access token is outside its handoff bounds");
-    }
-    let mut frame = zeroize::Zeroizing::new(Vec::with_capacity(12 + token.len()));
-    frame.extend_from_slice(API_TOKEN_FRAME_MAGIC);
-    frame.extend_from_slice(&expires_at.to_be_bytes());
-    frame.extend_from_slice(token.as_bytes());
-    let sent = loop {
-        let sent = unsafe {
-            libc::send(
-                channel.as_raw_fd(),
-                frame.as_ptr().cast(),
-                frame.len(),
-                libc::MSG_NOSIGNAL,
-            )
-        };
-        if sent >= 0 {
-            break sent;
-        }
-        if std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
-            bail!("fixed API access token handoff failed");
-        }
-    };
-    if sent < 0 || sent as usize != frame.len() {
-        bail!("fixed API access token handoff failed");
-    }
-    Ok(())
-}
-
-fn receive_api_token_frame(channel: &File) -> Result<TransferredAccessToken> {
-    let deadline = Instant::now() + API_PROFILE_CHILD_TIMEOUT;
-    loop {
-        let mut poll = libc::pollfd {
-            fd: channel.as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        let timeout_ms = i32::try_from(remaining.as_millis()).unwrap_or(i32::MAX);
-        if timeout_ms == 0 {
-            bail!("fixed API credential child did not complete in time");
-        }
-        let ready = unsafe { libc::poll(&mut poll, 1, timeout_ms) };
-        if ready > 0 {
-            if poll.revents & libc::POLLIN == 0 {
-                bail!("fixed API credential child did not complete in time");
-            }
-            break;
-        }
-        if ready == 0 {
-            bail!("fixed API credential child did not complete in time");
-        }
-        if std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
-            bail!("fixed API credential child did not complete in time");
-        }
-    }
-    let mut frame = zeroize::Zeroizing::new(vec![0_u8; MAX_API_TOKEN_FRAME_BYTES]);
-    let received = loop {
-        let received = unsafe {
-            libc::recv(
-                channel.as_raw_fd(),
-                frame.as_mut_ptr().cast(),
-                frame.len(),
-                libc::MSG_TRUNC,
-            )
-        };
-        if received >= 0 {
-            break received;
-        }
-        if std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
-            bail!("fixed API access token handoff has an invalid size");
-        }
-    };
-    if received < 12 || received as usize > frame.len() {
-        bail!("fixed API access token handoff has an invalid size");
-    }
-    decode_api_token_frame(&frame[..received as usize])
-}
-
-fn decode_api_token_frame(frame: &[u8]) -> Result<TransferredAccessToken> {
-    if frame.len() < 12 || frame.len() > MAX_API_TOKEN_FRAME_BYTES {
-        bail!("fixed API access token handoff has an invalid size");
-    }
-    if &frame[..4] != API_TOKEN_FRAME_MAGIC {
-        bail!("fixed API access token handoff has an invalid format");
-    }
-    let expires_at = i64::from_be_bytes(frame[4..12].try_into()?);
-    let token = std::str::from_utf8(&frame[12..])?;
-    if token.is_empty() || token.len() > 12 * 1024 {
-        bail!("fixed API access token handoff has an invalid token size");
-    }
-    Ok(TransferredAccessToken {
-        value: zeroize::Zeroizing::new(token.to_string()),
-        expires_at,
-    })
-}
-
-fn verify_api_profile_parent(channel: &File) -> Result<()> {
-    let mut socket_type: libc::c_int = 0;
-    let mut socket_type_len = std::mem::size_of_val(&socket_type) as libc::socklen_t;
-    let mut peer: libc::ucred = unsafe { std::mem::zeroed() };
-    let mut peer_len = std::mem::size_of_val(&peer) as libc::socklen_t;
-    if unsafe {
-        libc::getsockopt(
-            channel.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_TYPE,
-            (&mut socket_type as *mut libc::c_int).cast(),
-            &mut socket_type_len,
-        )
-    } != 0
-        || socket_type_len as usize != std::mem::size_of_val(&socket_type)
-        || socket_type != libc::SOCK_SEQPACKET
-        || unsafe {
-            libc::getsockopt(
-                channel.as_raw_fd(),
-                libc::SOL_SOCKET,
-                libc::SO_PEERCRED,
-                (&mut peer as *mut libc::ucred).cast(),
-                &mut peer_len,
-            )
-        } != 0
-        || peer_len as usize != std::mem::size_of_val(&peer)
-        || peer.uid != 0
-    {
-        bail!("fixed API credential child requires its root launcher peer");
-    }
-    Ok(())
-}
-
-fn fixed_user_bus(uid: libc::uid_t) -> Option<(String, String)> {
-    use std::os::unix::fs::FileTypeExt as _;
-
-    let runtime_directory = format!("/run/user/{uid}");
-    let runtime_path = Path::new(&runtime_directory);
-    let runtime = fs::symlink_metadata(runtime_path).ok()?;
-    if !runtime.is_dir() || runtime.uid() != uid || runtime.mode() & 0o077 != 0 {
-        return None;
-    }
-    let bus_path = runtime_path.join("bus");
-    let bus = fs::symlink_metadata(&bus_path).ok()?;
-    if !bus.file_type().is_socket() || bus.uid() != uid {
-        return None;
-    }
-    Some((
-        runtime_directory.clone(),
-        format!("unix:path={runtime_directory}/bus"),
-    ))
+    .map_err(crate::launcher::provisioning_oauth_failure)
 }
 
 fn require_interactive_root_invocation() -> Result<()> {
@@ -555,6 +323,361 @@ fn invoking_user_identity() -> Result<(libc::uid_t, libc::gid_t, String)> {
     Ok((uid, passwd.pw_gid, home.to_string()))
 }
 
+fn fixed_user_bus(uid: libc::uid_t) -> Option<(String, String)> {
+    use std::os::unix::fs::FileTypeExt as _;
+
+    let runtime_directory = format!("/run/user/{uid}");
+    let runtime_path = Path::new(&runtime_directory);
+    let runtime = fs::symlink_metadata(runtime_path).ok()?;
+    if !runtime.is_dir() || runtime.uid() != uid || runtime.mode() & 0o077 != 0 {
+        return None;
+    }
+    let bus_path = runtime_path.join("bus");
+    let bus = fs::symlink_metadata(&bus_path).ok()?;
+    if !bus.file_type().is_socket() || bus.uid() != uid {
+        return None;
+    }
+    Some((
+        runtime_directory.clone(),
+        format!("unix:path={runtime_directory}/bus"),
+    ))
+}
+
+fn validate_api_profile_directory() -> Result<File> {
+    let directory_path = Path::new(API_PROFILE_DIRECTORY);
+    if Path::new(API_PROFILE_PATH).parent() != Some(directory_path)
+        || Path::new(API_PROFILE_PATH).file_name() != Some(std::ffi::OsStr::new(API_PROFILE_NAME))
+        || directory_path.canonicalize()? != directory_path
+    {
+        bail!("fixed API refresh directory is not canonical");
+    }
+    for path in directory_path.ancestors() {
+        let metadata = fs::symlink_metadata(path)?;
+        if !metadata.is_dir() || metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
+            bail!("fixed API refresh directory is not root controlled");
+        }
+    }
+    let directory = open_fixed_directory(directory_path)?;
+    let metadata = directory.metadata()?;
+    if metadata.mode() & 0o777 != 0o700 {
+        bail!("fixed API refresh directory has unexpected permissions");
+    }
+    Ok(directory)
+}
+
+fn validate_api_profile_store() -> Result<File> {
+    let directory = validate_api_profile_directory()?;
+    let secret_path = Path::new(SYSTEMD_CREDENTIAL_SECRET_PATH);
+    if secret_path.canonicalize()? != secret_path {
+        bail!("host system credential key path is not canonical");
+    }
+    for path in secret_path.parent().into_iter().flat_map(Path::ancestors) {
+        let metadata = fs::symlink_metadata(path)?;
+        if !metadata.is_dir() || metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
+            bail!("host system credential key directory is not root controlled");
+        }
+    }
+    let secret_metadata = fs::symlink_metadata(secret_path)?;
+    if !secret_metadata.is_file()
+        || secret_metadata.uid() != 0
+        || secret_metadata.mode() & 0o777 != 0o400
+        || secret_metadata.nlink() != 1
+    {
+        bail!("host system credential key is outside its fixed file contract");
+    }
+    let utility = Path::new(SYSTEMD_CREDS_PATH);
+    let utility_metadata = fs::symlink_metadata(utility)?;
+    if !utility_metadata.is_file()
+        || utility_metadata.uid() != 0
+        || utility_metadata.mode() & 0o022 != 0
+        || utility_metadata.mode() & 0o111 == 0
+        || utility_metadata.nlink() != 1
+    {
+        bail!("fixed system credential utility is outside its root-owned contract");
+    }
+    Ok(directory)
+}
+
+fn load_api_refresh_profile() -> Result<Option<String>> {
+    let directory = validate_api_profile_store()?;
+    let name = std::ffi::CString::new(API_PROFILE_NAME)?;
+    let fd = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+        )
+    };
+    if fd < 0 {
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::NotFound {
+            return Ok(None);
+        }
+        return Err(error.into());
+    }
+    let file = unsafe { File::from_raw_fd(fd) };
+    let metadata = file.metadata()?;
+    if !metadata.is_file()
+        || metadata.uid() != 0
+        || metadata.mode() & 0o777 != 0o600
+        || metadata.nlink() != 1
+        || metadata.len() == 0
+        || metadata.len() > MAX_API_PROFILE_CIPHERTEXT_BYTES as u64
+    {
+        bail!("fixed API refresh ciphertext is outside its protected file contract");
+    }
+    let ciphertext = Zeroizing::new(crate::launcher::read_bounded(
+        file,
+        MAX_API_PROFILE_CIPHERTEXT_BYTES,
+    )?);
+    let plaintext = run_systemd_creds("decrypt", &ciphertext)?;
+    if plaintext.is_empty() || plaintext.len() > 24 * 1024 {
+        bail!("fixed API refresh profile is outside its size limit");
+    }
+    let mut plaintext = plaintext;
+    std::str::from_utf8(&plaintext)?;
+    let bytes = std::mem::take(&mut *plaintext);
+    // SAFETY: the same buffer was validated as UTF-8 immediately above.
+    Ok(Some(unsafe { String::from_utf8_unchecked(bytes) }))
+}
+
+fn save_api_refresh_profile(plaintext: &str) -> Result<()> {
+    if plaintext.is_empty() || plaintext.len() > 24 * 1024 {
+        bail!("fixed API refresh profile is outside its size limit");
+    }
+    let directory = validate_api_profile_store()?;
+    let ciphertext = run_systemd_creds("encrypt", plaintext.as_bytes())?;
+    if ciphertext.is_empty() || ciphertext.len() > MAX_API_PROFILE_CIPHERTEXT_BYTES {
+        bail!("encrypted API refresh profile is outside its size limit");
+    }
+    let name = std::ffi::CString::new(API_PROFILE_NAME)?;
+    atomic_replace_credential_at(&directory, &name, &ciphertext, /*expected_owner*/ 0)
+}
+
+fn run_systemd_creds(action: &str, input: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
+    if !matches!(action, "encrypt" | "decrypt") {
+        bail!("unsupported fixed system credential operation");
+    }
+    validate_systemd_creds_coredump_suppression()?;
+    let name_argument = format!("--name={API_PROFILE_NAME}");
+    let mut command = Command::new(SYSTEMD_CREDS_PATH);
+    command
+        .args(["--with-key=host", name_argument.as_str(), action, "-", "-"])
+        .env_clear()
+        .current_dir("/")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    unsafe {
+        command.pre_exec(|| {
+            if libc::geteuid() != 0 {
+                return Err(std::io::Error::from_raw_os_error(libc::EPERM));
+            }
+            // PR_SET_DUMPABLE is reset by execve for an ordinary binary. Keep
+            // the helper's credential-bearing memory out of core dumps with a
+            // zero, non-raisable core limit that survives exec.
+            let core_limit = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            if libc::setrlimit(libc::RLIMIT_CORE, &core_limit) != 0
+                || libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0
+                || libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) != 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = command.spawn()?;
+    let mut input_pipe = child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("system credential utility has no input pipe"))?;
+    let input = Zeroizing::new(input.to_vec());
+    let writer = std::thread::spawn(move || input_pipe.write_all(&input));
+    let deadline = Instant::now() + SYSTEMD_CREDS_TIMEOUT;
+    loop {
+        let status = match child.try_wait() {
+            Ok(status) => status,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = writer.join();
+                return Err(error.into());
+            }
+        };
+        if let Some(status) = status {
+            writer
+                .join()
+                .map_err(|_| anyhow::anyhow!("system credential input failed"))??;
+            if !status.success() {
+                bail!("fixed system credential operation failed");
+            }
+            break;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = writer.join();
+            bail!("fixed system credential operation timed out");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let mut output = Zeroizing::new(Vec::new());
+    child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("system credential utility has no output pipe"))?
+        .take((MAX_API_PROFILE_CIPHERTEXT_BYTES + 1) as u64)
+        .read_to_end(&mut output)?;
+    if output.len() > MAX_API_PROFILE_CIPHERTEXT_BYTES {
+        bail!("fixed system credential output exceeds its size limit");
+    }
+    Ok(output)
+}
+
+fn validate_systemd_creds_coredump_suppression() -> Result<()> {
+    let core_pattern = fs::read_to_string("/proc/sys/kernel/core_pattern")?;
+    if !core_pattern.starts_with('|') {
+        // The helper sets a hard zero RLIMIT_CORE before exec; file-backed
+        // core dumps are therefore disabled for the crypto process.
+        return Ok(());
+    }
+
+    if !core_pattern_uses_fixed_apport(&core_pattern) {
+        bail!("fixed system credential utility has no established piped-core suppression");
+    }
+
+    let apport = fs::symlink_metadata(APPORT_EXECUTABLE_PATH)?;
+    if !apport.is_file()
+        || apport.uid() != 0
+        || apport.mode() & 0o022 != 0
+        || apport.mode() & 0o111 == 0
+        || apport.nlink() != 1
+    {
+        bail!("fixed Apport collector is outside its root-owned contract");
+    }
+
+    let apport_directory = fs::symlink_metadata("/etc/apport")?;
+    if !apport_directory.is_dir()
+        || apport_directory.uid() != 0
+        || apport_directory.mode() & 0o022 != 0
+    {
+        bail!("fixed Apport configuration directory is outside its root-owned contract");
+    }
+    let ignore_directory = fs::symlink_metadata(APPORT_REPORT_IGNORE_DIRECTORY)?;
+    if !ignore_directory.is_dir()
+        || ignore_directory.uid() != 0
+        || ignore_directory.mode() & 0o022 != 0
+    {
+        bail!("fixed Apport report-ignore directory is outside its root-owned contract");
+    }
+    let ignore_file = fs::symlink_metadata(APPORT_SYSTEMD_CREDS_IGNORE_PATH)?;
+    if !ignore_file.is_file()
+        || ignore_file.uid() != 0
+        || ignore_file.mode() & 0o022 != 0
+        || ignore_file.nlink() != 1
+        || fs::read(APPORT_SYSTEMD_CREDS_IGNORE_PATH)? != b"/usr/bin/systemd-creds\n"
+    {
+        bail!("fixed system credential Apport exclusion is outside its file contract");
+    }
+    Ok(())
+}
+
+fn core_pattern_uses_fixed_apport(core_pattern: &str) -> bool {
+    let expected =
+        format!("|{APPORT_EXECUTABLE_PATH} -p%p -s%s -c%c -d%d -P%P -u%u -g%g -F%F -- %E");
+    core_pattern.strip_suffix('\n').unwrap_or(core_pattern) == expected
+}
+
+pub(crate) fn logout() -> Result<i32> {
+    if unsafe { libc::geteuid() } != 0 {
+        return Err(provisioning_failure(ProvisioningStage::Precondition));
+    }
+    require_installed_launcher_image()
+        .map_err(|_| provisioning_failure(ProvisioningStage::Precondition))?;
+    let bearer_directory = open_fixed_directory(Path::new("/run/credstore"))?;
+    validate_credential_store_directory(&bearer_directory, /*expected_owner*/ 0)?;
+    let _credential_lock = lock_credential_store_with_timeout(
+        &bearer_directory,
+        /*expected_owner*/ 0,
+        API_CREDENTIAL_LOCK_TIMEOUT,
+    )?;
+    let profile_directory = validate_api_profile_directory()?;
+    remove_fixed_profile_at(&profile_directory)?;
+    remove_bearer_source_at(&bearer_directory)?;
+    Ok(0)
+}
+
+fn remove_fixed_profile_at(directory: &File) -> Result<()> {
+    remove_root_file_at(
+        directory,
+        "codex-runtime-proof-api-refresh",
+        MAX_API_PROFILE_CIPHERTEXT_BYTES,
+    )
+}
+
+fn remove_bearer_source_at(directory: &File) -> Result<()> {
+    remove_root_file_at(
+        directory,
+        "ops-api-bearer",
+        crate::api_claim::API_BEARER_CREDENTIAL_MAX_BYTES,
+    )
+}
+
+fn remove_root_file_at(directory: &File, filename: &str, max_bytes: usize) -> Result<()> {
+    let name = std::ffi::CString::new(filename)?;
+    let fd = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+        )
+    };
+    if fd < 0 {
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::NotFound {
+            return Ok(());
+        }
+        return Err(error.into());
+    }
+    let file = unsafe { File::from_raw_fd(fd) };
+    let metadata = file.metadata()?;
+    if !metadata.is_file()
+        || metadata.uid() != 0
+        || metadata.mode() & 0o777 != 0o600
+        || metadata.nlink() != 1
+        || metadata.len() == 0
+        || metadata.len() > max_bytes as u64
+    {
+        bail!("fixed credential is outside its protected file contract");
+    }
+    let mut current = MaybeUninit::<libc::stat>::uninit();
+    if unsafe {
+        libc::fstatat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            current.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let current = unsafe { current.assume_init() };
+    if current.st_dev != metadata.dev() || current.st_ino != metadata.ino() {
+        bail!("fixed credential changed before logout");
+    }
+    if unsafe { libc::unlinkat(directory.as_raw_fd(), name.as_ptr(), 0) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    if unsafe { libc::fsync(directory.as_raw_fd()) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(())
+}
+
 fn open_authorization_url_as_invoking_user(authorization_url: &str) -> Result<()> {
     validate_fixed_authorization_url(authorization_url)?;
 
@@ -573,8 +696,9 @@ fn open_authorization_url_as_invoking_user(authorization_url: &str) -> Result<()
     command
         .arg(authorization_url)
         .env_clear()
-        .env("HOME", home)
+        .env("HOME", &home)
         .env("PATH", "/usr/bin:/bin")
+        .current_dir(&home)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -582,10 +706,8 @@ fn open_authorization_url_as_invoking_user(authorization_url: &str) -> Result<()
         "DISPLAY",
         "WAYLAND_DISPLAY",
         "XAUTHORITY",
-        "XDG_RUNTIME_DIR",
         "XDG_CURRENT_DESKTOP",
         "XDG_SESSION_TYPE",
-        "DBUS_SESSION_BUS_ADDRESS",
     ] {
         if let Some(value) = std::env::var_os(name) {
             let value_bytes = value.as_os_str().as_bytes();
@@ -594,19 +716,28 @@ fn open_authorization_url_as_invoking_user(authorization_url: &str) -> Result<()
             }
         }
     }
+    if let Some((runtime_directory, bus_address)) = fixed_user_bus(uid) {
+        command
+            .env("XDG_RUNTIME_DIR", runtime_directory)
+            .env("DBUS_SESSION_BUS_ADDRESS", bus_address);
+    }
     let already_invoking_user =
         unsafe { libc::geteuid() } == uid && unsafe { libc::getegid() } == gid;
     unsafe {
         command.pre_exec(move || {
-            if already_invoking_user {
-                return Ok(());
+            if !already_invoking_user {
+                if libc::geteuid() != 0 {
+                    return Err(std::io::Error::from_raw_os_error(libc::EPERM));
+                }
+                if libc::setgroups(0, std::ptr::null()) != 0
+                    || libc::setresgid(gid, gid, gid) != 0
+                    || libc::setresuid(uid, uid, uid) != 0
+                {
+                    return Err(std::io::Error::last_os_error());
+                }
             }
-            if libc::geteuid() != 0 {
-                return Err(std::io::Error::from_raw_os_error(libc::EPERM));
-            }
-            if libc::setgroups(0, std::ptr::null()) != 0
-                || libc::setgid(gid) != 0
-                || libc::setuid(uid) != 0
+            if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0
+                || libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) != 0
             {
                 return Err(std::io::Error::last_os_error());
             }
@@ -647,6 +778,10 @@ fn read_callback_url_from_invoking_terminal(
         .map_err(|_| callback_input_error(FixedOAuthCallbackFailure::InputIo))?;
     interruption?;
     result
+}
+
+fn read_callback_url_for_oauth(authorization_url: &str) -> Result<String> {
+    read_callback_url_from_invoking_terminal(authorization_url).map_err(anyhow::Error::new)
 }
 
 fn read_callback_url_with_echo_disabled(authorization_url: &str) -> CallbackInputResult<String> {
@@ -774,22 +909,6 @@ fn validate_fixed_parent(parent: &Path) -> Result<()> {
         }
     }
     Ok(())
-}
-
-fn replace_bearer_source(path: &Path, credential: &[u8]) -> Result<()> {
-    const FIXED_PARENT: &str = "/run/credstore";
-    const FIXED_NAME: &str = "ops-api-bearer";
-    if path != Path::new(BEARER_SOURCE_PATH) || path.parent() != Some(Path::new(FIXED_PARENT)) {
-        bail!("Ops API credential target is not the fixed systemd input");
-    }
-    validate_fixed_parent(Path::new(FIXED_PARENT))?;
-
-    let parent = open_fixed_directory(Path::new(FIXED_PARENT))?;
-    validate_credential_store_directory(&parent, /*expected_owner*/ 0)?;
-
-    let _lock = lock_credential_store(&parent, /*expected_owner*/ 0)?;
-    let destination = std::ffi::CString::new(FIXED_NAME)?;
-    atomic_replace_credential_at(&parent, &destination, credential, /*expected_owner*/ 0)
 }
 
 /// Removes the volatile source only when it still contains the exact bearer
@@ -934,6 +1053,22 @@ fn validate_credential_store_directory(
 }
 
 fn lock_credential_store(directory: &File, expected_owner: libc::uid_t) -> Result<File> {
+    lock_credential_store_until(directory, expected_owner, /*timeout*/ None)
+}
+
+fn lock_credential_store_with_timeout(
+    directory: &File,
+    expected_owner: libc::uid_t,
+    timeout: Duration,
+) -> Result<File> {
+    lock_credential_store_until(directory, expected_owner, Some(timeout))
+}
+
+fn lock_credential_store_until(
+    directory: &File,
+    expected_owner: libc::uid_t,
+    timeout: Option<Duration>,
+) -> Result<File> {
     let lock_name = std::ffi::CString::new(BEARER_LOCK_NAME)?;
     let fd = unsafe {
         libc::openat(
@@ -948,11 +1083,30 @@ fn lock_credential_store(directory: &File, expected_owner: libc::uid_t) -> Resul
     }
     let lock = unsafe { File::from_raw_fd(fd) };
     let metadata = lock.metadata()?;
-    if !metadata.is_file() || metadata.uid() != expected_owner || metadata.mode() & 0o777 != 0o600 {
+    if !metadata.is_file()
+        || metadata.uid() != expected_owner
+        || metadata.mode() & 0o777 != 0o600
+        || metadata.nlink() != 1
+    {
         bail!("fixed Ops API credential lock is outside its file contract");
     }
-    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } != 0 {
-        return Err(std::io::Error::last_os_error().into());
+    let deadline = timeout.map(|duration| Instant::now() + duration);
+    loop {
+        let operation = libc::LOCK_EX | if timeout.is_some() { libc::LOCK_NB } else { 0 };
+        if unsafe { libc::flock(lock.as_raw_fd(), operation) } == 0 {
+            break;
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::Interrupted {
+            continue;
+        }
+        let busy = error
+            .raw_os_error()
+            .is_some_and(|code| code == libc::EWOULDBLOCK || code == libc::EAGAIN);
+        if !busy || deadline.is_none_or(|deadline| Instant::now() >= deadline) {
+            return Err(error.into());
+        }
+        std::thread::sleep(Duration::from_millis(10));
     }
     Ok(lock)
 }
@@ -1062,29 +1216,62 @@ mod tests {
     use std::os::unix::fs::PermissionsExt as _;
 
     #[test]
-    fn api_profile_handoff_accepts_only_a_bounded_versioned_access_token_frame() {
-        let mut frame = Vec::new();
-        frame.extend_from_slice(API_TOKEN_FRAME_MAGIC);
-        frame.extend_from_slice(&1_900_000_000_i64.to_be_bytes());
-        frame.extend_from_slice(b"short-lived-access-token");
-
-        let token = decode_api_token_frame(&frame).expect("decode fixed API handoff");
-        assert_eq!(token.value.as_str(), "short-lived-access-token");
-        assert_eq!(token.expires_at, 1_900_000_000);
-
-        let mut wrong_version = frame.clone();
-        wrong_version[0] = b'X';
-        assert!(decode_api_token_frame(&wrong_version).is_err());
-        assert!(decode_api_token_frame(&frame[..11]).is_err());
-
-        let oversized = vec![0; MAX_API_TOKEN_FRAME_BYTES + 1];
-        assert!(decode_api_token_frame(&oversized).is_err());
+    fn systemd_creds_piped_core_suppression_accepts_only_fixed_apport() {
+        assert!(core_pattern_uses_fixed_apport(
+            "|/usr/share/apport/apport -p%p -s%s -c%c -d%d -P%P -u%u -g%g -F%F -- %E"
+        ));
+        assert!(!core_pattern_uses_fixed_apport(
+            "|/usr/share/apport/apport -p%p -s%s -c-1 -d%d -P%P -u%u -g%g -F%F -- %E"
+        ));
+        assert!(!core_pattern_uses_fixed_apport(
+            "|/usr/lib/systemd/systemd-coredump %P %u %g %s %t %c %h"
+        ));
     }
 
     #[test]
-    fn bearer_source_requires_exact_fixed_path() {
+    fn credential_utility_accepts_only_fixed_crypto_operations() {
+        assert!(run_systemd_creds("decrypt arbitrary", b"synthetic").is_err());
+    }
+
+    #[test]
+    fn host_systemd_credential_roundtrips_and_rejects_a_different_name() {
+        if unsafe { libc::geteuid() } != 0
+            || validate_api_profile_store().is_err()
+            || validate_systemd_creds_coredump_suppression().is_err()
+        {
+            return;
+        }
+        let plaintext = b"synthetic runtime-proof API refresh profile";
+        let encrypted = run_systemd_creds("encrypt", plaintext).expect("encrypt synthetic data");
+        let decrypted = run_systemd_creds("decrypt", &encrypted).expect("decrypt synthetic data");
+        assert_eq!(decrypted.as_slice(), plaintext);
+
+        let mut child = Command::new(SYSTEMD_CREDS_PATH)
+            .args([
+                "--with-key=host",
+                "--name=wrong-runtime-proof-api-refresh",
+                "decrypt",
+                "-",
+                "-",
+            ])
+            .env_clear()
+            .current_dir("/")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("start fixed system credential utility");
+        child
+            .stdin
+            .take()
+            .expect("credential input pipe")
+            .write_all(&encrypted)
+            .expect("write encrypted synthetic data");
         assert!(
-            replace_bearer_source(Path::new("/tmp/ops-api-bearer"), b"synthetic-token").is_err()
+            !child
+                .wait()
+                .expect("wait for wrong-name decryption")
+                .success()
         );
     }
 

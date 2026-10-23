@@ -155,11 +155,11 @@ fn response_and_jwt_claims_must_bind_to_the_fixed_identity_contract() {
         ),
         ("azp", serde_json::json!("other-client")),
         ("client_id", serde_json::json!("other-client")),
+        ("aud", serde_json::json!(["https://mcp.example/", 17])),
         (
             "aud",
-            serde_json::json!(["https://mcp.example/", "https://other.example/"]),
+            serde_json::json!("https://mcp.example/ https://other.example/"),
         ),
-        ("aud", serde_json::json!(["https://mcp.example/", 17])),
         ("scope", serde_json::json!("ops:write ops:admin")),
         ("scope", serde_json::json!(["ops:write", 17])),
         ("project_id", serde_json::json!(18)),
@@ -192,6 +192,96 @@ fn response_and_jwt_claims_must_bind_to_the_fixed_identity_contract() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn expected_recipient_must_be_an_exact_jwt_audience_member() {
+    let policy = fixed_policy();
+    let principal = Uuid::parse_str(PRINCIPAL).unwrap();
+
+    let mut array_audience = claims();
+    array_audience["aud"] =
+        serde_json::json!(["ops-mcp-service", "ops-mcp", "https://mcp.example/"]);
+    assert!(
+        validate_token_response(
+            response(array_audience),
+            &policy,
+            principal,
+            PROJECT_ID,
+            NOW
+        )
+        .is_ok()
+    );
+
+    let mut string_audience = claims();
+    string_audience["aud"] = serde_json::json!("https://mcp.example/");
+    assert!(
+        validate_token_response(
+            response(string_audience),
+            &policy,
+            principal,
+            PROJECT_ID,
+            NOW
+        )
+        .is_ok()
+    );
+
+    let mut unrelated_audience = claims();
+    unrelated_audience["aud"] = serde_json::json!(["ops-api", "ops-das"]);
+    assert!(
+        validate_token_response(
+            response(unrelated_audience),
+            &policy,
+            principal,
+            PROJECT_ID,
+            NOW
+        )
+        .is_err()
+    );
+
+    let mut missing_audience = claims();
+    missing_audience
+        .as_object_mut()
+        .expect("synthetic claims are an object")
+        .remove("aud");
+    assert!(
+        validate_token_response(
+            response(missing_audience),
+            &policy,
+            principal,
+            PROJECT_ID,
+            NOW
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn endpoint_response_ignores_unused_keycloak_metadata_but_validates_access_token() {
+    let endpoint_response: TokenEndpointResponse = serde_json::from_value(serde_json::json!({
+        "access_token": access_token(claims()),
+        "token_type": "Bearer",
+        "expires_in": 120,
+        "scope": "ops:write",
+        "refresh_expires_in": 0,
+        "not-before-policy": 0,
+        "session_state": "synthetic-session",
+        "refresh_token": "must-not-be-retained",
+        "id_token": "must-not-be-retained"
+    }))
+    .expect("ordinary Keycloak metadata does not reject the access token response");
+
+    let policy = fixed_policy();
+    let token = validate_token_response(
+        endpoint_response,
+        &policy,
+        Uuid::parse_str(PRINCIPAL).unwrap(),
+        PROJECT_ID,
+        NOW,
+    )
+    .expect("unused metadata does not weaken fixed JWT claim validation");
+    assert_eq!(token.bearer.0, access_token(claims()));
+    assert_eq!(token.expires_at, NOW + 120);
 }
 
 #[test]

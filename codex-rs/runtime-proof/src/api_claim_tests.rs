@@ -5,6 +5,9 @@ use std::io::Read as _;
 use std::io::Write as _;
 use std::net::TcpListener;
 use std::net::TcpStream;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Instant;
@@ -17,6 +20,26 @@ fn test_body(request_id: Uuid) -> Value {
         request_id,
     )
     .expect("fixed API claim body")
+}
+
+#[derive(Default)]
+struct CapturedJournal {
+    bytes: Vec<u8>,
+    flushed: Option<Arc<AtomicBool>>,
+}
+
+impl std::io::Write for CapturedJournal {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        if let Some(flushed) = &self.flushed {
+            flushed.store(true, Ordering::Release);
+        }
+        Ok(())
+    }
 }
 
 fn jwt(payload: Value) -> String {
@@ -320,6 +343,9 @@ fn uncertain_api_post_is_not_replayed_and_diagnostics_do_not_expose_bearer() {
         .expect("make extra-connection check bounded");
     let address = listener.local_addr().expect("local address");
     let (request_tx, request_rx) = mpsc::channel();
+    let (order_tx, order_rx) = mpsc::channel();
+    let journal_flushed = Arc::new(AtomicBool::new(false));
+    let server_journal_flushed = Arc::clone(&journal_flushed);
     let server = thread::spawn(move || {
         let accept_request = |description: &str| {
             let accept_deadline = Instant::now() + Duration::from_secs(5);
@@ -339,6 +365,9 @@ fn uncertain_api_post_is_not_replayed_and_diagnostics_do_not_expose_bearer() {
             .set_read_timeout(Some(Duration::from_secs(2)))
             .expect("bound request read");
         let claim_request = read_http_request(&mut stream).expect("read full API claim request");
+        order_tx
+            .send(server_journal_flushed.load(Ordering::Acquire))
+            .expect("deliver correlation ordering observation");
         request_tx
             .send(claim_request)
             .expect("deliver captured claim request");
@@ -401,16 +430,34 @@ fn uncertain_api_post_is_not_replayed_and_diagnostics_do_not_expose_bearer() {
         /*certificate_expires_at*/ 140,
     )
     .expect("sign actual final API body");
-    let result = send_claim_to(
+    let mut journal = CapturedJournal {
+        bytes: Vec::new(),
+        flushed: Some(journal_flushed),
+    };
+    let result = send_claim_to_with_correlation(
+        &mut journal,
         &client,
         &format!("http://{address}"),
         &bearer,
-        request_id,
-        &certificate,
-        &proof,
-        &body,
+        ClaimSubmission {
+            project_id: 7,
+            request_id,
+            certificate: &certificate,
+            proof: &proof,
+            body: &body,
+        },
     );
     assert!(result.is_err());
+    assert!(
+        order_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("observe claim request after journal flush"),
+        "request correlation is flushed before claim submission"
+    );
+    assert_eq!(
+        String::from_utf8(journal.bytes).expect("journal output is UTF-8"),
+        format!("runtime-proof claim request_id={request_id}\n")
+    );
     let error = format!(
         "{:#}",
         result.expect_err("closed response has unknown outcome")
@@ -471,12 +518,22 @@ fn uncertain_api_post_is_not_replayed_and_diagnostics_do_not_expose_bearer() {
             .to_ascii_lowercase()
             .contains(&format!("x-ops-request-id: {request_id}"))
     );
+    assert!(
+        claim_request
+            .to_ascii_lowercase()
+            .contains("x-ops-project-id: 7")
+    );
     assert!(claim_request.contains(&body.to_string()));
     assert!(receipt_request.starts_with("POST /v0/work-items/execution-receipt/read HTTP/1.1\r\n"));
     assert!(
         receipt_request
             .to_ascii_lowercase()
             .contains("authorization: bearer synthetic-test-bearer-never-log")
+    );
+    assert!(
+        receipt_request
+            .to_ascii_lowercase()
+            .contains("x-ops-project-id: 7")
     );
     assert!(
         !receipt_request
@@ -595,10 +652,13 @@ fn uncertain_api_post_recovers_only_from_matching_historical_receipt() {
         &client,
         &format!("http://{address}"),
         &SecretString("synthetic-test-bearer".to_string()),
-        request_id,
-        &certificate,
-        &proof,
-        &body,
+        ClaimSubmission {
+            project_id: 7,
+            request_id,
+            certificate: &certificate,
+            proof: &proof,
+            body: &body,
+        },
     )
     .expect("matching stored history settles the unknown POST");
 
@@ -609,11 +669,21 @@ fn uncertain_api_post_recovers_only_from_matching_historical_receipt() {
         .recv_timeout(Duration::from_secs(2))
         .expect("captured single receipt read");
     assert!(claim_request.starts_with("POST /v0/work-items/claim HTTP/1.1\r\n"));
+    assert!(
+        claim_request
+            .to_ascii_lowercase()
+            .contains("x-ops-project-id: 7")
+    );
     assert!(receipt_request.starts_with("POST /v0/work-items/execution-receipt/read HTTP/1.1\r\n"));
     assert!(
         receipt_request
             .to_ascii_lowercase()
             .contains("authorization: bearer synthetic-test-bearer")
+    );
+    assert!(
+        receipt_request
+            .to_ascii_lowercase()
+            .contains("x-ops-project-id: 7")
     );
     assert!(
         !receipt_request
@@ -764,10 +834,13 @@ fn api_200_claim_response_requires_the_matching_claimed_target() {
         &client,
         &format!("http://{address}"),
         &SecretString("synthetic-test-bearer".to_string()),
-        request_id,
-        &certificate,
-        &proof,
-        &body,
+        ClaimSubmission {
+            project_id: 7,
+            request_id,
+            certificate: &certificate,
+            proof: &proof,
+            body: &body,
+        },
     )
     .expect("matching claim receipt confirms success");
     server.join().expect("bounded receipt server completes");

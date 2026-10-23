@@ -1250,22 +1250,28 @@ reasons for input setup, reader fallback, timeout, interruption, I/O, framing,
 restoration, and pasted URL, redirect, state, duplicate, provider, and invalid
 response failures; reader error text is suppressed. They verify atomic
 replacement of only one root-owned credential
-basename. The invoking user's direct OS keyring holds a separate
-fixed API refresh profile; a rotated refresh token must be persisted before
-the short-lived access token reaches root over the bounded private handoff.
-Tests cover successful rotation, keyring-write failure, subject continuity,
-API-only logout, and handoff framing. It supports the installed root-owned
-launcher under interactive `sudo`; `SUDO_UID` selects only the unprivileged
-API-profile child and optional browser process and does not attest the OAuth
-subject. Provisioning checks issuer/audience/scope/UUID-subject-
-shape/expiry without requiring the claim policy. At actual use, the fixed HTTP
+basename. The fixed API refresh profile is a root-owned mode-0600 encrypted
+blob using the existing host credential key, explicit credential name, and
+`--with-key=host`; no key is generated and no plaintext fallback exists. The
+root process is non-dumpable before credential access and holds the existing
+credential lock across profile load, OAuth, rotation persistence, and bearer
+publication. It retains the same issuer/client/resource/scope/subject checks,
+persists rotation before returning a bearer, and fails closed on persistence
+failure. Tests cover rotation, persistence failure, subject continuity, and
+host `systemd-creds` roundtrip/name binding where the required host key is
+available. Only the authorization URL reaches the fixed privilege-dropped
+browser opener. Logout removes the fixed encrypted profile and volatile bearer
+under the same lock while leaving MCP and old keyring entries untouched.
+Provisioning checks issuer/audience/scope/UUID-subject-shape/expiry without
+requiring the claim policy. At actual use, the fixed HTTP
 launcher still requires the token subject to match the root policy before
 signing or sending.
 The volatile `/run/credstore` source is a versioned envelope with a unique
 generation; the launcher removes only the exact loaded envelope under the same
 lock as replacement, preserving a concurrent same-token replacement. The claim
 unit remains conditioned on the separate root policy. These source tests do not
-create the client, obtain a token, activate the policy, or claim a Work item.
+create a new client or grant, obtain a live token, activate the policy, or claim
+a Work item.
 The provisioner reports only a fixed stage label on failure and suppresses
 internal OAuth, token, callback, and credential-write error details.
 Its installed-image guard validates parent directories separately from the

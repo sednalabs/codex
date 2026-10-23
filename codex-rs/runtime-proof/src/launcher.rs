@@ -172,28 +172,9 @@ pub fn provision_api_bearer_with_manual_callback_input() -> Result<i32> {
     provision_api_bearer_with_mode(ApiBearerProvisioningMode::ManualCallbackInput)
 }
 
-/// Runs the fixed user-keyring child over the inherited root-created channel.
-pub fn run_api_profile_child(use_manual_callback_input: bool) -> Result<i32> {
-    crate::api_bearer_provisioner::run_api_profile_child(use_manual_callback_input)
-}
-
-/// Removes only the invoking user's fixed Ops API refresh profile.
+/// Removes only the fixed encrypted Ops API profile and volatile bearer.
 pub fn logout_api_profile() -> Result<i32> {
-    if unsafe { libc::geteuid() } == 0 {
-        return Err(provisioning_failure(ProvisioningStage::Precondition));
-    }
-    require_installed_launcher_image()
-        .map_err(|_| provisioning_failure(ProvisioningStage::Precondition))?;
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|_| provisioning_failure(ProvisioningStage::Runtime))?;
-    let oauth_dispatch = tracing::Dispatch::none();
-    tracing::dispatcher::with_default(&oauth_dispatch, || {
-        runtime.block_on(codex_rmcp_client::delete_fixed_ops_api_refresh_credential())
-    })
-    .map_err(|_| provisioning_failure(ProvisioningStage::CredentialStore))?;
-    Ok(0)
+    crate::api_bearer_provisioner::logout()
 }
 
 /// Returns the fixed HTTP policy principal when one is already installed.
@@ -538,6 +519,7 @@ fn run_http_claim(
     api_claim::send_claim(
         &client,
         &bearer.value,
+        policy.project_id,
         request_id,
         &certificate,
         &proof,

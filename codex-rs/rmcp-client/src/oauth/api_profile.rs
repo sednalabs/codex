@@ -1,15 +1,12 @@
-//! One fixed API claim profile stored directly in the invoking user's OS keyring.
+//! One fixed API claim refresh profile supplied by its protected caller.
 //!
 //! This is deliberately separate from MCP credential resolution: it never reads
 //! Codex's fallback credential file and never adopts or deletes an MCP entry.
 
-use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use codex_keyring_store::DefaultKeyringStore;
-use codex_keyring_store::KeyringStore;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
@@ -19,7 +16,6 @@ use zeroize::Zeroizing;
 use crate::FixedOAuthLoginError;
 use crate::FixedOAuthLoginStage;
 use crate::OAuthAccessToken;
-use crate::oauth::refresh_lock::RefreshCredentialLock;
 use crate::perform_oauth_login::FIXED_API_CLAIM_CLIENT_ID;
 use crate::perform_oauth_login::FIXED_API_CLAIM_ISSUER;
 use crate::perform_oauth_login::FIXED_API_CLAIM_RESOURCE;
@@ -29,8 +25,6 @@ use crate::perform_oauth_login::perform_fixed_ops_api_access_token_login;
 use crate::perform_oauth_login::perform_fixed_ops_api_access_token_login_with_callback_input;
 use crate::perform_oauth_login::perform_fixed_ops_api_access_token_refresh;
 
-const KEYRING_SERVICE: &str = "Codex Runtime Proof API";
-const KEYRING_ACCOUNT: &str = "fixed-work-claim";
 const REFRESH_PROFILE_VERSION: u8 = 1;
 const MAX_REFRESH_TOKEN_BYTES: usize = 16 * 1024;
 const MAX_PROFILE_BYTES: usize = 24 * 1024;
@@ -57,25 +51,15 @@ impl Drop for StoredApiRefreshProfile {
 /// Exchanges the fixed API refresh token, persisting any rotation before the
 /// access token can be returned to the root-owned launcher. If no profile is
 /// present, performs the fixed PKCE authorization once and stores only its
-/// refresh token in the direct OS keyring.
+/// refresh token through the supplied protected persistence callback.
 pub async fn perform_fixed_ops_api_access_token_with_refresh(
     open_authorization_url: fn(&str) -> anyhow::Result<()>,
     read_callback_url: fn(&str) -> anyhow::Result<String>,
     use_manual_callback_input: bool,
+    load_profile: impl FnOnce() -> Result<Option<String>>,
+    save_profile: impl FnMut(&str) -> Result<()>,
 ) -> std::result::Result<OAuthAccessToken, FixedOAuthLoginError> {
-    let lock_home = codex_utils_home_dir::find_default_codex_home_for_current_user()
-        .map_err(|_| FixedOAuthLoginError::at(FixedOAuthLoginStage::CredentialStore))?;
-    let _lock = RefreshCredentialLock::acquire_for_server_in(
-        &lock_home,
-        "codex-runtime-proof-api-claim",
-        FIXED_API_CLAIM_RESOURCE,
-    )
-    .await
-    .map_err(|_| FixedOAuthLoginError::at(FixedOAuthLoginStage::CredentialStore))?;
-
-    let store = DefaultKeyringStore;
-    let serialized = store
-        .load(KEYRING_SERVICE, KEYRING_ACCOUNT)
+    let serialized = load_profile()
         .map_err(|_| FixedOAuthLoginError::at(FixedOAuthLoginStage::CredentialStore))?;
     if let Some(serialized) = serialized {
         let serialized = Zeroizing::new(serialized);
@@ -89,7 +73,7 @@ pub async fn perform_fixed_ops_api_access_token_with_refresh(
         validate_profile(&profile)
             .map_err(|_| FixedOAuthLoginError::at(FixedOAuthLoginStage::CredentialStore))?;
 
-        return refresh_profile_with(&store, profile, |refresh_token| {
+        return refresh_profile_with(profile, save_profile, |refresh_token| {
             Box::pin(
                 async move { perform_fixed_ops_api_access_token_refresh(&refresh_token).await },
             )
@@ -102,16 +86,15 @@ pub async fn perform_fixed_ops_api_access_token_with_refresh(
     } else {
         perform_fixed_ops_api_access_token_login(open_authorization_url).await?
     };
-    persist_new_profile(&store, access_token)
+    persist_new_profile(access_token, save_profile)
 }
 
-async fn refresh_profile_with<K, F, Fut>(
-    store: &K,
+async fn refresh_profile_with<F, Fut>(
     profile: StoredApiRefreshProfile,
+    mut save_profile: impl FnMut(&str) -> Result<()>,
     refresh: F,
 ) -> std::result::Result<OAuthAccessToken, FixedOAuthLoginError>
 where
-    K: KeyringStore,
     F: FnOnce(Zeroizing<String>) -> Fut,
     Fut: std::future::Future<
             Output = std::result::Result<FixedOAuthRefreshResult, FixedOAuthLoginError>,
@@ -125,7 +108,7 @@ where
         .unwrap_or(&profile.refresh_token);
     let updated_profile =
         StoredApiRefreshProfile::new(profile.subject.clone(), rotated_refresh_token.to_string());
-    save_profile(store, &updated_profile)
+    save_profile_with(&mut save_profile, &updated_profile)
         .map_err(|_| FixedOAuthLoginError::at(FixedOAuthLoginStage::CredentialStore))?;
     let access_token = refresh_result.access_token?;
     let subject = subject_from_access_token(access_token.access_token())
@@ -138,9 +121,9 @@ where
     Ok(access_token)
 }
 
-fn persist_new_profile<K: KeyringStore>(
-    store: &K,
+fn persist_new_profile(
     access_token: OAuthAccessToken,
+    mut save_profile: impl FnMut(&str) -> Result<()>,
 ) -> std::result::Result<OAuthAccessToken, FixedOAuthLoginError> {
     let subject = subject_from_access_token(access_token.access_token())
         .map_err(|_| FixedOAuthLoginError::at(FixedOAuthLoginStage::TokenValidation))?;
@@ -149,29 +132,9 @@ fn persist_new_profile<K: KeyringStore>(
         .filter(|token| !token.is_empty())
         .ok_or_else(|| FixedOAuthLoginError::at(FixedOAuthLoginStage::TokenValidation))?;
     let profile = StoredApiRefreshProfile::new(subject, refresh_token.to_string());
-    save_profile(store, &profile)
+    save_profile_with(&mut save_profile, &profile)
         .map_err(|_| FixedOAuthLoginError::at(FixedOAuthLoginStage::CredentialStore))?;
     Ok(access_token)
-}
-
-/// Removes only the fixed runtime-proof API keyring entry for this user.
-pub async fn delete_fixed_ops_api_refresh_credential() -> Result<bool> {
-    let lock_home = codex_utils_home_dir::find_default_codex_home_for_current_user()
-        .map_err(anyhow::Error::from)?;
-    let _lock = RefreshCredentialLock::acquire_for_server_in(
-        &lock_home,
-        "codex-runtime-proof-api-claim",
-        FIXED_API_CLAIM_RESOURCE,
-    )
-    .await
-    .context("acquire fixed API credential lock")?;
-    delete_api_profile_from(&DefaultKeyringStore)
-}
-
-fn delete_api_profile_from(store: &impl KeyringStore) -> Result<bool> {
-    store
-        .delete(KEYRING_SERVICE, KEYRING_ACCOUNT)
-        .map_err(anyhow::Error::from)
 }
 
 impl StoredApiRefreshProfile {
@@ -204,15 +167,16 @@ fn validate_profile(profile: &StoredApiRefreshProfile) -> Result<()> {
     Ok(())
 }
 
-fn save_profile(store: &impl KeyringStore, profile: &StoredApiRefreshProfile) -> Result<()> {
+fn save_profile_with(
+    save: &mut impl FnMut(&str) -> Result<()>,
+    profile: &StoredApiRefreshProfile,
+) -> Result<()> {
     validate_profile(profile)?;
     let serialized = Zeroizing::new(serde_json::to_string(profile)?);
     if serialized.len() > MAX_PROFILE_BYTES {
         bail!("fixed API refresh profile exceeds its size limit");
     }
-    store
-        .save(KEYRING_SERVICE, KEYRING_ACCOUNT, &serialized)
-        .map_err(anyhow::Error::from)
+    save(&serialized)
 }
 
 /// This reads an unverified subject claim only to keep the user's refresh

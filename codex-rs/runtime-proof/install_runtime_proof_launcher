@@ -5,9 +5,12 @@ umask 077
 readonly launcher_name=codex-runtime-proof-launcher
 readonly target_dir=/usr/libexec/codex
 readonly target_path="${target_dir}/${launcher_name}"
+readonly apport_ignore_dir=/etc/apport/report-ignore
+readonly apport_ignore_path="${apport_ignore_dir}/codex-runtime-proof-systemd-creds"
 
 temporary_path=
 rollback_temporary_path=
+apport_temporary_path=
 created_target_dir=0
 parent_mode_before=
 parent_mode_changed=0
@@ -26,6 +29,7 @@ cleanup() {
   if (( status != 0 && replacement_complete == 0 )); then
     [[ -z "${temporary_path}" ]] || rm -f -- "${temporary_path}"
     [[ -z "${rollback_temporary_path}" ]] || rm -f -- "${rollback_temporary_path}"
+    [[ -z "${apport_temporary_path}" ]] || rm -f -- "${apport_temporary_path}"
     if (( parent_mode_changed == 1 )) && [[ -d "${target_dir}" && ! -L "${target_dir}" ]]; then
       chmod "${parent_mode_before}" -- "${target_dir}" 2>/dev/null || true
     fi
@@ -41,6 +45,57 @@ trap 'exit 130' HUP INT TERM
 fail() {
   printf '%s\n' "$1" >&2
   exit 1
+}
+
+validate_apport_directory() {
+  local directory=$1
+  local owner group mode mode_value
+  if [[ ! -e "${directory}" && ! -L "${directory}" ]]; then
+    return 0
+  fi
+  [[ -d "${directory}" && ! -L "${directory}" ]] || fail 'A fixed Apport configuration directory is not a regular directory.'
+  IFS=: read -r owner group mode < <(stat -c '%u:%g:%a' -- "${directory}")
+  [[ "${owner}" == 0 && "${group}" == 0 ]] || fail 'A fixed Apport configuration directory is not root-owned.'
+  mode_value=$((8#${mode}))
+  (( (mode_value & 0022) == 0 )) || fail 'A fixed Apport configuration directory is writable by group or other users.'
+}
+
+validate_apport_exclusion_preimage() {
+  local owner group mode size mode_value
+  validate_apport_directory /etc/apport
+  validate_apport_directory "${apport_ignore_dir}"
+  if [[ ! -e "${apport_ignore_path}" && ! -L "${apport_ignore_path}" ]]; then
+    return 0
+  fi
+  [[ -f "${apport_ignore_path}" && ! -L "${apport_ignore_path}" ]] || fail 'The fixed Apport exclusion path is not a regular file.'
+  IFS=: read -r owner group mode size < <(stat -c '%u:%g:%a:%s' -- "${apport_ignore_path}")
+  [[ "${owner}" == 0 && "${group}" == 0 && "${size}" -le 256 ]] || fail 'The fixed Apport exclusion is outside its root-owned file contract.'
+  mode_value=$((8#${mode}))
+  (( (mode_value & 0022) == 0 )) || fail 'The fixed Apport exclusion is writable by group or other users.'
+  printf '%s\n' '/usr/bin/systemd-creds' | cmp -s - "${apport_ignore_path}" || fail 'The fixed Apport exclusion path contains unrelated configuration.'
+}
+
+install_apport_exclusion() {
+  if [[ -f "${apport_ignore_path}" && ! -L "${apport_ignore_path}" ]]; then
+    return 0
+  fi
+  [[ -d /etc/apport ]] || install -d -o root -g root -m 0755 -- /etc/apport
+  [[ -d "${apport_ignore_dir}" ]] || install -d -o root -g root -m 0755 -- "${apport_ignore_dir}"
+  apport_temporary_path=$(mktemp "${apport_ignore_dir}/.codex-runtime-proof-systemd-creds.XXXXXX")
+  printf '%s\n' '/usr/bin/systemd-creds' > "${apport_temporary_path}"
+  chown root:root -- "${apport_temporary_path}"
+  chmod 0644 -- "${apport_temporary_path}"
+  sync -f "${apport_temporary_path}"
+  if ! ln -T -- "${apport_temporary_path}" "${apport_ignore_path}"; then
+    rm -f -- "${apport_temporary_path}"
+    apport_temporary_path=
+    validate_apport_exclusion_preimage
+    return 0
+  fi
+  rm -f -- "${apport_temporary_path}"
+  apport_temporary_path=
+  sync -f "${apport_ignore_dir}"
+  validate_apport_exclusion_preimage
 }
 
 if (( EUID != 0 )); then
@@ -88,6 +143,7 @@ for package_file in "${launcher_path}" "${checksum_path}"; do
 done
 checksum_size=$(stat -c '%s' -- "${checksum_path}")
 (( checksum_size <= 128 )) || fail 'The package launcher checksum is too large.'
+validate_apport_exclusion_preimage
 
 checksum_line=$(cat -- "${checksum_path}")
 [[ "${checksum_line}" =~ ^([0-9a-f]{64})[[:space:]][[:space:]]${launcher_name}$ ]] || fail 'The package launcher checksum format is invalid.'
@@ -167,4 +223,5 @@ else
 fi
 
 sync -f "${target_dir}"
+install_apport_exclusion
 printf '%s\n' 'The fixed runtime-proof launcher package is installed. No service was started or reloaded.'

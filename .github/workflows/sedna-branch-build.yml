@@ -175,6 +175,12 @@ jobs:
         install -Dm 0755 "target/x86_64-unknown-linux-gnu/release/codex-runtime-proof-launcher" "${stage_dir}/codex-runtime-proof-launcher"
         install -Dm 0755 runtime-proof/install_runtime_proof_launcher "${stage_dir}/install_runtime_proof_launcher"
         install -Dm 0644 runtime-proof/systemd/codex-runtime-proof-claim.service "${stage_dir}/systemd/codex-runtime-proof-claim.service"
+        grep -Fxq 'LoadCredential=provider-auth.json' "${stage_dir}/systemd/codex-runtime-proof-claim.service"
+        grep -Fxq 'LoadCredential=ops-mcp-client-secret' "${stage_dir}/systemd/codex-runtime-proof-claim.service"
+        if grep -Eq '^LoadCredential=(provider-auth\.json|ops-mcp-client-secret):' "${stage_dir}/systemd/codex-runtime-proof-claim.service"; then
+          echo "The shared claim unit still requires MCP-only credential files during HTTP startup." >&2
+          exit 1
+        fi
         (cd "${stage_dir}" && sha256sum codex-runtime-proof-launcher > codex-runtime-proof-launcher.sha256)
 
         file "${stage_dir}/codex" | grep -F 'x86-64'
@@ -198,11 +204,30 @@ jobs:
           echo "Refusing launcher install smoke because the fixed target already exists." >&2
           exit 1
         fi
+        apport_ignore_path=/etc/apport/report-ignore/codex-runtime-proof-systemd-creds
+        if sudo test -e "${apport_ignore_path}" || sudo test -L "${apport_ignore_path}"; then
+          echo "Refusing launcher install smoke because the fixed Apport exclusion already exists." >&2
+          exit 1
+        fi
+        apport_dir_created=0
+        apport_ignore_dir_created=0
+        sudo test -d /etc/apport || apport_dir_created=1
+        sudo test -d /etc/apport/report-ignore || apport_ignore_dir_created=1
+        smoke_apport_created=0
         smoke_target_created=0
         smoke_package_dir=
         smoke_package_mounted=0
         smoke_unsafe_package_dir=
         cleanup_installer_smoke() {
+          if (( smoke_apport_created == 1 )); then
+            sudo rm -f -- "${apport_ignore_path}"
+          fi
+          if (( apport_ignore_dir_created == 1 )); then
+            sudo rmdir -- /etc/apport/report-ignore 2>/dev/null || true
+          fi
+          if (( apport_dir_created == 1 )); then
+            sudo rmdir -- /etc/apport 2>/dev/null || true
+          fi
           if (( smoke_target_created == 1 )); then
             sudo rm -rf -- "${smoke_target}"
           fi
@@ -277,6 +302,24 @@ jobs:
           exit 1
         fi
         sudo chmod 0755 -- "${smoke_package_dir}/codex-runtime-proof-launcher"
+        if (( apport_dir_created == 1 )); then
+          sudo install -d -o root -g root -m 0755 -- /etc/apport
+        fi
+        if (( apport_ignore_dir_created == 1 )); then
+          sudo install -d -o root -g root -m 0755 -- /etc/apport/report-ignore
+        fi
+        smoke_apport_created=1
+        printf '%s\n' 'unrelated Apport configuration' | sudo tee "${apport_ignore_path}" >/dev/null
+        if sudo /bin/bash -- "${smoke_package_dir}/install_runtime_proof_launcher" >/dev/null 2>&1; then
+          echo "The runtime-proof installer replaced an unrelated Apport exclusion preimage." >&2
+          exit 1
+        fi
+        unchanged_launcher_sha256="$(sudo sha256sum "${smoke_target}/codex-runtime-proof-launcher" | cut -d' ' -f1)"
+        [[ "${unchanged_launcher_sha256}" == "${predecessor_sha256}" ]]
+        grep -Fxq 'unrelated Apport configuration' "${apport_ignore_path}"
+        sudo rm -f -- "${apport_ignore_path}"
+        smoke_apport_created=0
+        smoke_apport_created=1
         sudo /bin/bash -- "${smoke_package_dir}/install_runtime_proof_launcher"
         installed_launcher_sha256="$(sudo sha256sum "${smoke_target}/codex-runtime-proof-launcher" | cut -d' ' -f1)"
         rollback_sha256="$(sudo sha256sum "${smoke_target}/.codex-runtime-proof-launcher.rollback-${predecessor_sha256}" | cut -d' ' -f1)"
@@ -285,8 +328,20 @@ jobs:
         [[ "$(sudo stat -c '%u:%g:%a' -- "${smoke_target}")" == '0:0:711' ]]
         [[ "$(sudo stat -c '%u:%g:%a' -- "${smoke_target}/codex-runtime-proof-launcher")" == '0:0:755' ]]
         [[ "$(sudo stat -c '%u:%g:%a' -- "${smoke_target}/.codex-runtime-proof-launcher.rollback-${predecessor_sha256}")" == '0:0:600' ]]
+        [[ "$(sudo stat -c '%u:%g:%a' -- "${apport_ignore_path}")" == '0:0:644' ]]
+        printf '%s\n' '/usr/bin/systemd-creds' | sudo cmp -s - "${apport_ignore_path}"
         sudo rm -rf -- "${smoke_target}"
         smoke_target_created=0
+        sudo rm -f -- "${apport_ignore_path}"
+        smoke_apport_created=0
+        if (( apport_ignore_dir_created == 1 )); then
+          sudo rmdir -- /etc/apport/report-ignore
+          apport_ignore_dir_created=0
+        fi
+        if (( apport_dir_created == 1 )); then
+          sudo rmdir -- /etc/apport
+          apport_dir_created=0
+        fi
         sudo umount -- "${smoke_package_dir}"
         smoke_package_mounted=0
         sudo rmdir -- "${smoke_package_dir}"
@@ -423,6 +478,12 @@ jobs:
         install -Dm 0755 "target/aarch64-unknown-linux-gnu/release/codex-runtime-proof-launcher" "${stage_dir}/codex-runtime-proof-launcher"
         install -Dm 0755 runtime-proof/install_runtime_proof_launcher "${stage_dir}/install_runtime_proof_launcher"
         install -Dm 0644 runtime-proof/systemd/codex-runtime-proof-claim.service "${stage_dir}/systemd/codex-runtime-proof-claim.service"
+        grep -Fxq 'LoadCredential=provider-auth.json' "${stage_dir}/systemd/codex-runtime-proof-claim.service"
+        grep -Fxq 'LoadCredential=ops-mcp-client-secret' "${stage_dir}/systemd/codex-runtime-proof-claim.service"
+        if grep -Eq '^LoadCredential=(provider-auth\.json|ops-mcp-client-secret):' "${stage_dir}/systemd/codex-runtime-proof-claim.service"; then
+          echo "The shared claim unit still requires MCP-only credential files during HTTP startup." >&2
+          exit 1
+        fi
         (cd "${stage_dir}" && sha256sum codex-runtime-proof-launcher > codex-runtime-proof-launcher.sha256)
 
         file "${stage_dir}/codex" | grep -F 'ARM aarch64'

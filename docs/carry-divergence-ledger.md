@@ -3915,9 +3915,10 @@ read never authorizes a claim replay.
 
 The same measured launcher has a fixed `provision-api-bearer` mode for the
 HTTP profile. It requires interactive `sudo` through the installed root-owned
-launcher path; `SUDO_UID` is used only to run the fixed browser opener as the
-unprivileged desktop user and to select the invoking user's API keyring
-profile, never as the OAuth principal. The explicit
+launcher path; `SUDO_UID` selects only the local account for the fixed browser
+opener, never the OAuth principal. The root provisioner is made non-dumpable
+before credential access and holds the existing credential lock across profile
+load, OAuth, rotation persistence, and bearer publication. The explicit
 `provision-api-bearer --no-browser` form uses the same authorization-code plus
 PKCE flow and fixed loopback redirect without opening a browser or binding a
 local callback listener; it displays the generated authorization URL for the
@@ -3927,15 +3928,20 @@ path, unique state, and unambiguous response parameters before the same PKCE
 exchange and token checks. OAuth exchange failures expose only allowlisted HTTP status/OAuth codes or a closed SDK error category, never provider text. Manual input disables terminal echo and restores the
 original terminal settings on success, error, or a handled cancellation signal.
 Both forms use the API resource and only
-`ops:write`; neither writes the persistent MCP credential store. The invoking
-user's direct OS keyring stores one versioned API-only refresh profile, keyed
-separately from MCP credentials and bound to its fixed issuer, client, API
-resource, scope, and canonical subject. Each later provision request refreshes
-that profile under the existing OAuth refresh lock, stores a rotated refresh
-token before returning the short-lived access token, and fails closed if the
-keyring write fails. The root process receives only a bounded access-token
-frame from the fixed unprivileged child and still validates issuer, audience,
-scope, subject, and expiry before writing the volatile systemd input. Before
+`ops:write`; neither writes the persistent MCP credential store. One versioned
+API-only refresh profile is stored as a root-owned mode-0600 encrypted blob at
+the fixed `/etc/credstore.encrypted/codex-runtime-proof-api-refresh` path. The
+root provisioner uses the fixed root-owned `systemd-creds` utility with the
+explicit nonempty profile name and `--with-key=host`, after checking the
+existing root-only `/var/lib/systemd/credential.secret`; it does not create a
+host key or fall back to plaintext. The profile remains bound to its fixed
+issuer, client, API resource, scope, and canonical subject. Each later request
+refreshes that profile under the root credential lock and atomically persists
+any rotated token before returning the short-lived access token; encryption or
+storage failure releases no bearer. OAuth now runs in the non-dumpable root
+provisioner, while the only privilege-dropped helper receives the authorization
+URL for `xdg-open`. Root still validates issuer, audience, scope, subject, and
+expiry before atomically writing the volatile systemd input. Before
 storage, the returned token must match the fixed issuer, an audience claim
 containing `ops-api`, the exact scope, UUID-shaped subject, and bounded expiry.
 The configured client-specific `ops-api` mapper works with the existing
@@ -3949,8 +3955,9 @@ through source-less `LoadCredential=ops-api-bearer`. After systemd has copied it
 into the private credential directory, the launcher removes only the exact
 loaded envelope under the same lock used by provisioning. A replacement
 credential, including one with the same token but a different generation, is
-preserved. `logout-api-profile` removes only the invoking user's API refresh
-entry and never touches the MCP profile or the volatile systemd input. The unit
+preserved. `logout-api-profile` removes only the fixed encrypted API profile and volatile
+bearer under the credential lock; legacy user-keyring entries and MCP state
+are left untouched. The unit
 remains inactive while the root claim policy is absent.
 The mode accepts no caller-selected path, URL, client, scope, or command option
 beyond the fixed `--no-browser` switch and sends no claim.

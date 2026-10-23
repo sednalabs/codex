@@ -51,7 +51,6 @@ pub(crate) struct McpAccessToken {
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct TokenEndpointResponse {
     access_token: SecretString,
     token_type: String,
@@ -280,8 +279,8 @@ fn validate_token_response(
                 .is_some_and(|value| value.trim() == policy.client_id.as_str())
         })
     });
-    let audiences_match = claim_audiences(&claims)
-        .is_some_and(|audiences| audiences.as_slice() == [policy.audience.as_str()]);
+    let audience_matches = claim_audiences(&claims)
+        .is_some_and(|audiences| audiences.contains(&policy.audience.as_str()));
     let scopes_match =
         claim_scopes(&claims).is_some_and(|scopes| scopes.as_slice() == [REQUIRED_SCOPE]);
     let token_project = claim_project_id(&claims);
@@ -300,7 +299,7 @@ fn validate_token_response(
         || subject != Some(expected_subject.as_str())
         || token_principal != Some(principal)
         || !client_identity_matches
-        || !audiences_match
+        || !audience_matches
         || !scopes_match
         || response
             .scope
@@ -358,7 +357,7 @@ fn parse_access_token_claims(token: &str) -> Result<(AccessTokenHeader, Value)> 
 
 fn claim_audiences(claims: &Value) -> Option<Vec<&str>> {
     match claims.get("aud") {
-        Some(Value::String(value)) => Some(value.split_whitespace().collect()),
+        Some(Value::String(value)) => Some(vec![value.as_str()]),
         Some(Value::Array(values)) => values.iter().map(Value::as_str).collect::<Option<Vec<_>>>(),
         _ => None,
     }
