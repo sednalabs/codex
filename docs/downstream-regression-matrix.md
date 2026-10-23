@@ -1199,7 +1199,10 @@ directory. Hosted installation coverage rejects a user-owned stage and a
 root-owned stage under a user-controlled parent, then enforces root ownership
 and mode `0711`, verifies the staged launcher bytes, preserves the exact
 predecessor as a root-only digest-named rollback image, and uses atomic
-replacement without starting or reloading the unit. The installed-image
+replacement without starting or reloading the unit. It also runs the fixed
+installer through Bash from a noexec `/run` stage, rejects a launcher with no
+execute mode bits without changing the predecessor, then accepts a mode-safe
+launcher and verifies rollback. The installed-image
 regression requires invoking-user traversal through trusted parents and still
 rejects writable parents. Source or package proof does not establish
 policy/credential provisioning, service installation, issuer appointment, or

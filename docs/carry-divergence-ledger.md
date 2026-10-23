@@ -3975,9 +3975,13 @@ installer from that directory. Do not use an untrusted extraction directory
 or treat the package's adjacent launcher checksum as provider provenance.
 The installer checks the root-owned `/run` parent, direct-child stage, regular
 no-follow inputs, package ownership, modes, and launcher bytes against the
-package checksum. This prevents an unprivileged parent from replacing a
-checked staging directory between input validation and use. The hosted smoke
-rejects both user-owned staging and a root-owned directory under a
+package checksum. Launcher execute eligibility comes from its recorded mode
+bits, so the noexec staging mount does not block verification. The hosted smoke
+mounts a fresh noexec stage directly under `/run`, rejects a launcher without
+execute mode bits without changing the predecessor, and then verifies the
+valid launcher and rollback. This prevents an unprivileged parent from
+replacing a checked staging directory between input validation and use. The
+hosted smoke also rejects user-owned staging and a root-owned directory under a
 user-controlled parent. The installer changes only `/usr/libexec/codex` and
 atomically replaces the fixed root-owned executable after preserving the exact
 predecessor as a root-only digest-named rollback image. The directory is
