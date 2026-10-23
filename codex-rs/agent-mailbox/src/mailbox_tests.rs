@@ -1758,10 +1758,101 @@ async fn confirmed_execution_and_terminal_capture_supersede_stale_dispatch_recov
             .await
             .unwrap()
     );
+    assert!(
+        !fixture
+            .mailbox
+            .mark_recovery_needed(&work, RecoveryEvidence::RecipientIncompatible)
+            .await
+            .unwrap()
+    );
     assert_eq!(
         fixture.mailbox.dispatch_state(&work).await.unwrap(),
         DispatchState::Dispatched
     );
+    let snapshot = take_snapshot(
+        &fixture.mailbox,
+        issuer,
+        Some(agent),
+        vec![Selector::Work(work.id.clone())],
+        ReturnWhen::Any,
+    )
+    .await;
+    assert_eq!(
+        work_item(&snapshot, &work.id).outcome,
+        Some(terminal.outcomes[0].clone())
+    );
+}
+
+#[tokio::test]
+async fn recipient_incompatibility_recovers_accepted_work_without_losing_or_resending_it() {
+    let fixture = test_mailbox().await;
+    let (issuer, agent) = (thread_id(37), thread_id(38));
+    let (work, input_id) = accept_work(
+        &fixture.mailbox,
+        issuer,
+        agent,
+        "recipient-incompatible",
+        "captured input",
+    )
+    .await;
+    let (unrelated, unrelated_input_id) = accept_work(
+        &fixture.mailbox,
+        issuer,
+        agent,
+        "recipient-still-compatible",
+        "unrelated captured input",
+    )
+    .await;
+
+    assert!(fixture
+        .mailbox
+        .mark_recovery_needed(&work, RecoveryEvidence::RecipientIncompatible)
+        .await
+        .unwrap());
+    assert_eq!(
+        fixture.mailbox.dispatch_state(&work).await.unwrap(),
+        DispatchState::RecoveryNeeded
+    );
+    assert_eq!(
+        fixture.mailbox.begin_dispatch(&work).await.unwrap(),
+        DispatchDecision::RecoveryNeeded
+    );
+    assert!(!fixture
+        .mailbox
+        .mark_recovery_needed(&work, RecoveryEvidence::RecipientIncompatible)
+        .await
+        .unwrap());
+
+    assert_eq!(
+        fixture
+            .mailbox
+            .work_for_native_key(issuer, "recipient-incompatible")
+            .await
+            .unwrap(),
+        Some(work.clone())
+    );
+    let retained_input = fixture.mailbox.accepted_input(&work).await.unwrap();
+    assert_eq!(retained_input.id.as_deref(), Some(input_id.as_str()));
+    assert_eq!(retained_input.content, "captured input");
+
+    assert_eq!(
+        fixture.mailbox.dispatch_state(&unrelated).await.unwrap(),
+        DispatchState::Accepted
+    );
+    assert_eq!(
+        fixture
+            .mailbox
+            .work_for_native_key(issuer, "recipient-still-compatible")
+            .await
+            .unwrap(),
+        Some(unrelated.clone())
+    );
+    let unrelated_input = fixture.mailbox.accepted_input(&unrelated).await.unwrap();
+    assert_eq!(
+        unrelated_input.id.as_deref(),
+        Some(unrelated_input_id.as_str())
+    );
+    assert_eq!(unrelated_input.content, "unrelated captured input");
 }
 
 #[tokio::test]

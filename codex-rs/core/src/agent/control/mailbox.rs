@@ -7,6 +7,7 @@ use super::AgentControl;
 use crate::agent::AgentStatus;
 use crate::agent::goal_notifications::GoalNotificationPhase;
 use crate::agent::goal_notifications::GoalNotificationSnapshot;
+use crate::agent::role::apply_role_to_config;
 use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
 use crate::config::Config;
@@ -53,10 +54,26 @@ fn goal_binding_matches_native(
 }
 
 impl AgentControl {
+    pub(crate) fn mailbox_config_compatible(config: &Config) -> bool {
+        config.multi_agent_version_from_features() == MultiAgentVersion::V2
+            && config.features.enabled(Feature::AgentMailbox)
+    }
+
+    pub(super) fn mailbox_config_incompatibility_error(
+        recipient: &str,
+        role: Option<&str>,
+    ) -> CodexErr {
+        let target = role.map_or_else(
+            || recipient.to_string(),
+            |role| format!("role `{role}` ({recipient})"),
+        );
+        CodexErr::UnsupportedOperation(format!(
+            "tracked agent delivery to {target} requires MultiAgentV2 and agent_mailbox to be enabled"
+        ))
+    }
+
     pub(crate) async fn mailbox_initialize(&self, config: &Config) -> CodexResult<()> {
-        if config.multi_agent_version_from_features() != MultiAgentVersion::V2
-            || !config.features.enabled(Feature::AgentMailbox)
-        {
+        if !Self::mailbox_config_compatible(config) {
             return Ok(());
         }
         self.mailbox
@@ -72,6 +89,30 @@ impl AgentControl {
 
     pub(crate) fn mailbox_enabled(&self) -> bool {
         self.mailbox.get().is_some()
+    }
+
+    /// Resolve compatibility without reloading a cold recipient or restoring its queued input.
+    /// The retained role is the authoritative per-agent config selector while the runtime is cold.
+    pub(crate) async fn mailbox_recipient_config_compatible(
+        &self,
+        recipient: ThreadId,
+        fallback_config: &Config,
+    ) -> CodexResult<bool> {
+        let state = self.upgrade()?;
+        if let Ok(thread) = state.get_thread(recipient).await {
+            let config = thread.session.get_config().await;
+            return Ok(Self::mailbox_config_compatible(&config));
+        }
+
+        let metadata = self
+            .state
+            .agent_metadata_for_thread(recipient)
+            .ok_or(CodexErr::ThreadNotFound(recipient))?;
+        let mut resolved_config = fallback_config.clone();
+        apply_role_to_config(&mut resolved_config, metadata.agent_role.as_deref())
+            .await
+            .map_err(CodexErr::InvalidRequest)?;
+        Ok(Self::mailbox_config_compatible(&resolved_config))
     }
 
     pub(crate) fn mailbox(&self) -> Option<Arc<Mailbox>> {
@@ -116,6 +157,7 @@ impl AgentControl {
         context: &AgentCommunicationContext,
         communication: &mut InterAgentCommunication,
         submission_id: &mut String,
+        recipient_config: &Config,
     ) -> CodexResult<Option<(WorkRef, DispatchDecision)>> {
         let Some(mailbox) = self.mailbox() else {
             return Ok(None);
@@ -132,6 +174,14 @@ impl AgentControl {
         let Some(native_key) = context.native_key.as_deref() else {
             return Ok(None);
         };
+        self.mailbox_require_native_recipient_compatible(
+            agent,
+            context,
+            communication,
+            recipient_config,
+            /*recipient_role*/ None,
+        )
+        .await?;
         if let Some(existing) = mailbox
             .work_for_native_key(context.sender_thread_id, native_key)
             .await
@@ -155,9 +205,73 @@ impl AgentControl {
         Ok(Some((work, dispatch)))
     }
 
+    pub(super) async fn mailbox_require_native_recipient_compatible(
+        &self,
+        recipient: ThreadId,
+        context: &AgentCommunicationContext,
+        communication: &InterAgentCommunication,
+        recipient_config: &Config,
+        recipient_role: Option<&str>,
+    ) -> CodexResult<()> {
+        if !matches!(
+            context.kind,
+            AgentCommunicationKind::Spawn | AgentCommunicationKind::Followup
+        ) || context.native_key.is_none()
+            || Self::mailbox_config_compatible(recipient_config)
+        {
+            return Ok(());
+        }
+
+        let incompatibility = Self::mailbox_config_incompatibility_error(
+            &format!("recipient {recipient}"),
+            recipient_role,
+        );
+        let Some(mailbox) = self.mailbox() else {
+            return Err(incompatibility);
+        };
+        if let Some(native_key) = context.native_key.as_deref()
+            && let Some(work) = mailbox
+                .work_for_native_key(context.sender_thread_id, native_key)
+                .await
+                .map_err(storage_error)?
+        {
+            let mut accepted = mailbox.accepted_input(&work).await.map_err(storage_error)?;
+            let mut requested = communication.clone();
+            accepted.id = None;
+            requested.id = None;
+            if work.agent != recipient || accepted != requested {
+                return Err(CodexErr::InvalidRequest(format!(
+                    "native mailbox key `{native_key}` was reused with a different recipient or input"
+                )));
+            }
+            mailbox
+                .mark_recovery_needed(&work, RecoveryEvidence::RecipientIncompatible)
+                .await
+                .map_err(storage_error)?;
+            return Err(CodexErr::UnsupportedOperation(format!(
+                "accepted work {} for {recipient} is incompatible with the current recipient configuration; its original input is retained and recovery is required",
+                work.id
+            )));
+        }
+        Err(incompatibility)
+    }
+
     pub(super) async fn mailbox_dispatched(&self, work: &WorkRef) -> CodexResult<()> {
         if let Some(mailbox) = self.mailbox() {
             mailbox.mark_dispatched(work).await.map_err(storage_error)?;
+        }
+        Ok(())
+    }
+
+    pub(super) async fn mailbox_mark_recipient_incompatible(
+        &self,
+        work: &WorkRef,
+    ) -> CodexResult<()> {
+        if let Some(mailbox) = self.mailbox() {
+            mailbox
+                .mark_recovery_needed(work, RecoveryEvidence::RecipientIncompatible)
+                .await
+                .map_err(storage_error)?;
         }
         Ok(())
     }

@@ -10,6 +10,7 @@ use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
 use crate::tools::handlers::multi_agents_spec::create_spawn_agent_tool_v2;
 use crate::tools::handlers::multi_agents_v2::message_tool::message_content;
 use codex_protocol::AgentPath;
+use codex_protocol::protocol::MultiAgentVersion;
 use codex_tools::ToolSpec;
 
 #[derive(Default)]
@@ -118,10 +119,11 @@ async fn handle_spawn_agent(
         .get_agent_path()
         .unwrap_or_else(AgentPath::root);
     let communication = communication_from_tool_message(author, new_agent_path.clone(), message);
-    let mailbox_enabled = turn
-        .config
-        .features
-        .enabled(codex_features::Feature::AgentMailbox);
+    let mailbox_enabled = turn.multi_agent_version == MultiAgentVersion::V2
+        && turn
+            .config
+            .features
+            .enabled(codex_features::Feature::AgentMailbox);
     let mut context =
         AgentCommunicationContext::new(AgentCommunicationKind::Spawn, session.thread_id);
     if mailbox_enabled {
@@ -148,17 +150,29 @@ async fn handle_spawn_agent(
     .await
     .map_err(collab_spawn_error)?;
     let new_thread_id = spawned_agent.thread_id;
-    let work_ref = if mailbox_enabled {
+    let accepted_work = if mailbox_enabled {
         session
             .services
             .agent_control
             .mailbox_work_for_key(session.thread_id, &call_id)
             .await
             .map_err(collab_spawn_error)?
-            .map(|work| work.id)
     } else {
         None
     };
+    let dispatch_state = if let Some(work) = accepted_work.as_ref()
+        && let Some(mailbox) = session.services.agent_control.mailbox()
+    {
+        Some(
+            mailbox
+                .dispatch_state(work)
+                .await
+                .map_err(super::mailbox_message::mailbox_error)?,
+        )
+    } else {
+        None
+    };
+    let work_ref = accepted_work.map(|work| work.id);
     let agent_snapshot = session
         .services
         .agent_control
@@ -204,6 +218,7 @@ async fn handle_spawn_agent(
         Ok(SpawnAgentResult {
             agent_id: None,
             work_ref,
+            dispatch_state,
             task_name,
             nickname: None,
             requested_model: args.model.clone(),
@@ -220,6 +235,7 @@ async fn handle_spawn_agent(
         Ok(SpawnAgentResult {
             agent_id: Some(new_thread_id.to_string()),
             work_ref,
+            dispatch_state,
             task_name,
             nickname,
             requested_model: args.model.clone(),
@@ -369,6 +385,8 @@ pub(crate) struct SpawnAgentResult {
     agent_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     work_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dispatch_state: Option<codex_agent_mailbox::DispatchState>,
     task_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     nickname: Option<String>,

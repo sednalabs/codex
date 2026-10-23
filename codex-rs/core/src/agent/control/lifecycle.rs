@@ -227,17 +227,27 @@ impl PreparedV2AgentDelivery {
         &self,
         communication: &mut InterAgentCommunication,
         context: &AgentCommunicationContext,
+        recipient_config: Option<&Config>,
     ) -> CodexResult<RecordedSubmission> {
         let mut submission_id = new_submission_id();
-        let accepted = self
-            .control
-            .mailbox_accept_native_submission(
+        let accepted = if let Some(recipient_config) = recipient_config {
+            self.control
+                .mailbox_accept_native_submission(
                 self.agent_id,
                 context,
                 communication,
                 &mut submission_id,
+                recipient_config,
             )
-            .await?;
+                .await?
+        } else if context.native_key.is_some() {
+            return Err(CodexErr::UnsupportedOperation(format!(
+                "cannot verify the resolved configuration for mailbox recipient {}; the original input was not submitted",
+                self.agent_id
+            )));
+        } else {
+            None
+        };
         let (work, dispatch) = accepted
             .map_or((None, DispatchDecision::Dispatch), |(work, decision)| {
                 (Some(work), decision)
@@ -316,12 +326,19 @@ impl PreparedV2AgentDelivery {
                     if !thread.is_running() {
                         return Err(CodexErr::InternalAgentDied);
                     }
-                    if interrupt {
-                        self.state
-                            .record_submitted_op(self.agent_id, &Op::Interrupt);
-                        thread.session.interrupt_task().await;
-                    }
-                    let submission = self.record_submission(&mut communication, &context).await?;
+                    let recipient_config = thread.session.get_config().await;
+                    self.control
+                        .mailbox_require_native_recipient_compatible(
+                            self.agent_id,
+                            &context,
+                            &communication,
+                            &recipient_config,
+                            self.metadata.agent_role.as_deref(),
+                        )
+                        .await?;
+                    let submission = self
+                        .record_submission(&mut communication, &context, Some(&recipient_config))
+                        .await?;
                     match submission.dispatch {
                         DispatchDecision::AlreadyDispatched => return Ok(submission.id),
                         DispatchDecision::RecoveryNeeded => {
@@ -336,6 +353,11 @@ impl PreparedV2AgentDelivery {
                         }
                         DispatchDecision::Dispatch => {}
                     }
+                    if interrupt {
+                        self.state
+                            .record_submitted_op(self.agent_id, &Op::Interrupt);
+                        thread.session.interrupt_task().await;
+                    }
                     let send = crate::session::inter_agent_communication;
                     send(&thread.session, submission.id.clone(), communication).await;
                     if let Some(work) = &submission.work {
@@ -347,7 +369,15 @@ impl PreparedV2AgentDelivery {
             if communication.trigger_turn {
                 return Err(CodexErr::ThreadNotFound(self.agent_id));
             }
-            let submission = self.record_submission(&mut communication, &context).await?;
+            if context.native_key.is_some() {
+                return Err(CodexErr::UnsupportedOperation(format!(
+                    "cannot verify the resolved configuration for mailbox recipient {}; the original input was not submitted",
+                    self.agent_id
+                )));
+            }
+            let submission = self
+                .record_submission(&mut communication, &context, None)
+                .await?;
             match submission.dispatch {
                 DispatchDecision::AlreadyDispatched => return Ok(submission.id),
                 DispatchDecision::RecoveryNeeded => {

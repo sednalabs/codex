@@ -628,6 +628,14 @@ fn spawn_agent_output_schema_v2(hide_agent_metadata: bool) -> Value {
             }),
         ),
         (
+            "dispatch_state".to_string(),
+            json!({
+                "type": "string",
+                "enum": ["accepted", "dispatching", "dispatched", "recovery_needed"],
+                "description": "Native dispatch custody for the original work. Uncertain or incompatible dispatch is retained, not resent."
+            }),
+        ),
+        (
             "requested_model".to_string(),
             json!({
                 "type": "string",

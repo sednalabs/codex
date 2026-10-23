@@ -1198,6 +1198,20 @@ mod tests {
             .features
             .enable(Feature::AgentMailbox)
             .expect("test config should enable AgentMailbox");
+        let role_home = tempfile::tempdir()?;
+        let disabled_role_path = role_home.path().join("mailbox_disabled.toml");
+        tokio::fs::write(
+            &disabled_role_path,
+            "[features]\nmulti_agent_v2 = true\nagent_mailbox = false\n",
+        )
+        .await?;
+        config.agent_roles.insert(
+            "mailbox_disabled".to_string(),
+            crate::config::AgentRoleConfig {
+                config_file: Some(disabled_role_path),
+                ..Default::default()
+            },
+        );
         config.multi_agent_v2.hide_spawn_agent_metadata = false;
         config.multi_agent_v2.tool_namespace = Some("profile_agents".to_string());
         turn_context.multi_agent_version = config.multi_agent_version_from_features();
@@ -1243,6 +1257,45 @@ mod tests {
         ));
         let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
         let runtime = ToolCallRuntime::new(router, Arc::clone(&session), step_context, tracker);
+        let thread_ids_before_rejection = manager.list_thread_ids().await;
+        let rejected_response = runtime
+            .handle_tool_call(
+                ToolCall {
+                    tool_name: ToolName::namespaced("profile_agents", "spawn_agent"),
+                    call_id: "disabled-role".to_string(),
+                    payload: ToolPayload::Function {
+                        arguments: serde_json::json!({
+                            "message": "must not be submitted",
+                            "task_name": "disabled_worker",
+                            "agent_type": "mailbox_disabled",
+                            "fork_turns": "none"
+                        })
+                        .to_string(),
+                    },
+                },
+                CancellationToken::new(),
+            )
+            .await?;
+        let ResponseInputItem::FunctionCallOutput { output, .. } = rejected_response else {
+            anyhow::bail!("incompatible role rejection should return a function output");
+        };
+        assert_eq!(output.success, Some(false));
+        let FunctionCallOutputBody::Text(rejection) = output.body else {
+            anyhow::bail!("incompatible role rejection should be text");
+        };
+        assert!(rejection.contains("agent_mailbox"), "{rejection}");
+        assert!(rejection.contains("mailbox_disabled"), "{rejection}");
+        assert_eq!(manager.list_thread_ids().await, thread_ids_before_rejection);
+        assert!(
+            session
+                .services
+                .agent_control
+                .mailbox_work_for_key(session.thread_id, "disabled-role")
+                .await?
+                .is_none(),
+            "a rejected resolved role must not accept tracked native work"
+        );
+        assert!(created_threads.try_recv().is_err());
         let spawn_call = || ToolCall {
             tool_name: ToolName::namespaced("profile_agents", "spawn_agent"),
             call_id: "call-1".to_string(),
@@ -1394,6 +1447,7 @@ mod tests {
             Some(accepted_work_id.as_str()),
             "the tool result should publish the exact accepted native work reference"
         );
+        assert_eq!(first_result["dispatch_state"], "dispatched");
         assert!(
             session
                 .services

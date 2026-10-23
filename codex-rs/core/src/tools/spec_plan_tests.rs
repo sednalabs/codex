@@ -377,6 +377,10 @@ fn assert_mailbox_namespace_schema(plan: &ToolPlanProbe, namespace_name: &str) {
         let tool = namespace_function(plan, namespace_name, tool_name);
         let output = tool.output_schema.as_ref().expect("agent result schema");
         assert_eq!(output["properties"]["work_ref"]["type"], json!("string"));
+        assert_eq!(
+            output["properties"]["dispatch_state"]["enum"],
+            json!(["accepted", "dispatching", "dispatched", "recovery_needed"])
+        );
         assert!(
             !output["required"]
                 .as_array()

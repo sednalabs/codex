@@ -368,6 +368,10 @@ fn spawn_agent_tool_hides_model_controls_without_override_exposure() {
         .as_object()
         .expect("spawn result properties");
     assert_eq!(output_properties["work_ref"]["type"], json!("string"));
+    assert_eq!(
+        output_properties["dispatch_state"]["enum"],
+        json!(["accepted", "dispatching", "dispatched", "recovery_needed"])
+    );
     assert!(
         output_properties["work_ref"]["description"]
             .as_str()

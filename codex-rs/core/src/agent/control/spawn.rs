@@ -411,7 +411,7 @@ impl AgentControl {
         {
             // A repeated native invocation retains its original child, including when the
             // original tool publication was lost. Never provision a replacement for a retry.
-            mailbox
+            let work = mailbox
                 .accept_work(codex_agent_mailbox::NativeWork {
                     native_key: native_key.to_string(),
                     issuer: context.sender_thread_id,
@@ -423,6 +423,28 @@ impl AgentControl {
                 .map_err(|err| {
                     CodexErr::Fatal(format!("agent mailbox acceptance failed: {err}"))
                 })?;
+            let recipient_compatible = if !Self::mailbox_config_compatible(&config) {
+                false
+            } else {
+                self.mailbox_recipient_config_compatible(work.agent, &config)
+                    .await
+                    .map_err(|error| {
+                        CodexErr::UnsupportedOperation(format!(
+                            "accepted work {} retains original child {}; recipient compatibility is unknown: {error}; its original input remains retained and no replacement child or new dispatch was attempted",
+                            work.id, work.agent
+                        ))
+                    })?
+            };
+            if !recipient_compatible {
+                self.mailbox_mark_recipient_incompatible(&work)
+                    .await
+                    .map_err(|error| {
+                        CodexErr::Fatal(format!(
+                            "accepted work {} retains original child {}; incompatible-recipient recovery could not be persisted: {error}; its original input remains retained and no replacement child or new dispatch was attempted",
+                            work.id, work.agent
+                        ))
+                    })?;
+            }
             let metadata = self.get_agent_metadata(work.agent).ok_or_else(|| {
                 CodexErr::UnsupportedOperation(format!(
                     "accepted work {} retains original child {}; native recovery is required and no replacement was spawned",
@@ -434,6 +456,20 @@ impl AgentControl {
                 metadata,
                 status: self.get_status(work.agent).await,
             });
+        }
+        if context.native_key.is_some() && !Self::mailbox_config_compatible(&config) {
+            let role = session_source
+                .as_ref()
+                .and_then(SessionSource::get_agent_role);
+            let recipient = session_source
+                .as_ref()
+                .and_then(SessionSource::get_agent_path)
+                .map(ToString::to_string)
+                .unwrap_or_else(|| format!("new child of {}", context.sender_thread_id));
+            return Err(Self::mailbox_config_incompatibility_error(
+                &recipient,
+                role.as_deref(),
+            ));
         }
         Box::pin(self.spawn_agent_internal(
             config,

@@ -128,6 +128,9 @@ pub enum RecoveryEvidence {
     /// The adapter proved this exact native goal binding has no owner.
     /// The durable continuation itself is retained for later exact settlement.
     ContinuationUnowned { binding: GoalBinding },
+    /// The adapter proved the accepted recipient no longer supports mailbox delivery.
+    /// Keep the accepted work and its captured input for observation; never resend it.
+    RecipientIncompatible,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

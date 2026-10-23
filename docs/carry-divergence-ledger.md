@@ -84,6 +84,13 @@ can settle through its loaded parent's same-tree store, otherwise handback
 retains retry custody. Native finalizer/turn release emits an advisory rescan so
 a producer failure before input admission cannot leave an event-only wait asleep
 without an outcome or a producer able to advance it.
+New tracked spawn/followup operations require both the caller and the resolved
+recipient role to enable V2 and `agent_mailbox`. An explicitly incompatible role
+or recipient is rejected before child creation, work acceptance, or submission;
+it is never silently enabled or downgraded to native-only durability. If the
+native invocation was already accepted before the recipient became incompatible,
+its original work reference and input remain in custody with `recovery_needed`
+dispatch state rather than being resent or replaced.
 
 Both `agent_mailbox` and recipient `agent_mailbox_idle_activation` are off by
 default. Disabled mailbox handling preserves pending records and cannot drain,

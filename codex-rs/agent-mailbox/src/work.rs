@@ -290,7 +290,7 @@ impl Mailbox {
         Ok(result.rows_affected() as usize)
     }
 
-    /// Record adapter-confirmed stale in-flight custody for this exact work.
+    /// Record adapter-confirmed recovery evidence for this exact work.
     /// Returns whether this call changed the dispatch state.
     pub async fn mark_recovery_needed(
         &self,
@@ -300,12 +300,14 @@ impl Mailbox {
         let mut transaction = self.pool.begin().await?;
         let row = exact_work_tx(&mut transaction, work_ref).await?;
         let state = parse_dispatch_state(row.try_get::<String, _>("dispatch_state")?.as_str())?;
-        if state == DispatchState::Accepted {
+        if state == DispatchState::Accepted
+            && !matches!(&evidence, RecoveryEvidence::RecipientIncompatible)
+        {
             return Err(MailboxError::ReferenceMismatch);
         }
 
         let matching_binding_json = match &evidence {
-            RecoveryEvidence::DeliveryUnavailable => None,
+            RecoveryEvidence::DeliveryUnavailable | RecoveryEvidence::RecipientIncompatible => None,
             RecoveryEvidence::ContinuationUnowned { binding } => {
                 if binding.parent_thread_id != work_ref.issuer
                     || binding.child_thread_id != work_ref.agent
@@ -349,6 +351,16 @@ impl Mailbox {
                          WHERE continuation.work_id = mailbox_work.id
                            AND continuation.state IN ('pending_goal_binding', 'deferred')
                        )",
+                )
+                .bind(&work_ref.id)
+                .execute(&mut *transaction)
+                .await?
+            }
+            (RecoveryEvidence::RecipientIncompatible, _) => {
+                sqlx::query(
+                    "UPDATE mailbox_work SET dispatch_state = 'recovery_needed'
+                     WHERE id = ? AND dispatch_state IN ('accepted', 'dispatching', 'dispatched')
+                       AND outcome_json IS NULL",
                 )
                 .bind(&work_ref.id)
                 .execute(&mut *transaction)

@@ -14,6 +14,7 @@ use crate::context::TerminalCompletionStatus;
 use crate::init_state_db;
 use crate::thread_manager::ThreadManagerState;
 use crate::thread_manager::V2ThreadUnloadResult;
+use codex_agent_mailbox::DispatchState;
 use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_protocol::AgentPath;
@@ -32,6 +33,7 @@ use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::user_input::UserInput;
+use codex_utils_absolute_path::test_support::PathExt;
 use pretty_assertions::assert_eq;
 use std::sync::Arc;
 use std::task::Context;
@@ -606,6 +608,202 @@ async fn spawned_v2_terminal_child_unloads_at_terminal_idle_deadline() {
         .wait_for_terminal_idle_unload(&manager, child_thread_id)
         .await;
     assert_eq!(control.v2_residency.resident_count(), 0);
+}
+
+#[tokio::test]
+async fn mailbox_rejects_incompatible_spawn_and_followup_before_capture() {
+    let mut config = test_config().await;
+    config.features.enable(Feature::MultiAgentV2).unwrap();
+    config.features.enable(Feature::AgentMailbox).unwrap();
+    config.multi_agent_v2.max_concurrent_threads_per_session = 4;
+    let temp_home = tempfile::tempdir().expect("create temp home");
+    config.codex_home = temp_home.path().to_path_buf().try_into().unwrap();
+    config.cwd = temp_home.path().to_path_buf().try_into().unwrap();
+    config.sqlite = codex_state::SqliteConfig::new_for_testing(temp_home.path().abs());
+    let manager = ThreadManager::with_models_provider_and_home_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+        config.codex_home.to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+    );
+    let root = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start mailbox-enabled V2 root");
+    let control = manager.agent_control();
+    let mut disabled_config = config.clone();
+    disabled_config.features.disable(Feature::AgentMailbox).unwrap();
+
+    let disabled_spawn_source = Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id: root.thread_id,
+        depth: 1,
+        agent_path: Some(AgentPath::root().join("disabled_spawn").unwrap()),
+        agent_nickname: None,
+        agent_role: None,
+    }));
+    let before_rejected_spawn = manager.list_thread_ids().await;
+    let rejected_spawn = control
+        .spawn_agent_with_communication(
+            disabled_config.clone(),
+            test_communication("incompatible spawn", /*trigger_turn*/ true),
+            AgentCommunicationContext::new(AgentCommunicationKind::Spawn, root.thread_id)
+                .with_native_key("disabled-spawn-call".to_string()),
+            disabled_spawn_source,
+            SpawnAgentOptions::default(),
+        )
+        .await;
+    let rejected_spawn_error = rejected_spawn
+        .expect_err("incompatible tracked spawn must fail before child creation");
+    assert!(rejected_spawn_error.to_string().contains("disabled_spawn"));
+    assert!(
+        rejected_spawn_error
+            .to_string()
+            .contains("MultiAgentV2 and agent_mailbox")
+    );
+    let after_rejected_spawn = manager.list_thread_ids().await;
+    assert_eq!(after_rejected_spawn.len(), before_rejected_spawn.len());
+    assert!(
+        before_rejected_spawn
+            .iter()
+            .all(|thread_id| after_rejected_spawn.contains(thread_id))
+    );
+    assert!(
+        control
+            .mailbox_work_for_key(root.thread_id, "disabled-spawn-call")
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    let accepted_spawn_source = Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id: root.thread_id,
+        depth: 1,
+        agent_path: Some(AgentPath::root().join("mailbox_retry").unwrap()),
+        agent_nickname: None,
+        agent_role: None,
+    }));
+    let accepted_communication =
+        test_communication("accepted spawn input", /*trigger_turn*/ false);
+    let accepted_context = AgentCommunicationContext::new(
+        AgentCommunicationKind::Spawn,
+        root.thread_id,
+    )
+    .with_native_key("accepted-spawn-call".to_string());
+    let accepted_spawn = control
+        .spawn_agent_with_communication(
+            config.clone(),
+            accepted_communication.clone(),
+            accepted_context.clone(),
+            accepted_spawn_source.clone(),
+            SpawnAgentOptions::default(),
+        )
+        .await
+        .expect("compatible tracked spawn should succeed");
+    let accepted_work = control
+        .mailbox_work_for_key(root.thread_id, "accepted-spawn-call")
+        .await
+        .unwrap()
+        .expect("accepted spawn work");
+    let accepted_thread = manager
+        .get_thread(accepted_spawn.thread_id)
+        .await
+        .expect("accepted child remains loaded");
+    let queued_before_retry = accepted_thread
+        .session
+        .input_queue
+        .snapshot_mailbox_communications()
+        .await;
+    let retry = control
+        .spawn_agent_with_communication(
+            disabled_config.clone(),
+            accepted_communication,
+            accepted_context,
+            accepted_spawn_source,
+            SpawnAgentOptions::default(),
+        )
+        .await
+        .expect("incompatible retry must preserve the original child identity");
+    assert_eq!(retry.thread_id, accepted_spawn.thread_id);
+    assert_eq!(accepted_work.agent, accepted_spawn.thread_id);
+    assert_eq!(
+        control
+            .mailbox_work_for_key(root.thread_id, "accepted-spawn-call")
+            .await
+            .unwrap(),
+        Some(accepted_work.clone())
+    );
+    assert_eq!(
+        accepted_thread
+            .session
+            .input_queue
+            .snapshot_mailbox_communications()
+            .await,
+        queued_before_retry
+    );
+    assert_eq!(
+        control
+            .mailbox()
+            .unwrap()
+            .dispatch_state(&accepted_work)
+            .await
+            .unwrap(),
+        DispatchState::RecoveryNeeded
+    );
+
+    let disabled_child_source = Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id: root.thread_id,
+        depth: 1,
+        agent_path: Some(AgentPath::root().join("disabled_recipient").unwrap()),
+        agent_nickname: None,
+        agent_role: None,
+    }));
+    let disabled_child = control
+        .spawn_agent_with_communication(
+            disabled_config,
+            test_communication("stock child initialization", /*trigger_turn*/ false),
+            AgentCommunicationContext::new(AgentCommunicationKind::Message, root.thread_id),
+            disabled_child_source,
+            SpawnAgentOptions::default(),
+        )
+        .await
+        .expect("stock V2 child spawn should remain available");
+    let disabled_thread = manager
+        .get_thread(disabled_child.thread_id)
+        .await
+        .expect("disabled recipient is loaded");
+    let queued_before = disabled_thread
+        .session
+        .input_queue
+        .snapshot_mailbox_communications()
+        .await;
+    let delivery = control
+        .prepare_v2_agent_delivery(disabled_child.thread_id)
+        .await
+        .expect("prepare loaded disabled recipient");
+    let rejected_followup = delivery
+        .send(
+            test_communication("incompatible followup", /*trigger_turn*/ false),
+            AgentCommunicationContext::new(AgentCommunicationKind::Followup, root.thread_id)
+                .with_native_key("disabled-followup-call".to_string()),
+            /*interrupt*/ false,
+        )
+        .await;
+    assert!(rejected_followup.is_err());
+    assert_eq!(
+        disabled_thread
+            .session
+            .input_queue
+            .snapshot_mailbox_communications()
+            .await,
+        queued_before
+    );
+    assert!(
+        control
+            .mailbox_work_for_key(root.thread_id, "disabled-followup-call")
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[tokio::test(start_paused = true)]

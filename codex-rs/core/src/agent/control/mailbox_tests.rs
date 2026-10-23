@@ -38,7 +38,8 @@ async fn mailbox_shared_control_does_not_capture_stock_invocations() {
                 recipient,
                 &context,
                 &mut communication,
-                &mut submission_id
+                &mut submission_id,
+                &config,
             )
             .await
             .unwrap()
@@ -62,6 +63,7 @@ async fn mailbox_shared_control_does_not_capture_stock_invocations() {
             &enabled_context,
             &mut communication,
             &mut submission_id,
+            &config,
         )
         .await
         .unwrap()
