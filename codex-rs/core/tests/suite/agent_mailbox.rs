@@ -1146,7 +1146,7 @@ async fn unadmitted_canonical_message_survives_precreated_failure_and_manual_com
     );
     assert!(
         mailbox
-            .pending(root_thread_id, 10)
+            .pending(root_thread_id, /*limit*/ 10)
             .await?
             .iter()
             .any(|pending| pending.id.as_str() == message_id)
@@ -1184,7 +1184,7 @@ async fn unadmitted_canonical_message_survives_precreated_failure_and_manual_com
     );
     assert!(
         mailbox
-            .pending(root_thread_id, 10)
+            .pending(root_thread_id, /*limit*/ 10)
             .await?
             .iter()
             .any(|pending| pending.id.as_str() == message_id)

@@ -2234,7 +2234,7 @@ fn mailbox_deferred_goal_handoff_rejects_replaced_native_incarnation() {
             parent_thread_id,
             "turn-a",
             Some(&exact_goal),
-            None,
+            /*goal_store*/ None,
         )
         .is_ok()
     );

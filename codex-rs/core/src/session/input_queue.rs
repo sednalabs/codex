@@ -976,7 +976,7 @@ mod tests {
                 a,
                 vec![b],
                 ReturnWhen::Any,
-                false,
+                /*has_escape*/ false,
                 generation,
             )
             .unwrap();
@@ -985,7 +985,7 @@ mod tests {
                 AgentPath::root(),
                 AgentPath::root(),
                 "native input",
-                true,
+                /*trigger_turn*/ true,
             ))
             .await;
         assert!(queue.has_pending_mailbox_items().await);
@@ -995,7 +995,7 @@ mod tests {
                 b,
                 vec![a],
                 ReturnWhen::All,
-                false,
+                /*has_escape*/ false,
                 generation
             ),
             Err(MailboxError::StaleWaitSnapshot)
@@ -1003,7 +1003,13 @@ mod tests {
         // Native input invalidated the older edge before publication, so a peer cannot
         // incorrectly prove that both owners remain blocked on one another.
         let _peer = mailbox
-            .begin_wait("peer-b".into(), b, vec![a], ReturnWhen::All, false)
+            .begin_wait(
+                "peer-b".into(),
+                b,
+                vec![a],
+                ReturnWhen::All,
+                /*has_escape*/ false,
+            )
             .unwrap();
     }
 

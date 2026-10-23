@@ -50,7 +50,7 @@ async fn mailbox_shared_control_does_not_capture_stock_invocations() {
     let mailbox = control.mailbox().unwrap();
     assert!(
         mailbox
-            .issued_work_refs(session.thread_id, None, 100)
+            .issued_work_refs(session.thread_id, /*agent*/ None, /*limit*/ 100)
             .await
             .unwrap()
             .is_empty()
@@ -200,7 +200,7 @@ async fn mailbox_goal_terminal_matches_logical_binding_across_native_revisions_a
                 "accepted-turn",
                 AgentStatus::Completed(None),
                 Some((incarnation, goal.clone())),
-                None
+                /*completion*/ None
             )
             .await
             .unwrap()
@@ -214,7 +214,7 @@ async fn mailbox_goal_terminal_matches_logical_binding_across_native_revisions_a
                 "accepted-turn",
                 AgentStatus::Completed(None),
                 Some((incarnation, goal.clone())),
-                None
+                /*completion*/ None
             )
             .await
             .unwrap()
@@ -239,7 +239,7 @@ async fn mailbox_goal_terminal_matches_logical_binding_across_native_revisions_a
                 "continuation-turn",
                 AgentStatus::Completed(None),
                 Some((ThreadId::new(), goal.clone())),
-                None
+                /*completion*/ None
             )
             .await
             .unwrap()
@@ -252,7 +252,7 @@ async fn mailbox_goal_terminal_matches_logical_binding_across_native_revisions_a
                 "continuation-turn",
                 AgentStatus::Completed(None),
                 Some((incarnation, goal)),
-                None
+                /*completion*/ None
             )
             .await
             .unwrap()
@@ -270,8 +270,8 @@ async fn mailbox_goal_terminal_matches_logical_binding_across_native_revisions_a
                 ThreadId::new(),
                 "uncaptured-turn",
                 AgentStatus::Completed(None),
-                None,
-                None
+                /*goal*/ None,
+                /*completion*/ None
             )
             .await
             .unwrap()
@@ -307,8 +307,8 @@ async fn mailbox_terminal_recovers_exact_unadmitted_submission_idempotently() {
                 agent,
                 submission_id,
                 AgentStatus::Errored("provider request setup failed".to_string()),
-                None,
-                None,
+                /*goal*/ None,
+                /*completion*/ None,
             )
             .await
             .unwrap()
@@ -340,8 +340,8 @@ async fn mailbox_terminal_recovers_exact_unadmitted_submission_idempotently() {
                 agent,
                 "unrelated-source-turn",
                 AgentStatus::Errored("unrelated failure".to_string()),
-                None,
-                None,
+                /*goal*/ None,
+                /*completion*/ None,
             )
             .await
             .unwrap(),
@@ -353,8 +353,8 @@ async fn mailbox_terminal_recovers_exact_unadmitted_submission_idempotently() {
                 agent,
                 submission_id,
                 AgentStatus::Errored("provider request setup failed".to_string()),
-                None,
-                None,
+                /*goal*/ None,
+                /*completion*/ None,
             )
             .await
             .unwrap(),
@@ -402,7 +402,7 @@ async fn mailbox_cold_goal_continuation_returns_recovery_needed_without_losing_c
                 "accepted-turn",
                 AgentStatus::Completed(None),
                 Some((incarnation, goal.clone())),
-                None
+                /*completion*/ None
             )
             .await
             .unwrap()
@@ -440,7 +440,7 @@ async fn mailbox_cold_goal_continuation_returns_recovery_needed_without_losing_c
                 "recovered-turn",
                 AgentStatus::Completed(None),
                 Some((incarnation, goal)),
-                None
+                /*completion*/ None
             )
             .await
             .unwrap()
@@ -491,7 +491,7 @@ async fn mailbox_cold_deferred_handback_uses_loaded_parents_shared_store() {
                 "accepted-turn",
                 AgentStatus::Completed(None),
                 Some((incarnation, goal.clone())),
-                None
+                /*completion*/ None
             )
             .await
             .unwrap()

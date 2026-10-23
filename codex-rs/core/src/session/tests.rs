@@ -2939,8 +2939,8 @@ async fn stable_mailbox_message_retry_and_resumed_history_do_not_duplicate_body(
     session
         .replace_compacted_history(
             Vec::new(),
-            None,
-            None,
+            /*reference_context_item*/ None,
+            /*world_state_baseline*/ None,
             crate::compact::CompactedHistoryMetadata {
                 message: "test checkpoint".to_string(),
                 window_number: 1,

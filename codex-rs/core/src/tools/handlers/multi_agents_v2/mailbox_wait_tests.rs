@@ -134,7 +134,7 @@ async fn work(
         .unwrap();
     if let Some(outcome) = outcome {
         let result = mailbox
-            .record_outcome(&work, outcome, None, Continuation::None)
+            .record_outcome(&work, outcome, /*response*/ None, Continuation::None)
             .await
             .unwrap();
         // This fixture represents a previously surfaced result. Writer custody has
@@ -328,7 +328,14 @@ async fn observed_unsuccessful_work_remains_non_success_in_exact_and_mixed_repla
             Some(outcome),
         )
         .await;
-        let pending = work(&mailbox, session.thread_id, agent, "pending", None).await;
+        let pending = work(
+            &mailbox,
+            session.thread_id,
+            agent,
+            "pending",
+            /*outcome*/ None,
+        )
+        .await;
         for mode in ["any", "all"] {
             for targets in [
                 vec![failed.id.clone()],
@@ -397,7 +404,10 @@ async fn unrelated_attention_does_not_erase_a_successful_selected_join() {
             Some(MailboxWakeCause::AlreadySatisfied)
         );
         assert!(report.condition_satisfied);
-        let pending_attention = mailbox.attention(session.thread_id, 100).await.unwrap();
+        let pending_attention = mailbox
+            .attention(session.thread_id, /*limit*/ 100)
+            .await
+            .unwrap();
         assert_eq!(pending_attention.len(), 1);
         assert_eq!(
             pending_attention[0].id,
@@ -409,7 +419,14 @@ async fn unrelated_attention_does_not_erase_a_successful_selected_join() {
 #[tokio::test]
 async fn wait_delivers_unobserved_result_before_acknowledging_observation() {
     let (session, turn, mailbox, agent, rollout_path) = durable_fixture().await;
-    let work_ref = work(&mailbox, session.thread_id, agent, "deliver-result", None).await;
+    let work_ref = work(
+        &mailbox,
+        session.thread_id,
+        agent,
+        "deliver-result",
+        /*outcome*/ None,
+    )
+    .await;
     let body = "durable result body";
     let result_id = record_result(
         &mailbox,
@@ -522,7 +539,7 @@ async fn wait_delivers_exact_quiet_reply_and_persists_it_before_observation() {
     assert_eq!(mailbox.quiet_count(session.thread_id).await.unwrap(), 1);
     assert!(
         mailbox
-            .attention(session.thread_id, 100)
+            .attention(session.thread_id, /*limit*/ 100)
             .await
             .unwrap()
             .is_empty()
@@ -560,7 +577,7 @@ async fn wait_delivers_exact_quiet_reply_and_persists_it_before_observation() {
     assert_eq!(success, Some(true));
     assert!(
         mailbox
-            .attention(session.thread_id, 100)
+            .attention(session.thread_id, /*limit*/ 100)
             .await
             .unwrap()
             .is_empty()
@@ -607,7 +624,7 @@ async fn wait_leaves_over_limit_bodies_retrievable_and_a_later_exact_wait_delive
             session.thread_id,
             agent,
             &format!("bounded-delivery-{index}"),
-            None,
+            /*outcome*/ None,
         )
         .await;
         let body = format!("bounded body {index}");
@@ -704,7 +721,7 @@ async fn interrupted_wait_call_id_replays_failure_but_a_fresh_id_uses_the_wait_p
         session.thread_id,
         agent,
         "pending-after-interruption",
-        None,
+        /*outcome*/ None,
     )
     .await;
     let call_id = "interrupted-wait-call";
