@@ -6,7 +6,18 @@ index 3b4a24a..6aa06ff 100644
 -use std::path::Path;
 +use std::fs;
 +use std::path::Path;
-@@ -118,1 +119,9 @@
+@@ -63,1 +64,9 @@
+-    let mut builder = cxx_build::bridges(rust_files);
++    if env::var_os("WEBRTC_SYS_LINK_OUT_DIR").is_some() {
++        // Keep cxx-build's shared debug cache in this action's writable output,
++        // not scratch's dependency OUT_DIR, which is read-only under Bazel.
++        let out_dir = PathBuf::from(env::var_os("OUT_DIR").unwrap());
++        fs::create_dir_all(&out_dir).unwrap();
++        env::set_var("CARGO_TARGET_DIR", out_dir.canonicalize().unwrap());
++    }
++
++    let mut builder = cxx_build::bridges(rust_files);
+@@ -118,1 +127,9 @@
 -    println!("cargo:rustc-link-search=native={}", webrtc_lib.to_str().unwrap());
 +    let webrtc_link_lib = if env::var_os("WEBRTC_SYS_LINK_OUT_DIR").is_some() {
 +        let out_lib = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("lib");
@@ -17,10 +28,10 @@ index 3b4a24a..6aa06ff 100644
 +        webrtc_lib
 +    };
 +    println!("cargo:rustc-link-search=native={}", webrtc_link_lib.to_str().unwrap());
-@@ -255,1 +264,1 @@
+@@ -255,1 +272,1 @@
 -            println!("cargo:rustc-link-lib=framework=Appkit");
 +            println!("cargo:rustc-link-lib=framework=AppKit");
-@@ -320,1 +329,18 @@
+@@ -320,1 +337,18 @@
 -    builder.warnings(false).compile("webrtcsys-cxx");
 +    builder.warnings(false).compile("webrtcsys-cxx");
 +    let cxxbridge_dir = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("cxxbridge");
@@ -40,12 +51,12 @@ index 3b4a24a..6aa06ff 100644
 +        fs::remove_file(crate_link).unwrap();
 +    }
 +
-@@ -375,1 +384,3 @@
+@@ -375,1 +409,3 @@
 -    println!("cargo:rustc-link-lib={}", clang_rt);
 +    if env::var_os("WEBRTC_SYS_LINK_OUT_DIR").is_none() {
 +        println!("cargo:rustc-link-lib={}", clang_rt);
 +    }
-@@ -378,15 +389,32 @@
+@@ -378,15 +414,32 @@
 -    let sysroot = Command::new("xcrun").args(["--sdk", sdk, "--show-sdk-path"]).output().unwrap();
 -
 -    let sysroot = String::from_utf8_lossy(&sysroot.stdout);
@@ -93,3 +104,23 @@ index 3b4a24a..6aa06ff 100644
 +            }
 +        }
 +    }
+diff --git a/webrtc-sys/build/src/lib.rs b/webrtc-sys/build/src/lib.rs
+--- a/webrtc-sys/build/src/lib.rs
++++ b/webrtc-sys/build/src/lib.rs
+@@ -87,1 +87,10 @@
++fn webrtc_scratch_dir() -> path::PathBuf {
++    // Dependency outputs are read-only in Bazel; use the calling action's output.
++    if env::var_os("WEBRTC_SYS_LINK_OUT_DIR").is_some() {
++        path::PathBuf::from(env::var_os("OUT_DIR").unwrap()).join(SCRATH_PATH)
++    } else {
++        scratch::path(SCRATH_PATH)
++    }
++}
++
+ /// Location of the downloaded webrtc binaries
+@@ -92,1 +101,1 @@
+-    let target_dir = scratch::path(SCRATH_PATH);
++    let target_dir = webrtc_scratch_dir();
+@@ -200,1 +209,1 @@
+-    let dir = scratch::path(SCRATH_PATH);
++    let dir = webrtc_scratch_dir();
