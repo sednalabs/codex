@@ -479,8 +479,13 @@ fn run_mcp(
         let _ = output_reader.join();
     } else {
         // A blocked journal write or inherited stdout descriptor cannot delay
-        // child teardown or the launcher's normal return past this grace.
+        // child teardown or the launcher's normal return past this grace. Do
+        // not return the supervision error here: the binary's error reporter
+        // takes stderr's global lock, which the detached projector may hold.
+        // Exit nonzero without a diagnostic; the missing projection remains
+        // unknown to the caller.
         drop(output_reader);
+        return Ok(1);
     }
     result
 }

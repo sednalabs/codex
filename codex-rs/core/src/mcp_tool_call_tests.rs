@@ -11,7 +11,6 @@ use crate::state::ActiveTurn;
 use crate::test_support::models_manager_with_provider;
 use crate::tools::hook_names::HookToolName;
 use crate::turn_metadata::McpTurnMetadataContext;
-use anyhow::Context;
 use codex_config::CONFIG_TOML_FILE;
 use codex_config::config_toml::ConfigToml;
 use codex_config::types::AppConfig;
@@ -49,40 +48,22 @@ use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_test::internal::MockWriter;
 
 #[test]
-fn protected_error_projection_preserves_only_exact_ops_holder_conflict() {
-    let holder_conflict = anyhow::Error::new(rmcp::ErrorData::new(
-        rmcp::model::ErrorCode::INTERNAL_ERROR,
-        codex_runtime_proof::HOLDER_CONFLICT_MESSAGE,
-        Some(serde_json::json!({
-            "code": codex_runtime_proof::HOLDER_CONFLICT_ERROR_CODE,
-            "request_id": "44444444-4444-4444-8444-444444444444"
-        })),
-    ))
-    .context("tool call failed for `ops/work_item_claim`");
-    assert_eq!(
-        protected_mcp_call_error_message(&holder_conflict, "ops", "work_item_claim"),
-        codex_runtime_proof::HOLDER_CONFLICT_MESSAGE
-    );
-
-    let wrong_code = anyhow::Error::new(rmcp::ErrorData::new(
-        rmcp::model::ErrorCode::INTERNAL_ERROR,
-        codex_runtime_proof::HOLDER_CONFLICT_MESSAGE,
-        Some(serde_json::json!({"code": "other"})),
+fn protected_error_projection_does_not_classify_unwrapped_remote_errors() {
+    let unwrapped_error = anyhow::Error::new(rmcp::service::ServiceError::McpError(
+        rmcp::ErrorData::new(
+            rmcp::model::ErrorCode::INTERNAL_ERROR,
+            codex_runtime_proof::HOLDER_CONFLICT_MESSAGE,
+            Some(serde_json::json!({
+                "code": codex_runtime_proof::HOLDER_CONFLICT_ERROR_CODE
+            })),
+        ),
     ));
     assert_eq!(
-        protected_mcp_call_error_message(&wrong_code, "ops", "work_item_claim"),
+        protected_mcp_call_error_message(&unwrapped_error, "ops", "work_item_claim"),
         "protected runtime proof MCP call failed"
     );
-
-    let unrelated_tool = anyhow::Error::new(rmcp::ErrorData::new(
-        rmcp::model::ErrorCode::INTERNAL_ERROR,
-        codex_runtime_proof::HOLDER_CONFLICT_MESSAGE,
-        Some(serde_json::json!({
-            "code": codex_runtime_proof::HOLDER_CONFLICT_ERROR_CODE
-        })),
-    ));
     assert_eq!(
-        protected_mcp_call_error_message(&unrelated_tool, "ops", "work_item_release"),
+        protected_mcp_call_error_message(&unwrapped_error, "ops", "work_item_release"),
         "protected runtime proof MCP call failed"
     );
 }

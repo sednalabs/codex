@@ -564,20 +564,9 @@ async fn handle_approved_mcp_tool_call(
 fn protected_mcp_call_error_message(error: &anyhow::Error, server: &str, tool: &str) -> String {
     let is_holder_conflict = server == "ops"
         && tool == "work_item_claim"
-        && error.chain().any(|cause| {
-            cause
-                .downcast_ref::<rmcp::ErrorData>()
-                .is_some_and(|error| {
-                    error.code == rmcp::model::ErrorCode::INTERNAL_ERROR
-                        && error.message.as_ref() == codex_runtime_proof::HOLDER_CONFLICT_MESSAGE
-                        && error
-                            .data
-                            .as_ref()
-                            .and_then(|data| data.get("code"))
-                            .and_then(JsonValue::as_str)
-                            == Some(codex_runtime_proof::HOLDER_CONFLICT_ERROR_CODE)
-                })
-        });
+        && error
+            .chain()
+            .any(codex_rmcp_client::is_ops_holder_conflict_error);
     if is_holder_conflict {
         codex_runtime_proof::HOLDER_CONFLICT_MESSAGE.to_string()
     } else {

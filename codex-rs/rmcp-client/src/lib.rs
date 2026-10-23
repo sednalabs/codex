@@ -57,6 +57,7 @@ pub use protocol_mode::McpProtocolMode;
 pub use rmcp::model::ElicitationAction;
 pub use rmcp_client::Elicitation;
 pub use rmcp_client::ElicitationResponse;
+pub use rmcp_client::is_ops_holder_conflict_error;
 pub use rmcp_client::ListToolsWithConnectorIdResult;
 pub use rmcp_client::RmcpClient;
 pub use rmcp_client::SendElicitation;
