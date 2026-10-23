@@ -4872,6 +4872,63 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn('"notarized": False', macos_stage_script)
         self.assertNotIn("${{ needs.metadata.outputs.display_ref }}", macos_stage_script)
 
+    def test_sedna_branch_preview_version_preserves_one_metadata_separator(self) -> None:
+        metadata_step = workflow_step_by_name(
+            REPO_ROOT / ".github/workflows/sedna-branch-build.yml",
+            "metadata",
+            "Compute preview version",
+        )
+        script = metadata_step.get("run") or ""
+        git_fixture = """
+git() {
+  case "$1" in
+    rev-parse) printf '%s\\n' deadbeef ;;
+    tag) printf '%s\\n' "${PREVIEW_TEST_TAG}" ;;
+    *) return 2 ;;
+  esac
+}
+"""
+        cases = (
+            ("", "0.0.0-sedna.0+ci.42.gdeadbeef"),
+            ("v1.2.3-sedna.4", "1.2.3-sedna.4+ci.42.gdeadbeef"),
+            (
+                "v0.146.0-alpha.8-sedna.10",
+                "0.146.0-alpha.8-sedna.10+ci.42.gdeadbeef",
+            ),
+            (
+                "v0.146.0-alpha.8-sedna.10+upstream.8593",
+                "0.146.0-alpha.8-sedna.10+upstream.8593.ci.42.gdeadbeef",
+            ),
+        )
+        commit = "deadbeef" + "0" * 32
+        for tag, expected in cases:
+            with self.subTest(tag=tag), tempfile.TemporaryDirectory() as tmpdir:
+                output_path = Path(tmpdir) / "github-output"
+                proc = subprocess.run(
+                    ["bash", "-c", git_fixture + script],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env={
+                        **os.environ,
+                        "PREVIEW_TEST_TAG": tag,
+                        "GITHUB_OUTPUT": str(output_path),
+                        "GITHUB_RUN_NUMBER": "42",
+                        "CHECKOUT_REF": commit,
+                        "DISPLAY_REF": "feature/preview",
+                        "HOST_ONLY": "false",
+                        "PLATFORM": "linux-x86_64",
+                    },
+                )
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                outputs = parse_github_output_file(output_path)
+                self.assertEqual(outputs["preview_version"], expected)
+                self.assertEqual(outputs["preview_version"].count("+"), 1)
+                self.assertEqual(outputs["checkout_ref"], commit)
+                self.assertEqual(
+                    outputs["artifact_name"], "sedna-branch-feature-preview-deadbeef"
+                )
+
     def test_sedna_branch_build_host_only_command_has_valid_shell_syntax(self) -> None:
         workflow_path = REPO_ROOT / ".github/workflows/sedna-branch-build.yml"
         payload = load_workflow_payload(workflow_path)
