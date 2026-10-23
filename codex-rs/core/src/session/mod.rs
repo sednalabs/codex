@@ -1562,14 +1562,9 @@ impl Session {
                     report
                 }
                 None => {
-                    let mut report = call
-                        .mailbox_wait_report
-                        .clone()
-                        .ok_or_else(|| {
-                            CodexErr::Fatal(
-                                "stored mailbox wait has no structured report".to_string(),
-                            )
-                        })?;
+                    let mut report = call.mailbox_wait_report.clone().ok_or_else(|| {
+                        CodexErr::Fatal("stored mailbox wait has no structured report".to_string())
+                    })?;
                     if !already_completed {
                         report.completion_reason = Some(MailboxWakeCause::Interrupted);
                         report.condition_satisfied = false;
