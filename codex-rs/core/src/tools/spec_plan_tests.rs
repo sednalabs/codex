@@ -220,8 +220,17 @@ fn assert_mailbox_namespace_schema(plan: &ToolPlanProbe, namespace_name: &str) {
         ])
     );
     assert!(!send_properties.contains_key("interrupt"));
-    for property in ["work_ref", "reply_to", "supersedes", "activate_if_idle", "wake_wait"] {
-        assert!(send_properties.contains_key(property), "missing `{property}`");
+    for property in [
+        "work_ref",
+        "reply_to",
+        "supersedes",
+        "activate_if_idle",
+        "wake_wait",
+    ] {
+        assert!(
+            send_properties.contains_key(property),
+            "missing `{property}`"
+        );
     }
     let send_output = send_message
         .output_schema
@@ -235,10 +244,12 @@ fn assert_mailbox_namespace_schema(plan: &ToolPlanProbe, namespace_name: &str) {
         send_output["properties"]["activation_disposition"]["enum"],
         json!(["not_requested", "already_active", "activated", "denied"])
     );
-    assert!(send_output["properties"]["durable_state"]["description"]
-        .as_str()
-        .expect("durable receipt description")
-        .contains("not establish that the recipient read or understood it"));
+    assert!(
+        send_output["properties"]["durable_state"]["description"]
+            .as_str()
+            .expect("durable receipt description")
+            .contains("not establish that the recipient read or understood it")
+    );
 
     let wait_agent = namespace_function(plan, namespace_name, "wait_agent");
     let wait_properties = wait_agent
@@ -261,29 +272,48 @@ fn assert_mailbox_namespace_schema(plan: &ToolPlanProbe, namespace_name: &str) {
             codex_tools::JsonSchemaPrimitiveType::Integer
         ))
     );
-    assert!(wait_properties["timeout_ms"]
-        .description
-        .as_deref()
-        .expect("timeout description")
-        .contains("unbounded event-only wait"));
+    assert!(
+        wait_properties["timeout_ms"]
+            .description
+            .as_deref()
+            .expect("timeout description")
+            .contains("unbounded event-only wait")
+    );
     let wait_output = wait_agent
         .output_schema
         .as_ref()
         .expect("wait_agent output schema");
-    assert!(wait_output["required"]
-        .as_array()
-        .expect("wait result required fields")
-        .contains(&json!("return_when")));
-    assert_eq!(wait_output["properties"]["return_when"]["enum"], json!(["any", "all"]));
-    assert!(wait_output["properties"].get("condition_satisfied").is_some());
+    assert!(
+        wait_output["required"]
+            .as_array()
+            .expect("wait result required fields")
+            .contains(&json!("return_when"))
+    );
+    assert_eq!(
+        wait_output["properties"]["return_when"]["enum"],
+        json!(["any", "all"])
+    );
+    assert!(
+        wait_output["properties"]
+            .get("condition_satisfied")
+            .is_some()
+    );
     assert!(wait_output["properties"].get("quiet_count").is_some());
-    assert_eq!(wait_output["properties"]["completed"]["items"]["required"], json!(["status"]));
-    assert_eq!(wait_output["properties"]["pending"]["items"]["required"], json!(["status"]));
+    assert_eq!(
+        wait_output["properties"]["completed"]["items"]["required"],
+        json!(["status"])
+    );
+    assert_eq!(
+        wait_output["properties"]["pending"]["items"]["required"],
+        json!(["status"])
+    );
     for result_list in ["completed", "pending"] {
         for field in ["work_ref", "message_id", "agent", "status"] {
-            assert!(wait_output["properties"][result_list]["items"]["properties"]
-                .get(field)
-                .is_some());
+            assert!(
+                wait_output["properties"][result_list]["items"]["properties"]
+                    .get(field)
+                    .is_some()
+            );
         }
     }
     assert_eq!(
@@ -319,11 +349,13 @@ fn assert_mailbox_namespace_schema(plan: &ToolPlanProbe, namespace_name: &str) {
             codex_tools::JsonSchemaPrimitiveType::Integer
         ))
     );
-    assert!(read_properties["limit"]
-        .description
-        .as_deref()
-        .expect("mailbox page limit description")
-        .contains("capped at 100"));
+    assert!(
+        read_properties["limit"]
+            .description
+            .as_deref()
+            .expect("mailbox page limit description")
+            .contains("capped at 100")
+    );
     assert_eq!(
         mailbox_read
             .output_schema
@@ -345,10 +377,12 @@ fn assert_mailbox_namespace_schema(plan: &ToolPlanProbe, namespace_name: &str) {
         let tool = namespace_function(plan, namespace_name, tool_name);
         let output = tool.output_schema.as_ref().expect("agent result schema");
         assert_eq!(output["properties"]["work_ref"]["type"], json!("string"));
-        assert!(!output["required"]
-            .as_array()
-            .expect("required result fields")
-            .contains(&json!("work_ref")));
+        assert!(
+            !output["required"]
+                .as_array()
+                .expect("required result fields")
+                .contains(&json!("work_ref"))
+        );
     }
 }
 
@@ -1764,7 +1798,10 @@ async fn mailbox_schemas_survive_ordinary_namespaced_and_code_mode_exposure() {
     ordinary.assert_visible_contains(&["agents"]);
     for tool_name in ["send_message", "wait_agent", "mailbox_read"] {
         assert!(
-            ordinary.namespace_function_names("agents").iter().any(|name| name == tool_name),
+            ordinary
+                .namespace_function_names("agents")
+                .iter()
+                .any(|name| name == tool_name),
             "expected {tool_name} in the ordinary namespaced mailbox surface"
         );
     }
@@ -1799,10 +1836,12 @@ async fn mailbox_feature_disabled_keeps_legacy_v2_message_and_wait_schemas() {
     let ToolSpec::Namespace(namespace) = plan.visible_spec(MULTI_AGENT_V2_NAMESPACE) else {
         panic!("expected {MULTI_AGENT_V2_NAMESPACE} namespace");
     };
-    assert!(!plan
-        .namespace_function_names(MULTI_AGENT_V2_NAMESPACE)
-        .iter()
-        .any(|name| name == "mailbox_read"));
+    assert!(
+        !plan
+            .namespace_function_names(MULTI_AGENT_V2_NAMESPACE)
+            .iter()
+            .any(|name| name == "mailbox_read")
+    );
     let send_message = namespace
         .tools
         .iter()
@@ -1839,7 +1878,11 @@ async fn mailbox_feature_disabled_keeps_legacy_v2_message_and_wait_schemas() {
         .as_ref()
         .expect("legacy wait output schema");
     assert!(wait_output["properties"].get("requested_ids").is_some());
-    assert!(wait_output["properties"].get("condition_satisfied").is_none());
+    assert!(
+        wait_output["properties"]
+            .get("condition_satisfied")
+            .is_none()
+    );
 }
 
 #[tokio::test]

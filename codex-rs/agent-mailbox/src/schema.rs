@@ -298,6 +298,14 @@ pub(crate) async fn initialize(pool: &SqlitePool) -> MailboxResult<()> {
     .execute(&mut *transaction)
     .await?;
     sqlx::query(
+        "CREATE INDEX IF NOT EXISTS mailbox_messages_active_unread
+         ON mailbox_messages(recipient, seq)
+         WHERE (canonical = 0 OR input_admitted = 0)
+           AND superseded_by IS NULL AND withdrawn = 0",
+    )
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
         "CREATE INDEX IF NOT EXISTS mailbox_messages_unadmitted
          ON mailbox_messages(recipient, canonical, input_admitted, seq)",
     )

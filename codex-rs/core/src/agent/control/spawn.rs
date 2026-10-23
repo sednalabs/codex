@@ -420,7 +420,9 @@ impl AgentControl {
                     input: communication,
                 })
                 .await
-                .map_err(|err| CodexErr::Fatal(format!("agent mailbox acceptance failed: {err}")))?;
+                .map_err(|err| {
+                    CodexErr::Fatal(format!("agent mailbox acceptance failed: {err}"))
+                })?;
             let metadata = self.get_agent_metadata(work.agent).ok_or_else(|| {
                 CodexErr::UnsupportedOperation(format!(
                     "accepted work {} retains original child {}; native recovery is required and no replacement was spawned",

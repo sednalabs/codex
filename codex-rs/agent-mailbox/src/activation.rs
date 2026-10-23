@@ -13,14 +13,13 @@ impl Mailbox {
         message_id: &str,
     ) -> MailboxResult<ActivationDecision> {
         let mut transaction = self.pool.begin().await?;
-        let message = sqlx::query(
-            "SELECT id FROM mailbox_messages WHERE id = ? AND sender = ? LIMIT 1",
-        )
-        .bind(message_id)
-        .bind(sender.to_string())
-        .fetch_optional(&mut *transaction)
-        .await?
-        .ok_or(MailboxError::ReferenceMismatch)?;
+        let message =
+            sqlx::query("SELECT id FROM mailbox_messages WHERE id = ? AND sender = ? LIMIT 1")
+                .bind(message_id)
+                .bind(sender.to_string())
+                .fetch_optional(&mut *transaction)
+                .await?
+                .ok_or(MailboxError::ReferenceMismatch)?;
         let exact_id: String = message.try_get("id")?;
         let claimed = sqlx::query(
             "UPDATE mailbox_activations SET state = 'activating'
@@ -119,6 +118,8 @@ fn parse_activation_disposition(value: &str) -> MailboxResult<ActivationDisposit
         "activated" => Ok(ActivationDisposition::Activated),
         "denied" => Ok(ActivationDisposition::Denied),
         "unknown" => Ok(ActivationDisposition::Unknown),
-        _ => Err(MailboxError::InvalidInput("stored activation disposition".into())),
+        _ => Err(MailboxError::InvalidInput(
+            "stored activation disposition".into(),
+        )),
     }
 }

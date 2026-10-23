@@ -109,7 +109,7 @@ pub(crate) async fn save_outcome_tx(
     outcome: Outcome,
 ) -> MailboxResult<()> {
     let result = sqlx::query(
-        "UPDATE mailbox_work SET outcome_json = ?, outcome_id = ?
+        "UPDATE mailbox_work SET outcome_json = ?, outcome_id = ?, dispatch_state = 'dispatched'
          WHERE id = ? AND issuer = ? AND agent = ? AND submission_id = ?
            AND outcome_json IS NULL",
     )

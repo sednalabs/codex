@@ -90,7 +90,9 @@ pub(super) async fn deliver_envelope(
     envelope: &Envelope,
 ) -> Result<MessageMetadata, FunctionCallError> {
     if envelope.recipient != session.thread_id {
-        return Err(mailbox_error("message is not addressed to this native thread"));
+        return Err(mailbox_error(
+            "message is not addressed to this native thread",
+        ));
     }
     session
         .record_inter_agent_communication(turn, envelope.communication.clone())
@@ -118,53 +120,100 @@ impl ToolExecutor<ToolInvocation> for SendHandler {
 
     fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
         Box::pin(async move {
-            let ToolInvocation { session, turn, payload, call_id, .. } = invocation;
+            let ToolInvocation {
+                session,
+                turn,
+                payload,
+                call_id,
+                ..
+            } = invocation;
             let args: SendArgs = parse_arguments(&function_arguments(payload)?)?;
             if args.message.trim().is_empty() {
                 return Err(mailbox_error("message cannot be empty"));
             }
             let mailbox = mailbox_for(&session)?;
             let recipient = resolve_agent_target(&session, &turn, &args.target).await?;
-            let metadata = session.services.agent_control.ensure_agent_known(recipient)
+            let metadata = session
+                .services
+                .agent_control
+                .ensure_agent_known(recipient)
                 .map_err(|err| collab_agent_error(recipient, err))?;
-            let recipient_path = metadata.agent_path.ok_or_else(|| mailbox_error("recipient has no native agent path"))?;
-            let sender_path = turn.session_source.get_agent_path().unwrap_or_else(AgentPath::root);
+            let recipient_path = metadata
+                .agent_path
+                .ok_or_else(|| mailbox_error("recipient has no native agent path"))?;
+            let sender_path = turn
+                .session_source
+                .get_agent_path()
+                .unwrap_or_else(AgentPath::root);
             let work_ref = match args.work_ref.as_deref() {
-                Some(id) => Some(mailbox.work_for_message_scope(session.thread_id, recipient, id)
-                    .await.map_err(mailbox_error)?
-                    .ok_or_else(|| mailbox_error("work_ref does not belong to this exact author/recipient scope"))?),
+                Some(id) => Some(
+                    mailbox
+                        .work_for_message_scope(session.thread_id, recipient, id)
+                        .await
+                        .map_err(mailbox_error)?
+                        .ok_or_else(|| {
+                            mailbox_error(
+                                "work_ref does not belong to this exact author/recipient scope",
+                            )
+                        })?,
+                ),
                 None => None,
             };
             let legacy_attention = args.kind.is_none() && args.wake_wait;
-            let envelope = mailbox.accept_message(MessageDraft {
-                invocation_key: call_id,
-                sender: session.thread_id,
-                recipient,
-                communication: InterAgentCommunication::new_encrypted(
-                    sender_path,
-                    recipient_path.clone(),
-                    Vec::new(),
-                    args.message,
-                    /*trigger_turn*/ false,
-                ),
-                kind: args.kind.unwrap_or_default(),
-                work_ref,
-                reply_to: args.reply_to,
-                supersedes: args.supersedes,
-                legacy_attention,
-                activate_if_idle: args.activate_if_idle,
-            }).await.map_err(mailbox_error)?;
+            let envelope = mailbox
+                .accept_message(MessageDraft {
+                    invocation_key: call_id,
+                    sender: session.thread_id,
+                    recipient,
+                    communication: InterAgentCommunication::new_encrypted(
+                        sender_path,
+                        recipient_path.clone(),
+                        Vec::new(),
+                        args.message,
+                        /*trigger_turn*/ false,
+                    ),
+                    kind: args.kind.unwrap_or_default(),
+                    work_ref,
+                    reply_to: args.reply_to,
+                    supersedes: args.supersedes,
+                    legacy_attention,
+                    activate_if_idle: args.activate_if_idle,
+                })
+                .await
+                .map_err(mailbox_error)?;
             let (activation_disposition, activation_reason) = if args.activate_if_idle {
-                match mailbox.begin_activation(session.thread_id, &envelope.id).await {
+                match mailbox
+                    .begin_activation(session.thread_id, &envelope.id)
+                    .await
+                {
                     Ok(ActivationDecision::Activate) => {
-                        let result = session.services.agent_control
-                            .mailbox_activate_if_idle(recipient, &envelope).await;
+                        let result = session
+                            .services
+                            .agent_control
+                            .mailbox_activate_if_idle(recipient, &envelope)
+                            .await;
                         let (disposition, reason) = match result {
                             Ok(result) => result,
-                            Err(_) => (ActivationDisposition::Unknown, Some("activation_outcome_unknown_original_message_retained".to_string())),
+                            Err(_) => (
+                                ActivationDisposition::Unknown,
+                                Some(
+                                    "activation_outcome_unknown_original_message_retained"
+                                        .to_string(),
+                                ),
+                            ),
                         };
-                        if mailbox.record_activation(session.thread_id, &envelope.id, disposition).await.is_err() {
-                            (ActivationDisposition::Unknown, Some("activation_receipt_not_persisted_original_message_retained".to_string()))
+                        if mailbox
+                            .record_activation(session.thread_id, &envelope.id, disposition)
+                            .await
+                            .is_err()
+                        {
+                            (
+                                ActivationDisposition::Unknown,
+                                Some(
+                                    "activation_receipt_not_persisted_original_message_retained"
+                                        .to_string(),
+                                ),
+                            )
                         } else {
                             (disposition, reason)
                         }
@@ -178,17 +227,26 @@ impl ToolExecutor<ToolInvocation> for SendHandler {
             } else {
                 // The envelope is already committed. Optional activation bookkeeping must
                 // never hide acceptance or invite the caller to create a duplicate message.
-                let _ = mailbox.record_activation(session.thread_id, &envelope.id, ActivationDisposition::NotRequested).await;
+                let _ = mailbox
+                    .record_activation(
+                        session.thread_id,
+                        &envelope.id,
+                        ActivationDisposition::NotRequested,
+                    )
+                    .await;
                 (ActivationDisposition::NotRequested, None)
             };
             Ok(boxed_tool_output(FunctionToolOutput::from_text(
-                tool_output_json_text(&SendReceipt {
-                    message_id: envelope.id,
-                    durable_state: "accepted",
-                    activation_disposition,
-                    activation_reason,
-                    recipient_task_name: recipient_path.to_string(),
-                }, "send_message"),
+                tool_output_json_text(
+                    &SendReceipt {
+                        message_id: envelope.id,
+                        durable_state: "accepted",
+                        activation_disposition,
+                        activation_reason,
+                        recipient_task_name: recipient_path.to_string(),
+                    },
+                    "send_message",
+                ),
                 Some(true),
             )))
         })
@@ -212,9 +270,18 @@ impl ToolExecutor<ToolInvocation> for ReadHandler {
 
     fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
         Box::pin(async move {
-            let ToolInvocation { session, turn, payload, .. } = invocation;
+            let ToolInvocation {
+                session,
+                turn,
+                payload,
+                ..
+            } = invocation;
             let args: ReadArgs = parse_arguments(&function_arguments(payload)?)?;
-            let cursor = args.cursor.as_deref().map(str::parse::<i64>).transpose()
+            let cursor = args
+                .cursor
+                .as_deref()
+                .map(str::parse::<i64>)
+                .transpose()
                 .map_err(|_| mailbox_error("cursor must be a returned mailbox cursor"))?;
             let mailbox = mailbox_for(&session)?;
             let requested_limit = args.limit.unwrap_or(20);
@@ -223,8 +290,10 @@ impl ToolExecutor<ToolInvocation> for ReadHandler {
             }
             // An encrypted body cannot be safely truncated. Every accepted body is capped
             // at 8KiB; admit at most two per call and retain the rest behind the page cursor.
-            let page = mailbox.pending_page(session.thread_id, cursor, requested_limit.min(2))
-                .await.map_err(mailbox_error)?;
+            let page = mailbox
+                .pending_page(session.thread_id, cursor, requested_limit.min(2))
+                .await
+                .map_err(mailbox_error)?;
             let mut messages = Vec::with_capacity(page.items.len());
             for envelope in &page.items {
                 messages.push(deliver_envelope(&session, &turn, envelope).await?);
@@ -232,32 +301,52 @@ impl ToolExecutor<ToolInvocation> for ReadHandler {
                 if matches!(envelope.kind, MessageKind::Request | MessageKind::Alert)
                     || envelope.legacy_attention
                 {
-                    observations.push(ObservationTarget::Attention(format!("attention:{}", envelope.id)));
+                    observations.push(ObservationTarget::Attention(format!(
+                        "attention:{}",
+                        envelope.id
+                    )));
                 }
                 if envelope.reply_to.is_some() {
                     observations.push(ObservationTarget::Reply(envelope.id.clone()));
                 }
-                if envelope.communication.origin == Some(codex_protocol::protocol::AgentCommunicationOrigin::Result) {
+                if envelope.communication.origin
+                    == Some(codex_protocol::protocol::AgentCommunicationOrigin::Result)
+                {
                     // A native terminal result can cover several admitted inputs. Resolve
                     // the bounded exact body relation rather than infer from agent history.
-                    observations.extend(mailbox.work_for_outcome(session.thread_id, &envelope.id)
-                        .await.map_err(mailbox_error)?.into_iter().map(ObservationTarget::Work));
+                    observations.extend(
+                        mailbox
+                            .work_for_outcome(session.thread_id, &envelope.id)
+                            .await
+                            .map_err(mailbox_error)?
+                            .into_iter()
+                            .map(ObservationTarget::Work),
+                    );
                 }
                 // Reading a body can observe its own attention/reply only; it never observes
                 // unrelated work outcomes or unresolved request obligations.
                 if !observations.is_empty() {
                     for batch in observations.chunks(100) {
-                        mailbox.acknowledge_observed(session.thread_id, batch).await.map_err(mailbox_error)?;
+                        mailbox
+                            .acknowledge_observed(session.thread_id, batch)
+                            .await
+                            .map_err(mailbox_error)?;
                     }
                 }
             }
-            let quiet_count = mailbox.quiet_count(session.thread_id).await.map_err(mailbox_error)?;
+            let quiet_count = mailbox
+                .quiet_count(session.thread_id)
+                .await
+                .map_err(mailbox_error)?;
             Ok(boxed_tool_output(FunctionToolOutput::from_text(
-                tool_output_json_text(&ReadReceipt {
-                    messages,
-                    next_cursor: page.next_cursor.map(|cursor| cursor.to_string()),
-                    quiet_count,
-                }, "mailbox_read"),
+                tool_output_json_text(
+                    &ReadReceipt {
+                        messages,
+                        next_cursor: page.next_cursor.map(|cursor| cursor.to_string()),
+                        quiet_count,
+                    },
+                    "mailbox_read",
+                ),
                 Some(true),
             )))
         })

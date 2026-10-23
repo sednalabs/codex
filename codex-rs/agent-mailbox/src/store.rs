@@ -47,6 +47,7 @@ impl Mailbox {
         });
     }
 
+    #[cfg(test)]
     pub(crate) fn pool(&self) -> &SqlitePool {
         &self.pool
     }

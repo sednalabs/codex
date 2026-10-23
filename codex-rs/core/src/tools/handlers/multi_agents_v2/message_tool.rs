@@ -270,8 +270,11 @@ async fn handle_message_submission_inner(
         FunctionCallError::RespondToModel("target agent is missing an agent_path".to_string())
     })?;
     if mode == MessageDeliveryMode::TriggerTurn
-        && let Some(work) = session.services.agent_control
-            .mailbox_work_for_key(session.thread_id, &call_id).await
+        && let Some(work) = session
+            .services
+            .agent_control
+            .mailbox_work_for_key(session.thread_id, &call_id)
+            .await
             .map_err(|err| collab_agent_error(receiver_thread_id, err))?
         && let Some(mailbox) = session.services.agent_control.mailbox()
     {
@@ -280,30 +283,55 @@ async fn handle_message_submission_inner(
                 "native invocation was already accepted for a different agent".to_string(),
             ));
         }
-        mailbox.accept_work(codex_agent_mailbox::NativeWork {
-            native_key: call_id.clone(),
-            issuer: session.thread_id,
-            agent: work.agent,
-            submission_id: work.submission_id.clone(),
-            input: communication_from_tool_message(
-                turn.session_source.get_agent_path().unwrap_or_else(AgentPath::root),
-                receiver_agent_path.clone(), message.clone(),
-            ),
-        }).await.map_err(super::mailbox_message::mailbox_error)?;
-        let dispatch_state = mailbox.dispatch_state(&work).await.map_err(super::mailbox_message::mailbox_error)?;
+        mailbox
+            .accept_work(codex_agent_mailbox::NativeWork {
+                native_key: call_id.clone(),
+                issuer: session.thread_id,
+                agent: work.agent,
+                submission_id: work.submission_id.clone(),
+                input: communication_from_tool_message(
+                    turn.session_source
+                        .get_agent_path()
+                        .unwrap_or_else(AgentPath::root),
+                    receiver_agent_path.clone(),
+                    message.clone(),
+                ),
+            })
+            .await
+            .map_err(super::mailbox_message::mailbox_error)?;
+        let dispatch_state = mailbox
+            .dispatch_state(&work)
+            .await
+            .map_err(super::mailbox_message::mailbox_error)?;
         if dispatch_state != codex_agent_mailbox::DispatchState::Accepted {
-        let snapshot = session.services.agent_control.get_agent_config_snapshot(receiver_thread_id).await;
-        return Ok(FunctionToolOutput::from_text(tool_output_json_text(&FollowupTaskResult {
-            task_name: receiver_agent_path.to_string(),
-            recipient_task_name: receiver_agent_path.to_string(),
-            work_ref: Some(work.id),
-            dispatch_state: Some(dispatch_state),
-            effective_identity_scope: "recipient",
-            effective_model: snapshot.as_ref().map(|config| config.model.clone()),
-            effective_model_provider_id: snapshot.as_ref().map(|config| config.model_provider_id.clone()),
-            effective_reasoning_effort: snapshot.as_ref().and_then(|config| config.reasoning_effort.clone()),
-            effective_service_tier: snapshot.as_ref().and_then(|config| config.service_tier.clone()),
-        }, "followup_task"), Some(true)));
+            let snapshot = session
+                .services
+                .agent_control
+                .get_agent_config_snapshot(receiver_thread_id)
+                .await;
+            return Ok(FunctionToolOutput::from_text(
+                tool_output_json_text(
+                    &FollowupTaskResult {
+                        task_name: receiver_agent_path.to_string(),
+                        recipient_task_name: receiver_agent_path.to_string(),
+                        work_ref: Some(work.id),
+                        dispatch_state: Some(dispatch_state),
+                        effective_identity_scope: "recipient",
+                        effective_model: snapshot.as_ref().map(|config| config.model.clone()),
+                        effective_model_provider_id: snapshot
+                            .as_ref()
+                            .map(|config| config.model_provider_id.clone()),
+                        effective_reasoning_effort: snapshot
+                            .as_ref()
+                            .and_then(|config| config.reasoning_effort.clone()),
+                        effective_service_tier: snapshot
+                            .as_ref()
+                            .and_then(|config| config.service_tier.clone()),
+                    },
+                    "followup_task",
+                ),
+                Some(true),
+            ));
         }
     }
     let delivery = match mode {
@@ -362,8 +390,8 @@ async fn handle_message_submission_inner(
         MessageDeliveryMode::QueueOnly => AgentCommunicationKind::Message,
         MessageDeliveryMode::TriggerTurn => AgentCommunicationKind::Followup,
     };
-    let context = AgentCommunicationContext::new(kind, session.thread_id)
-        .with_native_key(call_id.clone());
+    let context =
+        AgentCommunicationContext::new(kind, session.thread_id).with_native_key(call_id.clone());
     let result = delivery
         .send(mode.apply(communication), context, interrupt)
         .await
@@ -420,7 +448,10 @@ async fn handle_message_submission_inner(
                         .await
                         .map_err(|err| collab_agent_error(receiver_thread_id, err))?
                         .map(|work| work.id),
-                    dispatch_state: session.services.agent_control.mailbox_enabled()
+                    dispatch_state: session
+                        .services
+                        .agent_control
+                        .mailbox_enabled()
                         .then_some(codex_agent_mailbox::DispatchState::Dispatched),
                     effective_identity_scope: "recipient",
                     effective_model: Some(receiver_config.model),

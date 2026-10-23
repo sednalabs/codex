@@ -1185,7 +1185,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn configured_v2_spawn_fast_completion_cancellation_retry_reuses_native_work()
+    async fn configured_v2_mailbox_spawn_fast_completion_cancellation_retry_reuses_native_work()
     -> anyhow::Result<()> {
         let (mut session, mut turn_context) =
             crate::session::tests::make_session_and_context().await;

@@ -65,8 +65,8 @@ pub(crate) fn validate_auto_response_size(groups: &[ResponseGroup]) -> MailboxRe
     let mut total = 0_usize;
     for group in groups {
         if let Some(response) = group.response.as_ref() {
-            let bytes = response.content.len()
-                + response.encrypted_content.as_ref().map_or(0, String::len);
+            let bytes =
+                response.content.len() + response.encrypted_content.as_ref().map_or(0, String::len);
             if bytes > MAX_RESPONSE_BYTES {
                 return Err(MailboxError::Backpressure("response message byte limit"));
             }
@@ -74,7 +74,9 @@ pub(crate) fn validate_auto_response_size(groups: &[ResponseGroup]) -> MailboxRe
         }
     }
     if total > MAX_AUTO_RESPONSE_BYTES {
-        return Err(MailboxError::Backpressure("automatic response aggregate byte limit"));
+        return Err(MailboxError::Backpressure(
+            "automatic response aggregate byte limit",
+        ));
     }
     Ok(())
 }
@@ -113,7 +115,9 @@ pub(crate) fn ensure_terminal_responses(
             source_ref,
         })?;
         if content.len() > MAX_RESPONSE_BYTES {
-            return Err(MailboxError::Backpressure("typed outcome envelope byte limit"));
+            return Err(MailboxError::Backpressure(
+                "typed outcome envelope byte limit",
+            ));
         }
         let mut communication = InterAgentCommunication::new(
             group.author.clone(),
@@ -160,4 +164,3 @@ pub(crate) async fn insert_response_group(
     group.output_id = Some(envelope.id.clone());
     Ok(group.output_id.clone())
 }
-

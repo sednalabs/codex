@@ -238,9 +238,10 @@ impl PreparedV2AgentDelivery {
                 &mut submission_id,
             )
             .await?;
-        let (work, dispatch) = accepted.map_or((None, DispatchDecision::Dispatch), |(work, decision)| {
-            (Some(work), decision)
-        });
+        let (work, dispatch) = accepted
+            .map_or((None, DispatchDecision::Dispatch), |(work, decision)| {
+                (Some(work), decision)
+            });
         if dispatch != DispatchDecision::Dispatch {
             return Ok(RecordedSubmission {
                 id: submission_id,
@@ -326,7 +327,11 @@ impl PreparedV2AgentDelivery {
                         DispatchDecision::RecoveryNeeded => {
                             return Err(CodexErr::UnsupportedOperation(format!(
                                 "accepted work {} requires native recovery; its original input is retained and was not resent",
-                                submission.work.as_ref().map(|work| work.id.as_str()).unwrap_or("unknown")
+                                submission
+                                    .work
+                                    .as_ref()
+                                    .map(|work| work.id.as_str())
+                                    .unwrap_or("unknown")
                             )));
                         }
                         DispatchDecision::Dispatch => {}
@@ -348,7 +353,11 @@ impl PreparedV2AgentDelivery {
                 DispatchDecision::RecoveryNeeded => {
                     return Err(CodexErr::UnsupportedOperation(format!(
                         "accepted work {} requires native recovery; its original input is retained and was not resent",
-                        submission.work.as_ref().map(|work| work.id.as_str()).unwrap_or("unknown")
+                        submission
+                            .work
+                            .as_ref()
+                            .map(|work| work.id.as_str())
+                            .unwrap_or("unknown")
                     )));
                 }
                 DispatchDecision::Dispatch => {}

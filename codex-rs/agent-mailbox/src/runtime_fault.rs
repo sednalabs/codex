@@ -43,7 +43,10 @@ impl Mailbox {
             return true;
         }
         let faults = lock(&self.runtime_faults);
-        faults.overflowed || agents.iter().any(|agent| faults.agents.contains(&agent.to_string()))
+        faults.overflowed
+            || agents
+                .iter()
+                .any(|agent| faults.agents.contains(&agent.to_string()))
     }
 
     /// Clear one exact agent's fault only after explicit adapter recovery.
@@ -57,6 +60,7 @@ impl Mailbox {
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
-

@@ -1,5 +1,5 @@
-use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::ThreadId;
+use codex_protocol::protocol::InterAgentCommunication;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

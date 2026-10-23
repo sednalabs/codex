@@ -3,8 +3,8 @@ use crate::store::Mailbox;
 use crate::types::ReturnWhen;
 use codex_protocol::ThreadId;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, Weak};
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex, Weak};
 
 const MAX_ACTIVE_WAITS: usize = 4_096;
 const MAX_PEERS_PER_WAIT: usize = 100;
@@ -37,8 +37,12 @@ pub struct InputArrival {
 impl Drop for InputArrival {
     fn drop(&mut self) {
         let waits = lock(&self.mailbox.waits);
-        self.mailbox.wait_input_generation.fetch_add(1, Ordering::AcqRel);
-        self.mailbox.pending_input_arrivals.fetch_sub(1, Ordering::AcqRel);
+        self.mailbox
+            .wait_input_generation
+            .fetch_add(1, Ordering::AcqRel);
+        self.mailbox
+            .pending_input_arrivals
+            .fetch_sub(1, Ordering::AcqRel);
         drop(waits);
         self.mailbox.notify_changed();
     }
@@ -73,7 +77,9 @@ impl Mailbox {
         self.wait_input_generation.fetch_add(1, Ordering::AcqRel);
         self.pending_input_arrivals.fetch_add(1, Ordering::AcqRel);
         drop(waits);
-        InputArrival { mailbox: self.clone() }
+        InputArrival {
+            mailbox: self.clone(),
+        }
     }
 
     /// Capture before the authoritative selection/input rescan.
@@ -113,7 +119,14 @@ impl Mailbox {
         has_escape: bool,
         input_generation: u64,
     ) -> MailboxResult<WaitRegistration> {
-        self.begin_wait_inner(wait_id, owner, peers, mode, has_escape, Some(input_generation))
+        self.begin_wait_inner(
+            wait_id,
+            owner,
+            peers,
+            mode,
+            has_escape,
+            Some(input_generation),
+        )
     }
 
     fn begin_wait_inner(
@@ -126,7 +139,9 @@ impl Mailbox {
         input_generation: Option<u64>,
     ) -> MailboxResult<WaitRegistration> {
         if wait_id.is_empty() || wait_id.len() > MAX_WAIT_ID_BYTES {
-            return Err(MailboxError::InvalidInput("invalid wait registration ID".into()));
+            return Err(MailboxError::InvalidInput(
+                "invalid wait registration ID".into(),
+            ));
         }
         if peers.len() > MAX_PEERS_PER_WAIT {
             return Err(MailboxError::Backpressure("wait dependency count"));
@@ -136,10 +151,14 @@ impl Mailbox {
             .map(|peer| peer.to_string())
             .collect::<Vec<_>>();
         if peers.iter().collect::<HashSet<_>>().len() != peers.len() {
-            return Err(MailboxError::InvalidInput("duplicate wait dependency".into()));
+            return Err(MailboxError::InvalidInput(
+                "duplicate wait dependency".into(),
+            ));
         }
         let mut waits = lock(&self.waits);
-        if input_generation.is_some_and(|generation| generation != self.wait_input_generation.load(Ordering::Acquire)) {
+        if input_generation.is_some_and(|generation| {
+            generation != self.wait_input_generation.load(Ordering::Acquire)
+        }) {
             return Err(MailboxError::StaleWaitSnapshot);
         }
         let has_escape = has_escape || self.pending_input_arrivals.load(Ordering::Acquire) != 0;
@@ -196,10 +215,16 @@ fn is_closed_owner(waits: &HashMap<String, ActiveWait>, owner: &str) -> bool {
             owner_waits.iter().all(|wait| match wait.mode {
                 // Any completes when one alternative is ready, so every peer
                 // must itself be blocked for this waiter to remain trapped.
-                ReturnWhen::Any => wait.peers.iter().all(|peer| previous.contains(peer.as_str())),
+                ReturnWhen::Any => wait
+                    .peers
+                    .iter()
+                    .all(|peer| previous.contains(peer.as_str())),
                 // All remains blocked while at least one required peer is
                 // blocked; other completed peers do not break the dependency.
-                ReturnWhen::All => wait.peers.iter().any(|peer| previous.contains(peer.as_str())),
+                ReturnWhen::All => wait
+                    .peers
+                    .iter()
+                    .any(|peer| previous.contains(peer.as_str())),
             })
         });
         if closed.len() == previous_len {
@@ -210,5 +235,7 @@ fn is_closed_owner(waits: &HashMap<String, ActiveWait>, owner: &str) -> bool {
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }

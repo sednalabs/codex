@@ -255,9 +255,7 @@ impl GoalRuntimeHandle {
             if self.inner.notification_store.has_forwarded_completion() {
                 return Ok(());
             }
-            if let Some((goal_id, codex_state::ThreadGoalStatus::Active)) =
-                external_goal.as_ref()
-            {
+            if let Some((goal_id, codex_state::ThreadGoalStatus::Active)) = external_goal.as_ref() {
                 let snapshot = self.inner.notification_store.snapshot();
                 if snapshot
                     .as_ref()

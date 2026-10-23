@@ -1,12 +1,11 @@
 use crate::error::{MailboxError, MailboxResult};
 use crate::message_delivery::envelope_from_row;
+use crate::outcome_store::{continuation_receipts_for, stored_outcome_receipt_for};
 use crate::store::Mailbox;
 use crate::types::{
-    Attention, Dependency, DependencyMode, ObservationTarget, ReturnWhen, Selection,
-    RequestDisposition, RequestSnapshot, Selector, Snapshot, SnapshotItem, SnapshotState,
-    WorkSnapshot,
+    Attention, Dependency, DependencyMode, ObservationTarget, RequestDisposition, RequestSnapshot,
+    ReturnWhen, Selection, Selector, Snapshot, SnapshotItem, SnapshotState, WorkSnapshot,
 };
-use crate::outcome_store::{continuation_receipts_for, stored_outcome_receipt_for};
 use crate::work::{parse_dispatch_state, work_ref_from_row};
 use codex_protocol::ThreadId;
 use sqlx::Row;
@@ -211,7 +210,10 @@ impl Mailbox {
                     )
                     .bind(recipient.to_string())
                     .bind(format!("attention:{}", work_ref.id))
-                    .bind(format!("attention:{}", row.try_get::<String, _>("outcome_id")?))
+                    .bind(format!(
+                        "attention:{}",
+                        row.try_get::<String, _>("outcome_id")?
+                    ))
                     .execute(&mut *transaction)
                     .await?;
                 }
@@ -233,7 +235,8 @@ impl Mailbox {
                     .await?;
                 }
                 ObservationTarget::Attention(id) => {
-                    acknowledge_attention(&mut transaction, id, recipient.to_string().as_str()).await?;
+                    acknowledge_attention(&mut transaction, id, recipient.to_string().as_str())
+                        .await?;
                 }
             }
         }
@@ -273,8 +276,10 @@ impl Mailbox {
             .map(|row| {
                 Ok(Attention {
                     id: row.try_get("id")?,
-                    recipient: ThreadId::from_string(row.try_get::<String, _>("recipient")?.as_str())
-                        .map_err(|_| MailboxError::InvalidInput("stored attention thread ID".into()))?,
+                    recipient: ThreadId::from_string(
+                        row.try_get::<String, _>("recipient")?.as_str(),
+                    )
+                    .map_err(|_| MailboxError::InvalidInput("stored attention thread ID".into()))?,
                     canonical: row.try_get::<i64, _>("canonical")? != 0,
                     observed: row.try_get::<i64, _>("observed")? != 0,
                 })
@@ -306,14 +311,13 @@ async fn acknowledge_attention(
     .execute(&mut **transaction)
     .await?;
     if result.rows_affected() == 0 {
-        let row = sqlx::query(
-            "SELECT canonical FROM mailbox_attention WHERE id = ? AND recipient = ?",
-        )
-        .bind(id)
-        .bind(recipient)
-        .fetch_optional(&mut **transaction)
-        .await?
-        .ok_or(MailboxError::ReferenceMismatch)?;
+        let row =
+            sqlx::query("SELECT canonical FROM mailbox_attention WHERE id = ? AND recipient = ?")
+                .bind(id)
+                .bind(recipient)
+                .fetch_optional(&mut **transaction)
+                .await?
+                .ok_or(MailboxError::ReferenceMismatch)?;
         if row.try_get::<i64, _>("canonical")? == 0 {
             return Err(MailboxError::NotCanonical);
         }

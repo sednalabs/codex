@@ -42,12 +42,18 @@ impl Handler {
 }
 
 impl ToolExecutor<ToolInvocation> for MailboxHandler {
-    fn tool_name(&self) -> ToolName { ToolName::plain("followup_task") }
-    fn spec(&self) -> ToolSpec { create_followup_task_tool() }
+    fn tool_name(&self) -> ToolName {
+        ToolName::plain("followup_task")
+    }
+    fn spec(&self) -> ToolSpec {
+        create_followup_task_tool()
+    }
     fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
         Box::pin(async move {
             if invocation.cancellation_token.is_cancelled() {
-                return Err(FunctionCallError::RespondToModel("follow-up was cancelled before native acceptance".to_string()));
+                return Err(FunctionCallError::RespondToModel(
+                    "follow-up was cancelled before native acceptance".to_string(),
+                ));
             }
             Handler.handle_call(invocation).await
         })

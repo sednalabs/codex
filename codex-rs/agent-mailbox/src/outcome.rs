@@ -1,21 +1,18 @@
 use crate::error::{MailboxError, MailboxResult};
 use crate::outcome_messages::{
-    ensure_terminal_responses, insert_response_group, response_groups,
-    validate_auto_response_size,
+    ensure_terminal_responses, insert_response_group, response_groups, validate_auto_response_size,
 };
 use crate::outcome_store::{
-    outcome_receipt_for, persist_continuation, save_outcome_tx, OutcomeData,
-    MAX_CONTINUATIONS_PER_WORK,
+    MAX_CONTINUATIONS_PER_WORK, OutcomeData, outcome_receipt_for, persist_continuation,
+    save_outcome_tx,
 };
 use crate::store::Mailbox;
 use crate::types::{
     Continuation, GoalBinding, Outcome, OutcomeReceipt, TurnOutcomeReceipt, WorkRef,
 };
-use crate::work::{
-    ensure_mailbox_id, exact_work_tx, new_mailbox_id, work_ref_from_row,
-};
-use codex_protocol::protocol::InterAgentCommunication;
+use crate::work::{ensure_mailbox_id, exact_work_tx, new_mailbox_id, work_ref_from_row};
 use codex_protocol::ThreadId;
+use codex_protocol::protocol::InterAgentCommunication;
 use sqlx::Row;
 
 const MAX_TURN_INPUTS: usize = 100;
@@ -54,7 +51,10 @@ impl Mailbox {
             .map(work_ref_from_row)
             .collect::<MailboxResult<Vec<_>>>()?;
 
-        if matches!(&continuation, Continuation::None | Continuation::Terminal(_)) {
+        if matches!(
+            &continuation,
+            Continuation::None | Continuation::Terminal(_)
+        ) {
             let binding_json = match &continuation {
                 Continuation::Terminal(binding) => Some(serde_json::to_string(binding)?),
                 _ => None,
@@ -74,7 +74,9 @@ impl Mailbox {
                     return Err(MailboxError::Backpressure("work continuation count"));
                 }
                 if unresolved.is_empty()
-                    || binding_json.as_ref().is_some_and(|binding| unresolved.contains(binding))
+                    || binding_json
+                        .as_ref()
+                        .is_some_and(|binding| unresolved.contains(binding))
                 {
                     eligible.push(work_ref);
                 }
@@ -149,7 +151,10 @@ impl Mailbox {
                 if unresolved.len() > MAX_CONTINUATIONS_PER_WORK as usize {
                     return Err(MailboxError::Backpressure("work continuation count"));
                 }
-                if unresolved.iter().any(|old_binding| old_binding != &binding_json) {
+                if unresolved
+                    .iter()
+                    .any(|old_binding| old_binding != &binding_json)
+                {
                     return Err(MailboxError::ReferenceMismatch);
                 }
             }
@@ -157,7 +162,10 @@ impl Mailbox {
                 let _response_id = insert_response_group(
                     &mut transaction,
                     group,
-                    format!("continuation:{}:{}:{}", recipient, source_turn_id, group.issuer),
+                    format!(
+                        "continuation:{}:{}:{}",
+                        recipient, source_turn_id, group.issuer
+                    ),
                     outcome,
                 )
                 .await?;
@@ -198,13 +206,7 @@ impl Mailbox {
             });
         }
 
-        ensure_terminal_responses(
-            &mut groups,
-            &refs,
-            outcome,
-            &continuation,
-            source_turn_id,
-        )?;
+        ensure_terminal_responses(&mut groups, &refs, outcome, &continuation, source_turn_id)?;
         validate_auto_response_size(&groups)?;
 
         let binding_json = match &continuation {
@@ -254,7 +256,10 @@ impl Mailbox {
                 group.output_id = insert_response_group(
                     &mut transaction,
                     group,
-                    format!("turn-outcome:{}:{}:{}", recipient, source_turn_id, group.issuer),
+                    format!(
+                        "turn-outcome:{}:{}:{}",
+                        recipient, source_turn_id, group.issuer
+                    ),
                     outcome,
                 )
                 .await?;
@@ -322,9 +327,7 @@ impl Mailbox {
                 .iter()
                 .find(|group| group.issuer == work_ref.issuer)
                 .is_some_and(|group| group.response.is_some());
-            receipts.push(
-                outcome_receipt_for(&self.pool, work_ref, group_id, has_response).await?,
-            );
+            receipts.push(outcome_receipt_for(&self.pool, work_ref, group_id, has_response).await?);
         }
         Ok(TurnOutcomeReceipt {
             outcomes: receipts,
@@ -353,7 +356,8 @@ impl Mailbox {
             validate_binding_for_work(binding, work_ref)?;
         }
         let mut transaction = self.pool.begin().await?;
-        let mut groups = response_groups(&mut transaction, &[work_ref.clone()], response.as_ref()).await?;
+        let mut groups =
+            response_groups(&mut transaction, &[work_ref.clone()], response.as_ref()).await?;
         let group = groups.pop().ok_or(MailboxError::ReferenceMismatch)?;
         let mut groups = vec![group];
         ensure_terminal_responses(
@@ -464,7 +468,9 @@ fn validate_binding_for_work(binding: &GoalBinding, work_ref: &WorkRef) -> Mailb
 
 fn validate_key(key: &str) -> MailboxResult<()> {
     if key.is_empty() || key.len() > MAX_KEY_BYTES {
-        Err(MailboxError::InvalidInput("invalid native turn or binding key".into()))
+        Err(MailboxError::InvalidInput(
+            "invalid native turn or binding key".into(),
+        ))
     } else {
         Ok(())
     }

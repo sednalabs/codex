@@ -249,10 +249,10 @@ impl Mailbox {
         let row = exact_work_tx(&mut transaction, work_ref).await?;
         let state = parse_dispatch_state(row.try_get::<String, _>("dispatch_state")?.as_str())?;
         match state {
-            DispatchState::Dispatching => {
+            DispatchState::Dispatching | DispatchState::Dispatched => {
                 sqlx::query(
                     "UPDATE mailbox_work SET dispatch_state = 'recovery_needed'
-                     WHERE id = ? AND dispatch_state = 'dispatching'
+                     WHERE id = ? AND dispatch_state IN ('dispatching', 'dispatched')
                        AND outcome_json IS NULL
                        AND NOT EXISTS (
                          SELECT 1 FROM mailbox_continuations AS continuation
@@ -265,7 +265,7 @@ impl Mailbox {
                 .await?;
             }
             DispatchState::RecoveryNeeded => {}
-            DispatchState::Accepted | DispatchState::Dispatched => {
+            DispatchState::Accepted => {
                 return Err(MailboxError::ReferenceMismatch);
             }
         }
@@ -376,6 +376,12 @@ impl Mailbox {
                 .bind(input_id)
                 .execute(&mut *transaction)
                 .await?;
+                // The provider established this exact native input. This is stronger
+                // evidence than a stale dispatch-recovery marker, without replaying it.
+                sqlx::query("UPDATE mailbox_work SET dispatch_state = 'dispatched' WHERE id = ?")
+                    .bind(&work_ref.id)
+                    .execute(&mut *transaction)
+                    .await?;
                 work_refs.push(work_ref);
                 added = true;
                 continue;

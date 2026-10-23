@@ -1,9 +1,9 @@
 use anyhow::Result;
 use codex_agent_mailbox::Mailbox;
 use codex_features::Feature;
+use codex_protocol::ThreadId;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
-use codex_protocol::ThreadId;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_function_call_with_namespace;
@@ -14,8 +14,8 @@ use core_test_support::responses::sse_response;
 use core_test_support::responses::start_mock_server;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
-use serde_json::json;
 use serde_json::Value;
+use serde_json::json;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -44,7 +44,9 @@ fn find_named_tool<'a>(value: &'a Value, name: &str) -> Option<&'a Value> {
             {
                 return Some(value);
             }
-            object.values().find_map(|child| find_named_tool(child, name))
+            object
+                .values()
+                .find_map(|child| find_named_tool(child, name))
         }
         Value::Array(items) => items.iter().find_map(|child| find_named_tool(child, name)),
         _ => None,
@@ -65,14 +67,10 @@ fn function_output_text<'a>(request: &'a Value, call_id: &str) -> Option<&'a str
 }
 
 fn agent_message_input<'a>(request: &'a Value, message_id: &str) -> Option<&'a Value> {
-    request
-        .get("input")?
-        .as_array()?
-        .iter()
-        .find(|item| {
-            item.get("type").and_then(Value::as_str) == Some("agent_message")
-                && item.get("id").and_then(Value::as_str) == Some(message_id)
-        })
+    request.get("input")?.as_array()?.iter().find(|item| {
+        item.get("type").and_then(Value::as_str) == Some("agent_message")
+            && item.get("id").and_then(Value::as_str) == Some(message_id)
+    })
 }
 
 fn has_function_output(request: &Value, call_id: &str) -> bool {
@@ -130,7 +128,11 @@ async fn mailbox_provider_schema_is_opt_in_and_exposes_the_v2_contract() -> Resu
     disabled.submit_turn(SCHEMA_DISABLED_PROMPT).await?;
 
     let mut enabled_builder = test_codex().with_model("koffing").with_config(|config| {
-        for feature in [Feature::Collab, Feature::MultiAgentV2, Feature::AgentMailbox] {
+        for feature in [
+            Feature::Collab,
+            Feature::MultiAgentV2,
+            Feature::AgentMailbox,
+        ] {
             config
                 .features
                 .enable(feature)
@@ -145,7 +147,11 @@ async fn mailbox_provider_schema_is_opt_in_and_exposes_the_v2_contract() -> Resu
     let disabled_wait = find_named_tool(&disabled_schema["tools"], "wait_agent")
         .expect("legacy V2 wait tool should be present when mailbox is disabled");
     assert!(find_named_tool(&disabled_schema["tools"], "mailbox_read").is_none());
-    assert!(disabled_wait["parameters"]["properties"].get("replies_to").is_none());
+    assert!(
+        disabled_wait["parameters"]["properties"]
+            .get("replies_to")
+            .is_none()
+    );
 
     let enabled_schema = enabled_response.single_request().body_json();
     let wait = find_named_tool(&enabled_schema["tools"], "wait_agent")
@@ -154,13 +160,19 @@ async fn mailbox_provider_schema_is_opt_in_and_exposes_the_v2_contract() -> Resu
     assert!(wait_properties.get("targets").is_some());
     assert!(wait_properties.get("replies_to").is_some());
     assert!(wait_properties.get("timeout_ms").is_some());
-    assert_eq!(wait_properties["return_when"]["enum"], json!(["any", "all"]));
+    assert_eq!(
+        wait_properties["return_when"]["enum"],
+        json!(["any", "all"])
+    );
 
     let send = find_named_tool(&enabled_schema["tools"], "send_message")
         .expect("mailbox send tool should be present");
     let send_properties = &send["parameters"]["properties"];
     for property in ["kind", "reply_to", "supersedes", "work_ref"] {
-        assert!(send_properties.get(property).is_some(), "missing {property}");
+        assert!(
+            send_properties.get(property).is_some(),
+            "missing {property}"
+        );
     }
     assert!(send_properties.get("interrupt").is_none());
 
@@ -169,9 +181,11 @@ async fn mailbox_provider_schema_is_opt_in_and_exposes_the_v2_contract() -> Resu
     let read_properties = &read["parameters"]["properties"];
     assert!(read_properties.get("cursor").is_some());
     assert!(read_properties.get("limit").is_some());
-    assert!(read["description"]
-        .as_str()
-        .is_some_and(|description| description.contains("canonical conversation history")));
+    assert!(
+        read["description"]
+            .as_str()
+            .is_some_and(|description| description.contains("canonical conversation history"))
+    );
 
     Ok(())
 }
@@ -199,12 +213,14 @@ struct ChildThreadMatcher {
 
 impl Match for ChildThreadMatcher {
     fn matches(&self, request: &Request) -> bool {
-        serde_json::from_slice::<Value>(&request.body).ok().is_some_and(|body| {
-            body.pointer("/client_metadata/thread_id")
-                .and_then(Value::as_str)
-                .is_some_and(|thread_id| thread_id != self.root_thread_id.as_str())
-                && body.to_string().contains(self.task.as_str())
-        })
+        serde_json::from_slice::<Value>(&request.body)
+            .ok()
+            .is_some_and(|body| {
+                body.pointer("/client_metadata/thread_id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|thread_id| thread_id != self.root_thread_id.as_str())
+                    && body.to_string().contains(self.task.as_str())
+            })
     }
 }
 
@@ -216,8 +232,8 @@ struct RootMailboxFlowResponder {
 
 impl Respond for RootMailboxFlowResponder {
     fn respond(&self, request: &Request) -> ResponseTemplate {
-        let body: Value = serde_json::from_slice(&request.body)
-            .expect("provider request should contain JSON");
+        let body: Value =
+            serde_json::from_slice(&request.body).expect("provider request should contain JSON");
         self.requests
             .lock()
             .expect("request capture lock should not be poisoned")
@@ -311,7 +327,11 @@ impl Respond for RootMailboxFlowResponder {
 async fn mailbox_read_keeps_encrypted_body_canonical_and_wait_joins_exact_ids() -> Result<()> {
     let server = start_mock_server().await;
     let mut builder = test_codex().with_model("koffing").with_config(|config| {
-        for feature in [Feature::Collab, Feature::MultiAgentV2, Feature::AgentMailbox] {
+        for feature in [
+            Feature::Collab,
+            Feature::MultiAgentV2,
+            Feature::AgentMailbox,
+        ] {
             config
                 .features
                 .enable(feature)
@@ -357,7 +377,11 @@ async fn mailbox_read_keeps_encrypted_body_canonical_and_wait_joins_exact_ids() 
         .lock()
         .expect("request capture lock should not be poisoned")
         .clone();
-    assert_eq!(requests.len(), 6, "root should make one provider call per tool stage");
+    assert_eq!(
+        requests.len(),
+        6,
+        "root should make one provider call per tool stage"
+    );
 
     let spawn: Value = serde_json::from_str(
         function_output_text(&requests[5], "spawn-call").expect("spawn output should be retained"),
@@ -365,7 +389,10 @@ async fn mailbox_read_keeps_encrypted_body_canonical_and_wait_joins_exact_ids() 
     let work_ref = spawn["work_ref"]
         .as_str()
         .expect("spawn should return an immutable mailbox work reference");
-    assert!(work_ref.starts_with("work_"), "unexpected work reference: {work_ref}");
+    assert!(
+        work_ref.starts_with("work_"),
+        "unexpected work reference: {work_ref}"
+    );
 
     let request_receipt: Value = serde_json::from_str(
         function_output_text(&requests[5], "request-call")
@@ -374,7 +401,10 @@ async fn mailbox_read_keeps_encrypted_body_canonical_and_wait_joins_exact_ids() 
     let request_id = request_receipt["message_id"]
         .as_str()
         .expect("request receipt should contain a native message ID");
-    assert!(request_id.starts_with("amsg_"), "unexpected native ID: {request_id}");
+    assert!(
+        request_id.starts_with("amsg_"),
+        "unexpected native ID: {request_id}"
+    );
 
     let read_output: Value = serde_json::from_str(
         function_output_text(&requests[3], "read-call")
@@ -402,7 +432,11 @@ async fn mailbox_read_keeps_encrypted_body_canonical_and_wait_joins_exact_ids() 
         function_output_text(&requests[5], "reply-call")
             .expect("final reply receipt should be retained"),
     )?;
-    assert!(reply_receipt["message_id"].as_str().is_some_and(|id| id.starts_with("amsg_")));
+    assert!(
+        reply_receipt["message_id"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("amsg_"))
+    );
     let wait_report: Value = serde_json::from_str(
         function_output_text(&requests[5], "wait-call")
             .expect("wait should return a selector report"),
@@ -411,12 +445,18 @@ async fn mailbox_read_keeps_encrypted_body_canonical_and_wait_joins_exact_ids() 
     assert_eq!(wait_report["requested_replies_to"], json!([request_id]));
     assert_eq!(wait_report["return_when"], "all");
     assert_eq!(wait_report["condition_satisfied"], true);
-    assert!(wait_report["completed"].as_array().is_some_and(|completed| {
-        completed.iter().any(|item| item["work_ref"] == work_ref && item["status"] == "completed")
-            && completed
-                .iter()
-                .any(|item| item["message_id"] == request_id && item["status"] == "replied")
-    }));
+    assert!(
+        wait_report["completed"]
+            .as_array()
+            .is_some_and(|completed| {
+                completed
+                    .iter()
+                    .any(|item| item["work_ref"] == work_ref && item["status"] == "completed")
+                    && completed
+                        .iter()
+                        .any(|item| item["message_id"] == request_id && item["status"] == "replied")
+            })
+    );
     assert_eq!(wait_report["pending"], json!([]));
 
     Ok(())
@@ -443,8 +483,8 @@ struct WaitProbeResponder {
 
 impl Respond for WaitProbeResponder {
     fn respond(&self, request: &Request) -> ResponseTemplate {
-        let body: Value = serde_json::from_slice(&request.body)
-            .expect("provider request should contain JSON");
+        let body: Value =
+            serde_json::from_slice(&request.body).expect("provider request should contain JSON");
         let received_at = Instant::now();
         self.requests
             .lock()
@@ -544,7 +584,8 @@ impl Respond for QuietThenRequestResponder {
                 ev_response_created("quiet-child-final"),
                 ev_assistant_message("quiet-child-final-message", "done"),
                 ev_completed("quiet-child-final"),
-            ])).set_delay(Duration::from_secs(3));
+            ]))
+            .set_delay(Duration::from_secs(3));
         }
 
         if has_function_output(&body, "quiet-progress-3-call") {
@@ -617,7 +658,11 @@ impl Respond for QuietThenRequestResponder {
 async fn quiet_events_keep_deadline_fixed_then_request_wakes_event_only_wait() -> Result<()> {
     let server = start_mock_server().await;
     let mut builder = test_codex().with_model("koffing").with_config(|config| {
-        for feature in [Feature::Collab, Feature::MultiAgentV2, Feature::AgentMailbox] {
+        for feature in [
+            Feature::Collab,
+            Feature::MultiAgentV2,
+            Feature::AgentMailbox,
+        ] {
             config
                 .features
                 .enable(feature)
@@ -680,15 +725,18 @@ async fn quiet_events_keep_deadline_fixed_then_request_wakes_event_only_wait() -
         .lock()
         .expect("request capture lock should not be poisoned")
         .clone();
-    assert_eq!(requests.len(), 5, "quiet events must not add root provider calls");
+    assert_eq!(
+        requests.len(),
+        5,
+        "quiet events must not add root provider calls"
+    );
     let wait_started = first_wait_started
         .lock()
         .expect("wait start lock should not be poisoned")
         .expect("first targeted wait should have started");
     let deadline_wait_elapsed = requests[3].0.duration_since(wait_started);
     assert!(
-        (Duration::from_millis(850)..Duration::from_millis(1_500))
-            .contains(&deadline_wait_elapsed),
+        (Duration::from_millis(850)..Duration::from_millis(1_500)).contains(&deadline_wait_elapsed),
         "quiet messages should not refresh the one-second deadline: {deadline_wait_elapsed:?}"
     );
 
@@ -754,7 +802,10 @@ async fn quiet_events_keep_deadline_fixed_then_request_wakes_event_only_wait() -
         })
         .expect("wait should admit the addressed request into canonical history");
     assert_eq!(canonical_request["content"][1]["type"], "encrypted_content");
-    assert_eq!(canonical_request["content"][1]["encrypted_content"], ADDRESSED_REQUEST_BODY);
+    assert_eq!(
+        canonical_request["content"][1]["encrypted_content"],
+        ADDRESSED_REQUEST_BODY
+    );
 
     Ok(())
 }
@@ -767,8 +818,8 @@ struct MailboxCustodyResponder {
 
 impl Respond for MailboxCustodyResponder {
     fn respond(&self, request: &Request) -> ResponseTemplate {
-        let body: Value = serde_json::from_slice(&request.body)
-            .expect("provider request should contain JSON");
+        let body: Value =
+            serde_json::from_slice(&request.body).expect("provider request should contain JSON");
         self.requests
             .lock()
             .expect("request capture lock should not be poisoned")
@@ -832,7 +883,11 @@ async fn unadmitted_canonical_message_survives_precreated_failure_and_manual_com
 -> Result<()> {
     let server = start_mock_server().await;
     let mut builder = test_codex().with_model("koffing").with_config(|config| {
-        for feature in [Feature::Collab, Feature::MultiAgentV2, Feature::AgentMailbox] {
+        for feature in [
+            Feature::Collab,
+            Feature::MultiAgentV2,
+            Feature::AgentMailbox,
+        ] {
             config
                 .features
                 .enable(feature)
@@ -868,7 +923,11 @@ async fn unadmitted_canonical_message_survives_precreated_failure_and_manual_com
         .lock()
         .expect("request capture lock should not be poisoned")
         .clone();
-    assert_eq!(requests.len(), 3, "the pre-created failure should not retry");
+    assert_eq!(
+        requests.len(),
+        3,
+        "the pre-created failure should not retry"
+    );
     let send_receipt: Value = serde_json::from_str(
         function_output_text(&requests[1], "send-request-call")
             .expect("accepted request receipt should remain in provider history"),
@@ -876,7 +935,10 @@ async fn unadmitted_canonical_message_survives_precreated_failure_and_manual_com
     let message_id = send_receipt["message_id"]
         .as_str()
         .expect("send receipt should include a native message ID");
-    assert!(message_id.starts_with("amsg_"), "unexpected native ID: {message_id}");
+    assert!(
+        message_id.starts_with("amsg_"),
+        "unexpected native ID: {message_id}"
+    );
 
     let failed_read_receipt: Value = serde_json::from_str(
         function_output_text(&requests[2], "initial-read-call")
@@ -885,7 +947,10 @@ async fn unadmitted_canonical_message_survives_precreated_failure_and_manual_com
     assert_eq!(failed_read_receipt["messages"][0]["message_id"], message_id);
     let failed_request_item = agent_message_input(&requests[2], message_id)
         .expect("the failed-before-created request must contain the canonical body");
-    assert_eq!(failed_request_item["content"][1]["type"], "encrypted_content");
+    assert_eq!(
+        failed_request_item["content"][1]["type"],
+        "encrypted_content"
+    );
     assert_eq!(
         failed_request_item["content"][1]["encrypted_content"],
         CUSTODY_BODY
@@ -895,7 +960,10 @@ async fn unadmitted_canonical_message_survives_precreated_failure_and_manual_com
     let message_id_owned = message_id.to_string();
     assert_eq!(
         mailbox
-            .unadmitted_input_ids(root_thread_id.clone(), std::slice::from_ref(&message_id_owned))
+            .unadmitted_input_ids(
+                root_thread_id.clone(),
+                std::slice::from_ref(&message_id_owned)
+            )
             .await?,
         vec![message_id_owned.clone()],
         "a stream that ended before response.created must not admit the body"
@@ -909,11 +977,13 @@ async fn unadmitted_canonical_message_survives_precreated_failure_and_manual_com
         envelope.communication.encrypted_content.as_deref(),
         Some(CUSTODY_BODY)
     );
-    assert!(mailbox
-        .pending(root_thread_id.clone(), 10)
-        .await?
-        .iter()
-        .any(|pending| pending.id.as_str() == message_id));
+    assert!(
+        mailbox
+            .pending(root_thread_id.clone(), 10)
+            .await?
+            .iter()
+            .any(|pending| pending.id.as_str() == message_id)
+    );
 
     test.codex.submit(Op::Compact).await?;
     let compact_terminal = wait_for_event(&test.codex, |event| {
@@ -926,23 +996,35 @@ async fn unadmitted_canonical_message_survives_precreated_failure_and_manual_com
         .lock()
         .expect("request capture lock should not be poisoned")
         .clone();
-    assert_eq!(requests.len(), 4, "manual compaction should use one provider call");
+    assert_eq!(
+        requests.len(),
+        4,
+        "manual compaction should use one provider call"
+    );
     assert!(requests[3].to_string().contains(COMPACTION_PROMPT));
     let compaction_item = agent_message_input(&requests[3], message_id)
         .expect("compaction should receive the canonical message as source history");
-    assert_eq!(compaction_item["content"][1]["encrypted_content"], CUSTODY_BODY);
+    assert_eq!(
+        compaction_item["content"][1]["encrypted_content"],
+        CUSTODY_BODY
+    );
     assert_eq!(
         mailbox
-            .unadmitted_input_ids(root_thread_id.clone(), std::slice::from_ref(&message_id_owned))
+            .unadmitted_input_ids(
+                root_thread_id.clone(),
+                std::slice::from_ref(&message_id_owned)
+            )
             .await?,
         vec![message_id_owned.clone()],
         "compaction is not execution admission for a pending mailbox obligation"
     );
-    assert!(mailbox
-        .pending(root_thread_id.clone(), 10)
-        .await?
-        .iter()
-        .any(|pending| pending.id.as_str() == message_id));
+    assert!(
+        mailbox
+            .pending(root_thread_id.clone(), 10)
+            .await?
+            .iter()
+            .any(|pending| pending.id.as_str() == message_id)
+    );
     let retained = mailbox
         .get_message(root_thread_id.clone(), message_id)
         .await?
@@ -958,20 +1040,32 @@ async fn unadmitted_canonical_message_survives_precreated_failure_and_manual_com
         .lock()
         .expect("request capture lock should not be poisoned")
         .clone();
-    assert_eq!(requests.len(), 6, "recovery should read the request then execute once");
+    assert_eq!(
+        requests.len(),
+        6,
+        "recovery should read the request then execute once"
+    );
     let recovery_read_receipt: Value = serde_json::from_str(
         function_output_text(&requests[5], "recovery-read-call")
             .expect("recovery mailbox_read receipt should remain in provider history"),
     )?;
-    assert_eq!(recovery_read_receipt["messages"][0]["message_id"], message_id);
+    assert_eq!(
+        recovery_read_receipt["messages"][0]["message_id"],
+        message_id
+    );
     let recovered_item = agent_message_input(&requests[5], message_id)
         .expect("recovery read must restore the exact canonical body to execution input");
     assert_eq!(recovered_item["content"][1]["type"], "encrypted_content");
-    assert_eq!(recovered_item["content"][1]["encrypted_content"], CUSTODY_BODY);
-    assert!(mailbox
-        .unadmitted_input_ids(root_thread_id, &[message_id_owned])
-        .await?
-        .is_empty());
+    assert_eq!(
+        recovered_item["content"][1]["encrypted_content"],
+        CUSTODY_BODY
+    );
+    assert!(
+        mailbox
+            .unadmitted_input_ids(root_thread_id, &[message_id_owned])
+            .await?
+            .is_empty()
+    );
 
     Ok(())
 }

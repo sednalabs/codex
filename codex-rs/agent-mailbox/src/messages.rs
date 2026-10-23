@@ -142,7 +142,7 @@ pub(crate) async fn insert_message_tx(
                 "SELECT * FROM mailbox_messages
                  WHERE sender = ? AND recipient = ? AND work_ref_json = ?
                    AND author_path = ? AND recipient_path = ?
-                   AND kind = 'progress' AND canonical = 0 AND input_admitted = 0
+                   AND kind = '\"progress\"' AND canonical = 0 AND input_admitted = 0
                    AND superseded_by IS NULL
                    AND legacy_attention = ?
                    AND NOT EXISTS (
@@ -160,26 +160,9 @@ pub(crate) async fn insert_message_tx(
             .fetch_optional(&mut **transaction)
             .await?
             {
-                let existing_id: String = existing.try_get("id")?;
-                draft.communication.id = Some(ResponseItemId::from_server(existing_id.clone()));
-                let coalesced_communication = serde_json::to_string(&draft.communication)?;
-                update_coalesced_tx(
-                    transaction,
-                    &existing_id,
-                    &draft,
-                    &request_json,
-                    &coalesced_communication,
-                )
-                .await?;
-                add_invocation_tx(transaction, &draft.invocation_key, &request_json, &existing_id).await?;
-                if has_attention(&draft) {
-                    insert_attention_tx(transaction, &existing_id, draft.recipient.to_string().as_str()).await?;
-                }
-                let row = sqlx::query("SELECT * FROM mailbox_messages WHERE id = ?")
-                    .bind(existing_id)
-                    .fetch_one(&mut **transaction)
-                    .await?;
-                return envelope_from_row(&row);
+                // Replacement gets its own stable ID. Never rewrite the body or
+                // idempotency binding behind the previously accepted identifier.
+                draft.supersedes = Some(existing.try_get("id")?);
             }
         }
     }
@@ -291,34 +274,6 @@ pub(crate) async fn insert_message_tx(
         .fetch_one(&mut **transaction)
         .await?;
     envelope_from_row(&row)
-}
-
-async fn update_coalesced_tx(
-    transaction: &mut Transaction<'_, Sqlite>,
-    id: &str,
-    draft: &MessageDraft,
-    request_json: &str,
-    communication_json: &str,
-) -> MailboxResult<()> {
-    sqlx::query(
-        "UPDATE mailbox_messages SET invocation_key = ?, request_json = ?,
-            communication_json = ?, author_path = ?, recipient_path = ?, kind = ?,
-            reply_to = ?, supersedes = ?, legacy_attention = ?
-         WHERE id = ? AND canonical = 0",
-    )
-    .bind(&draft.invocation_key)
-    .bind(request_json)
-    .bind(communication_json)
-    .bind(serde_json::to_string(&draft.communication.author)?)
-    .bind(serde_json::to_string(&draft.communication.recipient)?)
-    .bind(serde_json::to_string(&draft.kind)?)
-    .bind(&draft.reply_to)
-    .bind(&draft.supersedes)
-    .bind(i64::from(draft.legacy_attention))
-    .bind(id)
-    .execute(&mut **transaction)
-    .await?;
-    Ok(())
 }
 
 async fn add_invocation_tx(

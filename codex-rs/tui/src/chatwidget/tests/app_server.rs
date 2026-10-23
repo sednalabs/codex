@@ -1097,8 +1097,8 @@ async fn live_mailbox_wait_report_shows_join_pending_state_and_actual_wake() {
     drain_insert_history(&mut rx);
     let sender_thread_id = ThreadId::new();
     let receiver_thread_id = ThreadId::new();
-    let mailbox_wait_item = |status, mailbox_wait_report| {
-        AppServerThreadItem::CollabAgentToolCall {
+    let mailbox_wait_item =
+        |status, mailbox_wait_report| AppServerThreadItem::CollabAgentToolCall {
             id: "wait-mailbox-1".to_string(),
             tool: AppServerCollabAgentTool::Wait,
             status,
@@ -1116,8 +1116,7 @@ async fn live_mailbox_wait_report_shows_join_pending_state_and_actual_wake() {
             completion_reason: None,
             wake_cause: None,
             mailbox_wait_report,
-        }
-    };
+        };
     let active_report = codex_protocol::items::MailboxWaitReport {
         requested_targets: vec!["Ada".to_string(), "work_42".to_string()],
         requested_replies_to: vec!["msg_request".to_string()],

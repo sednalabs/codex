@@ -3,8 +3,8 @@ use crate::messages::decrement_pending_count;
 use crate::store::Mailbox;
 use crate::types::{CanonicalConfirmation, Envelope, PendingPage};
 use codex_protocol::ThreadId;
-use std::future::Future;
 use sqlx::Row;
+use std::future::Future;
 
 const MAX_PAGE_SIZE: usize = 100;
 
@@ -66,13 +66,12 @@ impl Mailbox {
         recipient: ThreadId,
         id: &str,
     ) -> MailboxResult<Option<Envelope>> {
-        let row = sqlx::query(
-            "SELECT * FROM mailbox_messages WHERE id = ? AND recipient = ? LIMIT 1",
-        )
-        .bind(id)
-        .bind(recipient.to_string())
-        .fetch_optional(&self.pool)
-        .await?;
+        let row =
+            sqlx::query("SELECT * FROM mailbox_messages WHERE id = ? AND recipient = ? LIMIT 1")
+                .bind(id)
+                .bind(recipient.to_string())
+                .fetch_optional(&self.pool)
+                .await?;
         row.as_ref().map(envelope_from_row).transpose()
     }
 
@@ -97,7 +96,9 @@ impl Mailbox {
             return Err(MailboxError::WrongRecipient);
         }
         if row.try_get::<String, _>("kind")? != "\"request\"" {
-            return Err(MailboxError::InvalidInput("only requests may be withdrawn".into()));
+            return Err(MailboxError::InvalidInput(
+                "only requests may be withdrawn".into(),
+            ));
         }
         if row.try_get::<i64, _>("withdrawn")? != 0 {
             transaction.commit().await?;
@@ -107,12 +108,11 @@ impl Mailbox {
         if superseded_by.is_some() {
             return Err(MailboxError::ReplacementNotAllowed);
         }
-        let reply_exists: Option<String> = sqlx::query_scalar(
-            "SELECT id FROM mailbox_messages WHERE reply_to = ? LIMIT 1",
-        )
-        .bind(id)
-        .fetch_optional(&mut *transaction)
-        .await?;
+        let reply_exists: Option<String> =
+            sqlx::query_scalar("SELECT id FROM mailbox_messages WHERE reply_to = ? LIMIT 1")
+                .bind(id)
+                .fetch_optional(&mut *transaction)
+                .await?;
         if reply_exists.is_some() {
             return Err(MailboxError::RequestAlreadyResolved);
         }
@@ -128,12 +128,11 @@ impl Mailbox {
         .execute(&mut *transaction)
         .await?;
         if updated.rows_affected() == 1 && (!canonical || !input_admitted) {
-            let recipient: String = sqlx::query_scalar(
-                "SELECT recipient FROM mailbox_messages WHERE id = ?",
-            )
-            .bind(id)
-            .fetch_one(&mut *transaction)
-            .await?;
+            let recipient: String =
+                sqlx::query_scalar("SELECT recipient FROM mailbox_messages WHERE id = ?")
+                    .bind(id)
+                    .fetch_one(&mut *transaction)
+                    .await?;
             decrement_pending_count(&mut transaction, &recipient, quiet).await?;
         }
         transaction.commit().await?;
@@ -176,7 +175,9 @@ impl Mailbox {
         .fetch_all(&self.pool)
         .await?;
         if rows.len() > limit {
-            return Err(MailboxError::Backpressure("unadmitted canonical body limit"));
+            return Err(MailboxError::Backpressure(
+                "unadmitted canonical body limit",
+            ));
         }
         rows.iter()
             .map(|row| row.try_get("id").map_err(Into::into))
@@ -330,7 +331,9 @@ impl Mailbox {
         let was_canonical = current.try_get::<i64, _>("canonical")? != 0;
         let input_admitted = current.try_get::<i64, _>("input_admitted")? != 0;
         let quiet = current.try_get::<i64, _>("quiet")? != 0;
-        let is_current = current.try_get::<Option<String>, _>("superseded_by")?.is_none()
+        let is_current = current
+            .try_get::<Option<String>, _>("superseded_by")?
+            .is_none()
             && current.try_get::<i64, _>("withdrawn")? == 0;
         let result = sqlx::query(
             "UPDATE mailbox_messages SET canonical = 1
@@ -372,11 +375,7 @@ impl Mailbox {
 
     /// Mark a no-response or typed outcome after the adapter has appended its
     /// exact `OutcomeReceipt.id` and flushed canonical history.
-    pub async fn mark_outcome_canonical(
-        &self,
-        recipient: ThreadId,
-        id: &str,
-    ) -> MailboxResult<()> {
+    pub async fn mark_outcome_canonical(&self, recipient: ThreadId, id: &str) -> MailboxResult<()> {
         let mut transaction = self.pool.begin().await?;
         let result = sqlx::query(
             "UPDATE mailbox_work SET outcome_canonical = 1
@@ -464,7 +463,9 @@ pub(crate) fn envelope_from_row(row: &sqlx::sqlite::SqliteRow) -> MailboxResult<
         communication: serde_json::from_str(&row.try_get::<String, _>("communication_json")?)?,
         kind: serde_json::from_str(&row.try_get::<String, _>("kind")?)?,
         activate_if_idle: row.try_get::<i64, _>("activate_if_idle")? != 0,
-        work_ref: work_ref.map(|value| serde_json::from_str(&value)).transpose()?,
+        work_ref: work_ref
+            .map(|value| serde_json::from_str(&value))
+            .transpose()?,
         reply_to: row.try_get("reply_to")?,
         supersedes: row.try_get("supersedes")?,
         legacy_attention: row.try_get::<i64, _>("legacy_attention")? != 0,

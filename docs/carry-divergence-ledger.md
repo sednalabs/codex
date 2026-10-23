@@ -59,6 +59,12 @@ reconciliation, and existing collaboration live/replay projection. Canonical
 custody is not execution admission; compact checkpoints preserve selected unread
 bodies. Digests and UI rows do not consume omitted bodies. Body delivery is
 bounded; longer final previews identify their canonical source turn explicitly.
+Execution admission uses the provider's existing response-created event, not a
+prepared request or a lazy stream wrapper. Failed pre-establishment attempts
+leave the original IDs pending through compaction. Reading a native result body
+observes only the exact work it covers; an observed failure remains non-success
+on subsequent exact or mixed any/all joins. Input publication invalidates stale
+cycle snapshots before a closed-peer claim can be made.
 
 Both `agent_mailbox` and recipient `agent_mailbox_idle_activation` are off by
 default. Disabled mailbox handling preserves pending records and cannot drain,

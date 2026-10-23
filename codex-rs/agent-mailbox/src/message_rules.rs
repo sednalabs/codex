@@ -16,7 +16,9 @@ pub(crate) async fn validate_reply_tx(
     .await?
     .ok_or(MailboxError::ReferenceMismatch)?;
     if request.try_get::<String, _>("kind")? != "\"request\"" {
-        return Err(MailboxError::InvalidInput("reply_to must name a request".into()));
+        return Err(MailboxError::InvalidInput(
+            "reply_to must name a request".into(),
+        ));
     }
     if request.try_get::<String, _>("recipient")? != draft.sender.to_string()
         || request.try_get::<String, _>("sender")? != draft.recipient.to_string()
@@ -26,17 +28,18 @@ pub(crate) async fn validate_reply_tx(
     if request.try_get::<i64, _>("canonical")? == 0 {
         return Err(MailboxError::NotCanonical);
     }
-    if request.try_get::<Option<String>, _>("superseded_by")?.is_some()
+    if request
+        .try_get::<Option<String>, _>("superseded_by")?
+        .is_some()
         || request.try_get::<i64, _>("withdrawn")? != 0
     {
         return Err(MailboxError::RequestAlreadyResolved);
     }
-    let resolved: Option<String> = sqlx::query_scalar(
-        "SELECT id FROM mailbox_messages WHERE reply_to = ? LIMIT 1",
-    )
-    .bind(request_id)
-    .fetch_optional(&mut **transaction)
-    .await?;
+    let resolved: Option<String> =
+        sqlx::query_scalar("SELECT id FROM mailbox_messages WHERE reply_to = ? LIMIT 1")
+            .bind(request_id)
+            .fetch_optional(&mut **transaction)
+            .await?;
     if resolved.is_some() {
         return Err(MailboxError::RequestAlreadyResolved);
     }
@@ -57,7 +60,11 @@ pub(crate) async fn validate_replacement_tx(
     .await?
     .ok_or(MailboxError::ReferenceMismatch)?;
     let old_work: Option<String> = old.try_get("work_ref_json")?;
-    let new_work = draft.work_ref.as_ref().map(serde_json::to_string).transpose()?;
+    let new_work = draft
+        .work_ref
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()?;
     if old.try_get::<String, _>("sender")? != draft.sender.to_string()
         || old.try_get::<String, _>("recipient")? != draft.recipient.to_string()
         || old_work != new_work
@@ -68,16 +75,12 @@ pub(crate) async fn validate_replacement_tx(
     let old_kind: String = old.try_get("kind")?;
     let valid_pair = match old_kind.as_str() {
         "\"progress\"" => {
-            draft.kind == MessageKind::Progress
-                && old.try_get::<i64, _>("canonical")? == 0
+            draft.kind == MessageKind::Progress && old.try_get::<i64, _>("canonical")? == 0
         }
         "\"request\"" => matches!(draft.kind, MessageKind::Request | MessageKind::Note),
         _ => false,
     };
-    if !valid_pair
-        || already_replaced.is_some()
-        || old.try_get::<i64, _>("withdrawn")? != 0
-    {
+    if !valid_pair || already_replaced.is_some() || old.try_get::<i64, _>("withdrawn")? != 0 {
         return Err(MailboxError::ReplacementNotAllowed);
     }
     if old_kind == "\"request\"" {

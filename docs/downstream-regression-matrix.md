@@ -61,6 +61,13 @@ compaction, activation denial, backpressure, and conservative closed-peer cycles
 Library tests alone do not prove the native adapter, UI, final packages, landing,
 or an installed session. Linux preview packages remain exact-SHA artifacts;
 install/restart and runtime adoption are separate operator actions.
+The maintained core lane runs the owned library, the core `mailbox` unit slice,
+and `suite::agent_mailbox`, including
+`unadmitted_canonical_message_survives_precreated_failure_and_manual_compaction`.
+Its native cancellation slice includes
+`configured_v2_mailbox_spawn_fast_completion_cancellation_retry_reuses_native_work`.
+The notification visibility lane also runs protocol/TUI `mailbox` tests so the
+same structured report is exercised in live and replay consumers.
 
 Exact-target V2 `wait_agent` ignores queue-only (`trigger_turn=false`) mailbox
 activity while preserving durable FIFO delivery and notification summaries;
