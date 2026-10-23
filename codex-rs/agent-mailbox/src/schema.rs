@@ -1,5 +1,6 @@
 use crate::error::MailboxResult;
-use sqlx::{Row, SqlitePool};
+use sqlx::Row;
+use sqlx::SqlitePool;
 
 const SCHEMA_VERSION: i64 = 5;
 
@@ -41,13 +42,13 @@ pub(crate) async fn initialize(pool: &SqlitePool) -> MailboxResult<()> {
         sqlx::query_scalar("SELECT version FROM mailbox_schema WHERE singleton = 1")
             .fetch_optional(&mut *transaction)
             .await?;
-    if let Some(version) = version {
-        if version > SCHEMA_VERSION {
-            return Err(crate::MailboxError::NewerSchema {
-                found: version,
-                supported: SCHEMA_VERSION,
-            });
-        }
+    if let Some(version) = version
+        && version > SCHEMA_VERSION
+    {
+        return Err(crate::MailboxError::NewerSchema {
+            found: version,
+            supported: SCHEMA_VERSION,
+        });
     }
 
     sqlx::query(

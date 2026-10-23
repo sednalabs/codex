@@ -1,11 +1,20 @@
-use crate::error::{MailboxError, MailboxResult};
+use crate::error::MailboxError;
+use crate::error::MailboxResult;
 use crate::messages::insert_message_tx;
-use crate::types::{Continuation, MessageDraft, MessageKind, Outcome, WorkRef};
+use crate::types::Continuation;
+use crate::types::MessageDraft;
+use crate::types::MessageKind;
+use crate::types::Outcome;
+use crate::types::WorkRef;
 use crate::work::exact_work_tx;
-use codex_protocol::protocol::{AgentCommunicationOrigin, InterAgentCommunication};
-use codex_protocol::{AgentPath, ThreadId};
+use codex_protocol::AgentPath;
+use codex_protocol::ThreadId;
+use codex_protocol::protocol::AgentCommunicationOrigin;
+use codex_protocol::protocol::InterAgentCommunication;
 use serde::Serialize;
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::Row;
+use sqlx::Sqlite;
+use sqlx::Transaction;
 
 const MAX_AUTO_RESPONSE_BYTES: usize = 16_384;
 const MAX_RESPONSE_BYTES: usize = 8_192;
@@ -158,9 +167,9 @@ pub(crate) async fn insert_response_group(
             supersedes: None,
             legacy_attention: outcome == Outcome::NeedsAttention,
         },
-        None,
+        /*explicit_id*/ None,
     )
     .await?;
-    group.output_id = Some(envelope.id.clone());
+    group.output_id = Some(envelope.id);
     Ok(group.output_id.clone())
 }

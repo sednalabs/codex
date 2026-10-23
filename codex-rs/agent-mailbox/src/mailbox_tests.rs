@@ -1,12 +1,37 @@
-use crate::{
-    ActivationDecision, ActivationDisposition, AdmissionReceipt, Continuation, ContinuationState,
-    Dependency, DependencyMode, DispatchDecision, DispatchState, Envelope, GoalBinding, Mailbox,
-    MailboxError, MessageDraft, MessageKind, NativeWork, ObservationTarget, Outcome,
-    RecoveryEvidence, RequestDisposition, RequestSnapshot, ReturnWhen, Selection, Selector,
-    Snapshot, SnapshotItem, SnapshotState, TurnOutcomeReceipt, WorkRef, WorkSnapshot,
-    is_provably_closed_peer_cycle,
-};
-use codex_protocol::{AgentPath, ThreadId, protocol::InterAgentCommunication};
+use crate::ActivationDecision;
+use crate::ActivationDisposition;
+use crate::AdmissionReceipt;
+use crate::Continuation;
+use crate::ContinuationState;
+use crate::Dependency;
+use crate::DependencyMode;
+use crate::DispatchDecision;
+use crate::DispatchState;
+use crate::Envelope;
+use crate::GoalBinding;
+use crate::Mailbox;
+use crate::MailboxError;
+use crate::MessageDraft;
+use crate::MessageKind;
+use crate::NativeWork;
+use crate::ObservationTarget;
+use crate::Outcome;
+use crate::RecoveryEvidence;
+use crate::RequestDisposition;
+use crate::RequestSnapshot;
+use crate::ReturnWhen;
+use crate::Selection;
+use crate::Selector;
+use crate::Snapshot;
+use crate::SnapshotItem;
+use crate::SnapshotState;
+use crate::TurnOutcomeReceipt;
+use crate::WorkRef;
+use crate::WorkSnapshot;
+use crate::is_provably_closed_peer_cycle;
+use codex_protocol::AgentPath;
+use codex_protocol::ThreadId;
+use codex_protocol::protocol::InterAgentCommunication;
 use codex_state::SqliteConfig;
 use codex_utils_absolute_path::test_support::PathExt;
 use pretty_assertions::assert_eq;
@@ -1369,7 +1394,7 @@ async fn explicit_attention_is_one_shot_after_canonical_read_without_settling_re
 
     let uncanonical = fixture
         .mailbox
-        .pending_page(recipient, None, 20)
+        .pending_page(recipient, /*after_seq*/ None, 20)
         .await
         .unwrap();
     let uncanonical_ids = uncanonical

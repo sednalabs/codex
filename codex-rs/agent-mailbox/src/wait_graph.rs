@@ -1,10 +1,14 @@
-use crate::error::{MailboxError, MailboxResult};
+use crate::error::MailboxError;
+use crate::error::MailboxResult;
 use crate::store::Mailbox;
 use crate::types::ReturnWhen;
 use codex_protocol::ThreadId;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::Weak;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex, Weak};
 
 const MAX_ACTIVE_WAITS: usize = 4_096;
 const MAX_PEERS_PER_WAIT: usize = 100;
@@ -106,7 +110,14 @@ impl Mailbox {
         mode: ReturnWhen,
         has_escape: bool,
     ) -> MailboxResult<WaitRegistration> {
-        self.begin_wait_inner(wait_id, owner, peers, mode, has_escape, None)
+        self.begin_wait_inner(
+            wait_id,
+            owner,
+            peers,
+            mode,
+            has_escape,
+            /*input_generation*/ None,
+        )
     }
 
     /// Register only if no eligible-input publication raced the caller's rescan.

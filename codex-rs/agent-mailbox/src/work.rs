@@ -1,14 +1,20 @@
-use crate::error::{MailboxError, MailboxResult};
+use crate::error::MailboxError;
+use crate::error::MailboxResult;
 use crate::messages::decrement_pending_count;
 use crate::outcome_store::MAX_CONTINUATIONS_PER_WORK;
 use crate::store::Mailbox;
-use crate::types::{
-    AdmissionReceipt, DispatchDecision, DispatchState, GoalBinding, NativeWork, RecoveryEvidence,
-    WorkRef,
-};
+use crate::types::AdmissionReceipt;
+use crate::types::DispatchDecision;
+use crate::types::DispatchState;
+use crate::types::GoalBinding;
+use crate::types::NativeWork;
+use crate::types::RecoveryEvidence;
+use crate::types::WorkRef;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::InterAgentCommunication;
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::Row;
+use sqlx::Sqlite;
+use sqlx::Transaction;
 
 const MAX_WORK_ITEMS: i64 = 50_000;
 const MAX_INPUT_BYTES: usize = 1_000_000;
@@ -58,7 +64,14 @@ impl Mailbox {
         if !work.input.id.as_ref().is_some_and(is_mailbox_id) {
             work.input.id = Some(codex_protocol::ResponseItemId::from_server(new_mailbox_id()));
         }
-        let input_message_id = work.input.id.as_ref().expect("assigned above").to_string();
+        let input_message_id = work
+            .input
+            .id
+            .as_ref()
+            .map(ToString::to_string)
+            .ok_or_else(|| {
+                MailboxError::InvalidInput("accepted native input ID is missing".into())
+            })?;
         let input_json = serde_json::to_string(&work.input)?;
 
         let mut transaction = self.pool.begin().await?;
@@ -321,7 +334,7 @@ impl Mailbox {
                      ORDER BY binding_json LIMIT ?",
                 )
                 .bind(&work_ref.id)
-                .bind((MAX_CONTINUATIONS_PER_WORK + 1) as i64)
+                .bind(MAX_CONTINUATIONS_PER_WORK + 1)
                 .fetch_all(&mut *transaction)
                 .await?;
                 if rows.len() > MAX_CONTINUATIONS_PER_WORK as usize {

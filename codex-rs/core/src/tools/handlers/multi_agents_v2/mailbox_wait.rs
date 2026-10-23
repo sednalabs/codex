@@ -8,6 +8,10 @@ use crate::session::input_queue::InputQueueActivity;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::context::FunctionToolOutput;
+use crate::tools::handlers::multi_agents_spec::MAX_MAILBOX_WAIT_REPORT_BYTES;
+use crate::tools::handlers::multi_agents_spec::MAX_MAILBOX_WAIT_SELECTOR_BYTES;
+use crate::tools::handlers::multi_agents_spec::MAX_MAILBOX_WAIT_SELECTOR_TOTAL_BYTES;
+use crate::tools::handlers::multi_agents_spec::MAX_MAILBOX_WAIT_SELECTORS;
 use crate::tools::handlers::multi_agents_spec::create_mailbox_wait_agent_tool;
 use codex_agent_mailbox::DispatchState;
 use codex_agent_mailbox::Mailbox;
@@ -88,6 +92,10 @@ async fn handle_wait(invocation: ToolInvocation) -> Result<Box<dyn ToolOutput>, 
     }
     let args: WaitArgs = parse_arguments(&function_arguments(payload)?)?;
     let _compatibility_only = args.native_event_wait;
+    let targetless = args.targets.is_none() && args.replies_to.is_none();
+    let targets = args.targets.unwrap_or_default();
+    let replies_to = args.replies_to.unwrap_or_default();
+    validate_wait_selectors(&targets, &replies_to)?;
     let mailbox = mailbox_for(&session)?;
     session
         .services
@@ -100,14 +108,6 @@ async fn handle_wait(invocation: ToolInvocation) -> Result<Box<dyn ToolOutput>, 
         .input_queue
         .subscribe_activity(/*turn_state*/ None)
         .await;
-    let targetless = args.targets.is_none() && args.replies_to.is_none();
-    let targets = args.targets.unwrap_or_default();
-    let replies_to = args.replies_to.unwrap_or_default();
-    if targets.len() + replies_to.len() > 100 {
-        return Err(mailbox_error(
-            "at most 100 work/reply selectors may be joined",
-        ));
-    }
     let mut selectors = Vec::new();
     let mut agents = Vec::new();
     for target in &targets {
@@ -130,6 +130,11 @@ async fn handle_wait(invocation: ToolInvocation) -> Result<Box<dyn ToolOutput>, 
     selectors.extend(replies_to.iter().cloned().map(Selector::Reply));
     let mut seen = HashSet::new();
     selectors.retain(|selector| seen.insert(selector_key(selector)));
+    if selectors.len() > MAX_MAILBOX_WAIT_SELECTORS {
+        return Err(mailbox_error(format!(
+            "selection expands beyond {MAX_MAILBOX_WAIT_SELECTORS} joins; select fewer exact work references"
+        )));
+    }
     let return_when = match args.return_when {
         MailboxWaitReturnWhen::Any => ReturnWhen::Any,
         MailboxWaitReturnWhen::All => ReturnWhen::All,
@@ -483,6 +488,41 @@ async fn handle_wait(invocation: ToolInvocation) -> Result<Box<dyn ToolOutput>, 
     )))
 }
 
+fn validate_wait_selectors(
+    targets: &[String],
+    replies_to: &[String],
+) -> Result<(), FunctionCallError> {
+    if targets.len() + replies_to.len() > MAX_MAILBOX_WAIT_SELECTORS {
+        return Err(mailbox_error(format!(
+            "at most {MAX_MAILBOX_WAIT_SELECTORS} work/reply selectors may be joined"
+        )));
+    }
+    let mut total_bytes = 0;
+    for selector in targets.iter().chain(replies_to) {
+        if selector.len() > MAX_MAILBOX_WAIT_SELECTOR_BYTES {
+            return Err(mailbox_error(format!(
+                "each work/reply selector must be at most {MAX_MAILBOX_WAIT_SELECTOR_BYTES} UTF-8 bytes"
+            )));
+        }
+        total_bytes += selector.len();
+    }
+    if total_bytes > MAX_MAILBOX_WAIT_SELECTOR_TOTAL_BYTES {
+        return Err(mailbox_error(format!(
+            "combined work/reply selectors must be at most {MAX_MAILBOX_WAIT_SELECTOR_TOTAL_BYTES} UTF-8 bytes"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_wait_report(report: &MailboxWaitReport) -> Result<(), FunctionCallError> {
+    if serde_json::to_vec(report).map_err(mailbox_error)?.len() > MAX_MAILBOX_WAIT_REPORT_BYTES {
+        return Err(mailbox_error(format!(
+            "resolved wait report exceeds {MAX_MAILBOX_WAIT_REPORT_BYTES} bytes; select fewer exact work/reply references"
+        )));
+    }
+    Ok(())
+}
+
 fn selector_key(selector: &Selector) -> String {
     match selector {
         Selector::Work(id) => format!("work:{id}"),
@@ -676,6 +716,7 @@ async fn emit_report(
     report: &MailboxWaitReport,
     status: CollabAgentToolCallStatus,
 ) -> Result<(), FunctionCallError> {
+    validate_wait_report(report)?;
     let item = TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
         id: call_id.to_string(),
         tool: CollabAgentTool::Wait,

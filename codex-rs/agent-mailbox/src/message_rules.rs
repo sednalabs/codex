@@ -1,6 +1,10 @@
-use crate::error::{MailboxError, MailboxResult};
-use crate::types::{MessageDraft, MessageKind};
-use sqlx::{Row, Sqlite, Transaction};
+use crate::error::MailboxError;
+use crate::error::MailboxResult;
+use crate::types::MessageDraft;
+use crate::types::MessageKind;
+use sqlx::Row;
+use sqlx::Sqlite;
+use sqlx::Transaction;
 
 pub(crate) async fn validate_reply_tx(
     transaction: &mut Transaction<'_, Sqlite>,

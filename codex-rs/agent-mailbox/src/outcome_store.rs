@@ -1,11 +1,19 @@
-use crate::error::{MailboxError, MailboxResult};
-use crate::types::{
-    Continuation, ContinuationReceipt, ContinuationState, Outcome, OutcomeReceipt, WorkRef,
-};
+use crate::error::MailboxError;
+use crate::error::MailboxResult;
+use crate::types::Continuation;
+use crate::types::ContinuationReceipt;
+use crate::types::ContinuationState;
+use crate::types::Outcome;
+use crate::types::OutcomeReceipt;
+use crate::types::WorkRef;
 use crate::work::exact_work;
 use codex_protocol::protocol::InterAgentCommunication;
-use serde::{Deserialize, Serialize};
-use sqlx::{Row, Sqlite, SqlitePool, Transaction};
+use serde::Deserialize;
+use serde::Serialize;
+use sqlx::Row;
+use sqlx::Sqlite;
+use sqlx::SqlitePool;
+use sqlx::Transaction;
 
 pub(crate) const MAX_CONTINUATIONS_PER_WORK: i64 = 32;
 
@@ -77,7 +85,7 @@ pub(crate) async fn persist_continuation(
     }
     let count_rows = sqlx::query("SELECT 1 FROM mailbox_continuations WHERE work_id = ? LIMIT ?")
         .bind(&work_ref.id)
-        .bind((MAX_CONTINUATIONS_PER_WORK + 1) as i64)
+        .bind(MAX_CONTINUATIONS_PER_WORK + 1)
         .fetch_all(&mut **transaction)
         .await?;
     if count_rows.len() >= MAX_CONTINUATIONS_PER_WORK as usize {
@@ -179,7 +187,7 @@ pub(crate) async fn stored_outcome_receipt_for(
         serde_json::from_str::<OutcomeData>(&row.try_get::<String, _>("outcome_json")?)?
             .response
             .is_some();
-    outcome_receipt_for(pool, work_ref, None, has_response).await
+    outcome_receipt_for(pool, work_ref, /*output_id*/ None, has_response).await
 }
 
 pub(crate) async fn continuation_receipts_for(
@@ -193,7 +201,7 @@ pub(crate) async fn continuation_receipts_for(
          ORDER BY source_turn_id, binding_json LIMIT ?",
     )
     .bind(&work_ref.id)
-    .bind((MAX_CONTINUATIONS_PER_WORK + 1) as i64)
+    .bind(MAX_CONTINUATIONS_PER_WORK + 1)
     .fetch_all(pool)
     .await?;
     if rows.len() > MAX_CONTINUATIONS_PER_WORK as usize {

@@ -1,6 +1,8 @@
-use crate::error::{MailboxError, MailboxResult};
+use crate::error::MailboxError;
+use crate::error::MailboxResult;
 use crate::store::Mailbox;
-use crate::types::{ActivationDecision, ActivationDisposition};
+use crate::types::ActivationDecision;
+use crate::types::ActivationDisposition;
 use codex_protocol::ThreadId;
 use sqlx::Row;
 

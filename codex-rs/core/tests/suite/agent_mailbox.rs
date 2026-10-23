@@ -1213,18 +1213,21 @@ async fn unadmitted_canonical_message_survives_precreated_failure_and_manual_com
     assert_eq!(
         requests.len(),
         6,
-        "recovery should read the request then execute once"
+        "recovery should execute the pending input, then read it once"
+    );
+    let automatically_delivered = agent_message_input(&requests[4], message_id)
+        .expect("the next ordinary provider request should receive the pending canonical input");
+    assert_eq!(
+        automatically_delivered["content"][1]["encrypted_content"],
+        CUSTODY_BODY
     );
     let recovery_read_receipt: Value = serde_json::from_str(
         function_output_text(&requests[5], "recovery-read-call")
             .expect("recovery mailbox_read receipt should remain in provider history"),
     )?;
-    assert_eq!(
-        recovery_read_receipt["messages"][0]["message_id"],
-        message_id
-    );
+    assert_eq!(recovery_read_receipt["messages"], json!([]));
     let recovered_item = agent_message_input(&requests[5], message_id)
-        .expect("recovery read must restore the exact canonical body to execution input");
+        .expect("the admitted canonical body should remain in provider history");
     assert_eq!(recovered_item["content"][1]["type"], "encrypted_content");
     assert_eq!(
         recovered_item["content"][1]["encrypted_content"],

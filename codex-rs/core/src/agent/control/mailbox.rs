@@ -15,6 +15,7 @@ use codex_agent_mailbox::ActivationDisposition;
 use codex_agent_mailbox::Continuation;
 use codex_agent_mailbox::ContinuationState;
 use codex_agent_mailbox::DispatchDecision;
+use codex_agent_mailbox::DispatchState;
 use codex_agent_mailbox::Envelope;
 use codex_agent_mailbox::GoalBinding;
 use codex_agent_mailbox::Mailbox;
@@ -51,6 +52,46 @@ fn goal_binding_matches_native(
         && binding.parent_thread_id == snapshot.binding.parent_thread_id
         && binding.child_thread_id == snapshot.binding.child_thread_id
         && binding.control_generation == snapshot.binding.control_generation
+}
+
+async fn recover_exact_unadmitted_submission(
+    mailbox: &Mailbox,
+    recipient: ThreadId,
+    submission_id: &str,
+) -> CodexResult<bool> {
+    let Some(work) = mailbox
+        .work_for_submission(recipient, submission_id)
+        .await
+        .map_err(storage_error)?
+    else {
+        return Ok(false);
+    };
+    let input = mailbox.accepted_input(&work).await.map_err(storage_error)?;
+    let input_id = input
+        .id
+        .as_ref()
+        .ok_or_else(|| storage_error("accepted mailbox submission has no stable input ID"))?
+        .to_string();
+    if mailbox
+        .unadmitted_input_ids(recipient, std::slice::from_ref(&input_id))
+        .await
+        .map_err(storage_error)?
+        .is_empty()
+    {
+        return Ok(false);
+    }
+
+    mailbox
+        .mark_recovery_needed(&work, RecoveryEvidence::DeliveryUnavailable)
+        .await
+        .map_err(storage_error)?;
+    let dispatch_state = mailbox.dispatch_state(&work).await.map_err(storage_error)?;
+    if dispatch_state != DispatchState::RecoveryNeeded {
+        return Err(storage_error(
+            "exact unadmitted mailbox submission could not enter recovery-needed state",
+        ));
+    }
+    Ok(true)
 }
 
 impl AgentControl {
@@ -257,8 +298,27 @@ impl AgentControl {
     }
 
     pub(super) async fn mailbox_dispatched(&self, work: &WorkRef) -> CodexResult<()> {
-        if let Some(mailbox) = self.mailbox() {
-            mailbox.mark_dispatched(work).await.map_err(storage_error)?;
+        if let Some(mailbox) = self.mailbox()
+            && let Err(mark_error) = mailbox.mark_dispatched(work).await
+        {
+            // Native input is already queued. A producer may have durably captured its
+            // pre-admission failure while this fast sender was finishing; preserve that
+            // accepted recovery receipt instead of making spawn roll the child back.
+            match mailbox.dispatch_state(work).await {
+                Ok(DispatchState::Dispatched | DispatchState::RecoveryNeeded) => return Ok(()),
+                Ok(state) => {
+                    return Err(storage_error(format!(
+                        "accepted work {} could not be marked dispatched (state {state:?}): {mark_error}",
+                        work.id
+                    )));
+                }
+                Err(state_error) => {
+                    return Err(storage_error(format!(
+                        "accepted work {} could not be marked dispatched and its retained state could not be verified: {mark_error}; {state_error}",
+                        work.id
+                    )));
+                }
+            }
         }
         Ok(())
     }
@@ -594,7 +654,17 @@ impl AgentControl {
                 return Err(storage_error(error));
             }
         };
-        Ok(!receipt.no_matching_work)
+        if receipt.no_matching_work {
+            match recover_exact_unadmitted_submission(&mailbox, recipient, source_turn_id).await {
+                Ok(captured) => Ok(captured),
+                Err(error) => {
+                    mailbox.notify_runtime_fault(recipient);
+                    Err(error)
+                }
+            }
+        } else {
+            Ok(true)
+        }
     }
 }
 

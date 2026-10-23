@@ -1,15 +1,28 @@
-use crate::error::{MailboxError, MailboxResult};
+use crate::error::MailboxError;
+use crate::error::MailboxResult;
 use crate::message_delivery::envelope_from_row;
-use crate::outcome_store::{continuation_receipts_for, stored_outcome_receipt_for};
+use crate::outcome_store::continuation_receipts_for;
+use crate::outcome_store::stored_outcome_receipt_for;
 use crate::store::Mailbox;
-use crate::types::{
-    Attention, Dependency, DependencyMode, ObservationTarget, RequestDisposition, RequestSnapshot,
-    ReturnWhen, Selection, Selector, Snapshot, SnapshotItem, SnapshotState, WorkSnapshot,
-};
-use crate::work::{parse_dispatch_state, work_ref_from_row};
+use crate::types::Attention;
+use crate::types::Dependency;
+use crate::types::DependencyMode;
+use crate::types::ObservationTarget;
+use crate::types::RequestDisposition;
+use crate::types::RequestSnapshot;
+use crate::types::ReturnWhen;
+use crate::types::Selection;
+use crate::types::Selector;
+use crate::types::Snapshot;
+use crate::types::SnapshotItem;
+use crate::types::SnapshotState;
+use crate::types::WorkSnapshot;
+use crate::work::parse_dispatch_state;
+use crate::work::work_ref_from_row;
 use codex_protocol::ThreadId;
 use sqlx::Row;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+use std::collections::HashSet;
 
 const MAX_SELECTIONS: usize = 100;
 const MAX_OBSERVATIONS: usize = 100;
@@ -293,7 +306,8 @@ impl Mailbox {
         recipient: ThreadId,
         limit: usize,
     ) -> MailboxResult<Vec<Attention>> {
-        self.pending_attention(recipient, None, limit).await
+        self.pending_attention(recipient, /*after_seq*/ None, limit)
+            .await
     }
 }
 

@@ -1,12 +1,20 @@
-use crate::error::{MailboxError, MailboxResult};
+use crate::error::MailboxError;
+use crate::error::MailboxResult;
 use crate::message_delivery::envelope_from_row;
-use crate::message_rules::{validate_replacement_tx, validate_reply_tx};
+use crate::message_rules::validate_replacement_tx;
+use crate::message_rules::validate_reply_tx;
 use crate::store::Mailbox;
-use crate::types::{Envelope, MessageDraft, MessageKind, WorkRef};
+use crate::types::Envelope;
+use crate::types::MessageDraft;
+use crate::types::MessageKind;
+use crate::types::WorkRef;
 use crate::work::exact_work;
-use codex_protocol::{ResponseItemId, ThreadId};
+use codex_protocol::ResponseItemId;
+use codex_protocol::ThreadId;
 use serde::Serialize;
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::Row;
+use sqlx::Sqlite;
+use sqlx::Transaction;
 
 const MAX_MESSAGE_BYTES: usize = 8_192;
 const MAX_RECORD_BYTES: usize = 16_384;
@@ -139,10 +147,11 @@ pub(crate) async fn insert_message_tx(
         validate_replacement_tx(transaction, supersedes, &draft).await?;
     }
 
-    if draft.supersedes.is_none() && draft.kind == MessageKind::Progress && !draft.activate_if_idle
-    {
-        if let Some(work_ref) = draft.work_ref.as_ref() {
-            if let Some(existing) = sqlx::query(
+    if draft.supersedes.is_none()
+        && draft.kind == MessageKind::Progress
+        && !draft.activate_if_idle
+        && let Some(work_ref) = draft.work_ref.as_ref()
+        && let Some(existing) = sqlx::query(
                 "SELECT * FROM mailbox_messages
                  WHERE sender = ? AND recipient = ? AND work_ref_json = ?
                    AND author_path = ? AND recipient_path = ?
@@ -163,12 +172,10 @@ pub(crate) async fn insert_message_tx(
             .bind(i64::from(draft.legacy_attention))
             .fetch_optional(&mut **transaction)
             .await?
-            {
-                // Replacement gets its own stable ID. Never rewrite the body or
-                // idempotency binding behind the previously accepted identifier.
-                draft.supersedes = Some(existing.try_get("id")?);
-            }
-        }
+    {
+        // Replacement gets its own stable ID. Never rewrite the body or
+        // idempotency binding behind the previously accepted identifier.
+        draft.supersedes = Some(existing.try_get("id")?);
     }
 
     let collision: Option<String> =
@@ -263,15 +270,13 @@ pub(crate) async fn insert_message_tx(
         .bind(old_id)
         .execute(&mut **transaction)
         .await?;
-        if replaced.rows_affected() == 1 {
-            if let Some(old) = old {
-                let unread = old.try_get::<i64, _>("canonical")? == 0
-                    || old.try_get::<i64, _>("input_admitted")? == 0;
-                if unread {
-                    let recipient: String = old.try_get("recipient")?;
-                    let quiet = old.try_get::<i64, _>("quiet")? != 0;
-                    decrement_pending_count(transaction, &recipient, quiet).await?;
-                }
+        if replaced.rows_affected() == 1 && let Some(old) = old {
+            let unread = old.try_get::<i64, _>("canonical")? == 0
+                || old.try_get::<i64, _>("input_admitted")? == 0;
+            if unread {
+                let recipient: String = old.try_get("recipient")?;
+                let quiet = old.try_get::<i64, _>("quiet")? != 0;
+                decrement_pending_count(transaction, &recipient, quiet).await?;
             }
         }
     }

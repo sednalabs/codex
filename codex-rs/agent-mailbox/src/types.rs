@@ -1,6 +1,7 @@
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::InterAgentCommunication;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkRef {
@@ -19,9 +20,10 @@ pub struct NativeWork {
     pub input: InterAgentCommunication,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MessageKind {
+    #[default]
     Note,
     Progress,
     Request,
@@ -43,12 +45,6 @@ pub enum ActivationDecision {
     Activate,
     AlreadyDecided(ActivationDisposition),
     RecoveryNeeded,
-}
-
-impl Default for MessageKind {
-    fn default() -> Self {
-        Self::Note
-    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

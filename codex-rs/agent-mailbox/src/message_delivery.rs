@@ -1,7 +1,10 @@
-use crate::error::{MailboxError, MailboxResult};
+use crate::error::MailboxError;
+use crate::error::MailboxResult;
 use crate::messages::decrement_pending_count;
 use crate::store::Mailbox;
-use crate::types::{CanonicalConfirmation, Envelope, PendingPage};
+use crate::types::CanonicalConfirmation;
+use crate::types::Envelope;
+use crate::types::PendingPage;
 use codex_protocol::ThreadId;
 use sqlx::Row;
 use std::future::Future;
@@ -35,7 +38,10 @@ impl Mailbox {
 
     /// Convenience first page; use `pending_page` to continue pagination.
     pub async fn pending(&self, recipient: ThreadId, limit: usize) -> MailboxResult<Vec<Envelope>> {
-        Ok(self.pending_page(recipient, None, limit).await?.items)
+        Ok(self
+            .pending_page(recipient, /*after_seq*/ None, limit)
+            .await?
+            .items)
     }
 
     /// Read a bounded page including canonical records, without consuming them.
@@ -416,7 +422,9 @@ impl Mailbox {
         F: FnMut(Envelope) -> Fut,
         Fut: Future<Output = MailboxResult<CanonicalConfirmation>>,
     {
-        let page = self.pending_page(recipient, None, limit).await?;
+        let page = self
+            .pending_page(recipient, /*after_seq*/ None, limit)
+            .await?;
         let mut reconciled = 0;
         for envelope in page.items {
             let id = envelope.id.clone();

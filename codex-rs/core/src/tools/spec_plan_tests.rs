@@ -268,6 +268,20 @@ fn assert_mailbox_namespace_schema(plan: &ToolPlanProbe, namespace_name: &str) {
     assert!(wait_properties.contains_key("timeout_ms"));
     assert!(wait_properties.contains_key("native_event_wait"));
     assert!(wait_agent.parameters.required.is_none());
+    assert!(
+        wait_properties["targets"]
+            .description
+            .as_deref()
+            .expect("target selection description")
+            .contains("Omit both `targets` and `replies_to`")
+    );
+    assert!(
+        wait_properties["targets"]
+            .description
+            .as_deref()
+            .expect("target selection description")
+            .contains("caller-issued unsurfaced work or new attention")
+    );
     assert_eq!(
         wait_properties["return_when"].enum_values.as_ref(),
         Some(&vec![json!("any"), json!("all")])
@@ -289,22 +303,32 @@ fn assert_mailbox_namespace_schema(plan: &ToolPlanProbe, namespace_name: &str) {
         .output_schema
         .as_ref()
         .expect("wait_agent output schema");
+    for selector_list in ["requestedTargets", "requestedRepliesTo"] {
+        assert_eq!(
+            wait_output["properties"][selector_list]["maxItems"],
+            json!(crate::tools::handlers::multi_agents_spec::MAX_MAILBOX_WAIT_SELECTORS)
+        );
+        assert_eq!(
+            wait_output["properties"][selector_list]["items"]["maxLength"],
+            json!(crate::tools::handlers::multi_agents_spec::MAX_MAILBOX_WAIT_SELECTOR_BYTES)
+        );
+    }
     assert!(
         wait_output["required"]
             .as_array()
             .expect("wait result required fields")
-            .contains(&json!("return_when"))
+            .contains(&json!("returnWhen"))
     );
     assert_eq!(
-        wait_output["properties"]["return_when"]["enum"],
+        wait_output["properties"]["returnWhen"]["enum"],
         json!(["any", "all"])
     );
     assert!(
         wait_output["properties"]
-            .get("condition_satisfied")
+            .get("conditionSatisfied")
             .is_some()
     );
-    assert!(wait_output["properties"].get("quiet_count").is_some());
+    assert!(wait_output["properties"].get("quietCount").is_some());
     assert_eq!(
         wait_output["properties"]["completed"]["items"]["required"],
         json!(["status"])
@@ -314,7 +338,7 @@ fn assert_mailbox_namespace_schema(plan: &ToolPlanProbe, namespace_name: &str) {
         json!(["status"])
     );
     for result_list in ["completed", "pending"] {
-        for field in ["work_ref", "message_id", "agent", "status"] {
+        for field in ["workRef", "messageId", "agent", "status"] {
             assert!(
                 wait_output["properties"][result_list]["items"]["properties"]
                     .get(field)
@@ -323,7 +347,7 @@ fn assert_mailbox_namespace_schema(plan: &ToolPlanProbe, namespace_name: &str) {
         }
     }
     assert_eq!(
-        wait_output["properties"]["completion_reason"]["enum"],
+        wait_output["properties"]["completionReason"]["enum"],
         json!([
             "result",
             "reply",
@@ -332,6 +356,7 @@ fn assert_mailbox_namespace_schema(plan: &ToolPlanProbe, namespace_name: &str) {
             "tool",
             "deadline",
             "cancel",
+            "interrupted",
             "subscription_loss",
             "runtime_fault",
             "no_matching_work",

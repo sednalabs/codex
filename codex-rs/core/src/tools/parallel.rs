@@ -1272,6 +1272,7 @@ mod tests {
         let runtime = ToolCallRuntime::new(router, Arc::clone(&session), step_context, tracker);
         let thread_ids_before_rejection = manager.list_thread_ids().await;
         let rejected_response = runtime
+            .clone()
             .handle_tool_call(
                 ToolCall {
                     tool_name: ToolName::namespaced("profile_agents", "spawn_agent"),
@@ -1501,7 +1502,10 @@ mod tests {
         };
         let retry_result: serde_json::Value = serde_json::from_str(&retry_message)?;
         assert_eq!(retry_result["agent_id"].as_str(), Some(first_agent_id));
-        assert_eq!(retry_result["dispatch_state"], first_result["dispatch_state"]);
+        assert_eq!(
+            retry_result["dispatch_state"],
+            first_result["dispatch_state"]
+        );
         assert_eq!(
             retry_result["work_ref"].as_str(),
             Some(accepted_work_id.as_str()),

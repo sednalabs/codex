@@ -124,6 +124,42 @@ async fn accepted_goal_work(mailbox: &Mailbox, issuer: ThreadId, agent: ThreadId
     work
 }
 
+async fn accepted_unadmitted_work(
+    mailbox: &Mailbox,
+    issuer: ThreadId,
+    agent: ThreadId,
+    submission_id: &str,
+) -> (WorkRef, String) {
+    let work = mailbox
+        .accept_work(NativeWork {
+            native_key: "pre-admission-failure".to_string(),
+            issuer,
+            agent,
+            submission_id: submission_id.to_string(),
+            input: InterAgentCommunication::new(
+                AgentPath::root(),
+                AgentPath::from_string("/root/worker".to_string()).unwrap(),
+                Vec::new(),
+                "accepted input not yet admitted to a provider request".to_string(),
+                /*trigger_turn*/ true,
+            ),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        mailbox.begin_dispatch(&work).await.unwrap(),
+        DispatchDecision::Dispatch
+    );
+    let input_id = mailbox
+        .accepted_input(&work)
+        .await
+        .unwrap()
+        .id
+        .expect("accepted mailbox input should carry a stable ID")
+        .to_string();
+    (work, input_id)
+}
+
 async fn exact_work_snapshot(mailbox: &Mailbox, work: &WorkRef) -> WorkSnapshot {
     let snapshot = mailbox
         .snapshot(&Selection {
@@ -239,6 +275,107 @@ async fn mailbox_goal_terminal_matches_logical_binding_across_native_revisions_a
             )
             .await
             .unwrap()
+    );
+}
+
+#[tokio::test]
+async fn mailbox_terminal_recovers_exact_unadmitted_submission_idempotently() {
+    let (session, turn) = crate::session::tests::make_session_and_context().await;
+    let mut config = (*turn.config).clone();
+    let sqlite_home = tempfile::tempdir().unwrap();
+    config.sqlite = codex_state::SqliteConfig::new_for_testing(sqlite_home.path().abs());
+    config.features.enable(Feature::MultiAgentV2).unwrap();
+    config.features.enable(Feature::AgentMailbox).unwrap();
+    let control = &session.services.agent_control;
+    control.mailbox_initialize(&config).await.unwrap();
+    let mailbox = control.mailbox().unwrap();
+    let agent = ThreadId::new();
+    let submission_id = "producer-failed-before-created";
+    let (work, input_id) = accepted_unadmitted_work(
+        &mailbox,
+        session.thread_id,
+        agent,
+        submission_id,
+    )
+    .await;
+    assert_eq!(
+        mailbox
+            .unadmitted_input_ids(agent, std::slice::from_ref(&input_id))
+            .await
+            .unwrap(),
+        vec![input_id.clone()]
+    );
+
+    assert!(
+        control
+            .mailbox_record_terminal(
+                agent,
+                submission_id,
+                AgentStatus::Errored("provider request setup failed".to_string()),
+                None,
+                None,
+            )
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        mailbox.dispatch_state(&work).await.unwrap(),
+        DispatchState::RecoveryNeeded
+    );
+    assert!(exact_work_snapshot(&mailbox, &work).await.outcome.is_none());
+    assert_eq!(
+        mailbox
+            .unadmitted_input_ids(agent, std::slice::from_ref(&input_id))
+            .await
+            .unwrap(),
+        vec![input_id.clone()],
+        "recovery capture must not consume or admit the accepted input"
+    );
+
+    // A fast sender finishing after producer failure must preserve the truthful receipt.
+    control.mailbox_dispatched(&work).await.unwrap();
+    assert_eq!(
+        mailbox.dispatch_state(&work).await.unwrap(),
+        DispatchState::RecoveryNeeded
+    );
+
+    assert!(
+        !control
+            .mailbox_record_terminal(
+                agent,
+                "unrelated-source-turn",
+                AgentStatus::Errored("unrelated failure".to_string()),
+                None,
+                None,
+            )
+            .await
+            .unwrap(),
+        "an unrelated source turn must not capture the accepted submission"
+    );
+    assert!(
+        control
+            .mailbox_record_terminal(
+                agent,
+                submission_id,
+                AgentStatus::Errored("provider request setup failed".to_string()),
+                None,
+                None,
+            )
+            .await
+            .unwrap(),
+        "retrying the exact producer terminal must retain the same recovery custody"
+    );
+    assert_eq!(
+        mailbox.dispatch_state(&work).await.unwrap(),
+        DispatchState::RecoveryNeeded
+    );
+    assert!(exact_work_snapshot(&mailbox, &work).await.outcome.is_none());
+    assert_eq!(
+        mailbox
+            .unadmitted_input_ids(agent, std::slice::from_ref(&input_id))
+            .await
+            .unwrap(),
+        vec![input_id]
     );
 }
 

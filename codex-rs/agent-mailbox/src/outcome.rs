@@ -1,16 +1,25 @@
-use crate::error::{MailboxError, MailboxResult};
-use crate::outcome_messages::{
-    ensure_terminal_responses, insert_response_group, response_groups, validate_auto_response_size,
-};
-use crate::outcome_store::{
-    MAX_CONTINUATIONS_PER_WORK, OutcomeData, outcome_receipt_for, persist_continuation,
-    save_outcome_tx,
-};
+use crate::error::MailboxError;
+use crate::error::MailboxResult;
+use crate::outcome_messages::ensure_terminal_responses;
+use crate::outcome_messages::insert_response_group;
+use crate::outcome_messages::response_groups;
+use crate::outcome_messages::validate_auto_response_size;
+use crate::outcome_store::MAX_CONTINUATIONS_PER_WORK;
+use crate::outcome_store::OutcomeData;
+use crate::outcome_store::outcome_receipt_for;
+use crate::outcome_store::persist_continuation;
+use crate::outcome_store::save_outcome_tx;
 use crate::store::Mailbox;
-use crate::types::{
-    Continuation, GoalBinding, Outcome, OutcomeReceipt, TurnOutcomeReceipt, WorkRef,
-};
-use crate::work::{ensure_mailbox_id, exact_work_tx, new_mailbox_id, work_ref_from_row};
+use crate::types::Continuation;
+use crate::types::GoalBinding;
+use crate::types::Outcome;
+use crate::types::OutcomeReceipt;
+use crate::types::TurnOutcomeReceipt;
+use crate::types::WorkRef;
+use crate::work::ensure_mailbox_id;
+use crate::work::exact_work_tx;
+use crate::work::new_mailbox_id;
+use crate::work::work_ref_from_row;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::InterAgentCommunication;
 use sqlx::Row;
@@ -67,7 +76,7 @@ impl Mailbox {
                      ORDER BY binding_json LIMIT ?",
                 )
                 .bind(&work_ref.id)
-                .bind((MAX_CONTINUATIONS_PER_WORK + 1) as i64)
+                .bind(MAX_CONTINUATIONS_PER_WORK + 1)
                 .fetch_all(&mut *transaction)
                 .await?;
                 if unresolved.len() > MAX_CONTINUATIONS_PER_WORK as usize {
@@ -135,8 +144,11 @@ impl Mailbox {
         let mut groups = response_groups(&mut transaction, &refs, response.as_ref()).await?;
         validate_auto_response_size(&groups)?;
         if is_nonterminal(&continuation) {
-            let binding = continuation_binding(&continuation)
-                .expect("nonterminal continuation always carries a binding");
+            let binding = continuation_binding(&continuation).ok_or_else(|| {
+                MailboxError::InvalidInput(
+                    "nonterminal continuation is missing its binding".into(),
+                )
+            })?;
             let binding_json = serde_json::to_string(binding)?;
             for work_ref in &refs {
                 let unresolved = sqlx::query_scalar::<_, String>(
@@ -145,7 +157,7 @@ impl Mailbox {
                      ORDER BY binding_json LIMIT ?",
                 )
                 .bind(&work_ref.id)
-                .bind((MAX_CONTINUATIONS_PER_WORK + 1) as i64)
+                .bind(MAX_CONTINUATIONS_PER_WORK + 1)
                 .fetch_all(&mut *transaction)
                 .await?;
                 if unresolved.len() > MAX_CONTINUATIONS_PER_WORK as usize {
@@ -356,8 +368,12 @@ impl Mailbox {
             validate_binding_for_work(binding, work_ref)?;
         }
         let mut transaction = self.pool.begin().await?;
-        let mut groups =
-            response_groups(&mut transaction, &[work_ref.clone()], response.as_ref()).await?;
+        let mut groups = response_groups(
+            &mut transaction,
+            std::slice::from_ref(work_ref),
+            response.as_ref(),
+        )
+        .await?;
         let group = groups.pop().ok_or(MailboxError::ReferenceMismatch)?;
         let mut groups = vec![group];
         ensure_terminal_responses(
@@ -389,7 +405,7 @@ impl Mailbox {
                  ORDER BY binding_json LIMIT ?",
             )
             .bind(&work_ref.id)
-            .bind((MAX_CONTINUATIONS_PER_WORK + 1) as i64)
+            .bind(MAX_CONTINUATIONS_PER_WORK + 1)
             .fetch_all(&mut *transaction)
             .await?;
             if unresolved.len() > MAX_CONTINUATIONS_PER_WORK as usize {

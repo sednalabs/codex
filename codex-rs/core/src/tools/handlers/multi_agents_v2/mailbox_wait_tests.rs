@@ -25,6 +25,44 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
+#[test]
+fn mailbox_wait_selectors_bound_utf8_count_and_combined_content() {
+    let at_limit = "x".repeat(MAX_MAILBOX_WAIT_SELECTOR_BYTES);
+    assert!(
+        validate_wait_selectors(&vec![at_limit.clone(); 8], &vec![at_limit.clone(); 8]).is_ok()
+    );
+    assert!(validate_wait_selectors(&vec![at_limit.clone(); 8], &vec![at_limit; 9]).is_err());
+    assert!(
+        validate_wait_selectors(&vec![String::new(); MAX_MAILBOX_WAIT_SELECTORS + 1], &[]).is_err()
+    );
+    assert!(
+        validate_wait_selectors(&["x".repeat(MAX_MAILBOX_WAIT_SELECTOR_BYTES + 1)], &[]).is_err()
+    );
+    assert!(
+        validate_wait_selectors(&[], &["é".repeat(MAX_MAILBOX_WAIT_SELECTOR_BYTES / 2 + 1)]).is_err()
+    );
+}
+
+#[test]
+fn mailbox_wait_report_bounds_escaped_selector_echoes() {
+    let mut report = MailboxWaitReport {
+        requested_targets: Vec::new(),
+        requested_replies_to: Vec::new(),
+        return_when: MailboxWaitReturnWhen::Any,
+        completed: Vec::new(),
+        pending: Vec::new(),
+        completion_reason: None,
+        condition_satisfied: false,
+        quiet_count: 0,
+        wake_sender: None,
+        wake_ref: None,
+    };
+    assert!(validate_wait_report(&report).is_ok());
+    report.requested_targets = vec!["\0".repeat(MAX_MAILBOX_WAIT_SELECTOR_BYTES); 16];
+    assert!(validate_wait_selectors(&report.requested_targets, &[]).is_ok());
+    assert!(validate_wait_report(&report).is_err());
+}
+
 async fn fixture_with_path() -> (
     Arc<Session>,
     Arc<TurnContext>,

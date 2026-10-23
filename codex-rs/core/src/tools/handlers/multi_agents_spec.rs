@@ -15,6 +15,10 @@ use crate::tools::tool_runtime_capabilities::ToolRuntimeCapabilities;
 use crate::tools::tool_runtime_capabilities::registered_tool_runtime_capabilities;
 
 pub const MULTI_AGENT_V1_NAMESPACE: &str = "multi_agent_v1";
+pub(crate) const MAX_MAILBOX_WAIT_SELECTORS: usize = 100;
+pub(crate) const MAX_MAILBOX_WAIT_SELECTOR_BYTES: usize = 512;
+pub(crate) const MAX_MAILBOX_WAIT_SELECTOR_TOTAL_BYTES: usize = 8_192;
+pub(crate) const MAX_MAILBOX_WAIT_REPORT_BYTES: usize = 32_768;
 const MULTI_AGENT_V1_NAMESPACE_DESCRIPTION: &str = "Tools for spawning and managing sub-agents.";
 
 const SPAWN_AGENT_INHERITED_MODEL_GUIDANCE: &str = "Spawned agents inherit your current model by default. Omit `model` to use that preferred default; set `model` only when an explicit override is needed.";
@@ -1092,12 +1096,14 @@ fn mailbox_wait_output_schema() -> Value {
         "properties": {
             "requestedTargets": {
                 "type": "array",
-                "items": { "type": "string" },
+                "items": { "type": "string", "maxLength": MAX_MAILBOX_WAIT_SELECTOR_BYTES },
+                "maxItems": MAX_MAILBOX_WAIT_SELECTORS,
                 "description": "Agent names or exact native work references requested by the wait call."
             },
             "requestedRepliesTo": {
                 "type": "array",
-                "items": { "type": "string" },
+                "items": { "type": "string", "maxLength": MAX_MAILBOX_WAIT_SELECTOR_BYTES },
+                "maxItems": MAX_MAILBOX_WAIT_SELECTORS,
                 "description": "Request message ids requested by the wait call."
             },
             "returnWhen": {
@@ -1605,9 +1611,11 @@ fn mailbox_wait_agent_tool_parameters() -> JsonSchema {
         (
             "targets".to_string(),
             JsonSchema::array(
-                JsonSchema::string(/*description*/ None),
+                JsonSchema::string(Some(format!(
+                    "Agent name or exact work reference, at most {MAX_MAILBOX_WAIT_SELECTOR_BYTES} UTF-8 bytes."
+                ))),
                 Some(
-                    "Optional names of agents in this tree or exact native work references (for example, `work_...`). Pass multiple targets to wait for whichever completes first unless `return_when` is `all`. Omit to wait only for matching mailbox attention/replies or until `timeout_ms`; without a timeout this wait is unbounded."
+                    "Optional names of agents in this tree or exact native work references (for example, `work_...`). Pass multiple targets to wait for whichever completes first unless `return_when` is `all`. Omit both `targets` and `replies_to` to wait for caller-issued unsurfaced work or new attention. If `replies_to` is provided, omitted `targets` adds no work joins. An explicit empty selection returns `no_matching_work`. Without a timeout this wait is unbounded."
                         .to_string(),
                 ),
             ),
@@ -1615,7 +1623,9 @@ fn mailbox_wait_agent_tool_parameters() -> JsonSchema {
         (
             "replies_to".to_string(),
             JsonSchema::array(
-                JsonSchema::string(Some("Request message id.".to_string())),
+                JsonSchema::string(Some(format!(
+                    "Request message id, at most {MAX_MAILBOX_WAIT_SELECTOR_BYTES} UTF-8 bytes."
+                ))),
                 Some(
                     "Optional request message ids whose intentional final replies should satisfy this wait."
                         .to_string(),
@@ -1652,8 +1662,7 @@ fn mailbox_wait_agent_tool_parameters() -> JsonSchema {
 }
 
 fn mailbox_wait_agent_description() -> String {
-    "Use this for blocking coordination within the current agent tree while awaiting agent, native work, or request-reply completion. Omit targets and `replies_to` to wait for caller-issued unsurfaced work or new attention; such attention, human/tool interrupts, and ordinary request notifications do not satisfy a selected join. `return_when` defaults to `any`; `all` requires every selected join to complete. A selected failure, cancellation, or needs-attention state may return early and is reported as the actual cause. Omit `timeout_ms` for an unbounded event-only wait. Results report requested, completed, and pending joins; no matching work returns an empty result rather than polling."
-        .to_string()
+    format!("Use this for blocking coordination within the current agent tree while awaiting agent, native work, or request-reply completion. Omit targets and `replies_to` to wait for caller-issued unsurfaced work or new attention; such attention, human/tool interrupts, and ordinary request notifications do not satisfy a selected join. `return_when` defaults to `any`; `all` requires every selected join to complete. A selected failure, cancellation, or needs-attention state may return early and is reported as the actual cause. Omit `timeout_ms` for an unbounded event-only wait. Results report requested, completed, and pending joins; no matching work returns an empty result rather than polling. At most {MAX_MAILBOX_WAIT_SELECTORS} selectors and resolved joins are accepted, each selector is at most {MAX_MAILBOX_WAIT_SELECTOR_BYTES} UTF-8 bytes, and their combined content is at most {MAX_MAILBOX_WAIT_SELECTOR_TOTAL_BYTES} bytes. Reports are limited to {MAX_MAILBOX_WAIT_REPORT_BYTES} serialized bytes; choose fewer exact references if a selection exceeds this bound.")
 }
 
 fn wait_agent_tool_parameters_v2(
