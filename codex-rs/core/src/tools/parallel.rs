@@ -1212,6 +1212,19 @@ mod tests {
                 ..Default::default()
             },
         );
+        let enabled_role_path = role_home.path().join("mailbox_enabled.toml");
+        tokio::fs::write(
+            &enabled_role_path,
+            "[features]\nmulti_agent_v2 = true\nagent_mailbox = true\n",
+        )
+        .await?;
+        config.agent_roles.insert(
+            "mailbox_enabled".to_string(),
+            crate::config::AgentRoleConfig {
+                config_file: Some(enabled_role_path.clone()),
+                ..Default::default()
+            },
+        );
         config.multi_agent_v2.hide_spawn_agent_metadata = false;
         config.multi_agent_v2.tool_namespace = Some("profile_agents".to_string());
         turn_context.multi_agent_version = config.multi_agent_version_from_features();
@@ -1303,6 +1316,7 @@ mod tests {
                 arguments: serde_json::json!({
                     "message": "delivery owns this child",
                     "task_name": "delivery_owned_worker",
+                    "agent_type": "mailbox_enabled",
                     "fork_turns": "none"
                 })
                 .to_string(),
@@ -1470,6 +1484,8 @@ mod tests {
 
         // A same-call retry models a tool result lost after acceptance/publication. It must
         // resolve the retained work, not provision another child or send the input again.
+        // Resolving the old request must also survive its role file becoming unavailable.
+        tokio::fs::remove_file(&enabled_role_path).await?;
         let retry_response = tokio::time::timeout(
             Duration::from_secs(5),
             runtime.handle_tool_call(spawn_call(), CancellationToken::new()),
@@ -1485,6 +1501,7 @@ mod tests {
         };
         let retry_result: serde_json::Value = serde_json::from_str(&retry_message)?;
         assert_eq!(retry_result["agent_id"].as_str(), Some(first_agent_id));
+        assert_eq!(retry_result["dispatch_state"], first_result["dispatch_state"]);
         assert_eq!(
             retry_result["work_ref"].as_str(),
             Some(accepted_work_id.as_str()),
