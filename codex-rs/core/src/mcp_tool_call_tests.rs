@@ -46,6 +46,46 @@ use tracing::Instrument;
 use tracing::Level;
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_test::internal::MockWriter;
+use anyhow::Context;
+
+#[test]
+fn protected_error_projection_preserves_only_exact_ops_holder_conflict() {
+    let holder_conflict = anyhow::Error::new(rmcp::ErrorData::new(
+        rmcp::model::ErrorCode::INTERNAL_ERROR,
+        codex_runtime_proof::HOLDER_CONFLICT_MESSAGE,
+        Some(serde_json::json!({
+            "code": codex_runtime_proof::HOLDER_CONFLICT_ERROR_CODE,
+            "request_id": "44444444-4444-4444-8444-444444444444"
+        })),
+    ))
+    .context("tool call failed for `ops/work_item_claim`");
+    assert_eq!(
+        protected_mcp_call_error_message(&holder_conflict, "ops", "work_item_claim"),
+        codex_runtime_proof::HOLDER_CONFLICT_MESSAGE
+    );
+
+    let wrong_code = anyhow::Error::new(rmcp::ErrorData::new(
+        rmcp::model::ErrorCode::INTERNAL_ERROR,
+        codex_runtime_proof::HOLDER_CONFLICT_MESSAGE,
+        Some(serde_json::json!({"code": "other"})),
+    ));
+    assert_eq!(
+        protected_mcp_call_error_message(&wrong_code, "ops", "work_item_claim"),
+        "protected runtime proof MCP call failed"
+    );
+
+    let unrelated_tool = anyhow::Error::new(rmcp::ErrorData::new(
+        rmcp::model::ErrorCode::INTERNAL_ERROR,
+        codex_runtime_proof::HOLDER_CONFLICT_MESSAGE,
+        Some(serde_json::json!({
+            "code": codex_runtime_proof::HOLDER_CONFLICT_ERROR_CODE
+        })),
+    ));
+    assert_eq!(
+        protected_mcp_call_error_message(&unrelated_tool, "ops", "work_item_release"),
+        "protected runtime proof MCP call failed"
+    );
+}
 
 fn annotations(
     read_only: Option<bool>,

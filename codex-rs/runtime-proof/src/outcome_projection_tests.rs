@@ -135,7 +135,7 @@ fn primary_claim_and_current_snapshot_are_projected_without_result_text() {
 }
 
 #[test]
-fn exact_holder_conflict_is_classified_but_other_errors_are_closed() {
+fn exact_holder_conflict_is_classified_but_other_errors_remain_unknown() {
     let mut input = Vec::new();
     line(
         serde_json::json!({"type":"thread.started","thread_id":THREAD}),
@@ -199,7 +199,7 @@ fn exact_holder_conflict_is_classified_but_other_errors_are_closed() {
         .map(|line| serde_json::from_slice(line).unwrap())
         .collect();
     assert_eq!(records[1]["outcome"], "holder_conflict");
-    assert_eq!(records[3]["outcome"], "rejected");
+    assert_eq!(records[3]["outcome"], "unknown");
 }
 
 #[test]
@@ -243,7 +243,7 @@ fn release_result_projects_only_its_compact_receipt_fields() {
                     "work_item_ref":"w18773",
                     "request_id":REQUEST,
                     "outcome":"released",
-                    "generation":3,
+                    "generation":2,
                     "execution_instance_id":INSTANCE,
                     "released":true,
                     "historical":{"private":"not forwarded"}
@@ -267,10 +267,74 @@ fn release_result_projects_only_its_compact_receipt_fields() {
         .map(|line| serde_json::from_slice(line).unwrap())
         .collect();
     assert_eq!(records[1]["outcome"], "released");
-    assert_eq!(records[1]["generation"], 3);
+    assert_eq!(records[1]["generation"], 2);
     assert_eq!(records[1]["execution_instance_id"], INSTANCE);
     assert_eq!(records[1]["released"], true);
     assert_eq!(records[1]["historical_present"], true);
+}
+
+#[test]
+fn release_generation_must_equal_the_claim_precondition() {
+    let mut input = Vec::new();
+    line(
+        serde_json::json!({"type":"thread.started","thread_id":THREAD}),
+        &mut input,
+    );
+    line(
+        item_event(
+            "item.started",
+            serde_json::json!({
+                "id":"item_0",
+                "type":"mcp_tool_call",
+                "server":"ops",
+                "tool":"work_item_release",
+                "arguments":{
+                    "work_item_ref":"w18773",
+                    "claim_precondition":{
+                        "expected_generation":2,
+                        "expected_updated_at":"2026-10-23T14:05:00Z",
+                        "request_id":REQUEST
+                    }
+                }
+            }),
+        ),
+        &mut input,
+    );
+    line(
+        item_event(
+            "item.completed",
+            serde_json::json!({
+                "id":"item_0",
+                "type":"mcp_tool_call",
+                "server":"ops",
+                "tool":"work_item_release",
+                "arguments":{},
+                "status":"completed",
+                "result":{"structured_content":{
+                    "work_item_ref":"w18773",
+                    "request_id":REQUEST,
+                    "outcome":"released",
+                    "generation":3,
+                    "execution_instance_id":INSTANCE,
+                    "released":true
+                }}
+            }),
+        ),
+        &mut input,
+    );
+    let mut output = Vec::new();
+    project_child_stdout(
+        input.as_slice(),
+        "w18773",
+        Uuid::parse_str(PRINCIPAL).unwrap(),
+        &mut output,
+    );
+    let records: Vec<Value> = output
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_slice(line).unwrap())
+        .collect();
+    assert_eq!(records[1]["outcome"], "unresolved");
 }
 
 #[test]
@@ -351,6 +415,85 @@ fn exact_receipt_recovery_is_correlated_and_null_stays_unresolved() {
     assert_eq!(records[0]["historical"]["generation"], 4);
     assert_eq!(records[1]["outcome"], "unresolved");
     assert_eq!(records[1]["request_id"], REQUEST);
+}
+
+#[test]
+fn current_work_requires_the_exact_ref_and_explicit_claim_state() {
+    let mut input = Vec::new();
+    line(
+        serde_json::json!({"type":"thread.started","thread_id":THREAD}),
+        &mut input,
+    );
+    for (id, result) in [
+        (
+            "item_0",
+            serde_json::json!({
+                "work_item_ref":"w99999",
+                "work_revision":{"updated_at":"2026-10-23T14:01:00Z"},
+                "current_claim":null
+            }),
+        ),
+        (
+            "item_1",
+            serde_json::json!({
+                "work_item_ref":"w18773",
+                "work_revision":{"updated_at":"2026-10-23T14:01:00Z"}
+            }),
+        ),
+        (
+            "item_2",
+            serde_json::json!({
+                "work_item_ref":"w18773",
+                "work_revision":{"updated_at":"2026-10-23T14:01:00Z"},
+                "current_claim":null
+            }),
+        ),
+    ] {
+        line(
+            item_event(
+                "item.started",
+                serde_json::json!({
+                    "id":id,
+                    "type":"mcp_tool_call",
+                    "server":"ops",
+                    "tool":"work_item_current_work",
+                    "arguments":{"work_item_ref":"w18773"}
+                }),
+            ),
+            &mut input,
+        );
+        line(
+            item_event(
+                "item.completed",
+                serde_json::json!({
+                    "id":id,
+                    "type":"mcp_tool_call",
+                    "server":"ops",
+                    "tool":"work_item_current_work",
+                    "arguments":{},
+                    "status":"completed",
+                    "result":{"structured_content":result}
+                }),
+            ),
+            &mut input,
+        );
+    }
+    let mut output = Vec::new();
+    project_child_stdout(
+        input.as_slice(),
+        "w18773",
+        Uuid::parse_str(PRINCIPAL).unwrap(),
+        &mut output,
+    );
+    let records: Vec<Value> = output
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_slice(line).unwrap())
+        .collect();
+    assert_eq!(records[0]["outcome"], "unresolved");
+    assert_eq!(records[1]["outcome"], "unresolved");
+    assert_eq!(records[2]["outcome"], "read");
+    assert_eq!(records[2]["expected_generation"], 0);
 }
 
 #[test]

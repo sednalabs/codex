@@ -12,8 +12,6 @@ use uuid::Uuid;
 
 const MAX_LINE_BYTES: usize = 64 * 1024;
 const MAX_PENDING_CALLS: usize = 16;
-const HOLDER_CONFLICT_MESSAGE: &str =
-    "work_item_execution.holder_conflict: another active execution holds this work item.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Tool {
@@ -253,10 +251,10 @@ impl<'a, W: Write> Projector<'a, W> {
             .and_then(|error| error.get("message"))
             .and_then(Value::as_str);
         if let Some(error) = error {
-            let outcome = if error == HOLDER_CONFLICT_MESSAGE {
+            let outcome = if error == crate::HOLDER_CONFLICT_MESSAGE {
                 "holder_conflict"
             } else {
-                "rejected"
+                "unknown"
             };
             self.emit_outcome(&pending, outcome, None);
             return;
@@ -264,7 +262,7 @@ impl<'a, W: Write> Projector<'a, W> {
 
         let status = item.get("status").and_then(Value::as_str);
         if status != Some("completed") {
-            self.emit_outcome(&pending, "rejected", None);
+            self.emit_outcome(&pending, "unknown", None);
             return;
         }
         let structured = item
@@ -279,13 +277,24 @@ impl<'a, W: Write> Projector<'a, W> {
     }
 
     fn emit_current_work(&mut self, pending: &PendingCall, value: Option<&Value>) {
+        let Some(value) = value else {
+            self.emit_outcome(pending, "unresolved", None);
+            return;
+        };
+        if value.get("work_item_ref").and_then(Value::as_str) != Some(self.work_item_ref) {
+            self.emit_outcome(pending, "unresolved", None);
+            return;
+        }
+        let Some(claim) = value.get("current_claim") else {
+            self.emit_outcome(pending, "unresolved", None);
+            return;
+        };
         let updated_at = value
-            .and_then(|value| value.get("work_revision"))
+            .get("work_revision")
             .and_then(|revision| revision.get("updated_at"))
             .and_then(Value::as_str)
             .and_then(canonical_timestamp);
-        let claim = value.and_then(|value| value.get("current_claim"));
-        let Some(claim) = claim.filter(|claim| !claim.is_null()) else {
+        if claim.is_null() {
             if let Some(updated_at) = updated_at {
                 self.emit_outcome(
                     pending,
@@ -300,7 +309,7 @@ impl<'a, W: Write> Projector<'a, W> {
                 self.emit_outcome(pending, "unresolved", None);
             }
             return;
-        };
+        }
         let Some(generation) = claim
             .get("generation")
             .and_then(Value::as_u64)
@@ -435,7 +444,9 @@ impl<'a, W: Write> Projector<'a, W> {
                 return None;
             }
             let generation = value.get("generation").and_then(Value::as_u64)?;
-            if generation > ((1_u64 << 53) - 1) {
+            if generation > ((1_u64 << 53) - 1)
+                || Some(generation) != pending.expected_generation
+            {
                 return None;
             }
             let instance_id = value
@@ -475,11 +486,11 @@ impl<'a, W: Write> Projector<'a, W> {
             "expected_generation": pending.expected_generation,
             "expected_updated_at": pending.expected_updated_at.as_deref(),
         });
-        if let (Some(record), Some(details)) = (record.as_object_mut(), details) {
-            if let Some(details) = details.as_object() {
-                for (key, value) in details {
-                    record.insert(key.clone(), value.clone());
-                }
+        if let (Some(record), Some(details)) = (record.as_object_mut(), details)
+            && let Some(details) = details.as_object()
+        {
+            for (key, value) in details {
+                record.insert(key.clone(), value.clone());
             }
         }
         self.emit_record(&record);

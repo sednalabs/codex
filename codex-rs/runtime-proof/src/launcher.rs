@@ -73,6 +73,7 @@ const MAX_PROVIDER_AUTH_BYTES: usize = 24 * 1024;
 const MAX_MCP_CLIENT_SECRET_BYTES: usize = 4096;
 const MAX_EXECUTABLE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const ACK_TIMEOUT: Duration = Duration::from_secs(60);
+const OUTPUT_DRAIN_GRACE: Duration = Duration::from_millis(100);
 const READINESS_PACKET: &[u8; 4] = b"ACK1";
 
 /// Root-owned policy for one fixed Work-task execution.
@@ -429,6 +430,7 @@ fn run_mcp(
         .stdout
         .take()
         .context("fixed codex-dev task has no JSON event stream")?;
+    let (output_finished_tx, output_finished_rx) = std::sync::mpsc::sync_channel(1);
     let work_item_ref = policy.work_item_ref.clone();
     let principal = policy.principal;
     let output_reader = match thread::Builder::new()
@@ -442,6 +444,8 @@ fn run_mcp(
                 principal,
                 &mut writer,
             );
+            drop(writer);
+            let _ = output_finished_tx.send(());
         }) {
         Ok(reader) => reader,
         Err(error) => {
@@ -471,7 +475,16 @@ fn run_mcp(
     if result.is_err() {
         terminate_child_group(&mut child);
     }
-    let _ = output_reader.join();
+    if output_finished_rx
+        .recv_timeout(OUTPUT_DRAIN_GRACE)
+        .is_ok()
+    {
+        let _ = output_reader.join();
+    } else {
+        // A blocked journal write or inherited stdout descriptor cannot delay
+        // child teardown or the launcher's normal return past this grace.
+        drop(output_reader);
+    }
     result
 }
 

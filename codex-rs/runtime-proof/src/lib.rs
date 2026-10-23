@@ -23,6 +23,9 @@ pub use auth::McpRedactionContext;
 pub use signer::ExecutionNonce;
 pub use signer::sign_protected_mcp_proof;
 pub use wire::RESERVED_META_KEY;
+pub const HOLDER_CONFLICT_ERROR_CODE: &str = "work_item_execution.holder_conflict";
+pub const HOLDER_CONFLICT_MESSAGE: &str =
+    "work_item_execution.holder_conflict: another active execution holds this work item.";
 
 pub fn bearer_for_mcp(
     server: &str,
