@@ -128,22 +128,71 @@ async fn replayed_mailbox_wait_report_preserves_active_join_selection() {
             wake_notifications: None,
             completion_reason: None,
             wake_cause: None,
-            mailbox_wait_report: Some(report),
+            mailbox_wait_report: Some(report.clone()),
         },
         "turn-replayed-mailbox-wait".to_string(),
         ReplayKind::ResumeInitialMessages,
     );
-    let lines = drain_insert_history(&mut rx)
+    let active_lines = lines_to_single_string(
+        &chat
+            .active_cell_transcript_lines(/*width*/ 80)
+            .expect("replayed mailbox wait active row"),
+    );
+    assert!(active_lines.contains("Waiting for any of 3 selected conditions"));
+    assert!(active_lines.contains("Targets: worker-A, work_17"));
+    assert!(active_lines.contains("Replies to: msg_request"));
+    assert!(active_lines.contains("Pending work_17: pending"));
+    assert!(active_lines.contains("Quiet count: 2"));
+    assert!(!active_lines.contains("Completion reason:"));
+
+    let interrupted_report = codex_protocol::items::MailboxWaitReport {
+        requested_targets: report.requested_targets.clone(),
+        requested_replies_to: report.requested_replies_to.clone(),
+        return_when: report.return_when,
+        completed: Vec::new(),
+        pending: report.pending.clone(),
+        completion_reason: Some(codex_protocol::items::MailboxWakeCause::Interrupted),
+        condition_satisfied: false,
+        quiet_count: 5,
+        wake_sender: None,
+        wake_ref: None,
+    };
+    chat.replay_thread_item(
+        AppServerThreadItem::CollabAgentToolCall {
+            id: "wait-replay".to_string(),
+            tool: AppServerCollabAgentTool::Wait,
+            status: AppServerCollabAgentToolCallStatus::Failed,
+            sender_thread_id: sender_thread_id.to_string(),
+            receiver_thread_ids: Vec::new(),
+            prompt: None,
+            model: None,
+            reasoning_effort: None,
+            requested_model: None,
+            requested_reasoning_effort: None,
+            effective_model: None,
+            effective_reasoning_effort: None,
+            agents_states: HashMap::new(),
+            wake_notifications: None,
+            completion_reason: None,
+            wake_cause: None,
+            mailbox_wait_report: Some(interrupted_report),
+        },
+        "turn-replayed-mailbox-wait".to_string(),
+        ReplayKind::ResumeInitialMessages,
+    );
+    let interrupted_lines = drain_insert_history(&mut rx)
         .into_iter()
         .map(|lines| lines_to_single_string(&lines))
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(lines.contains("Waiting for any of 3 selected conditions"));
-    assert!(lines.contains("Targets: worker-A, work_17"));
-    assert!(lines.contains("Replies to: msg_request"));
-    assert!(lines.contains("Pending work_17: pending"));
-    assert!(lines.contains("Quiet count: 2"));
-    assert!(!lines.contains("Completion reason:"));
+    assert!(interrupted_lines.contains("Mailbox wait returned: interrupted"));
+    assert!(interrupted_lines.contains("Pending work_17: pending"));
+    assert!(interrupted_lines.contains("Pending reviewer · msg_request: awaiting_reply"));
+    assert!(interrupted_lines.contains("Quiet count: 5"));
+    assert_chatwidget_snapshot!(
+        "replayed_mailbox_wait_report_interrupted_terminal",
+        interrupted_lines
+    );
 }
 
 #[tokio::test]

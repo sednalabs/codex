@@ -37,11 +37,10 @@ pub(crate) async fn initialize(pool: &SqlitePool) -> MailboxResult<()> {
     .execute(&mut *transaction)
     .await?;
 
-    let version: Option<i64> = sqlx::query_scalar(
-        "SELECT version FROM mailbox_schema WHERE singleton = 1",
-    )
-    .fetch_optional(&mut *transaction)
-    .await?;
+    let version: Option<i64> =
+        sqlx::query_scalar("SELECT version FROM mailbox_schema WHERE singleton = 1")
+            .fetch_optional(&mut *transaction)
+            .await?;
     if let Some(version) = version {
         if version > SCHEMA_VERSION {
             return Err(crate::MailboxError::NewerSchema {
@@ -169,12 +168,7 @@ pub(crate) async fn initialize(pool: &SqlitePool) -> MailboxResult<()> {
     )
     .execute(&mut *transaction)
     .await?;
-    ensure_column(
-        &mut transaction,
-        "mailbox_continuations",
-        "outcome",
-    )
-    .await?;
+    ensure_column(&mut transaction, "mailbox_continuations", "outcome").await?;
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS mailbox_continuations_binding
          ON mailbox_continuations(binding_json, state, work_id)",
@@ -218,48 +212,13 @@ pub(crate) async fn initialize(pool: &SqlitePool) -> MailboxResult<()> {
     )
     .execute(&mut *transaction)
     .await?;
-    ensure_column(
-        &mut transaction,
-        "mailbox_messages",
-        "withdrawn",
-    )
-    .await?;
-    ensure_column(
-        &mut transaction,
-        "mailbox_messages",
-        "activate_if_idle",
-    )
-    .await?;
-    ensure_column(
-        &mut transaction,
-        "mailbox_messages",
-        "input_admitted",
-    )
-    .await?;
-    ensure_column(
-        &mut transaction,
-        "mailbox_messages",
-        "author_path",
-    )
-    .await?;
-    ensure_column(
-        &mut transaction,
-        "mailbox_messages",
-        "recipient_path",
-    )
-    .await?;
-    ensure_column(
-        &mut transaction,
-        "mailbox_messages",
-        "work_id",
-    )
-    .await?;
-    ensure_column(
-        &mut transaction,
-        "mailbox_pending_counts",
-        "quiet_count",
-    )
-    .await?;
+    ensure_column(&mut transaction, "mailbox_messages", "withdrawn").await?;
+    ensure_column(&mut transaction, "mailbox_messages", "activate_if_idle").await?;
+    ensure_column(&mut transaction, "mailbox_messages", "input_admitted").await?;
+    ensure_column(&mut transaction, "mailbox_messages", "author_path").await?;
+    ensure_column(&mut transaction, "mailbox_messages", "recipient_path").await?;
+    ensure_column(&mut transaction, "mailbox_messages", "work_id").await?;
+    ensure_column(&mut transaction, "mailbox_pending_counts", "quiet_count").await?;
     if version.is_some_and(|version| version < SCHEMA_VERSION) {
         sqlx::query(
             "UPDATE mailbox_pending_counts SET
@@ -392,7 +351,11 @@ async fn ensure_column(
         "mailbox_continuations" => "PRAGMA table_info(mailbox_continuations)",
         "mailbox_messages" => "PRAGMA table_info(mailbox_messages)",
         "mailbox_pending_counts" => "PRAGMA table_info(mailbox_pending_counts)",
-        _ => return Err(crate::MailboxError::InvalidInput("unsupported mailbox schema table".into())),
+        _ => {
+            return Err(crate::MailboxError::InvalidInput(
+                "unsupported mailbox schema table".into(),
+            ));
+        }
     };
     let rows = sqlx::query(pragma).fetch_all(&mut **transaction).await?;
     let exists = rows
@@ -427,10 +390,13 @@ async fn ensure_column(
             ("mailbox_pending_counts", "quiet_count") => {
                 "ALTER TABLE mailbox_pending_counts ADD COLUMN quiet_count INTEGER NOT NULL DEFAULT 0"
             }
-            _ => return Err(crate::MailboxError::InvalidInput("unsupported mailbox schema column".into())),
+            _ => {
+                return Err(crate::MailboxError::InvalidInput(
+                    "unsupported mailbox schema column".into(),
+                ));
+            }
         };
         sqlx::query(alter).execute(&mut **transaction).await?;
     }
     Ok(())
 }
-

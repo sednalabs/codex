@@ -1591,7 +1591,7 @@ impl Session {
                     item: TurnItem::CollabAgentToolCall(call),
                     completed_at_ms: now_unix_timestamp_ms(),
                 });
-                repair_events.push((turn_id, completed_event.clone()));
+                repair_events.push((turn_id.clone(), completed_event.clone()));
                 repair_items.push(RolloutItem::EventMsg(completed_event));
             }
 
@@ -2210,6 +2210,21 @@ impl Session {
 
     /// Persist the event to rollout and send it to clients.
     pub(crate) async fn send_event(&self, turn_context: &TurnContext, msg: EventMsg) {
+        self.send_event_with_persistence(turn_context, msg, /*persist*/ true)
+            .await;
+    }
+
+    async fn send_event_without_persistence(&self, turn_context: &TurnContext, msg: EventMsg) {
+        self.send_event_with_persistence(turn_context, msg, /*persist*/ false)
+            .await;
+    }
+
+    async fn send_event_with_persistence(
+        &self,
+        turn_context: &TurnContext,
+        msg: EventMsg,
+        persist: bool,
+    ) {
         let legacy_source = msg.clone();
         if let EventMsg::Error(error) = &legacy_source
             && error
@@ -2259,7 +2274,7 @@ impl Session {
             self.send_event_raw_with_status_override(event, mailbox_status_override)
                 .await;
         } else {
-            self.send_event_raw(event).await;
+            self.send_event_raw_with_persistence(event, persist).await;
         }
         if !mailbox_terminal_before_publish {
             let _ = self
@@ -2280,8 +2295,68 @@ impl Session {
                 id: turn_context.sub_id.clone(),
                 msg: legacy,
             };
-            self.send_event_raw(legacy_event).await;
+            self.send_event_raw_with_persistence(legacy_event, persist)
+                .await;
         }
+    }
+
+    /// Durably records a structured mailbox wait item before publishing it. The
+    /// ordinary collaboration item path is best-effort and its ItemStarted events
+    /// are intentionally filtered from canonical rollout history.
+    pub(crate) async fn emit_mailbox_wait_report(
+        &self,
+        turn_context: &TurnContext,
+        item: TurnItem,
+    ) -> std::io::Result<()> {
+        let (status, event_msg) = match &item {
+            TurnItem::CollabAgentToolCall(call)
+                if call.tool == CollabAgentTool::Wait
+                    && call.mailbox_wait_report.is_some()
+                    && matches!(
+                        call.status,
+                        CollabAgentToolCallStatus::InProgress
+                            | CollabAgentToolCallStatus::Completed
+                    ) =>
+            {
+                let event_msg = match call.status {
+                    CollabAgentToolCallStatus::InProgress => {
+                        EventMsg::ItemStarted(ItemStartedEvent {
+                            thread_id: self.thread_id,
+                            turn_id: turn_context.sub_id.clone(),
+                            item: item.clone(),
+                            started_at_ms: now_unix_timestamp_ms(),
+                        })
+                    }
+                    CollabAgentToolCallStatus::Completed => {
+                        EventMsg::ItemCompleted(ItemCompletedEvent {
+                            thread_id: self.thread_id,
+                            turn_id: turn_context.sub_id.clone(),
+                            item: item.clone(),
+                            completed_at_ms: now_unix_timestamp_ms(),
+                        })
+                    }
+                    CollabAgentToolCallStatus::Failed => unreachable!("status was checked above"),
+                };
+                (call.status, event_msg)
+            }
+            _ => {
+                return Err(std::io::Error::other(
+                    "durable mailbox wait reporting requires a typed wait item",
+                ));
+            }
+        };
+
+        self.live_thread_for_persistence("publish a mailbox wait report")
+            .map_err(std::io::Error::other)?;
+        self.try_persist_rollout_items(&[RolloutItem::EventMsg(event_msg.clone())])
+            .await?;
+        self.flush_rollout().await?;
+        if status == CollabAgentToolCallStatus::Completed {
+            record_turn_ttfm_metric(turn_context, &item).await;
+        }
+        self.send_event_without_persistence(turn_context, event_msg)
+            .await;
+        Ok(())
     }
 
     /// Forwards terminal turn events from spawned MultiAgentV2 children to their direct parent.

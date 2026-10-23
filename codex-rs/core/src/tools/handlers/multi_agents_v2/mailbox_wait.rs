@@ -214,11 +214,11 @@ async fn handle_wait(invocation: ToolInvocation) -> Result<Box<dyn ToolOutput>, 
         };
         let all_observed = !selected.is_empty() && selected.iter().all(already_observed);
         if !started {
-            emit_report(&session, &turn, &call_id, &agents, &report, CollabAgentToolCallStatus::InProgress).await;
+            emit_report(&session, &turn, &call_id, &agents, &report, CollabAgentToolCallStatus::InProgress).await?;
             started = true;
             last_report = Some(report.clone());
         } else if last_report.as_ref() != Some(&report) {
-            emit_report(&session, &turn, &call_id, &agents, &report, CollabAgentToolCallStatus::InProgress).await;
+            emit_report(&session, &turn, &call_id, &agents, &report, CollabAgentToolCallStatus::InProgress).await?;
             last_report = Some(report.clone());
         }
         if mailbox.has_runtime_fault(&agents) {
@@ -365,7 +365,7 @@ async fn handle_wait(invocation: ToolInvocation) -> Result<Box<dyn ToolOutput>, 
             report.condition_satisfied = false;
         }
     }
-    emit_report(&session, &turn, &call_id, &agents, &report, CollabAgentToolCallStatus::Completed).await;
+    emit_report(&session, &turn, &call_id, &agents, &report, CollabAgentToolCallStatus::Completed).await?;
     Ok(boxed_tool_output(FunctionToolOutput::from_text(
         tool_output_json_text(&report, "wait_agent"), Some(true),
     )))
@@ -484,7 +484,7 @@ async fn admit_selected(session: &Session, turn: &TurnContext, mailbox: &Mailbox
     Ok(())
 }
 
-async fn emit_report(session: &Session, turn: &TurnContext, call_id: &str, agents: &[ThreadId], report: &MailboxWaitReport, status: CollabAgentToolCallStatus) {
+async fn emit_report(session: &Session, turn: &TurnContext, call_id: &str, agents: &[ThreadId], report: &MailboxWaitReport, status: CollabAgentToolCallStatus) -> Result<(), FunctionCallError> {
     let item = TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
         id: call_id.to_string(), tool: CollabAgentTool::Wait, status,
         sender_thread_id: session.thread_id, receiver_thread_ids: agents.to_vec(), receiver_agents: Vec::new(),
@@ -492,6 +492,8 @@ async fn emit_report(session: &Session, turn: &TurnContext, call_id: &str, agent
         agents_states: Default::default(), wake_notifications: None, completion_reason: None, wake_cause: None,
         mailbox_wait_report: Some(report.clone()),
     });
-    if status == CollabAgentToolCallStatus::InProgress { session.emit_turn_item_started(turn, &item).await; }
-    else { session.emit_turn_item_completed(turn, item).await; }
+    session
+        .emit_mailbox_wait_report(turn, item)
+        .await
+        .map_err(mailbox_error)
 }

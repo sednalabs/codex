@@ -653,7 +653,8 @@ impl Session {
                             mailbox.notify_runtime_fault(self.thread_id);
                         }
                         let error_event = error.to_error_event(/*message_prefix*/ None);
-                        self.send_event(&turn_context, EventMsg::Error(error_event)).await;
+                        self.send_event(&turn_context, EventMsg::Error(error_event))
+                            .await;
                     }
                 }
             }

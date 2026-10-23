@@ -1,11 +1,9 @@
 use crate::error::{MailboxError, MailboxResult};
 use crate::messages::decrement_pending_count;
 use crate::store::Mailbox;
-use crate::types::{
-    AdmissionReceipt, DispatchDecision, DispatchState, NativeWork, WorkRef,
-};
-use codex_protocol::protocol::InterAgentCommunication;
+use crate::types::{AdmissionReceipt, DispatchDecision, DispatchState, NativeWork, WorkRef};
 use codex_protocol::ThreadId;
+use codex_protocol::protocol::InterAgentCommunication;
 use sqlx::{Row, Sqlite, Transaction};
 
 const MAX_WORK_ITEMS: i64 = 50_000;
@@ -16,7 +14,11 @@ const MAX_TURN_INPUTS: usize = 100;
 
 impl Mailbox {
     /// Resolve only the work covered by this exact canonical result body.
-    pub async fn work_for_outcome(&self, issuer: ThreadId, outcome_id: &str) -> MailboxResult<Vec<WorkRef>> {
+    pub async fn work_for_outcome(
+        &self,
+        issuer: ThreadId,
+        outcome_id: &str,
+    ) -> MailboxResult<Vec<WorkRef>> {
         let rows = sqlx::query(
             "SELECT * FROM mailbox_work WHERE issuer = ? AND outcome_id = ? ORDER BY seq LIMIT 101",
         )
@@ -38,10 +40,12 @@ impl Mailbox {
 
         let mut request = work.clone();
         request.input.id = None;
-        let body_bytes = work.input.content.len()
-            + work.input.encrypted_content.as_ref().map_or(0, String::len);
+        let body_bytes =
+            work.input.content.len() + work.input.encrypted_content.as_ref().map_or(0, String::len);
         if body_bytes > MAX_NATIVE_BODY_BYTES {
-            return Err(MailboxError::Backpressure("accepted native body byte limit"));
+            return Err(MailboxError::Backpressure(
+                "accepted native body byte limit",
+            ));
         }
         let request_json = serde_json::to_string(&request)?;
         if request_json.len() > MAX_INPUT_BYTES {
@@ -54,13 +58,12 @@ impl Mailbox {
         let input_json = serde_json::to_string(&work.input)?;
 
         let mut transaction = self.pool.begin().await?;
-        if let Some(row) = sqlx::query(
-            "SELECT * FROM mailbox_work WHERE issuer = ? AND native_key = ?",
-        )
-        .bind(work.issuer.to_string())
-        .bind(&work.native_key)
-        .fetch_optional(&mut *transaction)
-        .await?
+        if let Some(row) =
+            sqlx::query("SELECT * FROM mailbox_work WHERE issuer = ? AND native_key = ?")
+                .bind(work.issuer.to_string())
+                .bind(&work.native_key)
+                .fetch_optional(&mut *transaction)
+                .await?
         {
             if row.try_get::<String, _>("request_json")? != request_json {
                 return Err(MailboxError::IdempotencyConflict);
@@ -89,11 +92,10 @@ impl Mailbox {
         if duplicate_input.is_some() {
             return Err(MailboxError::IdempotencyConflict);
         }
-        let count: i64 = sqlx::query_scalar(
-            "SELECT item_count FROM mailbox_counts WHERE name = 'work'",
-        )
-            .fetch_one(&mut *transaction)
-            .await?;
+        let count: i64 =
+            sqlx::query_scalar("SELECT item_count FROM mailbox_counts WHERE name = 'work'")
+                .fetch_one(&mut *transaction)
+                .await?;
         if count >= MAX_WORK_ITEMS {
             return Err(MailboxError::Backpressure("retained work-item count"));
         }
@@ -121,9 +123,11 @@ impl Mailbox {
         .execute(&mut *transaction)
         .await?;
         if inserted.rows_affected() == 1 {
-            sqlx::query("UPDATE mailbox_counts SET item_count = item_count + 1 WHERE name = 'work'")
-                .execute(&mut *transaction)
-                .await?;
+            sqlx::query(
+                "UPDATE mailbox_counts SET item_count = item_count + 1 WHERE name = 'work'",
+            )
+            .execute(&mut *transaction)
+            .await?;
         }
         transaction.commit().await?;
         self.notify_changed();
@@ -131,9 +135,14 @@ impl Mailbox {
     }
 
     /// Return the exact captured native input, including its assigned stable ID.
-    pub async fn accepted_input(&self, work_ref: &WorkRef) -> MailboxResult<InterAgentCommunication> {
+    pub async fn accepted_input(
+        &self,
+        work_ref: &WorkRef,
+    ) -> MailboxResult<InterAgentCommunication> {
         let row = exact_work(&self.pool, work_ref).await?;
-        Ok(serde_json::from_str(&row.try_get::<String, _>("input_json")?)?)
+        Ok(serde_json::from_str(
+            &row.try_get::<String, _>("input_json")?,
+        )?)
     }
 
     pub async fn work_for_native_key(
@@ -141,13 +150,12 @@ impl Mailbox {
         issuer: ThreadId,
         native_key: &str,
     ) -> MailboxResult<Option<WorkRef>> {
-        let row = sqlx::query(
-            "SELECT * FROM mailbox_work WHERE issuer = ? AND native_key = ? LIMIT 1",
-        )
-        .bind(issuer.to_string())
-        .bind(native_key)
-        .fetch_optional(&self.pool)
-        .await?;
+        let row =
+            sqlx::query("SELECT * FROM mailbox_work WHERE issuer = ? AND native_key = ? LIMIT 1")
+                .bind(issuer.to_string())
+                .bind(native_key)
+                .fetch_optional(&self.pool)
+                .await?;
         row.as_ref().map(work_ref_from_row).transpose()
     }
 
@@ -156,13 +164,12 @@ impl Mailbox {
         agent: ThreadId,
         submission_id: &str,
     ) -> MailboxResult<Option<WorkRef>> {
-        let row = sqlx::query(
-            "SELECT * FROM mailbox_work WHERE agent = ? AND submission_id = ? LIMIT 1",
-        )
-        .bind(agent.to_string())
-        .bind(submission_id)
-        .fetch_optional(&self.pool)
-        .await?;
+        let row =
+            sqlx::query("SELECT * FROM mailbox_work WHERE agent = ? AND submission_id = ? LIMIT 1")
+                .bind(agent.to_string())
+                .bind(submission_id)
+                .fetch_optional(&self.pool)
+                .await?;
         row.as_ref().map(work_ref_from_row).transpose()
     }
 
@@ -353,7 +360,9 @@ impl Mailbox {
         let mut ids = input_message_ids.to_vec();
         ids.sort_unstable();
         if ids.windows(2).any(|pair| pair[0] == pair[1]) {
-            return Err(MailboxError::InvalidInput("duplicate input message ID".into()));
+            return Err(MailboxError::InvalidInput(
+                "duplicate input message ID".into(),
+            ));
         }
 
         let mut transaction = self.pool.begin().await?;
@@ -439,7 +448,9 @@ impl Mailbox {
                 return Err(MailboxError::IdempotencyConflict);
             }
             let canonical = message.try_get::<i64, _>("canonical")? != 0;
-            let active = message.try_get::<Option<String>, _>("superseded_by")?.is_none()
+            let active = message
+                .try_get::<Option<String>, _>("superseded_by")?
+                .is_none()
                 && message.try_get::<i64, _>("withdrawn")? == 0;
             let quiet = message.try_get::<i64, _>("quiet")? != 0;
             sqlx::query(
@@ -544,7 +555,8 @@ pub(crate) fn ensure_mailbox_id(id: &str) -> MailboxResult<()> {
     if id.starts_with("amsg_") && id.len() > 5 {
         Ok(())
     } else {
-        Err(MailboxError::InvalidInput("expected stable amsg_* ID".into()))
+        Err(MailboxError::InvalidInput(
+            "expected stable amsg_* ID".into(),
+        ))
     }
 }
-

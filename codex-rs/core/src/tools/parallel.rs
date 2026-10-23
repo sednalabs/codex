@@ -1212,7 +1212,11 @@ mod tests {
             .await
             .expect("root thread should start");
         session.services.agent_control = manager.agent_control();
-        session.services.agent_control.mailbox_initialize(&config).await?;
+        session
+            .services
+            .agent_control
+            .mailbox_initialize(&config)
+            .await?;
         session.thread_id = root.thread_id;
         let (initial_delivery_finished, resume_spawn) = session
             .services
@@ -1253,7 +1257,9 @@ mod tests {
         };
         let cancellation_token = CancellationToken::new();
         let mut response_task = tokio::spawn(
-            runtime.clone().handle_tool_call(spawn_call(), cancellation_token.clone()),
+            runtime
+                .clone()
+                .handle_tool_call(spawn_call(), cancellation_token.clone()),
         );
 
         let child_thread_id =

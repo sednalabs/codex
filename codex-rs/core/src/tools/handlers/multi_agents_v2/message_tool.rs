@@ -250,7 +250,10 @@ async fn handle_message_submission_inner(
         ..
     } = invocation;
     let _ = payload;
-    let mailbox_enabled = turn.config.features.enabled(codex_features::Feature::AgentMailbox);
+    let mailbox_enabled = turn
+        .config
+        .features
+        .enabled(codex_features::Feature::AgentMailbox);
     let receiver_thread_id = resolve_agent_target(&session, &turn, &target).await?;
     let receiver_agent = session
         .services
@@ -270,7 +273,8 @@ async fn handle_message_submission_inner(
     let receiver_agent_path = receiver_agent.agent_path.clone().ok_or_else(|| {
         FunctionCallError::RespondToModel("target agent is missing an agent_path".to_string())
     })?;
-    if mailbox_enabled && mode == MessageDeliveryMode::TriggerTurn
+    if mailbox_enabled
+        && mode == MessageDeliveryMode::TriggerTurn
         && let Some(work) = session
             .services
             .agent_control
@@ -415,15 +419,24 @@ async fn handle_message_submission_inner(
     .await;
 
     let accepted_work = if mailbox_enabled && mode == MessageDeliveryMode::TriggerTurn {
-        session.services.agent_control.mailbox_work_for_key(session.thread_id, &call_id)
-            .await.map_err(|err| collab_agent_error(receiver_thread_id, err))?
+        session
+            .services
+            .agent_control
+            .mailbox_work_for_key(session.thread_id, &call_id)
+            .await
+            .map_err(|err| collab_agent_error(receiver_thread_id, err))?
     } else {
         None
     };
     let dispatch_state = if let Some(work) = accepted_work.as_ref()
         && let Some(mailbox) = session.services.agent_control.mailbox()
     {
-        Some(mailbox.dispatch_state(work).await.map_err(super::mailbox_message::mailbox_error)?)
+        Some(
+            mailbox
+                .dispatch_state(work)
+                .await
+                .map_err(super::mailbox_message::mailbox_error)?,
+        )
     } else {
         None
     };

@@ -15,7 +15,7 @@ jobs:
     env:
       CARGO_INCREMENTAL: "0"
       RUST_MIN_STACK: "8388608"
-      PREPARATION_ATTEMPT: "5"
+      PREPARATION_ATTEMPT: "6"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -55,6 +55,9 @@ jobs:
         continue-on-error: true
         working-directory: codex-rs
         run: cargo test --locked -p codex-agent-mailbox --lib -- --test-threads=1
+      - name: Verify canonical mailbox lifecycle retention
+        working-directory: codex-rs
+        run: cargo test --locked -p codex-rollout --lib mailbox -- --test-threads=1
       - name: Generate the affected native schemas
         run: |
           just write-config-schema
@@ -69,7 +72,7 @@ jobs:
       - name: Compile focused UI mailbox consumers
         working-directory: codex-rs
         env:
-          INSTA_UPDATE: always
+          INSTA_UPDATE: new
         run: cargo test --locked -p codex-tui --lib mailbox -- --test-threads=1
       - name: Verify interrupted mailbox wait history replay
         working-directory: codex-rs
@@ -92,6 +95,11 @@ jobs:
           git diff --binary > "$RUNNER_TEMP/mailbox-source-preparation/source.patch"
           git rev-parse HEAD > "$RUNNER_TEMP/mailbox-source-preparation/source-sha.txt"
           git status --short > "$RUNNER_TEMP/mailbox-source-preparation/status.txt"
+          while IFS= read -r -d '' pending_snapshot; do
+            snapshot_target="$RUNNER_TEMP/mailbox-source-preparation/pending-snapshots/$pending_snapshot"
+            mkdir -p "$(dirname "$snapshot_target")"
+            cp -- "$pending_snapshot" "$snapshot_target"
+          done < <(git ls-files --others --exclude-standard -z -- 'codex-rs/tui/src/**/*.snap.new')
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:

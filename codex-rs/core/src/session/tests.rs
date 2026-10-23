@@ -2075,7 +2075,7 @@ async fn record_initial_history_reconstructs_resumed_transcript() {
 
 #[tokio::test]
 async fn resumed_mailbox_wait_is_durably_interrupted_and_idempotent() {
-    let (mut session, _turn_context, rx) = make_session_and_context_with_rx().await;
+    let (mut session, turn_context, rx) = make_session_and_context_with_rx().await;
     let fault_store = Arc::new(FaultInjectingThreadStore::new(Arc::clone(
         &session.services.thread_store,
     )));
@@ -2087,7 +2087,6 @@ async fn resumed_mailbox_wait_is_durably_interrupted_and_idempotent() {
         Arc::get_mut(&mut session).expect("session should be uniquely owned"),
     )
     .await;
-    let turn_id = "turn-with-interrupted-mailbox-wait".to_string();
     let call_id = "wait-call-interrupted".to_string();
     let pending = codex_protocol::items::MailboxWaitSelectionItem {
         work_ref: Some("work_exact-42".to_string()),
@@ -2125,31 +2124,48 @@ async fn resumed_mailbox_wait_is_durably_interrupted_and_idempotent() {
         wake_cause: None,
         mailbox_wait_report: Some(report),
     });
-    let initial_items = vec![
-        RolloutItem::ResponseItem(ResponseItem::FunctionCall {
+    session
+        .try_persist_rollout_items(&[RolloutItem::ResponseItem(ResponseItem::FunctionCall {
             id: None,
             name: "wait_agent".to_string(),
             namespace: None,
             arguments: "{}".to_string(),
             call_id: call_id.clone(),
             internal_chat_message_metadata_passthrough: None,
-        }),
-        RolloutItem::EventMsg(EventMsg::ItemStarted(ItemStartedEvent {
-            thread_id: session.thread_id,
-            turn_id: turn_id.clone(),
-            item: started_item,
-            started_at_ms: 10,
-        })),
-    ];
-    session
-        .try_persist_rollout_items(&initial_items)
+        })])
         .await
-        .expect("initial wait history should append");
-    session.flush_rollout().await.expect("initial wait history should flush");
+        .expect("wait call should append");
+    session
+        .flush_rollout()
+        .await
+        .expect("initial wait history should flush");
+
+    fault_store
+        .fail_append_once
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        session
+            .emit_mailbox_wait_report(&turn_context, started_item.clone())
+            .await
+            .is_err(),
+        "a wait start must surface canonical append failure"
+    );
+    assert!(
+        rx.try_recv().is_err(),
+        "a wait start must not publish before canonical persistence"
+    );
+    session
+        .emit_mailbox_wait_report(&turn_context, started_item)
+        .await
+        .expect("a wait start should append, flush, then publish");
+    assert!(matches!(
+        rx.try_recv().expect("durable wait start should be published").msg,
+        EventMsg::ItemStarted(event) if event.item.id() == call_id
+    ));
 
     let InitialHistory::Resumed(resumed) = RolloutRecorder::get_rollout_history(&rollout_path)
         .await
-        .expect("read initial rollout history")
+        .expect("read durably started wait history")
     else {
         panic!("expected resumed history");
     };
@@ -2194,9 +2210,7 @@ async fn resumed_mailbox_wait_is_durably_interrupted_and_idempotent() {
         .history
         .iter()
         .find_map(|item| match item {
-            RolloutItem::EventMsg(EventMsg::ItemCompleted(event))
-                if event.item.id() == call_id =>
-            {
+            RolloutItem::EventMsg(EventMsg::ItemCompleted(event)) if event.item.id() == call_id => {
                 Some(event)
             }
             _ => None,
@@ -2230,7 +2244,10 @@ async fn resumed_mailbox_wait_is_durably_interrupted_and_idempotent() {
             )
         })
         .count();
-    assert_eq!(repaired_output_count, 1, "same call must have one durable result");
+    assert_eq!(
+        repaired_output_count, 1,
+        "same call must have one durable result"
+    );
     let output_text = repaired_history
         .history
         .iter()
@@ -2243,10 +2260,9 @@ async fn resumed_mailbox_wait_is_durably_interrupted_and_idempotent() {
             _ => None,
         })
         .expect("same provider call should have a durable result");
-    let output_report = serde_json::from_str::<codex_protocol::items::MailboxWaitReport>(
-        &output_text,
-    )
-    .expect("durable provider result should preserve the structured wait report");
+    let output_report =
+        serde_json::from_str::<codex_protocol::items::MailboxWaitReport>(&output_text)
+            .expect("durable provider result should preserve the structured wait report");
     assert_eq!(
         output_report.completion_reason,
         Some(codex_protocol::items::MailboxWakeCause::Interrupted)
@@ -2583,17 +2599,11 @@ impl codex_thread_store::ThreadStore for FaultInjectingThreadStore {
         codex_thread_store::ThreadStore::append_items(self.inner.as_ref(), params)
     }
 
-    fn persist_thread(
-        &self,
-        thread_id: ThreadId,
-    ) -> codex_thread_store::ThreadStoreFuture<'_, ()> {
+    fn persist_thread(&self, thread_id: ThreadId) -> codex_thread_store::ThreadStoreFuture<'_, ()> {
         codex_thread_store::ThreadStore::persist_thread(self.inner.as_ref(), thread_id)
     }
 
-    fn flush_thread(
-        &self,
-        thread_id: ThreadId,
-    ) -> codex_thread_store::ThreadStoreFuture<'_, ()> {
+    fn flush_thread(&self, thread_id: ThreadId) -> codex_thread_store::ThreadStoreFuture<'_, ()> {
         if self
             .fail_flush_once
             .swap(false, std::sync::atomic::Ordering::SeqCst)
@@ -2614,10 +2624,7 @@ impl codex_thread_store::ThreadStore for FaultInjectingThreadStore {
         codex_thread_store::ThreadStore::shutdown_thread(self.inner.as_ref(), thread_id)
     }
 
-    fn discard_thread(
-        &self,
-        thread_id: ThreadId,
-    ) -> codex_thread_store::ThreadStoreFuture<'_, ()> {
+    fn discard_thread(&self, thread_id: ThreadId) -> codex_thread_store::ThreadStoreFuture<'_, ()> {
         codex_thread_store::ThreadStore::discard_thread(self.inner.as_ref(), thread_id)
     }
 

@@ -1083,17 +1083,17 @@ fn mailbox_wait_output_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
-            "requested_targets": {
+            "requestedTargets": {
                 "type": "array",
                 "items": { "type": "string" },
                 "description": "Agent names or exact native work references requested by the wait call."
             },
-            "requested_replies_to": {
+            "requestedRepliesTo": {
                 "type": "array",
                 "items": { "type": "string" },
                 "description": "Request message ids requested by the wait call."
             },
-            "return_when": {
+            "returnWhen": {
                 "type": "string",
                 "enum": ["any", "all"],
                 "description": "Whether any one selected condition or every selected condition must complete."
@@ -1103,8 +1103,8 @@ fn mailbox_wait_output_schema() -> Value {
                 "items": {
                     "type": "object",
                     "properties": {
-                        "work_ref": { "type": ["string", "null"] },
-                        "message_id": { "type": ["string", "null"] },
+                        "workRef": { "type": ["string", "null"] },
+                        "messageId": { "type": ["string", "null"] },
                         "agent": { "type": ["string", "null"] },
                         "status": { "type": "string" }
                     },
@@ -1119,8 +1119,8 @@ fn mailbox_wait_output_schema() -> Value {
                 "items": {
                     "type": "object",
                     "properties": {
-                        "work_ref": { "type": ["string", "null"] },
-                        "message_id": { "type": ["string", "null"] },
+                        "workRef": { "type": ["string", "null"] },
+                        "messageId": { "type": ["string", "null"] },
                         "agent": { "type": ["string", "null"] },
                         "status": { "type": "string" }
                     },
@@ -1129,29 +1129,29 @@ fn mailbox_wait_output_schema() -> Value {
                 },
                 "description": "Requested targets or replies still pending when the wait returned."
             },
-            "completion_reason": {
+            "completionReason": {
                 "type": "string",
                 "enum": ["result", "reply", "request", "human", "tool", "deadline", "cancel", "interrupted", "subscription_loss", "runtime_fault", "no_matching_work", "already_satisfied", "cycle", "needs_attention"],
                 "description": "Actual reason the wait returned. Attention and interruption do not themselves satisfy an outstanding join."
             },
-            "condition_satisfied": {
+            "conditionSatisfied": {
                 "type": "boolean",
                 "description": "Whether the requested any/all join condition was satisfied."
             },
-            "quiet_count": {
+            "quietCount": {
                 "type": "integer",
                 "description": "Global retained quiet-message backlog for this recipient, not a per-wait filtered count. This metadata does not consume hidden message bodies."
             },
-            "wake_sender": {
+            "wakeSender": {
                 "type": ["string", "null"],
                 "description": "Safe sender identity metadata for a wake, when applicable."
             },
-            "wake_ref": {
+            "wakeRef": {
                 "type": ["string", "null"],
                 "description": "Safe reference metadata for a wake, when applicable."
             }
         },
-        "required": ["requested_targets", "requested_replies_to", "return_when", "completed", "pending", "completion_reason", "condition_satisfied", "quiet_count"],
+        "required": ["requestedTargets", "requestedRepliesTo", "returnWhen", "completed", "pending", "completionReason", "conditionSatisfied", "quietCount"],
         "additionalProperties": false
     })
 }

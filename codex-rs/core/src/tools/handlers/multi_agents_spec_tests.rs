@@ -657,6 +657,7 @@ fn mailbox_wait_agent_tool_exposes_unbounded_join_contract_and_structured_result
     assert!(properties.contains_key("timeout_ms"));
     assert!(properties.contains_key("return_when"));
     assert!(properties.contains_key("native_event_wait"));
+    assert!(!properties.contains_key("returnWhen"));
     assert_eq!(parameters.required, None);
     assert_eq!(
         properties["timeout_ms"].schema_type,
@@ -694,14 +695,14 @@ fn mailbox_wait_agent_tool_exposes_unbounded_join_contract_and_structured_result
     assert_eq!(
         output_schema["required"],
         json!([
-            "requested_targets",
-            "requested_replies_to",
-            "return_when",
+            "requestedTargets",
+            "requestedRepliesTo",
+            "returnWhen",
             "completed",
             "pending",
-            "completion_reason",
-            "condition_satisfied",
-            "quiet_count"
+            "completionReason",
+            "conditionSatisfied",
+            "quietCount"
         ])
     );
     for cause in [
@@ -720,7 +721,7 @@ fn mailbox_wait_agent_tool_exposes_unbounded_join_contract_and_structured_result
         "needs_attention",
     ] {
         assert!(
-            output_schema["properties"]["completion_reason"]["enum"]
+            output_schema["properties"]["completionReason"]["enum"]
                 .as_array()
                 .expect("completion reason enum")
                 .contains(&json!(cause)),
@@ -789,13 +790,31 @@ fn mailbox_wait_agent_tool_has_no_native_capability_prerequisite() {
     let output_schema = output_schema.expect("mailbox wait output schema");
     assert!(
         output_schema["properties"]
-            .get("condition_satisfied")
+            .get("conditionSatisfied")
             .is_some()
     );
-    assert!(output_schema["properties"].get("quiet_count").is_some());
+    assert!(output_schema["properties"].get("quietCount").is_some());
+    assert!(output_schema["properties"].get("completionReason").is_some());
+    assert!(output_schema["properties"].get("requestedTargets").is_some());
+    assert!(output_schema["properties"].get("requestedRepliesTo").is_some());
+    assert!(output_schema["properties"].get("returnWhen").is_some());
+    assert!(output_schema["properties"].get("wakeSender").is_some());
+    assert!(output_schema["properties"].get("wakeRef").is_some());
+    assert!(output_schema["properties"].get("condition_satisfied").is_none());
+    assert!(output_schema["properties"].get("quiet_count").is_none());
     assert_eq!(
         output_schema["properties"]["completed"]["items"]["type"],
         json!("object")
+    );
+    assert!(
+        output_schema["properties"]["completed"]["items"]["properties"]
+            .get("workRef")
+            .is_some()
+    );
+    assert!(
+        output_schema["properties"]["completed"]["items"]["properties"]
+            .get("messageId")
+            .is_some()
     );
 }
 

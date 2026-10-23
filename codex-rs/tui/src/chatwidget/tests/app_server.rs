@@ -1218,6 +1218,7 @@ async fn live_mailbox_wait_report_shows_join_pending_state_and_actual_wake() {
     assert!(updated_lines.contains("Pending Robie · msg_request: awaiting_reply"));
     assert!(updated_lines.contains("Quiet count: 4"));
     assert!(!updated_lines.contains("Pending work_42:"));
+    assert_chatwidget_snapshot!("live_mailbox_wait_report_active_progress", updated_lines);
     assert!(drain_insert_history(&mut rx).is_empty());
 
     let terminal_report = codex_protocol::items::MailboxWaitReport {

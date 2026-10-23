@@ -22,14 +22,20 @@ pub(crate) fn begin(report: &MailboxWaitReport) -> PlainHistoryCell {
             return_when_label(report.return_when)
         )
     } else if targetless {
-        format!("Waiting for mailbox attention or {} of {selection_count} work outcomes", return_when_label(report.return_when))
+        format!(
+            "Waiting for mailbox attention or {} of {selection_count} work outcomes",
+            return_when_label(report.return_when)
+        )
     } else {
         format!(
             "Waiting for {} of {selection_count} selected conditions",
             return_when_label(report.return_when)
         )
     };
-    collab_event(title_text(title), mailbox_wait_report_lines(report, /*in_progress*/ true))
+    collab_event(
+        title_text(title),
+        mailbox_wait_report_lines(report, /*in_progress*/ true),
+    )
 }
 
 pub(crate) fn end(report: &MailboxWaitReport) -> PlainHistoryCell {
@@ -37,7 +43,10 @@ pub(crate) fn end(report: &MailboxWaitReport) -> PlainHistoryCell {
         Some(reason) => format!("Mailbox wait returned: {}", mailbox_wake_label(reason)),
         None => "Mailbox wait returned (cause unavailable)".to_string(),
     };
-    collab_event(title_text(title), mailbox_wait_report_lines(report, /*in_progress*/ false))
+    collab_event(
+        title_text(title),
+        mailbox_wait_report_lines(report, /*in_progress*/ false),
+    )
 }
 
 #[derive(Clone, Debug)]
@@ -189,7 +198,11 @@ fn mailbox_wait_report_lines(report: &MailboxWaitReport, in_progress: bool) -> V
     if !in_progress {
         lines.push(Line::from(format!(
             "Condition satisfied: {}",
-            if report.condition_satisfied { "yes" } else { "no" }
+            if report.condition_satisfied {
+                "yes"
+            } else {
+                "no"
+            }
         )));
         if let Some(reason) = report.completion_reason {
             lines.push(Line::from(format!(

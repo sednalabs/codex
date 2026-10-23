@@ -10,8 +10,8 @@ use codex_agent_mailbox::WorkRef;
 use codex_features::Feature;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputPayload;
-use codex_protocol::models::ResponseItem;
 use codex_protocol::models::ResponseInputItem;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::ItemCompletedEvent;
@@ -22,24 +22,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-async fn fixture() -> (Arc<Session>, Arc<TurnContext>, Arc<Mailbox>, ThreadId) {
-    let (session, mut turn) = crate::session::tests::make_session_and_context().await;
-    let mut config = (*turn.config).clone();
-    config.features.enable(Feature::MultiAgentV2).unwrap();
-    config.features.enable(Feature::AgentMailbox).unwrap();
-    turn.multi_agent_version = config.multi_agent_version_from_features();
-    turn.config = Arc::new(config);
-    session
-        .services
-        .agent_control
-        .mailbox_initialize(&turn.config)
-        .await
-        .unwrap();
-    let mailbox = session.services.agent_control.mailbox().unwrap();
-    (Arc::new(session), Arc::new(turn), mailbox, ThreadId::new())
-}
-
-async fn durable_fixture() -> (
+async fn fixture_with_path() -> (
     Arc<Session>,
     Arc<TurnContext>,
     Arc<Mailbox>,
@@ -67,6 +50,21 @@ async fn durable_fixture() -> (
         ThreadId::new(),
         rollout_path,
     )
+}
+
+async fn fixture() -> (Arc<Session>, Arc<TurnContext>, Arc<Mailbox>, ThreadId) {
+    let (session, turn, mailbox, agent, _rollout_path) = fixture_with_path().await;
+    (session, turn, mailbox, agent)
+}
+
+async fn durable_fixture() -> (
+    Arc<Session>,
+    Arc<TurnContext>,
+    Arc<Mailbox>,
+    ThreadId,
+    PathBuf,
+) {
+    fixture_with_path().await
 }
 
 async fn work(
@@ -209,7 +207,9 @@ async fn assert_persisted_message(rollout_path: &std::path::Path, id: &str, body
     };
     assert!(resumed.history.iter().any(|item| match item {
         RolloutItem::ResponseItem(response) => {
-            response.id().is_some_and(|response_id| response_id.as_str() == id)
+            response
+                .id()
+                .is_some_and(|response_id| response_id.as_str() == id)
                 && serde_json::to_value(response)
                     .unwrap()
                     .to_string()
@@ -226,8 +226,8 @@ async fn seed_interrupted_wait_receipt(
 ) {
     // This exact call/output/terminal-event trio is the canonical history shape consumed by
     // resume recovery; refresh the same derived receipt cache used by that path.
-    let terminal_item = TurnItem::CollabAgentToolCall(
-        codex_protocol::protocol::CollabAgentToolCallItem {
+    let terminal_item =
+        TurnItem::CollabAgentToolCall(codex_protocol::protocol::CollabAgentToolCallItem {
             id: call_id.to_string(),
             tool: codex_protocol::protocol::CollabAgentTool::Wait,
             status: codex_protocol::protocol::CollabAgentToolCallStatus::Failed,
@@ -244,8 +244,7 @@ async fn seed_interrupted_wait_receipt(
             completion_reason: None,
             wake_cause: None,
             mailbox_wait_report: Some(report.clone()),
-        },
-    );
+        });
     let items = [
         RolloutItem::ResponseItem(ResponseItem::FunctionCall {
             id: None,
@@ -476,7 +475,13 @@ async fn wait_delivers_exact_quiet_reply_and_persists_it_before_observation() {
         .unwrap();
     assert!(!reply.canonical);
     assert_eq!(mailbox.quiet_count(session.thread_id).await.unwrap(), 1);
-    assert!(mailbox.attention(session.thread_id, 100).await.unwrap().is_empty());
+    assert!(
+        mailbox
+            .attention(session.thread_id, 100)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     let before = mailbox
         .snapshot(&Selection {
             caller: session.thread_id,
@@ -508,7 +513,13 @@ async fn wait_delivers_exact_quiet_reply_and_persists_it_before_observation() {
     assert!(report.condition_satisfied);
     assert_eq!(report.quiet_count, 1);
     assert_eq!(success, Some(true));
-    assert!(mailbox.attention(session.thread_id, 100).await.unwrap().is_empty());
+    assert!(
+        mailbox
+            .attention(session.thread_id, 100)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     assert!(
         mailbox
             .get_message(session.thread_id, &reply.id)
@@ -555,13 +566,7 @@ async fn wait_leaves_over_limit_bodies_retrievable_and_a_later_exact_wait_delive
         )
         .await;
         let body = format!("bounded body {index}");
-        let result_id = record_result(
-            &mailbox,
-            &work_ref,
-            worker_path.clone(),
-            &body,
-        )
-        .await;
+        let result_id = record_result(&mailbox, &work_ref, worker_path.clone(), &body).await;
         work_refs.push(work_ref);
         result_ids.push(result_id);
         bodies.push(body);
@@ -628,7 +633,10 @@ async fn wait_leaves_over_limit_bodies_retrievable_and_a_later_exact_wait_delive
         "deliver-omitted-result".to_string(),
     )
     .await;
-    assert_eq!(later_report.completion_reason, Some(MailboxWakeCause::Result));
+    assert_eq!(
+        later_report.completion_reason,
+        Some(MailboxWakeCause::Result)
+    );
     assert!(later_report.condition_satisfied);
     assert_eq!(later_success, Some(true));
     assert!(
@@ -646,7 +654,14 @@ async fn wait_leaves_over_limit_bodies_retrievable_and_a_later_exact_wait_delive
 #[tokio::test]
 async fn interrupted_wait_call_id_replays_failure_but_a_fresh_id_uses_the_wait_path() {
     let (session, turn, mailbox, agent, _rollout_path) = durable_fixture().await;
-    let pending = work(&mailbox, session.thread_id, agent, "pending-after-interruption", None).await;
+    let pending = work(
+        &mailbox,
+        session.thread_id,
+        agent,
+        "pending-after-interruption",
+        None,
+    )
+    .await;
     let call_id = "interrupted-wait-call";
     let interrupted = MailboxWaitReport {
         requested_targets: vec![pending.id.clone()],
@@ -678,7 +693,10 @@ async fn interrupted_wait_call_id_replays_failure_but_a_fresh_id_uses_the_wait_p
         call_id.to_string(),
     )
     .await;
-    assert_eq!(replayed.completion_reason, Some(MailboxWakeCause::Interrupted));
+    assert_eq!(
+        replayed.completion_reason,
+        Some(MailboxWakeCause::Interrupted)
+    );
     assert_eq!(replayed.pending, interrupted.pending);
     assert!(!replayed.condition_satisfied);
     assert_eq!(replay_success, Some(false));

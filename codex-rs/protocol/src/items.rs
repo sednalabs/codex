@@ -383,42 +383,48 @@ pub enum MailboxWakeCause {
 
 /// One selected wait condition and its current or terminal state.
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct MailboxWaitSelectionItem {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[serde(default, alias = "work_ref")]
+    #[ts(optional = false)]
     pub work_ref: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[serde(default, alias = "message_id")]
+    #[ts(optional = false)]
     pub message_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[serde(default)]
+    #[ts(optional = false)]
     pub agent: Option<String>,
     pub status: String,
 }
 
 /// Shared mailbox wait report carried by tool results and collaboration history.
 ///
-/// `completion_reason` is absent while the wait is in progress and populated with
+/// `completion_reason` is null while the wait is in progress and populated with
 /// the actual wake/result cause when it returns. It is always present in a terminal
 /// wait tool result.
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct MailboxWaitReport {
+    #[serde(alias = "requested_targets")]
     pub requested_targets: Vec<String>,
+    #[serde(alias = "requested_replies_to")]
     pub requested_replies_to: Vec<String>,
-    #[serde(default)]
+    #[serde(default, alias = "return_when")]
     pub return_when: MailboxWaitReturnWhen,
     pub completed: Vec<MailboxWaitSelectionItem>,
     pub pending: Vec<MailboxWaitSelectionItem>,
-    #[serde(default)]
+    #[serde(default, alias = "completion_reason")]
     #[ts(optional = false)]
     pub completion_reason: Option<MailboxWakeCause>,
+    #[serde(alias = "condition_satisfied")]
     pub condition_satisfied: bool,
+    #[serde(alias = "quiet_count")]
     pub quiet_count: usize,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[serde(default, alias = "wake_sender")]
+    #[ts(optional = false)]
     pub wake_sender: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[serde(default, alias = "wake_ref")]
+    #[ts(optional = false)]
     pub wake_ref: Option<String>,
 }
 
@@ -951,7 +957,7 @@ mod tests {
 
     #[test]
     fn mailbox_wait_report_preserves_in_progress_cause_and_defaults_any_join() {
-        let mut value = json!({
+        let value = json!({
             "requested_targets": ["work_42"],
             "requested_replies_to": [],
             "completed": [],
@@ -963,9 +969,65 @@ mod tests {
             serde_json::from_value(value.clone()).expect("decode mailbox wait report");
         assert_eq!(report.return_when, MailboxWaitReturnWhen::Any);
         assert_eq!(report.completion_reason, None);
-        value["return_when"] = json!("any");
-        value["completion_reason"] = json!(null);
-        assert_eq!(serde_json::to_value(report).expect("encode active wait"), value);
+        assert_eq!(
+            serde_json::to_value(report).expect("encode active wait"),
+            json!({
+                "requestedTargets": ["work_42"],
+                "requestedRepliesTo": [],
+                "returnWhen": "any",
+                "completed": [],
+                "pending": [{"workRef": "work_42", "messageId": null, "agent": null, "status": "running"}],
+                "completionReason": null,
+                "conditionSatisfied": false,
+                "quietCount": 2,
+                "wakeSender": null,
+                "wakeRef": null
+            })
+        );
+    }
+
+    #[test]
+    fn mailbox_wait_report_decodes_legacy_snake_case_and_serializes_camel_case() {
+        let legacy = json!({
+            "requested_targets": ["worker"],
+            "requested_replies_to": ["amsg_request"],
+            "return_when": "all",
+            "completed": [{
+                "work_ref": "work_42",
+                "message_id": "amsg_reply",
+                "agent": "worker",
+                "status": "completed"
+            }],
+            "pending": [],
+            "completion_reason": "reply",
+            "condition_satisfied": true,
+            "quiet_count": 3,
+            "wake_sender": "worker",
+            "wake_ref": "amsg_reply"
+        });
+        let report: MailboxWaitReport =
+            serde_json::from_value(legacy).expect("decode early mailbox report history");
+
+        assert_eq!(
+            serde_json::to_value(report).expect("encode current mailbox report"),
+            json!({
+                "requestedTargets": ["worker"],
+                "requestedRepliesTo": ["amsg_request"],
+                "returnWhen": "all",
+                "completed": [{
+                    "workRef": "work_42",
+                    "messageId": "amsg_reply",
+                    "agent": "worker",
+                    "status": "completed"
+                }],
+                "pending": [],
+                "completionReason": "reply",
+                "conditionSatisfied": true,
+                "quietCount": 3,
+                "wakeSender": "worker",
+                "wakeRef": "amsg_reply"
+            })
+        );
     }
 
     #[test]

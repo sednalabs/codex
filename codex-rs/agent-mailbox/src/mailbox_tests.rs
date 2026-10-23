@@ -1333,16 +1333,36 @@ async fn confirmed_execution_and_terminal_capture_supersede_stale_dispatch_recov
     let fixture = test_mailbox().await;
     let (issuer, agent) = (thread_id(32), thread_id(33));
     let (work, input) = accept_work(&fixture.mailbox, issuer, agent, "recovery", "original").await;
-    assert_eq!(fixture.mailbox.begin_dispatch(&work).await.unwrap(), DispatchDecision::Dispatch);
+    assert_eq!(
+        fixture.mailbox.begin_dispatch(&work).await.unwrap(),
+        DispatchDecision::Dispatch
+    );
     fixture.mailbox.mark_dispatched(&work).await.unwrap();
     fixture.mailbox.mark_recovery_needed(&work).await.unwrap();
-    assert_eq!(fixture.mailbox.dispatch_state(&work).await.unwrap(), DispatchState::RecoveryNeeded);
+    assert_eq!(
+        fixture.mailbox.dispatch_state(&work).await.unwrap(),
+        DispatchState::RecoveryNeeded
+    );
     admit(&fixture.mailbox, agent, "explicit-recovery-turn", &[input]).await;
-    assert_eq!(fixture.mailbox.dispatch_state(&work).await.unwrap(), DispatchState::Dispatched);
-    let terminal = finish(&fixture.mailbox, agent, "explicit-recovery-turn", Outcome::Completed, None, Continuation::None).await;
+    assert_eq!(
+        fixture.mailbox.dispatch_state(&work).await.unwrap(),
+        DispatchState::Dispatched
+    );
+    let terminal = finish(
+        &fixture.mailbox,
+        agent,
+        "explicit-recovery-turn",
+        Outcome::Completed,
+        None,
+        Continuation::None,
+    )
+    .await;
     assert_eq!(terminal.outcomes[0].work_ref, work);
     fixture.mailbox.mark_recovery_needed(&work).await.unwrap();
-    assert_eq!(fixture.mailbox.dispatch_state(&work).await.unwrap(), DispatchState::Dispatched);
+    assert_eq!(
+        fixture.mailbox.dispatch_state(&work).await.unwrap(),
+        DispatchState::Dispatched
+    );
 }
 
 #[tokio::test]
@@ -1350,30 +1370,113 @@ async fn resumed_issuer_interrupts_only_its_unconfirmed_dispatches_in_bounded_ba
     let fixture = test_mailbox().await;
     let (issuer, agent, other_issuer) = (thread_id(34), thread_id(35), thread_id(36));
     let accepted_request = native_work(issuer, agent, "resume-accepted", "retained accepted input");
-    let accepted = fixture.mailbox.accept_work(accepted_request.clone()).await.unwrap();
+    let accepted = fixture
+        .mailbox
+        .accept_work(accepted_request.clone())
+        .await
+        .unwrap();
     let retained_input = fixture.mailbox.accepted_input(&accepted).await.unwrap();
-    let (dispatching, _) = accept_work(&fixture.mailbox, issuer, agent, "resume-dispatching", "uncertain dispatch").await;
-    let (dispatched, _) = accept_work(&fixture.mailbox, issuer, agent, "resume-dispatched", "confirmed dispatch").await;
-    let (foreign, _) = accept_work(&fixture.mailbox, other_issuer, agent, "other-issuer", "foreign accepted input").await;
-    assert_eq!(fixture.mailbox.begin_dispatch(&dispatching).await.unwrap(), DispatchDecision::Dispatch);
-    assert_eq!(fixture.mailbox.begin_dispatch(&dispatched).await.unwrap(), DispatchDecision::Dispatch);
+    let (dispatching, _) = accept_work(
+        &fixture.mailbox,
+        issuer,
+        agent,
+        "resume-dispatching",
+        "uncertain dispatch",
+    )
+    .await;
+    let (dispatched, _) = accept_work(
+        &fixture.mailbox,
+        issuer,
+        agent,
+        "resume-dispatched",
+        "confirmed dispatch",
+    )
+    .await;
+    let (foreign, _) = accept_work(
+        &fixture.mailbox,
+        other_issuer,
+        agent,
+        "other-issuer",
+        "foreign accepted input",
+    )
+    .await;
+    assert_eq!(
+        fixture.mailbox.begin_dispatch(&dispatching).await.unwrap(),
+        DispatchDecision::Dispatch
+    );
+    assert_eq!(
+        fixture.mailbox.begin_dispatch(&dispatched).await.unwrap(),
+        DispatchDecision::Dispatch
+    );
     fixture.mailbox.mark_dispatched(&dispatched).await.unwrap();
 
     let reopened = Mailbox::open(&fixture.config).await.unwrap();
     // Opening the store alone is not authority to interrupt another native session.
-    assert_eq!(reopened.dispatch_state(&accepted).await.unwrap(), DispatchState::Accepted);
-    assert_eq!(reopened.interrupt_issuer_dispatches(issuer, 1).await.unwrap(), 1);
-    assert_eq!(reopened.interrupt_issuer_dispatches(issuer, 1).await.unwrap(), 1);
-    assert_eq!(reopened.interrupt_issuer_dispatches(issuer, 1).await.unwrap(), 0);
-    assert_eq!(reopened.dispatch_state(&accepted).await.unwrap(), DispatchState::RecoveryNeeded);
-    assert_eq!(reopened.dispatch_state(&dispatching).await.unwrap(), DispatchState::RecoveryNeeded);
-    assert_eq!(reopened.dispatch_state(&dispatched).await.unwrap(), DispatchState::Dispatched);
-    assert_eq!(reopened.dispatch_state(&foreign).await.unwrap(), DispatchState::Accepted);
-    assert_eq!(reopened.accept_work(accepted_request).await.unwrap(), accepted);
-    assert_eq!(reopened.accepted_input(&accepted).await.unwrap(), retained_input);
-    assert_eq!(reopened.begin_dispatch(&accepted).await.unwrap(), DispatchDecision::RecoveryNeeded);
-    assert_eq!(reopened.issued_work_refs(issuer, None, 100).await.unwrap().len(), 3);
-    assert!(matches!(reopened.interrupt_issuer_dispatches(issuer, 0).await, Err(MailboxError::InvalidInput(_))));
+    assert_eq!(
+        reopened.dispatch_state(&accepted).await.unwrap(),
+        DispatchState::Accepted
+    );
+    assert_eq!(
+        reopened
+            .interrupt_issuer_dispatches(issuer, 1)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        reopened
+            .interrupt_issuer_dispatches(issuer, 1)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        reopened
+            .interrupt_issuer_dispatches(issuer, 1)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        reopened.dispatch_state(&accepted).await.unwrap(),
+        DispatchState::RecoveryNeeded
+    );
+    assert_eq!(
+        reopened.dispatch_state(&dispatching).await.unwrap(),
+        DispatchState::RecoveryNeeded
+    );
+    assert_eq!(
+        reopened.dispatch_state(&dispatched).await.unwrap(),
+        DispatchState::Dispatched
+    );
+    assert_eq!(
+        reopened.dispatch_state(&foreign).await.unwrap(),
+        DispatchState::Accepted
+    );
+    assert_eq!(
+        reopened.accept_work(accepted_request).await.unwrap(),
+        accepted
+    );
+    assert_eq!(
+        reopened.accepted_input(&accepted).await.unwrap(),
+        retained_input
+    );
+    assert_eq!(
+        reopened.begin_dispatch(&accepted).await.unwrap(),
+        DispatchDecision::RecoveryNeeded
+    );
+    assert_eq!(
+        reopened
+            .issued_work_refs(issuer, None, 100)
+            .await
+            .unwrap()
+            .len(),
+        3
+    );
+    assert!(matches!(
+        reopened.interrupt_issuer_dispatches(issuer, 0).await,
+        Err(MailboxError::InvalidInput(_))
+    ));
 }
 
 #[tokio::test]

@@ -307,6 +307,7 @@ impl Respond for RootMailboxFlowResponder {
                     "target": self.root_thread_id,
                     "kind": "request",
                     "message": REQUEST_BODY,
+                    "activate_if_idle": true,
                 }),
             );
         }
@@ -401,6 +402,9 @@ async fn mailbox_read_keeps_encrypted_body_canonical_and_wait_joins_exact_ids() 
     let request_id = request_receipt["message_id"]
         .as_str()
         .expect("request receipt should contain a native message ID");
+    assert_eq!(request_receipt["durable_state"], "accepted");
+    assert_eq!(request_receipt["activation_disposition"], "denied");
+    assert_eq!(request_receipt["activation_reason"], "root_activation_is_not_allowed");
     assert!(
         request_id.starts_with("amsg_"),
         "unexpected native ID: {request_id}"
@@ -441,20 +445,20 @@ async fn mailbox_read_keeps_encrypted_body_canonical_and_wait_joins_exact_ids() 
         function_output_text(&requests[5], "wait-call")
             .expect("wait should return a selector report"),
     )?;
-    assert_eq!(wait_report["requested_targets"], json!([work_ref]));
-    assert_eq!(wait_report["requested_replies_to"], json!([request_id]));
-    assert_eq!(wait_report["return_when"], "all");
-    assert_eq!(wait_report["condition_satisfied"], true);
+    assert_eq!(wait_report["requestedTargets"], json!([work_ref]));
+    assert_eq!(wait_report["requestedRepliesTo"], json!([request_id]));
+    assert_eq!(wait_report["returnWhen"], "all");
+    assert_eq!(wait_report["conditionSatisfied"], true);
     assert!(
         wait_report["completed"]
             .as_array()
             .is_some_and(|completed| {
                 completed
                     .iter()
-                    .any(|item| item["work_ref"] == work_ref && item["status"] == "completed")
+                    .any(|item| item["workRef"] == work_ref && item["status"] == "completed")
                     && completed
                         .iter()
-                        .any(|item| item["message_id"] == request_id && item["status"] == "replied")
+                        .any(|item| item["messageId"] == request_id && item["status"] == "replied")
             })
     );
     assert_eq!(wait_report["pending"], json!([]));
@@ -760,12 +764,12 @@ async fn quiet_events_keep_deadline_fixed_then_request_wakes_event_only_wait() -
         function_output_text(&requests[3].1, "wait-1-call")
             .expect("first wait should return its deadline report"),
     )?;
-    assert_eq!(deadline_report["requested_targets"], json!([work_ref]));
-    assert_eq!(deadline_report["completion_reason"], "deadline");
-    assert_eq!(deadline_report["condition_satisfied"], false);
-    assert!(deadline_report["quiet_count"].as_u64().unwrap_or_default() >= 4);
+    assert_eq!(deadline_report["requestedTargets"], json!([work_ref]));
+    assert_eq!(deadline_report["completionReason"], "deadline");
+    assert_eq!(deadline_report["conditionSatisfied"], false);
+    assert!(deadline_report["quietCount"].as_u64().unwrap_or_default() >= 4);
     assert_eq!(deadline_report["completed"], json!([]));
-    assert_eq!(deadline_report["pending"][0]["work_ref"], work_ref);
+    assert_eq!(deadline_report["pending"][0]["workRef"], work_ref);
     assert_eq!(deadline_report["pending"][0]["status"], "pending");
     assert!(deadline_report.to_string().contains(work_ref));
     assert!(!deadline_report.to_string().contains(unrelated_work_ref));
@@ -781,13 +785,13 @@ async fn quiet_events_keep_deadline_fixed_then_request_wakes_event_only_wait() -
         function_output_text(&requests[4].1, "wait-2-call")
             .expect("event-only wait should return the addressed request report"),
     )?;
-    assert_eq!(request_report["requested_targets"], json!([work_ref]));
-    assert_eq!(request_report["completion_reason"], "request");
-    assert_eq!(request_report["condition_satisfied"], false);
+    assert_eq!(request_report["requestedTargets"], json!([work_ref]));
+    assert_eq!(request_report["completionReason"], "request");
+    assert_eq!(request_report["conditionSatisfied"], false);
     assert_eq!(request_report["completed"], json!([]));
-    assert_eq!(request_report["pending"][0]["work_ref"], work_ref);
+    assert_eq!(request_report["pending"][0]["workRef"], work_ref);
     assert_eq!(request_report["pending"][0]["status"], "pending");
-    let wake_ref = request_report["wake_ref"]
+    let wake_ref = request_report["wakeRef"]
         .as_str()
         .expect("addressed request should identify the exact wake message");
     assert!(wake_ref.starts_with("amsg_"));
