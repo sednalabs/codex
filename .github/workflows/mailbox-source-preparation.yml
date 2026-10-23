@@ -62,7 +62,8 @@ jobs:
         run: cargo test --locked -p codex-core --lib mailbox -- --test-threads=1
       - name: Run real native mailbox adapter contracts
         working-directory: codex-rs
-        run: cargo test --locked -p codex-core --test all suite::agent_mailbox:: -- --test-threads=1
+        run: |
+          cargo test --locked -p codex-core --test all suite::agent_mailbox:: -- --test-threads=1
       - name: Compile focused UI mailbox consumers
         working-directory: codex-rs
         env:
