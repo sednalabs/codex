@@ -41,6 +41,10 @@ const API_PROFILE_DIRECTORY: &str = "/etc/credstore.encrypted";
 const API_PROFILE_PATH: &str = "/etc/credstore.encrypted/codex-runtime-proof-api-refresh";
 const API_PROFILE_NAME: &str = "codex-runtime-proof-api-refresh";
 const SYSTEMD_CREDENTIAL_SECRET_PATH: &str = "/var/lib/systemd/credential.secret";
+const APPORT_EXECUTABLE_PATH: &str = "/usr/share/apport/apport";
+const APPORT_REPORT_IGNORE_DIRECTORY: &str = "/etc/apport/report-ignore";
+const APPORT_SYSTEMD_CREDS_IGNORE_PATH: &str =
+    "/etc/apport/report-ignore/codex-runtime-proof-systemd-creds";
 const MAX_PASSWD_BUFFER: usize = 64 * 1024;
 const MAX_CALLBACK_URL_BYTES: usize = 64 * 1024;
 const MAX_API_PROFILE_CIPHERTEXT_BYTES: usize = 64 * 1024;
@@ -452,6 +456,7 @@ fn run_systemd_creds(action: &str, input: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
     if !matches!(action, "encrypt" | "decrypt") {
         bail!("unsupported fixed system credential operation");
     }
+    validate_systemd_creds_coredump_suppression()?;
     let name_argument = format!("--name={API_PROFILE_NAME}");
     let mut command = Command::new(SYSTEMD_CREDS_PATH);
     command
@@ -528,6 +533,63 @@ fn run_systemd_creds(action: &str, input: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
         bail!("fixed system credential output exceeds its size limit");
     }
     Ok(output)
+}
+
+fn validate_systemd_creds_coredump_suppression() -> Result<()> {
+    let core_pattern = fs::read_to_string("/proc/sys/kernel/core_pattern")?;
+    if !core_pattern.starts_with('|') {
+        // The helper sets a hard zero RLIMIT_CORE before exec; file-backed
+        // core dumps are therefore disabled for the crypto process.
+        return Ok(());
+    }
+
+    if !core_pattern_uses_fixed_apport(&core_pattern) {
+        bail!("fixed system credential utility has no established piped-core suppression");
+    }
+
+    let apport = fs::symlink_metadata(APPORT_EXECUTABLE_PATH)?;
+    if !apport.is_file()
+        || apport.uid() != 0
+        || apport.mode() & 0o022 != 0
+        || apport.mode() & 0o111 == 0
+        || apport.nlink() != 1
+    {
+        bail!("fixed Apport collector is outside its root-owned contract");
+    }
+
+    let apport_directory = fs::symlink_metadata("/etc/apport")?;
+    if !apport_directory.is_dir()
+        || apport_directory.uid() != 0
+        || apport_directory.mode() & 0o022 != 0
+    {
+        bail!("fixed Apport configuration directory is outside its root-owned contract");
+    }
+    let ignore_directory = fs::symlink_metadata(APPORT_REPORT_IGNORE_DIRECTORY)?;
+    if !ignore_directory.is_dir()
+        || ignore_directory.uid() != 0
+        || ignore_directory.mode() & 0o022 != 0
+    {
+        bail!("fixed Apport report-ignore directory is outside its root-owned contract");
+    }
+    let ignore_file = fs::symlink_metadata(APPORT_SYSTEMD_CREDS_IGNORE_PATH)?;
+    if !ignore_file.is_file()
+        || ignore_file.uid() != 0
+        || ignore_file.mode() & 0o022 != 0
+        || ignore_file.nlink() != 1
+        || fs::read(APPORT_SYSTEMD_CREDS_IGNORE_PATH)? != b"/usr/bin/systemd-creds\n"
+    {
+        bail!("fixed system credential Apport exclusion is outside its file contract");
+    }
+    Ok(())
+}
+
+fn core_pattern_uses_fixed_apport(core_pattern: &str) -> bool {
+    let apport_prefix = format!("|{APPORT_EXECUTABLE_PATH}");
+    core_pattern.starts_with(&apport_prefix)
+        && core_pattern[apport_prefix.len()..]
+            .as_bytes()
+            .first()
+            .is_some_and(|byte| byte.is_ascii_whitespace())
 }
 
 pub(crate) fn logout() -> Result<i32> {
@@ -1171,13 +1233,29 @@ mod tests {
     use std::os::unix::fs::PermissionsExt as _;
 
     #[test]
+    fn systemd_creds_piped_core_suppression_accepts_only_fixed_apport() {
+        assert!(core_pattern_uses_fixed_apport(
+            "|/usr/share/apport/apport %p %s %c %d %P %I"
+        ));
+        assert!(!core_pattern_uses_fixed_apport(
+            "|/usr/lib/systemd/systemd-coredump %P %u %g %s %t %c %h"
+        ));
+        assert!(!core_pattern_uses_fixed_apport(
+            "|/usr/share/apport/apport-malicious %p"
+        ));
+    }
+
+    #[test]
     fn credential_utility_accepts_only_fixed_crypto_operations() {
         assert!(run_systemd_creds("decrypt arbitrary", b"synthetic").is_err());
     }
 
     #[test]
     fn host_systemd_credential_roundtrips_and_rejects_a_different_name() {
-        if unsafe { libc::geteuid() } != 0 || validate_api_profile_store().is_err() {
+        if unsafe { libc::geteuid() } != 0
+            || validate_api_profile_store().is_err()
+            || validate_systemd_creds_coredump_suppression().is_err()
+        {
             return;
         }
         let plaintext = b"synthetic runtime-proof API refresh profile";
