@@ -48,6 +48,33 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
             ["build", "--", "//codex-rs/cli:codex"],
         )
 
+    def test_hosted_only_fork_callers_withhold_optional_remote_credentials(self) -> None:
+        workflow_root = Path(__file__).resolve().parents[1] / "workflows"
+        expected = (
+            "BUILDBUDDY_API_KEY: ${{ github.repository != 'sednalabs/codex' "
+            "&& secrets.BUILDBUDDY_API_KEY || '' }}"
+        )
+        for workflow in ("bazel.yml", "rust-ci-full.yml", "v8-canary.yml"):
+            with self.subTest(workflow=workflow):
+                source = (workflow_root / workflow).read_text(encoding="utf-8")
+                assignments = [
+                    line.strip()
+                    for line in source.splitlines()
+                    if line.strip().startswith("BUILDBUDDY_API_KEY:")
+                ]
+                self.assertTrue(assignments)
+                self.assertTrue(all(line == expected for line in assignments))
+
+    def test_keyless_hosted_fallback_preserves_every_remote_ci_target(self) -> None:
+        for config in run_bazel_with_buildbuddy.REMOTE_EXECUTION_CONFIGS:
+            with self.subTest(config=config):
+                self.assertEqual(
+                    run_bazel_with_buildbuddy.bazel_args_with_remote_config(
+                        ["test", config, "--", "//codex-rs/cli:codex", "//..."], {}
+                    ),
+                    ["test", "--", "//codex-rs/cli:codex", "//..."],
+                )
+
     def test_program_arguments_after_separator_do_not_select_or_lose_rbe(self) -> None:
         args = ["run", "//codex-rs/cli:codex", "--", "--config=remote"]
 

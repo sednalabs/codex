@@ -228,7 +228,8 @@ jobs:
 
       - name: bazel test //...
         env:
-          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+          # This fork uses hosted-local Bazel; preserve upstream's remote opt-in elsewhere.
+          BUILDBUDDY_API_KEY: ${{ github.repository != 'sednalabs/codex' && secrets.BUILDBUDDY_API_KEY || '' }}
         shell: bash
         run: |
           bazel_targets=(
@@ -326,7 +327,7 @@ jobs:
         env:
           BAZEL_TEST_SHARD: ${{ matrix.shard }}
           BAZEL_TEST_SHARD_COUNT: 4
-          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+          BUILDBUDDY_API_KEY: ${{ github.repository != 'sednalabs/codex' && secrets.BUILDBUDDY_API_KEY || '' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -449,7 +450,7 @@ jobs:
 
       - name: bazel build --config=clippy lint targets
         env:
-          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+          BUILDBUDDY_API_KEY: ${{ github.repository != 'sednalabs/codex' && secrets.BUILDBUDDY_API_KEY || '' }}
         shell: bash
         run: |
           bazel_clippy_args=(
@@ -554,7 +555,7 @@ jobs:
 
       - name: bazel build verify-release-build targets
         env:
-          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+          BUILDBUDDY_API_KEY: ${{ github.repository != 'sednalabs/codex' && secrets.BUILDBUDDY_API_KEY || '' }}
         shell: bash
         run: |
           # This job exists to compile Rust code behind
@@ -604,7 +605,7 @@ jobs:
       - name: Verify Bazel builds bwrap
         if: runner.os == 'Linux'
         env:
-          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+          BUILDBUDDY_API_KEY: ${{ github.repository != 'sednalabs/codex' && secrets.BUILDBUDDY_API_KEY || '' }}
         shell: bash
         run: |
           ./.github/scripts/run-bazel-ci.sh \

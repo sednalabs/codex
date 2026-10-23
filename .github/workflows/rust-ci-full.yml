@@ -306,7 +306,8 @@ jobs:
       - name: Run argument comment lint on codex-rs via Bazel
         if: ${{ runner.os != 'Windows' }}
         env:
-          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+          # This fork uses hosted-local Bazel; preserve upstream's remote opt-in elsewhere.
+          BUILDBUDDY_API_KEY: ${{ github.repository != 'sednalabs/codex' && secrets.BUILDBUDDY_API_KEY || '' }}
         shell: bash
         run: |
           bazel_extra_args=()
@@ -329,7 +330,7 @@ jobs:
       - name: Run argument comment lint on codex-rs via Bazel
         if: ${{ runner.os == 'Windows' }}
         env:
-          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+          BUILDBUDDY_API_KEY: ${{ github.repository != 'sednalabs/codex' && secrets.BUILDBUDDY_API_KEY || '' }}
         shell: bash
         run: |
           ./.github/scripts/run-argument-comment-lint-bazel.sh \
