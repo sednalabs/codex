@@ -574,11 +574,9 @@ jobs:
           # Rust debug assertions explicitly.
           bazel_wrapper_args=()
           if [[ "${RUNNER_OS}" == "Windows" ]]; then
-            # This is build-only signal, so use the same Linux-RBE
-            # cross-compile path as the fast Windows test and clippy jobs.
-            # Fork/community PRs without the BuildBuddy secret fall back
-            # inside `run-bazel-ci.sh` to the previous local Windows MSVC
-            # host-platform shape.
+            # Use the same Windows cross-compile wrapper path as the fast test
+            # and Clippy jobs. Without RBE, the wrapper keeps its generic MSVC
+            # fallback; this fork overrides it with gnullvm below.
             bazel_wrapper_args+=(--windows-cross-compile)
           fi
 
@@ -590,6 +588,9 @@ jobs:
             --build_metadata=TAG_job=verify-release-build
             --build_metadata=TAG_rust_debug_assertions=off
           )
+          if [[ "${RUNNER_OS}" == "Windows" && "${GITHUB_REPOSITORY:-}" == "sednalabs/codex" && -z "${BUILDBUDDY_API_KEY:-}" ]]; then
+            bazel_build_args+=(--host_platform=//:local_windows)
+          fi
           if [[ "${RUNNER_OS}" == "macOS" ]]; then
             # Hosted macOS runners can exhaust the Bazel client thread/process
             # ceiling when inheriting the high remote-execution job count.

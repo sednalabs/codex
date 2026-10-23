@@ -1636,6 +1636,27 @@ class RouteSelectionTests(unittest.TestCase):
             "bazel_test_args+=(--host_platform=//:local_windows)", windows_test_run
         )
 
+    def test_bazel_windows_release_build_fork_uses_gnullvm_host(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/bazel.yml")
+        release_steps = (
+            ((payload.get("jobs") or {}).get("verify-release-build") or {}).get("steps")
+            or []
+        )
+        release_run = next(
+            step
+            for step in release_steps
+            if step.get("name") == "bazel build verify-release-build targets"
+        ).get("run") or ""
+        fork_no_key_windows_condition = (
+            '[[ "${RUNNER_OS}" == "Windows" '
+            '&& "${GITHUB_REPOSITORY:-}" == "sednalabs/codex" '
+            '&& -z "${BUILDBUDDY_API_KEY:-}" ]]'
+        )
+        self.assertIn(fork_no_key_windows_condition, release_run)
+        self.assertIn(
+            "bazel_build_args+=(--host_platform=//:local_windows)", release_run
+        )
+
     def test_bazel_windows_native_main_uses_gnullvm_proc_macro_toolchain(self) -> None:
         bazel = load_workflow_payload(REPO_ROOT / ".github/workflows/bazel.yml")
         self.assertNotIn("test-windows-native-main", bazel.get("jobs") or {})
