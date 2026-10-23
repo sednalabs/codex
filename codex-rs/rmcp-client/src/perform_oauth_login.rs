@@ -77,10 +77,82 @@ impl FixedOAuthLoginStage {
     }
 }
 
+/// Closed reasons for fixed OAuth callback failures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FixedOAuthCallbackFailure {
+    InputSetup,
+    InputRead,
+    InputTimeout,
+    InputInterrupted,
+    InputIo,
+    InputFraming,
+    InputRestoration,
+    UrlInvalid,
+    RedirectMismatch,
+    StateMissing,
+    StateMismatch,
+    DuplicateParameter,
+    ProviderError,
+    InvalidResponse,
+}
+
+impl FixedOAuthCallbackFailure {
+    /// Returns the fixed diagnostic label for this failure reason.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::InputSetup => "callback_input_setup",
+            Self::InputRead => "callback_input_read",
+            Self::InputTimeout => "callback_input_timeout",
+            Self::InputInterrupted => "callback_input_interrupted",
+            Self::InputIo => "callback_input_io",
+            Self::InputFraming => "callback_input_framing",
+            Self::InputRestoration => "callback_input_restoration",
+            Self::UrlInvalid => "callback_url_invalid",
+            Self::RedirectMismatch => "callback_redirect_mismatch",
+            Self::StateMissing => "callback_state_missing",
+            Self::StateMismatch => "callback_state_mismatch",
+            Self::DuplicateParameter => "callback_duplicate_parameter",
+            Self::ProviderError => "callback_provider_error",
+            Self::InvalidResponse => "callback_response_invalid",
+        }
+    }
+}
+
+impl std::fmt::Display for FixedOAuthCallbackFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl std::error::Error for FixedOAuthCallbackFailure {}
+
+/// Typed reader failure for manual callback input. It contains no reader text,
+/// so callers can pass a closed reason through anyhow without exposing input.
+#[derive(Debug)]
+pub struct FixedOAuthCallbackInputError {
+    failure: FixedOAuthCallbackFailure,
+}
+
+impl FixedOAuthCallbackInputError {
+    /// Creates an input error without retaining any input or system error text.
+    pub fn new(failure: FixedOAuthCallbackFailure) -> Self {
+        Self { failure }
+    }
+}
+
+impl std::fmt::Display for FixedOAuthCallbackInputError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("fixed OAuth callback input failed")
+    }
+}
+
+impl std::error::Error for FixedOAuthCallbackInputError {}
+
 #[derive(Debug)]
 pub struct FixedOAuthLoginError {
     stage: FixedOAuthLoginStage,
     exchange_detail: Option<String>,
+    callback_failure: Option<FixedOAuthCallbackFailure>,
 }
 
 impl FixedOAuthLoginError {
@@ -88,6 +160,16 @@ impl FixedOAuthLoginError {
         Self {
             stage,
             exchange_detail: None,
+            callback_failure: None,
+        }
+    }
+
+    /// Creates a callback-stage failure with a closed, non-sensitive reason.
+    pub fn callback_failure(failure: FixedOAuthCallbackFailure) -> Self {
+        Self {
+            stage: FixedOAuthLoginStage::Callback,
+            exchange_detail: None,
+            callback_failure: Some(failure),
         }
     }
 
@@ -99,6 +181,7 @@ impl FixedOAuthLoginError {
                     .unwrap_or(FixedApiExchangeFailure::Unknown)
                     .safe_detail(),
             ),
+            callback_failure: None,
         }
     }
 
@@ -122,6 +205,7 @@ impl FixedOAuthLoginError {
         Self {
             stage: FixedOAuthLoginStage::Exchange,
             exchange_detail: Some(detail),
+            callback_failure: None,
         }
     }
 
@@ -132,6 +216,11 @@ impl FixedOAuthLoginError {
     /// Returns a closed, non-sensitive classification for an OAuth token exchange failure.
     pub fn safe_exchange_detail(&self) -> Option<String> {
         self.exchange_detail.clone()
+    }
+
+    /// Returns a closed, non-sensitive classification for a callback failure.
+    pub fn safe_callback_detail(&self) -> Option<&'static str> {
+        self.callback_failure.map(FixedOAuthCallbackFailure::as_str)
     }
 }
 
@@ -374,6 +463,14 @@ async fn exchange_fixed_api_refresh_at_endpoint(
 type AuthorizationUrlOpener<'a> = Box<dyn FnOnce(&str) -> Result<()> + 'a>;
 type CallbackUrlReader<'a> = Box<dyn FnOnce(&str) -> Result<String> + 'a>;
 
+fn callback_reader_failure(error: anyhow::Error) -> FixedOAuthLoginError {
+    let failure = error
+        .downcast_ref::<FixedOAuthCallbackInputError>()
+        .map(|error| error.failure)
+        .unwrap_or(FixedOAuthCallbackFailure::InputRead);
+    FixedOAuthLoginError::callback_failure(failure)
+}
+
 enum FixedOAuthInteraction<'a> {
     Browser(AuthorizationUrlOpener<'a>),
     CallbackInput(CallbackUrlReader<'a>),
@@ -502,11 +599,11 @@ async fn perform_oauth_access_token_login<'a>(
             read_callback_url,
             redirect_uri,
         } => {
-            let callback_url = read_callback_url(&authorization_url)
-                .map_err(|_| FixedOAuthLoginError::at(FixedOAuthLoginStage::Callback))?;
+            let callback_url =
+                read_callback_url(&authorization_url).map_err(callback_reader_failure)?;
             (
                 parse_pasted_oauth_callback(&callback_url, &redirect_uri, &authorization_url)
-                    .map_err(|_| FixedOAuthLoginError::at(FixedOAuthLoginStage::Callback))?,
+                    .map_err(FixedOAuthLoginError::callback_failure)?,
                 None,
             )
         }
@@ -516,12 +613,7 @@ async fn perform_oauth_access_token_login<'a>(
         code,
         state: csrf_state,
         issuer,
-    } = match callback {
-        CallbackResult::Success(callback) => callback,
-        CallbackResult::Error(_) => {
-            return Err(FixedOAuthLoginError::at(FixedOAuthLoginStage::Callback));
-        }
-    };
+    } = callback_result(callback).map_err(FixedOAuthLoginError::callback_failure)?;
 
     if let Err(error) = oauth_state
         .handle_callback_with_issuer(&code, &csrf_state, issuer.as_deref())
@@ -982,6 +1074,15 @@ enum CallbackResult {
     Error(OAuthProviderError),
 }
 
+fn callback_result(
+    callback: CallbackResult,
+) -> std::result::Result<OauthCallbackResult, FixedOAuthCallbackFailure> {
+    match callback {
+        CallbackResult::Success(callback) => Ok(callback),
+        CallbackResult::Error(_) => Err(FixedOAuthCallbackFailure::ProviderError),
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum CallbackOutcome {
     Success(OauthCallbackResult),
@@ -1040,16 +1141,16 @@ fn parse_pasted_oauth_callback(
     input: &str,
     expected_redirect_uri: &str,
     authorization_url: &str,
-) -> Result<CallbackResult> {
+) -> std::result::Result<CallbackResult, FixedOAuthCallbackFailure> {
     const MAX_CALLBACK_URL_BYTES: usize = 64 * 1024;
 
     let input = input.trim();
     if input.len() > MAX_CALLBACK_URL_BYTES {
-        bail!("OAuth callback URL exceeds 64 KiB");
+        return Err(FixedOAuthCallbackFailure::InputFraming);
     }
-    let callback = Url::parse(input).map_err(|_| anyhow!("invalid OAuth callback URL"))?;
+    let callback = Url::parse(input).map_err(|_| FixedOAuthCallbackFailure::UrlInvalid)?;
     let expected = Url::parse(expected_redirect_uri)
-        .map_err(|_| anyhow!("invalid fixed OAuth redirect URI"))?;
+        .map_err(|_| FixedOAuthCallbackFailure::InvalidResponse)?;
     let has_userinfo = input
         .split_once("://")
         .and_then(|(_, remainder)| remainder.split(['/', '?', '#']).next())
@@ -1066,21 +1167,21 @@ fn parse_pasted_oauth_callback(
         || expected.query().is_some()
         || expected.fragment().is_some()
     {
-        bail!("OAuth callback URL does not match this login's fixed redirect");
+        return Err(FixedOAuthCallbackFailure::RedirectMismatch);
     }
 
     let authorization =
-        Url::parse(authorization_url).map_err(|_| anyhow!("invalid fixed OAuth request"))?;
+        Url::parse(authorization_url).map_err(|_| FixedOAuthCallbackFailure::InvalidResponse)?;
     let states = authorization
         .query_pairs()
         .filter(|(name, _)| name == "state")
         .map(|(_, value)| value.into_owned())
         .collect::<Vec<_>>();
     let [expected_state] = states.as_slice() else {
-        bail!("fixed OAuth request has no unique state");
+        return Err(FixedOAuthCallbackFailure::InvalidResponse);
     };
     if expected_state.is_empty() {
-        bail!("fixed OAuth request has no unique state");
+        return Err(FixedOAuthCallbackFailure::InvalidResponse);
     }
 
     let mut parameters = HashMap::new();
@@ -1089,23 +1190,23 @@ fn parse_pasted_oauth_callback(
             .insert(name.into_owned(), value.into_owned())
             .is_some()
         {
-            bail!("OAuth callback URL contains duplicate parameters");
+            return Err(FixedOAuthCallbackFailure::DuplicateParameter);
         }
     }
     let state = parameters
         .get("state")
         .filter(|state| !state.is_empty())
-        .ok_or_else(|| anyhow!("OAuth callback URL is missing state"))?;
+        .ok_or(FixedOAuthCallbackFailure::StateMissing)?;
     if state != expected_state {
-        bail!("OAuth callback state does not match this login");
+        return Err(FixedOAuthCallbackFailure::StateMismatch);
     }
     if parameters.get("code").is_some_and(String::is_empty) {
-        bail!("OAuth callback URL is missing an authorization code");
+        return Err(FixedOAuthCallbackFailure::InvalidResponse);
     }
     if (parameters.contains_key("error") || parameters.contains_key("error_description"))
         && parameters.contains_key("code")
     {
-        bail!("OAuth callback URL contains both a code and an error");
+        return Err(FixedOAuthCallbackFailure::InvalidResponse);
     }
 
     let callback_path_and_query = format!(
@@ -1118,7 +1219,7 @@ fn parse_pasted_oauth_callback(
         CallbackOutcome::Error(_) => Ok(CallbackResult::Error(OAuthProviderError::new(
             /*error*/ None, /*error_description*/ None,
         ))),
-        CallbackOutcome::Invalid => bail!("OAuth callback URL is invalid"),
+        CallbackOutcome::Invalid => Err(FixedOAuthCallbackFailure::InvalidResponse),
     }
 }
 
@@ -1500,6 +1601,7 @@ mod tests {
     use super::FIXED_API_CLAIM_ISSUER;
     use super::FIXED_API_CLAIM_RESOURCE;
     use super::FIXED_API_CLAIM_SCOPE;
+    use super::FixedOAuthCallbackFailure;
     use super::FixedOAuthLoginError;
     use super::FixedOAuthLoginStage;
     use super::HttpClientBuilder;
@@ -1614,6 +1716,27 @@ mod tests {
                 .expect("record successful HTTP response")
                 .safe_detail(),
             "http_status_200"
+        );
+    }
+
+    #[test]
+    fn callback_reader_failures_keep_only_a_closed_reason() {
+        let private_reader_detail = "synthetic-reader-detail";
+        let generic = super::callback_reader_failure(anyhow::anyhow!("{private_reader_detail}"));
+        assert_eq!(generic.stage(), FixedOAuthLoginStage::Callback);
+        assert_eq!(generic.safe_callback_detail(), Some("callback_input_read"));
+        assert!(!generic.to_string().contains(private_reader_detail));
+        assert!(!format!("{generic:?}").contains(private_reader_detail));
+
+        let interrupted = super::callback_reader_failure(anyhow::Error::new(
+            super::FixedOAuthCallbackInputError::new(
+                super::FixedOAuthCallbackFailure::InputInterrupted,
+            ),
+        ));
+        assert_eq!(interrupted.stage(), FixedOAuthLoginStage::Callback);
+        assert_eq!(
+            interrupted.safe_callback_detail(),
+            Some("callback_input_interrupted")
         );
     }
 
@@ -2109,27 +2232,76 @@ mod tests {
         let redirect = "http://127.0.0.1:8765/callback/gGLT7yyzxEu8";
         let authorization =
             "https://auth.grantmatler.com/authorize?state=expected-state&code_challenge=challenge";
-        for callback in [
-            "http://127.0.0.2:8765/callback/gGLT7yyzxEu8?code=secret-callback-code&state=expected-state",
-            "http://127.0.0.1:8766/callback/gGLT7yyzxEu8?code=secret-callback-code&state=expected-state",
-            "http://127.0.0.1:8765/callback/other?code=secret-callback-code&state=expected-state",
-            "https://127.0.0.1:8765/callback/gGLT7yyzxEu8?code=secret-callback-code&state=expected-state",
-            "http://user@127.0.0.1:8765/callback/gGLT7yyzxEu8?code=secret-callback-code&state=expected-state",
-            "http://127.0.0.1:8765/callback/gGLT7yyzxEu8?code=secret-callback-code&state=expected-state#fragment",
-            "http://@127.0.0.1:8765/callback/gGLT7yyzxEu8?code=secret-callback-code&state=expected-state",
-            "http://127.0.0.1:8765/callback/gGLT7yyzxEu8?code=&state=expected-state",
-            "http://127.0.0.1:8765/callback/gGLT7yyzxEu8?code=secret-callback-code&state=wrong-state",
-            "http://127.0.0.1:8765/callback/gGLT7yyzxEu8?code=secret-callback-code&state=expected-state&state=second",
-            "http://127.0.0.1:8765/callback/gGLT7yyzxEu8?code=secret-callback-code&%63ode=second&state=expected-state",
-            "http://127.0.0.1:8765/callback/gGLT7yyzxEu8?code=secret-callback-code&state=expected-state&error=denied",
+        for (callback, expected_failure) in [
+            (
+                "http://127.0.0.2:8765/callback/gGLT7yyzxEu8?code=fixture&state=expected-state",
+                FixedOAuthCallbackFailure::RedirectMismatch,
+            ),
+            (
+                "http://127.0.0.1:8766/callback/gGLT7yyzxEu8?code=fixture&state=expected-state",
+                FixedOAuthCallbackFailure::RedirectMismatch,
+            ),
+            (
+                "http://127.0.0.1:8765/callback/other?code=fixture&state=expected-state",
+                FixedOAuthCallbackFailure::RedirectMismatch,
+            ),
+            (
+                "https://127.0.0.1:8765/callback/gGLT7yyzxEu8?code=fixture&state=expected-state",
+                FixedOAuthCallbackFailure::RedirectMismatch,
+            ),
+            (
+                "http://user@127.0.0.1:8765/callback/gGLT7yyzxEu8?code=fixture&state=expected-state",
+                FixedOAuthCallbackFailure::RedirectMismatch,
+            ),
+            (
+                "http://127.0.0.1:8765/callback/gGLT7yyzxEu8?code=fixture&state=expected-state#fragment",
+                FixedOAuthCallbackFailure::RedirectMismatch,
+            ),
+            (
+                "http://@127.0.0.1:8765/callback/gGLT7yyzxEu8?code=fixture&state=expected-state",
+                FixedOAuthCallbackFailure::RedirectMismatch,
+            ),
+            (
+                "http://127.0.0.1:8765/callback/gGLT7yyzxEu8?code=&state=expected-state",
+                FixedOAuthCallbackFailure::InvalidResponse,
+            ),
+            (
+                "http://127.0.0.1:8765/callback/gGLT7yyzxEu8?code=fixture&state=wrong-state",
+                FixedOAuthCallbackFailure::StateMismatch,
+            ),
+            (
+                "http://127.0.0.1:8765/callback/gGLT7yyzxEu8?code=fixture&state=expected-state&state=second",
+                FixedOAuthCallbackFailure::DuplicateParameter,
+            ),
+            (
+                "http://127.0.0.1:8765/callback/gGLT7yyzxEu8?code=fixture&%63ode=second&state=expected-state",
+                FixedOAuthCallbackFailure::DuplicateParameter,
+            ),
+            (
+                "http://127.0.0.1:8765/callback/gGLT7yyzxEu8?code=fixture&state=expected-state&error=denied",
+                FixedOAuthCallbackFailure::InvalidResponse,
+            ),
+            (
+                "http://127.0.0.1:8765/callback/gGLT7yyzxEu8?code=fixture",
+                FixedOAuthCallbackFailure::StateMissing,
+            ),
+            (
+                "http://127.0.0.1:8765/callback/gGLT7yyzxEu8?state=expected-state",
+                FixedOAuthCallbackFailure::InvalidResponse,
+            ),
         ] {
-            let error = parse_pasted_oauth_callback(callback, redirect, authorization)
+            let failure = parse_pasted_oauth_callback(callback, redirect, authorization)
                 .expect_err("reject callback not bound to this login");
-            assert!(!format!("{error:#}").contains("secret-callback-code"));
+            assert_eq!(failure, expected_failure);
         }
-        assert!(
+        assert_eq!(
+            parse_pasted_oauth_callback("", redirect, authorization).expect_err("invalid URL"),
+            FixedOAuthCallbackFailure::UrlInvalid
+        );
+        assert_eq!(
             parse_pasted_oauth_callback(&"x".repeat(/*n*/ 65_537), redirect, authorization,)
-                .is_err()
+                .expect_err("oversized input"),
+            FixedOAuthCallbackFailure::InputFraming
         );
     }
 
@@ -2144,10 +2316,14 @@ mod tests {
             authorization,
         )
         .expect("parse state-bound provider error");
-        let CallbackResult::Error(error) = callback else {
+        let CallbackResult::Error(error) = &callback else {
             panic!("expected provider error");
         };
         assert_eq!(error.to_string(), "OAuth provider returned an error");
+        assert_eq!(
+            super::callback_result(callback).expect_err("classify provider response"),
+            FixedOAuthCallbackFailure::ProviderError
+        );
         assert!(
             parse_pasted_oauth_callback(
                 "http://127.0.0.1:8765/callback/gGLT7yyzxEu8?error=access_denied&state=wrong-state",

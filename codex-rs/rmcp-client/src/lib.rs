@@ -41,6 +41,8 @@ pub use oauth::stored_oauth_credentials;
 pub use perform_oauth_device_login::DeviceAuthorizationPrompt;
 pub use perform_oauth_device_login::perform_oauth_device_login;
 pub use perform_oauth_login::FIXED_API_CLAIM_TIMEOUT_SECS;
+pub use perform_oauth_login::FixedOAuthCallbackFailure;
+pub use perform_oauth_login::FixedOAuthCallbackInputError;
 pub use perform_oauth_login::FixedOAuthLoginError;
 pub use perform_oauth_login::FixedOAuthLoginStage;
 pub use perform_oauth_login::OAuthAccessToken;

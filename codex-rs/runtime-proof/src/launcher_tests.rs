@@ -65,6 +65,27 @@ fn api_bearer_provisioning_failure_exposes_only_a_fixed_stage() {
 }
 
 #[test]
+fn callback_failure_keeps_its_stage_and_closed_detail() {
+    let login_error = codex_rmcp_client::FixedOAuthLoginError::callback_failure(
+        codex_rmcp_client::FixedOAuthCallbackFailure::InputTimeout,
+    );
+    let error = provisioning_oauth_failure(login_error);
+
+    assert_eq!(
+        safe_provisioning_failure_stage(&error),
+        Some("oauth_callback")
+    );
+    assert_eq!(
+        safe_provisioning_failure_detail(&error),
+        Some("callback_input_timeout")
+    );
+    assert_eq!(
+        format!("{error:#}"),
+        "API bearer provisioning failed at oauth_callback (callback detail: callback_input_timeout)"
+    );
+}
+
+#[test]
 fn fixed_oauth_login_stages_map_to_provisioning_stages() {
     let stages = [
         (
