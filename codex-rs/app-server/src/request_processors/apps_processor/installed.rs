@@ -8,11 +8,12 @@ use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
 use codex_mcp::MCP_TOOL_CODEX_APPS_META_KEY;
 use codex_mcp::McpRuntime;
 use codex_mcp::McpRuntimeInput;
+use codex_mcp::McpStartupPolicy;
 use codex_mcp::ToolInfo;
 use codex_mcp::effective_mcp_servers;
 use codex_mcp::host_owned_codex_apps_enabled;
 use codex_mcp::tool_is_model_visible;
-use codex_protocol::models::PermissionProfile;
+use codex_protocol::mcp::ClientMcpExtensions;
 
 #[cfg(test)]
 #[path = "installed_tests.rs"]
@@ -46,33 +47,40 @@ impl AppsRequestProcessor {
         let mut snapshot_age = None;
         let mut snapshot_tool_count = 0;
         let result = async {
-            let config = self
-                .load_apps_installed_config(params.thread_id.as_deref())
-                .await?;
+            let (config, thread) = match params.thread_id.as_deref() {
+                Some(thread_id) => {
+                    let (_, thread) = self.load_thread(thread_id).await?;
+                    let config = thread.config().await;
+                    (config.as_ref().clone(), Some(thread))
+                }
+                None => (
+                    self.load_latest_config(/*fallback_cwd*/ None).await?,
+                    None,
+                ),
+            };
             let auth = self.auth_manager.auth().await;
-            let apps_enabled = config
+            let runtime_enabled = config
                 .features
                 .apps_enabled_for_auth(auth.as_ref().is_some_and(CodexAuth::uses_codex_backend));
 
-            let workspace_enabled = apps_enabled
-                && self
-                    .workspace_codex_plugins_enabled(&config, auth.as_ref())
-                    .await;
-            let runtime_enabled = apps_enabled && workspace_enabled;
-
             let mcp_manager = self.thread_manager.mcp_manager();
-            let mut mcp_config = mcp_manager.runtime_config(&config).await;
-            // Installed-app discovery has no active turn or reviewer.
-            mcp_config.permission_profile = PermissionProfile::default();
-            let mcp_config = Arc::new(mcp_config);
-            let mut mcp_servers = effective_mcp_servers(&mcp_config, auth.as_ref());
-            mcp_servers.retain(|name, _| name == CODEX_APPS_MCP_SERVER_NAME);
             let cache_key = connector_runtime_context_key(auth.as_ref());
             let previous_snapshot = mcp_manager
                 .codex_apps_tools_cache()
                 .current_snapshot(config.codex_home.to_path_buf(), cache_key.clone());
-            let snapshot = if force_refresh && runtime_enabled {
+            let mut model_visible_tool_names = None;
+            let tools = if force_refresh && runtime_enabled {
                 let refresh_result = async {
+                    if let Some(thread) = thread {
+                        let snapshot = thread.refresh_codex_apps_tools().await?;
+                        model_visible_tool_names = Some(snapshot.model_visible_tool_names);
+                        snapshot_age = Some(Duration::ZERO);
+                        return Ok(snapshot.tools);
+                    }
+                    let mcp_config = mcp_manager.runtime_config(&config).await;
+                    let mut mcp_servers = effective_mcp_servers(&mcp_config, auth.as_ref());
+                    mcp_servers.retain(|name, _| name == CODEX_APPS_MCP_SERVER_NAME);
+                    let mcp_config = Arc::new(mcp_config.for_threadless_operations(&mcp_servers));
                     anyhow::ensure!(
                         !mcp_servers.is_empty(),
                         "host-owned MCP server '{CODEX_APPS_MCP_SERVER_NAME}' is not enabled"
@@ -90,6 +98,7 @@ impl AppsRequestProcessor {
                         host_owned_codex_apps_enabled(&mcp_config, auth.as_ref())
                             .then(|| Arc::clone(&self.auth_manager));
                     let runtime = McpRuntime::new(McpRuntimeInput {
+                        startup_policy: McpStartupPolicy::Eager,
                         config: Arc::clone(&mcp_config),
                         plugins_available: false,
                         ready_selected_capability_roots: Vec::new(),
@@ -101,9 +110,9 @@ impl AppsRequestProcessor {
                         codex_apps_tools_cache: mcp_manager.codex_apps_tools_cache(),
                         tool_catalog_cache: mcp_manager.tool_catalog_cache(),
                         codex_apps_tools_cache_key: cache_key.clone(),
-                        supports_openai_form_elicitation: false,
+                        client_mcp_extensions: ClientMcpExtensions::default(),
                         auth: auth.clone(),
-                        codex_apps_auth_manager,
+                        auth_manager: codex_apps_auth_manager,
                         elicitation_reviewer: None,
                         elicitation_lifecycle: None,
                     })
@@ -131,14 +140,17 @@ impl AppsRequestProcessor {
                     };
                     cancellation_token.cancel();
                     runtime.shutdown().await;
-                    result
+                    result.map(|snapshot| {
+                        snapshot_age = Some(snapshot.age());
+                        snapshot.tools().to_vec()
+                    })
                 }
                 .await;
 
                 match refresh_result {
-                    Ok(snapshot) => {
+                    Ok(tools) => {
                         refresh_disposition = "success";
-                        Some(snapshot)
+                        tools
                     }
                     Err(err) => {
                         refresh_disposition = "error";
@@ -150,24 +162,25 @@ impl AppsRequestProcessor {
                 }
             } else {
                 if force_refresh {
-                    refresh_disposition = if !apps_enabled {
-                        "skipped_apps_disabled"
-                    } else {
-                        "skipped_workspace_disabled"
-                    };
+                    refresh_disposition = "skipped_apps_disabled";
                     retained_previous_snapshot = previous_snapshot.is_some();
                 }
-                previous_snapshot
-            };
-            let Some(snapshot) = snapshot else {
-                return Ok(AppsInstalledResponse { apps: Vec::new() });
+                previous_snapshot.map_or_else(Vec::new, |snapshot| {
+                    snapshot_age = Some(snapshot.age());
+                    snapshot.tools().to_vec()
+                })
             };
 
-            snapshot_age = Some(snapshot.age());
-            snapshot_tool_count = snapshot.tools().len();
+            snapshot_tool_count = tools.len();
             let apps = installed_connector_runtime(
                 &config.config_layer_stack,
-                snapshot.tools().iter().map(connector_runtime_tool),
+                tools.iter().map(|tool| {
+                    let mut runtime_tool = connector_runtime_tool(tool);
+                    if let Some(names) = &model_visible_tool_names {
+                        runtime_tool.model_visible &= names.contains(tool.tool.name.as_ref());
+                    }
+                    runtime_tool
+                }),
             )
             .into_iter()
             .map(|app| InstalledApp {
@@ -196,21 +209,6 @@ impl AppsRequestProcessor {
             );
         }
         result
-    }
-
-    async fn load_apps_installed_config(
-        &self,
-        thread_id: Option<&str>,
-    ) -> Result<Config, JSONRPCErrorError> {
-        let Some(thread_id) = thread_id else {
-            return self.load_latest_config(/*fallback_cwd*/ None).await;
-        };
-        let (_, thread) = self.load_thread(thread_id).await?;
-        let thread_config = thread.config().await;
-        self.config_manager
-            .load_latest_config_for_thread(thread_config.as_ref())
-            .await
-            .map_err(|err| internal_error(format!("failed to reload config: {err}")))
     }
 }
 

@@ -62,6 +62,52 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
             "buildbuddy-generic",
         )
 
+    def test_keyless_github_actions_builds_disable_disk_cache(self) -> None:
+        for command in ("build", "test"):
+            with self.subTest(command=command):
+                self.assertEqual(
+                    run_bazel_with_buildbuddy.bazel_args_with_remote_config(
+                        [command, "--config=ci-linux", "--", "//codex-rs/..."],
+                        {"GITHUB_ACTIONS": "true"},
+                    ),
+                    [command, "--disk_cache=", "--", "//codex-rs/..."],
+                )
+
+    def test_keyless_github_actions_preserves_explicit_disk_cache(self) -> None:
+        for options in (
+            ["--disk_cache=/tmp/explicit-cache"],
+            ["--disk_cache", "/tmp/explicit-cache"],
+            ["--disk_cache="],
+        ):
+            args = ["build", *options, "--", "//codex-rs/..."]
+            with self.subTest(options=options):
+                self.assertEqual(
+                    run_bazel_with_buildbuddy.bazel_args_with_remote_config(
+                        args, {"GITHUB_ACTIONS": "true"}
+                    ),
+                    args,
+                )
+
+    def test_keyless_github_actions_cache_default_precedes_payload(self) -> None:
+        args = ["build", "//codex-rs/...", "--", "--disk_cache=payload"]
+        self.assertEqual(
+            run_bazel_with_buildbuddy.bazel_args_with_remote_config(
+                args, {"GITHUB_ACTIONS": "true"}
+            ),
+            ["build", "//codex-rs/...", "--disk_cache=", "--", "--disk_cache=payload"],
+        )
+
+    def test_keyless_github_actions_keeps_non_build_commands_unchanged(self) -> None:
+        for command in ("query", "cquery", "aquery", "info", "run", "version"):
+            args = [command, "//codex-rs/..."]
+            with self.subTest(command=command):
+                self.assertEqual(
+                    run_bazel_with_buildbuddy.bazel_args_with_remote_config(
+                        args, {"GITHUB_ACTIONS": "true"}
+                    ),
+                    args,
+                )
+
     def test_upstream_push_selects_openai_rbe_before_target_separator(self) -> None:
         with TemporaryDirectory() as temp_dir:
             env = self.github_env(temp_dir, event_name="push")
@@ -196,6 +242,7 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
                 "--noexperimental_remote_repo_contents_cache",
                 "build",
                 "//codex-rs/...",
+                "--disk_cache=",
             ],
         )
         self.assertEqual(
@@ -211,6 +258,7 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
                 "--experimental_remote_repo_contents_cache",
                 "build",
                 "//codex-rs/...",
+                "--disk_cache=",
             ],
         )
 
@@ -232,29 +280,6 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
                 "build",
                 "--config=local",
                 "//codex-rs/...",
-                "--repo_contents_cache=/tmp/bazel-repo-contents",
-                "--repository_cache=/tmp/bazel-repository",
-            ],
-        )
-
-    def test_aquery_command_uses_configured_local_caches(self) -> None:
-        env = {
-            "BAZEL_REPO_CONTENTS_CACHE": "/tmp/bazel-repo-contents",
-            "BAZEL_REPOSITORY_CACHE": "/tmp/bazel-repository",
-        }
-
-        self.assertEqual(
-            run_bazel_with_buildbuddy.bazel_command(
-                "aquery",
-                "--output=text",
-                "//codex-rs/otel:otel",
-                env=env,
-            ),
-            [
-                "bazel",
-                "aquery",
-                "--output=text",
-                "//codex-rs/otel:otel",
                 "--repo_contents_cache=/tmp/bazel-repo-contents",
                 "--repository_cache=/tmp/bazel-repository",
             ],

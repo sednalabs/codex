@@ -1,12 +1,10 @@
 ---
-source: tui/src/history_cell.rs
-expression: rendered
+source: tui/src/history_cell/tests.rs
+assertion_line: 778
+expression: "rendered.replace(crate::version::CODEX_CLI_VERSION, \"<VERSION>\")"
 ---
-╭─────────────────────────────────────╮
-│ >_ OpenAI Codex (v0.0.0)            │
-│                                     │
-│ model:     gpt-5   /model to change │
-│ directory: /tmp/project             │
-╰─────────────────────────────────────╯
+
+  >_ OpenAI Codex (v<VERSION>)
+     /tmp/project
 
   Tip: Model just became available

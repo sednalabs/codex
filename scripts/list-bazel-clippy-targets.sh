@@ -22,9 +22,16 @@ done
 # Resolve the dynamic targets before printing anything so callers do not
 # continue with a partial list if `bazel query` fails. Target discovery is
 # local on all platforms.
+query_args=(--output=label)
+if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 ]]; then
+  # Some Windows cross-test dependencies materialize the pinned MSVC runtime
+  # even though the requested top-level target uses the GNU ABI.
+  query_args+=(--repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1)
+fi
+
 manual_rust_test_targets="$(
   ./.github/scripts/run-bazel-query-ci.sh \
-    --output=label \
+    "${query_args[@]}" \
     -- 'kind("rust_test rule", attr(tags, "manual", //codex-rs/... except //codex-rs/v8-poc/...))'
 )"
 if [[ "${RUNNER_OS:-}" != "Windows" ]]; then

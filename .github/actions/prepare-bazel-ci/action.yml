@@ -17,25 +17,53 @@ outputs:
   repository-cache-hit:
     description: Whether the Bazel repository cache restore found an exact key match.
     value: ${{ steps.cache_bazel_repository_restore.outputs.cache-hit }}
-  repository-cache-write-enabled:
-    description: Whether this event is trusted to publish a repository cache entry.
-    value: ${{ steps.repository_cache_write_policy.outputs.repository-cache-write-enabled }}
 
 runs:
   using: composite
   steps:
-    - name: Determine Bazel repository cache write eligibility
-      id: repository_cache_write_policy
+    - name: Reclaim unused Android SDK on hosted x86_64 Linux runners
+      if: >-
+        runner.environment == 'github-hosted' &&
+        runner.os == 'Linux' &&
+        (inputs.target == 'x86_64-unknown-linux-gnu' ||
+        inputs.target == 'x86_64-unknown-linux-musl')
       shell: bash
-      env:
-        EVENT_NAME: ${{ github.event_name }}
-        REF: ${{ github.ref }}
       run: |
-        enabled=false
-        if [[ "${EVENT_NAME}" == "push" && ("${REF}" == "refs/heads/main" || "${REF}" == "refs/heads/upstream-main") ]]; then
-          enabled=true
+        set -euo pipefail
+        sdk_root=/usr/local/lib/android/sdk
+        if [[ "${RUNNER_OS:-}" != "Linux" ||
+              "${ImageOS:-}" != "ubuntu24" ||
+              "${ANDROID_HOME:-}" != "${sdk_root}" ||
+              "${ANDROID_SDK_ROOT:-}" != "${sdk_root}" ||
+              ! -d "${sdk_root}" || -L "${sdk_root}" ||
+              "$(realpath -e -- "${sdk_root}")" != "${sdk_root}" ]]; then
+          echo "Skipping SDK cleanup: the hosted runner does not have the expected canonical Android SDK."
+          exit 0
         fi
-        echo "repository-cache-write-enabled=${enabled}" >> "${GITHUB_OUTPUT}"
+        sdk_device=$(stat -c '%d' -- "${sdk_root}")
+        if [[ "${sdk_device}" != "$(stat -c '%d' -- "${GITHUB_WORKSPACE}")" ||
+              "${sdk_device}" != "$(stat -c '%d' -- "${HOME}")" ]]; then
+          echo "Skipping SDK cleanup: the SDK does not share the build filesystem."
+          exit 0
+        fi
+        mount_targets=$(findmnt --raw --noheadings --output TARGET)
+        while IFS= read -r mount_target; do
+          case "${mount_target}" in
+            "${sdk_root}"|"${sdk_root}"/*)
+              echo "Skipping SDK cleanup: the SDK contains a mount."
+              exit 0
+              ;;
+          esac
+        done <<< "${mount_targets}"
+        du -sx --block-size=1 -- "${sdk_root}"
+        df --block-size=1 --output=avail "${GITHUB_WORKSPACE}"
+        find "${sdk_root}" -mindepth 1 -maxdepth 1 -exec rm -rf --one-file-system -- {} +
+        remaining=$(find "${sdk_root}" -mindepth 1 -print -quit)
+        if [[ -n "${remaining}" ]]; then
+          echo "SDK cleanup left entries under the verified root." >&2
+          exit 1
+        fi
+        df --block-size=1 --output=avail "${GITHUB_WORKSPACE}"
 
     - name: Set up Bazel CI
       id: setup_bazel
@@ -67,28 +95,6 @@ runs:
         key: ${{ steps.cache_bazel_repository_key.outputs.repository-cache-key }}
         restore-keys: |
           ${{ steps.cache_bazel_repository_key.outputs.repository-cache-restore-key }}
-
-    - name: Summarize Bazel repository cache
-      shell: bash
-      env:
-        CACHE_SCOPE: ${{ inputs.cache-scope }}
-        TARGET: ${{ inputs.target }}
-        CACHE_KEY: ${{ steps.cache_bazel_repository_key.outputs.repository-cache-key }}
-        CACHE_HIT: ${{ steps.cache_bazel_repository_restore.outputs.cache-hit }}
-        WRITE_ENABLED: ${{ steps.repository_cache_write_policy.outputs.repository-cache-write-enabled }}
-        SETUP_BAZEL_DISK_CACHE_SCOPE: ${{ github.workflow }}
-      run: |
-        {
-          echo "### Bazel cache summary"
-          echo
-          echo "- setup-bazel Bazelisk download cache: \`enabled\`"
-          echo "- setup-bazel disk-cache scope: \`${SETUP_BAZEL_DISK_CACHE_SCOPE}\`"
-          echo "- Repository cache scope: \`${CACHE_SCOPE}\`"
-          echo "- Repository cache target: \`${TARGET}\`"
-          echo "- Repository cache primary key: \`${CACHE_KEY}\`"
-          echo "- Repository cache exact hit: \`${CACHE_HIT:-unknown}\`"
-          echo "- Repository cache trusted writer eligible: \`${WRITE_ENABLED}\`"
-        } >> "${GITHUB_STEP_SUMMARY}"
 
     - name: Set up Bazel execution logs
       shell: bash

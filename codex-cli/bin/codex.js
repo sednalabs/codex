@@ -2,7 +2,7 @@
 // Unified entry point for the Codex CLI.
 
 import { spawn } from "node:child_process";
-import { existsSync, realpathSync } from "fs";
+import { existsSync, readFileSync, realpathSync } from "fs";
 import { createRequire } from "node:module";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -18,8 +18,6 @@ const PLATFORM_PACKAGE_BY_TARGET = {
   "aarch64-unknown-linux-musl": "@openai/codex-linux-arm64",
   "x86_64-apple-darwin": "@openai/codex-darwin-x64",
   "aarch64-apple-darwin": "@openai/codex-darwin-arm64",
-  "x86_64-pc-windows-msvc": "@openai/codex-win32-x64",
-  "aarch64-pc-windows-msvc": "@openai/codex-win32-arm64",
 };
 
 const { platform, arch } = process;
@@ -51,18 +49,6 @@ switch (platform) {
         break;
     }
     break;
-  case "win32":
-    switch (arch) {
-      case "x64":
-        targetTriple = "x86_64-pc-windows-msvc";
-        break;
-      case "arm64":
-        targetTriple = "aarch64-pc-windows-msvc";
-        break;
-      default:
-        break;
-    }
-    break;
   default:
     break;
 }
@@ -89,7 +75,7 @@ function findCodexExecutable() {
     vendorRoot,
     targetTriple,
     "bin",
-    process.platform === "win32" ? "codex.exe" : "codex",
+    "codex",
   );
   if (existsSync(codexExecutable)) {
     return codexExecutable;
@@ -101,7 +87,9 @@ function findCodexExecutable() {
       ? "bun install -g @openai/codex@latest"
       : packageManager === "pnpm"
         ? "pnpm add -g @openai/codex@latest"
-        : "npm install -g @openai/codex@latest";
+        : packageManager === "vite-plus"
+          ? "vp install -g @openai/codex@latest"
+          : "npm install -g @openai/codex@latest";
   throw new Error(
     `Missing optional dependency ${platformPackage}. Reinstall Codex: ${updateCommand}`,
   );
@@ -130,14 +118,52 @@ function isPnpmOwnedCodexInstall(nodeModulesDir) {
   }
 }
 
+function isVitePlusOwnedCodexInstall(packagesDir) {
+  if (path.basename(packagesDir) !== "packages") {
+    return false;
+  }
+
+  try {
+    const metadata = JSON.parse(
+      readFileSync(path.join(packagesDir, "@openai", "codex.json"), "utf8"),
+    );
+    if (metadata.name !== "@openai/codex") {
+      return false;
+    }
+
+    // Vite+ records the active global installation in packages/@openai/codex.json.
+    // Older installs have no ID or append a #-prefixed ID to the package name;
+    // newer installs put the ID in a subdirectory of the package prefix.
+    const installId = metadata.installId || "";
+    const installDir = installId.startsWith("#")
+      ? path.join(packagesDir, `@openai/codex${installId}`)
+      : path.join(packagesDir, "@openai/codex", installId);
+    for (const nodeModulesDir of [
+      path.join(installDir, "lib", "node_modules"),
+      path.join(installDir, "node_modules"),
+    ]) {
+      const packageRoot = path.join(nodeModulesDir, "@openai", "codex");
+      if (
+        existsSync(packageRoot) &&
+        realpathSync(packageRoot) === codexPackageRoot
+      ) {
+        return true;
+      }
+    }
+  } catch {
+    // Missing or unreadable ownership metadata must not prevent Codex starting.
+  }
+  return false;
+}
+
 /**
  * Use heuristics to detect the package manager that was used to install Codex
  * in order to give the user a hint about how to update it.
  */
 function detectPackageManager() {
-  // pnpm's owning node_modules directory can be several parents above the
-  // package in isolated global layouts. Search ancestors of both the canonical
-  // package root and lexical entrypoint because pnpm may link either path.
+  // Package-manager ownership metadata can be several parents above the package.
+  // Search ancestors of both the canonical package root and lexical entrypoint
+  // because the package manager may link either path.
   const entrypointDir = path.dirname(path.resolve(process.argv[1]));
   for (const startDir of new Set([codexPackageRoot, entrypointDir])) {
     const filesystemRoot = path.parse(startDir).root;
@@ -146,6 +172,9 @@ function detectPackageManager() {
       currentDir !== filesystemRoot;
       currentDir = path.dirname(currentDir)
     ) {
+      if (isVitePlusOwnedCodexInstall(currentDir)) {
+        return "vite-plus";
+      }
       if (isPnpmOwnedCodexInstall(path.join(currentDir, "node_modules"))) {
         return "pnpm";
       }
@@ -182,7 +211,9 @@ const packageManagerEnvVar =
     ? "CODEX_MANAGED_BY_BUN"
     : packageManager === "pnpm"
       ? "CODEX_MANAGED_BY_PNPM"
-      : "CODEX_MANAGED_BY_NPM";
+      : packageManager === "vite-plus"
+        ? "CODEX_MANAGED_BY_VITE_PLUS"
+        : "CODEX_MANAGED_BY_NPM";
 const env = {
   ...process.env,
   CODEX_MANAGED_PACKAGE_ROOT: codexPackageRoot,
@@ -190,6 +221,7 @@ const env = {
 delete env.CODEX_MANAGED_BY_NPM;
 delete env.CODEX_MANAGED_BY_BUN;
 delete env.CODEX_MANAGED_BY_PNPM;
+delete env.CODEX_MANAGED_BY_VITE_PLUS;
 env[packageManagerEnvVar] = "1";
 
 const child = spawn(binaryPath, process.argv.slice(2), {

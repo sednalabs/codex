@@ -1,8 +1,6 @@
 use super::*;
-use codex_utils_absolute_path::AbsolutePathBuf;
 use pretty_assertions::assert_eq;
 use std::io;
-use std::path::Path;
 use tempfile::TempDir;
 
 const EXTERNAL_AGENT_PROJECT_CONFIG_FILE: &str = ".claude.json";
@@ -18,13 +16,6 @@ fn fixture_paths() -> (TempDir, PathBuf, PathBuf) {
     let external_agent_home = root.path().join(EXTERNAL_AGENT_DIR);
     let codex_home = root.path().join(".codex");
     (root, external_agent_home, codex_home)
-}
-
-fn canonical_fixture_path(path: &Path) -> PathBuf {
-    AbsolutePathBuf::from_absolute_path(path)
-        .and_then(|path| path.canonicalize())
-        .map(AbsolutePathBuf::into_path_buf)
-        .expect("canonicalize fixture path")
 }
 
 fn service_for_paths(
@@ -75,15 +66,12 @@ fn import_success(
         cwd,
         source: Some(source.into()),
         target: Some(target.into()),
+        title: None,
     }
 }
 
 #[path = "service_tests/general.rs"]
 mod general;
-
-#[cfg(unix)]
-#[path = "service_tests/containment.rs"]
-mod containment;
 
 #[path = "service_tests/memory.rs"]
 mod memory;

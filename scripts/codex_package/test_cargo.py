@@ -4,6 +4,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -14,6 +15,56 @@ from codex_package.targets import TARGET_SPECS
 
 
 class SourceBinariesForTargetTest(unittest.TestCase):
+    def test_source_build_uses_locked_cargo(self) -> None:
+        spec = TARGET_SPECS["x86_64-unknown-linux-gnu"]
+        variant = PACKAGE_VARIANTS["codex"]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            build_dir = root / "target" / spec.target / "release"
+            build_dir.mkdir(parents=True)
+            touch_file(build_dir / variant.entrypoint_name(spec))
+            code_mode_host = touch_file(root / "codex-code-mode-host")
+            bwrap = touch_file(root / "bwrap")
+
+            with (
+                patch("codex_package.cargo.subprocess.run") as cargo_run,
+                patch(
+                    "codex_package.cargo.cargo_profile_output_dir",
+                    return_value=build_dir,
+                ),
+                patch(
+                    "codex_package.cargo.resolve_codex_v8_cargo_env",
+                    return_value=None,
+                ),
+            ):
+                build_source_binaries(
+                    spec,
+                    variant,
+                    cargo="cargo",
+                    profile="release",
+                    entrypoint_bin=None,
+                    code_mode_host_bin=code_mode_host,
+                    bwrap_bin=bwrap,
+                    codex_command_runner_bin=None,
+                    codex_windows_sandbox_setup_bin=None,
+                )
+
+        cargo_run.assert_called_once()
+        self.assertEqual(
+            cargo_run.call_args.args[0],
+            [
+                "cargo",
+                "build",
+                "--locked",
+                "--target",
+                spec.target,
+                "--profile",
+                "release",
+                "--bin",
+                variant.cargo_bin,
+            ],
+        )
+
     def test_macos_package_with_prebuilt_entrypoint_builds_nothing(self) -> None:
         self.assertEqual(
             source_binaries_for_target(

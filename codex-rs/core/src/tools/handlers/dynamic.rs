@@ -1,6 +1,4 @@
 use crate::function_tool::FunctionCallError;
-use crate::original_image_detail::can_request_original_image_detail;
-use crate::original_image_detail::sanitize_original_image_detail;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::context::FunctionToolOutput;
@@ -9,10 +7,10 @@ use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
 use crate::tools::context::boxed_tool_output;
 use crate::tools::handlers::parse_arguments;
-use crate::tools::handlers::search_text::SearchTextBuilder;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
 use crate::tools::registry::ToolExposure;
+use codex_async_utils::OrCancelExt;
 use codex_protocol::dynamic_tools::DynamicToolFunctionSpec;
 use codex_protocol::dynamic_tools::DynamicToolNamespaceSpec;
 use codex_protocol::dynamic_tools::DynamicToolResponse;
@@ -20,6 +18,7 @@ use codex_protocol::items::DynamicToolCallItem;
 use codex_protocol::items::DynamicToolCallStatus;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::FunctionCallOutputContentItem;
+use codex_protocol::models::ResponseInputItem;
 use codex_tools::ResponsesApiNamespace;
 use codex_tools::ResponsesApiNamespaceTool;
 use codex_tools::ToolName;
@@ -29,9 +28,9 @@ use codex_tools::ToolSpec;
 use codex_tools::default_namespace_description;
 use codex_tools::dynamic_tool_to_responses_api_tool;
 use serde_json::Value;
-use serde_json::json;
 use std::time::Instant;
 use tokio::sync::oneshot;
+use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 pub struct DynamicToolHandler {
@@ -42,15 +41,7 @@ pub struct DynamicToolHandler {
 
 impl DynamicToolHandler {
     pub fn new(tool: &DynamicToolFunctionSpec) -> Option<Self> {
-        let namespace = tool
-            .namespace
-            .as_ref()
-            .map(|name| DynamicToolNamespaceSpec {
-                name: name.clone(),
-                description: String::new(),
-                tools: Vec::new(),
-            });
-        Self::from_parts(tool, namespace.as_ref())
+        Self::from_parts(tool, /*namespace*/ None)
     }
 
     pub fn new_in_namespace(
@@ -118,7 +109,10 @@ impl ToolExecutor<ToolInvocation> for DynamicToolHandler {
         )
     }
 
-    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
+    where
+        ToolInvocation: 'a,
+    {
         Box::pin(self.handle_call(invocation))
     }
 }
@@ -133,6 +127,7 @@ impl DynamicToolHandler {
             turn,
             call_id,
             payload,
+            cancellation_token,
             ..
         } = invocation;
 
@@ -152,6 +147,7 @@ impl DynamicToolHandler {
             call_id,
             self.tool_name.clone(),
             args,
+            cancellation_token,
         )
         .await
         .ok_or_else(|| {
@@ -164,22 +160,105 @@ impl DynamicToolHandler {
             content_items,
             success,
         } = response;
-        let mut body = content_items
+        let body = content_items
             .into_iter()
             .map(FunctionCallOutputContentItem::from)
             .collect::<Vec<_>>();
-        sanitize_original_image_detail(
-            can_request_original_image_detail(&turn.model_info),
-            &mut body,
-        );
-        Ok(boxed_tool_output(FunctionToolOutput::from_content(
-            body,
-            Some(success),
-        )))
+        Ok(dynamic_tool_output(&self.tool_name, body, success))
     }
 }
 
-impl CoreToolRuntime for DynamicToolHandler {}
+fn dynamic_tool_output(
+    tool_name: &ToolName,
+    body: Vec<FunctionCallOutputContentItem>,
+    success: bool,
+) -> Box<dyn ToolOutput> {
+    let output = FunctionToolOutput::from_content(body, Some(success));
+    if matches!(
+        (tool_name.namespace.as_deref(), tool_name.name.as_str()),
+        (Some("codex_browser"), "browser_observe" | "browser_step")
+    ) {
+        boxed_tool_output(NativeBrowserToolOutput { output })
+    } else {
+        boxed_tool_output(output)
+    }
+}
+
+/// Preserve native image content through both direct and code-mode tool results.
+struct NativeBrowserToolOutput {
+    output: FunctionToolOutput,
+}
+
+impl ToolOutput for NativeBrowserToolOutput {
+    fn log_output(&self) -> String {
+        self.output.log_output()
+    }
+
+    fn success_for_logging(&self) -> bool {
+        self.output.success_for_logging()
+    }
+
+    fn to_response_item(&self, call_id: &str, payload: &ToolPayload) -> ResponseInputItem {
+        self.output.to_response_item(call_id, payload)
+    }
+
+    fn post_tool_use_response(&self, call_id: &str, payload: &ToolPayload) -> Option<Value> {
+        self.output.post_tool_use_response(call_id, payload)
+    }
+
+    fn code_mode_result(&self, _payload: &ToolPayload) -> Value {
+        serde_json::json!({
+            "content": self.output.body,
+            "success": self.output.success.unwrap_or(true),
+        })
+    }
+}
+
+impl CoreToolRuntime for DynamicToolHandler {
+    fn finishes_on_cancellation(&self) -> bool {
+        true
+    }
+
+    fn is_third_party_tool(&self) -> bool {
+        true
+    }
+}
+
+#[cfg(test)]
+mod browser_tests {
+    use super::*;
+
+    #[test]
+    fn browser_dynamic_tool_code_mode_result_preserves_typed_images() {
+        let image_url = "data:image/png;base64,AAAA";
+        let tool_name = ToolName::new(
+            Some("codex_browser".to_string()),
+            "browser_observe".to_string(),
+        );
+        let output = dynamic_tool_output(
+            &tool_name,
+            vec![
+                FunctionCallOutputContentItem::InputText {
+                    text: "Browser observation".to_string(),
+                },
+                FunctionCallOutputContentItem::InputImage {
+                    image: codex_protocol::models::ImageReference::Inline {
+                        image_url: image_url.to_string(),
+                    },
+                    detail: Some(codex_protocol::models::DEFAULT_IMAGE_DETAIL),
+                },
+            ],
+            /*success*/ true,
+        );
+        let result = output.code_mode_result(&ToolPayload::Function {
+            arguments: "{}".to_string(),
+        });
+
+        assert!(result["success"].as_bool().unwrap_or(false));
+        assert_eq!(result["content"][1]["type"], "input_image");
+        assert_eq!(result["content"][1]["image_url"], image_url);
+    }
+}
 
 #[expect(
     clippy::await_holding_invalid_type,
@@ -191,19 +270,26 @@ async fn request_dynamic_tool(
     call_id: String,
     tool_name: ToolName,
     arguments: Value,
+    cancellation_token: CancellationToken,
 ) -> Option<DynamicToolResponse> {
+    if cancellation_token.is_cancelled() {
+        return None;
+    }
     let namespace = tool_name.namespace;
     let tool = tool_name.name;
     let (tx_response, rx_response) = oneshot::channel();
     let event_id = call_id.clone();
     let prev_entry = {
         let mut active = session.active_turn.lock().await;
+        if cancellation_token.is_cancelled() {
+            return None;
+        }
         match active.as_mut() {
             Some(at) => {
                 let mut ts = at.turn_state.lock().await;
                 ts.insert_pending_dynamic_tool(call_id.clone(), tx_response)
             }
-            None => None,
+            None => return None,
         }
     };
     if prev_entry.is_some() {
@@ -227,7 +313,11 @@ async fn request_dynamic_tool(
             }),
         )
         .await;
-    let response = rx_response.await.ok();
+    let response = rx_response
+        .or_cancel(&cancellation_token)
+        .await
+        .ok()
+        .and_then(Result::ok);
 
     let item = match &response {
         Some(response) => DynamicToolCallItem {
@@ -263,3 +353,7 @@ async fn request_dynamic_tool(
 
     response
 }
+
+#[cfg(test)]
+#[path = "dynamic_tests.rs"]
+mod tests;

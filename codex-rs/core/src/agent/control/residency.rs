@@ -1,40 +1,109 @@
-use super::AgentControl;
+//! Accounts for resident MAv2 children and unloads exact idle runtimes while preserving their state.
+
+use super::LocalAgentControl;
+use super::LocalAgentRuntime;
+use super::runtime::AgentTreeMembership;
 use crate::agent::AgentStatus;
-use crate::agent::lifecycle::AgentLifecycleState;
-use crate::agent::lifecycle::ColdMailboxItem;
-use crate::agent::registry::AgentRegistry;
 use crate::codex_thread::CodexThread;
 use crate::config::Config;
-use crate::thread_manager::RemoveThreadIfSameResult;
-#[cfg(test)]
-use crate::thread_manager::ThreadManager;
 use crate::thread_manager::ThreadManagerState;
-use crate::thread_manager::V2ThreadUnloadResult;
 use codex_protocol::ThreadId;
+use codex_protocol::error::AgentErrorContext;
 use codex_protocol::error::CodexErr;
+use codex_protocol::error::CodexErrKind;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SessionSource;
 use std::collections::VecDeque;
-#[cfg(test)]
-use std::future::Future;
 use std::sync::Arc;
 use std::sync::Mutex;
-#[cfg(test)]
-use std::task::Poll;
-use std::time::Duration;
-#[cfg(test)]
-use tokio::sync::Notify;
 use tracing::warn;
+
+/// The result of trying to unload one exact MAv2 child runtime.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ThreadEvictionOutcome {
+    /// Work or another teardown owns the runtime; retry later.
+    Busy,
+    /// This operation stopped and removed the runtime.
+    Evicted,
+    /// The runtime was removed or replaced; leave its replacement alone.
+    NotCurrent,
+}
+
+impl ThreadManagerState {
+    pub(crate) async fn try_evict_v2_thread(
+        self: &Arc<Self>,
+        thread: Arc<CodexThread>,
+        membership: &AgentTreeMembership,
+    ) -> CodexResult<ThreadEvictionOutcome> {
+        let Ok(residency_guard) = Arc::clone(&thread.residency_gate).try_write_owned() else {
+            return Ok(ThreadEvictionOutcome::Busy);
+        };
+        let thread_id = thread.session.thread_id;
+        if !self
+            .get_thread(thread_id)
+            .await
+            .is_ok_and(|registered| Arc::ptr_eq(&registered, &thread))
+        {
+            return Ok(ThreadEvictionOutcome::NotCurrent);
+        }
+        if !is_resident_candidate(&thread) || !is_unloadable(&thread).await {
+            return Ok(ThreadEvictionOutcome::Busy);
+        }
+        let manager = Arc::clone(self);
+        let teardown = membership
+            .clone()
+            .into_teardown_guard("resident_eviction", Some(thread_id));
+        // Once shutdown is submitted, cancellation cannot release delivery or capacity early.
+        tokio::spawn(async move {
+            let _residency_guard = residency_guard;
+            thread.ensure_rollout_materialized().await;
+            if let Err(err) = thread.shutdown_and_wait().await {
+                teardown.record_shutdown_failure("stop_resident", CodexErrKind::from(&err).into());
+                teardown.complete();
+                return Err(err);
+            }
+            // Dispatch has stopped and the residency guard excludes senders. A tree
+            // shutdown deliberately discards its mailbox instead of retaining it.
+            let mail = thread
+                .session
+                .input_queue
+                .drain_mailbox()
+                .await
+                .into_iter()
+                .map(|mail| mail.communication)
+                .collect();
+            let runtime = &thread.session.services.local_agent_runtime;
+            let _ = runtime.mailboxes.enqueue(thread_id, /*id*/ None, mail);
+            let environments = thread.environment_selections().await;
+            let mut threads = manager.threads.write().await;
+            if threads
+                .get(&thread_id)
+                .is_some_and(|registered| !Arc::ptr_eq(registered, &thread))
+            {
+                teardown.complete();
+                return Ok(ThreadEvictionOutcome::NotCurrent);
+            }
+            runtime
+                .registry
+                .save_evicted_environments(thread_id, environments);
+            let removed = threads.remove(&thread_id).is_some();
+            runtime.residency.remove(thread_id);
+            teardown.complete();
+            Ok(if removed {
+                ThreadEvictionOutcome::Evicted
+            } else {
+                ThreadEvictionOutcome::NotCurrent
+            })
+        })
+        .await?
+    }
+}
 
 #[derive(Default)]
 pub(super) struct V2Residency {
     state: Mutex<V2ResidencyState>,
-    #[cfg(test)]
-    terminal_idle_unload_completed: Notify,
-    #[cfg(test)]
-    terminal_idle_unload_deadline_polled: Notify,
 }
 
 #[derive(Default)]
@@ -43,25 +112,7 @@ struct V2ResidencyState {
     pending_slots: usize,
 }
 
-/// Private terminal-idle watcher outcomes. These deliberately retain more information than the
-/// public external-teardown result so a stale timer does not look like an identity replacement.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum TerminalIdleUnloadAttempt {
-    Unloaded,
-    Missing,
-    SupersededIdentity,
-    DeadlineInvalidated,
-    Deferred,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct TerminalIdleUnloadGenerations {
-    watcher_generation: u64,
-    timer_generation: u64,
-    runtime_activity_generation: u64,
-}
-
-pub(crate) struct V2ResidencySlot {
+pub(super) struct V2ResidencySlot {
     residency: Arc<V2Residency>,
     active: bool,
 }
@@ -81,315 +132,44 @@ impl Drop for V2ResidencySlot {
     }
 }
 
-impl AgentControl {
+impl LocalAgentControl {
     pub(super) async fn reserve_v2_residency_slot(
         &self,
         state: &Arc<ThreadManagerState>,
         config: &Config,
+        membership: &AgentTreeMembership,
         protected_thread_id: Option<ThreadId>,
     ) -> CodexResult<V2ResidencySlot> {
         let capacity = config
             .effective_agent_max_threads(MultiAgentVersion::V2)
             .unwrap_or(usize::MAX);
-        Arc::clone(&self.v2_residency)
-            .reserve_slot(state, self.state.as_ref(), capacity, protected_thread_id)
+        Arc::clone(&self.runtime.residency)
+            .reserve_slot(state, capacity, membership, protected_thread_id)
             .await
     }
 
-    pub(super) async fn touch_loaded_v2_residency(
-        &self,
-        state: &Arc<ThreadManagerState>,
-        thread_id: ThreadId,
-    ) {
-        if let Ok(thread) = state.get_thread(thread_id).await
-            && is_resident_candidate(thread.as_ref())
-        {
-            self.v2_residency.touch(thread_id);
-        }
-    }
-
     pub(super) fn forget_v2_residency(&self, thread_id: ThreadId) {
-        self.v2_residency.remove(thread_id);
+        self.runtime.residency.remove(thread_id);
     }
+}
 
-    pub(super) async fn start_terminal_idle_unload_watcher(
+impl LocalAgentRuntime {
+    /// Pins and touches the registered runtime without waiting for unrelated eviction.
+    pub(crate) async fn pin_v2_residency(
         &self,
-        thread: Arc<CodexThread>,
-        metadata: crate::agent::registry::AgentMetadata,
-        timeout_ms: u64,
-    ) {
-        let mut lifecycle = metadata.lifecycle.lock().await;
-        self.start_terminal_idle_unload_watcher_under_lifecycle(
-            thread,
-            metadata.clone(),
-            timeout_ms,
-            &mut lifecycle,
-        );
-    }
-
-    pub(super) fn start_terminal_idle_unload_watcher_under_lifecycle(
-        &self,
-        thread: Arc<CodexThread>,
-        metadata: crate::agent::registry::AgentMetadata,
-        timeout_ms: u64,
-        lifecycle: &mut AgentLifecycleState,
-    ) {
-        let (watcher_generation, watcher_cancellation) =
-            lifecycle.replace_terminal_idle_unload_watcher();
-        if timeout_ms == 0
-            || !is_resident_candidate(thread.as_ref())
-            || thread.session.live_thread().is_none()
-        {
-            return;
+        state: &ThreadManagerState,
+        thread: &Arc<CodexThread>,
+    ) -> CodexResult<Option<tokio::sync::OwnedRwLockReadGuard<()>>> {
+        if !is_resident_candidate(thread) {
+            return Ok(None);
         }
-
-        let control = self.clone();
-        tokio::spawn(async move {
-            let thread_id = thread.session.thread_id();
-            let mut status_rx = thread.subscribe_status();
-            loop {
-                let status = status_rx.borrow().clone();
-                match status {
-                    AgentStatus::Completed(_)
-                    | AgentStatus::Errored(_)
-                    | AgentStatus::Interrupted => {
-                        let timer_generation = {
-                            let mut lifecycle = metadata.lifecycle.lock().await;
-                            if !control.state.metadata_is_current(thread_id, &metadata)
-                                || !lifecycle
-                                    .terminal_idle_unload_watcher_is_current(watcher_generation)
-                            {
-                                return;
-                            }
-                            lifecycle.arm_terminal_idle_unload()
-                        };
-                        let runtime_activity_generation =
-                            thread.session.input_queue.residency_activity_generation();
-                        let generations = TerminalIdleUnloadGenerations {
-                            watcher_generation,
-                            timer_generation,
-                            runtime_activity_generation,
-                        };
-                        let sleep = tokio::time::sleep(Duration::from_millis(timeout_ms));
-                        tokio::pin!(sleep);
-                        #[cfg(test)]
-                        {
-                            // Register the paused timer before tests advance virtual time. The
-                            // lifecycle generation is published before Tokio first polls Sleep,
-                            // so observing the generation alone is not an ordering guarantee.
-                            std::future::poll_fn(|cx| {
-                                let _ = sleep.as_mut().poll(cx);
-                                control
-                                    .v2_residency
-                                    .notify_terminal_idle_unload_deadline_polled();
-                                Poll::Ready(())
-                            })
-                            .await;
-                        }
-                        let deadline_elapsed = tokio::select! {
-                            () = watcher_cancellation.cancelled() => return,
-                            () = &mut sleep => true,
-                            changed = status_rx.changed() => {
-                                if changed.is_err() {
-                                    return;
-                                }
-                                false
-                            }
-                        };
-                        if !deadline_elapsed {
-                            continue;
-                        }
-                        let Ok(manager) = control.upgrade() else {
-                            return;
-                        };
-                        match control
-                            .v2_residency
-                            .try_unload_terminal_idle(
-                                &manager,
-                                control.state.as_ref(),
-                                &metadata,
-                                &thread,
-                                generations,
-                            )
-                            .await
-                        {
-                            TerminalIdleUnloadAttempt::Unloaded
-                            | TerminalIdleUnloadAttempt::Missing => {
-                                control.forget_v2_residency(thread_id);
-                                #[cfg(test)]
-                                control.v2_residency.notify_terminal_idle_unload_complete();
-                                return;
-                            }
-                            TerminalIdleUnloadAttempt::SupersededIdentity => return,
-                            TerminalIdleUnloadAttempt::DeadlineInvalidated
-                            | TerminalIdleUnloadAttempt::Deferred => {}
-                        }
-                    }
-                    AgentStatus::PendingInit | AgentStatus::Running => {
-                        let changed = tokio::select! {
-                            () = watcher_cancellation.cancelled() => return,
-                            changed = status_rx.changed() => changed,
-                        };
-                        if changed.is_err() {
-                            return;
-                        }
-                    }
-                    AgentStatus::Shutdown | AgentStatus::NotFound => return,
-                }
-            }
-        });
-    }
-
-    pub(crate) async fn unload_v2_thread_for_external_teardown<Finalize, FinalizeFuture>(
-        &self,
-        manager: &Arc<ThreadManagerState>,
-        expected_thread: &Arc<CodexThread>,
-        finalize: Finalize,
-    ) -> V2ThreadUnloadResult
-    where
-        Finalize: FnOnce(V2ThreadUnloadResult) -> FinalizeFuture,
-        FinalizeFuture: std::future::Future<Output = ()>,
-    {
-        if !is_resident_candidate(expected_thread.as_ref()) {
-            return V2ThreadUnloadResult::NotApplicable;
+        let guard = Arc::clone(&thread.residency_gate).read_owned().await;
+        let thread_id = thread.session.thread_id;
+        if !Arc::ptr_eq(thread, &state.get_thread(thread_id).await?) {
+            return Err(CodexErr::ThreadNotFound(thread_id));
         }
-        let thread_id = expected_thread.session.thread_id();
-        let Some(metadata) = self.state.agent_metadata_for_thread(thread_id) else {
-            return V2ThreadUnloadResult::NotApplicable;
-        };
-        let _reload = metadata.lifecycle.lock_reload().await;
-        let result = {
-            let mut lifecycle = metadata.lifecycle.lock().await;
-            if !self.state.metadata_is_current(thread_id, &metadata) {
-                V2ThreadUnloadResult::Superseded
-            } else {
-                match manager.get_thread(thread_id).await {
-                    Err(_) => {
-                        self.forget_v2_residency(thread_id);
-                        if self
-                            .state
-                            .cold_status(thread_id, /*live_thread*/ None)
-                            .is_some()
-                        {
-                            V2ThreadUnloadResult::Unloaded
-                        } else {
-                            V2ThreadUnloadResult::Missing
-                        }
-                    }
-                    Ok(thread) if !Arc::ptr_eq(&thread, expected_thread) => {
-                        V2ThreadUnloadResult::Superseded
-                    }
-                    Ok(thread) => {
-                        let residency_transition =
-                            thread.session.input_queue.lock_residency_transition().await;
-                        let result = if self
-                            .v2_residency
-                            .try_unload_candidate(
-                                manager,
-                                self.state.as_ref(),
-                                Some(&metadata),
-                                Some(&mut lifecycle),
-                                thread,
-                            )
-                            .await
-                        {
-                            self.forget_v2_residency(thread_id);
-                            V2ThreadUnloadResult::Unloaded
-                        } else {
-                            match manager.get_thread(thread_id).await {
-                                Err(_) => {
-                                    self.forget_v2_residency(thread_id);
-                                    if self
-                                        .state
-                                        .cold_status(thread_id, /*live_thread*/ None)
-                                        .is_some()
-                                    {
-                                        V2ThreadUnloadResult::Unloaded
-                                    } else {
-                                        V2ThreadUnloadResult::Missing
-                                    }
-                                }
-                                Ok(current) if Arc::ptr_eq(&current, expected_thread) => {
-                                    V2ThreadUnloadResult::Deferred
-                                }
-                                Ok(_) => V2ThreadUnloadResult::Superseded,
-                            }
-                        };
-                        drop(residency_transition);
-                        result
-                    }
-                }
-            }
-        };
-        if matches!(
-            result,
-            V2ThreadUnloadResult::Unloaded | V2ThreadUnloadResult::Missing
-        ) {
-            finalize(result).await;
-        }
-        result
-    }
-
-    pub(crate) async fn reconcile_dead_v2_thread_for_external_teardown<Finalize, FinalizeFuture>(
-        &self,
-        manager: &Arc<ThreadManagerState>,
-        expected_thread: &Arc<CodexThread>,
-        finalize: Finalize,
-    ) -> V2ThreadUnloadResult
-    where
-        Finalize: FnOnce(V2ThreadUnloadResult) -> FinalizeFuture,
-        FinalizeFuture: std::future::Future<Output = ()>,
-    {
-        if !is_resident_candidate(expected_thread.as_ref()) {
-            return V2ThreadUnloadResult::NotApplicable;
-        }
-        let thread_id = expected_thread.session.thread_id();
-        let Some(metadata) = self.state.agent_metadata_for_thread(thread_id) else {
-            return V2ThreadUnloadResult::NotApplicable;
-        };
-        let _reload = metadata.lifecycle.lock_reload().await;
-        let result = match manager.get_thread(thread_id).await {
-            Err(_) => {
-                if self
-                    .state
-                    .cold_status(thread_id, /*live_thread*/ None)
-                    .is_some()
-                {
-                    V2ThreadUnloadResult::Unloaded
-                } else {
-                    V2ThreadUnloadResult::Missing
-                }
-            }
-            Ok(current) if !Arc::ptr_eq(&current, expected_thread) => {
-                V2ThreadUnloadResult::Superseded
-            }
-            Ok(_) => {
-                let registry = Arc::clone(&self.state);
-                let removal = manager
-                    .remove_thread_if_same(&thread_id, expected_thread, || {
-                        if registry
-                            .cold_status(thread_id, Some(expected_thread))
-                            .is_none()
-                        {
-                            registry.release_spawned_thread(thread_id);
-                        }
-                    })
-                    .await;
-                if removal == RemoveThreadIfSameResult::Removed {
-                    self.forget_v2_residency(thread_id);
-                    V2ThreadUnloadResult::Unloaded
-                } else {
-                    V2ThreadUnloadResult::Superseded
-                }
-            }
-        };
-        if matches!(
-            result,
-            V2ThreadUnloadResult::Unloaded | V2ThreadUnloadResult::Missing
-        ) {
-            finalize(result).await;
-        }
-        result
+        self.residency.touch(thread_id);
+        Ok(Some(guard))
     }
 }
 
@@ -397,8 +177,8 @@ impl V2Residency {
     async fn reserve_slot(
         self: Arc<Self>,
         manager: &Arc<ThreadManagerState>,
-        registry: &AgentRegistry,
         capacity: usize,
+        membership: &AgentTreeMembership,
         protected_thread_id: Option<ThreadId>,
     ) -> CodexResult<V2ResidencySlot> {
         loop {
@@ -409,12 +189,13 @@ impl V2Residency {
                 });
             }
             if !self
-                .try_unload_one_resident(manager, registry, protected_thread_id)
+                .try_unload_one_resident(manager, membership, protected_thread_id)
                 .await
             {
                 return Err(CodexErr::new(CodexErrorDetails::AgentLimitReached {
                     max_threads: capacity,
-                }));
+                })
+                .with_agent_context(AgentErrorContext::ResidencyCapacity));
             }
         }
     }
@@ -432,331 +213,53 @@ impl V2Residency {
     }
 
     async fn try_unload_one_resident(
-        &self,
+        self: &Arc<Self>,
         manager: &Arc<ThreadManagerState>,
-        registry: &AgentRegistry,
+        membership: &AgentTreeMembership,
         protected_thread_id: Option<ThreadId>,
     ) -> bool {
-        let candidates_to_scan = self.resident_count();
-        for _ in 0..candidates_to_scan {
-            let Some(candidate_thread_id) = self.pop_lru_candidate(protected_thread_id) else {
-                return false;
-            };
-            let metadata = registry.agent_metadata_for_thread(candidate_thread_id);
-            let mut lifecycle = match metadata.as_ref() {
-                Some(metadata) => {
-                    let lifecycle = metadata.lifecycle.lock().await;
-                    if !registry.metadata_is_current(candidate_thread_id, metadata) {
-                        continue;
-                    }
-                    Some(lifecycle)
-                }
-                None => None,
-            };
-            let Some(candidate_thread) = manager
-                .get_thread(candidate_thread_id)
-                .await
-                .ok()
-                .filter(|thread| is_resident_candidate(thread))
-            else {
-                continue;
-            };
-            let _residency_transition = candidate_thread
-                .session
-                .input_queue
-                .lock_residency_transition()
-                .await;
-            if self
-                .try_unload_candidate(
-                    manager,
-                    registry,
-                    metadata.as_ref(),
-                    lifecycle.as_deref_mut(),
-                    candidate_thread,
-                )
-                .await
-            {
-                return true;
-            }
-            self.touch(candidate_thread_id);
-        }
-        false
-    }
-
-    async fn try_unload_terminal_idle(
-        &self,
-        manager: &Arc<ThreadManagerState>,
-        registry: &AgentRegistry,
-        metadata: &crate::agent::registry::AgentMetadata,
-        expected_thread: &Arc<CodexThread>,
-        generations: TerminalIdleUnloadGenerations,
-    ) -> TerminalIdleUnloadAttempt {
-        let _reload = metadata.lifecycle.lock_reload().await;
-        let mut lifecycle = metadata.lifecycle.lock().await;
-        if !registry.metadata_is_current(expected_thread.session.thread_id(), metadata)
-            || !lifecycle.terminal_idle_unload_watcher_is_current(generations.watcher_generation)
-        {
-            return TerminalIdleUnloadAttempt::SupersededIdentity;
-        }
-        if !lifecycle.terminal_idle_unload_is_current(generations.timer_generation) {
-            return TerminalIdleUnloadAttempt::DeadlineInvalidated;
-        }
-        let Ok(thread) = manager
-            .get_thread(expected_thread.session.thread_id())
-            .await
-        else {
-            return TerminalIdleUnloadAttempt::Missing;
-        };
-        if !Arc::ptr_eq(&thread, expected_thread) {
-            return TerminalIdleUnloadAttempt::SupersededIdentity;
-        }
-        if !is_resident_candidate(thread.as_ref()) {
-            return TerminalIdleUnloadAttempt::Deferred;
-        }
-        let _residency_transition = thread.session.input_queue.lock_residency_transition().await;
-        if thread.session.input_queue.residency_activity_generation()
-            != generations.runtime_activity_generation
-        {
-            return TerminalIdleUnloadAttempt::Deferred;
-        }
-        if self
-            .try_unload_candidate(
-                manager,
-                registry,
-                Some(metadata),
-                Some(&mut lifecycle),
-                thread,
-            )
-            .await
-        {
-            TerminalIdleUnloadAttempt::Unloaded
-        } else {
-            match manager
-                .get_thread(expected_thread.session.thread_id())
-                .await
-            {
-                Err(_) => TerminalIdleUnloadAttempt::Missing,
-                Ok(current) if Arc::ptr_eq(&current, expected_thread) => {
-                    TerminalIdleUnloadAttempt::Deferred
-                }
-                Ok(_) => TerminalIdleUnloadAttempt::SupersededIdentity,
-            }
-        }
-    }
-
-    async fn try_unload_candidate(
-        &self,
-        manager: &Arc<ThreadManagerState>,
-        registry: &AgentRegistry,
-        metadata: Option<&crate::agent::registry::AgentMetadata>,
-        mut lifecycle: Option<&mut crate::agent::lifecycle::AgentLifecycleState>,
-        candidate_thread: Arc<CodexThread>,
-    ) -> bool {
-        let candidate_thread_id = candidate_thread.session.thread_id();
-        // Cold identities are reloadable only when the session has durable history.
-        if candidate_thread.session.live_thread().is_none() {
-            return false;
-        }
-        let status = candidate_thread.agent_status().await;
-        if !is_unloadable(candidate_thread.as_ref(), &status).await
-            || candidate_thread
-                .session
-                .input_queue
-                .has_pending_terminal_completions()
-                .await
-            || candidate_thread
-                .session
-                .input_queue
-                .has_pending_terminal_finalizers()
-            || candidate_thread
-                .session
-                .input_queue
-                .has_pending_residency_submissions()
-        {
-            return false;
-        }
-        let cold_status = match status {
-            AgentStatus::Completed(_) | AgentStatus::Errored(_) | AgentStatus::Interrupted => {
-                Some(status)
-            }
-            AgentStatus::PendingInit
-            | AgentStatus::Running
-            | AgentStatus::Shutdown
-            | AgentStatus::NotFound => return false,
-        };
-        if let Err(err) = candidate_thread
-            .session
-            .try_ensure_rollout_materialized()
-            .await
-        {
-            warn!(
-                "failed to materialize v2 resident thread before unloading {candidate_thread_id}: {err}"
-            );
-            return false;
-        }
-        if let Err(err) = candidate_thread.flush_rollout().await {
-            warn!(
-                "failed to flush v2 resident thread before unloading {candidate_thread_id}: {err}"
-            );
-            return false;
-        }
-        let pending_mail = candidate_thread
-            .session
-            .input_queue
-            .drain_mailbox_entries()
-            .await;
-        if pending_mail
-            .iter()
-            .any(|mail| mail.communication.trigger_turn)
-            || (metadata.is_none() && !pending_mail.is_empty())
-        {
-            candidate_thread
-                .session
-                .input_queue
-                .prepend_mailbox_entries(pending_mail)
-                .await;
-            return false;
-        }
-        if metadata
-            .is_some_and(|metadata| !registry.metadata_is_current(candidate_thread_id, metadata))
-        {
-            candidate_thread
-                .session
-                .input_queue
-                .prepend_mailbox_entries(pending_mail)
-                .await;
-            return false;
-        }
-        if let Err(err) = candidate_thread.shutdown_and_wait().await {
-            warn!(
-                "failed to shut down v2 resident thread before unloading {candidate_thread_id}: {err}"
-            );
-            candidate_thread
-                .session
-                .input_queue
-                .prepend_mailbox_entries(pending_mail)
-                .await;
-            return false;
-        }
-        let removal = manager
-            .remove_thread_if_same(&candidate_thread_id, &candidate_thread, || {
-                if let (Some(metadata), Some(status)) = (metadata, cold_status) {
-                    registry.publish_cold_status_if_current(
-                        candidate_thread_id,
-                        metadata,
-                        &candidate_thread,
-                        status,
-                    );
-                }
-            })
-            .await;
-        match removal {
-            RemoveThreadIfSameResult::Removed | RemoveThreadIfSameResult::Missing => {
-                if let Some(lifecycle) = lifecycle.as_mut() {
-                    lifecycle.extend_cold_mail(pending_mail.into_iter().map(|communication| {
-                        let sequence = communication.sequence;
-                        let enqueued_at_ms = communication.enqueued_at_ms;
-                        ColdMailboxItem {
-                            receive_id: None,
-                            communication: communication.communication,
-                            sequence: Some(sequence),
-                            enqueued_at_ms: Some(enqueued_at_ms),
-                        }
-                    }));
-                }
-                true
-            }
-            RemoveThreadIfSameResult::Replaced => {
-                if let Ok(replacement) = manager.get_thread(candidate_thread_id).await {
-                    replacement
-                        .session
-                        .input_queue
-                        .prepend_mailbox_entries(pending_mail)
-                        .await;
-                } else if let Some(lifecycle) = lifecycle.as_mut() {
-                    lifecycle.extend_cold_mail(pending_mail.into_iter().map(|communication| {
-                        let sequence = communication.sequence;
-                        let enqueued_at_ms = communication.enqueued_at_ms;
-                        ColdMailboxItem {
-                            receive_id: None,
-                            communication: communication.communication,
-                            sequence: Some(sequence),
-                            enqueued_at_ms: Some(enqueued_at_ms),
-                        }
-                    }));
-                }
-                false
-            }
-        }
-    }
-
-    pub(super) fn resident_count(&self) -> usize {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .residents
-            .len()
-    }
-
-    #[cfg(test)]
-    async fn wait_for_terminal_idle_unload(&self, manager: &ThreadManager, thread_id: ThreadId) {
-        loop {
-            let notified = self.terminal_idle_unload_completed.notified();
-            tokio::pin!(notified);
-            notified.as_mut().enable();
-
-            let manager_missing = manager.get_thread(thread_id).await.is_err();
-            let residency_missing = !self.contains_resident(thread_id);
-            if manager_missing && residency_missing {
-                return;
-            }
-            notified.await;
-        }
-    }
-
-    #[cfg(test)]
-    async fn wait_for_terminal_idle_unload_deadline_polled(&self) {
-        let notified = self.terminal_idle_unload_deadline_polled.notified();
-        tokio::pin!(notified);
-        notified.as_mut().enable();
-        notified.await;
-    }
-
-    #[cfg(test)]
-    fn notify_terminal_idle_unload_complete(&self) {
-        self.terminal_idle_unload_completed.notify_waiters();
-    }
-
-    #[cfg(test)]
-    fn notify_terminal_idle_unload_deadline_polled(&self) {
-        self.terminal_idle_unload_deadline_polled.notify_one();
-    }
-
-    #[cfg(test)]
-    fn contains_resident(&self, thread_id: ThreadId) -> bool {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .residents
-            .iter()
-            .any(|resident_thread_id| *resident_thread_id == thread_id)
-    }
-
-    fn pop_lru_candidate(&self, protected_thread_id: Option<ThreadId>) -> Option<ThreadId> {
-        let mut state = self
+        // Keep shutting-down workers counted until removal. Each runtime's write guard
+        // excludes delivery and competing evictions without blocking unrelated workers.
+        let candidates = self
             .state
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let candidates_to_scan = state.residents.len();
-        for _ in 0..candidates_to_scan {
-            let candidate_thread_id = state.residents.pop_front()?;
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .residents
+            .clone();
+        for candidate_thread_id in candidates {
             if Some(candidate_thread_id) == protected_thread_id {
-                state.residents.push_back(candidate_thread_id);
                 continue;
             }
-            return Some(candidate_thread_id);
+            let candidate_thread = {
+                let threads = manager.threads.read().await;
+                match threads.get(&candidate_thread_id) {
+                    Some(thread) if is_resident_candidate(thread) => Arc::clone(thread),
+                    Some(_) | None => {
+                        // A reload cannot publish between the lookup and stale-entry removal.
+                        self.remove(candidate_thread_id);
+                        return true;
+                    }
+                }
+            };
+            // Capacity eviction keeps its existing policy of retaining unstarted workers.
+            if matches!(
+                candidate_thread.agent_status().await,
+                AgentStatus::PendingInit
+            ) {
+                continue;
+            }
+            match manager
+                .try_evict_v2_thread(candidate_thread, membership)
+                .await
+            {
+                Ok(ThreadEvictionOutcome::Evicted | ThreadEvictionOutcome::NotCurrent) => {
+                    return true;
+                }
+                Ok(ThreadEvictionOutcome::Busy) => {}
+                Err(err) => warn!("v2 resident eviction failed: {err}"),
+            }
         }
-        None
+        false
     }
 
     fn touch(&self, thread_id: ThreadId) {
@@ -807,12 +310,20 @@ pub(super) fn is_v2_resident_session_source(session_source: &SessionSource) -> b
     matches!(session_source, SessionSource::SubAgent(_))
 }
 
-async fn is_unloadable(thread: &CodexThread, status: &AgentStatus) -> bool {
+async fn is_unloadable(thread: &CodexThread) -> bool {
     matches!(
-        status,
-        AgentStatus::Completed(_) | AgentStatus::Errored(_) | AgentStatus::Interrupted
+        thread.agent_status().await,
+        AgentStatus::PendingInit
+            | AgentStatus::Completed(_)
+            | AgentStatus::Errored(_)
+            | AgentStatus::Interrupted
     ) && thread.session.active_turn.lock().await.is_none()
-        && thread.list_background_terminals().await.is_empty()
+        && !thread.session.has_outstanding_durable_sleep()
+        && !thread
+            .session
+            .input_queue
+            .has_trigger_turn_mailbox_items()
+            .await
 }
 
 #[cfg(test)]

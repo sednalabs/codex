@@ -1,9 +1,8 @@
 diff --git a/build.rs b/build.rs
+index 912a3bf..e078f0e 100644
 --- a/build.rs
 +++ b/build.rs
-@@ -348,10 +348,20 @@
-     }
- 
+@@ -349,6 +349,16 @@ fn compile_zstd() {
      // Some extra parameters
      config.include("zstd/lib/");
      config.include("zstd/lib/common");
@@ -20,5 +19,3 @@ diff --git a/build.rs b/build.rs
      config.warnings(false);
  
      config.define("ZSTD_LIB_DEPRECATED", Some("0"));
- 
-     config

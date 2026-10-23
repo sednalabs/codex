@@ -1,0 +1,47 @@
+---
+source: tui/src/app/tests/startup_frame_tests.rs
+expression: "normalize_snapshot_paths(normalize_agent_center_snapshot(snapshots.join(\"\\n\\n\"))).replace(crate::version::CODEX_CLI_VERSION, \"<VERSION>\")"
+---
+80 columns
+
+  >_ OpenAI Codex (v<VERSION>)
+     /tmp/project
+
+• Conversation continues here.
+
+
+
+
+
+
+
+
+
+
+
+› Ask Codex to do anything
+
+  GPT-5.6-Sol default · /tmp/project
+  ? for shortcuts
+
+32 columns
+
+  >_ OpenAI Codex (v<VERSION>)
+     /tmp/project
+
+• Conversation continues here.
+
+
+
+
+
+
+
+
+
+
+
+› Ask Codex to do anything
+
+  GPT-5.6-Sol default · /tmp/pr…
+  ? for shortcuts

@@ -1,11 +1,25 @@
 {
-  "$defs": {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
     "McpAuthStatus": {
       "enum": [
+        "unknown",
         "unsupported",
         "notLoggedIn",
         "bearerToken",
         "oAuth"
+      ],
+      "type": "string"
+    },
+    "McpServerConnectionStatus": {
+      "enum": [
+        "notStarted",
+        "starting",
+        "connected",
+        "authenticationRequired",
+        "failed",
+        "cancelled",
+        "disabled"
       ],
       "type": "string"
     },
@@ -53,27 +67,54 @@
     "McpServerStatus": {
       "properties": {
         "authStatus": {
-          "$ref": "#/$defs/McpAuthStatus"
+          "$ref": "#/definitions/McpAuthStatus"
+        },
+        "httpOrigin": {
+          "description": "HTTP origin of the effective configured endpoint, including plugin servers. Excludes credentials, path, query, and fragment; null for non-HTTP transports.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "name": {
           "type": "string"
         },
+        "pluginId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "resourceTemplates": {
           "items": {
-            "$ref": "#/$defs/ResourceTemplate"
+            "$ref": "#/definitions/ResourceTemplate"
           },
           "type": "array"
         },
         "resources": {
           "items": {
-            "$ref": "#/$defs/Resource"
+            "$ref": "#/definitions/Resource"
           },
           "type": "array"
+        },
+        "runtimeStatus": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/McpServerConnectionStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Current thread-runtime connection state; null when unavailable or the configuration changed."
+        },
+        "serverCapabilities": {
+          "description": "Capabilities advertised by the initialized MCP server; null when unavailable."
         },
         "serverInfo": {
           "anyOf": [
             {
-              "$ref": "#/$defs/McpServerInfo"
+              "$ref": "#/definitions/McpServerInfo"
             },
             {
               "type": "null"
@@ -82,17 +123,24 @@
         },
         "tools": {
           "additionalProperties": {
-            "$ref": "#/$defs/Tool"
+            "$ref": "#/definitions/Tool"
           },
           "type": "object"
+        },
+        "toolsError": {
+          "description": "Tool discovery failed and no catalog was returned. Null when a catalog is returned, including cached or empty catalogs.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
+        "authStatus",
         "name",
-        "tools",
-        "resources",
         "resourceTemplates",
-        "authStatus"
+        "resources",
+        "tools"
       ],
       "type": "object"
     },
@@ -176,8 +224,8 @@
         }
       },
       "required": [
-        "uriTemplate",
-        "name"
+        "name",
+        "uriTemplate"
       ],
       "type": "object"
     },
@@ -212,22 +260,21 @@
         }
       },
       "required": [
-        "name",
-        "inputSchema"
+        "inputSchema",
+        "name"
       ],
       "type": "object"
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "data": {
       "items": {
-        "$ref": "#/$defs/McpServerStatus"
+        "$ref": "#/definitions/McpServerStatus"
       },
       "type": "array"
     },
     "nextCursor": {
-      "description": "Opaque cursor to pass to the next call to continue after the last item.\nIf None, there are no more items to return.",
+      "description": "Opaque cursor to pass to the next call to continue after the last item. If None, there are no more items to return.",
       "type": [
         "string",
         "null"

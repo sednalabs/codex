@@ -2,132 +2,196 @@
   "schema_version": "rust-tests-command-manifest-v1",
   "targets": [
     {
+      "package": "codex-protocol",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal"],
+      "inventory_argv": ["cargo","test","--locked","-p","codex-protocol","--lib","--","--list"],
+      "execution_argv": ["cargo","test","--locked","-p","codex-protocol","--lib","--","--test-threads=1"]
+    },
+    {
       "package": "codex-app-server",
       "target_kind": "lib",
       "target": "",
-      "profiles": ["rust_minimal", "rust_integration"],
-      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-app-server", "--lib", "--", "--list"],
-      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-app-server", "--lib", "--", "--test-threads=1"]
+      "profiles": ["rust_minimal"],
+      "inventory_argv": ["cargo","test","--locked","-p","codex-app-server","--lib","--","--list"],
+      "execution_argv": ["cargo","test","--locked","-p","codex-app-server","--lib","--","--test-threads=1"]
+    },
+    {
+      "package": "codex-app-server",
+      "target_kind": "integration",
+      "target": "all",
+      "profiles": ["rust_minimal"],
+      "inventory_argv": ["cargo","test","--locked","-p","codex-app-server","--test","all","--","--list"],
+      "execution_argv": ["cargo","test","--locked","-p","codex-app-server","--test","all","--","--test-threads=1"]
+    },
+    {
+      "package": "codex-browser-computer-use",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal"],
+      "inventory_argv": ["cargo","test","--locked","-p","codex-browser-computer-use","--lib","--","--list"],
+      "execution_argv": ["cargo","test","--locked","-p","codex-browser-computer-use","--lib","--","--test-threads=1"]
+    },
+    {
+      "package": "codex-cli",
+      "target_kind": "integration",
+      "target": "mcp_device_login",
+      "profiles": ["rust_minimal"],
+      "inventory_argv": ["cargo","test","--locked","-p","codex-cli","--test","mcp_device_login","--","--list"],
+      "execution_argv": ["cargo","test","--locked","-p","codex-cli","--test","mcp_device_login","--","--test-threads=1"]
     },
     {
       "package": "codex-config",
       "target_kind": "lib",
       "target": "",
-      "profiles": ["rust_minimal", "rust_integration"],
-      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-config", "--lib", "--", "--list"],
-      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-config", "--lib", "--", "--test-threads=1"]
+      "profiles": ["rust_minimal"],
+      "inventory_argv": ["cargo","test","--locked","-p","codex-config","--lib","--","--list"],
+      "execution_argv": ["cargo","test","--locked","-p","codex-config","--lib","--","--test-threads=1"]
     },
     {
       "package": "codex-core",
       "target_kind": "lib",
       "target": "",
-      "profiles": ["rust_minimal", "rust_integration"],
-      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-core", "--lib", "--", "--list"],
-      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-core", "--lib", "--", "--test-threads=1"]
+      "profiles": ["rust_minimal"],
+      "inventory_argv": ["cargo","test","--locked","-p","codex-core","--lib","--","--list"],
+      "execution_argv": ["cargo","test","--locked","-p","codex-core","--lib","--","--test-threads=1"]
     },
     {
       "package": "codex-core",
       "target_kind": "integration",
       "target": "all",
-      "profiles": ["rust_minimal", "rust_integration"],
-      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-core", "--test", "all", "--", "--list"],
-      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-core", "--test", "all", "--", "--test-threads=1"]
+      "profiles": ["rust_minimal"],
+      "inventory_argv": ["cargo","test","--locked","-p","codex-core","--test","all","--","--list"],
+      "execution_argv": ["cargo","test","--locked","-p","codex-core","--test","all","--","--test-threads=1"]
     },
     {
-      "package": "codex-core-api",
+      "package": "codex-core-plugins",
       "target_kind": "lib",
       "target": "",
-      "profiles": ["rust_minimal", "rust_integration"],
-      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-core-api", "--lib", "--", "--list"],
-      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-core-api", "--lib", "--", "--test-threads=1"]
+      "profiles": ["rust_minimal"],
+      "inventory_argv": ["cargo","test","--locked","-p","codex-core-plugins","--lib","--","--list"],
+      "execution_argv": ["cargo","test","--locked","-p","codex-core-plugins","--lib","--","--test-threads=1"]
+    },
+    {
+      "package": "codex-exec",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal"],
+      "inventory_argv": ["cargo","test","--locked","-p","codex-exec","--lib","--","--list"],
+      "execution_argv": ["cargo","test","--locked","-p","codex-exec","--lib","--","--test-threads=1"]
+    },
+    {
+      "package": "codex-goal-extension",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal"],
+      "inventory_argv": ["cargo","test","--locked","-p","codex-goal-extension","--lib","--","--list"],
+      "execution_argv": ["cargo","test","--locked","-p","codex-goal-extension","--lib","--","--test-threads=1"]
+    },
+    {
+      "package": "codex-goal-extension",
+      "target_kind": "integration",
+      "target": "goal_extension_backend",
+      "profiles": ["rust_minimal"],
+      "inventory_argv": ["cargo","test","--locked","-p","codex-goal-extension","--test","goal_extension_backend","--","--list"],
+      "execution_argv": ["cargo","test","--locked","-p","codex-goal-extension","--test","goal_extension_backend","--","--test-threads=1"]
+    },
+    {
+      "package": "codex-keyring-store",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal"],
+      "inventory_argv": ["cargo","test","--locked","-p","codex-keyring-store","--lib","--","--list"],
+      "execution_argv": ["cargo","test","--locked","-p","codex-keyring-store","--lib","--","--test-threads=1"]
+    },
+    {
+      "package": "codex-mcp",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal"],
+      "inventory_argv": ["cargo","test","--locked","-p","codex-mcp","--lib","--","--list"],
+      "execution_argv": ["cargo","test","--locked","-p","codex-mcp","--lib","--","--test-threads=1"]
+    },
+    {
+      "package": "codex-memories-write",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal"],
+      "inventory_argv": ["cargo","test","--locked","-p","codex-memories-write","--lib","--","--list"],
+      "execution_argv": ["cargo","test","--locked","-p","codex-memories-write","--lib","--","--test-threads=1"]
+    },
+    {
+      "package": "codex-rmcp-client",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal"],
+      "inventory_argv": ["cargo","test","--locked","-p","codex-rmcp-client","--lib","--","--list"],
+      "execution_argv": ["cargo","test","--locked","-p","codex-rmcp-client","--lib","--","--test-threads=1"]
+    },
+    {
+      "package": "codex-rmcp-client",
+      "target_kind": "integration",
+      "target": "mcp_2026_mrtr",
+      "profiles": ["rust_minimal"],
+      "inventory_argv": ["cargo","test","--locked","-p","codex-rmcp-client","--test","mcp_2026_mrtr","--","--list"],
+      "execution_argv": ["cargo","test","--locked","-p","codex-rmcp-client","--test","mcp_2026_mrtr","--","--test-threads=1"]
+    },
+    {
+      "package": "codex-rmcp-client",
+      "target_kind": "integration",
+      "target": "streamable_http_oauth_store_pinning",
+      "profiles": ["rust_minimal"],
+      "inventory_argv": ["cargo","test","--locked","-p","codex-rmcp-client","--test","streamable_http_oauth_store_pinning","--","--list"],
+      "execution_argv": ["cargo","test","--locked","-p","codex-rmcp-client","--test","streamable_http_oauth_store_pinning","--","--test-threads=1"]
+    },
+    {
+      "package": "codex-rmcp-client",
+      "target_kind": "integration",
+      "target": "streamable_http_recovery",
+      "profiles": ["rust_minimal"],
+      "inventory_argv": ["cargo","test","--locked","-p","codex-rmcp-client","--test","streamable_http_recovery","--","--list"],
+      "execution_argv": ["cargo","test","--locked","-p","codex-rmcp-client","--test","streamable_http_recovery","--","--test-threads=1"]
+    },
+    {
+      "package": "codex-rollout",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal"],
+      "inventory_argv": ["cargo","test","--locked","-p","codex-rollout","--lib","--","--list"],
+      "execution_argv": ["cargo","test","--locked","-p","codex-rollout","--lib","--","--test-threads=1"]
     },
     {
       "package": "codex-state",
       "target_kind": "lib",
       "target": "",
       "profiles": ["rust_minimal"],
-      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-state", "--lib", "--", "--list"],
-      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-state", "--lib", "--", "--test-threads=1"]
-    },
-    {
-      "package": "codex-exec",
-      "target_kind": "lib",
-      "target": "",
-      "profiles": ["rust_minimal", "rust_integration"],
-      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-exec", "--lib", "--", "--list"],
-      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-exec", "--lib", "--", "--test-threads=1"]
-    },
-    {
-      "package": "codex-mcp",
-      "target_kind": "lib",
-      "target": "",
-      "profiles": ["rust_minimal", "rust_integration"],
-      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-mcp", "--lib", "--", "--list"],
-      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-mcp", "--lib", "--", "--test-threads=1"]
-    },
-    {
-      "package": "codex-mcp-server",
-      "target_kind": "lib",
-      "target": "",
-      "profiles": ["rust_minimal", "rust_integration"],
-      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-mcp-server", "--lib", "--", "--list"],
-      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-mcp-server", "--lib", "--", "--test-threads=1"]
-    },
-    {
-      "package": "codex-model-provider",
-      "target_kind": "lib",
-      "target": "",
-      "profiles": ["rust_minimal", "rust_integration"],
-      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-model-provider", "--lib", "--", "--list"],
-      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-model-provider", "--lib", "--", "--test-threads=1"]
-    },
-    {
-      "package": "codex-model-provider-info",
-      "target_kind": "lib",
-      "target": "",
-      "profiles": ["rust_minimal", "rust_integration"],
-      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-model-provider-info", "--lib", "--", "--list"],
-      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-model-provider-info", "--lib", "--", "--test-threads=1"]
-    },
-    {
-      "package": "codex-models-manager",
-      "target_kind": "lib",
-      "target": "",
-      "profiles": ["rust_minimal", "rust_integration"],
-      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-models-manager", "--lib", "--", "--list"],
-      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-models-manager", "--lib", "--", "--test-threads=1"]
-    },
-    {
-      "package": "codex-prompts",
-      "target_kind": "lib",
-      "target": "",
-      "profiles": ["rust_minimal", "rust_integration"],
-      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-prompts", "--lib", "--", "--list"],
-      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-prompts", "--lib", "--", "--test-threads=1"]
-    },
-    {
-      "package": "codex-protocol",
-      "target_kind": "lib",
-      "target": "",
-      "profiles": ["rust_minimal", "rust_integration"],
-      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-protocol", "--lib", "--", "--list"],
-      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-protocol", "--lib", "--", "--test-threads=1"]
+      "inventory_argv": ["cargo","test","--locked","-p","codex-state","--lib","--","--list"],
+      "execution_argv": ["cargo","test","--locked","-p","codex-state","--lib","--","--test-threads=1"]
     },
     {
       "package": "codex-tui",
       "target_kind": "lib",
       "target": "",
-      "profiles": ["rust_minimal", "rust_integration"],
-      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-tui", "--lib", "--", "--list"],
-      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-tui", "--lib", "--", "--test-threads=1"]
+      "profiles": ["rust_minimal"],
+      "inventory_argv": ["cargo","test","--locked","-p","codex-tui","--lib","--","--list"],
+      "execution_argv": ["cargo","test","--locked","-p","codex-tui","--lib","--","--test-threads=1"]
     },
     {
-      "package": "codex-tui",
-      "target_kind": "integration",
-      "target": "all",
-      "profiles": ["rust_minimal", "rust_integration"],
-      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-tui", "--test", "all", "--", "--list"],
-      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-tui", "--test", "all", "--", "--test-threads=1"]
+      "package": "codex-websocket-client",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal"],
+      "inventory_argv": ["cargo","test","--locked","-p","codex-websocket-client","--lib","--","--list"],
+      "execution_argv": ["cargo","test","--locked","-p","codex-websocket-client","--lib","--","--test-threads=1"]
+    },
+    {
+      "package": "core_test_support",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal"],
+      "inventory_argv": ["cargo","test","--locked","-p","core_test_support","--lib","--","--list"],
+      "execution_argv": ["cargo","test","--locked","-p","core_test_support","--lib","--","--test-threads=1"]
     }
   ]
 }

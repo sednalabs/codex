@@ -174,6 +174,18 @@ def bazel_args_with_remote_config(
             arg.startswith(option_prefix) for arg in configured_args[:separator_idx]
         )
     ]
+    # Preserve the disk-cache policy from common:ci without selecting remote
+    # execution configs for keyless builds on ephemeral GitHub Actions runners.
+    if (
+        config is None
+        and env.get("GITHUB_ACTIONS") == "true"
+        and args[command_idx] in {"build", "test"}
+        and not any(
+            arg == "--disk_cache" or arg.startswith("--disk_cache=")
+            for arg in configured_args[:separator_idx]
+        )
+    ):
+        cache_args.append("--disk_cache=")
     return [
         *configured_args[:separator_idx],
         *cache_args,

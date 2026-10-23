@@ -1,5 +1,5 @@
-use std::borrow::Cow;
-
+use crate::JsonSchema;
+use crate::TS;
 use codex_experimental_api_macros::ExperimentalApi;
 use codex_protocol::config_types::ApprovalsReviewer as CoreApprovalsReviewer;
 use codex_protocol::config_types::SandboxMode as CoreSandboxMode;
@@ -7,13 +7,19 @@ use codex_protocol::protocol::AskForApproval as CoreAskForApproval;
 use codex_protocol::protocol::CodexErrorInfo as CoreCodexErrorInfo;
 use codex_protocol::protocol::GranularApprovalConfig as CoreGranularApprovalConfig;
 use codex_protocol::protocol::NonSteerableTurnKind as CoreNonSteerableTurnKind;
-use schemars::JsonSchema;
-use schemars::Schema;
-use schemars::SchemaGenerator;
+#[cfg(test)]
+use schemars::r#gen::SchemaGenerator;
+#[cfg(test)]
+use schemars::schema::InstanceType;
+#[cfg(test)]
+use schemars::schema::Metadata;
+#[cfg(test)]
+use schemars::schema::Schema;
+#[cfg(test)]
+use schemars::schema::SchemaObject;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
-use ts_rs::TS;
 
 // Macro to declare a camelCased API v2 enum mirroring a core enum which
 // tends to use either snake_case or kebab-case.
@@ -71,8 +77,12 @@ pub enum CodexErrorInfo {
     ContextWindowExceeded,
     SessionBudgetExceeded,
     UsageLimitExceeded,
+    RateLimitExceeded,
+    FlexUnavailable,
     ServerOverloaded,
     CyberPolicy,
+    MisalignmentPolicyViolation,
+    TooManyDenials,
     HttpConnectionFailed {
         #[serde(rename = "httpStatusCode")]
         #[ts(rename = "httpStatusCode")]
@@ -108,7 +118,32 @@ pub enum CodexErrorInfo {
         #[ts(rename = "turnKind")]
         turn_kind: NonSteerableTurnKind,
     },
+    #[serde(
+        untagged,
+        serialize_with = "serialize_other_codex_error_info",
+        deserialize_with = "deserialize_other_codex_error_info"
+    )]
+    #[ts(type = "\"other\" | string | { [key: string]: unknown }")]
     Other,
+}
+
+fn serialize_other_codex_error_info<S>(serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_str("other")
+}
+
+fn deserialize_other_codex_error_info<'de, D>(deserializer: D) -> Result<(), D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    match JsonValue::deserialize(deserializer)? {
+        JsonValue::String(_) | JsonValue::Object(_) => Ok(()),
+        _ => Err(serde::de::Error::custom(
+            "expected an error string or object",
+        )),
+    }
 }
 
 impl From<CoreCodexErrorInfo> for CodexErrorInfo {
@@ -117,8 +152,15 @@ impl From<CoreCodexErrorInfo> for CodexErrorInfo {
             CoreCodexErrorInfo::ContextWindowExceeded => CodexErrorInfo::ContextWindowExceeded,
             CoreCodexErrorInfo::SessionBudgetExceeded => CodexErrorInfo::SessionBudgetExceeded,
             CoreCodexErrorInfo::UsageLimitExceeded => CodexErrorInfo::UsageLimitExceeded,
+            CoreCodexErrorInfo::RateLimitExceeded => CodexErrorInfo::RateLimitExceeded,
+            CoreCodexErrorInfo::FlexUnavailable => CodexErrorInfo::FlexUnavailable,
             CoreCodexErrorInfo::ServerOverloaded => CodexErrorInfo::ServerOverloaded,
             CoreCodexErrorInfo::CyberPolicy => CodexErrorInfo::CyberPolicy,
+            CoreCodexErrorInfo::BioPolicy => CodexErrorInfo::Other,
+            CoreCodexErrorInfo::MisalignmentPolicyViolation => {
+                CodexErrorInfo::MisalignmentPolicyViolation
+            }
+            CoreCodexErrorInfo::TooManyDenials => CodexErrorInfo::TooManyDenials,
             CoreCodexErrorInfo::HttpConnectionFailed { http_status_code } => {
                 CodexErrorInfo::HttpConnectionFailed { http_status_code }
             }
@@ -128,6 +170,7 @@ impl From<CoreCodexErrorInfo> for CodexErrorInfo {
             CoreCodexErrorInfo::InternalServerError => CodexErrorInfo::InternalServerError,
             CoreCodexErrorInfo::Unauthorized => CodexErrorInfo::Unauthorized,
             CoreCodexErrorInfo::BadRequest => CodexErrorInfo::BadRequest,
+            CoreCodexErrorInfo::InvalidPrompt => CodexErrorInfo::Other,
             CoreCodexErrorInfo::ThreadRollbackFailed => CodexErrorInfo::ThreadRollbackFailed,
             CoreCodexErrorInfo::SandboxError => CodexErrorInfo::SandboxError,
             CoreCodexErrorInfo::ResponseStreamDisconnected { http_status_code } => {
@@ -235,9 +278,10 @@ pub enum ApprovalsReviewer {
     AutoReview,
 }
 
+#[cfg(test)]
 impl JsonSchema for ApprovalsReviewer {
-    fn schema_name() -> Cow<'static, str> {
-        "ApprovalsReviewer".into()
+    fn schema_name() -> String {
+        "ApprovalsReviewer".to_string()
     }
 
     fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
@@ -248,16 +292,23 @@ impl JsonSchema for ApprovalsReviewer {
     }
 }
 
+#[cfg(test)]
 fn string_enum_schema_with_description(values: &[&str], description: &str) -> Schema {
-    let enum_values = values
-        .iter()
-        .map(|value| JsonValue::String((*value).to_string()))
-        .collect::<Vec<_>>();
-    schemars::json_schema!({
-        "type": "string",
-        "description": description,
-        "enum": enum_values,
-    })
+    let mut schema = SchemaObject {
+        instance_type: Some(InstanceType::String.into()),
+        metadata: Some(Box::new(Metadata {
+            description: Some(description.to_string()),
+            ..Default::default()
+        })),
+        ..Default::default()
+    };
+    schema.enum_values = Some(
+        values
+            .iter()
+            .map(|value| JsonValue::String((*value).to_string()))
+            .collect(),
+    );
+    Schema::Object(schema)
 }
 
 impl ApprovalsReviewer {

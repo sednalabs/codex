@@ -3,9 +3,9 @@ source: tui/src/chatwidget/tests/side.rs
 expression: normalized_backend_snapshot(terminal.backend())
 ---
 "                                                                                "
-"• Working (0s • esc esc to interrupt)                                           "
+"• Working (0s • esc to interrupt)                                               "
 "                                                                                "
 "                                                                                "
 "› Ask Codex to do anything                                                      "
 "                                                                                "
-"  gpt-6-astra default                                         Side starting...  "
+"  GPT-5.6-Sol default                                         Side starting...  "

@@ -1,12 +1,12 @@
 ALTER TABLE usage_automatic_turn_eligibility
     ADD COLUMN event_occurrence_id TEXT;
 ALTER TABLE usage_automatic_turn_eligibility
-    ADD COLUMN connection_principal TEXT;
+    ADD COLUMN principal_identity TEXT;
 
 ALTER TABLE usage_automatic_turns
     ADD COLUMN event_occurrence_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE usage_automatic_turns
-    ADD COLUMN connection_principal TEXT;
+    ADD COLUMN principal_identity TEXT;
 
 -- The original trigger key treated a repeated turn id as one occurrence. Rebuild the table so
 -- duplicate suppression is scoped to the immutable server event occurrence as well as the

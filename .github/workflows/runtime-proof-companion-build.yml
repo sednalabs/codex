@@ -1,0 +1,253 @@
+name: Runtime-proof companion build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runtime-proof-companion-336efa36
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build pinned runtime-proof companion
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      TARGET: x86_64-unknown-linux-gnu
+    steps:
+      - name: Require manual dispatch on the default branch
+        shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_EVENT_NAME}" != "workflow_dispatch" || -z "${DEFAULT_BRANCH}" || "${GITHUB_REF}" != "refs/heads/${DEFAULT_BRANCH}" ]]; then
+            echo "This workflow only builds from a manual dispatch on the default branch." >&2
+            exit 1
+          fi
+
+      - name: Check out the fixed companion source
+        uses: actions/checkout@v7
+        with:
+          repository: sednalabs/codex
+          ref: 336efa36bf847ebbf00a7b1c6b7a5d0cf66e462f
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify and record source identity
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_commit="336efa36bf847ebbf00a7b1c6b7a5d0cf66e462f"
+          source_commit="$(git rev-parse HEAD)"
+          if [[ "${source_commit}" != "${expected_commit}" ]]; then
+            echo "Checked-out companion source did not match the fixed commit." >&2
+            exit 1
+          fi
+          source_tree="$(git rev-parse 'HEAD^{tree}')"
+          cargo_lock_sha="$(sha256sum codex-rs/Cargo.lock | cut -d' ' -f1)"
+          toolchain_sha="$(sha256sum codex-rs/rust-toolchain.toml | cut -d' ' -f1)"
+          {
+            echo "commit=${source_commit}"
+            echo "tree=${source_tree}"
+            echo "cargo_lock_sha256=${cargo_lock_sha}"
+            echo "toolchain_sha256=${toolchain_sha}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Install Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Install Linux build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libcap-dev
+
+      - name: Install DotSlash
+        uses: facebook/install-dotslash@1e4e7b3e07eaca387acb98f1d4720e0bee8dbb6a # v2
+
+      - name: Set up the source-matched Rust toolchain
+        uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # action pinned in the source workflow
+        with:
+          toolchain: 1.96.0
+          components: clippy, rustfmt, rust-src
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Configure source-matched rusty_v8 artifacts
+        uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: x86_64-unknown-linux-gnu
+
+      - name: Build the complete pinned companion set
+        shell: bash
+        working-directory: codex-rs
+        run: |
+          set -euo pipefail
+          cargo build --locked --target "${TARGET}" --release \
+            --bin codex \
+            --bin codex-code-mode-host \
+            --bin codex-responses-api-proxy \
+            --bin codex-runtime-proof-launcher
+
+      - name: Package and hash the companion payload
+        id: package
+        shell: bash
+        env:
+          SOURCE_COMMIT: ${{ steps.source.outputs.commit }}
+          SOURCE_TREE: ${{ steps.source.outputs.tree }}
+          CARGO_LOCK_SHA256: ${{ steps.source.outputs.cargo_lock_sha256 }}
+          TOOLCHAIN_SHA256: ${{ steps.source.outputs.toolchain_sha256 }}
+          WORKFLOW_HOST_SHA: ${{ github.sha }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          set -euo pipefail
+          stage_dir="${RUNNER_TEMP}/runtime-proof-companion-payload"
+          output_dir="${RUNNER_TEMP}/runtime-proof-companion-output"
+          archive_name="runtime-proof-companion-336efa36-${TARGET}.tar.gz"
+          archive_path="${output_dir}/${archive_name}"
+          mkdir -p "${stage_dir}" "${output_dir}"
+
+          install -Dm 0755 "codex-rs/target/${TARGET}/release/codex" "${stage_dir}/codex"
+          install -Dm 0755 "codex-rs/target/${TARGET}/release/codex-code-mode-host" "${stage_dir}/codex-code-mode-host"
+          install -Dm 0755 "codex-rs/target/${TARGET}/release/codex-responses-api-proxy" "${stage_dir}/codex-responses-api-proxy"
+          install -Dm 0755 "codex-rs/target/${TARGET}/release/codex-runtime-proof-launcher" "${stage_dir}/codex-runtime-proof-launcher"
+          install -Dm 0644 "codex-rs/runtime-proof/systemd/codex-runtime-proof-claim.service" "${stage_dir}/systemd/codex-runtime-proof-claim.service"
+
+          (
+            cd "${stage_dir}"
+            sha256sum \
+              codex \
+              codex-code-mode-host \
+              codex-responses-api-proxy \
+              codex-runtime-proof-launcher \
+              systemd/codex-runtime-proof-claim.service > SHA256SUMS.txt
+          )
+          tar -C "${stage_dir}" -czf "${archive_path}" .
+          archive_sha="$(sha256sum "${archive_path}" | cut -d' ' -f1)"
+          v8_version="$(python3 .github/scripts/rusty_v8_bazel.py resolved-v8-crate-version)"
+          printf '%s  %s\n' "${archive_sha}" "${archive_name}" > "${archive_path}.sha256"
+
+          SOURCE_COMMIT="${SOURCE_COMMIT}" \
+          SOURCE_TREE="${SOURCE_TREE}" \
+          CARGO_LOCK_SHA256="${CARGO_LOCK_SHA256}" \
+          TOOLCHAIN_SHA256="${TOOLCHAIN_SHA256}" \
+          V8_VERSION="${v8_version}" \
+          WORKFLOW_HOST_SHA="${WORKFLOW_HOST_SHA}" \
+          WORKFLOW_REF="${WORKFLOW_REF}" \
+          TARGET="${TARGET}" \
+          ARCHIVE_NAME="${archive_name}" \
+          ARCHIVE_SHA256="${archive_sha}" \
+          ARCHIVE_PATH="${archive_path}" \
+          OUTPUT_DIR="${output_dir}" \
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import tarfile
+          from pathlib import Path
+
+          stage = Path(os.environ["RUNNER_TEMP"]) / "runtime-proof-companion-payload"
+          checksums = {}
+          for line in (stage / "SHA256SUMS.txt").read_text().splitlines():
+              digest, relative_path = line.split(maxsplit=1)
+              relative_path = relative_path.lstrip(" *")
+              checksums[relative_path] = {
+                  "sha256": digest,
+                  "bytes": (stage / relative_path).stat().st_size,
+              }
+
+          with tarfile.open(os.environ["ARCHIVE_PATH"], "r:gz") as archive:
+              members = [
+                  member
+                  for member in archive.getmembers()
+                  if member.name in {"./codex-runtime-proof-launcher", "codex-runtime-proof-launcher"}
+              ]
+              if len(members) != 1 or not members[0].isfile():
+                  raise SystemExit("companion archive is missing the runtime-proof launcher")
+              packaged_launcher = archive.extractfile(members[0])
+              if packaged_launcher is None:
+                  raise SystemExit("companion archive runtime-proof launcher is unreadable")
+              archive_digest = hashlib.sha256()
+              for block in iter(lambda: packaged_launcher.read(1024 * 1024), b""):
+                  archive_digest.update(block)
+              if archive_digest.hexdigest() != checksums["codex-runtime-proof-launcher"]["sha256"]:
+                  raise SystemExit("companion archive runtime-proof launcher does not match its manifest")
+
+          manifest = {
+              "schemaVersion": 1,
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "sourceCommit": os.environ["SOURCE_COMMIT"],
+              "sourceTree": os.environ["SOURCE_TREE"],
+              "cargoLockSha256": os.environ["CARGO_LOCK_SHA256"],
+              "rustToolchainFileSha256": os.environ["TOOLCHAIN_SHA256"],
+              "rustToolchain": "1.96.0",
+              "rustyV8Version": os.environ["V8_VERSION"],
+              "target": os.environ["TARGET"],
+              "workflowHostSha": os.environ["WORKFLOW_HOST_SHA"],
+              "workflowRef": os.environ["WORKFLOW_REF"],
+              "workflowRunId": os.environ["GITHUB_RUN_ID"],
+              "workflowRunAttempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "workflowRunUrl": (
+                  f'{os.environ["GITHUB_SERVER_URL"]}/'
+                  f'{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{os.environ["GITHUB_RUN_ID"]}'
+              ),
+              "artifactName": (
+                  f'runtime-proof-companion-336efa36-'
+                  f'{os.environ["GITHUB_RUN_ID"]}-'
+                  f'{os.environ["GITHUB_RUN_ATTEMPT"]}'
+              ),
+              "artifactRetentionDays": 90,
+              "payload": checksums,
+              "archive": {
+                  "name": os.environ["ARCHIVE_NAME"],
+                  "sha256": os.environ["ARCHIVE_SHA256"],
+                  "bytes": Path(os.environ["ARCHIVE_PATH"]).stat().st_size,
+              },
+          }
+          output = Path(os.environ["OUTPUT_DIR"])
+          (output / "manifest.json").write_text(
+              json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+          )
+          PY
+          echo "archive_sha256=${archive_sha}" >> "${GITHUB_OUTPUT}"
+          echo "archive_path=${archive_path}" >> "${GITHUB_OUTPUT}"
+          echo "manifest_path=${output_dir}/manifest.json" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload one versioned 90-day companion artifact
+        id: upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: runtime-proof-companion-336efa36-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/runtime-proof-companion-output/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90
+
+      - name: Emit the build receipt
+        shell: bash
+        env:
+          ARCHIVE_SHA256: ${{ steps.package.outputs.archive_sha256 }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### Runtime-proof companion artifact"
+            echo
+            echo "- Fixed source commit: \`336efa36bf847ebbf00a7b1c6b7a5d0cf66e462f\`"
+            echo "- Source tree: \`${{ steps.source.outputs.tree }}\`"
+            echo "- Workflow host commit: \`${GITHUB_SHA}\`"
+            echo "- Run: \`${GITHUB_RUN_ID}\` (attempt \`${GITHUB_RUN_ATTEMPT}\`)"
+            echo "- Archive SHA-256: \`${ARCHIVE_SHA256}\`"
+            if [[ -n "${ARTIFACT_DIGEST}" ]]; then
+              echo "- GitHub artifact digest: \`${ARTIFACT_DIGEST}\`"
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"

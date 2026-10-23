@@ -1,5 +1,6 @@
 {
-  "$defs": {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
     "ResourceContent": {
       "anyOf": [
         {
@@ -20,8 +21,8 @@
             }
           },
           "required": [
-            "uri",
-            "text"
+            "text",
+            "uri"
           ],
           "type": "object"
         },
@@ -43,8 +44,8 @@
             }
           },
           "required": [
-            "uri",
-            "blob"
+            "blob",
+            "uri"
           ],
           "type": "object"
         }
@@ -52,13 +53,19 @@
       "description": "Contents returned when reading a resource from an MCP server."
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "contents": {
       "items": {
-        "$ref": "#/$defs/ResourceContent"
+        "$ref": "#/definitions/ResourceContent"
       },
       "type": "array"
+    },
+    "originCallId": {
+      "description": "Originating call when the server applied app-specific resource scoping.",
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
   "required": [

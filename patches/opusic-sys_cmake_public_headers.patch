@@ -1,0 +1,29 @@
+diff --git a/build.rs b/build.rs
+--- a/build.rs
++++ b/build.rs
+@@ -237,3 +237,25 @@
+     let mut out_dir = cmake.build();
++
++    // CMake can preserve runfiles symlinks while installing public headers.
++    // Materialize their pinned source bytes before the runfiles tree is removed.
++    for header in [
++        "opus.h",
++        "opus_defines.h",
++        "opus_multistream.h",
++        "opus_projection.h",
++        "opus_types.h",
++        "opus_custom.h",
++    ] {
++        let installed_header = out_dir.join("include").join("opus").join(header);
++        match std::fs::symlink_metadata(&installed_header) {
++            Ok(_) => {}
++            Err(err) if header == "opus_custom.h" && err.kind() == std::io::ErrorKind::NotFound => continue,
++            Err(err) => panic!("Cannot inspect installed Opus header {header}: {err}"),
++        }
++        let source_header = path::Path::new(CURRENT_DIR).join("include").join(header);
++        let contents = std::fs::read(source_header).expect("Cannot read bundled Opus public header");
++        std::fs::remove_file(&installed_header).expect("Cannot remove installed Opus header entry");
++        std::fs::write(&installed_header, contents).expect("Cannot materialize Opus public header");
++    }
+
+     println!("cargo:rustc-link-lib=static=opus");

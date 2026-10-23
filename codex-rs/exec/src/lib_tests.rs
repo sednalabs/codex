@@ -1,4 +1,7 @@
 use super::*;
+use codex_app_server_protocol::AuthRecoveryNotification;
+#[cfg(unix)]
+use codex_app_server_protocol::DynamicToolCallOutputContentItem;
 use codex_otel::set_parent_from_w3c_trace_context;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::models::ActivePermissionProfile;
@@ -10,44 +13,12 @@ use opentelemetry::trace::TraceId;
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_sdk::trace::SdkTracerProvider;
 use pretty_assertions::assert_eq;
-use serde_json::json;
 use std::io;
 use std::io::Write;
 use std::sync::Arc;
 use std::sync::Mutex;
 use tempfile::tempdir;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
-
-#[test]
-fn protected_runtime_accepts_only_the_fixed_claim_tool_profile() {
-    let recipient = "https://ops.example/mcp";
-    let valid = || {
-        serde_json::from_value::<McpServerConfig>(json!({
-            "url": recipient,
-            "required": true,
-            "enabled_tools": ["work_item_claim"],
-            "tools": { "work_item_claim": { "approval_mode": "approve" } },
-        }))
-        .expect("valid protected MCP profile")
-    };
-
-    assert!(validate_protected_claim_server(&valid(), recipient).is_ok());
-
-    for config in [
-        json!({ "url": recipient, "enabled": false, "required": true, "enabled_tools": ["work_item_claim"], "tools": { "work_item_claim": { "approval_mode": "approve" } } }),
-        json!({ "url": recipient, "required": false, "enabled_tools": ["work_item_claim"], "tools": { "work_item_claim": { "approval_mode": "approve" } } }),
-        json!({ "url": recipient, "enabled_tools": ["work_item_claim", "other"], "tools": { "work_item_claim": { "approval_mode": "approve" } } }),
-        json!({ "url": recipient, "enabled_tools": ["work_item_claim"], "tools": { "work_item_claim": { "approval_mode": "prompt" } } }),
-        json!({ "url": recipient, "enabled_tools": ["work_item_claim"], "tools": { "work_item_claim": { "approval_mode": "approve" }, "other": { "approval_mode": "approve" } } }),
-        json!({ "url": recipient, "enabled_tools": ["work_item_claim"], "default_tools_approval_mode": "approve", "tools": { "work_item_claim": { "approval_mode": "approve" } } }),
-        json!({ "url": recipient, "enabled_tools": ["work_item_claim"], "environment_id": "remote", "tools": { "work_item_claim": { "approval_mode": "approve" } } }),
-        json!({ "url": recipient, "enabled_tools": ["work_item_claim"], "bearer_token_env_var": "OPS_TOKEN", "tools": { "work_item_claim": { "approval_mode": "approve" } } }),
-    ] {
-        let server = serde_json::from_value::<McpServerConfig>(config)
-            .expect("fixture MCP configuration shape parses");
-        assert!(validate_protected_claim_server(&server, recipient).is_err());
-    }
-}
 
 fn test_tracing_subscriber() -> impl tracing::Subscriber + Send + Sync {
     let provider = SdkTracerProvider::builder().build();
@@ -321,6 +292,28 @@ fn runtime_warnings_are_filtered_to_the_primary_thread() {
     });
 
     assert_eq!(outcomes, [true, true, false]);
+
+    let recovery = AuthRecoveryNotification {
+        thread_id: primary_thread_id.to_string(),
+        turn_id: turn_id.to_string(),
+        provider: "example".to_string(),
+        message: "Refresh authentication".to_string(),
+    };
+    let outcomes = [
+        ServerNotification::AuthRecoveryStarted(recovery.clone()),
+        ServerNotification::AuthRecoveryCompleted(recovery.clone()),
+        ServerNotification::AuthRecoveryStarted(AuthRecoveryNotification {
+            thread_id: "thread-2".to_string(),
+            ..recovery.clone()
+        }),
+        ServerNotification::AuthRecoveryCompleted(AuthRecoveryNotification {
+            turn_id: "turn-2".to_string(),
+            ..recovery
+        }),
+    ]
+    .map(|notification| should_process_notification(&notification, primary_thread_id, turn_id));
+
+    assert_eq!(outcomes, [true, true, false, false]);
 }
 
 #[tokio::test]
@@ -360,6 +353,7 @@ async fn resume_lookup_model_providers_filters_only_last_lookup() {
 #[test]
 fn turn_items_for_thread_returns_matching_turn_items() {
     let thread = AppServerThread {
+        environments: None,
         id: "thread-1".to_string(),
         extra: None,
         session_id: "thread-1".to_string(),
@@ -367,7 +361,10 @@ fn turn_items_for_thread_returns_matching_turn_items() {
         parent_thread_id: None,
         preview: String::new(),
         ephemeral: false,
-        is_pinned: false,
+        section: None,
+        section_entered_at: None,
+        project_id: None,
+        daybreak_enabled: None,
         history_mode: Default::default(),
         model_provider: "openai".to_string(),
         model: None,
@@ -379,6 +376,7 @@ fn turn_items_for_thread_returns_matching_turn_items() {
         path: None,
         cwd: test_path_buf("/tmp/project").abs(),
         cli_version: "0.0.0-test".to_string(),
+        originator: None,
         source: codex_app_server_protocol::SessionSource::Exec,
         can_accept_direct_input: None,
         thread_source: None,
@@ -389,12 +387,15 @@ fn turn_items_for_thread_returns_matching_turn_items() {
         turns: vec![
             codex_app_server_protocol::Turn {
                 id: "turn-1".to_string(),
+                root_turn_id: None,
                 items_view: codex_app_server_protocol::TurnItemsView::Full,
                 items: vec![AppServerThreadItem::AgentMessage {
                     id: "msg-1".to_string(),
                     text: "hello".to_string(),
                     phase: None,
                     memory_citation: None,
+                    delivery: None,
+                    questions: None,
                 }],
                 status: codex_app_server_protocol::TurnStatus::Completed,
                 error: None,
@@ -404,6 +405,7 @@ fn turn_items_for_thread_returns_matching_turn_items() {
             },
             codex_app_server_protocol::Turn {
                 id: "turn-2".to_string(),
+                root_turn_id: None,
                 items_view: codex_app_server_protocol::TurnItemsView::Full,
                 items: vec![AppServerThreadItem::Plan {
                     id: "plan-1".to_string(),
@@ -425,6 +427,8 @@ fn turn_items_for_thread_returns_matching_turn_items() {
             text: "hello".to_string(),
             phase: None,
             memory_citation: None,
+            delivery: None,
+            questions: None,
         }])
     );
     assert_eq!(turn_items_for_thread(&thread, "missing-turn"), None);
@@ -437,6 +441,7 @@ fn should_backfill_turn_completed_items_backfills_persisted_summaries_only() {
             thread_id: "thread-1".to_string(),
             turn: codex_app_server_protocol::Turn {
                 id: "turn-1".to_string(),
+                root_turn_id: None,
                 items_view: codex_app_server_protocol::TurnItemsView::Summary,
                 items: Vec::new(),
                 status: codex_app_server_protocol::TurnStatus::Completed,
@@ -445,8 +450,6 @@ fn should_backfill_turn_completed_items_backfills_persisted_summaries_only() {
                 completed_at: None,
                 duration_ms: None,
             },
-            final_model: None,
-            model_snapshot: None,
         });
 
     assert!(!should_backfill_turn_completed_items(
@@ -492,7 +495,7 @@ async fn thread_start_params_include_review_policy_when_review_policy_is_manual_
         .await
         .expect("build config with manual-only review policy");
 
-    let params = thread_start_params_from_config(&config);
+    let params = thread_start_params_from_config(&config, &ThreadSource::User);
 
     assert_eq!(
         params.approvals_reviewer,
@@ -520,7 +523,7 @@ async fn thread_start_params_include_review_policy_when_auto_review_is_enabled()
         .await
         .expect("build config with guardian review policy");
 
-    let params = thread_start_params_from_config(&config);
+    let params = thread_start_params_from_config(&config, &ThreadSource::User);
 
     assert_eq!(
         params.approvals_reviewer,
@@ -648,22 +651,33 @@ async fn build_exec_config_preserves_headless_error_when_retry_fails() {
 }
 
 #[tokio::test]
-async fn thread_start_params_include_user_thread_source() {
+async fn thread_start_params_match_history_to_persistence() {
     let codex_home = tempdir().expect("create temp codex home");
     let cwd = tempdir().expect("create temp cwd");
-    let config = ConfigBuilder::default()
+    let mut config = ConfigBuilder::default()
         .codex_home(codex_home.path().to_path_buf())
         .fallback_cwd(Some(cwd.path().to_path_buf()))
         .build()
         .await
         .expect("build config");
 
-    let params = thread_start_params_from_config(&config);
+    let params = thread_start_params_from_config(&config, &ThreadSource::User);
 
     assert_eq!(
         params.thread_source,
         Some(codex_app_server_protocol::ThreadSource::User)
     );
+    assert_eq!(params.history_mode, Some(ThreadHistoryMode::Paginated));
+
+    let thread_source = ThreadSource::Feature("automated_review".to_string());
+    let params = thread_start_params_from_config(&config, &thread_source);
+    assert_eq!(params.thread_source, Some(thread_source));
+
+    config.ephemeral = true;
+    let params = thread_start_params_from_config(&config, &ThreadSource::User);
+
+    assert_eq!(params.ephemeral, Some(true));
+    assert_eq!(params.history_mode, None);
 }
 
 #[tokio::test]
@@ -685,7 +699,7 @@ async fn thread_lifecycle_params_preserve_hook_trust_bypass() {
         serde_json::Value::Bool(true),
     )]));
 
-    let start_params = thread_start_params_from_config(&config);
+    let start_params = thread_start_params_from_config(&config, &ThreadSource::User);
     let resume_params = thread_resume_params_from_config(
         &config,
         "thread-id".to_string(),
@@ -721,7 +735,7 @@ async fn thread_lifecycle_params_include_legacy_sandbox_when_no_active_profile()
         .await
         .expect("build config with legacy sandbox override");
 
-    let start_params = thread_start_params_from_config(&config);
+    let start_params = thread_start_params_from_config(&config, &ThreadSource::User);
     let resume_params = thread_resume_params_from_config(
         &config,
         "thread-id".to_string(),
@@ -820,18 +834,24 @@ async fn session_configured_from_thread_response_preserves_parent_thread_id() {
         .await
         .expect("build config");
     let parent_thread_id = ThreadId::new();
+    let forked_from_id = ThreadId::new();
     let mut response = sample_thread_start_response();
     response.thread.parent_thread_id = Some(parent_thread_id.to_string());
+    response.thread.forked_from_id = Some(forked_from_id.to_string());
 
     let event = session_configured_from_thread_start_response(&response, &config)
         .expect("build bootstrap session configured event");
 
     assert_eq!(event.parent_thread_id, Some(parent_thread_id));
+    assert_eq!(event.forked_from_id, Some(forked_from_id));
 }
 
 fn sample_thread_start_response() -> ThreadStartResponse {
     ThreadStartResponse {
+        disabled_plugin_ids: Vec::new(),
         thread: codex_app_server_protocol::Thread {
+            originator: None,
+            environments: None,
             id: "67e55044-10b1-426f-9247-bb680e5fe0c8".to_string(),
             extra: None,
             session_id: "67e55044-10b1-426f-9247-bb680e5fe0c7".to_string(),
@@ -839,7 +859,10 @@ fn sample_thread_start_response() -> ThreadStartResponse {
             parent_thread_id: None,
             preview: String::new(),
             ephemeral: false,
-            is_pinned: false,
+            section: None,
+            section_entered_at: None,
+            project_id: None,
+            daybreak_enabled: None,
             history_mode: Default::default(),
             model_provider: "openai".to_string(),
             model: None,
@@ -878,4 +901,135 @@ fn sample_thread_start_response() -> ThreadStartResponse {
         reasoning_effort: None,
         multi_agent_mode: Default::default(),
     }
+}
+
+#[tokio::test]
+async fn browser_tools_are_registered_for_exec_start() {
+    let codex_home = tempdir().expect("create temp codex home");
+    let cwd = tempdir().expect("create temp cwd");
+    std::fs::write(
+        codex_home.path().join("browser-computer-use.json"),
+        r#"{"provider":"playwright"}"#,
+    )
+    .expect("configure Browser provider");
+    let config = ConfigBuilder::default()
+        .loader_overrides(LoaderOverrides::without_managed_config_for_tests())
+        .codex_home(codex_home.path().to_path_buf())
+        .fallback_cwd(Some(cwd.path().to_path_buf()))
+        .build()
+        .await
+        .expect("build exec config");
+
+    let start = thread_start_params_from_config(&config, &ThreadSource::User);
+    let specs = start.dynamic_tools.expect("Browser tools on exec start");
+    assert!(matches!(
+        specs.as_slice(),
+        [DynamicToolSpec::Namespace(namespace)]
+            if namespace.name == "codex_browser" && namespace.tools.len() == 2
+    ));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn exec_dispatches_browser_provider_and_preserves_typed_images() {
+    let codex_home = tempdir().expect("create temp codex home");
+    let provider = r#"
+import json, sys
+request = json.load(sys.stdin)
+assert request["namespace"] == "codex_browser"
+assert request["threadId"] == "native-thread"
+assert request["turnId"] == "native-turn"
+assert request["callId"] == "native-call"
+assert request["tool"] == "browser_observe"
+assert request["arguments"] == {"url": "https://example.test"}
+json.dump({"contentItems": [{"type": "inputText", "text": "observed"},
+    {"type": "inputImage", "imageUrl": "data:image/png;base64,AAAA"}],
+    "success": True}, sys.stdout)
+"#;
+    std::fs::write(
+        codex_home.path().join("browser-computer-use.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "command": ["python3", "-c", provider],
+        }))
+        .expect("serialize Browser config"),
+    )
+    .expect("write Browser provider config");
+    let params = DynamicToolCallParams {
+        thread_id: "native-thread".to_string(),
+        turn_id: "native-turn".to_string(),
+        call_id: "native-call".to_string(),
+        namespace: Some("codex_browser".to_string()),
+        tool: "browser_observe".to_string(),
+        arguments: serde_json::json!({"url": "https://example.test"}),
+    };
+
+    let response = handle_exec_native_dynamic_tool(&params, codex_home.path())
+        .await
+        .expect("native Browser request is dispatched");
+    assert!(response.success, "{response:?}");
+    assert!(matches!(
+        response.content_items.as_slice(),
+        [DynamicToolCallOutputContentItem::InputText { text },
+            DynamicToolCallOutputContentItem::InputImage { image_url }]
+            if text == "observed" && image_url == "data:image/png;base64,AAAA"
+    ));
+
+    let mut unrelated = params;
+    unrelated.namespace = Some("codex_android".to_string());
+    assert!(
+        handle_exec_native_dynamic_tool(&unrelated, codex_home.path())
+            .await
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn pending_browser_request_is_dropped_on_interrupt_without_replay() {
+    struct PendingBrowserProvider(Option<tokio::sync::oneshot::Sender<()>>);
+
+    impl Drop for PendingBrowserProvider {
+        fn drop(&mut self) {
+            if let Some(sender) = self.0.take() {
+                let _ = sender.send(());
+            }
+        }
+    }
+
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (dropped_tx, dropped_rx) = tokio::sync::oneshot::channel();
+    let (interrupt_tx, mut interrupt_rx) = mpsc::unbounded_channel();
+    let request = async move {
+        let _provider = PendingBrowserProvider(Some(dropped_tx));
+        let _ = started_tx.send(());
+        std::future::pending::<()>().await;
+    };
+    let task = tokio::spawn(async move {
+        let mut channel_open = true;
+        complete_server_request_or_interrupt(request, &mut interrupt_rx, &mut channel_open).await
+    });
+    started_rx.await.expect("Browser provider dispatched");
+    interrupt_tx
+        .send(())
+        .expect("interrupt pending Browser request");
+
+    assert!(task.await.expect("Browser request task completed"));
+    dropped_rx.await.expect("provider future was dropped");
+}
+
+#[tokio::test]
+async fn closed_exec_interrupt_channel_does_not_cancel_browser_request() {
+    let (interrupt_tx, mut interrupt_rx) = mpsc::unbounded_channel::<()>();
+    drop(interrupt_tx);
+    let mut channel_open = true;
+    let mut completed = false;
+    assert!(
+        !complete_server_request_or_interrupt(
+            async { completed = true },
+            &mut interrupt_rx,
+            &mut channel_open,
+        )
+        .await
+    );
+    assert!(completed);
+    assert!(!channel_open);
 }

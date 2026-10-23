@@ -1,0 +1,11 @@
+---
+source: tui/src/app/tests.rs
+assertion_line: 6513
+expression: "rendered.replace(crate::version::CODEX_CLI_VERSION, \"<VERSION>\")"
+---
+
+  >_ OpenAI Codex (v<VERSION>)
+     <thread cwd>
+
+
+› Next thread prompt
