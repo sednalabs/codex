@@ -200,13 +200,20 @@ jobs:
         fi
         smoke_target_created=0
         smoke_package_dir=
+        smoke_package_mounted=0
         smoke_unsafe_package_dir=
         cleanup_installer_smoke() {
           if (( smoke_target_created == 1 )); then
             sudo rm -rf -- "${smoke_target}"
           fi
+          if (( smoke_package_mounted == 1 )); then
+            sudo umount -- "${smoke_package_dir}" 2>/dev/null || true
+            smoke_package_mounted=0
+          fi
           if [[ -n "${smoke_package_dir}" ]]; then
-            sudo rm -rf -- "${smoke_package_dir}"
+            if ! sudo mountpoint -q -- "${smoke_package_dir}"; then
+              sudo rm -rf -- "${smoke_package_dir}"
+            fi
           fi
           if [[ -n "${smoke_unsafe_package_dir}" ]]; then
             sudo rm -rf -- "${smoke_unsafe_package_dir}"
@@ -237,10 +244,17 @@ jobs:
         sudo rm -rf -- "${smoke_unsafe_package_dir}"
         smoke_unsafe_package_dir=
         smoke_package_dir="$(sudo mktemp -d /run/codex-runtime-proof-installer.XXXXXX)"
+        smoke_package_mounted=1
+        sudo mount -t tmpfs -o nosuid,nodev,noexec,size=256m,mode=0700 tmpfs "${smoke_package_dir}"
+        smoke_mount_options="$(sudo findmnt -n -o OPTIONS --target "${smoke_package_dir}")"
+        case ",${smoke_mount_options}," in
+          *,noexec,*) ;;
+          *) echo "The runtime-proof installer smoke stage is not mounted noexec." >&2; exit 1 ;;
+        esac
         sudo install -o root -g root -m 0755 -- \
           "${stage_dir}/install_runtime_proof_launcher" \
           "${smoke_package_dir}/install_runtime_proof_launcher"
-        sudo install -o root -g root -m 0755 -- \
+        sudo install -o root -g root -m 0644 -- \
           "${stage_dir}/codex-runtime-proof-launcher" \
           "${smoke_package_dir}/codex-runtime-proof-launcher"
         sudo install -o root -g root -m 0644 -- \
@@ -252,7 +266,18 @@ jobs:
           "${smoke_target}/codex-runtime-proof-launcher"
         predecessor_sha256="$(sha256sum "${RUNNER_TEMP}/runtime-proof-launcher-predecessor" | cut -d' ' -f1)"
         staged_launcher_sha256="$(sha256sum "${stage_dir}/codex-runtime-proof-launcher" | cut -d' ' -f1)"
-        sudo "${smoke_package_dir}/install_runtime_proof_launcher"
+        if sudo /bin/bash -- "${smoke_package_dir}/install_runtime_proof_launcher" >/dev/null 2>&1; then
+          echo "The runtime-proof installer accepted a launcher without executable mode bits." >&2
+          exit 1
+        fi
+        unchanged_launcher_sha256="$(sudo sha256sum "${smoke_target}/codex-runtime-proof-launcher" | cut -d' ' -f1)"
+        [[ "${unchanged_launcher_sha256}" == "${predecessor_sha256}" ]]
+        if sudo test -e "${smoke_target}/.codex-runtime-proof-launcher.rollback-${predecessor_sha256}"; then
+          echo "A rejected runtime-proof package created a rollback image." >&2
+          exit 1
+        fi
+        sudo chmod 0755 -- "${smoke_package_dir}/codex-runtime-proof-launcher"
+        sudo /bin/bash -- "${smoke_package_dir}/install_runtime_proof_launcher"
         installed_launcher_sha256="$(sudo sha256sum "${smoke_target}/codex-runtime-proof-launcher" | cut -d' ' -f1)"
         rollback_sha256="$(sudo sha256sum "${smoke_target}/.codex-runtime-proof-launcher.rollback-${predecessor_sha256}" | cut -d' ' -f1)"
         [[ "${installed_launcher_sha256}" == "${staged_launcher_sha256}" ]]
@@ -262,7 +287,9 @@ jobs:
         [[ "$(sudo stat -c '%u:%g:%a' -- "${smoke_target}/.codex-runtime-proof-launcher.rollback-${predecessor_sha256}")" == '0:0:600' ]]
         sudo rm -rf -- "${smoke_target}"
         smoke_target_created=0
-        sudo rm -rf -- "${smoke_package_dir}"
+        sudo umount -- "${smoke_package_dir}"
+        smoke_package_mounted=0
+        sudo rmdir -- "${smoke_package_dir}"
         smoke_package_dir=
         if [[ -n "${smoke_unsafe_package_dir}" ]]; then
           sudo rm -rf -- "${smoke_unsafe_package_dir}"

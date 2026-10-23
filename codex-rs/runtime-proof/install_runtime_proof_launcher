@@ -75,13 +75,16 @@ mode_value=$((8#${installer_mode}))
 
 launcher_path="${package_dir}/${launcher_name}"
 checksum_path="${package_dir}/${launcher_name}.sha256"
-[[ -f "${launcher_path}" && ! -L "${launcher_path}" && -x "${launcher_path}" ]] || fail 'The packaged launcher is not a regular executable.'
+[[ -f "${launcher_path}" && ! -L "${launcher_path}" ]] || fail 'The packaged launcher is not a regular file.'
 [[ -f "${checksum_path}" && ! -L "${checksum_path}" ]] || fail 'The package launcher checksum is missing.'
 for package_file in "${launcher_path}" "${checksum_path}"; do
   IFS=: read -r owner group package_file_mode < <(stat -c '%u:%g:%a' -- "${package_file}")
   [[ "${owner}" == 0 && "${group}" == 0 ]] || fail 'A package input is not root-owned.'
   mode_value=$((8#${package_file_mode}))
   (( (mode_value & 07022) == 0 )) || fail 'A package input is writable or has special permission bits.'
+  if [[ "${package_file}" == "${launcher_path}" ]]; then
+    (( (mode_value & 0111) != 0 )) || fail 'The packaged launcher has no executable mode bits.'
+  fi
 done
 checksum_size=$(stat -c '%s' -- "${checksum_path}")
 (( checksum_size <= 128 )) || fail 'The package launcher checksum is too large.'
