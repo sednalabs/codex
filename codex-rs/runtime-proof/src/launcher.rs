@@ -270,6 +270,7 @@ impl From<codex_rmcp_client::FixedOAuthLoginStage> for ProvisioningStage {
 pub(crate) struct ProvisioningFailure {
     stage: ProvisioningStage,
     exchange_detail: Option<String>,
+    callback_detail: Option<&'static str>,
 }
 
 impl ProvisioningFailure {
@@ -277,6 +278,7 @@ impl ProvisioningFailure {
         Self {
             stage,
             exchange_detail: None,
+            callback_detail: None,
         }
     }
 }
@@ -290,6 +292,8 @@ impl std::fmt::Display for ProvisioningFailure {
         )?;
         if let Some(detail) = &self.exchange_detail {
             write!(formatter, " (exchange detail: {detail})")?;
+        } else if let Some(detail) = self.callback_detail {
+            write!(formatter, " (callback detail: {detail})")?;
         }
         Ok(())
     }
@@ -307,6 +311,7 @@ pub(crate) fn provisioning_oauth_failure(
     anyhow::Error::new(ProvisioningFailure {
         stage: error.stage().into(),
         exchange_detail: error.safe_exchange_detail(),
+        callback_detail: error.safe_callback_detail(),
     })
 }
 
@@ -321,7 +326,11 @@ pub fn safe_provisioning_failure_stage(error: &anyhow::Error) -> Option<&'static
 pub fn safe_provisioning_failure_detail(error: &anyhow::Error) -> Option<&str> {
     error
         .downcast_ref::<ProvisioningFailure>()
-        .and_then(|failure| failure.exchange_detail.as_deref())
+        .and_then(|failure| {
+            failure
+                .callback_detail
+                .or(failure.exchange_detail.as_deref())
+        })
 }
 
 fn provision_api_bearer_with_mode(mode: ApiBearerProvisioningMode) -> Result<i32> {

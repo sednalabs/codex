@@ -1245,7 +1245,11 @@ allowlisted HTTP status/OAuth codes or a closed SDK error category, never provid
 text. Its regressions check the exact
 client/resource/scope and S256 request, reject unsafe or ambiguous callback
 input, issuer metadata, token types, and lifetimes, and prevent scope
-expansion. They verify atomic replacement of only one root-owned credential
+expansion. Callback diagnostics preserve `oauth_callback` with closed static
+reasons for input setup, reader fallback, timeout, interruption, I/O, framing,
+restoration, and pasted URL, redirect, state, duplicate, provider, and invalid
+response failures; reader error text is suppressed. They verify atomic
+replacement of only one root-owned credential
 basename. The invoking user's direct OS keyring holds a separate
 fixed API refresh profile; a rotated refresh token must be persisted before
 the short-lived access token reaches root over the bounded private handoff.

@@ -14,6 +14,8 @@ use crate::launcher::seqpacket_pair;
 use anyhow::Result;
 use anyhow::bail;
 use codex_rmcp_client::FIXED_API_CLAIM_TIMEOUT_SECS;
+use codex_rmcp_client::FixedOAuthCallbackFailure;
+use codex_rmcp_client::FixedOAuthCallbackInputError;
 use std::ffi::CStr;
 use std::fs;
 use std::fs::File;
@@ -46,6 +48,12 @@ const MAX_API_TOKEN_FRAME_BYTES: usize = 12 * 1024 + 12;
 // lock, and bounded discovery/token requests with a small scheduling margin.
 const API_PROFILE_CHILD_TIMEOUT: Duration = Duration::from_secs(400);
 static CALLBACK_INPUT_INTERRUPTED: AtomicBool = AtomicBool::new(false);
+
+type CallbackInputResult<T> = std::result::Result<T, FixedOAuthCallbackInputError>;
+
+fn callback_input_error(failure: FixedOAuthCallbackFailure) -> FixedOAuthCallbackInputError {
+    FixedOAuthCallbackInputError::new(failure)
+}
 
 const CALLBACK_INPUT_SIGNALS: [libc::c_int; 5] = [
     libc::SIGINT,
@@ -212,7 +220,10 @@ pub(crate) fn run_api_profile_child(use_manual_callback_input: bool) -> Result<i
         runtime.block_on(
             codex_rmcp_client::perform_fixed_ops_api_access_token_with_refresh(
                 open_authorization_url_as_invoking_user,
-                read_callback_url_from_invoking_terminal,
+                |authorization_url| {
+                    read_callback_url_from_invoking_terminal(authorization_url)
+                        .map_err(anyhow::Error::new)
+                },
                 use_manual_callback_input,
             ),
         )
@@ -611,35 +622,45 @@ fn open_authorization_url_as_invoking_user(authorization_url: &str) -> Result<()
     Ok(())
 }
 
-fn read_callback_url_from_invoking_terminal(authorization_url: &str) -> Result<String> {
-    validate_fixed_authorization_url(authorization_url)?;
+fn read_callback_url_from_invoking_terminal(
+    authorization_url: &str,
+) -> CallbackInputResult<String> {
+    validate_fixed_authorization_url(authorization_url)
+        .map_err(|_| callback_input_error(FixedOAuthCallbackFailure::InputSetup))?;
     if unsafe { libc::isatty(libc::STDOUT_FILENO) } != 1 {
-        bail!("manual OAuth callback input requires terminal output");
+        return Err(callback_input_error(FixedOAuthCallbackFailure::InputSetup));
     }
 
-    let mut signal_guard = CallbackSignalGuard::install()?;
-    let mut echo_guard = TerminalEchoGuard::disable(libc::STDIN_FILENO)?;
+    let mut signal_guard = CallbackSignalGuard::install()
+        .map_err(|_| callback_input_error(FixedOAuthCallbackFailure::InputSetup))?;
+    let mut echo_guard = TerminalEchoGuard::disable(libc::STDIN_FILENO)
+        .map_err(|_| callback_input_error(FixedOAuthCallbackFailure::InputSetup))?;
     let result = read_callback_url_with_echo_disabled(authorization_url);
     echo_guard
         .restore()
-        .map_err(|_| anyhow::anyhow!("restore invoking terminal settings"))?;
+        .map_err(|_| callback_input_error(FixedOAuthCallbackFailure::InputRestoration))?;
     signal_guard
         .restore()
-        .map_err(|_| anyhow::anyhow!("restore invoking signal handlers"))?;
+        .map_err(|_| callback_input_error(FixedOAuthCallbackFailure::InputRestoration))?;
     let interruption = ensure_callback_input_not_interrupted();
-    writeln!(std::io::stdout().lock())?;
+    writeln!(std::io::stdout().lock())
+        .map_err(|_| callback_input_error(FixedOAuthCallbackFailure::InputIo))?;
     interruption?;
     result
 }
 
-fn read_callback_url_with_echo_disabled(authorization_url: &str) -> Result<String> {
+fn read_callback_url_with_echo_disabled(authorization_url: &str) -> CallbackInputResult<String> {
     let mut stdout = std::io::stdout().lock();
     writeln!(
         stdout,
         "Open this fixed authorization URL in your browser, complete sign-in, then paste the full callback URL below:\n{authorization_url}"
-    )?;
-    write!(stdout, "Callback URL: ")?;
-    stdout.flush()?;
+    )
+    .map_err(|_| callback_input_error(FixedOAuthCallbackFailure::InputIo))?;
+    write!(stdout, "Callback URL: ")
+        .map_err(|_| callback_input_error(FixedOAuthCallbackFailure::InputIo))?;
+    stdout
+        .flush()
+        .map_err(|_| callback_input_error(FixedOAuthCallbackFailure::InputIo))?;
 
     let deadline = Instant::now() + Duration::from_secs(FIXED_API_CLAIM_TIMEOUT_SECS);
     let mut input = Vec::with_capacity(2048);
@@ -647,7 +668,9 @@ fn read_callback_url_with_echo_disabled(authorization_url: &str) -> Result<Strin
         ensure_callback_input_not_interrupted()?;
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
-            bail!("fixed OAuth callback timed out");
+            return Err(callback_input_error(
+                FixedOAuthCallbackFailure::InputTimeout,
+            ));
         }
         let timeout_ms = remaining.as_millis().clamp(1, i32::MAX as u128) as i32;
         let mut descriptor = libc::pollfd {
@@ -657,14 +680,16 @@ fn read_callback_url_with_echo_disabled(authorization_url: &str) -> Result<Strin
         };
         let ready = unsafe { libc::poll(&mut descriptor, 1, timeout_ms) };
         if ready == 0 {
-            bail!("fixed OAuth callback timed out");
+            return Err(callback_input_error(
+                FixedOAuthCallbackFailure::InputTimeout,
+            ));
         }
         if ready < 0 {
             let error = std::io::Error::last_os_error();
             if error.kind() == std::io::ErrorKind::Interrupted {
                 continue;
             }
-            return Err(error.into());
+            return Err(callback_input_error(FixedOAuthCallbackFailure::InputIo));
         }
         let mut byte = [0_u8; 1];
         let read = unsafe { libc::read(libc::STDIN_FILENO, byte.as_mut_ptr().cast(), byte.len()) };
@@ -673,11 +698,13 @@ fn read_callback_url_with_echo_disabled(authorization_url: &str) -> Result<Strin
             if error.kind() == std::io::ErrorKind::Interrupted {
                 continue;
             }
-            return Err(error.into());
+            return Err(callback_input_error(FixedOAuthCallbackFailure::InputIo));
         }
         if read == 0 {
             if input.is_empty() {
-                bail!("no OAuth callback URL was supplied");
+                return Err(callback_input_error(
+                    FixedOAuthCallbackFailure::InputFraming,
+                ));
             }
             break;
         }
@@ -685,31 +712,39 @@ fn read_callback_url_with_echo_disabled(authorization_url: &str) -> Result<Strin
             break;
         }
         if input.len() == MAX_CALLBACK_URL_BYTES {
-            bail!("OAuth callback URL exceeds 64 KiB");
+            return Err(callback_input_error(
+                FixedOAuthCallbackFailure::InputFraming,
+            ));
         }
         input.push(byte[0]);
     }
     callback_url_from_terminal_input(input)
 }
 
-fn ensure_callback_input_not_interrupted() -> Result<()> {
+fn ensure_callback_input_not_interrupted() -> CallbackInputResult<()> {
     if CALLBACK_INPUT_INTERRUPTED.swap(false, Ordering::Relaxed) {
-        bail!("manual OAuth callback input was interrupted");
+        return Err(callback_input_error(
+            FixedOAuthCallbackFailure::InputInterrupted,
+        ));
     }
     Ok(())
 }
 
-fn callback_url_from_terminal_input(mut input: Vec<u8>) -> Result<String> {
+fn callback_url_from_terminal_input(mut input: Vec<u8>) -> CallbackInputResult<String> {
     if input.last() == Some(&b'\r') {
         input.pop();
     }
     if input.is_empty() {
-        bail!("no OAuth callback URL was supplied");
+        return Err(callback_input_error(
+            FixedOAuthCallbackFailure::InputFraming,
+        ));
     }
-    let callback_url =
-        String::from_utf8(input).map_err(|_| anyhow::anyhow!("OAuth callback URL is invalid"))?;
+    let callback_url = String::from_utf8(input)
+        .map_err(|_| callback_input_error(FixedOAuthCallbackFailure::InputFraming))?;
     if callback_url.chars().any(char::is_control) {
-        bail!("OAuth callback URL is invalid");
+        return Err(callback_input_error(
+            FixedOAuthCallbackFailure::InputFraming,
+        ));
     }
     Ok(callback_url)
 }

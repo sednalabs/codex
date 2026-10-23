@@ -3957,6 +3957,11 @@ beyond the fixed `--no-browser` switch and sends no claim.
 Provisioning failures expose a fixed phase and only allowlisted HTTP status/OAuth
 codes or closed SDK error categories; internal error strings, OAuth response
 details, and callback input remain suppressed.
+Manual callback failures retain the `oauth_callback` stage and expose only a
+closed static reason for input setup, generic reader failure, timeout,
+interruption, I/O, framing, terminal restoration, URL, redirect, state,
+duplicate-parameter, provider, or invalid-response failures. Generic reader
+errors become `callback_input_read` without retaining their text.
 The installed-image guard checks the executable's parent directories through
 `/` separately from the executable's own regular-file, mode, owner, and inode
 checks; regressions cover a valid executable in traversable trusted parents,
