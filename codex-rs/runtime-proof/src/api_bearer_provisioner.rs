@@ -584,12 +584,9 @@ fn validate_systemd_creds_coredump_suppression() -> Result<()> {
 }
 
 fn core_pattern_uses_fixed_apport(core_pattern: &str) -> bool {
-    let apport_prefix = format!("|{APPORT_EXECUTABLE_PATH}");
-    core_pattern.starts_with(&apport_prefix)
-        && core_pattern[apport_prefix.len()..]
-            .as_bytes()
-            .first()
-            .is_some_and(|byte| byte.is_ascii_whitespace())
+    let expected =
+        format!("|{APPORT_EXECUTABLE_PATH} -p%p -s%s -c%c -d%d -P%P -u%u -g%g -F%F -- %E");
+    core_pattern.strip_suffix('\n').unwrap_or(core_pattern) == expected
 }
 
 pub(crate) fn logout() -> Result<i32> {
@@ -1235,13 +1232,13 @@ mod tests {
     #[test]
     fn systemd_creds_piped_core_suppression_accepts_only_fixed_apport() {
         assert!(core_pattern_uses_fixed_apport(
-            "|/usr/share/apport/apport %p %s %c %d %P %I"
+            "|/usr/share/apport/apport -p%p -s%s -c%c -d%d -P%P -u%u -g%g -F%F -- %E"
+        ));
+        assert!(!core_pattern_uses_fixed_apport(
+            "|/usr/share/apport/apport -p%p -s%s -c-1 -d%d -P%P -u%u -g%g -F%F -- %E"
         ));
         assert!(!core_pattern_uses_fixed_apport(
             "|/usr/lib/systemd/systemd-coredump %P %u %g %s %t %c %h"
-        ));
-        assert!(!core_pattern_uses_fixed_apport(
-            "|/usr/share/apport/apport-malicious %p"
         ));
     }
 
