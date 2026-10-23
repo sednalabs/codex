@@ -2210,7 +2210,7 @@ fn mailbox_deferred_goal_handoff_rejects_replaced_native_incarnation() {
             child_thread_id,
             parent_thread_id,
             "turn-a",
-            Some(&(ThreadId::new(), snapshot.clone())),
+            Some(&(ThreadId::new(), snapshot)),
             Some(&store),
         )
         .is_err()

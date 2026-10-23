@@ -201,28 +201,28 @@ impl ChatWidget {
             self.request_redraw();
             return;
         }
-        if matches!(tool, CollabAgentTool::Wait) {
-            if let Some(progress) = self.active_mailbox_waits.remove(id) {
-                if let Some(report) = mailbox_wait_report.as_ref() {
-                    progress.update(report.clone(), /*in_progress*/ false);
-                } else {
-                    progress.finish();
-                }
-                let wait_cell_is_active = self
-                    .transcript
-                    .active_cell
-                    .as_ref()
-                    .and_then(|cell| {
-                        cell.as_any()
-                            .downcast_ref::<multi_agents::mailbox_wait::MailboxWaitProgressCell>()
-                    })
-                    .is_some_and(|cell| cell.call_id() == id.as_str());
-                if wait_cell_is_active {
-                    self.bump_active_cell_revision();
-                    self.flush_active_cell();
-                    self.request_redraw();
-                    return;
-                }
+        if matches!(tool, CollabAgentTool::Wait)
+            && let Some(progress) = self.active_mailbox_waits.remove(id)
+        {
+            if let Some(report) = mailbox_wait_report.as_ref() {
+                progress.update(report.clone(), /*in_progress*/ false);
+            } else {
+                progress.finish();
+            }
+            let wait_cell_is_active = self
+                .transcript
+                .active_cell
+                .as_ref()
+                .and_then(|cell| {
+                    cell.as_any()
+                        .downcast_ref::<multi_agents::mailbox_wait::MailboxWaitProgressCell>()
+                })
+                .is_some_and(|cell| cell.call_id() == id.as_str());
+            if wait_cell_is_active {
+                self.bump_active_cell_revision();
+                self.flush_active_cell();
+                self.request_redraw();
+                return;
             }
         }
 

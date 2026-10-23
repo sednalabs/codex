@@ -96,7 +96,8 @@ struct UnadmittedWorkResponder;
 
 impl Respond for UnadmittedWorkResponder {
     fn respond(&self, request: &Request) -> ResponseTemplate {
-        let body: Value = serde_json::from_slice(&request.body).unwrap();
+        let body: Value =
+            serde_json::from_slice(&request.body).expect("provider request should contain JSON");
         if has_function_output(&body, "unadmitted-wait") {
             return sse_response(sse(vec![
                 ev_response_created("unadmitted-final"),
@@ -105,9 +106,10 @@ impl Respond for UnadmittedWorkResponder {
             ]));
         }
         if has_function_output(&body, "unadmitted-spawn") {
+            let spawn_output = function_output_text(&body, "unadmitted-spawn")
+                .expect("spawn output should remain in provider history");
             let spawn: Value =
-                serde_json::from_str(function_output_text(&body, "unadmitted-spawn").unwrap())
-                    .unwrap();
+                serde_json::from_str(spawn_output).expect("spawn output should be JSON");
             return function_call_response(
                 "unadmitted-wait-response",
                 "unadmitted-wait",
@@ -244,7 +246,7 @@ async fn mailbox_event_only_wait_wakes_when_producer_fails_before_input_admissio
     let input_id = work.input.id.as_ref().unwrap().to_string();
     assert_eq!(
         mailbox
-            .unadmitted_input_ids(work.work_ref.agent, &[input_id.clone()])
+            .unadmitted_input_ids(work.work_ref.agent, std::slice::from_ref(&input_id))
             .await?,
         vec![input_id]
     );
@@ -642,7 +644,6 @@ const CUSTODY_BODY: &str = "canonical request body that must survive compaction"
 
 #[derive(Clone)]
 struct WaitProbeResponder {
-    root_thread_id: String,
     requests: Arc<Mutex<Vec<(Instant, Value)>>>,
     first_wait_started: Arc<Mutex<Option<Instant>>>,
     event_only_arguments: Arc<Mutex<Option<Value>>>,
@@ -850,7 +851,6 @@ async fn quiet_events_keep_deadline_fixed_then_request_wakes_event_only_wait() -
             thread_id: root_thread_id.clone(),
         })
         .respond_with(WaitProbeResponder {
-            root_thread_id: root_thread_id.clone(),
             requests: Arc::clone(&captured),
             first_wait_started: Arc::clone(&first_wait_started),
             event_only_arguments: Arc::clone(&event_only_arguments),
@@ -1070,7 +1070,7 @@ async fn unadmitted_canonical_message_survives_precreated_failure_and_manual_com
         config.compact_prompt = Some(COMPACTION_PROMPT.to_string());
     });
     let test = builder.build_with_auto_env(&server).await?;
-    let root_thread_id: ThreadId = test.session_configured.thread_id.clone();
+    let root_thread_id: ThreadId = test.session_configured.thread_id;
     let root_thread_id_text = root_thread_id.to_string();
     let captured = Arc::new(Mutex::new(Vec::new()));
 
@@ -1130,16 +1130,13 @@ async fn unadmitted_canonical_message_survives_precreated_failure_and_manual_com
     let message_id_owned = message_id.to_string();
     assert_eq!(
         mailbox
-            .unadmitted_input_ids(
-                root_thread_id.clone(),
-                std::slice::from_ref(&message_id_owned)
-            )
+            .unadmitted_input_ids(root_thread_id, std::slice::from_ref(&message_id_owned))
             .await?,
         vec![message_id_owned.clone()],
         "a stream that ended before response.created must not admit the body"
     );
     let envelope = mailbox
-        .get_message(root_thread_id.clone(), message_id)
+        .get_message(root_thread_id, message_id)
         .await?
         .expect("accepted canonical body should remain retrievable");
     assert!(envelope.canonical);
@@ -1149,7 +1146,7 @@ async fn unadmitted_canonical_message_survives_precreated_failure_and_manual_com
     );
     assert!(
         mailbox
-            .pending(root_thread_id.clone(), 10)
+            .pending(root_thread_id, 10)
             .await?
             .iter()
             .any(|pending| pending.id.as_str() == message_id)
@@ -1180,23 +1177,20 @@ async fn unadmitted_canonical_message_survives_precreated_failure_and_manual_com
     );
     assert_eq!(
         mailbox
-            .unadmitted_input_ids(
-                root_thread_id.clone(),
-                std::slice::from_ref(&message_id_owned)
-            )
+            .unadmitted_input_ids(root_thread_id, std::slice::from_ref(&message_id_owned))
             .await?,
         vec![message_id_owned.clone()],
         "compaction is not execution admission for a pending mailbox obligation"
     );
     assert!(
         mailbox
-            .pending(root_thread_id.clone(), 10)
+            .pending(root_thread_id, 10)
             .await?
             .iter()
             .any(|pending| pending.id.as_str() == message_id)
     );
     let retained = mailbox
-        .get_message(root_thread_id.clone(), message_id)
+        .get_message(root_thread_id, message_id)
         .await?
         .expect("compaction must not delete the canonical body from mailbox custody");
     assert_eq!(

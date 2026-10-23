@@ -218,7 +218,7 @@ fn goal_binding(
 #[tokio::test]
 async fn new_continuation_binding_requires_native_incarnation() {
     let fixture = test_mailbox().await;
-    let (issuer, agent) = (thread_id(40), thread_id(41));
+    let (issuer, agent) = (thread_id(/*index*/ 40), thread_id(/*index*/ 41));
     let (work, input) = accept_work(
         &fixture.mailbox,
         issuer,
@@ -240,7 +240,12 @@ async fn new_continuation_binding_requires_native_incarnation() {
     )
     .await;
 
-    let mut legacy_binding = goal_binding(issuer, agent, 3, thread_id(42));
+    let mut legacy_binding = goal_binding(
+        issuer,
+        agent,
+        /*generation*/ 3,
+        thread_id(/*index*/ 42),
+    );
     legacy_binding.incarnation = None;
     let result = fixture
         .mailbox
@@ -248,7 +253,7 @@ async fn new_continuation_binding_requires_native_incarnation() {
             agent,
             "missing-incarnation-turn",
             Outcome::Completed,
-            None,
+            /*response*/ None,
             Continuation::PendingGoalBinding(legacy_binding),
         )
         .await;
@@ -278,7 +283,7 @@ fn dependency(owner: &str, peers: &[&str], mode: DependencyMode) -> Dependency {
 #[tokio::test]
 async fn native_retry_dispatch_reopen_and_capture_backpressure_are_safe() {
     let fixture = test_mailbox().await;
-    let (issuer, agent) = (thread_id(1), thread_id(2));
+    let (issuer, agent) = (thread_id(/*index*/ 1), thread_id(/*index*/ 2));
     let original = native_work(issuer, agent, "native-1", "do the work");
     let work = fixture.mailbox.accept_work(original.clone()).await.unwrap();
     let captured = fixture.mailbox.accepted_input(&work).await.unwrap();
@@ -342,7 +347,7 @@ async fn native_accept_retry_after_pre_dispatch_handle_drop_reuses_original_iden
         config,
         mailbox,
     } = test_mailbox().await;
-    let (issuer, agent) = (thread_id(22), thread_id(23));
+    let (issuer, agent) = (thread_id(/*index*/ 22), thread_id(/*index*/ 23));
     let original = native_work(
         issuer,
         agent,
@@ -400,7 +405,11 @@ async fn native_accept_retry_after_pre_dispatch_handle_drop_reuses_original_iden
 #[tokio::test]
 async fn admission_is_incremental_but_outcomes_and_snapshots_stay_exactly_scoped() {
     let fixture = test_mailbox().await;
-    let (issuer, other_issuer, agent) = (thread_id(3), thread_id(4), thread_id(5));
+    let (issuer, other_issuer, agent) = (
+        thread_id(/*index*/ 3),
+        thread_id(/*index*/ 4),
+        thread_id(/*index*/ 5),
+    );
     let (a, id_a) = accept_work(&fixture.mailbox, issuer, agent, "a", "A").await;
     let (b, id_b) = accept_work(&fixture.mailbox, issuer, agent, "b", "B").await;
     let (c, _id_c) = accept_work(&fixture.mailbox, issuer, agent, "c", "C").await;
@@ -435,7 +444,12 @@ async fn admission_is_incremental_but_outcomes_and_snapshots_stay_exactly_scoped
         accept_work(&fixture.mailbox, other_issuer, agent, "foreign", "foreign").await;
     fixture
         .mailbox
-        .record_outcome(&foreign, Outcome::Completed, None, Continuation::None)
+        .record_outcome(
+            &foreign,
+            Outcome::Completed,
+            /*response*/ None,
+            Continuation::None,
+        )
         .await
         .unwrap();
     let outcomes = finish(
@@ -443,7 +457,7 @@ async fn admission_is_incremental_but_outcomes_and_snapshots_stay_exactly_scoped
         agent,
         "turn",
         Outcome::Completed,
-        None,
+        /*response*/ None,
         Continuation::None,
     )
     .await;
@@ -496,7 +510,11 @@ async fn admission_is_incremental_but_outcomes_and_snapshots_stay_exactly_scoped
 #[tokio::test]
 async fn mixed_issuer_turn_creates_distinct_handbacks() {
     let fixture = test_mailbox().await;
-    let (issuer_a, issuer_b, agent) = (thread_id(6), thread_id(7), thread_id(8));
+    let (issuer_a, issuer_b, agent) = (
+        thread_id(/*index*/ 6),
+        thread_id(/*index*/ 7),
+        thread_id(/*index*/ 8),
+    );
     let (a, id_a) = accept_work(&fixture.mailbox, issuer_a, agent, "multi-a", "A").await;
     let (b, id_b) = accept_work(&fixture.mailbox, issuer_b, agent, "multi-b", "B").await;
     admit(&fixture.mailbox, agent, "shared-turn", &[id_a, id_b]).await;
@@ -537,12 +555,22 @@ async fn mixed_issuer_turn_creates_distinct_handbacks() {
 #[tokio::test]
 async fn pending_deferred_and_terminal_continuations_bind_to_exact_generation() {
     let fixture = test_mailbox().await;
-    let (issuer, agent) = (thread_id(9), thread_id(10));
+    let (issuer, agent) = (thread_id(/*index*/ 9), thread_id(/*index*/ 10));
     let (a, id_a) = accept_work(&fixture.mailbox, issuer, agent, "pending", "A").await;
     let (b, id_b) = accept_work(&fixture.mailbox, issuer, agent, "deferred", "B").await;
     let bindings = [
-        goal_binding(issuer, agent, 4, thread_id(44)),
-        goal_binding(issuer, agent, 5, thread_id(45)),
+        goal_binding(
+            issuer,
+            agent,
+            /*generation*/ 4,
+            thread_id(/*index*/ 44),
+        ),
+        goal_binding(
+            issuer,
+            agent,
+            /*generation*/ 5,
+            thread_id(/*index*/ 45),
+        ),
     ];
     for (work, id, turn, continuation, state) in [
         (
@@ -566,7 +594,7 @@ async fn pending_deferred_and_terminal_continuations_bind_to_exact_generation() 
             agent,
             turn,
             Outcome::Completed,
-            None,
+            /*response*/ None,
             continuation,
         )
         .await;
@@ -593,7 +621,7 @@ async fn pending_deferred_and_terminal_continuations_bind_to_exact_generation() 
             agent,
             "stale-generation",
             Outcome::Completed,
-            None,
+            /*response*/ None,
             Continuation::Terminal(stale)
         )
         .await
@@ -610,14 +638,14 @@ async fn pending_deferred_and_terminal_continuations_bind_to_exact_generation() 
     assert!(work_item(&still_deferred, &a.id).outcome.is_none());
 
     let mut stale_incarnation = bindings[0].clone();
-    stale_incarnation.incarnation = Some(thread_id(99));
+    stale_incarnation.incarnation = Some(thread_id(/*index*/ 99));
     assert!(
         finish(
             &fixture.mailbox,
             agent,
             "stale-incarnation",
             Outcome::Completed,
-            None,
+            /*response*/ None,
             Continuation::Terminal(stale_incarnation)
         )
         .await
@@ -651,7 +679,7 @@ async fn pending_deferred_and_terminal_continuations_bind_to_exact_generation() 
             agent,
             turn,
             Outcome::Completed,
-            None,
+            /*response*/ None,
             Continuation::Terminal(binding.clone()),
         )
         .await;
@@ -678,8 +706,13 @@ async fn pending_deferred_and_terminal_continuations_bind_to_exact_generation() 
 #[tokio::test]
 async fn continuation_binding_survives_deferred_phase_and_later_source_turn() {
     let fixture = test_mailbox().await;
-    let (issuer, agent) = (thread_id(46), thread_id(47));
-    let binding = goal_binding(issuer, agent, 6, thread_id(48));
+    let (issuer, agent) = (thread_id(/*index*/ 46), thread_id(/*index*/ 47));
+    let binding = goal_binding(
+        issuer,
+        agent,
+        /*generation*/ 6,
+        thread_id(/*index*/ 48),
+    );
     let (original, original_input) = accept_work(
         &fixture.mailbox,
         issuer,
@@ -699,7 +732,7 @@ async fn continuation_binding_survives_deferred_phase_and_later_source_turn() {
         agent,
         "source-origin",
         Outcome::Completed,
-        None,
+        /*response*/ None,
         Continuation::PendingGoalBinding(binding.clone()),
     )
     .await;
@@ -708,7 +741,7 @@ async fn continuation_binding_survives_deferred_phase_and_later_source_turn() {
         agent,
         "source-origin",
         Outcome::Completed,
-        None,
+        /*response*/ None,
         Continuation::Deferred(binding.clone()),
     )
     .await;
@@ -746,7 +779,7 @@ async fn continuation_binding_survives_deferred_phase_and_later_source_turn() {
         agent,
         "source-terminal",
         Outcome::Completed,
-        None,
+        /*response*/ None,
         Continuation::Terminal(binding.clone()),
     )
     .await;
@@ -775,8 +808,13 @@ async fn continuation_binding_survives_deferred_phase_and_later_source_turn() {
 #[tokio::test]
 async fn unowned_continuation_recovery_retains_binding_until_exact_incarnation_terminal() {
     let fixture = test_mailbox().await;
-    let (issuer, agent) = (thread_id(50), thread_id(51));
-    let binding = goal_binding(issuer, agent, 7, thread_id(52));
+    let (issuer, agent) = (thread_id(/*index*/ 50), thread_id(/*index*/ 51));
+    let binding = goal_binding(
+        issuer,
+        agent,
+        /*generation*/ 7,
+        thread_id(/*index*/ 52),
+    );
     let (original, original_input) = accept_work(
         &fixture.mailbox,
         issuer,
@@ -796,7 +834,7 @@ async fn unowned_continuation_recovery_retains_binding_until_exact_incarnation_t
         agent,
         "source-pending",
         Outcome::Completed,
-        None,
+        /*response*/ None,
         Continuation::PendingGoalBinding(binding.clone()),
     )
     .await;
@@ -810,7 +848,7 @@ async fn unowned_continuation_recovery_retains_binding_until_exact_incarnation_t
             .unwrap()
     );
     let mut different_incarnation = binding.clone();
-    different_incarnation.incarnation = Some(thread_id(53));
+    different_incarnation.incarnation = Some(thread_id(/*index*/ 53));
     assert!(
         !fixture
             .mailbox
@@ -887,7 +925,7 @@ async fn unowned_continuation_recovery_retains_binding_until_exact_incarnation_t
         agent,
         "source-wrong-terminal",
         Outcome::Completed,
-        None,
+        /*response*/ None,
         Continuation::Terminal(different_incarnation),
     )
     .await;
@@ -943,7 +981,7 @@ async fn unowned_continuation_recovery_retains_binding_until_exact_incarnation_t
         agent,
         "source-exact-terminal",
         Outcome::Completed,
-        None,
+        /*response*/ None,
         Continuation::Terminal(binding.clone()),
     )
     .await;
@@ -979,7 +1017,11 @@ async fn unowned_continuation_recovery_retains_binding_until_exact_incarnation_t
 #[tokio::test]
 async fn quiet_reply_and_author_dispositions_settle_only_the_exact_request() {
     let fixture = test_mailbox().await;
-    let (author, recipient, stranger) = (thread_id(11), thread_id(12), thread_id(13));
+    let (author, recipient, stranger) = (
+        thread_id(/*index*/ 11),
+        thread_id(/*index*/ 12),
+        thread_id(/*index*/ 13),
+    );
     let request = send(
         &fixture.mailbox,
         draft(
@@ -988,7 +1030,7 @@ async fn quiet_reply_and_author_dispositions_settle_only_the_exact_request() {
             recipient,
             MessageKind::Request,
             "decide",
-            false,
+            /*legacy_attention*/ false,
         ),
     )
     .await;
@@ -1006,7 +1048,7 @@ async fn quiet_reply_and_author_dispositions_settle_only_the_exact_request() {
         recipient,
         "unrelated-turn",
         Outcome::Completed,
-        None,
+        /*response*/ None,
         Continuation::None,
     )
     .await;
@@ -1028,7 +1070,14 @@ async fn quiet_reply_and_author_dispositions_settle_only_the_exact_request() {
         .mark_canonical(recipient, &request.id)
         .await
         .unwrap();
-    let mut reply_draft = draft("reply", recipient, author, MessageKind::Note, "done", false);
+    let mut reply_draft = draft(
+        "reply",
+        recipient,
+        author,
+        MessageKind::Note,
+        "done",
+        /*legacy_attention*/ false,
+    );
     reply_draft.reply_to = Some(request.id.clone());
     let reply = send(&fixture.mailbox, reply_draft).await;
     let replied = take_snapshot(
@@ -1061,7 +1110,7 @@ async fn quiet_reply_and_author_dispositions_settle_only_the_exact_request() {
             recipient,
             MessageKind::Request,
             "old",
-            false,
+            /*legacy_attention*/ false,
         ),
     )
     .await;
@@ -1071,7 +1120,7 @@ async fn quiet_reply_and_author_dispositions_settle_only_the_exact_request() {
         recipient,
         MessageKind::Request,
         "no",
-        false,
+        /*legacy_attention*/ false,
     );
     unauthorized.supersedes = Some(open_request.id.clone());
     assert!(matches!(
@@ -1084,14 +1133,14 @@ async fn quiet_reply_and_author_dispositions_settle_only_the_exact_request() {
         recipient,
         MessageKind::Request,
         "new",
-        false,
+        /*legacy_attention*/ false,
     );
     replacement_draft.supersedes = Some(open_request.id.clone());
     let replacement = send(&fixture.mailbox, replacement_draft).await;
     let superseded = take_snapshot(
         &fixture.mailbox,
         author,
-        None,
+        /*agent*/ None,
         vec![Selector::Reply(open_request.id.clone())],
         ReturnWhen::Any,
     )
@@ -1109,7 +1158,7 @@ async fn quiet_reply_and_author_dispositions_settle_only_the_exact_request() {
             recipient,
             MessageKind::Request,
             "cancel",
-            false,
+            /*legacy_attention*/ false,
         ),
     )
     .await;
@@ -1128,7 +1177,7 @@ async fn quiet_reply_and_author_dispositions_settle_only_the_exact_request() {
     let withdrawn = take_snapshot(
         &fixture.mailbox,
         author,
-        None,
+        /*agent*/ None,
         vec![Selector::Reply(withdrawal.id.clone())],
         ReturnWhen::Any,
     )
@@ -1143,13 +1192,27 @@ async fn quiet_reply_and_author_dispositions_settle_only_the_exact_request() {
 #[tokio::test]
 async fn progress_coalesces_exact_unadmitted_scope_and_closes_at_terminal_outcome() {
     let fixture = test_mailbox().await;
-    let (author, agent) = (thread_id(14), thread_id(15));
+    let (author, agent) = (thread_id(/*index*/ 14), thread_id(/*index*/ 15));
     let (work_a, _) = accept_work(&fixture.mailbox, author, agent, "work-a", "A").await;
     let (work_b, _) = accept_work(&fixture.mailbox, author, agent, "work-b", "B").await;
-    let mut first_draft = draft("p1", author, agent, MessageKind::Progress, "first", false);
+    let mut first_draft = draft(
+        "p1",
+        author,
+        agent,
+        MessageKind::Progress,
+        "first",
+        /*legacy_attention*/ false,
+    );
     first_draft.work_ref = Some(work_a.clone());
     let first = send(&fixture.mailbox, first_draft).await;
-    let mut update_draft = draft("p2", author, agent, MessageKind::Progress, "latest", false);
+    let mut update_draft = draft(
+        "p2",
+        author,
+        agent,
+        MessageKind::Progress,
+        "latest",
+        /*legacy_attention*/ false,
+    );
     update_draft.work_ref = Some(work_a.clone());
     let update = send(&fixture.mailbox, update_draft).await;
     assert_ne!(update.id, first.id);
@@ -1169,7 +1232,7 @@ async fn progress_coalesces_exact_unadmitted_scope_and_closes_at_terminal_outcom
         .unwrap();
     assert_eq!(latest.communication.content, "latest");
     assert_eq!(latest.supersedes.as_deref(), Some(first.id.as_str()));
-    let pending = fixture.mailbox.pending(agent, 20).await.unwrap();
+    let pending = fixture.mailbox.pending(agent, /*limit*/ 20).await.unwrap();
     assert!(pending.iter().any(|envelope| envelope.id == update.id));
     assert!(!pending.iter().any(|envelope| envelope.id == first.id));
 
@@ -1179,7 +1242,7 @@ async fn progress_coalesces_exact_unadmitted_scope_and_closes_at_terminal_outcom
         agent,
         MessageKind::Progress,
         "other path",
-        false,
+        /*legacy_attention*/ false,
     );
     other_author.work_ref = Some(work_a.clone());
     other_author.communication.author = AgentPath::from_string("/root/child".to_string()).unwrap();
@@ -1190,18 +1253,30 @@ async fn progress_coalesces_exact_unadmitted_scope_and_closes_at_terminal_outcom
         agent,
         MessageKind::Progress,
         "other path",
-        false,
+        /*legacy_attention*/ false,
     );
     other_path.work_ref = Some(work_a.clone());
     other_path.communication.recipient = AgentPath::from_string("/root/other".to_string()).unwrap();
     assert_ne!(send(&fixture.mailbox, other_path).await.id, first.id);
-    let mut other_work = draft("p4", author, agent, MessageKind::Progress, "work B", false);
+    let mut other_work = draft(
+        "p4",
+        author,
+        agent,
+        MessageKind::Progress,
+        "work B",
+        /*legacy_attention*/ false,
+    );
     other_work.work_ref = Some(work_b);
     assert_ne!(send(&fixture.mailbox, other_work).await.id, first.id);
 
     fixture
         .mailbox
-        .record_outcome(&work_a, Outcome::Completed, None, Continuation::None)
+        .record_outcome(
+            &work_a,
+            Outcome::Completed,
+            /*response*/ None,
+            Continuation::None,
+        )
         .await
         .unwrap();
     let mut late = draft(
@@ -1210,7 +1285,7 @@ async fn progress_coalesces_exact_unadmitted_scope_and_closes_at_terminal_outcom
         agent,
         MessageKind::Progress,
         "late",
-        false,
+        /*legacy_attention*/ false,
     );
     late.work_ref = Some(work_a);
     assert!(matches!(
@@ -1222,7 +1297,7 @@ async fn progress_coalesces_exact_unadmitted_scope_and_closes_at_terminal_outcom
 #[tokio::test]
 async fn canonical_outcomes_are_observed_per_item_without_cursor_loss() {
     let fixture = test_mailbox().await;
-    let (issuer, agent) = (thread_id(16), thread_id(17));
+    let (issuer, agent) = (thread_id(/*index*/ 16), thread_id(/*index*/ 17));
     let (a, id_a) = accept_work(&fixture.mailbox, issuer, agent, "observe-a", "A").await;
     let (b, id_b) = accept_work(&fixture.mailbox, issuer, agent, "observe-b", "B").await;
     for (work, id, turn) in [(&a, id_a, "turn-a"), (&b, id_b, "turn-b")] {
@@ -1232,7 +1307,7 @@ async fn canonical_outcomes_are_observed_per_item_without_cursor_loss() {
             agent,
             turn,
             Outcome::Completed,
-            None,
+            /*response*/ None,
             Continuation::None,
         )
         .await;
@@ -1276,7 +1351,7 @@ async fn canonical_outcomes_are_observed_per_item_without_cursor_loss() {
 #[tokio::test]
 async fn message_kinds_default_to_quiet_delivery_with_legacy_attention_separate() {
     let fixture = test_mailbox().await;
-    let (sender, recipient) = (thread_id(18), thread_id(19));
+    let (sender, recipient) = (thread_id(/*index*/ 18), thread_id(/*index*/ 19));
     let kinds = [
         MessageKind::Note,
         MessageKind::Progress,
@@ -1293,7 +1368,7 @@ async fn message_kinds_default_to_quiet_delivery_with_legacy_attention_separate(
                 recipient,
                 kind,
                 "quiet",
-                false,
+                /*legacy_attention*/ false,
             ),
         )
         .await;
@@ -1305,12 +1380,16 @@ async fn message_kinds_default_to_quiet_delivery_with_legacy_attention_separate(
                 recipient,
                 kind,
                 "legacy",
-                true,
+                /*legacy_attention*/ true,
             ),
         )
         .await;
     }
-    let pending = fixture.mailbox.pending(recipient, 20).await.unwrap();
+    let pending = fixture
+        .mailbox
+        .pending(recipient, /*limit*/ 20)
+        .await
+        .unwrap();
     assert_eq!(pending.len(), 8);
     for kind in kinds {
         assert_eq!(pending.iter().filter(|m| m.kind == kind).count(), 2);
@@ -1320,7 +1399,7 @@ async fn message_kinds_default_to_quiet_delivery_with_legacy_attention_separate(
     assert_eq!(
         fixture
             .mailbox
-            .attention(recipient, 20)
+            .attention(recipient, /*limit*/ 20)
             .await
             .unwrap()
             .len(),
@@ -1331,7 +1410,7 @@ async fn message_kinds_default_to_quiet_delivery_with_legacy_attention_separate(
 #[tokio::test]
 async fn explicit_attention_is_one_shot_after_canonical_read_without_settling_request() {
     let fixture = test_mailbox().await;
-    let (sender, recipient) = (thread_id(24), thread_id(25));
+    let (sender, recipient) = (thread_id(/*index*/ 24), thread_id(/*index*/ 25));
     let request = send(
         &fixture.mailbox,
         draft(
@@ -1340,7 +1419,7 @@ async fn explicit_attention_is_one_shot_after_canonical_read_without_settling_re
             recipient,
             MessageKind::Request,
             "please decide",
-            false,
+            /*legacy_attention*/ false,
         ),
     )
     .await;
@@ -1352,7 +1431,7 @@ async fn explicit_attention_is_one_shot_after_canonical_read_without_settling_re
             recipient,
             MessageKind::Alert,
             "needs attention",
-            false,
+            /*legacy_attention*/ false,
         ),
     )
     .await;
@@ -1364,7 +1443,7 @@ async fn explicit_attention_is_one_shot_after_canonical_read_without_settling_re
             recipient,
             MessageKind::Note,
             "quiet note",
-            false,
+            /*legacy_attention*/ false,
         ),
     )
     .await;
@@ -1376,7 +1455,7 @@ async fn explicit_attention_is_one_shot_after_canonical_read_without_settling_re
             recipient,
             MessageKind::Progress,
             "quiet progress",
-            false,
+            /*legacy_attention*/ false,
         ),
     )
     .await;
@@ -1387,14 +1466,14 @@ async fn explicit_attention_is_one_shot_after_canonical_read_without_settling_re
         recipient,
         MessageKind::Note,
         "legacy wake",
-        true,
+        /*legacy_attention*/ true,
     );
     let legacy = send(&fixture.mailbox, legacy_draft.clone()).await;
     assert_eq!(send(&fixture.mailbox, legacy_draft).await.id, legacy.id);
 
     let uncanonical = fixture
         .mailbox
-        .pending_page(recipient, /*after_seq*/ None, 20)
+        .pending_page(recipient, /*after_seq*/ None, /*limit*/ 20)
         .await
         .unwrap();
     let uncanonical_ids = uncanonical
@@ -1412,7 +1491,7 @@ async fn explicit_attention_is_one_shot_after_canonical_read_without_settling_re
     }
     let canonical = fixture
         .mailbox
-        .read_page(recipient, None, 20)
+        .read_page(recipient, /*after_seq*/ None, /*limit*/ 20)
         .await
         .unwrap();
     assert!(
@@ -1425,7 +1504,7 @@ async fn explicit_attention_is_one_shot_after_canonical_read_without_settling_re
 
     let mut attention_ids = fixture
         .mailbox
-        .attention(recipient, 20)
+        .attention(recipient, /*limit*/ 20)
         .await
         .unwrap()
         .into_iter()
@@ -1453,7 +1532,7 @@ async fn explicit_attention_is_one_shot_after_canonical_read_without_settling_re
     assert!(
         fixture
             .mailbox
-            .attention(recipient, 20)
+            .attention(recipient, /*limit*/ 20)
             .await
             .unwrap()
             .is_empty()
@@ -1481,7 +1560,7 @@ async fn explicit_attention_is_one_shot_after_canonical_read_without_settling_re
             recipient,
             MessageKind::Request,
             "new request",
-            false,
+            /*legacy_attention*/ false,
         ),
     )
     .await;
@@ -1490,7 +1569,11 @@ async fn explicit_attention_is_one_shot_after_canonical_read_without_settling_re
         .mark_canonical(recipient, &new_request.id)
         .await
         .unwrap();
-    let new_attention = fixture.mailbox.attention(recipient, 20).await.unwrap();
+    let new_attention = fixture
+        .mailbox
+        .attention(recipient, /*limit*/ 20)
+        .await
+        .unwrap();
     let new_attention_ids = new_attention
         .iter()
         .map(|attention| attention.id.clone())
@@ -1513,7 +1596,7 @@ async fn explicit_attention_is_one_shot_after_canonical_read_without_settling_re
     assert!(
         fixture
             .mailbox
-            .attention(recipient, 20)
+            .attention(recipient, /*limit*/ 20)
             .await
             .unwrap()
             .is_empty()
@@ -1523,14 +1606,14 @@ async fn explicit_attention_is_one_shot_after_canonical_read_without_settling_re
 #[tokio::test]
 async fn activation_claim_is_single_use_across_a_lost_result() {
     let fixture = test_mailbox().await;
-    let (sender, recipient) = (thread_id(20), thread_id(21));
+    let (sender, recipient) = (thread_id(/*index*/ 20), thread_id(/*index*/ 21));
     let mut message_draft = draft(
         "activation",
         sender,
         recipient,
         MessageKind::Alert,
         "activate",
-        false,
+        /*legacy_attention*/ false,
     );
     message_draft.activate_if_idle = true;
     let message = send(&fixture.mailbox, message_draft).await;
@@ -1606,7 +1689,7 @@ fn only_closed_any_and_all_peer_cycles_are_provable() {
 #[tokio::test]
 async fn wait_cycle_rejects_only_the_new_registration_and_drop_is_exact() {
     let fixture = test_mailbox().await;
-    let (owner_a, owner_b) = (thread_id(22), thread_id(23));
+    let (owner_a, owner_b) = (thread_id(/*index*/ 22), thread_id(/*index*/ 23));
     let wait_a = fixture
         .mailbox
         .begin_wait(
@@ -1614,7 +1697,7 @@ async fn wait_cycle_rejects_only_the_new_registration_and_drop_is_exact() {
             owner_a,
             vec![owner_b],
             ReturnWhen::Any,
-            false,
+            /*has_escape*/ false,
         )
         .unwrap();
     assert_eq!(wait_a.wait_id(), "wait-a");
@@ -1624,7 +1707,7 @@ async fn wait_cycle_rejects_only_the_new_registration_and_drop_is_exact() {
             owner_b,
             vec![owner_a],
             ReturnWhen::All,
-            false,
+            /*has_escape*/ false,
         ),
         Err(MailboxError::ClosedPeerCycle)
     ));
@@ -1634,7 +1717,7 @@ async fn wait_cycle_rejects_only_the_new_registration_and_drop_is_exact() {
             owner_b,
             vec![owner_a],
             ReturnWhen::All,
-            false,
+            /*has_escape*/ false,
         ),
         Err(MailboxError::ClosedPeerCycle)
     ));
@@ -1645,7 +1728,7 @@ async fn wait_cycle_rejects_only_the_new_registration_and_drop_is_exact() {
             owner_b,
             vec![owner_a],
             ReturnWhen::All,
-            true,
+            /*has_escape*/ true,
         )
         .unwrap();
     drop(escape);
@@ -1655,7 +1738,7 @@ async fn wait_cycle_rejects_only_the_new_registration_and_drop_is_exact() {
             owner_b,
             vec![owner_a],
             ReturnWhen::All,
-            false,
+            /*has_escape*/ false,
         ),
         Err(MailboxError::ClosedPeerCycle)
     ));
@@ -1668,7 +1751,7 @@ async fn wait_cycle_rejects_only_the_new_registration_and_drop_is_exact() {
                 owner_b,
                 vec![owner_a],
                 ReturnWhen::All,
-                false,
+                /*has_escape*/ false,
             )
             .is_ok()
     );
@@ -1677,29 +1760,55 @@ async fn wait_cycle_rejects_only_the_new_registration_and_drop_is_exact() {
 #[tokio::test]
 async fn input_publication_invalidates_stale_waits_and_defers_cycle_claims_until_rescan() {
     let fixture = test_mailbox().await;
-    let (a, b) = (thread_id(28), thread_id(29));
+    let (a, b) = (thread_id(/*index*/ 28), thread_id(/*index*/ 29));
     let before = fixture.mailbox.wait_input_generation();
     let old = fixture
         .mailbox
-        .begin_wait_at("a".into(), a, vec![b], ReturnWhen::Any, false, before)
+        .begin_wait_at(
+            "a".into(),
+            a,
+            vec![b],
+            ReturnWhen::Any,
+            /*has_escape*/ false,
+            before,
+        )
         .unwrap();
     let arrival = fixture.mailbox.begin_input_arrival();
     assert!(matches!(
-        fixture
-            .mailbox
-            .begin_wait_at("stale".into(), b, vec![a], ReturnWhen::All, false, before,),
+        fixture.mailbox.begin_wait_at(
+            "stale".into(),
+            b,
+            vec![a],
+            ReturnWhen::All,
+            /*has_escape*/ false,
+            before,
+        ),
         Err(MailboxError::StaleWaitSnapshot)
     ));
     let during = fixture.mailbox.wait_input_generation();
     let provisional_a = fixture
         .mailbox
-        .begin_wait_at("a".into(), a, vec![b], ReturnWhen::Any, false, during)
+        .begin_wait_at(
+            "a".into(),
+            a,
+            vec![b],
+            ReturnWhen::Any,
+            /*has_escape*/ false,
+            during,
+        )
         .unwrap();
     // A stale RAII handle must not remove a replacement registration.
     drop(old);
     let provisional_b = fixture
         .mailbox
-        .begin_wait_at("b".into(), b, vec![a], ReturnWhen::All, false, during)
+        .begin_wait_at(
+            "b".into(),
+            b,
+            vec![a],
+            ReturnWhen::All,
+            /*has_escape*/ false,
+            during,
+        )
         .unwrap();
     drop(arrival);
     assert!(matches!(
@@ -1708,7 +1817,7 @@ async fn input_publication_invalidates_stale_waits_and_defers_cycle_claims_until
             b,
             vec![a],
             ReturnWhen::All,
-            false,
+            /*has_escape*/ false,
             during,
         ),
         Err(MailboxError::StaleWaitSnapshot)
@@ -1723,7 +1832,7 @@ async fn input_publication_invalidates_stale_waits_and_defers_cycle_claims_until
             a,
             vec![b],
             ReturnWhen::Any,
-            false,
+            /*has_escape*/ false,
             current,
         )
         .unwrap();
@@ -1733,7 +1842,7 @@ async fn input_publication_invalidates_stale_waits_and_defers_cycle_claims_until
             b,
             vec![a],
             ReturnWhen::All,
-            false,
+            /*has_escape*/ false,
             current,
         ),
         Err(MailboxError::ClosedPeerCycle)
@@ -1743,7 +1852,7 @@ async fn input_publication_invalidates_stale_waits_and_defers_cycle_claims_until
 #[tokio::test]
 async fn confirmed_execution_and_terminal_capture_supersede_stale_dispatch_recovery() {
     let fixture = test_mailbox().await;
-    let (issuer, agent) = (thread_id(32), thread_id(33));
+    let (issuer, agent) = (thread_id(/*index*/ 32), thread_id(/*index*/ 33));
     let (work, input) = accept_work(&fixture.mailbox, issuer, agent, "recovery", "original").await;
     assert_eq!(
         fixture.mailbox.begin_dispatch(&work).await.unwrap(),
@@ -1771,7 +1880,7 @@ async fn confirmed_execution_and_terminal_capture_supersede_stale_dispatch_recov
         agent,
         "explicit-recovery-turn",
         Outcome::Completed,
-        None,
+        /*response*/ None,
         Continuation::None,
     )
     .await;
@@ -1811,7 +1920,7 @@ async fn confirmed_execution_and_terminal_capture_supersede_stale_dispatch_recov
 #[tokio::test]
 async fn recipient_incompatibility_recovers_accepted_work_without_losing_or_resending_it() {
     let fixture = test_mailbox().await;
-    let (issuer, agent) = (thread_id(37), thread_id(38));
+    let (issuer, agent) = (thread_id(/*index*/ 37), thread_id(/*index*/ 38));
     let (work, input_id) = accept_work(
         &fixture.mailbox,
         issuer,
@@ -1887,7 +1996,11 @@ async fn recipient_incompatibility_recovers_accepted_work_without_losing_or_rese
 #[tokio::test]
 async fn resumed_issuer_interrupts_only_its_unconfirmed_dispatches_in_bounded_batches() {
     let fixture = test_mailbox().await;
-    let (issuer, agent, other_issuer) = (thread_id(34), thread_id(35), thread_id(36));
+    let (issuer, agent, other_issuer) = (
+        thread_id(/*index*/ 34),
+        thread_id(/*index*/ 35),
+        thread_id(/*index*/ 36),
+    );
     let accepted_request = native_work(issuer, agent, "resume-accepted", "retained accepted input");
     let accepted = fixture
         .mailbox
@@ -1937,21 +2050,21 @@ async fn resumed_issuer_interrupts_only_its_unconfirmed_dispatches_in_bounded_ba
     );
     assert_eq!(
         reopened
-            .interrupt_issuer_dispatches(issuer, 1)
+            .interrupt_issuer_dispatches(issuer, /*limit*/ 1)
             .await
             .unwrap(),
         1
     );
     assert_eq!(
         reopened
-            .interrupt_issuer_dispatches(issuer, 1)
+            .interrupt_issuer_dispatches(issuer, /*limit*/ 1)
             .await
             .unwrap(),
         1
     );
     assert_eq!(
         reopened
-            .interrupt_issuer_dispatches(issuer, 1)
+            .interrupt_issuer_dispatches(issuer, /*limit*/ 1)
             .await
             .unwrap(),
         0
@@ -1986,14 +2099,16 @@ async fn resumed_issuer_interrupts_only_its_unconfirmed_dispatches_in_bounded_ba
     );
     assert_eq!(
         reopened
-            .issued_work_refs(issuer, None, 100)
+            .issued_work_refs(issuer, /*agent*/ None, /*limit*/ 100)
             .await
             .unwrap()
             .len(),
         3
     );
     assert!(matches!(
-        reopened.interrupt_issuer_dispatches(issuer, 0).await,
+        reopened
+            .interrupt_issuer_dispatches(issuer, /*limit*/ 0)
+            .await,
         Err(MailboxError::InvalidInput(_))
     ));
 }
@@ -2001,7 +2116,7 @@ async fn resumed_issuer_interrupts_only_its_unconfirmed_dispatches_in_bounded_ba
 #[tokio::test]
 async fn canonical_result_body_resolves_only_its_exact_covered_work_and_attention() {
     let fixture = test_mailbox().await;
-    let (issuer, agent) = (thread_id(30), thread_id(31));
+    let (issuer, agent) = (thread_id(/*index*/ 30), thread_id(/*index*/ 31));
     let (covered, input) = accept_work(&fixture.mailbox, issuer, agent, "covered", "A").await;
     let (unrelated, _) = accept_work(&fixture.mailbox, issuer, agent, "unrelated", "B").await;
     admit(&fixture.mailbox, agent, "covered-turn", &[input]).await;
@@ -2010,7 +2125,7 @@ async fn canonical_result_body_resolves_only_its_exact_covered_work_and_attentio
         agent,
         "covered-turn",
         Outcome::NeedsAttention,
-        None,
+        /*response*/ None,
         Continuation::None,
     )
     .await;
@@ -2028,7 +2143,7 @@ async fn canonical_result_body_resolves_only_its_exact_covered_work_and_attentio
     assert!(
         !fixture
             .mailbox
-            .attention(issuer, 100)
+            .attention(issuer, /*limit*/ 100)
             .await
             .unwrap()
             .is_empty()
@@ -2052,7 +2167,7 @@ async fn canonical_result_body_resolves_only_its_exact_covered_work_and_attentio
     assert!(
         fixture
             .mailbox
-            .attention(issuer, 100)
+            .attention(issuer, /*limit*/ 100)
             .await
             .unwrap()
             .is_empty()
