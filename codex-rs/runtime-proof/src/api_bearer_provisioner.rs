@@ -463,7 +463,17 @@ fn run_systemd_creds(action: &str, input: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
         .stderr(Stdio::null());
     unsafe {
         command.pre_exec(|| {
-            if libc::geteuid() != 0
+            if libc::geteuid() != 0 {
+                return Err(std::io::Error::from_raw_os_error(libc::EPERM));
+            }
+            // PR_SET_DUMPABLE is reset by execve for an ordinary binary. Keep
+            // the helper's credential-bearing memory out of core dumps with a
+            // zero, non-raisable core limit that survives exec.
+            let core_limit = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            if libc::setrlimit(libc::RLIMIT_CORE, &core_limit) != 0
                 || libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0
                 || libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) != 0
             {
