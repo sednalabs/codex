@@ -28,7 +28,7 @@ fn http_failure_displays_only_validated_transport_hints() {
     let rendered = error.to_string();
     assert!(rendered.starts_with("HTTP 502: existing bounded body preview"));
     assert!(rendered.contains("provider=cloudflare cf-ray=0123456789abcdef-SYD"));
-    assert!(rendered.contains("via-present"));
+    assert_eq!(rendered.matches("via-present").count(), 1);
     for forbidden in [
         "untrusted gateway value",
         "internal-host.example",

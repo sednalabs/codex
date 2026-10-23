@@ -94,17 +94,19 @@ struct SafeHttpResponseDiagnostics {
 
 impl std::fmt::Display for SafeHttpResponseDiagnostics {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(ray) = &self.cloudflare_ray {
-            write!(formatter, " [transport: provider=cloudflare cf-ray={ray}")?;
-        } else if self.via_present {
-            formatter.write_str(" [transport: via-present")?;
-        } else {
-            return Ok(());
+        match (&self.cloudflare_ray, self.via_present) {
+            (Some(ray), true) => {
+                write!(
+                    formatter,
+                    " [transport: provider=cloudflare cf-ray={ray}; via-present]"
+                )
+            }
+            (Some(ray), false) => {
+                write!(formatter, " [transport: provider=cloudflare cf-ray={ray}]")
+            }
+            (None, true) => formatter.write_str(" [transport: via-present]"),
+            (None, false) => Ok(()),
         }
-        if self.via_present {
-            formatter.write_str("; via-present")?;
-        }
-        formatter.write_str("]")
     }
 }
 
