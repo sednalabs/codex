@@ -111,12 +111,7 @@ impl Mailbox {
         has_escape: bool,
     ) -> MailboxResult<WaitRegistration> {
         self.begin_wait_inner(
-            wait_id,
-            owner,
-            peers,
-            mode,
-            has_escape,
-            /*input_generation*/ None,
+            wait_id, owner, peers, mode, has_escape, /*input_generation*/ None,
         )
     }
 

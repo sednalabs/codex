@@ -64,14 +64,14 @@ impl Mailbox {
         if !work.input.id.as_ref().is_some_and(is_mailbox_id) {
             work.input.id = Some(codex_protocol::ResponseItemId::from_server(new_mailbox_id()));
         }
-        let input_message_id = work
-            .input
-            .id
-            .as_ref()
-            .map(ToString::to_string)
-            .ok_or_else(|| {
-                MailboxError::InvalidInput("accepted native input ID is missing".into())
-            })?;
+        let input_message_id =
+            work.input
+                .id
+                .as_ref()
+                .map(ToString::to_string)
+                .ok_or_else(|| {
+                    MailboxError::InvalidInput("accepted native input ID is missing".into())
+                })?;
         let input_json = serde_json::to_string(&work.input)?;
 
         let mut transaction = self.pool.begin().await?;

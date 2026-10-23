@@ -479,6 +479,10 @@ jobs:
               # the old local-fallback behavior there.
               bazel_clippy_args+=(--skip_incompatible_explicit_targets)
             fi
+            if [[ "${GITHUB_REPOSITORY:-}" == "sednalabs/codex" && -z "${BUILDBUDDY_API_KEY:-}" ]]; then
+              # Match native Rust execution tools to the fork's gnullvm C++ host.
+              bazel_clippy_args+=(--host_platform=//:local_windows)
+            fi
           fi
 
           bazel_target_lines="$(./scripts/list-bazel-clippy-targets.sh "${bazel_target_list_args[@]}")"

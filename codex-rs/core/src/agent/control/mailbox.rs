@@ -170,7 +170,7 @@ impl AgentControl {
         // Indexed bounded batches, scoped to the exact native session being resumed.
         // Other loaded issuers and producer continuation custody are untouched.
         while mailbox
-            .interrupt_issuer_dispatches(issuer, 100)
+            .interrupt_issuer_dispatches(issuer, /*limit*/ 100)
             .await
             .map_err(storage_error)?
             != 0
@@ -428,7 +428,7 @@ impl AgentControl {
         let mut cursor = None;
         loop {
             let page = mailbox
-                .pending_page(recipient, cursor, 100)
+                .pending_page(recipient, cursor, /*limit*/ 100)
                 .await
                 .map_err(storage_error)?;
             for envelope in &page.items {
@@ -461,7 +461,7 @@ impl AgentControl {
             return Ok(Vec::new());
         };
         let unread = mailbox
-            .unadmitted_canonical_ids(recipient, 4096)
+            .unadmitted_canonical_ids(recipient, /*limit*/ 4096)
             .await
             .map_err(storage_error)?
             .into_iter()
@@ -480,7 +480,7 @@ impl AgentControl {
             return Ok(Vec::new());
         };
         Ok(mailbox
-            .automatic_inputs(recipient, source_turn_id, 2)
+            .automatic_inputs(recipient, source_turn_id, /*limit*/ 2)
             .await
             .map_err(storage_error)?
             .into_iter()

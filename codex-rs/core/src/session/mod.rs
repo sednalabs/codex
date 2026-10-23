@@ -2683,8 +2683,10 @@ impl Session {
     }
 
     async fn send_event_raw_with_persistence(&self, event: Event, persist: bool) {
-        self.send_event_raw_with_persistence_and_status_override(event, persist, None)
-            .await;
+        self.send_event_raw_with_persistence_and_status_override(
+            event, persist, /*status_override*/ None,
+        )
+        .await;
     }
 
     async fn send_event_raw_with_persistence_and_status_override(

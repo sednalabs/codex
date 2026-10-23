@@ -291,13 +291,8 @@ async fn mailbox_terminal_recovers_exact_unadmitted_submission_idempotently() {
     let mailbox = control.mailbox().unwrap();
     let agent = ThreadId::new();
     let submission_id = "producer-failed-before-created";
-    let (work, input_id) = accepted_unadmitted_work(
-        &mailbox,
-        session.thread_id,
-        agent,
-        submission_id,
-    )
-    .await;
+    let (work, input_id) =
+        accepted_unadmitted_work(&mailbox, session.thread_id, agent, submission_id).await;
     assert_eq!(
         mailbox
             .unadmitted_input_ids(agent, std::slice::from_ref(&input_id))

@@ -91,7 +91,19 @@ pub fn should_persist_event_msg(ev: &EventMsg, history_mode: ThreadHistoryMode) 
         EventMsg::ItemCompleted(event) => {
             // Paginated rollouts store TurnItems.
             // Legacy rollouts keep only items with no raw ResponseItem or legacy equivalent.
+            // Typed mailbox terminal reports must survive legacy rollout filtering.
             matches!(history_mode, ThreadHistoryMode::Paginated)
+                || matches!(
+                    &event.item,
+                    TurnItem::CollabAgentToolCall(call)
+                        if call.tool == CollabAgentTool::Wait
+                            && matches!(
+                                call.status,
+                                CollabAgentToolCallStatus::Completed
+                                    | CollabAgentToolCallStatus::Failed
+                            )
+                            && call.mailbox_wait_report.is_some()
+                )
                 || matches!(
                     event.item,
                     TurnItem::Plan(_) | TurnItem::Extension(ExtensionItem::Sleep(_))

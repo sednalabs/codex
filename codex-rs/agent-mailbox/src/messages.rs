@@ -152,7 +152,7 @@ pub(crate) async fn insert_message_tx(
         && !draft.activate_if_idle
         && let Some(work_ref) = draft.work_ref.as_ref()
         && let Some(existing) = sqlx::query(
-                "SELECT * FROM mailbox_messages
+            "SELECT * FROM mailbox_messages
                  WHERE sender = ? AND recipient = ? AND work_ref_json = ?
                    AND author_path = ? AND recipient_path = ?
                    AND kind = '\"progress\"' AND canonical = 0 AND input_admitted = 0
@@ -163,15 +163,15 @@ pub(crate) async fn insert_message_tx(
                      WHERE newer.supersedes = mailbox_messages.id
                    )
                  ORDER BY seq DESC LIMIT 1",
-            )
-            .bind(draft.sender.to_string())
-            .bind(draft.recipient.to_string())
-            .bind(serde_json::to_string(work_ref)?)
-            .bind(serde_json::to_string(&draft.communication.author)?)
-            .bind(serde_json::to_string(&draft.communication.recipient)?)
-            .bind(i64::from(draft.legacy_attention))
-            .fetch_optional(&mut **transaction)
-            .await?
+        )
+        .bind(draft.sender.to_string())
+        .bind(draft.recipient.to_string())
+        .bind(serde_json::to_string(work_ref)?)
+        .bind(serde_json::to_string(&draft.communication.author)?)
+        .bind(serde_json::to_string(&draft.communication.recipient)?)
+        .bind(i64::from(draft.legacy_attention))
+        .fetch_optional(&mut **transaction)
+        .await?
     {
         // Replacement gets its own stable ID. Never rewrite the body or
         // idempotency binding behind the previously accepted identifier.
@@ -270,7 +270,9 @@ pub(crate) async fn insert_message_tx(
         .bind(old_id)
         .execute(&mut **transaction)
         .await?;
-        if replaced.rows_affected() == 1 && let Some(old) = old {
+        if replaced.rows_affected() == 1
+            && let Some(old) = old
+        {
             let unread = old.try_get::<i64, _>("canonical")? == 0
                 || old.try_get::<i64, _>("input_admitted")? == 0;
             if unread {

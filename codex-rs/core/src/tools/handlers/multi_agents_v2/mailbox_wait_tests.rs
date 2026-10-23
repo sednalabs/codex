@@ -39,7 +39,8 @@ fn mailbox_wait_selectors_bound_utf8_count_and_combined_content() {
         validate_wait_selectors(&["x".repeat(MAX_MAILBOX_WAIT_SELECTOR_BYTES + 1)], &[]).is_err()
     );
     assert!(
-        validate_wait_selectors(&[], &["é".repeat(MAX_MAILBOX_WAIT_SELECTOR_BYTES / 2 + 1)]).is_err()
+        validate_wait_selectors(&[], &["é".repeat(MAX_MAILBOX_WAIT_SELECTOR_BYTES / 2 + 1)])
+            .is_err()
     );
 }
 

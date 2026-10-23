@@ -376,7 +376,7 @@ impl PreparedV2AgentDelivery {
                 )));
             }
             let submission = self
-                .record_submission(&mut communication, &context, None)
+                .record_submission(&mut communication, &context, /*recipient_config*/ None)
                 .await?;
             match submission.dispatch {
                 DispatchDecision::AlreadyDispatched => return Ok(submission.id),

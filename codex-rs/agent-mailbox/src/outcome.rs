@@ -145,9 +145,7 @@ impl Mailbox {
         validate_auto_response_size(&groups)?;
         if is_nonterminal(&continuation) {
             let binding = continuation_binding(&continuation).ok_or_else(|| {
-                MailboxError::InvalidInput(
-                    "nonterminal continuation is missing its binding".into(),
-                )
+                MailboxError::InvalidInput("nonterminal continuation is missing its binding".into())
             })?;
             let binding_json = serde_json::to_string(binding)?;
             for work_ref in &refs {

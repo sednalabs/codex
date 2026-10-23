@@ -119,7 +119,7 @@ async fn handle_wait(invocation: ToolInvocation) -> Result<Box<dyn ToolOutput>, 
             agents.push(agent);
             selectors.extend(
                 mailbox
-                    .issued_work_refs(session.thread_id, Some(agent), 100)
+                    .issued_work_refs(session.thread_id, Some(agent), /*limit*/ 100)
                     .await
                     .map_err(mailbox_error)?
                     .into_iter()
@@ -183,7 +183,10 @@ async fn handle_wait(invocation: ToolInvocation) -> Result<Box<dyn ToolOutput>, 
         drop(registration.take());
         let input_generation = mailbox.wait_input_generation();
         if targetless {
-            match mailbox.issued_work_refs(session.thread_id, None, 100).await {
+            match mailbox
+                .issued_work_refs(session.thread_id, /*agent*/ None, /*limit*/ 100)
+                .await
+            {
                 Ok(work) => {
                     selectors = work
                         .into_iter()
@@ -328,7 +331,7 @@ async fn handle_wait(invocation: ToolInvocation) -> Result<Box<dyn ToolOutput>, 
         }
         // An addressed request/alert interrupts a join but never satisfies it. Its body is
         // admitted before its one-shot notification is observed; unanswered obligation remains.
-        let attention = match mailbox.attention(session.thread_id, 100).await {
+        let attention = match mailbox.attention(session.thread_id, /*limit*/ 100).await {
             Ok(attention) => attention,
             Err(_) => {
                 report.completion_reason = Some(MailboxWakeCause::RuntimeFault);

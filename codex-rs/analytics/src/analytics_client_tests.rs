@@ -4807,6 +4807,7 @@ async fn turn_event_counts_completed_tool_items() {
             wake_notifications: None,
             completion_reason: None,
             wake_cause: None,
+            mailbox_wait_report: None,
         },
         ThreadItem::SubAgentActivity {
             id: "sub-agent-activity-1".to_string(),

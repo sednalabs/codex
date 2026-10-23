@@ -1598,6 +1598,25 @@ class RouteSelectionTests(unittest.TestCase):
         self.assertIn("--jobs=96", clippy_run)
         self.assertIn("--loading_phase_threads=8", clippy_run)
 
+    def test_bazel_windows_clippy_fork_uses_native_host(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/bazel.yml")
+        clippy_steps = ((payload.get("jobs") or {}).get("clippy") or {}).get("steps") or []
+        clippy_run = next(
+            step
+            for step in clippy_steps
+            if step.get("name") == "bazel build --config=clippy lint targets"
+        ).get("run") or ""
+        fork_no_key_condition = (
+            '[[ "${GITHUB_REPOSITORY:-}" == "sednalabs/codex" '
+            '&& -z "${BUILDBUDDY_API_KEY:-}" ]]'
+        )
+        self.assertIn('[[ "${RUNNER_OS}" == "Windows" ]]', clippy_run)
+        self.assertIn(fork_no_key_condition, clippy_run)
+        self.assertIn(
+            "bazel_clippy_args+=(--host_platform=//:local_windows)", clippy_run
+        )
+        self.assertEqual(clippy_run.count("--host_platform=//:local_windows"), 1)
+
     def test_bazel_windows_tests_serialize_host_global_policy_state(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/bazel.yml")
         windows_steps = (
