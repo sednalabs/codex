@@ -3796,7 +3796,10 @@ fn failed_amendment_network_output_shape(output: &str) -> &'static str {
     for (matches_shape, shape) in [
         (process_failed_wrapper, "exec_process_failed"),
         (other_exec_error, "exec_other_error"),
-        (write_stdin_process_failed_wrapper, "write_stdin_process_failed"),
+        (
+            write_stdin_process_failed_wrapper,
+            "write_stdin_process_failed",
+        ),
         (tool_output_header.is_some(), "exec_output_header"),
         (
             context_output_header.is_some(),
@@ -3862,9 +3865,7 @@ fn failed_amendment_network_output_category_matches_only_exact_denials() {
             format!("{FAILED_AMENDMENT_POLICY_FALLBACK} extra")
         ),
         format!("{FAILED_AMENDMENT_PROXY_DENIAL_PREFIX}different host or detail"),
-        format!(
-            "write_stdin failed: OtherError: {FAILED_AMENDMENT_POLICY_FALLBACK}"
-        ),
+        format!("write_stdin failed: OtherError: {FAILED_AMENDMENT_POLICY_FALLBACK}"),
         format!(
             "{FAILED_AMENDMENT_WRITE_STDIN_PROCESS_FAILED_PREFIX}Network access to \"wrong.invalid\" was blocked by policy."
         ),
@@ -3903,15 +3904,11 @@ fn failed_amendment_network_output_shape_is_closed_and_payload_free() {
         "write_stdin_process_failed"
     );
     assert_eq!(
-        failed_amendment_network_output_shape(
-            "write_stdin failed: Unified exec process failed:"
-        ),
+        failed_amendment_network_output_shape("write_stdin failed: Unified exec process failed:"),
         "opaque"
     );
     assert_eq!(
-        failed_amendment_network_output_shape(
-            "write_stdin failed: OtherError: private detail"
-        ),
+        failed_amendment_network_output_shape("write_stdin failed: OtherError: private detail"),
         "opaque"
     );
     assert_eq!(
