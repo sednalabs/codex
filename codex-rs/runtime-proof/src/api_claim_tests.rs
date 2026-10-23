@@ -405,6 +405,7 @@ fn uncertain_api_post_is_not_replayed_and_diagnostics_do_not_expose_bearer() {
         &client,
         &format!("http://{address}"),
         &bearer,
+        7,
         request_id,
         &certificate,
         &proof,
@@ -477,6 +478,11 @@ fn uncertain_api_post_is_not_replayed_and_diagnostics_do_not_expose_bearer() {
         receipt_request
             .to_ascii_lowercase()
             .contains("authorization: bearer synthetic-test-bearer-never-log")
+    );
+    assert!(
+        receipt_request
+            .to_ascii_lowercase()
+            .contains("x-ops-project-id: 7")
     );
     assert!(
         !receipt_request
@@ -595,6 +601,7 @@ fn uncertain_api_post_recovers_only_from_matching_historical_receipt() {
         &client,
         &format!("http://{address}"),
         &SecretString("synthetic-test-bearer".to_string()),
+        7,
         request_id,
         &certificate,
         &proof,
@@ -614,6 +621,11 @@ fn uncertain_api_post_recovers_only_from_matching_historical_receipt() {
         receipt_request
             .to_ascii_lowercase()
             .contains("authorization: bearer synthetic-test-bearer")
+    );
+    assert!(
+        receipt_request
+            .to_ascii_lowercase()
+            .contains("x-ops-project-id: 7")
     );
     assert!(
         !receipt_request
@@ -764,6 +776,7 @@ fn api_200_claim_response_requires_the_matching_claimed_target() {
         &client,
         &format!("http://{address}"),
         &SecretString("synthetic-test-bearer".to_string()),
+        7,
         request_id,
         &certificate,
         &proof,

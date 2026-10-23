@@ -309,6 +309,7 @@ pub(crate) fn api_http_client() -> Result<HttpClient> {
 pub(crate) fn send_claim(
     client: &HttpClient,
     bearer: &SecretString,
+    project_id: u64,
     request_id: Uuid,
     certificate: &str,
     proof: &str,
@@ -318,6 +319,7 @@ pub(crate) fn send_claim(
         client,
         API_RECIPIENT,
         bearer,
+        project_id,
         request_id,
         certificate,
         proof,
@@ -400,6 +402,7 @@ async fn read_execution_receipt_async(
     client: &HttpClient,
     recipient: &str,
     bearer: &SecretString,
+    project_id: u64,
     expected_work_item_ref: &str,
     request_id: Uuid,
 ) -> Result<ExecutionReceiptResolution> {
@@ -416,6 +419,7 @@ async fn read_execution_receipt_async(
     let response = client
         .post(format!("{recipient}{API_EXECUTION_RECEIPT_ROUTE}"))
         .header("authorization", authorization.as_str())
+        .header("x-ops-project-id", project_id.to_string())
         .header("content-type", "application/json")
         .body(body.as_slice().to_vec())
         .timeout(REQUEST_TIMEOUT)
@@ -454,6 +458,7 @@ async fn send_claim_to_async(
     client: &HttpClient,
     recipient: &str,
     bearer: &SecretString,
+    project_id: u64,
     request_id: Uuid,
     certificate: &str,
     proof: &str,
@@ -525,6 +530,7 @@ async fn send_claim_to_async(
         client,
         recipient,
         bearer,
+        project_id,
         expected_work_item_ref,
         request_id,
     )
@@ -544,6 +550,7 @@ fn send_claim_to(
     client: &HttpClient,
     recipient: &str,
     bearer: &SecretString,
+    project_id: u64,
     request_id: Uuid,
     certificate: &str,
     proof: &str,
@@ -557,6 +564,7 @@ fn send_claim_to(
         client,
         recipient,
         bearer,
+        project_id,
         request_id,
         certificate,
         proof,

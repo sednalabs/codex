@@ -519,6 +519,7 @@ fn run_http_claim(
     api_claim::send_claim(
         &client,
         &bearer.value,
+        policy.project_id,
         request_id,
         &certificate,
         &proof,
