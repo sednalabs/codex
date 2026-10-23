@@ -405,11 +405,13 @@ fn uncertain_api_post_is_not_replayed_and_diagnostics_do_not_expose_bearer() {
         &client,
         &format!("http://{address}"),
         &bearer,
-        7,
-        request_id,
-        &certificate,
-        &proof,
-        &body,
+        ClaimSubmission {
+            project_id: 7,
+            request_id,
+            certificate: &certificate,
+            proof: &proof,
+            body: &body,
+        },
     );
     assert!(result.is_err());
     let error = format!(
@@ -601,11 +603,13 @@ fn uncertain_api_post_recovers_only_from_matching_historical_receipt() {
         &client,
         &format!("http://{address}"),
         &SecretString("synthetic-test-bearer".to_string()),
-        7,
-        request_id,
-        &certificate,
-        &proof,
-        &body,
+        ClaimSubmission {
+            project_id: 7,
+            request_id,
+            certificate: &certificate,
+            proof: &proof,
+            body: &body,
+        },
     )
     .expect("matching stored history settles the unknown POST");
 
@@ -776,11 +780,13 @@ fn api_200_claim_response_requires_the_matching_claimed_target() {
         &client,
         &format!("http://{address}"),
         &SecretString("synthetic-test-bearer".to_string()),
-        7,
-        request_id,
-        &certificate,
-        &proof,
-        &body,
+        ClaimSubmission {
+            project_id: 7,
+            request_id,
+            certificate: &certificate,
+            proof: &proof,
+            body: &body,
+        },
     )
     .expect("matching claim receipt confirms success");
     server.join().expect("bounded receipt server completes");
