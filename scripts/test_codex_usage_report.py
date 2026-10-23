@@ -265,7 +265,7 @@ def _correctness(
             helper._write_bounded_json({"synthetic": "x" * 1_024}, bounded_output)
         except helper.WorkLimitReached as exc:
             _assert(
-                exc.reason == "output_size_limit_exceeded",
+                exc.reason == "serialized_json_limit_exceeded",
                 "JSON byte overflow must be typed incomplete",
             )
         else:
@@ -298,15 +298,15 @@ def _correctness(
             writer_guard._account_output_text(oversized_text)
         except helper.WorkLimitReached as exc:
             _assert(
-                exc.reason == "output_size_limit_exceeded",
+                exc.reason == "source_text_field_limit_exceeded",
                 "oversized source text must be typed incomplete",
             )
         else:
             raise AssertionError(
                 "synthetic oversized source text unexpectedly passed its field cap"
             )
-        original_text_limit = helper.MAX_OUTPUT_TEXT_CHARS
-        helper.MAX_OUTPUT_TEXT_CHARS = 3
+        original_text_limit = helper.MAX_SELECTED_TEXT_CHARS
+        helper.MAX_SELECTED_TEXT_CHARS = 3
         writer_guard._account_output_text(
             text_connection.execute("SELECT ?", ("ab",)).fetchone()
         )
@@ -316,7 +316,7 @@ def _correctness(
             )
         except helper.WorkLimitReached as exc:
             _assert(
-                exc.reason == "output_size_limit_exceeded",
+                exc.reason == "selected_source_text_limit_exceeded",
                 "aggregate report text must be typed incomplete",
             )
         else:
@@ -324,7 +324,7 @@ def _correctness(
                 "synthetic aggregate output text unexpectedly passed its cap"
             )
         finally:
-            helper.MAX_OUTPUT_TEXT_CHARS = original_text_limit
+            helper.MAX_SELECTED_TEXT_CHARS = original_text_limit
     finally:
         text_connection.close()
     guarded_connection = writer_guard.open()
@@ -378,7 +378,7 @@ def _correctness(
         "oversized source text must return typed incomplete",
     )
     _assert(
-        oversized_text["error"]["reason"] == "output_size_limit_exceeded",
+        oversized_text["error"]["reason"] == "sqlite_value_limit_exceeded",
         "SQLite text-value limit must not allocate or emit an oversized report",
     )
     long_thread_id = "overlimit-thread-" + ("x" * (helper.MAX_TEXT_FIELD_CHARS + 1))
@@ -424,7 +424,7 @@ def _correctness(
         "long-thread error must remain incomplete",
     )
     _assert(
-        long_thread_error["error"]["reason"] == "output_size_limit_exceeded",
+        long_thread_error["error"]["reason"] == "source_text_field_limit_exceeded",
         "long thread id must trigger bounded text accounting",
     )
     _assert(
@@ -486,21 +486,21 @@ def _correctness(
         subtree_writer.commit()
     finally:
         subtree_writer.close()
-    subtree_text_limit, _subtree_text_diagnostic = _report(
+    subtree_text_report, _subtree_text_diagnostic = _report(
         subtree_text_database,
         repo_root,
         scope="subtree",
         thread_id=subtree_root_id,
         credit_mode="supplied_standard_scenario",
-        expected_exit=2,
+        expected_exit=0,
     )
     _assert(
-        subtree_text_limit["status"] == "incomplete",
-        "subtree text overflow must return typed incomplete",
+        subtree_text_report["status"] == "complete",
+        "bounded indexed subtree text below the aggregate cap remains reportable",
     )
     _assert(
-        subtree_text_limit["error"]["reason"] == "output_size_limit_exceeded",
-        "subtree metadata text overflow must stop during row streaming without global fallback",
+        subtree_text_report["lineage_coverage"]["descendant_thread_count"] == 256,
+        "subtree rows below the aggregate cap remain fully represented",
     )
 
     all_report, all_diagnostic = _report(
